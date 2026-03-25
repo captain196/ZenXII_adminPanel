@@ -1,0 +1,16 @@
+.main_login_box {
+    width: 38%;
+    height: 332px;
+    background: rosybrown;
+    margin-left: 29%;
+    margin-top: 142px;
+    border-radius: 10px;
+    padding-top: 1px;
+    font-size: 30px; 
+    font-family:cursive;
+    padding-left: 4%;
+    padding-right: 4%;
+}
+.input_control {
+    height: 40px;
+}

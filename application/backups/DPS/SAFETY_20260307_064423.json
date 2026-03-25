@@ -1,0 +1,44 @@
+{
+    "backup_format": "1.2",
+    "backup_type": "firebase",
+    "school_name": "DPS",
+    "firebase_key": "DPS",
+    "backed_up_at": "2026-03-07 06:44:23",
+    "backed_up_by": "auto-safety",
+    "Schools": {
+        "2026-27": {
+            "Accounts": {
+                "Account_book": {
+                    "Admission Fees": {
+                        "__init": true
+                    },
+                    "Misc Income": {
+                        "__init": true
+                    },
+                    "School Fees": {
+                        "__init": true
+                    },
+                    "Stationery": {
+                        "__init": true
+                    },
+                    "Transport Fees": {
+                        "__init": true
+                    }
+                },
+                "Fees": {
+                    "Titles": {
+                        "Computer Fee": {
+                            "active": true
+                        },
+                        "Library Fee": {
+                            "active": true
+                        },
+                        "Tuition Fee": {
+                            "active": true
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

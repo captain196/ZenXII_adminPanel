@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Firebase Realtime Database Architecture Summary</title>
+<style>
+  @media print { body { font-size: 11px; } .page-break { page-break-before: always; } }
+  body { font-family: 'Segoe UI', Arial, sans-serif; max-width: 900px; margin: 40px auto; color: #1a1a2e; line-height: 1.6; padding: 0 20px; }
+  h1 { text-align: center; color: #0f766e; font-size: 22px; border-bottom: 3px solid #0f766e; padding-bottom: 10px; }
+  h2 { color: #0f766e; font-size: 17px; margin-top: 32px; border-left: 4px solid #0f766e; padding-left: 10px; }
+  h3 { color: #334155; font-size: 14px; margin-top: 20px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; font-size: 12.5px; }
+  th { background: #0f766e; color: #fff; padding: 8px 10px; text-align: left; font-weight: 600; }
+  td { padding: 7px 10px; border-bottom: 1px solid #e2e8f0; }
+  tr:nth-child(even) td { background: #f0fdfa; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; }
+  .active { background: #d1fae5; color: #065f46; }
+  .legacy { background: #fef3c7; color: #92400e; }
+  .unused { background: #fee2e2; color: #991b1b; }
+  .new { background: #dbeafe; color: #1e40af; }
+  code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 12px; font-family: 'Consolas', monospace; }
+  .meta { text-align: center; color: #64748b; font-size: 12px; margin-bottom: 30px; }
+  .footer { text-align: center; color: #94a3b8; font-size: 11px; margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 12px; }
+  .tree { font-family: 'Consolas', monospace; font-size: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px 18px; margin: 10px 0; line-height: 1.5; white-space: pre; }
+  .section-box { background: #f0fdfa; border: 1px solid #99f6e4; border-radius: 8px; padding: 14px 18px; margin: 12px 0; }
+</style>
+</head>
+<body>
+
+<h1>Firebase Realtime Database<br>Architecture Summary</h1>
+<p class="meta">School ERP — Grader Platform &bull; Generated: 15 March 2026</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>1. Original Parent Nodes (6 Nodes)</h2>
+
+<table>
+  <tr><th>Node</th><th>Purpose</th><th>Status</th></tr>
+  <tr>
+    <td><code>Schools/</code></td>
+    <td>All academic data &mdash; classes, sections, students, fees, exams, results, attendance, accounts, communication. Keyed by school name (legacy) or <code>SCH_XXXXXX</code> (new).</td>
+    <td><span class="badge active">ACTIVE</span></td>
+  </tr>
+  <tr>
+    <td><code>Users/</code></td>
+    <td>Authentication (<code>Users/Admin/{code}/{id}</code>) + student profiles (<code>Users/Parents/{code}/{id}</code>) + teacher profiles (<code>Users/Teachers/{id}</code>).</td>
+    <td><span class="badge active">ACTIVE</span></td>
+  </tr>
+  <tr>
+    <td><code>School_ids/</code></td>
+    <td>Maps login code &rarr; school name (e.g., <code>10004 &rarr; "Demo"</code>). Read-only fallback during login.</td>
+    <td><span class="badge legacy">LEGACY</span></td>
+  </tr>
+  <tr>
+    <td><code>Exits/</code></td>
+    <td>Global phone &rarr; school_id index for mobile app lookups. Dual-written with tenant-scoped <code>Schools/{school}/Phone_Index/</code>.</td>
+    <td><span class="badge legacy">LEGACY</span></td>
+  </tr>
+  <tr>
+    <td><code>User_ids_pno/</code></td>
+    <td>Global phone &rarr; userId index for mobile app lookups. Dual-written alongside <code>Exits/</code>.</td>
+    <td><span class="badge legacy">LEGACY</span></td>
+  </tr>
+  <tr>
+    <td><code>Subject_master_list</code></td>
+    <td>Zero references in codebase. Not used by any controller, model, or view.</td>
+    <td><span class="badge unused">UNUSED</span></td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>2. New Parent Nodes (3 Nodes)</h2>
+
+<h3>2.1 &nbsp; <code>System/</code> &mdash; Platform-Level Data</h3>
+<p>Stores everything that belongs to the <strong>platform as a whole</strong>, not to any individual school. This is the biggest addition.</p>
+
+<table>
+  <tr><th>Sub-path</th><th>What It Stores</th><th>Used By</th></tr>
+  <tr>
+    <td><code>System/Schools/{SCH_XXXXXX}/</code></td>
+    <td>Canonical school registry &mdash; profile, subscription, plan, status, stats cache</td>
+    <td>SA panel, login, health checks, school config</td>
+  </tr>
+  <tr>
+    <td><code>System/Plans/{PLAN_ID}/</code></td>
+    <td>Subscription plan definitions &mdash; name, price, modules, billing cycle, grace days</td>
+    <td>SA Plans management, onboarding</td>
+  </tr>
+  <tr>
+    <td><code>System/Payments/{PAY_ID}/</code></td>
+    <td>Payment transaction records &mdash; amount, gateway, status, invoice</td>
+    <td>SA payment processing</td>
+  </tr>
+  <tr>
+    <td><code>System/Backups/{uid}/{id}</code></td>
+    <td>Backup metadata &mdash; filename, type, size, status, encryption key</td>
+    <td>SA backup system, cron job</td>
+  </tr>
+  <tr>
+    <td><code>System/BackupSchedule</code></td>
+    <td>Automated backup config &mdash; frequency, retention, last run</td>
+    <td>Backup cron job</td>
+  </tr>
+  <tr>
+    <td><code>System/Logs/Activity/</code></td>
+    <td>SA action audit trail (date-partitioned)</td>
+    <td>SA monitoring dashboard</td>
+  </tr>
+  <tr>
+    <td><code>System/Logs/Payroll/</code></td>
+    <td>Payroll computation audit trail</td>
+    <td>HR module</td>
+  </tr>
+  <tr>
+    <td><code>System/API_Keys/{hash}</code></td>
+    <td>Device API key &rarr; school lookup (biometric/RFID)</td>
+    <td>Attendance module</td>
+  </tr>
+</table>
+
+<h3>2.2 &nbsp; <code>RateLimit/</code> &mdash; Brute-Force Protection</h3>
+<table>
+  <tr><th>Sub-path</th><th>Purpose</th><th>Threshold</th></tr>
+  <tr>
+    <td><code>RateLimit/Login/{ip}</code></td>
+    <td>Tracks failed school admin login attempts per IP</td>
+    <td>20 fails / 15 min</td>
+  </tr>
+  <tr>
+    <td><code>RateLimit/SA/{ip}</code></td>
+    <td>Tracks failed SA login attempts per IP</td>
+    <td>10 fails / 30 min</td>
+  </tr>
+</table>
+<p>Stores <code>{fails: count, windowStart: timestamp}</code>. Cleared on successful login. Purely security infrastructure.</p>
+
+<h3>2.3 &nbsp; <code>Indexes/</code> &mdash; Fast School Lookups</h3>
+<table>
+  <tr><th>Sub-path</th><th>Maps</th><th>Purpose</th></tr>
+  <tr>
+    <td><code>Indexes/School_codes/{CODE}</code></td>
+    <td><code>CODE &rarr; SCH_XXXXXX</code></td>
+    <td>Login resolution: school code &rarr; school_id (O(1) lookup)</td>
+  </tr>
+  <tr>
+    <td><code>Indexes/School_names/{name}</code></td>
+    <td><code>name &rarr; SCH_XXXXXX</code></td>
+    <td>Onboarding: uniqueness check by school name</td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="page-break"></div>
+<h2>3. Overlap: Old &harr; New</h2>
+
+<table>
+  <tr><th>Old Node</th><th>New Node</th><th>Relationship</th></tr>
+  <tr>
+    <td><code>School_ids/</code></td>
+    <td><code>Indexes/School_codes/</code></td>
+    <td><strong>Same purpose, different format.</strong> Old stores <code>code &rarr; school_name</code>. New stores <code>code &rarr; SCH_XXXXXX</code>. Login reads new first, falls back to old for legacy schools.</td>
+  </tr>
+  <tr>
+    <td><code>Schools/{name}/</code> (profile)</td>
+    <td><code>System/Schools/{id}/profile</code></td>
+    <td><strong>Partial overlap.</strong> <code>System/Schools</code> stores subscription/plan/status metadata. <code>Schools/</code> stores academic data. They complement each other.</td>
+  </tr>
+  <tr>
+    <td><code>Exits/</code></td>
+    <td>&mdash;</td>
+    <td>No replacement. Still dual-written for mobile app backward compat.</td>
+  </tr>
+  <tr>
+    <td><code>User_ids_pno/</code></td>
+    <td>&mdash;</td>
+    <td>No replacement. Still dual-written for mobile app backward compat.</td>
+  </tr>
+  <tr>
+    <td><code>Subject_master_list</code></td>
+    <td>&mdash;</td>
+    <td>Dead node &mdash; can be safely deleted.</td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>4. Impact Summary</h2>
+
+<table>
+  <tr><th>Aspect</th><th>Before (Old Only)</th><th>After (Old + New)</th></tr>
+  <tr>
+    <td>School lookup at login</td>
+    <td>Scan <code>School_ids/</code> or hardcoded</td>
+    <td>O(1) via <code>Indexes/School_codes/</code></td>
+  </tr>
+  <tr>
+    <td>Subscription management</td>
+    <td>No centralized tracking</td>
+    <td><code>System/Schools/</code> + <code>System/Plans/</code></td>
+  </tr>
+  <tr>
+    <td>Brute-force protection</td>
+    <td>None</td>
+    <td><code>RateLimit/</code> blocks after N failures</td>
+  </tr>
+  <tr>
+    <td>Audit trail</td>
+    <td>None</td>
+    <td><code>System/Logs/</code> &mdash; daily partitioned</td>
+  </tr>
+  <tr>
+    <td>Backup management</td>
+    <td>None</td>
+    <td><code>System/Backups/</code> + cron scheduling</td>
+  </tr>
+  <tr>
+    <td>Payment tracking</td>
+    <td>None</td>
+    <td><code>System/Payments/</code></td>
+  </tr>
+  <tr>
+    <td>Plan definitions</td>
+    <td>Hardcoded or manual</td>
+    <td><code>System/Plans/</code> &mdash; full CRUD</td>
+  </tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>5. Complete Firebase Tree Structure</h2>
+
+<div class="tree">Firebase Root
+├── <strong>Schools/{school_name}/</strong>                    <span style="color:#0f766e;">[ACTIVE — Core Academic Data]</span>
+│   ├── Config/Profile, Board, Classes, Streams, ActiveSession
+│   ├── Sessions/                              (available session years)
+│   ├── {session_year}/
+│   │   ├── Class {N}/Section {X}/Students, Teachers, Subjects
+│   │   ├── Accounts/Fees, Vouchers, Account_book
+│   │   ├── Results/Templates, Marks, Computed
+│   │   ├── Attendance/
+│   │   └── CRM/Admissions
+│   ├── Subject_list/
+│   ├── Phone_Index/                           (tenant-scoped)
+│   ├── Communication/
+│   └── Operations/Library, Transport, Hostel, Inventory, Assets
+│
+├── <strong>Users/</strong>                                     <span style="color:#0f766e;">[ACTIVE — Auth &amp; Profiles]</span>
+│   ├── Admin/{school_code}/{admin_id}/Credentials, AccessHistory
+│   ├── Admin/Our Panel/{admin_id}/            (developer access)
+│   ├── Parents/{school_code}/{userId}/        (student profiles)
+│   └── Teachers/{school_id}/{staffId}/
+│
+├── <strong>System/</strong>                                    <span style="color:#1e40af;">[NEW — Platform Infrastructure]</span>
+│   ├── Schools/{SCH_XXXXXX}/profile, subscription, stats_cache
+│   ├── Plans/{PLAN_ID}/name, price, modules, billing_cycle
+│   ├── Payments/{PAY_ID}/amount, gateway, status
+│   ├── Backups/{uid}/{id}/filename, status, encryption_key
+│   ├── BackupSchedule/enabled, frequency, retention
+│   ├── Logs/Activity, Logins, Errors, ApiUsage, Payroll
+│   └── API_Keys/{hash}/device_id, school_name
+│
+├── <strong>Indexes/</strong>                                   <span style="color:#1e40af;">[NEW — Fast Lookups]</span>
+│   ├── School_codes/{CODE} → SCH_XXXXXX
+│   └── School_names/{name} → SCH_XXXXXX
+│
+├── <strong>RateLimit/</strong>                                 <span style="color:#1e40af;">[NEW — Security]</span>
+│   ├── Login/{ip}/fails, windowStart
+│   └── SA/{ip}/fails, windowStart
+│
+├── <strong>School_ids/</strong>                                <span style="color:#92400e;">[LEGACY — Fallback for old schools]</span>
+├── <strong>Exits/</strong>                                     <span style="color:#92400e;">[LEGACY — Mobile app compat]</span>
+├── <strong>User_ids_pno/</strong>                              <span style="color:#92400e;">[LEGACY — Mobile app compat]</span>
+└── <strong>Subject_master_list</strong>                        <span style="color:#991b1b;">[UNUSED — Safe to delete]</span></div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>6. Key Takeaway</h2>
+
+<div class="section-box">
+  <p><strong><code>Schools/</code></strong> and <strong><code>Users/</code></strong> remain the core of your database &mdash; nothing changed there.</p>
+  <p>The 3 new nodes add <strong>platform infrastructure</strong> (subscriptions, security, auditing, backups) that didn't exist before:</p>
+  <ul>
+    <li><strong><code>System/</code></strong> &mdash; centralizes platform-level data that doesn't belong to any single school</li>
+    <li><strong><code>Indexes/</code></strong> &mdash; enables O(1) school resolution instead of scanning</li>
+    <li><strong><code>RateLimit/</code></strong> &mdash; adds brute-force login protection</li>
+  </ul>
+  <p><strong><code>School_ids/</code></strong> is the only old node with a direct replacement (<code>Indexes/School_codes/</code>), and both are still read for backward compatibility.</p>
+  <p><strong><code>Subject_master_list</code></strong> is unused and can be safely deleted from Firebase.</p>
+</div>
+
+<div class="footer">
+  Grader School ERP &bull; Firebase Architecture Document &bull; March 2026
+</div>
+
+</body>
+</html>

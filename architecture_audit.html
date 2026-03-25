@@ -1,0 +1,1543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GraderIQ — Deep Architecture Audit & Mobile App Design</title>
+<style>
+  :root {
+    --bg: #0a0f1a;
+    --bg2: #0f1729;
+    --bg3: #141e33;
+    --bg4: #1a2844;
+    --border: #1e3150;
+    --t1: #e8edf5;
+    --t2: #9aa8c2;
+    --t3: #5e6e8a;
+    --teal: #0f766e;
+    --teal2: #14b8a6;
+    --teal-dim: rgba(15,118,110,.12);
+    --teal-glow: rgba(20,184,166,.08);
+    --red: #ef4444;
+    --red-dim: rgba(239,68,68,.1);
+    --amber: #f59e0b;
+    --amber-dim: rgba(245,158,11,.1);
+    --green: #22c55e;
+    --green-dim: rgba(34,197,94,.1);
+    --blue: #3b82f6;
+    --blue-dim: rgba(59,130,246,.1);
+    --purple: #a855f7;
+    --purple-dim: rgba(168,85,247,.1);
+    --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    --mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --sh: 0 4px 24px rgba(0,0,0,.3);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--t1);
+    line-height: 1.7;
+    font-size: 15px;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--t3); }
+
+  /* Layout */
+  .wrapper {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+
+  /* Hero */
+  .hero {
+    text-align: center;
+    padding: 60px 20px 50px;
+    margin-bottom: 48px;
+    background: linear-gradient(135deg, var(--bg2), var(--bg3));
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at 50% 0%, var(--teal-glow), transparent 70%);
+    pointer-events: none;
+  }
+  .hero-badge {
+    display: inline-block;
+    padding: 6px 16px;
+    background: var(--teal-dim);
+    border: 1px solid rgba(15,118,110,.3);
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--teal2);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 20px;
+  }
+  .hero h1 {
+    font-size: 36px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    margin-bottom: 12px;
+    background: linear-gradient(135deg, var(--t1), var(--teal2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .hero p {
+    color: var(--t2);
+    font-size: 16px;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+  .hero-meta {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    margin-top: 24px;
+    flex-wrap: wrap;
+  }
+  .hero-meta span {
+    font-size: 13px;
+    color: var(--t3);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .hero-meta span strong {
+    color: var(--t2);
+  }
+
+  /* TOC */
+  .toc {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px 32px;
+    margin-bottom: 48px;
+  }
+  .toc h2 {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    color: var(--teal2);
+  }
+  .toc-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 8px;
+  }
+  .toc a {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    color: var(--t2);
+    text-decoration: none;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    transition: all .2s;
+  }
+  .toc a:hover {
+    background: var(--teal-dim);
+    color: var(--teal2);
+  }
+  .toc-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--teal2);
+    flex-shrink: 0;
+  }
+
+  /* Sections */
+  .section {
+    margin-bottom: 48px;
+  }
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .step-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 36px;
+    height: 36px;
+    padding: 0 10px;
+    background: linear-gradient(135deg, var(--teal), var(--teal2));
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 800;
+    color: #fff;
+    flex-shrink: 0;
+  }
+  .section-header h2 {
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+  }
+  .section-header h3 {
+    font-size: 20px;
+    font-weight: 600;
+  }
+
+  /* Cards */
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .card-icon {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+  .card-icon.teal { background: var(--teal-dim); }
+  .card-icon.blue { background: var(--blue-dim); }
+  .card-icon.purple { background: var(--purple-dim); }
+  .card-icon.amber { background: var(--amber-dim); }
+  .card-icon.green { background: var(--green-dim); }
+  .card-icon.red { background: var(--red-dim); }
+  .card h3 {
+    font-size: 17px;
+    font-weight: 700;
+  }
+  .card h4 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--t2);
+    margin-bottom: 8px;
+  }
+  .card p, .card li {
+    color: var(--t2);
+    font-size: 14px;
+    line-height: 1.7;
+  }
+
+  /* Diagram boxes */
+  .diagram {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 20px 24px;
+    margin: 16px 0;
+    overflow-x: auto;
+  }
+  .diagram pre {
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--t2);
+    white-space: pre;
+    margin: 0;
+  }
+  .diagram pre .hl { color: var(--teal2); font-weight: 600; }
+  .diagram pre .dim { color: var(--t3); }
+  .diagram pre .warn { color: var(--amber); }
+  .diagram pre .err { color: var(--red); }
+  .diagram pre .ok { color: var(--green); }
+
+  /* Tables */
+  .table-wrap {
+    overflow-x: auto;
+    margin: 16px 0;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+  }
+  thead th {
+    background: var(--bg3);
+    color: var(--teal2);
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .8px;
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  tbody td {
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(30,49,80,.5);
+    color: var(--t2);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--teal-glow); }
+  td code, th code {
+    background: var(--bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--teal2);
+  }
+
+  /* Code blocks */
+  .code-block {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 16px 20px;
+    margin: 12px 0;
+    overflow-x: auto;
+  }
+  .code-block code {
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--t2);
+  }
+  .code-label {
+    display: inline-block;
+    padding: 2px 10px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 4px 4px 0 0;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--t3);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-bottom: -1px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Tags / Badges */
+  .tag {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+  }
+  .tag.critical { background: var(--red-dim); color: var(--red); border: 1px solid rgba(239,68,68,.2); }
+  .tag.high { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(245,158,11,.2); }
+  .tag.medium { background: var(--blue-dim); color: var(--blue); border: 1px solid rgba(59,130,246,.2); }
+  .tag.good { background: var(--green-dim); color: var(--green); border: 1px solid rgba(34,197,94,.2); }
+  .tag.p0 { background: var(--red-dim); color: var(--red); border: 1px solid rgba(239,68,68,.2); }
+  .tag.p1 { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(245,158,11,.2); }
+  .tag.p2 { background: var(--blue-dim); color: var(--blue); border: 1px solid rgba(59,130,246,.2); }
+  .tag.p3 { background: var(--purple-dim); color: var(--purple); border: 1px solid rgba(168,85,247,.2); }
+
+  /* Flow steps */
+  .flow-steps {
+    position: relative;
+    padding-left: 28px;
+  }
+  .flow-steps::before {
+    content: '';
+    position: absolute;
+    left: 11px;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    background: var(--border);
+  }
+  .flow-step {
+    position: relative;
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .flow-step::before {
+    content: '';
+    position: absolute;
+    left: -22px;
+    top: 16px;
+    width: 10px;
+    height: 10px;
+    background: var(--teal);
+    border: 2px solid var(--teal2);
+    border-radius: 50%;
+  }
+  .flow-step h4 {
+    color: var(--teal2);
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+  }
+  .flow-step p {
+    color: var(--t2);
+    font-size: 13px;
+  }
+  .flow-step code {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--teal2);
+    background: var(--bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  /* Grid layouts */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  @media (max-width: 768px) {
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    .hero h1 { font-size: 26px; }
+    .toc-grid { grid-template-columns: 1fr; }
+  }
+
+  /* Module cards */
+  .module-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 16px; margin: 16px 0; }
+  .module-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 20px;
+    transition: border-color .2s;
+  }
+  .module-card:hover { border-color: rgba(15,118,110,.4); }
+  .module-card h4 {
+    font-size: 15px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--t1);
+  }
+  .module-card p { font-size: 13px; color: var(--t3); margin-bottom: 10px; }
+  .module-detail {
+    font-size: 12.5px;
+    color: var(--t2);
+    line-height: 1.8;
+  }
+  .module-detail strong { color: var(--t1); font-weight: 600; }
+
+  /* Callout */
+  .callout {
+    border-left: 3px solid var(--teal);
+    background: var(--teal-dim);
+    padding: 14px 18px;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    margin: 16px 0;
+    font-size: 14px;
+    color: var(--t2);
+  }
+  .callout.warn {
+    border-left-color: var(--amber);
+    background: var(--amber-dim);
+  }
+  .callout.danger {
+    border-left-color: var(--red);
+    background: var(--red-dim);
+  }
+  .callout.success {
+    border-left-color: var(--green);
+    background: var(--green-dim);
+  }
+  .callout strong { color: var(--t1); }
+
+  /* Dep chain */
+  .dep-chain {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 16px 0;
+  }
+  .dep-level {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .dep-level .level-num {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--teal-dim);
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 800;
+    color: var(--teal2);
+    flex-shrink: 0;
+  }
+  .dep-level .level-label { font-size: 12px; color: var(--t3); min-width: 100px; }
+  .dep-level .level-items { font-size: 13px; color: var(--t2); }
+  .dep-level .level-items code { font-family: var(--mono); font-size: 12px; color: var(--teal2); background: var(--bg); padding: 2px 6px; border-radius: 3px; margin: 0 2px; }
+  .dep-arrow {
+    text-align: center;
+    color: var(--t3);
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  /* Summary box */
+  .summary-box {
+    background: linear-gradient(135deg, var(--bg2), var(--bg3));
+    border: 1px solid rgba(15,118,110,.3);
+    border-radius: var(--radius);
+    padding: 28px;
+    margin-top: 32px;
+  }
+  .summary-box h3 {
+    color: var(--teal2);
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 16px;
+  }
+
+  /* Architecture box */
+  .arch-box {
+    background: var(--bg3);
+    border: 2px solid var(--teal);
+    border-radius: var(--radius);
+    padding: 24px 28px;
+    margin: 20px 0;
+  }
+  .arch-box h4 {
+    color: var(--teal2);
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+  .arch-box ul {
+    list-style: none;
+    padding: 0;
+  }
+  .arch-box ul li {
+    padding: 6px 0;
+    color: var(--t2);
+    font-size: 14px;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .arch-box ul li::before {
+    content: '✓';
+    color: var(--green);
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .arch-box ul li.dont::before {
+    content: '✗';
+    color: var(--red);
+  }
+
+  ul.plain { list-style: none; padding: 0; }
+  ul.plain li { padding: 4px 0; }
+  ul.bullet { padding-left: 20px; }
+  ul.bullet li { padding: 3px 0; }
+
+  .mt-8 { margin-top: 8px; }
+  .mt-16 { margin-top: 16px; }
+  .mt-24 { margin-top: 24px; }
+  .mb-16 { margin-bottom: 16px; }
+  .text-teal { color: var(--teal2); }
+  .text-dim { color: var(--t3); }
+  .fw-700 { font-weight: 700; }
+  .fs-13 { font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrapper">
+
+<!-- ==================== HERO ==================== -->
+<div class="hero">
+  <div class="hero-badge">Architecture Audit Report</div>
+  <h1>GraderIQ — Deep Architecture Audit<br>& Mobile App Design</h1>
+  <p>System-level analysis of Admin Web Portal with Parent & Teacher App synchronization strategy</p>
+  <div class="hero-meta">
+    <span>Platform: <strong>CodeIgniter 3 + Node.js + Firebase RTDB</strong></span>
+    <span>Date: <strong>March 2026</strong></span>
+    <span>Type: <strong>Multi-tenant School ERP</strong></span>
+  </div>
+</div>
+
+<!-- ==================== TOC ==================== -->
+<div class="toc">
+  <h2>Table of Contents</h2>
+  <div class="toc-grid">
+    <a href="#step1"><span class="toc-num">1</span> Admin Portal Architecture Audit</a>
+    <a href="#step2"><span class="toc-num">2</span> Internal Connection Mapping</a>
+    <a href="#step3"><span class="toc-num">3</span> Real Data Flows</a>
+    <a href="#step4"><span class="toc-num">4</span> Parent & Teacher App Design</a>
+    <a href="#step5"><span class="toc-num">5</span> Synchronization Strategy</a>
+    <a href="#step6"><span class="toc-num">6</span> Database Design Validation</a>
+    <a href="#step7"><span class="toc-num">7</span> Risks & Problems</a>
+    <a href="#step8"><span class="toc-num">8</span> Implementation Blueprint</a>
+  </div>
+</div>
+
+<!-- ==================== STEP 1 ==================== -->
+<div class="section" id="step1">
+  <div class="section-header">
+    <span class="step-badge">01</span>
+    <h2>Admin Portal Architecture Audit</h2>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon teal">&#9881;</div>
+      <h3>Architecture Type: Modular Monolith + External Auth Microservice</h3>
+    </div>
+    <div class="diagram"><pre>
+┌───────────────────────────────────────────────────────────────┐
+│                      <span class="hl">ADMIN WEB PORTAL</span>                         │
+│  CodeIgniter 3 (PHP) — Modular Monolith                      │
+│                                                               │
+│  <span class="hl">MY_Controller</span> (base)                                       │
+│    ├── Auth check (session)                                   │
+│    ├── Firebase init (<span class="hl">$this->firebase</span>)                        │
+│    ├── School context (<span class="hl">$this->school_name</span>,                    │
+│    │    <span class="hl">$this->school_code</span>, <span class="hl">$this->parent_db_key</span>)              │
+│    ├── Session context (<span class="hl">$this->session_year</span>)                  │
+│    ├── RBAC enforcement (<span class="hl">_require_role</span>)                       │
+│    └── CSRF on all POST                                       │
+│                                                               │
+│  jQuery AJAX → PHP Controller → Firebase RTDB                 │
+│  <span class="dim">(no REST standard — mixed GET/POST, HTML + JSON)</span>            │
+└──────────────┬────────────────────────────────────────────────┘
+               │ <span class="dim">/internal/* (X-Internal-Key)</span>
+┌──────────────▼────────────────────────────────────────────────┐
+│               <span class="hl">NODE.JS AUTH API</span> (Render.com)                  │
+│  Express 5 — JWT auth, device binding, OTP                    │
+│  MongoDB (graderIQ) ←→ Firebase RTDB (dual-write)            │
+└───────────────────────────────────────────────────────────────┘</pre></div>
+
+    <h4 class="mt-16">Controller → DB Flow</h4>
+    <div class="code-block"><code>Browser → jQuery $.ajax() → PHP Controller method
+  → $this->firebase->get/set/update/delete(path)
+  → Firebase Realtime Database
+  → json_success() / json_error() back to browser</code></div>
+    <div class="callout">Controllers serve both HTML pages (GET) and JSON endpoints (POST AJAX). No versioning, no consistent response envelope outside <code>json_success/json_error</code>.</div>
+  </div>
+
+  <!-- Module Breakdown -->
+  <h3 class="mt-24 mb-16" style="font-size:20px;font-weight:700;">Module-Level Breakdown</h3>
+
+  <div class="module-grid">
+    <!-- SIS -->
+    <div class="module-card">
+      <h4>&#128218; Student Information System (SIS)</h4>
+      <p>Full student lifecycle: admission → enrollment → profile → promotion → TC → withdrawal</p>
+      <div class="module-detail">
+        <strong>Controller:</strong> Sis.php — 3280 lines, 21+ methods<br>
+        <strong>Key APIs:</strong> <code>save_admission()</code>, <code>enroll_student()</code>, <code>student_profile()</code>, <code>promote_students()</code>, <code>generate_tc()</code><br>
+        <strong>DB Writes:</strong> <code>Users/Parents/{key}/{STU_ID}/</code>, <code>Schools/{s}/{y}/Class {N}/Section {X}/Students/{STU_ID}</code>, <code>SIS/Students_Index</code><br>
+        <strong>Consumed by:</strong> Fees, Attendance, Exams, Communication, Transport/Hostel<br>
+        <strong>External:</strong> <code>Auth_client::sync_student()</code> → Node.js <code>/internal/sync-student</code>
+      </div>
+    </div>
+
+    <!-- Fees -->
+    <div class="module-card">
+      <h4>&#128176; Fees & Fee Management</h4>
+      <p>Fee structure definition, collection, receipts, ledger, defaulter tracking, online payments</p>
+      <div class="module-detail">
+        <strong>Controllers:</strong> Fees.php (1200+ lines) + Fee_management.php (800+ lines)<br>
+        <strong>Key APIs:</strong> <code>fees_counter()</code>, <code>lookup_student()</code>, <code>submit_fees()</code>, <code>save_fee_structure()</code><br>
+        <strong>DB Writes:</strong> <code>Accounts/Vouchers/</code>, <code>Accounts/Fees/Classes Fees/</code>, <code>Accounts/Pending_fees/</code>, <code>Users/Parents/{}/Fees Record/</code><br>
+        <strong>Consumed by:</strong> Accounting (journals), Communication (triggers), Parent App<br>
+        <strong>Depends on:</strong> SIS, Accounting, School Config
+      </div>
+    </div>
+
+    <!-- Accounting -->
+    <div class="module-card">
+      <h4>&#128200; Accounting</h4>
+      <p>Double-entry bookkeeping — chart of accounts, journal entries, ledger, closing balances</p>
+      <div class="module-detail">
+        <strong>Controller:</strong> Accounting.php + Operations_accounting.php (library)<br>
+        <strong>Key APIs:</strong> <code>save_journal_entry()</code>, <code>get_ledger()</code>, <code>closing_balances()</code><br>
+        <strong>DB Writes:</strong> <code>Accounts/ChartOfAccounts/</code>, <code>Accounts/Ledger/</code>, <code>Accounts/Closing_balances/</code><br>
+        <strong>Upstream feeds:</strong> Fees (receipts), HR Payroll, Library fines, Assets (depreciation)
+      </div>
+    </div>
+
+    <!-- Exam & Results -->
+    <div class="module-card">
+      <h4>&#128209; Exam & Results</h4>
+      <p>Exam scheduling, mark templates, grade computation, report cards, merit lists, analytics</p>
+      <div class="module-detail">
+        <strong>Controllers:</strong> Exam.php, Result.php, Examination.php<br>
+        <strong>Key APIs:</strong> <code>save_template()</code>, <code>save_marks()</code>, <code>compute_results()</code>, <code>report_card()</code><br>
+        <strong>DB Writes:</strong> <code>Exams/</code>, <code>Results/Templates/</code>, <code>Results/Marks/</code>, <code>Results/Computed/</code>, <code>Results/Cumulative/</code><br>
+        <strong>Grade Scales:</strong> Percentage, A-F, O-E, 10-Point GPA, Pass/Fail<br>
+        <strong>Ranking:</strong> Competition (1,1,3 not 1,1,2)
+      </div>
+    </div>
+
+    <!-- Attendance -->
+    <div class="module-card">
+      <h4>&#128197; Attendance</h4>
+      <p>Daily student/staff attendance, late tracking, biometric/RFID device integration, analytics</p>
+      <div class="module-detail">
+        <strong>Controller:</strong> Attendance.php — 34 methods<br>
+        <strong>Key APIs:</strong> <code>save_student_attendance()</code>, <code>save_staff_attendance()</code>, <code>device_punch()</code><br>
+        <strong>Format:</strong> String per month — <code>"PPAPLHV..."</code> (P/A/L/H/T/V)<br>
+        <strong>DB Writes:</strong> <code>Class {N}/Section {X}/Students/{ID}/Attendance/{Month}</code>, <code>Attendance/Late/</code>, <code>Staff_Attendance/</code><br>
+        <strong>Triggers:</strong> <code>student_absent</code>, <code>student_late</code>
+      </div>
+    </div>
+
+    <!-- Communication -->
+    <div class="module-card">
+      <h4>&#128172; Communication</h4>
+      <p>Messages, notices, circulars, templates, automated triggers, delivery queue</p>
+      <div class="module-detail">
+        <strong>Controller:</strong> Communication.php — 1341 lines, 35+ methods<br>
+        <strong>Key APIs:</strong> <code>send_message()</code>, <code>create_notice()</code>, <code>process_queue()</code>, <code>fire_event()</code><br>
+        <strong>Trigger events:</strong> student_absent, fee_due, fee_received, exam_result, leave_approved, salary_processed<br>
+        <strong>Integration:</strong> Modules call <code>Communication_helper::fire_event()</code>
+      </div>
+    </div>
+
+    <!-- HR -->
+    <div class="module-card">
+      <h4>&#128101; HR & Payroll</h4>
+      <p>Departments, recruitment, leave (with LWP), salary structures, payroll runs, appraisals</p>
+      <div class="module-detail">
+        <strong>Controller:</strong> Hr.php — 2650 lines, 40+ methods<br>
+        <strong>DB:</strong> <code>Schools/{s}/HR/</code> (depts, leaves, salaries), <code>{session}/HR/Payroll/</code> (runs, slips)<br>
+        <strong>Depends on:</strong> Attendance (staff LWP calc), Accounting (payroll journals), SIS (staff profiles)
+      </div>
+    </div>
+
+    <!-- School Config -->
+    <div class="module-card">
+      <h4>&#9881; School Config</h4>
+      <p>School profile, sessions, board, classes, sections, subjects, streams — <strong>FOUNDATION</strong></p>
+      <div class="module-detail">
+        <strong>Controller:</strong> School_config.php — 7-tab SPA<br>
+        <strong>DB:</strong> <code>Config/Profile</code>, <code>Config/Board</code>, <code>Config/Classes</code>, <code>Config/ActiveSession</code>, <code>Subject_list/</code>, <code>Sessions/</code><br>
+        <strong>Consumed by:</strong> EVERY other module
+      </div>
+    </div>
+
+    <!-- Operations -->
+    <div class="module-card">
+      <h4>&#128666; Operations</h4>
+      <p>Transport, Hostel, Library, Inventory, Assets — 5 controllers, ~110 routes</p>
+      <div class="module-detail">
+        <strong>DB:</strong> <code>Operations/{Transport|Hostel|Library|Inventory|Assets}/</code><br>
+        <strong>Accounting:</strong> Library fines → journal, purchases → journal, depreciation → journal
+      </div>
+    </div>
+
+    <!-- Academic -->
+    <div class="module-card">
+      <h4>&#128218; Academic</h4>
+      <p>Timetable, curriculum, academic calendar, substitute management</p>
+      <div class="module-detail">
+        <strong>Controller:</strong> Academic.php<br>
+        <strong>DB:</strong> <code>Academic/Subject_Assignments/</code>, <code>Academic/Curriculum/</code>, <code>Academic/Calendar/</code>, timetable per class/section<br>
+        <strong>Consumed by:</strong> Teacher App (my timetable), Parent App (student timetable)
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== STEP 2 ==================== -->
+<div class="section" id="step2">
+  <div class="section-header">
+    <span class="step-badge">02</span>
+    <h2>Internal Connection Mapping</h2>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon blue">&#128279;</div>
+      <h3>Module Dependency Diagram</h3>
+    </div>
+    <div class="diagram"><pre>
+                      ┌──────────────┐
+                      │ <span class="hl">School Config</span> │  ◄── FOUNDATION
+                      │ Classes,      │
+                      │ Subjects,     │
+                      │ Sessions      │
+                      └──────┬───────┘
+                             │
+              ┌──────────────┼──────────────────┐
+              ▼              ▼                   ▼
+       ┌────────────┐  ┌──────────┐      ┌────────────┐
+       │    <span class="hl">SIS</span>     │  │ <span class="hl">Academic</span> │      │     <span class="hl">HR</span>     │
+       │ Admission  │  │ Timetable│      │ Staff Mgmt │
+       │ Enrollment │  │ Calendar │      │ Recruitment│
+       └─────┬──────┘  └────┬─────┘      └─────┬──────┘
+             │               │                   │
+       ┌─────┼───────────────┼───────────────────┼──────┐
+       │     ▼               ▼                   ▼      │
+       │  <span class="dim">Student exists → used by ALL downstream:</span>       │
+       │                                                 │
+       │  ┌────────────┐  ┌──────────────┐  ┌─────────┐│
+       │  │ <span class="hl">Attendance</span> │  │ <span class="hl">Exam/Results</span> │  │  <span class="hl">Fees</span>   ││
+       │  └─────┬──────┘  └──────┬───────┘  └────┬────┘│
+       │        │                │                │     │
+       │        ▼                ▼                ▼     │
+       │  ┌──────────────────────────────────────────┐  │
+       │  │        <span class="warn">COMMUNICATION MODULE</span>             │  │
+       │  │  fire_event(student_absent)              │  │
+       │  │  fire_event(exam_result)                 │  │
+       │  │  fire_event(fee_due / fee_received)      │  │
+       │  │  → Queue → Process → Deliver             │  │
+       │  └──────────────────────────────────────────┘  │
+       │                                                 │
+       │  ┌──────────────┐     ┌──────────────────────┐ │
+       │  │  <span class="hl">Operations</span>  │────▶│    <span class="hl">ACCOUNTING</span>         │ │
+       │  │  Library     │     │  Journal entries      │ │
+       │  │  Transport   │     │  from all financial   │ │
+       │  │  Hostel      │     │  modules              │ │
+       │  └──────────────┘     └──────────────────────┘ │
+       └─────────────────────────────────────────────────┘</pre></div>
+  </div>
+
+  <h4 class="mt-16 mb-16" style="font-size:16px;">Dependency Chain (upstream → downstream)</h4>
+  <div class="dep-chain">
+    <div class="dep-level">
+      <span class="level-num">0</span>
+      <span class="level-label">Foundation</span>
+      <span class="level-items"><code>School Config</code> — Classes, Subjects, Sessions</span>
+    </div>
+    <div class="dep-arrow">↓</div>
+    <div class="dep-level">
+      <span class="level-num">1</span>
+      <span class="level-label">Entity Creation</span>
+      <span class="level-items"><code>SIS</code> + <code>HR</code> + <code>Academic</code></span>
+    </div>
+    <div class="dep-arrow">↓</div>
+    <div class="dep-level">
+      <span class="level-num">2</span>
+      <span class="level-label">Transactional</span>
+      <span class="level-items"><code>Attendance</code> + <code>Exams</code> + <code>Fees</code> + <code>Operations</code></span>
+    </div>
+    <div class="dep-arrow">↓</div>
+    <div class="dep-level">
+      <span class="level-num">3</span>
+      <span class="level-label">Cross-cutting</span>
+      <span class="level-items"><code>Communication</code> + <code>Accounting</code></span>
+    </div>
+  </div>
+  <div class="callout success"><strong>No circular dependencies</strong> — Level N modules only consume data from Level &le; N. Clean architecture.</div>
+</div>
+
+<!-- ==================== STEP 3 ==================== -->
+<div class="section" id="step3">
+  <div class="section-header">
+    <span class="step-badge">03</span>
+    <h2>Real Data Flows</h2>
+  </div>
+
+  <!-- Flow 1 -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon green">1</div>
+      <h3>Flow 1: Student Admission → Full Lifecycle</h3>
+    </div>
+    <div class="flow-steps">
+      <div class="flow-step">
+        <h4>Step 1 — Admin fills admission form</h4>
+        <p><code>POST sis/save_admission</code> → <code>Sis::save_admission()</code><br>
+        Generates STU_ID via <code>Auth_client::sync_student()</code><br>
+        → <code>POST /internal/sync-student</code> (Node.js)<br>
+        → MongoDB: <code>users.insert({userId:"STU0042", password:bcrypt, schoolId:"10005"...})</code><br>
+        → Firebase: <code>Users/Parents/{parentDbKey}/STU0042/{full profile}</code></p>
+      </div>
+      <div class="flow-step">
+        <h4>Step 2 — Admin enrolls student into class</h4>
+        <p><code>POST sis/enroll_student</code><br>
+        → Firebase SET: <code>Schools/{school}/{session}/Class 9th/Section A/Students/STU0042 = true</code><br>
+        → Firebase UPDATE: <code>Users/Parents/{key}/STU0042/Class = "9th", Section = "A"</code><br>
+        → Firebase UPDATE: <code>SIS/Students_Index/STU0042/status = "Active"</code></p>
+      </div>
+      <div class="flow-step">
+        <h4>Step 3 — Student now visible in all downstream modules</h4>
+        <p>Attendance (class roster) &bull; Fees (student lookup) &bull; Exams (marks entry) &bull; Communication (recipients) &bull; Transport/Hostel (assignments)</p>
+      </div>
+      <div class="flow-step">
+        <h4>Step 4 — MongoDB record enables mobile</h4>
+        <p>Mobile app login: <code>STU0042 + password → JWT tokens</code><br>
+        Device binding: first device auto-bound<br>
+        Parent sees child's data immediately</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Flow 2 -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon amber">2</div>
+      <h3>Flow 2: Fee Creation → Payment → Accounting</h3>
+    </div>
+    <div class="flow-steps">
+      <div class="flow-step">
+        <h4>Step 1 — Admin defines fee structure</h4>
+        <p><code>POST fee_management/save_fee_structure</code><br>
+        → Firebase SET: <code>Accounts/Fees/Fees Structure/Monthly/Tuition = 5000</code></p>
+      </div>
+      <div class="flow-step">
+        <h4>Step 2 — Admin maps fees to classes</h4>
+        <p><code>POST fee_management/save_class_fees</code><br>
+        → Firebase SET: <code>Accounts/Fees/Classes Fees/Class 9th/Section A/ = {Tuition:5000, Transport:1500}</code></p>
+      </div>
+      <div class="flow-step">
+        <h4>Step 3 — Fee details fetched</h4>
+        <p><code>POST fees/fetch_fee_details</code> (userId, months[])<br>
+        Reads class fees + already paid months + discounts<br>
+        Returns: <code>{monthly:6500, total:13000, discount:500, net:12500}</code></p>
+      </div>
+      <div class="flow-step">
+        <h4>Step 4 — Payment submitted</h4>
+        <p><code>POST fees/submit_fees</code><br>
+        → Creates voucher in <code>Accounts/Vouchers/{receipt}</code><br>
+        → Updates <code>Users/Parents/{key}/{STU}/Fees Record/</code> + <code>Month Fee/</code><br>
+        → Deletes from <code>Accounts/Pending_fees/{STU}/</code></p>
+      </div>
+      <div class="flow-step">
+        <h4>Step 5 — Accounting journal auto-created</h4>
+        <p><code>Operations_accounting::create_fee_journal()</code><br>
+        → Dr: 1010 (Cash) = &#8377;12,500 &bull; Cr: 4010 (Tuition Income) = &#8377;10,000 + 4020 (Transport) = &#8377;2,500<br>
+        → Closing balances updated</p>
+      </div>
+      <div class="flow-step">
+        <h4>Step 6 — Communication trigger</h4>
+        <p><code>fire_event("fee_received", {student_id, amount:12500})</code><br>
+        → Queue → Process → Push notification to parent app</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Flow 3 -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon purple">3</div>
+      <h3>Flow 3: Teacher Marks Entry → Parent Visibility</h3>
+    </div>
+    <div class="flow-steps">
+      <div class="flow-step">
+        <h4>Step 1 — Exam + template created</h4>
+        <p><code>POST exam/create_exam</code> → <code>Exams/{EX001} = {name:"Mid-Term", status:"Published"}</code><br>
+        <code>POST result/save_template</code> → Components: Theory(80) + Practical(20)</p>
+      </div>
+      <div class="flow-step">
+        <h4>Step 2 — Teacher enters marks</h4>
+        <p><code>POST result/save_marks</code><br>
+        → <code>Results/Marks/EX001/Class_9th/Section_A/English/STU0042 = {Theory:65, Practical:18, Total:83}</code></p>
+      </div>
+      <div class="flow-step">
+        <h4>Step 3 — Admin computes results</h4>
+        <p><code>POST result/compute_results</code><br>
+        → Computes: percentage, grade, pass/fail, rank (competition: 1,1,3)<br>
+        → <code>Results/Computed/{exam}/{class}/{section}/{STU} = {Pct:82.9, Grade:"A", Rank:3}</code></p>
+      </div>
+      <div class="flow-step">
+        <h4>Step 4 — Parent sees results in real-time</h4>
+        <p>Firebase listener on <code>Results/Computed/</code> fires automatically<br>
+        Communication trigger → push notification sent</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Flow 4 -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon blue">4</div>
+      <h3>Flow 4: Configuration Propagation</h3>
+    </div>
+    <div class="flow-steps">
+      <div class="flow-step">
+        <h4>Admin adds subject "Computer Science"</h4>
+        <p><code>POST school_config/save_subject</code> → <code>Subject_list/9/CS = "Computer Science"</code><br><br>
+        <strong>Propagates to:</strong> Academic (subject assignments), Exam (subject list), Result (template designer), Timetable (period assignment), Teacher App (schedule)</p>
+      </div>
+      <div class="flow-step">
+        <h4>Admin creates new session "2026-27"</h4>
+        <p><code>POST school_config/add_session</code> → <code>Config/ActiveSession = "2026-27"</code><br><br>
+        <strong>Impact:</strong> ALL controllers use new session_year. Fresh class structure needed. Old data intact. Students need promotion.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== STEP 4 ==================== -->
+<div class="section" id="step4">
+  <div class="section-header">
+    <span class="step-badge">04</span>
+    <h2>Parent & Teacher App Design</h2>
+  </div>
+
+  <!-- Parent App -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon green">&#128241;</div>
+      <h3>4.1 — Parent App Architecture</h3>
+    </div>
+    <div class="diagram"><pre>
+┌──────────────────────────────────────────────────┐
+│              <span class="hl">PARENT MOBILE APP</span>                    │
+│          (Flutter / React Native)                │
+├──────────────────────────────────────────────────┤
+│                                                  │
+│  <span class="hl">AUTH LAYER</span>                                     │
+│  ├─ Login: POST /internal/mobile-app-login       │
+│  ├─ Device binding: OTP flow for 2nd+ device     │
+│  ├─ Token storage: secure keychain               │
+│  ├─ Auto-refresh: 15min access token cycle       │
+│  └─ Max <span class="warn">3 devices</span> per student                   │
+│                                                  │
+│  <span class="hl">DATA LAYER</span> (Firebase RTDB — <span class="ok">READ ONLY</span>)         │
+│  ├─ Direct Firebase listeners (.on)              │
+│  ├─ Firebase custom auth token from JWT          │
+│  └─ Security rules: read own data only           │
+│                                                  │
+│  <span class="hl">LOCAL CACHE</span> (SQLite / Hive)                    │
+│  ├─ Student profile                              │
+│  ├─ Fee history                                  │
+│  ├─ Recent results                               │
+│  └─ Last 3 months attendance                     │
+└──────────────────────────────────────────────────┘</pre></div>
+
+    <h4 class="mt-16">Screens & Data Sources</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Screen</th><th>Firebase Path (READ)</th><th>Update Frequency</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Dashboard</strong></td><td><code>Users/Parents/{key}/{STU_ID}/</code> + <code>Attendance/{currentMonth}</code> + <code>Pending_fees/{STU_ID}</code></td><td>Real-time listener</td></tr>
+          <tr><td><strong>Attendance</strong></td><td><code>Users/Parents/{key}/{STU_ID}/Attendance/{Month}</code> — decode P/A/L/H/T/V by day index</td><td>Listener current month, fetch past</td></tr>
+          <tr><td><strong>Results</strong></td><td><code>Results/Computed/{examId}/{class}/{section}/{STU_ID}/</code></td><td>Fetch on screen open</td></tr>
+          <tr><td><strong>Fee Status</strong></td><td><code>Accounts/Fees/Classes Fees/{class}/{section}/</code> + <code>Pending_fees/{STU_ID}</code></td><td>Listener on pending</td></tr>
+          <tr><td><strong>Fee History</strong></td><td><code>Users/Parents/{key}/{STU_ID}/Fees Record/</code></td><td>Fetch on screen open</td></tr>
+          <tr><td><strong>Timetable</strong></td><td><code>Class {N}/Section {X}/Time_table/</code> + <code>Time_table_settings/</code></td><td>Fetch once, cache</td></tr>
+          <tr><td><strong>Notices</strong></td><td><code>Communication/Notices/</code> (filter published)</td><td>Real-time listener</td></tr>
+          <tr><td><strong>Messages</strong></td><td><code>Communication/Messages/Inbox/parent/{key}/</code> → <code>Chat/{convId}/</code></td><td>Real-time listener</td></tr>
+          <tr><td><strong>Transport</strong></td><td><code>Operations/Transport/Assignments/{STU_ID}/</code> → <code>Routes/{routeId}/</code></td><td>Fetch once, cache</td></tr>
+          <tr><td><strong>Library</strong></td><td><code>Operations/Library/Issues/</code> filter by studentId</td><td>Fetch on demand</td></tr>
+          <tr><td><strong>Events</strong></td><td><code>Events/List/</code> filter upcoming</td><td>Fetch on demand</td></tr>
+          <tr><td><strong>Profile</strong></td><td><code>Users/Parents/{key}/{STU_ID}/</code> full node</td><td>Listener</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout">Parent app is <strong>95% READ-ONLY</strong>. Only writes: messages (chat), mark notices read, online fee payment (via gateway webhook → admin system).</div>
+  </div>
+
+  <!-- Teacher App -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon purple">&#128187;</div>
+      <h3>4.2 — Teacher App Architecture</h3>
+    </div>
+    <div class="diagram"><pre>
+┌──────────────────────────────────────────────────┐
+│              <span class="hl">TEACHER MOBILE APP</span>                   │
+│          (Flutter / React Native)                │
+├──────────────────────────────────────────────────┤
+│                                                  │
+│  <span class="hl">AUTH LAYER</span>                                     │
+│  ├─ Login: POST /internal/mobile-app-login       │
+│  │   (TEA_ID + password + device)                │
+│  ├─ Max <span class="warn">2 devices</span> per teacher                   │
+│  └─ Same JWT/refresh cycle as parent             │
+│                                                  │
+│  <span class="hl">DATA LAYER</span> (Firebase RTDB — <span class="warn">READ + WRITE</span>)      │
+│  ├─ Read: own timetable, assigned classes        │
+│  ├─ Write: attendance, marks                     │
+│  └─ Security rules: write only assigned          │
+│                                                  │
+│  <span class="hl">OFFLINE QUEUE</span> (critical for schools)            │
+│  ├─ Queue attendance saves locally               │
+│  ├─ Queue marks entries locally                  │
+│  ├─ Sync when online (FIFO with timestamp)       │
+│  └─ Conflict: server timestamp wins              │
+└──────────────────────────────────────────────────┘</pre></div>
+
+    <h4 class="mt-16">Screens & Data Sources</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Screen</th><th>Firebase Path</th><th>Mode</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><strong>My Timetable</strong></td><td><code>Class {N}/Section {X}/Time_table/</code> filtered by teacher</td><td><span class="tag good">READ</span></td><td>Cache daily</td></tr>
+          <tr><td><strong>Take Attendance</strong></td><td><code>Students/{STU_ID}/Attendance/{Month}</code></td><td><span class="tag high">READ+WRITE</span></td><td>Modifies string at day index</td></tr>
+          <tr><td><strong>Enter Marks</strong></td><td><code>Results/Marks/{exam}/{class}/{section}/{subject}/{STU_ID}/</code></td><td><span class="tag high">READ+WRITE</span></td><td>Per-component entry</td></tr>
+          <tr><td><strong>My Classes</strong></td><td><code>Academic/Subject_Assignments/</code> filtered by teacher</td><td><span class="tag good">READ</span></td><td>Assigned subjects</td></tr>
+          <tr><td><strong>Student List</strong></td><td><code>Class/Section/Students/</code> → <code>Users/Parents/</code></td><td><span class="tag good">READ</span></td><td>Class roster</td></tr>
+          <tr><td><strong>Leave Request</strong></td><td><code>HR/Staff_Leave/Records/{TEA_ID}/</code></td><td><span class="tag high">READ+WRITE</span></td><td>Submit &amp; view</td></tr>
+          <tr><td><strong>Notices</strong></td><td><code>Communication/Notices/</code></td><td><span class="tag good">READ</span></td><td>Same as parent</td></tr>
+          <tr><td><strong>Messages</strong></td><td><code>Communication/Messages/Inbox/teacher/{TEA_ID}/</code></td><td><span class="tag high">READ+WRITE</span></td><td>Chat with parents</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h4 class="mt-16">Critical: Attendance String Manipulation</h4>
+    <div class="code-block"><code><span style="color:var(--t3)">// Current string in Firebase:</span> "PPAP" <span style="color:var(--t3)">(4 days recorded)</span>
+<span style="color:var(--t3)">// Teacher marks Day 5 as "L" (Leave)</span>
+
+1. READ current string:  "PPAP"
+2. Pad to current day:   "PPAP " <span style="color:var(--t3)">(day 5 = index 4)</span>
+3. Replace char at idx 4: "PPAPL"
+4. WRITE back full string
+
+<span style="color:var(--amber)">⚠ IMPORTANT: Use Firebase transaction() for atomic read-then-write</span>
+<span style="color:var(--amber)">  to prevent concurrent overwrites by teacher + admin</span></code></div>
+  </div>
+</div>
+
+<!-- ==================== STEP 5 ==================== -->
+<div class="section" id="step5">
+  <div class="section-header">
+    <span class="step-badge">05</span>
+    <h2>Synchronization Strategy</h2>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon teal">&#128260;</div>
+      <h3>Firebase as the Single Source of Truth</h3>
+    </div>
+    <div class="diagram"><pre>
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│ <span class="hl">Admin Portal</span> │    │ <span class="hl">Teacher App</span> │    │  <span class="hl">Parent App</span> │
+│   (PHP)      │    │  (Mobile)   │    │  (Mobile)   │
+└──────┬───────┘    └──────┬──────┘    └──────┬──────┘
+       │                   │                   │
+       │   <span class="warn">WRITE</span>           │   <span class="warn">WRITE</span>           │   <span class="ok">READ</span> (mostly)
+       │                   │                   │
+       ▼                   ▼                   ▼
+┌──────────────────────────────────────────────────────┐
+│            <span class="hl">FIREBASE REALTIME DATABASE</span>                 │
+│                                                      │
+│  ┌────────────────────────────────────────────────┐  │
+│  │  Real-time listeners (.on / .onValue)          │  │
+│  │  Auto-push changes to ALL connected clients    │  │
+│  │  <span class="ok">No polling needed — Firebase handles it</span>       │  │
+│  └────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────┘</pre></div>
+  </div>
+
+  <div class="card">
+    <h4>Sync Rules by Data Type</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Data</th><th>Writer(s)</th><th>Reader(s)</th><th>Sync Method</th><th>Latency</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Attendance</strong></td><td>Admin, Teacher App</td><td>Parent App</td><td>Firebase <code>.on</code> listener on current month</td><td>&lt;1 sec</td></tr>
+          <tr><td><strong>Marks/Results</strong></td><td>Admin, Teacher App</td><td>Parent App</td><td>Fetch on demand (Computed node)</td><td>On compute</td></tr>
+          <tr><td><strong>Fee Payment</strong></td><td>Admin, Payment Gateway</td><td>Parent App</td><td>Listener on <code>Pending_fees</code> + <code>Fees Record</code></td><td>&lt;1 sec</td></tr>
+          <tr><td><strong>Notices</strong></td><td>Admin</td><td>Parent, Teacher</td><td>Listener on <code>Communication/Notices/</code></td><td>&lt;1 sec</td></tr>
+          <tr><td><strong>Messages</strong></td><td>All</td><td>All</td><td>Listener on <code>Chat/{convId}/</code></td><td>&lt;1 sec</td></tr>
+          <tr><td><strong>Timetable</strong></td><td>Admin</td><td>Teacher, Parent</td><td>Fetch + cache, re-fetch on session change</td><td>Minutes OK</td></tr>
+          <tr><td><strong>Profile</strong></td><td>Admin (SIS)</td><td>Parent</td><td>Listener on student profile node</td><td>&lt;1 sec</td></tr>
+          <tr><td><strong>School Config</strong></td><td>Admin</td><td>Teacher (indirect)</td><td>Rarely changes, fetch on app start</td><td>Hours OK</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>Conflict Handling</h4>
+      <ul class="bullet" style="font-size:13px;color:var(--t2);">
+        <li><strong>Attendance:</strong> Firebase <code>transaction()</code> — atomic read-modify-write with auto-retry</li>
+        <li><strong>Marks:</strong> Last-write-wins (per-teacher-per-subject, no real concurrency)</li>
+        <li><strong>Fees:</strong> Only admin writes vouchers — parent app read-only</li>
+        <li><strong>Messages:</strong> Append-only (push) — no conflict possible</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>Offline Handling</h4>
+      <ul class="bullet" style="font-size:13px;color:var(--t2);">
+        <li><strong>Parent App:</strong> Firebase disk persistence ON — reads from cache, shows stale indicator</li>
+        <li><strong>Teacher App:</strong> Firebase disk persistence ON — writes queued locally, auto-synced on reconnect</li>
+        <li><strong>Why it works:</strong> Firebase RTDB has built-in offline support — no custom sync engine needed</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== STEP 6 ==================== -->
+<div class="section" id="step6">
+  <div class="section-header">
+    <span class="step-badge">06</span>
+    <h2>Database Design Validation</h2>
+  </div>
+
+  <div class="card">
+    <h4>Current Strengths</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Aspect</th><th>Status</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr><td>Multi-tenancy</td><td><span class="tag good">Good</span></td><td>Complete isolation via <code>Schools/{school_id}/</code> prefix</td></tr>
+          <tr><td>Session isolation</td><td><span class="tag good">Good</span></td><td><code>{session_year}/</code> prevents cross-year contamination</td></tr>
+          <tr><td>Student data access</td><td><span class="tag good">Good</span></td><td><code>parent_db_key</code> abstraction handles legacy + new schools</td></tr>
+          <tr><td>Denormalization</td><td><span class="tag good">Intentional</span></td><td>Profile in Users/Parents/ AND enrollment in class nodes — Firebase best practice</td></tr>
+          <tr><td>Lightweight indexes</td><td><span class="tag good">Good</span></td><td><code>SIS/Students_Index</code> prevents loading full profiles for lists</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>Problems Found</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Problem</th><th>Severity</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr><td>No Firebase Security Rules</td><td><span class="tag critical">Critical</span></td><td>Admin SDK bypasses rules. Mobile apps need client-side Firebase with security rules. Without rules, any user can read/write any school's data.</td></tr>
+          <tr><td>Attendance as string</td><td><span class="tag medium">Medium</span></td><td><code>"PPAPLHV..."</code> — modifying day 15 requires read-modify-write of entire string. Concurrent overwrite risk with teacher app.</td></tr>
+          <tr><td>Fee paths scattered</td><td><span class="tag medium">Medium</span></td><td>Fee data in 5+ locations. Mobile app must read multiple paths to assemble complete picture.</td></tr>
+          <tr><td>No pagination</td><td><span class="tag medium">Medium</span></td><td><code>Communication/Notices/</code> could grow large. Need <code>.limitToLast(N)</code> + cursor.</td></tr>
+          <tr><td>Dual-write risk</td><td><span class="tag medium">Medium</span></td><td><code>sync_student()</code> writes to MongoDB + Firebase. Partial failure = inconsistent state.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>Required: Firebase Security Rules</h4>
+    <div class="callout danger"><strong>MUST implement before mobile launch.</strong> Currently all data is unprotected on the client side.</div>
+    <div class="code-label">Firebase Security Rules</div>
+    <div class="code-block"><code>{
+  "rules": {
+    "Users": {
+      "Parents": {
+        "$schoolKey": {
+          "$studentId": {
+            ".read": "auth != null
+              && auth.token.parentDbKey == $schoolKey
+              && auth.token.userId == $studentId",
+            ".write": false
+          }
+        }
+      }
+    },
+    "Schools": {
+      "$schoolId": {
+        ".read": "auth != null
+          && (auth.token.schoolCode == $schoolId
+              || auth.token.schoolId == $schoolId)",
+        "$session": {
+          "Results": {
+            "Marks": {
+              "$examId": { "$class": { "$section": { "$subject": {
+                ".write": "auth != null && auth.token.role == 'teacher'"
+              }}}}
+            }
+          }
+        }
+      }
+    }
+  }
+}</code></div>
+  </div>
+
+  <div class="card">
+    <h4>Required: Firebase Custom Token Generation</h4>
+    <div class="code-label">Add to Node.js Auth API — mobile-app-login response</div>
+    <div class="code-block"><code><span style="color:var(--t3)">// After successful JWT login, also generate Firebase custom token:</span>
+const firebaseToken = await admin.auth().createCustomToken(userId, {
+  schoolCode: user.schoolCode,
+  schoolId:   user.schoolId,
+  parentDbKey: user.parentDbKey,
+  role:        user.role,
+  userId:      user.userId
+});
+
+<span style="color:var(--t3)">// Mobile app then calls:</span>
+firebase.auth().signInWithCustomToken(firebaseToken);</code></div>
+  </div>
+</div>
+
+<!-- ==================== STEP 7 ==================== -->
+<div class="section" id="step7">
+  <div class="section-header">
+    <span class="step-badge">07</span>
+    <h2>Risks & Problems</h2>
+  </div>
+
+  <div class="card">
+    <h4>Critical</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Risk</th><th>Impact</th><th>Mitigation</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><strong>No Firebase Security Rules</strong></td><td>Any mobile user can read/write any school's data</td><td>Implement rules BEFORE mobile launch</td></tr>
+          <tr><td>2</td><td><strong>No Firebase Custom Auth Tokens</strong></td><td>Mobile apps can't authenticate to Firebase RTDB</td><td>Add <code>createCustomToken()</code> to login response</td></tr>
+          <tr><td>3</td><td><strong>Admin endpoints serve HTML + JSON</strong></td><td>Can't reuse PHP APIs for mobile</td><td>Mobile reads Firebase directly (no PHP API needed)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>High</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Risk</th><th>Impact</th><th>Mitigation</th></tr></thead>
+        <tbody>
+          <tr><td>4</td><td><strong>Attendance string concurrent writes</strong></td><td>Teacher + admin overwrite each other</td><td>Use Firebase <code>transaction()</code></td></tr>
+          <tr><td>5</td><td><strong>No API versioning</strong></td><td>Breaking changes affect all clients</td><td>Freeze <code>/internal/*</code> contract, version new endpoints</td></tr>
+          <tr><td>6</td><td><strong>MongoDB-Firebase dual-write</strong></td><td>Partial failure = inconsistent state</td><td>Add reconciliation cron job</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>Medium</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Risk</th><th>Impact</th><th>Mitigation</th></tr></thead>
+        <tbody>
+          <tr><td>7</td><td>No rate limiting on Firebase reads</td><td>Firebase cost spikes</td><td>Use <code>.once()</code> for static, <code>.on()</code> for live only</td></tr>
+          <tr><td>8</td><td>Large notice lists</td><td>Slow mobile load</td><td><code>.limitToLast(50)</code> + cursor pagination</td></tr>
+          <tr><td>9</td><td>100+ schools scaling</td><td>Firebase RTDB 100k connection limit</td><td>Sufficient for ~50k students. Shard or Firestore beyond that.</td></tr>
+          <tr><td>10</td><td>No push notification infra</td><td>Parent app needs FCM</td><td>Store FCM tokens in MongoDB, trigger from Communication queue</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== STEP 8 ==================== -->
+<div class="section" id="step8">
+  <div class="section-header">
+    <span class="step-badge">08</span>
+    <h2>Implementation Blueprint</h2>
+  </div>
+
+  <!-- Phase 1 -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon teal">P1</div>
+      <h3>Phase 1: Auth API Additions</h3>
+    </div>
+    <p class="fs-13" style="color:var(--t3);margin-bottom:12px;">Add to Node.js Auth API (internalRoutes.js)</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td><code>POST /internal/firebase-token</code></td><td>Generate Firebase custom auth token for mobile SDK access</td></tr>
+          <tr><td><code>POST /internal/register-fcm</code></td><td>Store FCM push notification token per user/device</td></tr>
+          <tr><td><code>POST /internal/student-profile</code></td><td>Single call for app startup — full profile + school info + active session</td></tr>
+          <tr><td><code>POST /internal/student-dashboard</code></td><td>Aggregate: attendance summary + pending fees + recent results + unread notices</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Phase 2 -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon red">P2</div>
+      <h3>Phase 2: Firebase Security Rules</h3>
+    </div>
+    <ul class="bullet" style="font-size:13px;color:var(--t2);">
+      <li>Students read ONLY their own <code>Users/Parents/{key}/{userId}/</code> subtree</li>
+      <li>Students read school-level data (notices, events, timetable) for their school only</li>
+      <li>Teachers read assigned class data + write attendance and marks</li>
+      <li>No mobile user can write to <code>Accounts/</code>, <code>HR/</code>, <code>SIS/</code>, <code>Config/</code></li>
+      <li>Messages writable only by conversation participants</li>
+    </ul>
+  </div>
+
+  <!-- Phase 3 -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon green">P3</div>
+      <h3>Phase 3: Parent App (3-4 weeks)</h3>
+    </div>
+    <div class="grid-2">
+      <div>
+        <h4>Week 1: Auth + Profile + Dashboard</h4>
+        <ul class="bullet" style="font-size:13px;color:var(--t2);">
+          <li>Login screen (STU_ID + password)</li>
+          <li>Device binding flow (OTP)</li>
+          <li>Firebase custom token auth</li>
+          <li>Dashboard with profile, today's attendance, fee summary</li>
+        </ul>
+      </div>
+      <div>
+        <h4>Week 2: Attendance + Results</h4>
+        <ul class="bullet" style="font-size:13px;color:var(--t2);">
+          <li>Monthly attendance calendar (decode string)</li>
+          <li>Exam list + results per exam</li>
+          <li>Report card view (render Computed data)</li>
+        </ul>
+      </div>
+      <div>
+        <h4>Week 3: Fees + Communication</h4>
+        <ul class="bullet" style="font-size:13px;color:var(--t2);">
+          <li>Fee structure view</li>
+          <li>Payment history</li>
+          <li>Online payment (Razorpay/PayU)</li>
+          <li>Notices + Chat with teachers</li>
+        </ul>
+      </div>
+      <div>
+        <h4>Week 4: Remaining + Polish</h4>
+        <ul class="bullet" style="font-size:13px;color:var(--t2);">
+          <li>Timetable, Transport, Library, Events</li>
+          <li>Push notifications (FCM)</li>
+          <li>Offline caching</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 4 -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon purple">P4</div>
+      <h3>Phase 4: Teacher App (3-4 weeks)</h3>
+    </div>
+    <div class="grid-2">
+      <div>
+        <h4>Week 1: Auth + Dashboard + Timetable</h4>
+        <ul class="bullet" style="font-size:13px;color:var(--t2);">
+          <li>Login (TEA_ID + password)</li>
+          <li>My timetable (today's schedule)</li>
+          <li>My assigned classes/subjects</li>
+        </ul>
+      </div>
+      <div>
+        <h4>Week 2: Attendance</h4>
+        <ul class="bullet" style="font-size:13px;color:var(--t2);">
+          <li>Class roster + click-to-cycle (P/A/L/H/T/V)</li>
+          <li>Firebase transaction for string updates</li>
+          <li>Offline queue support</li>
+        </ul>
+      </div>
+      <div>
+        <h4>Week 3: Marks Entry</h4>
+        <ul class="bullet" style="font-size:13px;color:var(--t2);">
+          <li>Exam list (assigned subjects only)</li>
+          <li>Per-student component marks entry</li>
+          <li>Save to Results/Marks/ path</li>
+        </ul>
+      </div>
+      <div>
+        <h4>Week 4: Communication + Leave</h4>
+        <ul class="bullet" style="font-size:13px;color:var(--t2);">
+          <li>Notices + Messages with parents</li>
+          <li>Leave request submission</li>
+          <li>Push notifications</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Architecture Decision -->
+  <div class="arch-box">
+    <h4>Recommended Architecture — DO NOT OVER-ENGINEER</h4>
+    <ul>
+      <li>Mobile apps read Firebase RTDB directly (with security rules + custom auth tokens)</li>
+      <li>Mobile apps write Firebase RTDB directly (teacher: attendance, marks — with security rules)</li>
+      <li>Node.js Auth API handles: login + JWT + device binding + Firebase token + FCM + 2-3 aggregate endpoints</li>
+      <li>PHP Admin Panel continues <strong>unchanged</strong> — writes to same Firebase paths, mobile sees changes in real-time</li>
+      <li class="dont">DON'T build a new REST API layer on top of PHP</li>
+      <li class="dont">DON'T create a separate "mobile backend"</li>
+      <li class="dont">DON'T migrate to Firestore or a new database</li>
+    </ul>
+    <div class="callout success mt-16"><strong>This works because Firebase IS the sync layer.</strong> All three systems read/write the same database. Firebase real-time listeners handle the sync automatically.</div>
+  </div>
+
+  <!-- Priority Table -->
+  <div class="summary-box">
+    <h3>Implementation Priority</h3>
+    <div class="table-wrap mt-16">
+      <table>
+        <thead><tr><th>Priority</th><th>Task</th><th>Effort</th><th>Blocks</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tag p0">P0</span></td><td>Deploy Node.js to Render (fix git repo)</td><td>1 hour</td><td>Everything</td></tr>
+          <tr><td><span class="tag p0">P0</span></td><td>Add <code>createCustomToken()</code> to login response</td><td>2 hours</td><td>Mobile Firebase access</td></tr>
+          <tr><td><span class="tag p0">P0</span></td><td>Write Firebase Security Rules</td><td>1 week</td><td>Mobile launch</td></tr>
+          <tr><td><span class="tag p1">P1</span></td><td>Add FCM token registration endpoint</td><td>1 day</td><td>Push notifications</td></tr>
+          <tr><td><span class="tag p1">P1</span></td><td>Add dashboard aggregate endpoint</td><td>2 days</td><td>App performance</td></tr>
+          <tr><td><span class="tag p2">P2</span></td><td>Build Parent App</td><td>3-4 weeks</td><td>—</td></tr>
+          <tr><td><span class="tag p3">P3</span></td><td>Build Teacher App</td><td>3-4 weeks</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout mt-16">The existing admin portal needs <strong>zero changes</strong>. Mobile apps plug into the same Firebase database and see everything in real-time. Firebase is already the perfect sync layer.</div>
+  </div>
+
+  <!-- API Response Format -->
+  <div class="card mt-24">
+    <h4>Standard API Response Format (Node.js endpoints)</h4>
+    <div class="grid-2">
+      <div>
+        <div class="code-label">Success</div>
+        <div class="code-block"><code>{
+  "success": true,
+  "data": { ... },
+  "meta": {
+    "timestamp": "2026-03-23T10:00:00Z"
+  }
+}</code></div>
+      </div>
+      <div>
+        <div class="code-label">Error</div>
+        <div class="code-block"><code>{
+  "success": false,
+  "message": "Human-readable error",
+  "code": "DEVICE_NOT_BOUND",
+  "meta": {
+    "timestamp": "2026-03-23T10:00:00Z"
+  }
+}</code></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /wrapper -->
+</body>
+</html>

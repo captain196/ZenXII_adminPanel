@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/9.6/phpunit.xsd"
+         bootstrap="tests/bootstrap.php"
+         colors="true"
+         verbose="true"
+         stopOnFailure="false"
+         failOnRisky="false"
+         failOnWarning="false">
+
+    <testsuites>
+        <testsuite name="Unit">
+            <directory>tests/Unit</directory>
+        </testsuite>
+        <testsuite name="Integration">
+            <directory>tests/Integration</directory>
+        </testsuite>
+    </testsuites>
+
+    <coverage processUncoveredFiles="true">
+        <include>
+            <directory suffix=".php">application/controllers</directory>
+            <directory suffix=".php">application/libraries</directory>
+            <directory suffix=".php">application/core</directory>
+        </include>
+        <exclude>
+            <directory>vendor</directory>
+            <directory>application/views</directory>
+        </exclude>
+        <report>
+            <html outputDirectory="tests/coverage"/>
+            <text outputFile="tests/coverage/coverage.txt" showOnlySummary="true"/>
+        </report>
+    </coverage>
+
+    <php>
+        <!-- Override Firebase with the test double -->
+        <env name="GRADER_TEST_MODE"  value="1"/>
+        <env name="GRADER_BASE_URL"   value="http://localhost/Grader/school/"/>
+        <!-- Set to a real Firebase project only for integration tests -->
+        <env name="FIREBASE_TEST_DB"  value=""/>
+    </php>
+
+    <logging>
+        <junit outputFile="tests/results/junit.xml"/>
+    </logging>
+
+</phpunit>

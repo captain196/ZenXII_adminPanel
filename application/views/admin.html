@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>User Administration</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+    <style>
+        /* General Styling */
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f0f0f0;
+        }
+
+        /* Container */
+        .container {
+            width: 700px;
+            margin: 50px auto;
+            background-color: #fff;
+            border: 1px solid #ccc;
+            box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Header */
+        .header {
+            background-color: #1b7fcc;
+            color: white;
+            padding: 15px 20px;
+            font-size: 20px;
+            display: flex;
+            align-items: center;
+        }
+
+        .header i {
+            margin-right: 10px;
+        }
+
+        /* Navigation Tabs */
+        .nav-tabs {
+            background-color: #f9f9f9;
+            padding: 10px 20px;
+            border-bottom: 1px solid #ccc;
+        }
+
+        .nav-tabs a {
+            text-decoration: none;
+            color: #888;
+            margin-right: 20px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .nav-tabs a.active {
+            color: #1b7fcc;
+            border-bottom: 2px solid #1b7fcc;
+        }
+
+        /* Content Section */
+        .content {
+            display: none;
+            padding: 40px;
+        }
+
+        .content.active {
+            display: flex;
+        }
+
+        .icon {
+            font-size: 120px;
+            color: #555;
+            margin-right: 50px;
+        }
+
+        .form {
+            width: 100%;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #555;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        /* User List Styling */
+        .user-list {
+            width: 100%;
+        }
+
+        .user-list table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .user-list th, .user-list td {
+            padding: 10px;
+            border: 1px solid #ccc;
+            text-align: left;
+        }
+
+        .user-list th {
+            background-color: #1b7fcc;
+            color: white;
+        }
+
+        /* Buttons */
+        .buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            font-size: 14px;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .btn.make-user {
+            background-color: #1b7fcc;
+        }
+
+        .btn.update-password {
+            background-color: #28a745;
+        }
+
+        .btn.close {
+            background-color: #888;
+        }
+
+        .btn:hover {
+            opacity: 0.9;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h2><i class="fa fa-user"></i> User Administration</h2>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <div class="nav-tabs">
+            <a href="#" class="active" onclick="showSection('make-user')">Make User</a>
+            <a href="#" onclick="showSection('update-password')">Update Password</a>
+            <a href="#" onclick="showSection('user-listing')">User Listing</a>
+        </div>
+
+        <!-- Make User Section -->
+        <div id="make-user" class="content active">
+            <div class="icon">
+                <i class="fa fa-user-plus"></i>
+            </div>
+            <div class="form">
+                <form>
+                    <div class="form-group">
+                        <label>User Name</label>
+                        <input type="text" name="username">
+                    </div>
+                    <div class="form-group">
+                        <label>Password</label>
+                        <input type="password" name="password">
+                    </div>
+                    <div class="form-group">
+                        <label>Confirm Password</label>
+                        <input type="password" name="confirm_password">
+                    </div>
+                    <div class="buttons">
+                        <button type="submit" class="btn make-user">Make New User</button>
+                        <button type="button" class="btn close">Close</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Update Password Section -->
+        <div id="update-password" class="content">
+            <div class="icon">
+                <i class="fa fa-key"></i>
+            </div>
+            <div class="form">
+                <form>
+                    <div class="form-group">
+                        <label>Select User</label>
+                        <select>
+                            <option value="" disabled selected>Select User</option>
+                            <option value="user1">User 1</option>
+                            <option value="user2">User 2</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Old Password</label>
+                        <input type="password" name="old_password">
+                    </div>
+                    <div class="form-group">
+                        <label>New Password</label>
+                        <input type="password" name="new_password">
+                    </div>
+                    <div class="form-group">
+                        <label>Confirm Password</label>
+                        <input type="password" name="confirm_password">
+                    </div>
+                    <div class="buttons">
+                        <button type="submit" class="btn update-password">Update Password</button>
+                        <button type="button" class="btn close">Close</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <!-- user listing -->
+        <div id="user-listing" class="content">
+            <div class="user-list">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Sr. No.</th>
+                            <th>User Name</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>1</td>
+                            <td>JohnDoe</td>
+                        </tr>
+                        <tr>
+                            <td>2</td>
+                            <td>JaneSmith</td>
+                        </tr>
+                        <tr>
+                            <td>3</td>
+                            <td>MikeBrown</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="buttons">
+                <button type="button" class="btn close">Close</button>
+            </div>
+        </div>
+        
+    </div>
+    <script>
+        function showSection(sectionId) {
+            // Remove active class from all tabs
+            document.querySelectorAll('.nav-tabs a').forEach(tab => {
+                tab.classList.remove('active');
+            });
+ 
+            // Add active class to clicked tab
+            event.target.classList.add('active');
+
+            // Hide all content sections
+            document.querySelectorAll('.content').forEach(section => {
+                section.classList.remove('active');
+            });
+
+            // Show the selected content section
+            document.getElementById(sectionId).classList.add('active');
+        }
+    </script>
+</body>
+</html>
