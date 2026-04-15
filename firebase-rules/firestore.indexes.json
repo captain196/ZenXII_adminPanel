@@ -20,6 +20,15 @@
       ]
     },
     {
+      "collectionGroup": "hrJobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "statusLower", "order": "ASCENDING" },
+        { "fieldPath": "postedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "homework",
       "queryScope": "COLLECTION",
       "fields": [

@@ -1309,7 +1309,13 @@ document.addEventListener('DOMContentLoaded', function(){
     var first = $s.find('option:first').prop('outerHTML');
     $s.html(first);
     $.each(deptCache, function(k,v){
-      $s.append('<option value="'+esc(k)+'"'+(k===selectedVal?' selected':'')+'>'+esc(v.name)+'</option>');
+      // Option value is the department NAME (save_job + filters key by name, not id).
+      // deptCache may be array-indexed or doc-id keyed depending on backend; either way
+      // v.name is canonical.
+      var name = (v && v.name) ? v.name : '';
+      if (!name) return;
+      var sel = (name === selectedVal) ? ' selected' : '';
+      $s.append('<option value="'+esc(name)+'"'+sel+' data-id="'+esc(v.id || k)+'">'+esc(name)+'</option>');
     });
   }
   function fillLeaveTypeSelect(selId, selectedVal){
@@ -1615,7 +1621,13 @@ document.addEventListener('DOMContentLoaded', function(){
   function loadJobs(){
     var params = '?status='+($('#filterJobStatus').val()||'')+'&department='+($('#filterJobDept').val()||'');
     getJSON('hr/get_jobs'+params).then(function(r){
-      var jobs = toMap((r&&r.jobs)?r.jobs:(r&&r.data)?r.data:{});
+      var jobsRaw = (r&&r.jobs)?r.jobs:(r&&r.data)?r.data:{};
+      // Re-key cache by canonical j.id so editJob/deleteJob lookups work
+      var jobs = {};
+      $.each(jobsRaw, function(k, j){
+        var rid = (j && j.id) ? j.id : k;
+        jobs[rid] = j;
+      });
       _jobsCache = jobs;
       var $tb=$('#tblJobs tbody');
       var keys=Object.keys(jobs);
@@ -1623,20 +1635,21 @@ document.addEventListener('DOMContentLoaded', function(){
       var h='', i=0;
       $.each(jobs, function(k,j){
         i++;
+        var rid = j.id || k;
         var circHtml = '<span style="color:var(--t3);font-size:11px;">—</span>';
         if(j.circular_id){
-          circHtml = '<button class="hr-circular-badge" onclick="event.stopPropagation();HR.viewCircular(\''+esc(k)+'\')" title="View circular poster">'
+          circHtml = '<button class="hr-circular-badge" onclick="event.stopPropagation();HR.viewCircular(\''+esc(rid)+'\')" title="View circular poster">'
             + '<i class="fa fa-eye"></i> '+esc(j.circular_id)+'</button>';
         } else if(j.status==='Open'){
-          circHtml = '<button class="hr-act-btn" onclick="event.stopPropagation();HR.generateCircular(\''+esc(k)+'\')" title="Generate circular" style="font-size:10px;padding:3px 8px;"><i class="fa fa-plus"></i> Generate</button>';
+          circHtml = '<button class="hr-act-btn" onclick="event.stopPropagation();HR.generateCircular(\''+esc(rid)+'\')" title="Generate circular" style="font-size:10px;padding:3px 8px;"><i class="fa fa-plus"></i> Generate</button>';
         }
-        h+='<tr class="hr-job-row" data-id="'+esc(k)+'" style="cursor:pointer">';
+        h+='<tr class="hr-job-row" data-id="'+esc(rid)+'" style="cursor:pointer">';
         h+='<td class="hr-num">'+i+'</td><td><strong>'+esc(j.title)+'</strong></td><td>'+esc(deptName(j.department))+'</td>';
         h+='<td class="hr-num">'+(j.positions||0)+'</td><td class="hr-num">'+(j.applicant_count||0)+'</td>';
         h+='<td>'+badgeHtml(j.status)+'</td><td>'+esc(j.deadline||'-')+'</td>';
         h+='<td>'+circHtml+'</td>';
-        h+='<td><button class="hr-act-btn" onclick="event.stopPropagation();HR.editJob(\''+esc(k)+'\')"><i class="fa fa-pencil"></i></button> ';
-        h+='<button class="hr-act-btn danger" onclick="event.stopPropagation();HR.deleteJob(\''+esc(k)+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+        h+='<td><button class="hr-act-btn" onclick="event.stopPropagation();HR.editJob(\''+esc(rid)+'\')"><i class="fa fa-pencil"></i></button> ';
+        h+='<button class="hr-act-btn danger" onclick="event.stopPropagation();HR.deleteJob(\''+esc(rid)+'\')"><i class="fa fa-trash"></i></button></td></tr>';
       });
       $tb.html(h);
 
@@ -1714,16 +1727,23 @@ document.addEventListener('DOMContentLoaded', function(){
 
   function saveJob(){
     var title=$('#jobTitle').val().trim();
-    var dept=$('#jobDept').val();
+    var $deptOpt=$('#jobDept option:selected');
+    var dept=$deptOpt.val();
+    var deptId=$deptOpt.attr('data-id') || '';
     if(!title||!dept){ toast('Title and department are required','error'); return; }
+    if(window._saveJobInFlight) return;
+    window._saveJobInFlight = true;
+    var $btn=$('button.hr-btn-primary[onclick*="saveJob"]');
+    var orig=$btn.html();
+    $btn.prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Saving…');
     post('hr/save_job', {
-      id:$('#jobId').val(), title:title, department:dept,
+      id:$('#jobId').val(), title:title, department:dept, department_id:deptId,
       description:$('#jobDescription').val().trim(), qualifications:$('#jobQualifications').val().trim(),
       experience_required:$('#jobExperience').val().trim(),
       positions:$('#jobPositions').val(), salary_range_min:$('#jobSalaryMin').val(),
       salary_range_max:$('#jobSalaryMax').val(), deadline:$('#jobDeadline').val(), status:$('#jobStatus').val()
     }).then(function(r){
-      if(r&&r.status){
+      if(r&&r.status==='success'){
         closeModal('modalJob');
         loadJobs();
         // Show enhanced notification with circular info
@@ -1733,16 +1753,21 @@ document.addEventListener('DOMContentLoaded', function(){
           toast(r.message||'Saved','success');
         }
       }
-      else toast(r.message||'Failed','error');
+      else toast((r&&r.message)||'Failed to save job','error');
+    }).fail(function(){
+      toast('Server error — refreshing list','error'); loadJobs();
+    }).always(function(){
+      window._saveJobInFlight=false;
+      $btn.prop('disabled',false).html(orig);
     });
   }
 
   function deleteJob(id){
     if(!confirm('Delete this job posting and all its applicants?')) return;
     post('hr/delete_job', {id:id}).then(function(r){
-      if(r&&r.status){ toast('Deleted','success'); loadJobs(); $('#applicantsContainer').hide(); }
-      else toast(r.message||'Failed','error');
-    });
+      if(r&&r.status==='success'){ toast('Deleted','success'); $('#applicantsContainer').hide(); }
+      else toast((r&&r.message)||'Failed to delete','error');
+    }).fail(function(){ toast('Server error — refreshing list','error'); }).always(function(){ loadJobs(); });
   }
 
   function openApplicantModal(){

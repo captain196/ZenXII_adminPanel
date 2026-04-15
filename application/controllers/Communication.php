@@ -51,12 +51,34 @@ class Communication extends MY_Controller
     const MAX_BODY_LENGTH     = 10000;
     const MAX_BULK_RECIPIENTS = 500;
 
+    /** @var Messaging_service */
+    public $msg_svc;
+
     public function __construct()
     {
         parent::__construct();
         require_permission('Communication');
         $this->load->library('communication_helper');
-        $this->communication_helper->init($this->firebase, $this->school_name, $this->session_year, $this->parent_db_key);
+        $this->communication_helper->init(
+            $this->firebase,
+            $this->school_name,
+            $this->session_year,
+            $this->parent_db_key,
+            $this->fs,
+            $this->school_id
+        );
+
+        // Phase 5 — Firestore-first messaging primitives. The service
+        // dual-writes (Firestore canonical, RTDB best-effort mirror) so
+        // older mobile builds keep working until Phase 5d/5e ship.
+        $this->load->library('messaging_service', null, 'msg_svc');
+        $this->msg_svc->init(
+            $this->fs,
+            $this->firebase,
+            $this->school_id,
+            $this->school_name,
+            $this->session_year
+        );
     }
 
     // ── Access helpers ──────────────────────────────────────────────────
@@ -96,6 +118,56 @@ class Communication extends MY_Controller
     private function _sanitize_html(string $text): string
     {
         return htmlspecialchars($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+
+    /**
+     * Sync a notice or circular to Firestore 'circulars' collection.
+     * Maps RTDB field names to Android CircularDoc fields.
+     *
+     * Android expects: schoolId, title, body, author, authorId, category, priority,
+     *   targetType, attachmentUrl, status ("sent"), sentAt (Timestamp)
+     */
+    /**
+     * Tier A: Firestore-first writer for the `circulars` collection.
+     *
+     * The Parent and Teacher Android apps both read notices/circulars from
+     * the Firestore `circulars` collection (CommunicationFirestoreRepository).
+     * Per the Firestore-first contract, callers MUST invoke this BEFORE the
+     * RTDB write and abort the operation if it returns false.
+     *
+     * @return bool true if Firestore write succeeded
+     */
+    private function _syncToFirestoreCirculars(string $id, array $data, string $type = 'notice'): bool
+    {
+        try {
+            $fsDocId = $this->fs->docId($id);
+            $fsData  = [
+                'schoolId'      => $this->school_id,
+                'title'         => $data['title'] ?? '',
+                'body'          => $data['description'] ?? '',
+                'author'        => $data['created_by_name'] ?? $data['issued_by_name'] ?? $this->admin_name ?? '',
+                'authorId'      => $data['created_by'] ?? $data['issued_by'] ?? $this->admin_id ?? '',
+                'category'      => $data['category'] ?? 'General',
+                'priority'      => $data['priority'] ?? 'Normal',
+                'targetType'    => ($data['target_group'] ?? 'All School') === 'All School' ? 'All' : $data['target_group'],
+                'targetClasses' => [],
+                'targetRoles'   => [],
+                'attachmentUrl' => $data['attachment_url'] ?? '',
+                'status'        => 'sent',  // Android filters by status == "sent"
+                'type'          => $type,    // "notice" or "circular"
+                'sentAt'        => date('c'),
+                'updatedAt'     => date('c'),
+            ];
+
+            $ok = $this->fs->set('circulars', $fsDocId, $fsData, true);
+            if (!$ok) {
+                log_message('error', "Communication::_syncToFirestoreCirculars set returned false for {$id}");
+            }
+            return (bool) $ok;
+        } catch (\Exception $e) {
+            log_message('error', "Communication::_syncToFirestoreCirculars failed for {$id}: " . $e->getMessage());
+            return false;
+        }
     }
 
     // ── Path helpers ────────────────────────────────────────────────────
@@ -329,13 +401,33 @@ class Communication extends MY_Controller
     //  MESSAGING
     // ====================================================================
 
+    /**
+     * Inbox path role segment — always lowercase. Mirrors the lowercase
+     * `parent` segment used by the parent app and unifies the admin web
+     * + teacher mobile paths so there is only ONE source of truth per
+     * user. Legacy capital-case rows are migrated by
+     * scripts/migrate-inbox-case.php (Phase 3).
+     */
     private function _inbox_role(): string
     {
         if (in_array($this->admin_role, ['Super Admin', 'School Super Admin', 'Principal', 'Vice Principal', 'Admin'], true))
-            return 'Admin';
-        if ($this->admin_role === 'Teacher') return 'Teacher';
-        if ($this->admin_role === 'HR Manager') return 'HR';
-        return 'Admin';
+            return 'admin';
+        if ($this->admin_role === 'Teacher') return 'teacher';
+        if ($this->admin_role === 'HR Manager') return 'hr';
+        return 'admin';
+    }
+
+    /**
+     * Map a participant role label ("Teacher", "Parent", "Admin", ...) to
+     * its lowercase inbox path segment.
+     */
+    private function _inbox_role_for(string $participantRole): string
+    {
+        $r = strtolower(trim($participantRole));
+        if ($r === 'teacher') return 'teacher';
+        if ($r === 'parent' || $r === 'student') return 'parent';
+        if ($r === 'hr' || $r === 'hr manager') return 'hr';
+        return 'admin';
     }
 
     public function get_conversations()
@@ -343,24 +435,35 @@ class Communication extends MY_Controller
         $this->_require_role(self::RBAC_VIEW_ROLES, 'get_conversations');
         $this->_require_view();
         $role  = $this->_inbox_role();
-        $inbox = $this->firebase->get($this->_comm("Messages/Inbox/{$role}/{$this->admin_id}"));
-        $list  = [];
 
-        if (is_array($inbox)) {
-            // Batch load: fetch all conversations in one read to avoid N+1
-            $allConvs = $this->firebase->get($this->_comm('Messages/Conversations'));
+        // Firestore-first via the messaging service. Inbox entries are
+        // already enriched with conversation metadata (lastMessage,
+        // lastMessageTime, ...) so we don't need a second read per row.
+        $inbox = $this->msg_svc->listInbox($role, $this->admin_id, 200);
 
-            foreach ($inbox as $convId => $meta) {
-                $conv = (is_array($allConvs) && isset($allConvs[$convId]) && is_array($allConvs[$convId]))
-                    ? $allConvs[$convId]
-                    : null;
-                if ($conv === null) continue;
-                $conv['id']           = $convId;
-                $conv['unread_count'] = is_array($meta) ? (int) ($meta['unread_count'] ?? 0) : 0;
-                $conv['last_seen_at'] = is_array($meta) ? ($meta['last_seen_at'] ?? '') : '';
-                $list[] = $conv;
+        $list = [];
+        foreach ($inbox as $entry) {
+            $convId = $entry['conversationId'] ?? ($entry['id'] ?? null);
+            if (!$convId) continue;
+
+            // Pull the conversation doc for fields the inbox stub doesn't
+            // carry (participants, participantNames, context). Single
+            // direct getDoc — no query.
+            $conv = $this->msg_svc->getConversation($convId);
+            if (!is_array($conv)) {
+                // Inbox stub orphaned (conversation deleted) — synthesize
+                // a minimal row so the UI still renders something.
+                $conv = ['conversationId' => $convId];
             }
-            usort($list, fn($a, $b) => strcmp($b['last_message_at'] ?? '', $a['last_message_at'] ?? ''));
+            $conv['id']               = $convId;
+            $conv['unreadCount']      = (int) ($entry['unreadCount'] ?? $entry['unread_count'] ?? 0);
+            $conv['lastSeenAt']       = $entry['lastSeenAt'] ?? $entry['last_seen_at'] ?? '';
+            // Inbox stub fields override conversation snapshot for the
+            // values that change per-message (so we never show a stale
+            // preview).
+            if (isset($entry['lastMessage']))     $conv['lastMessage']     = $entry['lastMessage'];
+            if (isset($entry['lastMessageTime'])) $conv['lastMessageTime'] = $entry['lastMessageTime'];
+            $list[] = $conv;
         }
 
         $page  = max(1, (int) ($this->input->get('page') ?? 1));
@@ -377,30 +480,18 @@ class Communication extends MY_Controller
         $this->_require_view();
         $convId = $this->safe_path_segment(trim($this->input->get('conversation_id') ?? ''), 'conversation_id');
 
-        // Verify participant
-        $conv = $this->firebase->get($this->_comm("Messages/Conversations/{$convId}"));
+        // Verify participant — Firestore-first via service.
+        $conv = $this->msg_svc->getConversation($convId);
         if (!is_array($conv)) $this->json_error('Conversation not found.');
         $participants = $conv['participants'] ?? [];
         if (!isset($participants[$this->admin_id])) $this->json_error('Access denied.', 403);
 
-        // Fetch messages
-        $chat = $this->firebase->get($this->_comm("Messages/Chat/{$convId}"));
-        $msgs = [];
-        if (is_array($chat)) {
-            foreach ($chat as $id => $m) {
-                if (!is_array($m)) continue;
-                $m['id'] = $id;
-                $msgs[] = $m;
-            }
-            usort($msgs, fn($a, $b) => strcmp($a['sent_at'] ?? '', $b['sent_at'] ?? ''));
-        }
+        // Fetch messages — Firestore-first via service.
+        $msgs = $this->msg_svc->listMessages($convId, 500);
 
         // Mark as read
         $role = $this->_inbox_role();
-        $this->firebase->update($this->_comm("Messages/Inbox/{$role}/{$this->admin_id}/{$convId}"), [
-            'unread_count' => 0,
-            'last_seen_at' => date('c'),
-        ]);
+        $this->msg_svc->markRead($role, $this->admin_id, $convId);
 
         // Always paginate — default 50, max 100
         $page  = max(1, (int) ($this->input->get('page') ?? 1));
@@ -425,6 +516,13 @@ class Communication extends MY_Controller
         $this->_require_role(self::RBAC_MANAGE_ROLES, 'create_conversation');
         $this->_require_teacher();
         $recipientId    = $this->safe_path_segment(trim($this->input->post('recipient_id') ?? ''), 'recipient_id');
+        // Defensive: older recipient pickers posted the full Firestore doc id
+        // (`{schoolId}_{entityId}`) instead of the raw entity id. Strip the
+        // schoolId prefix so getEntity() doesn't double-prepend and 400.
+        $schoolPrefix = $this->school_id . '_';
+        if ($schoolPrefix !== '_' && strpos($recipientId, $schoolPrefix) === 0) {
+            $recipientId = substr($recipientId, strlen($schoolPrefix));
+        }
         $recipientRole  = trim($this->input->post('recipient_role') ?? '');
         $recipientName  = $this->_sanitize_html(trim($this->input->post('recipient_name') ?? ''));
         $studentId      = trim($this->input->post('student_id') ?? '');
@@ -437,15 +535,43 @@ class Communication extends MY_Controller
         $this->_validate_length($initialMsg, 'Message', self::MAX_MESSAGE_LENGTH);
         $this->_validate_length($recipientName, 'Recipient name', self::MAX_TITLE_LENGTH);
 
-        // Validate recipient exists
+        // Validate recipient exists (Admin, Teacher, or Student/Parent)
         $session = $this->session_year;
         $recipientExists = false;
+        $studentData = null;
+
+        // Check Admins
         $adminData = $this->firebase->get("Schools/{$this->school_name}/{$session}/Admins/{$recipientId}");
         if (is_array($adminData)) { $recipientExists = true; }
+
+        // Check Teachers
         if (!$recipientExists) {
-            $teacherData = $this->firebase->get("Schools/{$this->school_name}/{$session}/Teachers/{$recipientId}");
+            $teacherData = $this->firebase->get("Schools/{$this->school_name}/Teachers/{$recipientId}");
             if (is_array($teacherData)) { $recipientExists = true; }
+            if (!$recipientExists) {
+                $teacherData = $this->firebase->get("Schools/{$this->school_name}/{$session}/Teachers/{$recipientId}");
+                if (is_array($teacherData)) { $recipientExists = true; }
+            }
         }
+
+        // Check Students from Firestore (role=Parent means messaging a student's parent)
+        if (!$recipientExists && ($recipientRole === 'Parent' || $recipientRole === 'Student')) {
+            try {
+                $studentData = $this->fs->getEntity('students', $recipientId);
+                if ($studentData) {
+                    $recipientExists = true;
+                    $recipientRole = 'Parent'; // always route to parent
+                    // Auto-fill student context
+                    if ($studentId === '') $studentId = $recipientId;
+                    if ($studentClass === '') $studentClass = $studentData['className'] ?? $studentData['Class'] ?? '';
+                    if ($studentSection === '') $studentSection = $studentData['section'] ?? $studentData['Section'] ?? '';
+                    // Use parent name if available
+                    $fatherName = $studentData['fatherName'] ?? $studentData['Father Name'] ?? '';
+                    if ($fatherName) $recipientName = $recipientName . ' (Parent: ' . $fatherName . ')';
+                }
+            } catch (\Exception $e) { /* non-fatal */ }
+        }
+
         if (!$recipientExists) $this->json_error('Recipient not found.');
 
         // Sanitize student context path segments
@@ -453,26 +579,15 @@ class Communication extends MY_Controller
         if ($studentClass !== '') $studentClass = $this->_sanitize_html($studentClass);
         if ($studentSection !== '') $studentSection = $this->_sanitize_html($studentSection);
 
-        // Check for existing conversation between these two about same student
-        // Batch load all conversations to avoid N+1 reads
+        // Find an existing direct conversation between these two users
+        // about the same student, via the Messaging_service Firestore
+        // dedup query (`array-contains` on participantIds). Falls back
+        // through the service helper.
         $myRole = $this->_inbox_role();
-        $myInbox = $this->firebase->get($this->_comm("Messages/Inbox/{$myRole}/{$this->admin_id}"));
         $existingConvId = null;
-        if (is_array($myInbox) && count($myInbox) > 0) {
-            $allConvs = $this->firebase->get($this->_comm('Messages/Conversations'));
-            if (is_array($allConvs)) {
-                foreach ($myInbox as $cId => $meta) {
-                    $c = $allConvs[$cId] ?? null;
-                    if (!is_array($c)) continue;
-                    if (isset($c['participants'][$recipientId]) && isset($c['participants'][$this->admin_id])) {
-                        $ctx = $c['context'] ?? [];
-                        if (($ctx['student_id'] ?? '') === $studentId) {
-                            $existingConvId = $cId;
-                            break;
-                        }
-                    }
-                }
-            }
+        $existingConv = $this->msg_svc->findDirectConversation($this->admin_id, $recipientId, $studentId);
+        if (is_array($existingConv)) {
+            $existingConvId = $existingConv['conversationId'] ?? ($existingConv['id'] ?? null);
         }
 
         if ($existingConvId) {
@@ -485,43 +600,162 @@ class Communication extends MY_Controller
                 $this->admin_id => $myRole,
                 $recipientId    => $recipientRole,
             ];
-            $this->firebase->set($this->_comm("Messages/Conversations/{$convId}"), [
+            $nowMs0 = round(microtime(true) * 1000);
+            // Firestore-first via the service. The RTDB mirror under
+            // Communication/Messages/Conversations/{convId} happens
+            // inside writeConversation().
+            $this->msg_svc->writeConversation($convId, [
                 'participants'      => $participants,
-                'participant_names' => [
+                'participantNames'  => [
                     $this->admin_id => $this->admin_name,
                     $recipientId    => $recipientName,
                 ],
                 'type'              => 'direct',
                 'title'             => '',
                 'context'           => [
-                    'student_id' => $studentId,
-                    'class'      => $studentClass,
-                    'section'    => $studentSection,
+                    'studentId' => $studentId,
+                    'className' => $studentClass,
+                    'section'   => $studentSection,
                 ],
-                'last_message'      => '',
-                'last_message_at'   => '',
-                'last_sender_id'    => '',
-                'created_by'        => $this->admin_id,
-                'created_at'        => date('c'),
+                'lastMessage'       => '',
+                'lastMessageTime'   => 0,
+                'lastSenderId'      => '',
+                'lastSenderName'    => '',
+                'createdBy'         => $this->admin_id,
+                'createdAt'         => $nowMs0,
                 'status'            => 'active',
-            ]);
+            ], false);
 
-            // Create inbox entries for both participants
-            $recipientInboxRole = $recipientRole === 'Teacher' ? 'Teacher' : 'Admin';
-            $this->firebase->set($this->_comm("Messages/Inbox/{$myRole}/{$this->admin_id}/{$convId}"), [
-                'unread_count' => 0,
-                'last_seen_at' => date('c'),
-            ]);
-            $this->firebase->set($this->_comm("Messages/Inbox/{$recipientInboxRole}/{$recipientId}/{$convId}"), [
-                'unread_count' => 0,
-                'last_seen_at' => '',
-            ]);
+            // ── Create rich inbox entries for web admin + mobile apps ──
+            $now = round(microtime(true) * 1000);
+            // Lowercase, single source of truth — same path admin web AND
+            // mobile apps read.
+            $recipientInboxRole = $this->_inbox_role_for($recipientRole);
+
+            // Sender's inbox entry (admin web)
+            $senderInbox = [
+                'unreadCount'    => 0,
+                'lastSeenAt'     => $now,
+                'conversationId' => $convId,
+                'otherName'      => $recipientName,
+                'otherPartyId'   => $recipientId,
+                'otherPartyName' => $recipientName,
+                'otherPartyRole' => $recipientRole,
+                'studentName'    => '',
+                'studentClass'   => $studentClass,
+                'className'      => $studentClass,
+                'section'        => $studentSection,
+                'lastMessage'    => '',
+                'lastMessageTime'=> $now,
+            ];
+            $this->msg_svc->writeInbox($myRole, $this->admin_id, $convId, $senderInbox, false);
+
+            // Recipient's inbox entry (admin web)
+            $recipientInbox = [
+                'unreadCount'    => 0,
+                'lastSeenAt'     => 0,
+                'conversationId' => $convId,
+                'otherName'      => $this->admin_name,
+                'otherPartyId'   => $this->admin_id,
+                'otherPartyName' => $this->admin_name,
+                'otherPartyRole' => $myRole,
+                'studentName'    => '',
+                'studentClass'   => $studentClass,
+                'className'      => $studentClass,
+                'section'        => $studentSection,
+                'lastMessage'    => '',
+                'lastMessageTime'=> $now,
+            ];
+            $this->msg_svc->writeInbox($recipientInboxRole, $recipientId, $convId, $recipientInbox, false);
+
+            // Parent app reads: Communication/Messages/Inbox/parent/{parentDbKey}/{convId}
+            // Always create parent inbox when:
+            //   a) recipient is Parent (messaging a student's parent)
+            //   b) conversation has student context
+            if ($recipientRole === 'Parent' || $studentId !== '') {
+                // The parentDbKey for the parent app is the student's parent_db_key
+                // For the school's parent DB, this is the school_code (numeric)
+                $parentDbKey = $this->parent_db_key;
+
+                // Determine student name from context
+                $studentDisplayName = '';
+                if ($studentData) {
+                    $studentDisplayName = $studentData['name'] ?? $studentData['Name'] ?? '';
+                }
+
+                $senderLabel = $this->admin_name;
+                if ($myRole === 'Teacher') $senderLabel .= ' (Teacher)';
+                else $senderLabel .= ' (School)';
+
+                // Combine class + section so the parent app's chat header
+                // can show "Class 8th · Section A" instead of just the class.
+                // The section is normalized (strip any leading "Section " so
+                // we don't end up with "Section Section A").
+                $sectionLabel = trim((string) $studentSection);
+                if ($sectionLabel !== '' && stripos($sectionLabel, 'section') !== 0) {
+                    $sectionLabel = "Section {$sectionLabel}";
+                }
+                $studentClassFull = trim($studentClass);
+                if ($sectionLabel !== '') {
+                    $studentClassFull = $studentClassFull === ''
+                        ? $sectionLabel
+                        : "{$studentClassFull} · {$sectionLabel}";
+                }
+
+                $parentInbox = [
+                    'unreadCount'    => 0,
+                    'lastSeenAt'     => 0,
+                    'conversationId' => $convId,
+                    'otherName'      => $senderLabel,
+                    'otherPartyId'   => $this->admin_id,
+                    'otherPartyName' => $this->admin_name,
+                    'otherPartyRole' => $myRole,
+                    'senderName'     => $this->admin_name,
+                    'studentName'    => $studentDisplayName,
+                    'studentClass'   => $studentClassFull,
+                    'className'      => $studentClass,
+                    'section'        => $studentSection,
+                    'lastMessage'    => '',
+                    'lastMessageTime'=> $now,
+                    'teacherDbKey'   => $recipientRole === 'Teacher' ? $recipientId : $this->admin_id,
+                    'recipientDbKey' => $this->admin_id,
+                    'otherDbKey'     => $this->admin_id,
+                ];
+                $this->msg_svc->writeInbox('parent', $parentDbKey, $convId, $parentInbox, false);
+            }
         }
 
         // Send the initial message
         $this->_add_message($convId, $initialMsg);
 
         $this->json_success(['conversation_id' => $convId, 'message' => 'Conversation created.']);
+    }
+
+    /**
+     * "Delete chat for me" — removes ONLY the current admin's inbox stub
+     * for this conversation. The shared Conversations/{id} doc and the
+     * chat history under Chat/{id} are left intact, so the parent and
+     * teacher continue to see the conversation. Mirrors the
+     * deleteConversationForMe() flow in the parent + teacher Android apps.
+     */
+    public function delete_conversation()
+    {
+        $this->_require_role(self::RBAC_MANAGE_ROLES, 'delete_conversation');
+        $this->_require_teacher();
+
+        $convId = $this->safe_path_segment(trim($this->input->post('conversation_id') ?? ''), 'conversation_id');
+
+        // Verify the admin actually participates in this conversation —
+        // a non-participant has no inbox entry to delete and shouldn't be
+        // able to probe for paths.
+        $conv = $this->msg_svc->getConversation($convId);
+        if (!is_array($conv)) $this->json_error('Conversation not found.');
+        if (!isset($conv['participants'][$this->admin_id])) $this->json_error('Access denied.', 403);
+
+        $role = $this->_inbox_role();
+        $this->msg_svc->deleteInbox($role, $this->admin_id, $convId);
+
+        $this->json_success(['message' => 'Conversation removed from your inbox.']);
     }
 
     public function send_message()
@@ -546,41 +780,65 @@ class Communication extends MY_Controller
     private function _add_message(string $convId, string $text, string $type = 'text'): string
     {
         $msgId = $this->_next_id('Message', 'MSG', 5);
-        $now   = date('c');
+        $nowMs = round(microtime(true) * 1000);
         $role  = $this->_inbox_role();
+        $preview = mb_substr($text, 0, 100);
 
-        $this->firebase->set($this->_comm("Messages/Chat/{$convId}/{$msgId}"), [
-            'sender_id'       => $this->admin_id,
-            'sender_role'     => $role,
-            'sender_name'     => $this->admin_name,
-            'message_text'    => $text,
-            'attachment_url'  => '',
-            'attachment_name' => '',
-            'sent_at'         => $now,
-            'type'            => $type,
+        // Canonical chat message — Firestore-first via service.
+        $this->msg_svc->writeMessage($convId, $msgId, [
+            'senderId'       => $this->admin_id,
+            'senderRole'     => strtolower($role),
+            'senderName'     => $this->admin_name,
+            'text'           => $text,
+            'timestamp'      => $nowMs,
+            'type'           => $type,
+            'attachmentUrl'  => '',
+            'attachmentName' => '',
+            'readBy'         => [$this->admin_id => true],
         ]);
 
-        // Fetch conversation once (needed for participants), then update metadata
-        $conv = $this->firebase->get($this->_comm("Messages/Conversations/{$convId}"));
+        // Fetch conversation once (for participants) — Firestore-first.
+        $conv = $this->msg_svc->getConversation($convId);
         if (!is_array($conv)) return $msgId;
 
-        $this->firebase->update($this->_comm("Messages/Conversations/{$convId}"), [
-            'last_message'    => mb_substr($text, 0, 100),
-            'last_message_at' => $now,
-            'last_sender_id'  => $this->admin_id,
-        ]);
+        // Update conversation metadata (Firestore-first via service).
+        $this->msg_svc->writeConversation($convId, [
+            'lastMessage'     => $preview,
+            'lastMessageTime' => $nowMs,
+            'lastSenderName'  => $this->admin_name,
+            'lastSenderId'    => $this->admin_id,
+            'updatedAt'       => $nowMs,
+        ], true);
 
-        // Increment unread for other participants (uses already-fetched conv)
+        // Update inbox for all other participants (admin + mobile paths) — camelCase only.
+        $inboxUpdate = [
+            'lastMessage'     => $preview,
+            'lastMessageTime' => $nowMs,
+            'lastMessageType' => $type,
+            'lastSenderId'    => $this->admin_id,
+            'lastSenderName'  => $this->admin_name,
+        ];
+
         if (is_array($conv['participants'] ?? null)) {
             foreach ($conv['participants'] as $pid => $pRole) {
                 if ($pid === $this->admin_id) continue;
-                $inboxRole = ($pRole === 'Teacher') ? 'Teacher' : 'Admin';
-                $inboxPath = $this->_comm("Messages/Inbox/{$inboxRole}/{$pid}/{$convId}");
-                $current   = $this->firebase->get($inboxPath);
-                $unread    = is_array($current) ? (int) ($current['unread_count'] ?? 0) : 0;
-                $this->firebase->update($inboxPath, ['unread_count' => $unread + 1]);
+                $inboxRole = $this->_inbox_role_for((string) $pRole);
+                $this->msg_svc->incrementUnread($inboxRole, $pid, $convId, $inboxUpdate);
+            }
+
+            // Also update parent inbox if conversation has student context
+            $ctx = $conv['context'] ?? [];
+            $ctxStudentId = $ctx['studentId'] ?? $ctx['student_id'] ?? '';
+            if (!empty($ctxStudentId)) {
+                $this->msg_svc->incrementUnread('parent', $this->parent_db_key, $convId, $inboxUpdate);
             }
         }
+
+        // Update sender's own inbox (0 unread).
+        $this->msg_svc->writeInbox($role, $this->admin_id, $convId, array_merge($inboxUpdate, [
+            'unreadCount' => 0,
+            'lastSeenAt'  => $nowMs,
+        ]), true);
 
         return $msgId;
     }
@@ -591,10 +849,7 @@ class Communication extends MY_Controller
         $this->_require_view();
         $convId = $this->safe_path_segment(trim($this->input->post('conversation_id') ?? ''), 'conversation_id');
         $role   = $this->_inbox_role();
-        $this->firebase->update($this->_comm("Messages/Inbox/{$role}/{$this->admin_id}/{$convId}"), [
-            'unread_count' => 0,
-            'last_seen_at' => date('c'),
-        ]);
+        $this->msg_svc->markRead($role, $this->admin_id, $convId);
         $this->json_success(['message' => 'Marked as read.']);
     }
 
@@ -602,14 +857,7 @@ class Communication extends MY_Controller
     {
         $this->_require_role(self::RBAC_VIEW_ROLES, 'get_unread_count');
         $this->_require_view();
-        $role  = $this->_inbox_role();
-        $inbox = $this->firebase->get($this->_comm("Messages/Inbox/{$role}/{$this->admin_id}"));
-        $total = 0;
-        if (is_array($inbox)) {
-            foreach ($inbox as $conv) {
-                if (is_array($conv)) $total += (int) ($conv['unread_count'] ?? 0);
-            }
-        }
+        $total = $this->msg_svc->getUnreadCount($this->_inbox_role(), $this->admin_id);
         $this->json_success(['unread' => $total]);
     }
 
@@ -650,6 +898,44 @@ class Communication extends MY_Controller
                         $results[] = ['id' => $id, 'name' => $this->_sanitize_html($name), 'role' => 'Teacher', 'label' => $this->_sanitize_html("{$name} ({$id}) - Teacher")];
                     }
                 }
+            }
+        }
+
+        // Search Students from Firestore (name, userId, fatherName)
+        if (count($results) < $maxResults) {
+            try {
+                $studentDocs = $this->fs->schoolWhere('students', [['status', '==', 'Active']]);
+                foreach ($studentDocs as $doc) {
+                    if (count($results) >= $maxResults) break;
+                    $s = $doc['data'];
+                    // Firestore student doc IDs are stored as `{schoolId}_{studentUserId}`.
+                    // Downstream code (create_conversation → fs->getEntity) re-prepends
+                    // the schoolId, so we MUST strip it here or the lookup double-prefixes
+                    // and 400s with "Recipient not found.".
+                    $rawId = $doc['id'];
+                    $prefix = $this->school_id . '_';
+                    $sid = (strpos($rawId, $prefix) === 0)
+                        ? substr($rawId, strlen($prefix))
+                        : $rawId;
+                    $sName = $s['name'] ?? $s['Name'] ?? '';
+                    $fatherName = $s['fatherName'] ?? $s['Father Name'] ?? '';
+                    $cls = $s['className'] ?? $s['Class'] ?? '';
+                    $sec = $s['section'] ?? $s['Section'] ?? '';
+                    if (stripos($sName, $query) !== false || stripos($sid, $query) !== false || stripos($fatherName, $query) !== false) {
+                        $classLabel = $cls ? " - Class {$cls}" . ($sec ? " {$sec}" : '') : '';
+                        $results[] = [
+                            'id'       => $sid,
+                            'name'     => $this->_sanitize_html($sName),
+                            'role'     => 'Parent',
+                            'label'    => $this->_sanitize_html("{$sName} ({$fatherName}){$classLabel} - Student"),
+                            'class'    => $cls,
+                            'section'  => $sec,
+                            'father'   => $this->_sanitize_html($fatherName),
+                        ];
+                    }
+                }
+            } catch (\Exception $e) {
+                // Non-fatal — students search failed
             }
         }
 
@@ -728,6 +1014,21 @@ class Communication extends MY_Controller
         ];
         if ($isNew) $data['created_at'] = date('c');
 
+        // ────────────────────────────────────────────────────────────────
+        //  TIER A: Firestore-first.
+        //  Both Android apps read notices from the `circulars` collection.
+        //  Write Firestore FIRST and abort if it fails — RTDB is mirrored
+        //  only on Firestore success.
+        // ────────────────────────────────────────────────────────────────
+        $fsOk = $this->_syncToFirestoreCirculars($id, $data, 'notice');
+        if (!$fsOk) {
+            log_message('error', "save_notice: Firestore-first write failed for {$id} — aborting RTDB write");
+            $this->output->set_status_header(503);
+            $this->json_error('Could not save notice to Firestore. No changes were made. Please try again.');
+            return;
+        }
+
+        // Firestore succeeded — mirror to RTDB.
         $this->firebase->set($this->_comm("Notices/{$id}"), $data);
 
         // Dual-write to legacy path for mobile app compatibility
@@ -825,6 +1126,24 @@ class Communication extends MY_Controller
         $this->_require_role(self::RBAC_MANAGE_ROLES, 'delete_notice');
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'notice_id');
+
+        // ── TIER A: Firestore-first delete ──────────────────────────────
+        // Apps read from `circulars`. If Firestore delete fails the notice
+        // would remain visible to parents/teachers — abort and keep RTDB
+        // intact so the system stays consistent.
+        try {
+            $ok = $this->fs->remove('circulars', $this->fs->docId($id));
+        } catch (\Exception $e) {
+            log_message('error', "delete_notice: Firestore remove threw for {$id}: " . $e->getMessage());
+            $ok = false;
+        }
+        if (!$ok) {
+            $this->output->set_status_header(503);
+            $this->json_error('Could not remove notice from Firestore. No changes were made. Please try again.');
+            return;
+        }
+
+        // Firestore succeeded — mirror delete to RTDB.
         $this->firebase->delete($this->_comm('Notices'), $id);
         $this->json_success(['message' => 'Notice deleted.']);
     }
@@ -837,16 +1156,26 @@ class Communication extends MY_Controller
     {
         $this->_require_role(self::RBAC_VIEW_ROLES, 'get_circulars');
         $this->_require_view();
-        $all = $this->firebase->get($this->_comm('Circulars'));
+
+        // Firestore-only (no RTDB fallback per project policy).
         $list = [];
-        if (is_array($all)) {
-            foreach ($all as $id => $c) {
-                if (!is_array($c) || $id === 'Counter') continue;
-                $c['id'] = $id;
-                $list[] = $c;
+        try {
+            $fsDocs = $this->fs->schoolWhere('circulars', []);
+            if (is_array($fsDocs)) {
+                $prefix = $this->school_id . '_';
+                foreach ($fsDocs as $doc) {
+                    $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
+                    $rawId = (string) ($doc['id'] ?? '');
+                    $r['id'] = (strpos($rawId, $prefix) === 0)
+                        ? substr($rawId, strlen($prefix))
+                        : $rawId;
+                    $list[] = $r;
+                }
             }
-            usort($list, fn($a, $b) => strcmp($b['issued_date'] ?? '', $a['issued_date'] ?? ''));
+        } catch (\Exception $e) {
+            log_message('error', 'Communication get_circulars Firestore read failed: ' . $e->getMessage());
         }
+        usort($list, fn($a, $b) => strcmp($b['issued_date'] ?? '', $a['issued_date'] ?? ''));
 
         $page  = max(1, (int) ($this->input->get('page') ?? 1));
         $limit = min(100, max(1, (int) ($this->input->get('limit') ?? 50)));
@@ -892,12 +1221,7 @@ class Communication extends MY_Controller
         $attachmentName = trim($this->input->post('existing_attachment_name') ?? '');
 
         if (!empty($_FILES['attachment']['name'])) {
-            $uploadDir = FCPATH . 'uploads/circulars/';
-            if (!is_dir($uploadDir)) {
-                mkdir($uploadDir, 0755, true);
-            }
-
-            // Validate MIME type server-side (don't trust extension alone)
+            // Validate MIME type server-side
             $finfo    = new finfo(FILEINFO_MIME_TYPE);
             $mimeType = $finfo->file($_FILES['attachment']['tmp_name']);
             $allowedMimes = [
@@ -911,17 +1235,45 @@ class Communication extends MY_Controller
                 $this->json_error('Invalid file type. Allowed: PDF, DOC, DOCX, JPG, PNG.');
             }
 
-            $config['upload_path']   = $uploadDir;
-            $config['allowed_types'] = 'pdf|doc|docx|jpg|jpeg|png';
-            $config['max_size']      = 5120; // 5MB
-            $config['file_name']     = $id . '_' . time();
+            // Upload to temp dir first
+            $tempDir = APPPATH . 'temp/';
+            if (!is_dir($tempDir)) mkdir($tempDir, 0755, true);
+
+            $config['upload_path']      = $tempDir;
+            $config['allowed_types']    = 'pdf|doc|docx|jpg|jpeg|png';
+            $config['max_size']         = 5120; // 5MB
+            $config['file_name']        = $id . '_' . time();
             $config['file_ext_tolower'] = true;
             $this->load->library('upload', $config);
 
             if ($this->upload->do_upload('attachment')) {
                 $uploadData     = $this->upload->data();
-                $attachmentUrl  = base_url('uploads/circulars/' . $uploadData['file_name']);
+                $localPath      = $uploadData['full_path'];
                 $attachmentName = basename($uploadData['orig_name']);
+
+                // Try Firebase Storage first
+                $firebaseOk = false;
+                try {
+                    $safe       = preg_replace('/[^A-Za-z0-9_\-]/', '_', $this->school_name);
+                    $remotePath = "schools/{$safe}/circulars/{$uploadData['file_name']}";
+                    $uploaded   = $this->firebase->uploadFile($localPath, $remotePath);
+                    if ($uploaded) {
+                        $attachmentUrl = $this->firebase->getDownloadUrl($remotePath);
+                        $firebaseOk = !empty($attachmentUrl);
+                    }
+                } catch (Exception $e) {
+                    log_message('info', 'Circular attachment: Firebase Storage unavailable, using local — ' . $e->getMessage());
+                }
+
+                // Fallback: copy to local uploads/
+                if (!$firebaseOk) {
+                    $localDir = FCPATH . 'uploads/circulars/';
+                    if (!is_dir($localDir)) mkdir($localDir, 0755, true);
+                    copy($localPath, $localDir . $uploadData['file_name']);
+                    $attachmentUrl = base_url('uploads/circulars/' . $uploadData['file_name']);
+                }
+
+                @unlink($localPath); // clean up temp
             } else {
                 $this->json_error($this->upload->display_errors('', ''));
             }
@@ -943,6 +1295,21 @@ class Communication extends MY_Controller
         ];
         if ($isNew) $data['created_at'] = date('c');
 
+        // ────────────────────────────────────────────────────────────────
+        //  TIER A: Firestore-first.
+        //  Both Android apps read circulars from the `circulars` collection.
+        //  Write Firestore FIRST and abort if it fails — RTDB is mirrored
+        //  only on Firestore success.
+        // ────────────────────────────────────────────────────────────────
+        $fsOk = $this->_syncToFirestoreCirculars($id, $data, 'circular');
+        if (!$fsOk) {
+            log_message('error', "save_circular: Firestore-first write failed for {$id} — aborting RTDB write");
+            $this->output->set_status_header(503);
+            $this->json_error('Could not save circular to Firestore. No changes were made. Please try again.');
+            return;
+        }
+
+        // Firestore succeeded — mirror to RTDB.
         $this->firebase->set($this->_comm("Circulars/{$id}"), $data);
 
         // Also distribute as a notice for mobile app visibility
@@ -964,6 +1331,21 @@ class Communication extends MY_Controller
         $this->_require_role(self::RBAC_MANAGE_ROLES, 'delete_circular');
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'circular_id');
+
+        // ── TIER A: Firestore-first delete ──────────────────────────────
+        try {
+            $ok = $this->fs->remove('circulars', $this->fs->docId($id));
+        } catch (\Exception $e) {
+            log_message('error', "delete_circular: Firestore remove threw for {$id}: " . $e->getMessage());
+            $ok = false;
+        }
+        if (!$ok) {
+            $this->output->set_status_header(503);
+            $this->json_error('Could not remove circular from Firestore. No changes were made. Please try again.');
+            return;
+        }
+
+        // Firestore succeeded — mirror delete to RTDB.
         $this->firebase->delete($this->_comm('Circulars'), $id);
         $this->json_success(['message' => 'Circular deleted.']);
     }
@@ -988,14 +1370,12 @@ class Communication extends MY_Controller
     {
         $this->_require_role(self::RBAC_VIEW_ROLES, 'get_templates');
         $this->_require_admin();
-        $all = $this->firebase->get($this->_comm('Templates'));
+        $all = $this->_dwListAdmin(self::FS_COL_TEMPLATES, 'Templates');
         $list = [];
-        if (is_array($all)) {
-            foreach ($all as $id => $t) {
-                if (!is_array($t) || $id === 'Counter') continue;
-                $t['id'] = $id;
-                $list[] = $t;
-            }
+        foreach ($all as $id => $t) {
+            if (!is_array($t) || $id === 'Counter') continue;
+            $t['id'] = $id;
+            $list[] = $t;
         }
         $this->json_success(['templates' => $list]);
     }
@@ -1048,7 +1428,7 @@ class Communication extends MY_Controller
         ];
         if ($isNew) $data['created_at'] = date('c');
 
-        $this->firebase->set($this->_comm("Templates/{$id}"), $data);
+        $this->_dwSet(self::FS_COL_TEMPLATES, 'Templates', $id, $data);
         $this->json_success(['id' => $id, 'message' => 'Template saved.']);
     }
 
@@ -1059,17 +1439,15 @@ class Communication extends MY_Controller
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'template_id');
 
         // Check if any trigger uses this template
-        $triggers = $this->firebase->get($this->_comm('Triggers'));
-        if (is_array($triggers)) {
-            foreach ($triggers as $tId => $trg) {
-                if (!is_array($trg) || $tId === 'Counter') continue;
-                if (($trg['template_id'] ?? '') === $id && !empty($trg['enabled'])) {
-                    $this->json_error('Cannot delete: template is used by an active trigger.');
-                }
+        $triggers = $this->_dwListAdmin(self::FS_COL_TRIGGERS, 'Triggers');
+        foreach ($triggers as $tId => $trg) {
+            if (!is_array($trg) || $tId === 'Counter') continue;
+            if (($trg['template_id'] ?? '') === $id && !empty($trg['enabled'])) {
+                $this->json_error('Cannot delete: template is used by an active trigger.');
             }
         }
 
-        $this->firebase->delete($this->_comm('Templates'), $id);
+        $this->_dwDelete(self::FS_COL_TEMPLATES, 'Templates', $id);
         $this->json_success(['message' => 'Template deleted.']);
     }
 
@@ -1117,14 +1495,12 @@ class Communication extends MY_Controller
     {
         $this->_require_role(self::RBAC_VIEW_ROLES, 'get_triggers');
         $this->_require_admin();
-        $all = $this->firebase->get($this->_comm('Triggers'));
+        $all = $this->_dwListAdmin(self::FS_COL_TRIGGERS, 'Triggers');
         $list = [];
-        if (is_array($all)) {
-            foreach ($all as $id => $t) {
-                if (!is_array($t) || $id === 'Counter') continue;
-                $t['id'] = $id;
-                $list[] = $t;
-            }
+        foreach ($all as $id => $t) {
+            if (!is_array($t) || $id === 'Counter') continue;
+            $t['id'] = $id;
+            $list[] = $t;
         }
         $this->json_success(['triggers' => $list]);
     }
@@ -1149,9 +1525,9 @@ class Communication extends MY_Controller
         $this->_validate_enum($channel, self::ALLOWED_CHANNELS, 'channel');
         $this->_validate_enum($recipientType, self::ALLOWED_RECIPIENT_TYPES, 'recipient type');
 
-        // Verify template exists
+        // Verify template exists (Firestore-first via helper)
         $templateId = $this->safe_path_segment($templateId, 'template_id');
-        $tpl = $this->firebase->get($this->_comm("Templates/{$templateId}"));
+        $tpl = $this->_dwGet(self::FS_COL_TEMPLATES, 'Templates', $templateId);
         if (!is_array($tpl)) $this->json_error('Selected template does not exist.');
 
         // Parse and validate conditions JSON — only allow flat key:numeric pairs
@@ -1190,7 +1566,7 @@ class Communication extends MY_Controller
         ];
         if ($isNew) $data['created_at'] = date('c');
 
-        $this->firebase->set($this->_comm("Triggers/{$id}"), $data);
+        $this->_dwSet(self::FS_COL_TRIGGERS, 'Triggers', $id, $data);
         $this->json_success(['id' => $id, 'message' => 'Trigger saved.']);
     }
 
@@ -1199,7 +1575,7 @@ class Communication extends MY_Controller
         $this->_require_role(self::RBAC_ADMIN_ROLES, 'delete_trigger');
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'trigger_id');
-        $this->firebase->delete($this->_comm('Triggers'), $id);
+        $this->_dwDelete(self::FS_COL_TRIGGERS, 'Triggers', $id);
         $this->json_success(['message' => 'Trigger deleted.']);
     }
 
@@ -1209,7 +1585,7 @@ class Communication extends MY_Controller
         $this->_require_admin();
         $id      = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'trigger_id');
         $enabled = ($this->input->post('enabled') ?? '1') === '1';
-        $this->firebase->update($this->_comm("Triggers/{$id}"), [
+        $this->_dwUpdate(self::FS_COL_TRIGGERS, 'Triggers', $id, [
             'enabled'    => $enabled,
             'updated_at' => date('c'),
         ]);
@@ -1225,17 +1601,15 @@ class Communication extends MY_Controller
         $this->_require_role(self::RBAC_VIEW_ROLES, 'get_queue');
         $this->_require_admin();
         $status = trim($this->input->get('status') ?? '');
-        $all    = $this->firebase->get($this->_comm('Queue'));
+        $all    = $this->_dwListAdmin(self::FS_COL_QUEUE, 'Queue');
         $list   = [];
-        if (is_array($all)) {
-            foreach ($all as $id => $q) {
-                if (!is_array($q)) continue;
-                if ($status !== '' && ($q['status'] ?? '') !== $status) continue;
-                $q['id'] = $id;
-                $list[] = $q;
-            }
-            usort($list, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
+        foreach ($all as $id => $q) {
+            if (!is_array($q)) continue;
+            if ($status !== '' && ($q['status'] ?? '') !== $status) continue;
+            $q['id'] = $id;
+            $list[] = $q;
         }
+        usort($list, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
 
         $page  = max(1, (int) ($this->input->get('page') ?? 1));
         $limit = min(100, max(1, (int) ($this->input->get('limit') ?? 50)));
@@ -1253,8 +1627,8 @@ class Communication extends MY_Controller
     {
         $this->_require_role(self::RBAC_ADMIN_ROLES, 'process_queue');
         $this->_require_admin();
-        $all = $this->firebase->get($this->_comm('Queue'));
-        if (!is_array($all)) {
+        $all = $this->_dwListAdmin(self::FS_COL_QUEUE, 'Queue');
+        if (empty($all)) {
             $this->json_success(['processed' => 0, 'message' => 'Queue empty.']);
             return;
         }
@@ -1281,8 +1655,8 @@ class Communication extends MY_Controller
             $scheduledAt = $q['scheduled_at'] ?? '';
             if ($scheduledAt !== '' && $scheduledAt > $now) continue;
 
-            // Mark as processing
-            $this->firebase->update($this->_comm("Queue/{$id}"), ['status' => 'processing']);
+            // Mark as processing — Firestore-first via _dwUpdate.
+            $this->_dwUpdate(self::FS_COL_QUEUE, 'Queue', $id, ['status' => 'processing']);
 
             $channel = $q['channel'] ?? 'push';
             $success = false;
@@ -1304,7 +1678,7 @@ class Communication extends MY_Controller
 
             $now = date('c');
             if ($success) {
-                $this->firebase->update($this->_comm("Queue/{$id}"), [
+                $this->_dwUpdate(self::FS_COL_QUEUE, 'Queue', $id, [
                     'status'  => 'sent',
                     'sent_at' => $now,
                 ]);
@@ -1315,7 +1689,7 @@ class Communication extends MY_Controller
                 $attempts = (int) ($q['attempts'] ?? 0) + 1;
                 $maxAttempts = (int) ($q['max_attempts'] ?? 3);
                 $newStatus = $attempts >= $maxAttempts ? 'failed' : 'pending';
-                $this->firebase->update($this->_comm("Queue/{$id}"), [
+                $this->_dwUpdate(self::FS_COL_QUEUE, 'Queue', $id, [
                     'status'        => $newStatus,
                     'attempts'      => $attempts,
                     'error_message' => 'Delivery failed',
@@ -1333,7 +1707,9 @@ class Communication extends MY_Controller
     }
 
     /**
-     * Deliver push notification via legacy Firebase paths.
+     * Deliver push notification via FCM (Phase C — 2026-04-08) plus the
+     * legacy in-app notice path that the apps fall back to when they're
+     * already open and listening on RTDB.
      */
     private function _deliver_push(array $q): bool
     {
@@ -1344,6 +1720,28 @@ class Communication extends MY_Controller
         // Validate recipient ID format for path safety
         if (!preg_match('/^[A-Za-z0-9_\-]+$/', $recipientId)) return false;
         if (!in_array($recipientType, self::ALLOWED_RECIPIENT_TYPES, true)) return false;
+
+        // ── PATH A: Real FCM push via Push_service ─────────────────────
+        // Only parents/teachers/staff have devices registered. Broadcast
+        // and student types fall through to the legacy in-app path only.
+        $fcmSent = 0;
+        if (in_array($recipientType, ['parent', 'teacher', 'staff'], true)) {
+            try {
+                $this->load->library('push_service');
+                $fcmSent = $this->push_service->sendToUser($recipientId, [
+                    'title' => $q['title'] ?? '',
+                    'body'  => $q['message_body'] ?? '',
+                    'data'  => [
+                        'type'         => $q['event_type'] ?? 'notification',
+                        'queue_id'     => $q['_id'] ?? '',
+                        'recipient_id' => $recipientId,
+                        'recipient_type' => $recipientType,
+                    ],
+                ]);
+            } catch (\Exception $e) {
+                log_message('error', 'Communication FCM push failed: ' . $e->getMessage());
+            }
+        }
 
         $session = $this->session_year;
         $school  = $this->school_name;
@@ -1400,7 +1798,7 @@ class Communication extends MY_Controller
     {
         $logId = $this->_next_id('Log', 'LOG', 5);
 
-        $this->firebase->set($this->_comm("Logs/{$logId}"), [
+        $this->_dwSet(self::FS_COL_LOGS, 'Logs', $logId, [
             'queue_id'          => $queueId,
             'trigger_id'        => $q['trigger_id'] ?? '',
             'channel'           => $q['channel'] ?? '',
@@ -1425,10 +1823,10 @@ class Communication extends MY_Controller
         $this->_require_role(self::RBAC_ADMIN_ROLES, 'cancel_queued');
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'queue_id');
-        $q  = $this->firebase->get($this->_comm("Queue/{$id}"));
+        $q  = $this->_dwGet(self::FS_COL_QUEUE, 'Queue', $id);
         if (!is_array($q)) $this->json_error('Queue item not found.');
         if (($q['status'] ?? '') !== 'pending') $this->json_error('Only pending items can be cancelled.');
-        $this->firebase->update($this->_comm("Queue/{$id}"), [
+        $this->_dwUpdate(self::FS_COL_QUEUE, 'Queue', $id, [
             'status'     => 'cancelled',
             'updated_at' => date('c'),
         ]);
@@ -1440,10 +1838,10 @@ class Communication extends MY_Controller
         $this->_require_role(self::RBAC_ADMIN_ROLES, 'retry_failed');
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'queue_id');
-        $q  = $this->firebase->get($this->_comm("Queue/{$id}"));
+        $q  = $this->_dwGet(self::FS_COL_QUEUE, 'Queue', $id);
         if (!is_array($q)) $this->json_error('Queue item not found.');
         if (($q['status'] ?? '') !== 'failed') $this->json_error('Only failed items can be retried.');
-        $this->firebase->update($this->_comm("Queue/{$id}"), [
+        $this->_dwUpdate(self::FS_COL_QUEUE, 'Queue', $id, [
             'status'        => 'pending',
             'attempts'      => 0,
             'error_message' => '',
@@ -1460,16 +1858,14 @@ class Communication extends MY_Controller
     {
         $this->_require_role(self::RBAC_VIEW_ROLES, 'get_logs');
         $this->_require_admin();
-        $all = $this->firebase->get($this->_comm('Logs'));
+        $all = $this->_dwListAdmin(self::FS_COL_LOGS, 'Logs');
         $list = [];
-        if (is_array($all)) {
-            foreach ($all as $id => $l) {
-                if (!is_array($l)) continue;
-                $l['id'] = $id;
-                $list[] = $l;
-            }
-            usort($list, fn($a, $b) => strcmp($b['logged_at'] ?? '', $a['logged_at'] ?? ''));
+        foreach ($all as $id => $l) {
+            if (!is_array($l)) continue;
+            $l['id'] = $id;
+            $list[] = $l;
         }
+        usort($list, fn($a, $b) => strcmp($b['logged_at'] ?? '', $a['logged_at'] ?? ''));
 
         $page  = max(1, (int) ($this->input->get('page') ?? 1));
         $limit = min(100, max(1, (int) ($this->input->get('limit') ?? 50)));
@@ -1484,18 +1880,16 @@ class Communication extends MY_Controller
         $this->_require_role(self::RBAC_VIEW_ROLES, 'get_log_stats');
         $this->_require_admin();
 
-        $all = $this->firebase->get($this->_comm('Logs'));
+        $all = $this->_dwListAdmin(self::FS_COL_LOGS, 'Logs');
         $stats = ['total' => 0, 'delivered' => 0, 'failed' => 0, 'bounced' => 0, 'by_channel' => []];
 
-        if (is_array($all)) {
-            foreach ($all as $l) {
-                if (!is_array($l)) continue;
-                $stats['total']++;
-                $s = $l['status'] ?? '';
-                if (isset($stats[$s])) $stats[$s]++;
-                $ch = $l['channel'] ?? 'unknown';
-                $stats['by_channel'][$ch] = ($stats['by_channel'][$ch] ?? 0) + 1;
-            }
+        foreach ($all as $l) {
+            if (!is_array($l)) continue;
+            $stats['total']++;
+            $s = $l['status'] ?? '';
+            if (isset($stats[$s])) $stats[$s]++;
+            $ch = $l['channel'] ?? 'unknown';
+            $stats['by_channel'][$ch] = ($stats['by_channel'][$ch] ?? 0) + 1;
         }
 
         $this->json_success(['stats' => $stats]);
@@ -1599,8 +1993,24 @@ class Communication extends MY_Controller
             ];
         }
 
-        // PERF-1 fix: single batch write instead of N individual writes
+        // PERF-1 fix: single RTDB batch write (mirror).
         $this->firebase->update($this->_comm('Queue'), $batchData);
+
+        // Firestore primary writes — one per queue item. The Firestore
+        // REST client doesn't expose batch writes, so this is N PATCHes.
+        // For bulk send the RTDB mirror still made it through atomically
+        // above, so any Firestore failure here logs but doesn't block.
+        foreach ($batchData as $queueId => $row) {
+            try {
+                $this->fs->set(self::FS_COL_QUEUE, "{$this->school_id}_{$queueId}",
+                    array_merge(['schoolId' => $this->school_id, 'id' => $queueId], $row),
+                    false
+                );
+            } catch (\Exception $e) {
+                log_message('error', "Communication::send_bulk FS queue [{$queueId}]: " . $e->getMessage());
+            }
+        }
+
         $queued = $totalRecipients;
 
         $this->json_success(['queued' => $queued, 'message' => "{$queued} messages queued for delivery."]);
@@ -1609,6 +2019,206 @@ class Communication extends MY_Controller
     // ====================================================================
     //  CLASS LIST HELPER (for target group dropdowns)
     // ====================================================================
+
+    /**
+     * Backfill all existing RTDB notices and circulars into the Firestore
+     * `circulars` collection. Idempotent — safe to re-run. Document IDs are
+     * deterministic, so re-runs overwrite the same docs.
+     *
+     * Used after the Firestore-first refactor to make existing notices
+     * visible to the Parent + Teacher Android apps.
+     */
+    public function firestore_backfill_circulars()
+    {
+        $this->_require_role(self::RBAC_MANAGE_ROLES, 'firestore_backfill_circulars');
+        $this->_require_admin();
+
+        $stats = [
+            'notices_attempted'   => 0,
+            'notices_synced'      => 0,
+            'circulars_attempted' => 0,
+            'circulars_synced'    => 0,
+            'failed_ids'          => [],
+        ];
+
+        // Notices
+        $notices = $this->firebase->get($this->_comm('Notices'));
+        if (is_array($notices)) {
+            foreach ($notices as $id => $data) {
+                if (!is_array($data)) continue;
+                $stats['notices_attempted']++;
+                if ($this->_syncToFirestoreCirculars((string) $id, $data, 'notice')) {
+                    $stats['notices_synced']++;
+                } else {
+                    $stats['failed_ids'][] = "notice:{$id}";
+                }
+            }
+        }
+
+        // Circulars
+        $circulars = $this->firebase->get($this->_comm('Circulars'));
+        if (is_array($circulars)) {
+            foreach ($circulars as $id => $data) {
+                if (!is_array($data)) continue;
+                $stats['circulars_attempted']++;
+                if ($this->_syncToFirestoreCirculars((string) $id, $data, 'circular')) {
+                    $stats['circulars_synced']++;
+                } else {
+                    $stats['failed_ids'][] = "circular:{$id}";
+                }
+            }
+        }
+
+        $this->json_success([
+            'message' => 'Communication backfill completed.',
+            'stats'   => $stats,
+        ]);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  PHASE 6 — Firestore-first dual-write helpers for admin-only entities
+    //
+    //  Templates, Triggers, Queue and Logs are admin-internal — no Android
+    //  app reads them — so we don't need a heavy service library. These
+    //  five helpers wrap the same Firestore-first → RTDB mirror pattern
+    //  used by Messaging_service, just inline.
+    //
+    //  Doc id format:  {schoolId}_{entityId}      (matches sister modules)
+    // ════════════════════════════════════════════════════════════════════
+
+    /** Firestore collection names — keep in one place. */
+    private const FS_COL_TEMPLATES = 'messageTemplates';
+    private const FS_COL_TRIGGERS  = 'alertTriggers';
+    private const FS_COL_QUEUE     = 'messageQueue';
+    private const FS_COL_LOGS      = 'deliveryLogs';
+
+    /**
+     * Firestore-first set/replace. Stamps `schoolId` + `id` so docs are
+     * tenant-scoped and self-describing. Falls through to RTDB mirror.
+     */
+    private function _dwSet(string $fsCollection, string $rtdbSub, string $id, array $data): bool
+    {
+        $docId  = "{$this->school_id}_{$id}";
+        $fsData = array_merge(['schoolId' => $this->school_id, 'id' => $id], $data);
+
+        $fsOk = false;
+        try {
+            $fsOk = (bool) $this->fs->set($fsCollection, $docId, $fsData, false);
+        } catch (\Exception $e) {
+            log_message('error', "Communication::_dwSet FS [{$fsCollection}/{$docId}]: " . $e->getMessage());
+        }
+
+        try {
+            $this->firebase->set($this->_comm("{$rtdbSub}/{$id}"), $data);
+        } catch (\Exception $e) {
+            log_message('error', "Communication::_dwSet RTDB mirror [{$rtdbSub}/{$id}]: " . $e->getMessage());
+        }
+
+        return $fsOk;
+    }
+
+    /**
+     * Firestore-first patch (merge). Use for partial field updates like
+     * status changes, attempt counters, toggles.
+     */
+    private function _dwUpdate(string $fsCollection, string $rtdbSub, string $id, array $patch): bool
+    {
+        $docId = "{$this->school_id}_{$id}";
+
+        $fsOk = false;
+        try {
+            $fsOk = (bool) $this->fs->set($fsCollection, $docId, $patch, true);
+        } catch (\Exception $e) {
+            log_message('error', "Communication::_dwUpdate FS [{$fsCollection}/{$docId}]: " . $e->getMessage());
+        }
+
+        try {
+            $this->firebase->update($this->_comm("{$rtdbSub}/{$id}"), $patch);
+        } catch (\Exception $e) {
+            log_message('error', "Communication::_dwUpdate RTDB mirror [{$rtdbSub}/{$id}]: " . $e->getMessage());
+        }
+
+        return $fsOk;
+    }
+
+    /**
+     * Firestore-first delete.
+     */
+    private function _dwDelete(string $fsCollection, string $rtdbSub, string $id): bool
+    {
+        $docId = "{$this->school_id}_{$id}";
+
+        $fsOk = false;
+        try {
+            $fsOk = (bool) $this->fs->remove($fsCollection, $docId);
+        } catch (\Exception $e) {
+            log_message('error', "Communication::_dwDelete FS [{$fsCollection}/{$docId}]: " . $e->getMessage());
+        }
+
+        try {
+            $this->firebase->delete($this->_comm($rtdbSub), $id);
+        } catch (\Exception $e) {
+            log_message('error', "Communication::_dwDelete RTDB mirror [{$rtdbSub}/{$id}]: " . $e->getMessage());
+        }
+
+        return $fsOk;
+    }
+
+    /**
+     * Firestore-first list — returns rows as `[id => data]` so callers can
+     * iterate the same way they did with the legacy RTDB shape. Falls back
+     * to RTDB if Firestore returns empty.
+     */
+    private function _dwListAdmin(string $fsCollection, string $rtdbSub): array
+    {
+        try {
+            $rows = $this->fs->schoolWhere($fsCollection, []);
+            if (is_array($rows) && count($rows) > 0) {
+                $out = [];
+                foreach ($rows as $row) {
+                    $data = $row['data'] ?? [];
+                    $id   = $data['id'] ?? ($row['id'] ?? '');
+                    if ($id === '') continue;
+                    // Strip schoolId prefix from doc id if it leaked through
+                    if (strpos($id, $this->school_id . '_') === 0) {
+                        $id = substr($id, strlen($this->school_id) + 1);
+                    }
+                    $out[$id] = $data;
+                }
+                return $out;
+            }
+        } catch (\Exception $e) {
+            log_message('error', "Communication::_dwListAdmin FS [{$fsCollection}]: " . $e->getMessage());
+        }
+
+        // RTDB fallback
+        try {
+            $rtdb = $this->firebase->get($this->_comm($rtdbSub));
+            return is_array($rtdb) ? $rtdb : [];
+        } catch (\Exception $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Firestore-first single fetch by id. Falls back to RTDB.
+     */
+    private function _dwGet(string $fsCollection, string $rtdbSub, string $id): ?array
+    {
+        try {
+            $doc = $this->fs->get($fsCollection, "{$this->school_id}_{$id}");
+            if (is_array($doc) && !empty($doc)) return $doc;
+        } catch (\Exception $e) {
+            log_message('error', "Communication::_dwGet FS [{$fsCollection}/{$id}]: " . $e->getMessage());
+        }
+
+        try {
+            $rtdb = $this->firebase->get($this->_comm("{$rtdbSub}/{$id}"));
+            return is_array($rtdb) ? $rtdb : null;
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
 
     public function get_target_groups()
     {

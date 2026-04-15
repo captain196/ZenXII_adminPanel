@@ -951,6 +951,37 @@ class Hr extends MY_Controller
             }
         }
 
+        // ── RTDB mirror so the Accounting dashboard sees HR journals ──────
+        // Accounting.php currently reads Accounts/Ledger + Ledger_index + Closing_balances
+        // from RTDB. Without this mirror, salary payments never appear on
+        // Trial Balance / Day Book / Cash Book reports. Writes match the shape
+        // that Operations_accounting::create_journal produces so readers don't
+        // care which source wrote the entry.
+        $bp = "Schools/{$this->school_name}/{$this->session_year}";
+        try {
+            $this->firebase->set("{$bp}/Accounts/Ledger/{$entryId}", $entry);
+            $today = date('Y-m-d');
+            $this->firebase->set("{$bp}/Accounts/Ledger_index/by_date/{$today}/{$entryId}", true);
+            foreach (array_keys($affected) as $acCode) {
+                $this->firebase->set("{$bp}/Accounts/Ledger_index/by_account/{$acCode}/{$entryId}", true);
+            }
+            // Closing balance accumulator — read/increment/write, matching the
+            // retry pattern ops_acct uses. Here we run a single attempt;
+            // concurrent payroll writes are rare enough to not warrant retries.
+            foreach ($affected as $code => $amounts) {
+                $balPath = "{$bp}/Accounts/Closing_balances/{$code}";
+                $cur = $this->firebase->get($balPath);
+                if (!is_array($cur)) $cur = ['period_dr' => 0, 'period_cr' => 0];
+                $this->firebase->set($balPath, [
+                    'period_dr'     => round((float) ($cur['period_dr'] ?? 0) + $amounts['dr'], 2),
+                    'period_cr'     => round((float) ($cur['period_cr'] ?? 0) + $amounts['cr'], 2),
+                    'last_computed' => date('c'),
+                ]);
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _create_acct_journal RTDB mirror failed: " . $e->getMessage());
+        }
+
         return $entryId;
     }
 
@@ -1025,6 +1056,38 @@ class Hr extends MY_Controller
             ], true);
         } catch (\Exception $e) {
             log_message('error', "HR _delete_acct_journal soft-delete failed: " . $e->getMessage());
+        }
+
+        // ── RTDB mirror for delete — reverse balances, clear indices, soft-delete ──
+        $bp = "Schools/{$this->school_name}/{$this->session_year}";
+        try {
+            foreach ($affected as $code => $amounts) {
+                $balPath = "{$bp}/Accounts/Closing_balances/{$code}";
+                $cur = $this->firebase->get($balPath);
+                if (!is_array($cur)) $cur = ['period_dr' => 0, 'period_cr' => 0];
+                $this->firebase->set($balPath, [
+                    'period_dr'     => round((float) ($cur['period_dr'] ?? 0) - $amounts['dr'], 2),
+                    'period_cr'     => round((float) ($cur['period_cr'] ?? 0) - $amounts['cr'], 2),
+                    'last_computed' => date('c'),
+                ]);
+            }
+            if ($date !== '') {
+                $this->firebase->delete("{$bp}/Accounts/Ledger_index/by_date/{$date}", $entryId);
+            }
+            foreach (array_keys($affected) as $acCode) {
+                $this->firebase->delete("{$bp}/Accounts/Ledger_index/by_account/{$acCode}", $entryId);
+            }
+            // Mark the RTDB ledger entry as deleted so Accounting.php filters it out.
+            $existing = $this->firebase->get("{$bp}/Accounts/Ledger/{$entryId}");
+            if (is_array($existing)) {
+                $this->firebase->set("{$bp}/Accounts/Ledger/{$entryId}", array_merge($existing, [
+                    'status'     => 'deleted',
+                    'deleted_by' => $this->admin_id ?? '',
+                    'deleted_at' => date('c'),
+                ]));
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _delete_acct_journal RTDB mirror failed: " . $e->getMessage());
         }
     }
 
@@ -1664,18 +1727,24 @@ class Hr extends MY_Controller
         $list = [];
         $fromFirestore = false;
 
-        // ── Firestore-first read ────────────────────────────────────
+        // ── Firestore-first read (use schoolWhere so we keep doc IDs) ──
         try {
             $conditions = [];
             if ($filterStatus !== '') {
-                $conditions[] = ['status', '=', $filterStatus];
+                $conditions[] = ['status', '==', $filterStatus];
             }
-            $fsDocs = $this->fs->schoolList('hrJobs', $conditions);
+            $fsDocs = $this->fs->schoolWhere('hrJobs', $conditions);
             if (is_array($fsDocs) && !empty($fsDocs)) {
                 $fromFirestore = true;
+                $prefix = $this->school_id . '_';
                 foreach ($fsDocs as $doc) {
-                    $doc['applicant_count'] = 0;
-                    $list[] = $doc;
+                    $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
+                    $rawId = (string) ($doc['id'] ?? '');
+                    $r['id'] = (strpos($rawId, $prefix) === 0)
+                        ? substr($rawId, strlen($prefix))
+                        : $rawId;
+                    $r['applicant_count'] = 0;
+                    $list[] = $r;
                 }
             }
         } catch (\Exception $e) {
@@ -1763,6 +1832,13 @@ class Hr extends MY_Controller
             } catch (\Exception $e) {}
         }
 
+        // Canonical salary range string for cross-system display
+        $salaryRangeStr = '';
+        if ($salaryRangeMin > 0 || $salaryRangeMax > 0) {
+            $salaryRangeStr = '₹' . number_format($salaryRangeMin, 0)
+                . ' – ₹' . number_format($salaryRangeMax, 0);
+        }
+
         $data = [
             'title'               => $title,
             'department'          => $department,
@@ -1777,11 +1853,25 @@ class Hr extends MY_Controller
             'deadline'            => $deadline,
             'description'         => $description,
             'updated_at'          => $now,
+            // ── Canonical camelCase mirror for cross-system consumers
+            //    (Teacher app RecruitmentDoc reads from this collection).
+            'departmentId'        => $departmentId,
+            'vacancies'           => $positions,
+            'qualification'       => $qualifications,
+            'experience'          => $experienceRequired,
+            'salaryRangeMin'      => $salaryRangeMin,
+            'salaryRangeMax'      => $salaryRangeMax,
+            'salaryRange'         => $salaryRangeStr,
+            'closingDate'         => $deadline,
+            'jobDescription'      => $description,
+            'statusLower'         => strtolower(str_replace(' ', '_', $status)),  // open / closed / on_hold
         ];
         if ($isNew) {
             $data['created_at']       = $now;
             $data['created_by']       = $this->admin_name;
             $data['filled_positions'] = 0;
+            $data['postedAt']         = $now;     // canonical: teacher orders by this
+            $data['postedDate']       = substr($now, 0, 10);
         }
 
         // ── Firestore-first write ────────────────────────────────────
@@ -2132,19 +2222,27 @@ HTML;
         $list = [];
         $fromFirestore = false;
 
-        // ── Firestore-first read ────────────────────────────────────
+        // ── Firestore-first read (use schoolWhere so we keep doc IDs) ──
         try {
             $conditions = [];
             if ($filterJob !== '') {
-                $conditions[] = ['job_id', '=', $filterJob];
+                $conditions[] = ['job_id', '==', $filterJob];
             }
             if ($filterStatus !== '') {
-                $conditions[] = ['status', '=', $filterStatus];
+                $conditions[] = ['status', '==', $filterStatus];
             }
-            $fsDocs = $this->fs->schoolList('hrApplicants', $conditions);
+            $fsDocs = $this->fs->schoolWhere('hrApplicants', $conditions);
             if (is_array($fsDocs) && !empty($fsDocs)) {
                 $fromFirestore = true;
-                $list = $fsDocs;
+                $prefix = $this->school_id . '_';
+                foreach ($fsDocs as $doc) {
+                    $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
+                    $rawId = (string) ($doc['id'] ?? '');
+                    $r['id'] = (strpos($rawId, $prefix) === 0)
+                        ? substr($rawId, strlen($prefix))
+                        : $rawId;
+                    $list[] = $r;
+                }
             }
         } catch (\Exception $e) {
             log_message('error', 'HR get_applicants: Firestore read failed: ' . $e->getMessage());
