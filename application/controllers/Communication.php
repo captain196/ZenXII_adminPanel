@@ -1102,88 +1102,6 @@ class Communication extends MY_Controller
         $this->json_success(['id' => $id, 'message' => 'Notice saved.']);
     }
 
-    /**
-     * Write notice to legacy paths for mobile app compatibility.
-     */
-    private function _distribute_notice_legacy(string $noticeId, array $data): void
-    {
-        $session = $this->session_year;
-        $school  = $this->school_name;
-        $basePath = "Schools/{$school}/{$session}/All Notices";
-
-        // Get counter
-        $count = (int) ($this->firebase->get("{$basePath}/Count") ?? 0);
-        $legacyId = 'NOT' . str_pad($count, 4, '0', STR_PAD_LEFT);
-        $this->firebase->set("{$basePath}/Count", $count + 1);
-
-        $ts = round(microtime(true) * 1000);
-        $legacyNotice = [
-            'Title'       => $data['title'],
-            'Description' => $data['description'],
-            'From Id'     => $this->admin_id,
-            'From Type'   => 'Admin',
-            'Priority'    => $data['priority'] ?? 'Normal',
-            'Category'    => $data['category'] ?? 'General',
-            'Timestamp'   => $ts,
-            'To Id'       => [],
-        ];
-        $this->firebase->set("{$basePath}/{$legacyId}", $legacyNotice);
-
-        $target = $data['target_group'] ?? 'All School';
-
-        // Distribute based on target
-        if ($target === 'All School' || $target === 'All Students') {
-            $this->firebase->set(
-                "Schools/{$school}/{$session}/Announcements/{$target}/{$legacyId}",
-                $ts
-            );
-            // Write to each class/section Notification node
-            $sessionKeys = $this->firebase->shallow_get("Schools/{$school}/{$session}");
-            foreach ((array) $sessionKeys as $classKey) {
-                if (strpos($classKey, 'Class ') !== 0) continue;
-                $sectionKeys = $this->firebase->shallow_get("Schools/{$school}/{$session}/{$classKey}");
-                foreach ((array) $sectionKeys as $sectionKey) {
-                    if (strpos($sectionKey, 'Section ') !== 0) continue;
-                    $this->firebase->set(
-                        "Schools/{$school}/{$session}/{$classKey}/{$sectionKey}/Notification/{$legacyId}",
-                        $ts
-                    );
-                }
-            }
-        }
-
-        if ($target === 'All School' || $target === 'All Teachers') {
-            $this->firebase->set(
-                "Schools/{$school}/{$session}/Announcements/All Teachers/{$legacyId}",
-                $ts
-            );
-            $teachers = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
-            if (is_array($teachers)) {
-                foreach ($teachers as $tid => $t) {
-                    if (!is_array($t)) continue;
-                    $this->firebase->set(
-                        "Schools/{$school}/{$session}/Teachers/{$tid}/Received/{$legacyId}",
-                        $ts
-                    );
-                }
-            }
-        }
-
-        // Sender's sent log
-        $this->firebase->set(
-            "Schools/{$school}/{$session}/Admins/{$this->admin_id}/Sent/{$legacyId}",
-            $ts
-        );
-
-        // Update legacy notice To Id
-        $toId = [];
-        if ($target === 'All School') $toId['All School'] = '';
-        elseif ($target === 'All Students') $toId['All Students'] = '';
-        elseif ($target === 'All Teachers') $toId['All Teachers'] = '';
-        else $toId[$target] = '';
-        $this->firebase->update("{$basePath}/{$legacyId}", ['To Id' => $toId, 'Timestamp' => $ts]);
-    }
-
     public function delete_notice()
     {
         $this->_require_role(self::RBAC_MANAGE_ROLES, 'delete_notice');
@@ -1214,8 +1132,7 @@ class Communication extends MY_Controller
             return;
         }
 
-        // Firestore succeeded — mirror delete to RTDB.
-        $this->firebase->delete($this->_comm('Notices'), $id);
+        // Firestore-only per no-RTDB policy.
         $this->json_success(['message' => 'Notice deleted.']);
     }
 
@@ -1383,25 +1300,15 @@ class Communication extends MY_Controller
         // ────────────────────────────────────────────────────────────────
         $fsOk = $this->_syncToFirestoreCirculars($id, $data, 'circular');
         if (!$fsOk) {
-            log_message('error', "save_circular: Firestore-first write failed for {$id} — aborting RTDB write");
+            log_message('error', "save_circular: Firestore write failed for {$id}");
             $this->output->set_status_header(503);
             $this->json_error('Could not save circular to Firestore. No changes were made. Please try again.');
             return;
         }
 
-        // Firestore succeeded — mirror to RTDB.
-        $this->firebase->set($this->_comm("Circulars/{$id}"), $data);
-
-        // Also distribute as a notice for mobile app visibility
-        if ($isNew) {
-            $this->_distribute_notice_legacy($id, [
-                'title'       => "[Circular] {$title}",
-                'description' => $description,
-                'priority'    => 'High',
-                'category'    => $category,
-                'target_group' => $targetGroup,
-            ]);
-        }
+        // Firestore-only per no-RTDB policy. Mobile apps read the `circulars`
+        // collection directly (and the `notices` collection for notices);
+        // legacy All-Notices RTDB distribution removed.
 
         $this->json_success(['id' => $id, 'message' => 'Circular saved.']);
     }
@@ -1434,8 +1341,7 @@ class Communication extends MY_Controller
             return;
         }
 
-        // Firestore succeeded — mirror delete to RTDB.
-        $this->firebase->delete($this->_comm('Circulars'), $id);
+        // Firestore-only per no-RTDB policy.
         $this->json_success(['message' => 'Circular deleted.']);
     }
 
