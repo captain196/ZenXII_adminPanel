@@ -586,11 +586,17 @@ class Communication extends MY_Controller
         $recipientExists = false;
         $studentData = null;
 
-        // Check Admins
+        // TODO(SIS-migration): These recipient lookups read from RTDB because
+        // the SIS (Admins/Teachers/Parents trees) hasn't been migrated to
+        // Firestore yet. Leaving as-is per the no-RTDB policy's dependency
+        // chain — Phase 5 memory note tracks this. See hr_payroll_canonical_schema
+        // and feedback_no_rtdb_ever memory entries for the roadmap.
+
+        // Check Admins (RTDB — SIS dependency)
         $adminData = $this->firebase->get("Schools/{$this->school_name}/{$session}/Admins/{$recipientId}");
         if (is_array($adminData)) { $recipientExists = true; }
 
-        // Check Teachers
+        // Check Teachers (RTDB — SIS dependency)
         if (!$recipientExists) {
             $teacherData = $this->firebase->get("Schools/{$this->school_name}/Teachers/{$recipientId}");
             if (is_array($teacherData)) { $recipientExists = true; }
@@ -2022,12 +2028,21 @@ class Communication extends MY_Controller
             $this->json_error('No recipients found for the selected target group.');
         }
 
-        // PERF-1 fix: bulk-allocate queue IDs (2 Firebase ops instead of 2*N)
+        // Bulk-allocate queue IDs from the Firestore commCounters.Queue field
+        // (Phase 2 convention). Single read + single update regardless of N.
         $totalRecipients = count($recipients);
-        $counterPath     = $this->_counter('Queue');
-        $curCounter      = (int) ($this->firebase->get($counterPath) ?? 0);
-        $newCounter      = $curCounter + $totalRecipients;
-        $this->firebase->set($counterPath, $newCounter);
+        $profileDocId    = $this->fs->docId('profile');
+        $profileDoc      = null;
+        try { $profileDoc = $this->fs->get('schools', $profileDocId); } catch (\Exception $e) {}
+        $curCounter = (is_array($profileDoc) && isset($profileDoc['commCounters.Queue']) && is_numeric($profileDoc['commCounters.Queue']))
+            ? (int) $profileDoc['commCounters.Queue']
+            : 0;
+        $newCounter = $curCounter + $totalRecipients;
+        try {
+            $this->fs->update('schools', $profileDocId, ['commCounters.Queue' => $newCounter]);
+        } catch (\Exception $e) {
+            log_message('error', 'send_bulk counter update failed: ' . $e->getMessage());
+        }
 
         // Build all queue items in a single batch
         $now       = date('c');
@@ -2060,13 +2075,12 @@ class Communication extends MY_Controller
             ];
         }
 
-        // PERF-1 fix: single RTDB batch write (mirror).
-        $this->firebase->update($this->_comm('Queue'), $batchData);
-
-        // Firestore primary writes — one per queue item. The Firestore
-        // REST client doesn't expose batch writes, so this is N PATCHes.
-        // For bulk send the RTDB mirror still made it through atomically
-        // above, so any Firestore failure here logs but doesn't block.
+        // Firestore-only primary writes — one per queue item. The Firestore
+        // REST client doesn't expose atomic batch writes, so this is N
+        // sequential PATCHes. For typical school-scale bulk sends (tens to
+        // low hundreds) this is acceptable; the MAX_BULK_RECIPIENTS cap
+        // enforced above bounds the blast radius. Each write is isolated —
+        // partial success is recoverable via the queue status field.
         foreach ($batchData as $queueId => $row) {
             try {
                 $this->fs->set(self::FS_COL_QUEUE, "{$this->school_id}_{$queueId}",
@@ -2086,61 +2100,8 @@ class Communication extends MY_Controller
     // ====================================================================
     //  CLASS LIST HELPER (for target group dropdowns)
     // ====================================================================
-
-    /**
-     * Backfill all existing RTDB notices and circulars into the Firestore
-     * `circulars` collection. Idempotent — safe to re-run. Document IDs are
-     * deterministic, so re-runs overwrite the same docs.
-     *
-     * Used after the Firestore-first refactor to make existing notices
-     * visible to the Parent + Teacher Android apps.
-     */
-    public function firestore_backfill_circulars()
-    {
-        $this->_require_role(self::RBAC_MANAGE_ROLES, 'firestore_backfill_circulars');
-        $this->_require_admin();
-
-        $stats = [
-            'notices_attempted'   => 0,
-            'notices_synced'      => 0,
-            'circulars_attempted' => 0,
-            'circulars_synced'    => 0,
-            'failed_ids'          => [],
-        ];
-
-        // Notices
-        $notices = $this->firebase->get($this->_comm('Notices'));
-        if (is_array($notices)) {
-            foreach ($notices as $id => $data) {
-                if (!is_array($data)) continue;
-                $stats['notices_attempted']++;
-                if ($this->_syncToFirestoreCirculars((string) $id, $data, 'notice')) {
-                    $stats['notices_synced']++;
-                } else {
-                    $stats['failed_ids'][] = "notice:{$id}";
-                }
-            }
-        }
-
-        // Circulars
-        $circulars = $this->firebase->get($this->_comm('Circulars'));
-        if (is_array($circulars)) {
-            foreach ($circulars as $id => $data) {
-                if (!is_array($data)) continue;
-                $stats['circulars_attempted']++;
-                if ($this->_syncToFirestoreCirculars((string) $id, $data, 'circular')) {
-                    $stats['circulars_synced']++;
-                } else {
-                    $stats['failed_ids'][] = "circular:{$id}";
-                }
-            }
-        }
-
-        $this->json_success([
-            'message' => 'Communication backfill completed.',
-            'stats'   => $stats,
-        ]);
-    }
+    // (firestore_backfill_circulars endpoint removed — one-shot migration
+    //  already completed and the RTDB source paths are no longer written.)
 
     // ════════════════════════════════════════════════════════════════════
     //  PHASE 6 — Firestore-first dual-write helpers for admin-only entities
@@ -2160,129 +2121,88 @@ class Communication extends MY_Controller
     private const FS_COL_LOGS      = 'deliveryLogs';
 
     /**
-     * Firestore-first set/replace. Stamps `schoolId` + `id` so docs are
-     * tenant-scoped and self-describing. Falls through to RTDB mirror.
+     * Firestore-only set/replace. Stamps schoolId + id so docs are
+     * tenant-scoped and self-describing. $rtdbSub is kept in the signature
+     * so call sites don't need to change, but is no longer written to.
      */
     private function _dwSet(string $fsCollection, string $rtdbSub, string $id, array $data): bool
     {
         $docId  = "{$this->school_id}_{$id}";
         $fsData = array_merge(['schoolId' => $this->school_id, 'id' => $id], $data);
-
-        $fsOk = false;
         try {
-            $fsOk = (bool) $this->fs->set($fsCollection, $docId, $fsData, false);
+            return (bool) $this->fs->set($fsCollection, $docId, $fsData, false);
         } catch (\Exception $e) {
             log_message('error', "Communication::_dwSet FS [{$fsCollection}/{$docId}]: " . $e->getMessage());
+            return false;
         }
-
-        try {
-            $this->firebase->set($this->_comm("{$rtdbSub}/{$id}"), $data);
-        } catch (\Exception $e) {
-            log_message('error', "Communication::_dwSet RTDB mirror [{$rtdbSub}/{$id}]: " . $e->getMessage());
-        }
-
-        return $fsOk;
     }
 
     /**
-     * Firestore-first patch (merge). Use for partial field updates like
+     * Firestore-only patch (merge). Use for partial field updates like
      * status changes, attempt counters, toggles.
      */
     private function _dwUpdate(string $fsCollection, string $rtdbSub, string $id, array $patch): bool
     {
         $docId = "{$this->school_id}_{$id}";
-
-        $fsOk = false;
         try {
-            $fsOk = (bool) $this->fs->set($fsCollection, $docId, $patch, true);
+            return (bool) $this->fs->set($fsCollection, $docId, $patch, true);
         } catch (\Exception $e) {
             log_message('error', "Communication::_dwUpdate FS [{$fsCollection}/{$docId}]: " . $e->getMessage());
+            return false;
         }
-
-        try {
-            $this->firebase->update($this->_comm("{$rtdbSub}/{$id}"), $patch);
-        } catch (\Exception $e) {
-            log_message('error', "Communication::_dwUpdate RTDB mirror [{$rtdbSub}/{$id}]: " . $e->getMessage());
-        }
-
-        return $fsOk;
     }
 
     /**
-     * Firestore-first delete.
+     * Firestore-only delete.
      */
     private function _dwDelete(string $fsCollection, string $rtdbSub, string $id): bool
     {
         $docId = "{$this->school_id}_{$id}";
-
-        $fsOk = false;
         try {
-            $fsOk = (bool) $this->fs->remove($fsCollection, $docId);
+            return (bool) $this->fs->remove($fsCollection, $docId);
         } catch (\Exception $e) {
             log_message('error', "Communication::_dwDelete FS [{$fsCollection}/{$docId}]: " . $e->getMessage());
+            return false;
         }
-
-        try {
-            $this->firebase->delete($this->_comm($rtdbSub), $id);
-        } catch (\Exception $e) {
-            log_message('error', "Communication::_dwDelete RTDB mirror [{$rtdbSub}/{$id}]: " . $e->getMessage());
-        }
-
-        return $fsOk;
     }
 
     /**
-     * Firestore-first list — returns rows as `[id => data]` so callers can
-     * iterate the same way they did with the legacy RTDB shape. Falls back
-     * to RTDB if Firestore returns empty.
+     * Firestore-only list — returns rows as [id => data] so callers can
+     * iterate the same way they did with the legacy RTDB shape.
      */
     private function _dwListAdmin(string $fsCollection, string $rtdbSub): array
     {
         try {
             $rows = $this->fs->schoolWhere($fsCollection, []);
-            if (is_array($rows) && count($rows) > 0) {
-                $out = [];
-                foreach ($rows as $row) {
-                    $data = $row['data'] ?? [];
-                    $id   = $data['id'] ?? ($row['id'] ?? '');
-                    if ($id === '') continue;
-                    // Strip schoolId prefix from doc id if it leaked through
-                    if (strpos($id, $this->school_id . '_') === 0) {
-                        $id = substr($id, strlen($this->school_id) + 1);
-                    }
-                    $out[$id] = $data;
+            if (!is_array($rows)) return [];
+            $out = [];
+            foreach ($rows as $row) {
+                $data = $row['data'] ?? [];
+                $id   = $data['id'] ?? ($row['id'] ?? '');
+                if ($id === '') continue;
+                // Strip schoolId prefix from doc id if it leaked through
+                if (strpos($id, $this->school_id . '_') === 0) {
+                    $id = substr($id, strlen($this->school_id) + 1);
                 }
-                return $out;
+                $out[$id] = $data;
             }
+            return $out;
         } catch (\Exception $e) {
             log_message('error', "Communication::_dwListAdmin FS [{$fsCollection}]: " . $e->getMessage());
-        }
-
-        // RTDB fallback
-        try {
-            $rtdb = $this->firebase->get($this->_comm($rtdbSub));
-            return is_array($rtdb) ? $rtdb : [];
-        } catch (\Exception $e) {
             return [];
         }
     }
 
     /**
-     * Firestore-first single fetch by id. Falls back to RTDB.
+     * Firestore-only single fetch by id.
      */
     private function _dwGet(string $fsCollection, string $rtdbSub, string $id): ?array
     {
         try {
             $doc = $this->fs->get($fsCollection, "{$this->school_id}_{$id}");
-            if (is_array($doc) && !empty($doc)) return $doc;
+            return (is_array($doc) && !empty($doc)) ? $doc : null;
         } catch (\Exception $e) {
             log_message('error', "Communication::_dwGet FS [{$fsCollection}/{$id}]: " . $e->getMessage());
-        }
-
-        try {
-            $rtdb = $this->firebase->get($this->_comm("{$rtdbSub}/{$id}"));
-            return is_array($rtdb) ? $rtdb : null;
-        } catch (\Exception $e) {
             return null;
         }
     }
@@ -2297,18 +2217,38 @@ class Communication extends MY_Controller
             ['value' => 'All Teachers', 'label' => 'All Teachers'],
         ];
 
-        // Add class/section options
-        $sessionKeys = $this->firebase->shallow_get("Schools/{$this->school_name}/{$this->session_year}");
-        foreach ((array) $sessionKeys as $classKey) {
-            if (strpos($classKey, 'Class ') !== 0) continue;
-            $sectionKeys = $this->firebase->shallow_get("Schools/{$this->school_name}/{$this->session_year}/{$classKey}");
-            foreach ((array) $sectionKeys as $sectionKey) {
-                if (strpos($sectionKey, 'Section ') !== 0) continue;
-                $groups[] = [
-                    'value' => "{$classKey}|{$sectionKey}",
-                    'label' => "{$classKey} / {$sectionKey}",
-                ];
+        // Class/section options from the canonical Firestore `sections`
+        // collection (per the class-section-canonical memory).
+        try {
+            $docs = $this->fs->schoolWhere('sections', [
+                ['session', '==', $this->session_year],
+            ]);
+            if (is_array($docs)) {
+                $seen = [];
+                foreach ($docs as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $classKey   = $d['className'] ?? '';
+                    $sectionKey = $d['section'] ?? '';
+                    if ($classKey === '' || $sectionKey === '') continue;
+                    $key = "{$classKey}|{$sectionKey}";
+                    if (isset($seen[$key])) continue;
+                    $seen[$key] = true;
+                    $groups[] = [
+                        'value' => $key,
+                        'label' => "{$classKey} / {$sectionKey}",
+                    ];
+                }
+                // Sort class/section pairs for predictable dropdown order
+                usort($groups, function ($a, $b) {
+                    // Keep the fixed "All *" entries at the top
+                    $aTop = strpos($a['value'], 'All ') === 0 ? 0 : 1;
+                    $bTop = strpos($b['value'], 'All ') === 0 ? 0 : 1;
+                    if ($aTop !== $bTop) return $aTop <=> $bTop;
+                    return strnatcmp($a['label'], $b['label']);
+                });
             }
+        } catch (\Exception $e) {
+            log_message('error', 'get_target_groups sections FS read failed: ' . $e->getMessage());
         }
 
         $this->json_success(['groups' => $groups]);

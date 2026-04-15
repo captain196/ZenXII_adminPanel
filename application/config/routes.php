@@ -937,8 +937,8 @@ $route['communication/delete_circular']              = 'Communication/delete_cir
 $route['communication/acknowledge_circular']         = 'Communication/acknowledge_circular';
 $route['communication/get_circular_acks']            = 'Communication/get_circular_acks';
 
-// Firestore-first migration backfill (admin-only)
-$route['communication/firestore_backfill_circulars'] = 'Communication/firestore_backfill_circulars';
+// (communication/firestore_backfill_circulars removed — one-shot backfill
+//  already completed; RTDB source paths no longer written.)
 
 // Templates
 $route['communication/get_templates']                = 'Communication/get_templates';
