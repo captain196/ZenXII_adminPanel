@@ -5810,22 +5810,31 @@ HTML;
         $list = [];
         $fromFirestore = false;
 
-        // ── Firestore-first read ────────────────────────────────────
+        // ── Firestore-first read (use schoolWhere so we keep doc IDs) ──
         try {
             $conditions = [];
             if ($filterStaffId !== '') {
-                $conditions[] = ['staff_id', '=', $filterStaffId];
+                $conditions[] = ['staff_id', '==', $filterStaffId];
             }
             if ($filterStatus !== '') {
-                $conditions[] = ['status', '=', $filterStatus];
+                $conditions[] = ['status', '==', $filterStatus];
             }
             if ($filterPeriod !== '') {
-                $conditions[] = ['period', '=', $filterPeriod];
+                $conditions[] = ['period', '==', $filterPeriod];
             }
-            $fsDocs = $this->fs->schoolList('appraisals', $conditions);
+            $fsDocs = $this->fs->schoolWhere('appraisals', $conditions);
             if (is_array($fsDocs) && !empty($fsDocs)) {
                 $fromFirestore = true;
-                $list = $fsDocs;
+                foreach ($fsDocs as $doc) {
+                    $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
+                    // Strip schoolId prefix from doc id (format: {schoolId}_APR0001)
+                    $rawId = (string) ($doc['id'] ?? '');
+                    $prefix = $this->school_id . '_';
+                    $r['id'] = (strpos($rawId, $prefix) === 0)
+                        ? substr($rawId, strlen($prefix))
+                        : $rawId;
+                    $list[] = $r;
+                }
             }
         } catch (\Exception $e) {
             log_message('error', 'HR get_appraisals: Firestore read failed: ' . $e->getMessage());
@@ -5914,13 +5923,17 @@ HTML;
             }
         }
 
+        $reviewerId = $this->input->post('reviewer_id')
+            ? $this->safe_path_segment(trim($this->input->post('reviewer_id')), 'reviewer_id')
+            : $this->admin_id;
+
         $data = [
             'staff_id'              => $staffId,
             'staff_name'            => $staffName,
             'department'            => $department,
             'appraisal_type'        => $appraisalType,
             'period'                => $period,
-            'reviewer_id'           => $this->input->post('reviewer_id') ? $this->safe_path_segment(trim($this->input->post('reviewer_id')), 'reviewer_id') : $this->admin_id,
+            'reviewer_id'           => $reviewerId,
             'reviewer_name'         => $this->admin_name,
             'teaching_quality'      => $teachingQuality,
             'punctuality'           => $punctuality,
@@ -5936,6 +5949,16 @@ HTML;
             'status'                => 'Draft',
             'updated_at'            => $now,
             'updated_by'            => $this->admin_id,
+            // Canonical camelCase mirror for cross-system consumers (Teacher app AppraisalDoc).
+            'staffId'               => $staffId,
+            'staffName'             => $staffName,
+            'appraisalType'         => $appraisalType,
+            'reviewerId'            => $reviewerId,
+            'reviewerName'          => $this->admin_name,
+            'teachingQuality'       => $teachingQuality,
+            'studentFeedback'       => $studentFeedback,
+            'overallRating'         => $overallRating,
+            'areasOfImprovement'    => $areasImprovement,
         ];
         if ($isNew) {
             $data['created_at'] = $now;

@@ -3095,6 +3095,8 @@ document.addEventListener('DOMContentLoaded', function(){
       var h='', i=0;
       $.each(appraisals, function(k,a){
         i++;
+        // a.id is the canonical APR id from the controller; fall back to map key for legacy responses
+        var rid = a.id || k;
         var statusCls = (a.status||'Draft').toLowerCase();
         h+='<tr><td class="hr-num">'+i+'</td>';
         h+='<td>'+esc(a.staff_name||staffName(a.staff_id))+'</td>';
@@ -3107,11 +3109,11 @@ document.addEventListener('DOMContentLoaded', function(){
         h+='<td>'+esc(a.created_at ? a.created_at.substring(0,10) : '-')+'</td>';
         h+='<td>';
         if((a.status||'Draft')==='Draft'){
-          h+='<button class="hr-act-btn" onclick="HR.editAppraisal(\''+esc(k)+'\')"><i class="fa fa-pencil"></i></button> ';
-          h+='<button class="hr-act-btn" onclick="HR.submitAppraisal(\''+esc(k)+'\')" title="Submit for review"><i class="fa fa-paper-plane"></i></button> ';
-          h+='<button class="hr-act-btn danger" onclick="HR.deleteAppraisal(\''+esc(k)+'\')"><i class="fa fa-trash"></i></button>';
+          h+='<button class="hr-act-btn" onclick="HR.editAppraisal(\''+esc(rid)+'\')"><i class="fa fa-pencil"></i></button> ';
+          h+='<button class="hr-act-btn" onclick="HR.submitAppraisal(\''+esc(rid)+'\')" title="Submit for review"><i class="fa fa-paper-plane"></i></button> ';
+          h+='<button class="hr-act-btn danger" onclick="HR.deleteAppraisal(\''+esc(rid)+'\')"><i class="fa fa-trash"></i></button>';
         } else if((a.status||'')==='Submitted'){
-          h+='<button class="hr-act-btn" onclick="HR.reviewAppraisal(\''+esc(k)+'\')" title="Mark as Reviewed"><i class="fa fa-check-circle"></i></button>';
+          h+='<button class="hr-act-btn" onclick="HR.reviewAppraisal(\''+esc(rid)+'\')" title="Mark as Reviewed"><i class="fa fa-check-circle"></i></button>';
         } else {
           h+='<span style="font-size:11px;color:var(--t3)">Finalized</span>';
         }
@@ -3182,6 +3184,11 @@ document.addEventListener('DOMContentLoaded', function(){
     if(!staff){ toast('Please select a staff member','error'); return; }
     if(!$('#apDepartment').val()){ toast('Selected staff has no department. Update staff profile first.','error'); return; }
     if(!period){ toast('Period is required','error'); return; }
+    if(window._saveAppraisalInFlight) return;
+    window._saveAppraisalInFlight = true;
+    var $btn = $('button.hr-btn-primary[onclick*="saveAppraisal"]');
+    var orig = $btn.html();
+    $btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Saving…');
     post('hr/save_appraisal', {
       id:$('#appraisalId').val(), staff_id:staff, period:period,
       appraisal_type:$('#apType').val(),
@@ -3192,34 +3199,46 @@ document.addEventListener('DOMContentLoaded', function(){
       strengths:$('#apStrengths').val().trim(), areas_of_improvement:$('#apImprovement').val().trim(),
       goals:$('#apGoals').val().trim(), recommendation:$('#apRecommendation').val()
     }).then(function(r){
-      if(r&&r.status){ toast(r.message||'Saved','success'); closeModal('modalAppraisal'); loadAppraisals(); }
-      else toast(r.message||'Failed','error');
+      if(r&&r.status==='success'){ toast(r.message||'Saved','success'); closeModal('modalAppraisal'); loadAppraisals(); }
+      else toast((r&&r.message)||'Failed to save','error');
+    }).fail(function(){
+      toast('Server error — refreshing list','error');
+      loadAppraisals();
+    }).always(function(){
+      window._saveAppraisalInFlight = false;
+      $btn.prop('disabled', false).html(orig);
     });
   }
 
   function submitAppraisal(id){
     if(!confirm('Submit this appraisal for review? It cannot be edited afterwards.')) return;
     post('hr/submit_appraisal', {id:id}).then(function(r){
-      if(r&&r.status){ toast(r.message||'Submitted','success'); loadAppraisals(); }
-      else toast(r.message||'Failed','error');
-    });
+      if(r&&r.status==='success'){ toast(r.message||'Submitted','success'); }
+      else toast((r&&r.message)||'Failed to submit','error');
+    }).fail(function(){
+      toast('Server error — refreshing list','error');
+    }).always(function(){ loadAppraisals(); });
   }
 
   function reviewAppraisal(id){
     var comments = prompt('Optional reviewer comments:','');
     if(comments === null) return; // cancelled
     post('hr/review_appraisal', {id:id, comments:comments}).then(function(r){
-      if(r&&r.status){ toast(r.message||'Reviewed','success'); loadAppraisals(); }
-      else toast(r.message||'Failed','error');
-    });
+      if(r&&r.status==='success'){ toast(r.message||'Reviewed','success'); }
+      else toast((r&&r.message)||'Failed to mark reviewed','error');
+    }).fail(function(){
+      toast('Server error — refreshing list','error');
+    }).always(function(){ loadAppraisals(); });
   }
 
   function deleteAppraisal(id){
     if(!confirm('Delete this appraisal?')) return;
     post('hr/delete_appraisal', {id:id}).then(function(r){
-      if(r&&r.status){ toast('Deleted','success'); loadAppraisals(); }
-      else toast(r.message||'Failed','error');
-    });
+      if(r&&r.status==='success'){ toast('Deleted','success'); }
+      else toast((r&&r.message)||'Failed to delete','error');
+    }).fail(function(){
+      toast('Server error — refreshing list','error');
+    }).always(function(){ loadAppraisals(); });
   }
 
   /* ── Circular Viewer ──────────────────────────────────────── */
