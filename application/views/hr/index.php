@@ -568,7 +568,7 @@
       </div>
       <div class="hr-fg">
         <label>Phone</label>
-        <input type="text" id="applicantPhone" placeholder="Phone number" maxlength="15">
+        <div class="phone-ig"><span class="phone-pfx">+91</span><input type="tel" id="applicantPhone" placeholder="Phone number" maxlength="15"></div>
       </div>
       <div class="hr-fg">
         <label>Status</label>
@@ -1039,9 +1039,10 @@
 .hr-sub-panel.active{display:block}
 
 /* Modal */
-.hr-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center;padding:20px;animation:hrFadeIn .2s}
-.hr-modal-overlay.open{display:flex}
-.hr-modal{background:var(--bg2);border-radius:12px;padding:24px;max-width:500px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3);animation:hrSlideUp .25s var(--ease)}
+.hr-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center;padding:20px}
+.hr-modal-overlay.open{display:flex;animation:hrFadeIn .2s}
+.hr-modal{background:var(--bg2);border-radius:12px;padding:24px;max-width:580px;width:95%;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.hr-modal-overlay.open .hr-modal{animation:hrSlideUp .25s var(--ease)}
 .hr-modal-title{font-size:16px;font-weight:700;color:var(--t1);margin-bottom:18px;display:flex;align-items:center;gap:8px;font-family:var(--font-b)}
 .hr-modal-title i{color:var(--gold)}
 .hr-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;padding-top:14px;border-top:1px solid var(--border)}
@@ -1257,7 +1258,11 @@ document.addEventListener('DOMContentLoaded', function(){
     $('#'+id).removeClass('open');
   }
   function openModal(id){
-    $('#'+id).addClass('open');
+    var $m = $('#'+id);
+    if($m.hasClass('open')) return;
+    // Close any other open modals first
+    $('.hr-modal-overlay.open').removeClass('open');
+    $m.addClass('open');
   }
 
   function starsHtml(rating, max){
@@ -1952,6 +1957,22 @@ document.addEventListener('DOMContentLoaded', function(){
       var lt = leaveTypeCache[typeId];
       isPaid = (lt.paid===true||lt.paid==='true'||lt.paid==='1'||lt.paid===1);
     }
+    // Fallback: if no type_id, try matching by leaveType name (Teacher-app format)
+    if(isPaid===undefined && !typeId){
+      var ltName = (l.leave_type||l.leaveType||l.type_code||'').toLowerCase();
+      for(var tid in leaveTypeCache){
+        var ltc = leaveTypeCache[tid];
+        if((ltc.code||'').toLowerCase()===ltName || (ltc.name||'').toLowerCase()===ltName){
+          isPaid = (ltc.paid===true||ltc.paid==='true'||ltc.paid==='1'||ltc.paid===1);
+          break;
+        }
+      }
+      // Default: common types are paid
+      if(isPaid===undefined){
+        var paidTypes = ['casual','cl','sick','sl','earned','el','ml','maternity','paternity'];
+        isPaid = paidTypes.indexOf(ltName)!==-1;
+      }
+    }
 
     var status = (l.status||'').toLowerCase();
     if(status==='rejected') return 'Rejected';
@@ -2000,16 +2021,16 @@ document.addEventListener('DOMContentLoaded', function(){
         var pd = parseInt(l.paid_days||0), lw = parseInt(l.lwp_days||0);
         if(pd>0 && lw>0) daysCol += ' <small style="color:var(--t3)">('+pd+'P+'+lw+'L)</small>';
 
-        h+='<tr><td class="hr-num">'+i+'</td><td>'+esc(staffName(l.staff_id))+'</td>';
-        h+='<td>'+esc(l.type_name||l.leave_type)+code+'</td>';
+        h+='<tr><td class="hr-num">'+i+'</td><td>'+esc(l.staff_name||staffName(l.staff_id))+'</td>';
+        h+='<td>'+esc(l.type_name||l.leave_type||l.type_code)+code+'</td>';
         h+='<td>'+esc(l.from_date||l.start_date)+'</td><td>'+esc(l.to_date||l.end_date)+'</td>';
         h+='<td class="hr-num">'+daysCol+'</td>';
         h+='<td>'+payLabelBadge(label)+'</td>';
         h+='<td>'+badgeHtml(l.status)+'</td>';
         h+='<td>';
         if((l.status||'').toLowerCase()==='pending'){
-          h+='<button class="hr-act-btn" onclick="HR.approveLeave(\''+esc(k)+'\')" title="Approve"><i class="fa fa-check"></i></button> ';
-          h+='<button class="hr-act-btn danger" onclick="HR.rejectLeave(\''+esc(k)+'\')" title="Reject"><i class="fa fa-times"></i></button>';
+          h+='<button class="hr-act-btn" onclick="event.stopPropagation();this.disabled=true;HR.approveLeave(\''+esc(k)+'\')" title="Approve"><i class="fa fa-check" style="pointer-events:none"></i></button> ';
+          h+='<button class="hr-act-btn danger" onclick="event.stopPropagation();this.disabled=true;HR.rejectLeave(\''+esc(k)+'\')" title="Reject"><i class="fa fa-times" style="pointer-events:none"></i></button>';
         }
         // Info tooltip for calculation reason
         if(l.calculation_reason){
@@ -2021,7 +2042,11 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   }
 
+  var _leaveReqModalOpening = false;
   function openLeaveRequestModal(){
+    if(_leaveReqModalOpening) return;
+    _leaveReqModalOpening = true;
+    setTimeout(function(){ _leaveReqModalOpening = false; }, 500);
     $('#leaveReqId').val('');
     $('#lrReason').val('');
     $('#lrStart,#lrEnd').val('');
@@ -2034,19 +2059,25 @@ document.addEventListener('DOMContentLoaded', function(){
   function saveLeaveRequest(){
     var staff=$('#lrStaff').val(), type=$('#lrType').val(), start=$('#lrStart').val(), end=$('#lrEnd').val();
     if(!staff||!type||!start||!end){ toast('Staff, type, start and end dates are required','error'); return; }
+    var $btn=$('#modalLeaveRequest .hr-btn-primary');
+    var origHtml=$btn.html();
+    $btn.prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Submitting...');
     post('hr/apply_leave', {
       staff_id:staff, type_id:type,
-      from_date:start, to_date:end, reason:$('#lrReason').val().trim()
+      from_date:start, to_date:end, reason:$('#lrReason').val().trim(),
+      half_day:$('#lrHalfDay').prop('checked')?'1':'0'
     }).then(function(r){
+      $btn.prop('disabled',false).html(origHtml);
       if(r&&r.status){
         var msg = r.message||'Submitted';
         if(r.lwp_warning){ toast(msg,'warning'); } else { toast(msg,'success'); }
         closeModal('modalLeaveRequest'); loadLeaveRequests();
       } else toast(r.message||'Failed','error');
-    });
+    }).catch(function(){ $btn.prop('disabled',false).html(origHtml); toast('Request failed','error'); });
   }
 
   function approveLeave(id){
+    if($('#modalLeaveAction').hasClass('open')) return;
     $('#leaveActionId').val(id);
     $('#leaveActionType').val('approved');
     $('#leaveActionTitle').text('Approve Leave');
@@ -2055,6 +2086,7 @@ document.addEventListener('DOMContentLoaded', function(){
     openModal('modalLeaveAction');
   }
   function rejectLeave(id){
+    if($('#modalLeaveAction').hasClass('open')) return;
     $('#leaveActionId').val(id);
     $('#leaveActionType').val('rejected');
     $('#leaveActionTitle').text('Reject Leave');
@@ -2064,15 +2096,18 @@ document.addEventListener('DOMContentLoaded', function(){
   }
   function confirmLeaveAction(){
     var id=$('#leaveActionId').val(), action=$('#leaveActionType').val();
-    // Controller expects 'decision' param with capitalized value
     var decision = action === 'approved' ? 'Approved' : 'Rejected';
+    var $btn=$('#btnLeaveAction');
+    var origHtml=$btn.html();
+    $btn.prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Processing...');
     post('hr/decide_leave', {id:id, decision:decision, remarks:$('#leaveActionRemarks').val().trim()}).then(function(r){
+      $btn.prop('disabled',false).html(origHtml);
       if(r&&r.status){
         var msg = r.message||'Updated';
         if(r.lwp_days && parseInt(r.lwp_days)>0){ toast(msg,'warning'); } else { toast(msg,'success'); }
         closeModal('modalLeaveAction'); loadLeaveRequests();
-      } else toast(r.message||'Failed','error');
-    });
+      } else { toast(r.message||'Failed','error'); }
+    }).catch(function(){ $btn.prop('disabled',false).html(origHtml); toast('Request failed','error'); });
   }
 
   function loadLeaveBalances(){
@@ -2093,6 +2128,19 @@ document.addEventListener('DOMContentLoaded', function(){
           typeKeys.forEach(function(tk){ types[tk]=tk; });
         }
       }
+
+      // Sort leave types by priority: CL, SL, EL first, then alphabetical
+      var priorityOrder=['Casual','Sick','Earned','Academic','Compensatory','Paternity','Maternity','Leave Without','On Duty'];
+      typeKeys.sort(function(a,b){
+        var na=(types[a]||a).toLowerCase(), nb=(types[b]||b).toLowerCase();
+        var ia=-1, ib=-1;
+        for(var p=0;p<priorityOrder.length;p++){
+          if(ia<0 && na.indexOf(priorityOrder[p].toLowerCase())>=0) ia=p;
+          if(ib<0 && nb.indexOf(priorityOrder[p].toLowerCase())>=0) ib=p;
+        }
+        if(ia<0) ia=99; if(ib<0) ib=99;
+        return ia-ib;
+      });
 
       var thH='<th>Staff Name</th>';
       $.each(typeKeys, function(i,tk){
@@ -2703,10 +2751,18 @@ document.addEventListener('DOMContentLoaded', function(){
   }
 
   function finalizeRun(id){
+    if(window._finalizeInFlight) return;
     if(!confirm('Finalize this payroll run? Draft payslips will be locked.')) return;
+    window._finalizeInFlight = true;
+    toast('Finalizing payroll… please wait','info');
     post('hr/finalize_payroll', {run_id:id}).then(function(r){
-      if(r&&r.status){ toast('Finalized','success'); loadPayrollRuns(); }
-      else toast(r.message||'Failed','error');
+      if(r&&r.status==='success'){ toast(r.message||'Finalized','success'); }
+      else toast((r&&r.message)||'Failed to finalize','error');
+    }).fail(function(){
+      toast('Request failed — refreshing to show current status','error');
+    }).always(function(){
+      window._finalizeInFlight = false;
+      loadPayrollRuns();
     });
   }
 
@@ -2762,15 +2818,18 @@ document.addEventListener('DOMContentLoaded', function(){
     }).then(function(r){
       if(r&&r.status==='success'){
         toast(r.message||'Marked as paid','success');
-        closeModal('modalPayment');
-        loadPayrollRuns();
       } else {
-        toast(r&&r.message||'Failed to process payment','error');
-        $btn.prop('disabled',false).html('<i class="fa fa-check-circle"></i> Confirm Payment');
+        toast((r&&r.message)||'Payment may not have completed — check list','error');
       }
     }).fail(function(){
-      toast('Server error. Please try again.','error');
+      // Server may have succeeded despite the client failure (e.g. timeout on
+      // a long-running request). Close modal and reload the list so UI reflects
+      // whatever the actual server state is, rather than leaving a stuck modal.
+      toast('Request failed — refreshing to show current status','error');
+    }).always(function(){
+      closeModal('modalPayment');
       $btn.prop('disabled',false).html('<i class="fa fa-check-circle"></i> Confirm Payment');
+      loadPayrollRuns();
     });
   }
 
@@ -2897,7 +2956,7 @@ document.addEventListener('DOMContentLoaded', function(){
 
           // Payment info
           if(slipStatus==='paid'){
-            h+='<div class="hr-slip-section"'+(hasWorkInfo&&hasLeaves?' style="grid-column:span 2"':'')+'>';
+            h+='<div class="hr-slip-section"'+(hasWorkInfo&&hasLeaves?' style="grid-column:1/-1"':'')+'>';
             h+='<div class="hr-slip-section-hd pay"><i class="fa fa-check-circle"></i> Payment Details</div>';
             h+='<div class="hr-slip-row"><span class="hr-slip-label">Status</span><span class="hr-slip-value">'+payrollBadge('Paid')+'</span></div>';
             if(p.payment_mode) h+='<div class="hr-slip-row"><span class="hr-slip-label">Payment Mode</span><span class="hr-slip-value">'+esc(p.payment_mode)+'</span></div>';

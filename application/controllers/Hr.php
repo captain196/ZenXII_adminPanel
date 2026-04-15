@@ -86,8 +86,285 @@ class Hr extends MY_Controller
         return $this->_hr() . '/Leaves/Audit_log';
     }
 
+    // ====================================================================
+    //  FIRESTORE-ONLY READ HELPERS — Payroll data
+    // ====================================================================
+
+    /** Read a payroll run from Firestore. */
+    private function _fsGetRun(string $runId): ?array
+    {
+        try {
+            $doc = $this->fs->get('salarySlips', $this->fs->docId("RUN_{$runId}"));
+            if (is_array($doc) && !empty($doc)) return $doc;
+        } catch (\Exception $e) {
+            log_message('error', "HR _fsGetRun failed for {$runId}: " . $e->getMessage());
+        }
+        return null;
+    }
+
+    /** Read a payroll slip from Firestore. */
+    private function _fsGetSlip(string $runId, string $staffId): ?array
+    {
+        try {
+            $doc = $this->fs->get('salarySlips', $this->fs->docId("SLIP_{$runId}_{$staffId}"));
+            if (is_array($doc) && !empty($doc)) return $doc;
+        } catch (\Exception $e) {
+            log_message('error', "HR _fsGetSlip failed for {$runId}/{$staffId}: " . $e->getMessage());
+        }
+        return null;
+    }
+
+    /** Read all slips for a payroll run from Firestore. Keyed by staffId. */
+    private function _fsGetAllSlips(string $runId): array
+    {
+        $slips = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('salarySlips', [
+                ['type', '==', 'payslip'],
+                ['runId', '==', $runId],
+            ]);
+            if (is_array($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $s = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $s['staffId'] ?? '';
+                    if ($sid !== '') $slips[$sid] = $s;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _fsGetAllSlips failed for {$runId}: " . $e->getMessage());
+        }
+        return $slips;
+    }
+
+    /** Read all payroll runs from Firestore. Keyed by runId. */
+    private function _fsGetAllRuns(): array
+    {
+        $runs = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('salarySlips', [['type', '==', 'run']]);
+            if (is_array($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $r = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $parts = explode('_RUN_', $doc['id'], 2);
+                    $rid = isset($parts[1]) ? $parts[1] : $doc['id'];
+                    $runs[$rid] = $r;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _fsGetAllRuns failed: " . $e->getMessage());
+        }
+        return $runs;
+    }
+
+    /** Read a staff profile from Firestore. */
+    private function _fsGetStaffProfile(string $staffId): ?array
+    {
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', [['staffId', '==', $staffId]]);
+            if (is_array($fsDocs) && !empty($fsDocs)) {
+                return is_array($fsDocs[0]['data'] ?? null) ? $fsDocs[0]['data'] : $fsDocs[0];
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _fsGetStaffProfile failed for {$staffId}: " . $e->getMessage());
+        }
+        return null;
+    }
+
+    // ====================================================================
+    //  FIRESTORE-ONLY READ HELPERS — Leave data
+    //  Each tries Firestore first; falls back to RTDB on exception.
+    // ====================================================================
+
+    /**
+     * Read a single leave type (or ALL leave types when $typeId is empty).
+     * Firestore source: schools/{schoolId} → leaveTypes map.
+     * RTDB fallback:    Schools/{school}/HR/Leaves/Types[/{typeId}]
+     *
+     * @return array|null  Single type array, full map, or null if not found
+     */
+    private function _fsGetLeaveType(string $typeId = ''): ?array
+    {
+        try {
+            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($fsSchool) && !empty($fsSchool['leaveTypes'])) {
+                if ($typeId !== '') {
+                    return isset($fsSchool['leaveTypes'][$typeId])
+                        ? $fsSchool['leaveTypes'][$typeId]
+                        : null;
+                }
+                return $fsSchool['leaveTypes'];
+            }
+            return null; // empty = no leave types configured yet
+        } catch (\Exception $e) {
+            log_message('error', "HR _fsGetLeaveType: Firestore failed: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Read leave balance(s).
+     *   - ($staffId, $year, $typeId) → single type balance array
+     *   - ($staffId, $year, '')      → all balances for that staff/year
+     *   - ('', $year, '')            → all staff balances for the year (keyed by staffId)
+     *
+     * Firestore source: leaveApplications collection, doc BAL_{staffId}_{year}
+     * RTDB fallback:    Schools/{school}/HR/Leaves/Balances/{year}[/{staffId}[/{typeId}]]
+     *
+     * @return array|null
+     */
+    private function _fsGetLeaveBalance(string $staffId = '', string $year = '', string $typeId = ''): ?array
+    {
+        if ($year === '') $year = date('Y');
+
+        if ($staffId !== '') {
+            // Single staff
+            try {
+                $fsDoc = $this->fs->get('leaveApplications', $this->fs->docId("BAL_{$staffId}_{$year}"));
+                if (is_array($fsDoc) && !empty($fsDoc['balances'])) {
+                    if ($typeId !== '') {
+                        return isset($fsDoc['balances'][$typeId])
+                            ? $fsDoc['balances'][$typeId]
+                            : null;
+                    }
+                    return $fsDoc['balances'];
+                }
+                return null; // not found in Firestore = genuinely doesn't exist
+            } catch (\Exception $e) {
+                log_message('error', "HR _fsGetLeaveBalance: Firestore failed: " . $e->getMessage());
+                return null;
+            }
+        }
+
+        // All staff for a year
+        try {
+            $fsDocs = $this->fs->schoolWhere('leaveApplications', [
+                ['type', '==', 'balance'],
+                ['year', '==', $year],
+            ]);
+            $result = [];
+            foreach ($fsDocs as $doc) {
+                $d   = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                $sid = $d['staffId'] ?? '';
+                if ($sid !== '' && !empty($d['balances'])) {
+                    $result[$sid] = $d['balances'];
+                }
+            }
+            return $result; // empty is valid — means no balances initialized yet
+        } catch (\Exception $e) {
+            log_message('error', "HR _fsGetLeaveBalance(all): Firestore failed: " . $e->getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * Read a single leave request by its ID.
+     * Tries HR-format doc ID (LR_{id}), then direct doc ID, then RTDB.
+     * Normalizes Teacher-app camelCase fields to HR snake_case.
+     *
+     * Firestore source: leaveApplications collection
+     * RTDB fallback:    Schools/{school}/HR/Leaves/Requests/{id}
+     *
+     * @return array|null  Request data with normalized field names, or null
+     */
+    private function _fsGetLeaveRequest(string $id): ?array
+    {
+        $request = null;
+
+        // Try 1: HR-format doc ID (LR_{id})
+        try {
+            $hrDocId = $this->fs->docId("LR_{$id}");
+            $fsDoc = $this->fs->get('leaveApplications', $hrDocId);
+            if (is_array($fsDoc) && !empty($fsDoc)) {
+                $request = $fsDoc;
+                $request['_fsDocId'] = $hrDocId;
+            }
+        } catch (\Exception $e) {}
+
+        // Try 2: direct doc ID (Teacher-app format)
+        if (!is_array($request)) {
+            try {
+                $fsDoc = $this->firebase->firestoreGet('leaveApplications', $id);
+                if (is_array($fsDoc) && !empty($fsDoc)) {
+                    $request = $fsDoc;
+                    $request['_fsDocId'] = $id;
+                }
+            } catch (\Exception $e) {}
+        }
+
+        // If both Firestore attempts returned nothing, doc doesn't exist
+        if (!is_array($request)) return null;
+
+        // Normalize Teacher-app camelCase → HR snake_case
+        if (!isset($request['staff_id']))   $request['staff_id']   = $request['staffId']       ?? $request['applicantId']   ?? '';
+        if (!isset($request['staff_name'])) $request['staff_name'] = $request['staffName']     ?? $request['applicantName'] ?? '';
+        if (!isset($request['type_id']))    $request['type_id']    = $request['typeId']        ?? $request['leaveType']     ?? '';
+        if (!isset($request['from_date']))  $request['from_date']  = $request['fromDate']      ?? $request['startDate']     ?? '';
+        if (!isset($request['to_date']))    $request['to_date']    = $request['toDate']        ?? $request['endDate']       ?? '';
+        if (!isset($request['paid_days']))  $request['paid_days']  = $request['paidDays']      ?? 0;
+        if (!isset($request['lwp_days']))   $request['lwp_days']   = $request['lwpDays']       ?? 0;
+        if (!isset($request['days']))       $request['days']       = $request['numberOfDays']  ?? 1;
+
+        return $request;
+    }
+
+    /**
+     * Read ALL leave requests (optionally filtered by staff).
+     * Firestore-first, RTDB fallback. Normalizes field names.
+     *
+     * @param  string $staffId  Optional staff filter
+     * @return array  Map of requestId => request data (may be empty)
+     */
+    private function _fsGetAllLeaveRequests(string $staffId = ''): array
+    {
+        $result = null;
+
+        try {
+            // Query HR-format docs (type=request)
+            $cond = [['type', '==', 'request']];
+            if ($staffId !== '') $cond[] = ['staffId', '==', $staffId];
+            $fsDocs = $this->fs->schoolWhere('leaveApplications', $cond);
+
+            // Also query Teacher-app format (applicantType=staff)
+            $cond2 = [['applicantType', '==', 'staff']];
+            if ($staffId !== '') $cond2[] = ['applicantId', '==', $staffId];
+            $fsDocs2 = $this->fs->schoolWhere('leaveApplications', $cond2);
+
+            $allDocs = array_merge($fsDocs ?: [], $fsDocs2 ?: []);
+
+            $result = [];
+            $seen = [];
+            foreach ($allDocs as $doc) {
+                $docId = $doc['id'] ?? '';
+                if ($docId === '' || isset($seen[$docId])) continue;
+                $seen[$docId] = true;
+                $rd = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                // Normalize
+                if (!isset($rd['staff_id']))   $rd['staff_id']   = $rd['staffId']      ?? $rd['applicantId']   ?? '';
+                if (!isset($rd['staff_name'])) $rd['staff_name'] = $rd['staffName']    ?? $rd['applicantName'] ?? '';
+                if (!isset($rd['type_id']))    $rd['type_id']    = $rd['typeId']       ?? $rd['leaveType']     ?? '';
+                if (!isset($rd['from_date']))  $rd['from_date']  = $rd['fromDate']     ?? $rd['startDate']     ?? '';
+                if (!isset($rd['to_date']))    $rd['to_date']    = $rd['toDate']       ?? $rd['endDate']       ?? '';
+                if (!isset($rd['type_code']))  $rd['type_code']  = $rd['typeCode']     ?? $rd['leaveType']     ?? '';
+                if (!isset($rd['paid_days']))  $rd['paid_days']  = $rd['paidDays']     ?? 0;
+                if (!isset($rd['lwp_days']))   $rd['lwp_days']   = $rd['lwpDays']      ?? 0;
+                if (!isset($rd['days']))       $rd['days']       = $rd['numberOfDays'] ?? 1;
+                $result[$docId] = $rd;
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _fsGetAllLeaveRequests: Firestore failed: " . $e->getMessage());
+        }
+
+        // If Firestore failed entirely, return empty
+        if ($result === null) {
+            $result = [];
+        }
+
+        return $result;
+    }
+
     /**
      * Write an immutable audit entry for leave/payroll decisions.
+     * Firestore-first → RTDB mirror.
      */
     private function _log_leave_audit(array $data): void
     {
@@ -98,12 +375,151 @@ class Hr extends MY_Controller
             'ip'         => $this->input->ip_address(),
             'timestamp'  => date('c'),
         ], $data);
-        $this->firebase->push($this->_leave_audit(), $entry);
+
+        // 1. Firestore FIRST
+        try {
+            $pushId = 'AUDIT_' . uniqid('', true);
+            $fsEntry = $entry;
+            $fsEntry['schoolId'] = $this->school_id;
+            $fsEntry['type']     = 'audit';
+            $this->fs->set('leaveApplications', $this->fs->docId($pushId), $fsEntry, true);
+            log_message('debug', "HR: Leave audit → Firestore OK");
+        } catch (\Exception $e) {
+            log_message('error', "HR: Leave audit → Firestore FAILED: " . $e->getMessage());
+        }
+
     }
 
     private function _salary($staff = '')
     {
         return $this->_hr() . '/Salary_Structures' . ($staff ? "/{$staff}" : '');
+    }
+
+    // ====================================================================
+    //  FIRESTORE SYNC HELPERS — mirrors HR data for app/query access
+    // ====================================================================
+
+    /**
+     * Sync salary structure to Firestore salarySlips collection.
+     * Best-effort — never blocks RTDB writes.
+     */
+    private function _fsSyncSalary(string $staffId, array $data): void
+    {
+        try {
+            $fsData = array_merge($data, [
+                'schoolId'  => $this->school_id,
+                'staffId'   => $staffId,
+                'type'      => 'salary_structure',
+                'updatedAt' => date('c'),
+            ]);
+            unset($fsData['_prev']); // don't store audit trail in Firestore
+            $this->fs->set('salarySlips', $this->fs->docId("SAL_{$staffId}"), $fsData, true);
+            log_message('debug', "HR: Salary structure → Firestore OK for {$staffId}");
+        } catch (\Exception $e) {
+            log_message('error', "HR: Salary structure → Firestore FAILED for {$staffId}: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Sync a payroll run to Firestore.
+     */
+    private function _fsSyncPayrollRun(string $runId, array $runData): void
+    {
+        try {
+            $fsData = array_merge($runData, [
+                'schoolId'  => $this->school_id,
+                'session'   => $this->session_year,
+                'type'      => 'run',
+                'runId'     => $runId,
+                'updatedAt' => date('c'),
+            ]);
+            $this->fs->set('salarySlips', $this->fs->docId("RUN_{$runId}"), $fsData, true);
+            log_message('debug', "HR: Payroll run → Firestore OK for {$runId}");
+        } catch (\Exception $e) {
+            log_message('error', "HR: Payroll run → Firestore FAILED for {$runId}: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Sync individual payslip to Firestore.
+     */
+    private function _fsSyncPayslip(string $runId, string $staffId, array $slipData): void
+    {
+        try {
+            // Canonical camelCase mirror for cross-system consumers (Teacher app SalarySlipDoc).
+            // Snake_case kept alongside so admin-side code that reads these docs continues to work.
+            $canonical = [
+                'staffName'       => (string) ($slipData['staff_name'] ?? ''),
+                'netPayable'      => (float) ($slipData['net_pay'] ?? 0),
+                'grossEarnings'   => (float) ($slipData['gross'] ?? 0),
+                'totalDeductions' => (float) ($slipData['total_deductions'] ?? 0),
+                'workingDays'     => (int) ($slipData['working_days'] ?? 0),
+                'presentDays'     => (int) ($slipData['days_worked'] ?? 0),
+                'daysAbsent'      => (int) ($slipData['days_absent'] ?? 0),
+                'lwpDays'         => (int) ($slipData['lwp_days'] ?? 0),
+                'paidLeaveDays'   => (int) ($slipData['paid_leave_days'] ?? 0),
+                'monthKey'        => (string) ($slipData['month_key'] ?? ''),
+                'earnings'        => [
+                    'basic'           => (float) ($slipData['basic'] ?? 0),
+                    'hra'             => (float) ($slipData['hra'] ?? 0),
+                    'da'              => (float) ($slipData['da'] ?? 0),
+                    'ta'              => (float) ($slipData['ta'] ?? 0),
+                    'medical'         => (float) ($slipData['medical'] ?? 0),
+                    'otherAllowances' => (float) ($slipData['other_allowances'] ?? 0),
+                ],
+                'deductions'      => [
+                    'pfEmployee'      => (float) ($slipData['pf_employee'] ?? 0),
+                    'esiEmployee'     => (float) ($slipData['esi_employee'] ?? 0),
+                    'professionalTax' => (float) ($slipData['professional_tax'] ?? 0),
+                    'tds'             => (float) ($slipData['tds'] ?? 0),
+                    'otherDeductions' => (float) ($slipData['other_deductions'] ?? 0),
+                ],
+            ];
+
+            $fsData = array_merge($slipData, $canonical, [
+                'schoolId'  => $this->school_id,
+                'staffId'   => $staffId,
+                'runId'     => $runId,
+                'type'      => 'payslip',
+                'updatedAt' => date('c'),
+            ]);
+            $this->fs->set('salarySlips', $this->fs->docId("SLIP_{$runId}_{$staffId}"), $fsData, true);
+        } catch (\Exception $e) {
+            log_message('error', "HR: Payslip → Firestore FAILED for {$staffId}: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Sync leave balance to Firestore.
+     */
+    private function _fsSyncLeaveBalance(string $staffId, string $year, array $balances): void
+    {
+        try {
+            $docId = $this->fs->docId("BAL_{$staffId}_{$year}");
+
+            // Read existing balance doc to merge (not overwrite) the balances map
+            $existing = [];
+            try {
+                $fsDoc = $this->firebase->firestoreGet('leaveApplications', $docId);
+                if (is_array($fsDoc) && is_array($fsDoc['balances'] ?? null)) {
+                    $existing = $fsDoc['balances'];
+                }
+            } catch (\Exception $e) {}
+
+            // Merge new balances into existing
+            $merged = array_merge($existing, $balances);
+
+            $this->firebase->firestoreSet('leaveApplications', $docId, [
+                'schoolId'  => $this->school_id ?? $this->school_name,
+                'staffId'   => $staffId,
+                'year'      => $year,
+                'balances'  => $merged,
+                'type'      => 'balance',
+                'updatedAt' => date('c'),
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', "HR: Leave balance → Firestore FAILED for {$staffId}: " . $e->getMessage());
+        }
     }
 
     /**
@@ -112,14 +528,21 @@ class Hr extends MY_Controller
      */
     private function _log_payroll_warning(string $type, string $staffId, string $message): void
     {
-        $this->firebase->push('System/Logs/Payroll_Warnings', [
-            'type'       => $type,
-            'staff_id'   => $staffId,
-            'school'     => $this->school_name,
-            'message'    => $message,
-            'admin'      => $this->admin_id ?? '',
-            'timestamp'  => date('c'),
-        ]);
+        try {
+            $warnId = 'PWARN_' . uniqid('', true);
+            $this->firebase->firestoreSet('systemLogs', $warnId, [
+                'logType'    => 'payroll_warning',
+                'type'       => $type,
+                'staff_id'   => $staffId,
+                'school'     => $this->school_name,
+                'schoolId'   => $this->school_id,
+                'message'    => $message,
+                'admin'      => $this->admin_id ?? '',
+                'timestamp'  => date('c'),
+            ], true);
+        } catch (\Exception $e) {
+            log_message('error', "HR _log_payroll_warning Firestore failed: " . $e->getMessage());
+        }
     }
 
     /**
@@ -156,9 +579,16 @@ class Hr extends MY_Controller
         $allow  = (float) ($salDet['Allowances'] ?? 0);
         if ($basic <= 0) return null;
 
-        // Load per-school config with fallback
-        $cfg = $this->firebase->get("Schools/{$this->school_name}/Config/SalaryDefaults");
-        if (!is_array($cfg)) $cfg = [];
+        // Load per-school config from Firestore
+        $cfg = [];
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($schoolDoc) && is_array($schoolDoc['salaryDefaults'] ?? null)) {
+                $cfg = $schoolDoc['salaryDefaults'];
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _auto_create_from_profile: Firestore SalaryDefaults read failed: " . $e->getMessage());
+        }
         $get = function ($k, $fb) use ($cfg) { return isset($cfg[$k]) && is_numeric($cfg[$k]) ? (float) $cfg[$k] : $fb; };
 
         $hraPct = $get('hra_pct_of_basic', 40);
@@ -185,7 +615,7 @@ class Hr extends MY_Controller
             'updated_by' => 'system', '_version' => 1,
         ];
 
-        $this->firebase->set($this->_salary($staffId), $struct);
+        $this->_fsSyncSalary($staffId, $struct);
         $this->_log_payroll_warning('auto_created', $staffId,
             "Auto-created salary structure during payroll (basic={$basic}, allowances={$allow})");
 
@@ -230,23 +660,28 @@ class Hr extends MY_Controller
     private function _next_id(string $prefix, string $type, int $pad = 4): string
     {
         $counterPath = $this->_counters($type);
-        $maxAttempts = 3;
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            $current = $this->firebase->get($counterPath);
-            $next = is_numeric($current) ? (int) $current + 1 : 1;
-            $this->firebase->set($counterPath, $next);
 
-            // Verify-after-write: re-read to confirm we own this value
-            $verify = $this->firebase->get($counterPath);
-            if ((int) $verify === $next) {
-                return $prefix . str_pad($next, $pad, '0', STR_PAD_LEFT);
-            }
-            // Another writer overwrote — retry with their higher value
-            usleep(50000 * $attempt); // 50ms, 100ms, 150ms backoff
+        // ── Firestore-first: counters in schools doc hrCounters field ──
+        $fsNext = null;
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->fs->docId('profile'));
+            $counters  = (is_array($schoolDoc) && isset($schoolDoc['hrCounters'])) ? $schoolDoc['hrCounters'] : [];
+            $cur       = isset($counters[$type]) && is_numeric($counters[$type]) ? (int) $counters[$type] : 0;
+            $fsNext    = $cur + 1;
+            $this->fs->update('schools', $this->fs->docId('profile'), [
+                "hrCounters.{$type}" => $fsNext,
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', "HR _next_id FS failed [{$type}]: " . $e->getMessage());
+            $fsNext = null;
         }
-        // Fallback: use timestamp-based unique suffix to guarantee uniqueness
-        $fallback = (int) ($this->firebase->get($counterPath) ?? 0) + 1;
-        $this->firebase->set($counterPath, $fallback);
+
+        if ($fsNext !== null) {
+            return $prefix . str_pad($fsNext, $pad, '0', STR_PAD_LEFT);
+        }
+
+        // Firestore failed — generate a unique fallback ID using timestamp + random
+        $fallback = (int) (microtime(true) * 1000) % 100000;
         return $prefix . str_pad($fallback, $pad, '0', STR_PAD_LEFT) . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
     }
 
@@ -273,7 +708,14 @@ class Hr extends MY_Controller
             'ip'             => $this->input->ip_address(),
         ], $extra);
 
-        $this->firebase->push('System/Logs/Payroll', $logData);
+        try {
+            $logId = 'PLOG_' . uniqid('', true);
+            $logData['schoolId'] = $this->school_id;
+            $logData['logType']  = 'payroll';
+            $this->firebase->firestoreSet('systemLogs', $logId, $logData, true);
+        } catch (\Exception $e) {
+            log_message('error', "HR _log_payroll Firestore failed: " . $e->getMessage());
+        }
     }
 
     // ====================================================================
@@ -316,9 +758,19 @@ class Hr extends MY_Controller
      */
     private function _validate_accounts(array $codes, bool $structured = false): void
     {
-        $coaBase = "Schools/{$this->school_name}/Accounts/ChartOfAccounts";
-        $coa = $this->firebase->get($coaBase);
-        if (!is_array($coa)) $coa = [];
+        $coa = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('accounting', [['type', '==', 'chartOfAccounts']]);
+            if (is_array($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $code = $d['code'] ?? '';
+                    if ($code !== '') $coa[$code] = $d;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _validate_accounts Firestore failed: " . $e->getMessage());
+        }
 
         $missing = [];
         foreach ($codes as $code) {
@@ -377,39 +829,37 @@ class Hr extends MY_Controller
      */
     private function _create_acct_journal(string $narration, array $lines, string $sourceRef = ''): string
     {
-        $bp = "Schools/{$this->school_name}/{$this->session_year}";
-
-        // Generate voucher number via the Accounting counter
-        $counterPath = "{$bp}/Accounts/Voucher_counters/Journal";
-        $maxAttempts = 3;
+        // Generate voucher number via Firestore counter
         $newSeq = 0;
-        $resolved = false;
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            $currentSeq = (int) ($this->firebase->get($counterPath) ?? 0);
-            $newSeq     = $currentSeq + 1;
-            $this->firebase->set($counterPath, $newSeq);
-
-            // Verify-after-write: re-read to confirm we own this value
-            $verify = $this->firebase->get($counterPath);
-            if ((int) $verify === $newSeq) {
-                $resolved = true;
-                break;
-            }
-            usleep(50000 * $attempt);
-        }
-        if (!$resolved) {
-            $newSeq = (int) ($this->firebase->get($counterPath) ?? 0) + 1;
-            $this->firebase->set($counterPath, $newSeq);
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->fs->docId('profile'));
+            $counters = (is_array($schoolDoc) && isset($schoolDoc['acctCounters'])) ? $schoolDoc['acctCounters'] : [];
+            $cur = isset($counters['Journal']) && is_numeric($counters['Journal']) ? (int) $counters['Journal'] : 0;
+            $newSeq = $cur + 1;
+            $this->fs->update('schools', $this->fs->docId('profile'), [
+                'acctCounters.Journal' => $newSeq,
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', "HR _create_acct_journal counter failed: " . $e->getMessage());
+            $newSeq = (int) (microtime(true) * 1000) % 1000000;
         }
         $voucherNo = 'JV-' . str_pad($newSeq, 6, '0', STR_PAD_LEFT);
 
         // Generate entry ID matching Accounting format
         $entryId = 'JE_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
 
-        // Resolve account names from PAYROLL_ACCOUNTS or CoA
-        $coaPath = "Schools/{$this->school_name}/Accounts/ChartOfAccounts";
-        $coa = $this->firebase->get($coaPath);
-        if (!is_array($coa)) $coa = [];
+        // Resolve account names from PAYROLL_ACCOUNTS or Firestore CoA
+        $coa = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('accounting', [['type', '==', 'chartOfAccounts']]);
+            if (is_array($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $code = $d['code'] ?? '';
+                    if ($code !== '') $coa[$code] = $d;
+                }
+            }
+        } catch (\Exception $e) {}
 
         // Calculate totals and affected accounts
         $totalDr = 0;
@@ -450,29 +900,55 @@ class Hr extends MY_Controller
             'status'       => 'active',
             'created_by'   => $this->admin_id ?? '',
             'created_at'   => date('c'),
+            'schoolId'     => $this->school_id,
+            'session'      => $this->session_year,
+            'type'         => 'ledger',
         ];
 
-        // Write ledger entry
-        $this->firebase->set("{$bp}/Accounts/Ledger/{$entryId}", $entry);
-
-        // Write indices (by_date and by_account)
-        $safeDate = date('Y-m-d');
-        $this->firebase->set("{$bp}/Accounts/Ledger_index/by_date/{$safeDate}/{$entryId}", true);
-        foreach (array_keys($affected) as $acCode) {
-            $this->firebase->set("{$bp}/Accounts/Ledger_index/by_account/{$acCode}/{$entryId}", true);
+        // Write ledger entry to Firestore
+        try {
+            $this->firebase->firestoreSet('accounting', $this->fs->docId($entryId), $entry, true);
+        } catch (\Exception $e) {
+            log_message('error', "HR _create_acct_journal ledger write failed: " . $e->getMessage());
         }
 
-        // Update closing balances cache
+        // Write indices to Firestore
+        $safeDate = date('Y-m-d');
+        try {
+            $this->firebase->firestoreSet('accounting', $this->fs->docId("IDX_DATE_{$safeDate}_{$entryId}"), [
+                'type' => 'ledger_index_by_date', 'date' => $safeDate, 'entryId' => $entryId,
+                'schoolId' => $this->school_id, 'session' => $this->session_year,
+            ], true);
+            foreach (array_keys($affected) as $acCode) {
+                $this->firebase->firestoreSet('accounting', $this->fs->docId("IDX_ACCT_{$acCode}_{$entryId}"), [
+                    'type' => 'ledger_index_by_account', 'accountCode' => $acCode, 'entryId' => $entryId,
+                    'schoolId' => $this->school_id, 'session' => $this->session_year,
+                ], true);
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _create_acct_journal index write failed: " . $e->getMessage());
+        }
+
+        // Update closing balances cache in Firestore
         foreach ($affected as $code => $amounts) {
-            $balPath = "{$bp}/Accounts/Closing_balances/{$code}";
-            $current = $this->firebase->get($balPath);
-            $pDr = (float) ($current['period_dr'] ?? 0) + $amounts['dr'];
-            $pCr = (float) ($current['period_cr'] ?? 0) + $amounts['cr'];
-            $this->firebase->set($balPath, [
-                'period_dr'     => round($pDr, 2),
-                'period_cr'     => round($pCr, 2),
-                'last_computed' => date('c'),
-            ]);
+            try {
+                $balDocId = $this->fs->docId("BAL_{$this->session_year}_{$code}");
+                $current = $this->firebase->firestoreGet('accounting', $balDocId);
+                if (!is_array($current)) $current = [];
+                $pDr = (float) ($current['period_dr'] ?? 0) + $amounts['dr'];
+                $pCr = (float) ($current['period_cr'] ?? 0) + $amounts['cr'];
+                $this->firebase->firestoreSet('accounting', $balDocId, [
+                    'type'          => 'closing_balance',
+                    'accountCode'   => $code,
+                    'schoolId'      => $this->school_id,
+                    'session'       => $this->session_year,
+                    'period_dr'     => round($pDr, 2),
+                    'period_cr'     => round($pCr, 2),
+                    'last_computed' => date('c'),
+                ], true);
+            } catch (\Exception $e) {
+                log_message('error', "HR _create_acct_journal balance update failed for {$code}: " . $e->getMessage());
+            }
         }
 
         return $entryId;
@@ -484,8 +960,12 @@ class Hr extends MY_Controller
      */
     private function _delete_acct_journal(string $entryId): void
     {
-        $bp    = "Schools/{$this->school_name}/{$this->session_year}";
-        $entry = $this->firebase->get("{$bp}/Accounts/Ledger/{$entryId}");
+        $entry = null;
+        try {
+            $entry = $this->firebase->firestoreGet('accounting', $this->fs->docId($entryId));
+        } catch (\Exception $e) {
+            log_message('error', "HR _delete_acct_journal Firestore read failed: " . $e->getMessage());
+        }
         if (!is_array($entry) || ($entry['status'] ?? '') === 'deleted') {
             return;
         }
@@ -501,34 +981,51 @@ class Hr extends MY_Controller
             ];
         }
 
-        // Reverse closing balances
+        // Reverse closing balances in Firestore
         foreach ($affected as $code => $amounts) {
-            $balPath = "{$bp}/Accounts/Closing_balances/{$code}";
-            $current = $this->firebase->get($balPath);
-            $pDr = (float) ($current['period_dr'] ?? 0) - $amounts['dr'];
-            $pCr = (float) ($current['period_cr'] ?? 0) - $amounts['cr'];
-            $this->firebase->set($balPath, [
-                'period_dr'     => round($pDr, 2),
-                'period_cr'     => round($pCr, 2),
-                'last_computed' => date('c'),
-            ]);
+            try {
+                $balDocId = $this->fs->docId("BAL_{$this->session_year}_{$code}");
+                $current = $this->firebase->firestoreGet('accounting', $balDocId);
+                if (!is_array($current)) $current = [];
+                $pDr = (float) ($current['period_dr'] ?? 0) - $amounts['dr'];
+                $pCr = (float) ($current['period_cr'] ?? 0) - $amounts['cr'];
+                $this->firebase->firestoreSet('accounting', $balDocId, [
+                    'type'          => 'closing_balance',
+                    'accountCode'   => $code,
+                    'schoolId'      => $this->school_id,
+                    'session'       => $this->session_year,
+                    'period_dr'     => round($pDr, 2),
+                    'period_cr'     => round($pCr, 2),
+                    'last_computed' => date('c'),
+                ], true);
+            } catch (\Exception $e) {
+                log_message('error', "HR _delete_acct_journal balance reverse failed for {$code}: " . $e->getMessage());
+            }
         }
 
-        // Remove indices
+        // Remove indices from Firestore
         $date = $entry['date'] ?? '';
-        if ($date !== '') {
-            $this->firebase->delete("{$bp}/Accounts/Ledger_index/by_date/{$date}", $entryId);
-        }
-        foreach (array_keys($affected) as $acCode) {
-            $this->firebase->delete("{$bp}/Accounts/Ledger_index/by_account/{$acCode}", $entryId);
+        try {
+            if ($date !== '') {
+                $this->firebase->firestoreDelete('accounting', $this->fs->docId("IDX_DATE_{$date}_{$entryId}"));
+            }
+            foreach (array_keys($affected) as $acCode) {
+                $this->firebase->firestoreDelete('accounting', $this->fs->docId("IDX_ACCT_{$acCode}_{$entryId}"));
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _delete_acct_journal index delete failed: " . $e->getMessage());
         }
 
-        // Soft-delete the entry
-        $this->firebase->update("{$bp}/Accounts/Ledger/{$entryId}", [
-            'status'     => 'deleted',
-            'deleted_by' => $this->admin_id ?? '',
-            'deleted_at' => date('c'),
-        ]);
+        // Soft-delete the entry in Firestore
+        try {
+            $this->firebase->firestoreSet('accounting', $this->fs->docId($entryId), [
+                'status'     => 'deleted',
+                'deleted_by' => $this->admin_id ?? '',
+                'deleted_at' => date('c'),
+            ], true);
+        } catch (\Exception $e) {
+            log_message('error', "HR _delete_acct_journal soft-delete failed: " . $e->getMessage());
+        }
     }
 
     /**
@@ -542,8 +1039,12 @@ class Hr extends MY_Controller
      */
     private function _create_reversal_journal(string $originalId, string $reason = ''): string
     {
-        $bp = "Schools/{$this->school_name}/{$this->session_year}";
-        $original = $this->firebase->get("{$bp}/Accounts/Ledger/{$originalId}");
+        $original = null;
+        try {
+            $original = $this->firebase->firestoreGet('accounting', $this->fs->docId($originalId));
+        } catch (\Exception $e) {
+            log_message('error', "HR _create_reversal_journal Firestore read failed: " . $e->getMessage());
+        }
 
         if (!is_array($original) || ($original['status'] ?? '') === 'deleted') {
             log_message('error', "Cannot reverse entry {$originalId} — not found or already deleted");
@@ -567,13 +1068,17 @@ class Hr extends MY_Controller
         $reversalId = $this->_create_acct_journal($narration, $reversedLines, $originalId);
 
         // Mark original as reversed (not deleted — it stays in the ledger)
-        $this->firebase->update("{$bp}/Accounts/Ledger/{$originalId}", [
-            'is_reversed'     => true,
-            'reversal_id'     => $reversalId,
-            'reversed_by'     => $this->admin_id ?? '',
-            'reversed_at'     => date('c'),
-            'reversal_reason' => $reason,
-        ]);
+        try {
+            $this->firebase->firestoreSet('accounting', $this->fs->docId($originalId), [
+                'is_reversed'     => true,
+                'reversal_id'     => $reversalId,
+                'reversed_by'     => $this->admin_id ?? '',
+                'reversed_at'     => date('c'),
+                'reversal_reason' => $reason,
+            ], true);
+        } catch (\Exception $e) {
+            log_message('error', "HR _create_reversal_journal mark-reversed failed: " . $e->getMessage());
+        }
 
         log_message('info',
             "Reversal journal created: original={$originalId} reversal={$reversalId} school=[{$this->school_name}]"
@@ -599,37 +1104,61 @@ class Hr extends MY_Controller
             $this->json_error('Invalid month or year.');
         }
 
-        $lockPath = "Schools/{$this->school_name}/{$this->session_year}/HR/Payroll/Locks/{$year}_{$month}";
-        $existing = $this->firebase->get($lockPath);
+        // ── Firestore-first: check existing lock ──
+        $lockKey = "{$year}_{$month}";
+        $existing = null;
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->fs->docId('profile'));
+            if (is_array($schoolDoc) && isset($schoolDoc['payrollLocks'][$lockKey])) {
+                $existing = $schoolDoc['payrollLocks'][$lockKey];
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR lock_payroll_month FS read failed: " . $e->getMessage());
+        }
+
         if (is_array($existing) && !empty($existing['locked'])) {
             $this->json_error("{$month} {$year} is already locked by " . ($existing['locked_by'] ?? 'unknown') . '.');
         }
 
-        // Verify a Finalized or Paid run exists for this month
-        $runs = $this->firebase->get($this->_payroll_runs());
+        // ── Firestore-first: verify finalized run exists ──
         $runFound = false;
-        if (is_array($runs)) {
-            foreach ($runs as $rid => $r) {
-                if (($r['month'] ?? '') === $month && ($r['year'] ?? '') === $year) {
-                    $st = $r['status'] ?? '';
-                    if ($st === 'Finalized' || $st === 'Paid' || $st === 'Partially Paid') {
-                        $runFound = true;
-                    }
+        try {
+            $fsRuns = $this->fs->schoolWhere('salarySlips', [
+                ['type', '==', 'run'],
+                ['month', '==', $month],
+                ['year', '==', $year],
+            ]);
+            foreach ($fsRuns as $doc) {
+                $st = $doc['data']['status'] ?? '';
+                if (in_array($st, ['Finalized', 'Paid', 'Partially Paid'], true)) {
+                    $runFound = true;
                     break;
                 }
             }
+        } catch (\Exception $e) {
+            log_message('error', "HR lock_payroll_month FS run check failed: " . $e->getMessage());
         }
+
         if (!$runFound) {
             $this->json_error("No finalized payroll run found for {$month} {$year}. Finalize first.");
         }
 
-        $this->firebase->set($lockPath, [
+        $lockData = [
             'locked'    => true,
             'locked_by' => $this->admin_name,
             'locked_at' => date('c'),
             'month'     => $month,
             'year'      => $year,
-        ]);
+        ];
+
+        // 1. Firestore FIRST — store lock in schools doc
+        try {
+            $this->fs->update('schools', $this->fs->docId('profile'), [
+                "payrollLocks.{$lockKey}" => $lockData,
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', "HR lock_payroll_month FS write failed: " . $e->getMessage());
+        }
 
         $this->_log_payroll('month_locked', '', ['month' => $month, 'year' => $year]);
 
@@ -641,8 +1170,19 @@ class Hr extends MY_Controller
      */
     private function _check_payroll_lock(string $month, string $year): void
     {
-        $lockPath = "Schools/{$this->school_name}/{$this->session_year}/HR/Payroll/Locks/{$year}_{$month}";
-        $lock = $this->firebase->get($lockPath);
+        $lockKey = "{$year}_{$month}";
+
+        // ── Firestore-first ──
+        $lock = null;
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->fs->docId('profile'));
+            if (is_array($schoolDoc) && isset($schoolDoc['payrollLocks'][$lockKey])) {
+                $lock = $schoolDoc['payrollLocks'][$lockKey];
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _check_payroll_lock FS failed: " . $e->getMessage());
+        }
+
         if (is_array($lock) && !empty($lock['locked'])) {
             $this->json_error(
                 "{$month} {$year} payroll is locked by " . ($lock['locked_by'] ?? 'admin')
@@ -685,41 +1225,77 @@ class Hr extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'hr_dashboard');
 
-        // Staff count from session roster
-        $roster = $this->firebase->get("Schools/{$this->school_name}/{$this->session_year}/Teachers");
-        $staffCount = is_array($roster) ? count($roster) : 0;
+        // Staff count from Firestore
+        $staffCount = 0;
+        try {
+            $fsStaff = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
+            $staffCount = is_array($fsStaff) ? count($fsStaff) : 0;
+        } catch (\Exception $e) {}
 
-        // Department count
-        $depts = $this->firebase->get($this->_dept());
-        $deptCount = is_array($depts) ? count($depts) : 0;
+        // Department count from Firestore
+        $deptCount = 0;
+        try {
+            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($fsSchool) && is_array($fsSchool['departments'] ?? null)) {
+                $deptCount = count($fsSchool['departments']);
+            }
+        } catch (\Exception $e) {}
 
-        // Open jobs & applicant counts
-        $jobs = $this->firebase->get($this->_jobs());
+        // Open jobs & applicant counts from Firestore
+        $jobs = [];
         $openJobs = 0;
-        if (is_array($jobs)) {
-            foreach ($jobs as $j) {
-                if (isset($j['status']) && $j['status'] === 'Open') {
-                    $openJobs++;
+        try {
+            $fsJobs = $this->fs->schoolList('hrJobs');
+            if (is_array($fsJobs)) {
+                foreach ($fsJobs as $j) {
+                    $jid = $j['id'] ?? '';
+                    $jobs[$jid] = $j;
+                    if (($j['status'] ?? '') === 'Open') {
+                        $openJobs++;
+                    }
                 }
             }
-        }
+        } catch (\Exception $e) {}
 
-        $applicants = $this->firebase->get($this->_applicants());
-        $totalApplicants = is_array($applicants) ? count($applicants) : 0;
+        $applicants = [];
+        $totalApplicants = 0;
+        try {
+            $fsApps = $this->fs->schoolList('hrApplicants');
+            if (is_array($fsApps)) {
+                foreach ($fsApps as $a) {
+                    $aid = $a['id'] ?? '';
+                    $applicants[$aid] = $a;
+                }
+                $totalApplicants = count($fsApps);
+            }
+        } catch (\Exception $e) {}
 
-        // Pending leave requests
-        $leaveReqs = $this->firebase->get($this->_leave_req());
+        // Pending leave requests — Firestore-first via helper
+        $leaveReqs = $this->_fsGetAllLeaveRequests();
         $pendingLeaves = 0;
-        if (is_array($leaveReqs)) {
-            foreach ($leaveReqs as $lr) {
-                if (isset($lr['status']) && $lr['status'] === 'Pending') {
-                    $pendingLeaves++;
-                }
+        foreach ($leaveReqs as $lr) {
+            if (isset($lr['status']) && $lr['status'] === 'Pending') {
+                $pendingLeaves++;
             }
         }
 
-        // Payroll runs this session
-        $runs = $this->firebase->get($this->_payroll_runs());
+        // ── Firestore-first: payroll runs this session ──
+        $runs = null;
+        try {
+            $fsDocs = $this->fs->schoolWhere('salarySlips', [['type', '==', 'run']]);
+            if (!empty($fsDocs)) {
+                $runs = [];
+                foreach ($fsDocs as $doc) {
+                    $parts = explode('_RUN_', $doc['id'], 2);
+                    $rid = isset($parts[1]) ? $parts[1] : $doc['id'];
+                    $runs[$rid] = $doc['data'];
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR get_dashboard FS runs failed: " . $e->getMessage());
+        }
+        if ($runs === null) $runs = [];
+
         $payrollRuns = is_array($runs) ? count($runs) : 0;
         $lastPayroll = null;
         if (is_array($runs)) {
@@ -760,9 +1336,12 @@ class Hr extends MY_Controller
             }
         }
 
-        // Appraisal count
-        $appraisals = $this->firebase->get($this->_appraisals());
-        $appraisalCount = is_array($appraisals) ? count($appraisals) : 0;
+        // Appraisal count from Firestore
+        $appraisalCount = 0;
+        try {
+            $fsAppr = $this->fs->schoolList('appraisals');
+            $appraisalCount = is_array($fsAppr) ? count($fsAppr) : 0;
+        } catch (\Exception $e) {}
 
         // ATS pipeline summary
         $pipelineCounts = ['Applied' => 0, 'Shortlisted' => 0, 'Interviewed' => 0, 'Selected' => 0, 'Hired' => 0];
@@ -833,11 +1412,30 @@ class Hr extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'get_departments');
 
-        $depts = $this->firebase->get($this->_dept());
-        if (!is_array($depts)) $depts = [];
+        // 1. Firestore FIRST
+        $depts = [];
+        try {
+            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($fsSchool) && is_array($fsSchool['departments'] ?? null)) {
+                $raw = $fsSchool['departments'];
+                foreach ($raw as $k => $v) {
+                    $depts[$k] = is_array($v) ? $v : (array) $v;
+                }
+            }
+        } catch (\Exception $e) {}
 
-        // Compute real staff counts from profiles
-        $profiles = $this->firebase->get("Users/Teachers/{$this->school_name}");
+        // Compute real staff counts from Firestore staff profiles
+        $profiles = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', []);
+            if (is_array($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? $d['userId'] ?? ($d['id'] ?? '');
+                    if ($sid !== '') $profiles[$sid] = $d;
+                }
+            }
+        } catch (\Exception $e) {}
         $countByDept = [];
         $staffByDept = [];
         if (is_array($profiles)) {
@@ -859,8 +1457,17 @@ class Hr extends MY_Controller
             }
         }
 
-        // Load active job openings per department
-        $allJobs = $this->firebase->get($this->_jobs());
+        // Load active job openings per department from Firestore
+        $allJobs = [];
+        try {
+            $fsJobs = $this->fs->schoolList('hrJobs');
+            if (is_array($fsJobs)) {
+                foreach ($fsJobs as $j) {
+                    $jid = $j['id'] ?? '';
+                    if ($jid !== '') $allJobs[$jid] = $j;
+                }
+            }
+        } catch (\Exception $e) {}
         $jobsByDept = [];
         if (is_array($allJobs)) {
             foreach ($allJobs as $jid => $j) {
@@ -923,13 +1530,20 @@ class Hr extends MY_Controller
             $id = $this->_next_id('DEPT', 'Department');
         }
 
-        // Check for duplicate name (excluding self when editing)
-        $existing = $this->firebase->get($this->_dept());
-        if (is_array($existing)) {
-            foreach ($existing as $eid => $ed) {
-                if ($eid !== $id && isset($ed['name']) && strtolower($ed['name']) === strtolower($name)) {
-                    $this->json_error('A department with this name already exists.');
+        // Check for duplicate name — Firestore first, RTDB fallback
+        $existing = [];
+        try {
+            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($fsSchool) && is_array($fsSchool['departments'] ?? null)) {
+                foreach ($fsSchool['departments'] as $k => $v) {
+                    $existing[$k] = is_array($v) ? $v : (array) $v;
                 }
+            }
+        } catch (\Exception $e) {}
+        if (!is_array($existing)) $existing = [];
+        foreach ($existing as $eid => $ed) {
+            if ($eid !== $id && isset($ed['name']) && strtolower($ed['name']) === strtolower($name)) {
+                $this->json_error('A department with this name already exists.');
             }
         }
 
@@ -944,7 +1558,24 @@ class Hr extends MY_Controller
             $data['created_at'] = $now;
         }
 
-        $this->firebase->set($this->_dept($id), $data);
+        // 1. Firestore FIRST — store departments in schools doc
+        try {
+            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            $allDepts = [];
+            if (is_array($fsSchool) && isset($fsSchool['departments'])) {
+                $raw = $fsSchool['departments'];
+                if (is_array($raw)) {
+                    foreach ($raw as $k => $v) {
+                        $allDepts[$k] = is_array($v) ? $v : (array) $v;
+                    }
+                }
+            }
+            $allDepts[$id] = $data;
+            $this->fs->update('schools', $this->fs->schoolId(), ['departments' => $allDepts, 'updatedAt' => date('c')]);
+        } catch (\Exception $e) {
+            log_message('error', "HR save_department Firestore failed: " . $e->getMessage());
+        }
+
         $this->json_success(['id' => $id, 'message' => $isNew ? 'Department created.' : 'Department updated.']);
     }
 
@@ -958,34 +1589,63 @@ class Hr extends MY_Controller
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
-        // Check if department exists
-        $dept = $this->firebase->get($this->_dept($id));
+        // Check if department exists (Firestore)
+        $dept = null;
+        $deptName = '';
+        try {
+            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($fsSchool) && is_array($fsSchool['departments'] ?? null) && isset($fsSchool['departments'][$id])) {
+                $dept = $fsSchool['departments'][$id];
+                $deptName = $dept['name'] ?? '';
+            }
+        } catch (\Exception $e) {}
         if (!is_array($dept)) {
             $this->json_error('Department not found.');
         }
-        $deptName = $dept['name'] ?? '';
 
-        // Check if staff are assigned to this department
-        $staffProfiles = $this->firebase->get("Users/Teachers/{$this->school_name}");
-        if (is_array($staffProfiles)) {
-            foreach ($staffProfiles as $sid => $sp) {
-                if (isset($sp['Department']) && $sp['Department'] === $deptName) {
-                    $this->json_error('Cannot delete: staff members are assigned to this department. Reassign them first.');
+        // Check if staff are assigned to this department (Firestore)
+        try {
+            $fsStaff = $this->fs->schoolWhere('staff', []);
+            if (is_array($fsStaff)) {
+                foreach ($fsStaff as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    if (($d['Department'] ?? $d['department'] ?? '') === $deptName) {
+                        $this->json_error('Cannot delete: staff members are assigned to this department. Reassign them first.');
+                    }
                 }
             }
-        }
+        } catch (\Exception $e) {}
 
-        // Check if any open jobs reference this department
-        $jobs = $this->firebase->get($this->_jobs());
-        if (is_array($jobs)) {
-            foreach ($jobs as $jid => $j) {
-                if (isset($j['department']) && $j['department'] === $deptName && isset($j['status']) && $j['status'] === 'Open') {
-                    $this->json_error('Cannot delete: there are open job postings in this department.');
+        // Check if any open jobs reference this department (Firestore)
+        try {
+            $fsJobs = $this->fs->schoolList('hrJobs');
+            if (is_array($fsJobs)) {
+                foreach ($fsJobs as $j) {
+                    if (($j['department'] ?? '') === $deptName && ($j['status'] ?? '') === 'Open') {
+                        $this->json_error('Cannot delete: there are open job postings in this department.');
+                    }
                 }
             }
+        } catch (\Exception $e) {}
+
+        // 1. Firestore FIRST — remove from departments map
+        try {
+            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            $allDepts = [];
+            if (is_array($fsSchool) && isset($fsSchool['departments'])) {
+                $raw = $fsSchool['departments'];
+                if (is_array($raw)) {
+                    foreach ($raw as $k => $v) {
+                        $allDepts[$k] = is_array($v) ? $v : (array) $v;
+                    }
+                }
+            }
+            unset($allDepts[$id]);
+            $this->fs->update('schools', $this->fs->schoolId(), ['departments' => $allDepts, 'updatedAt' => date('c')]);
+        } catch (\Exception $e) {
+            log_message('error', "HR delete_department Firestore failed: " . $e->getMessage());
         }
 
-        $this->firebase->delete($this->_dept($id));
         $this->json_success(['message' => 'Department deleted.']);
     }
 
@@ -1001,34 +1661,46 @@ class Hr extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'get_jobs');
 
         $filterStatus = trim($this->input->get('status') ?? '');
-        $jobs = $this->firebase->get($this->_jobs());
         $list = [];
-        if (is_array($jobs)) {
-            foreach ($jobs as $id => $j) {
-                if ($filterStatus !== '' && isset($j['status']) && $j['status'] !== $filterStatus) {
-                    continue;
-                }
-                $j['id'] = $id;
-                $j['applicant_count'] = 0;
-                $list[] = $j;
+        $fromFirestore = false;
+
+        // ── Firestore-first read ────────────────────────────────────
+        try {
+            $conditions = [];
+            if ($filterStatus !== '') {
+                $conditions[] = ['status', '=', $filterStatus];
             }
+            $fsDocs = $this->fs->schoolList('hrJobs', $conditions);
+            if (is_array($fsDocs) && !empty($fsDocs)) {
+                $fromFirestore = true;
+                foreach ($fsDocs as $doc) {
+                    $doc['applicant_count'] = 0;
+                    $list[] = $doc;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'HR get_jobs: Firestore read failed: ' . $e->getMessage());
         }
 
-        // Count applicants per job
-        $applicants = $this->firebase->get($this->_applicants());
-        if (is_array($applicants)) {
-            $countsByJob = [];
-            foreach ($applicants as $a) {
-                $jid = $a['job_id'] ?? '';
-                if ($jid !== '') {
-                    $countsByJob[$jid] = ($countsByJob[$jid] ?? 0) + 1;
+        // Count applicants per job (Firestore)
+        $countsByJob = [];
+        try {
+            $fsApps = $this->fs->schoolList('hrApplicants');
+            if (is_array($fsApps)) {
+                foreach ($fsApps as $a) {
+                    $jid = $a['job_id'] ?? $a['jobId'] ?? '';
+                    if ($jid !== '') {
+                        $countsByJob[$jid] = ($countsByJob[$jid] ?? 0) + 1;
+                    }
                 }
             }
-            foreach ($list as &$j) {
-                $j['applicant_count'] = $countsByJob[$j['id']] ?? 0;
-            }
-            unset($j);
+        } catch (\Exception $e) {
+            log_message('error', 'HR get_jobs: Firestore applicant count failed: ' . $e->getMessage());
         }
+        foreach ($list as &$j) {
+            $j['applicant_count'] = $countsByJob[$j['id']] ?? 0;
+        }
+        unset($j);
 
         $this->json_success(['jobs' => $list]);
     }
@@ -1075,19 +1747,20 @@ class Hr extends MY_Controller
             $id = $this->_next_id('JOB', 'Job');
         }
 
-        // Resolve department_id from name (link to HR/Departments entity)
+        // Resolve department_id from name (Firestore)
         $departmentId = trim($this->input->post('department_id') ?? '');
         if ($departmentId === '') {
-            // Try to find department by name
-            $allDepts = $this->firebase->get($this->_dept());
-            if (is_array($allDepts)) {
-                foreach ($allDepts as $did => $dd) {
-                    if (($dd['name'] ?? '') === $department) {
-                        $departmentId = $did;
-                        break;
+            try {
+                $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+                if (is_array($fsSchool) && is_array($fsSchool['departments'] ?? null)) {
+                    foreach ($fsSchool['departments'] as $did => $dd) {
+                        if (($dd['name'] ?? '') === $department) {
+                            $departmentId = $did;
+                            break;
+                        }
                     }
                 }
-            }
+            } catch (\Exception $e) {}
         }
 
         $data = [
@@ -1111,7 +1784,13 @@ class Hr extends MY_Controller
             $data['filled_positions'] = 0;
         }
 
-        $this->firebase->set($this->_jobs($id), $data);
+        // ── Firestore-first write ────────────────────────────────────
+        try {
+            $this->fs->setEntity('hrJobs', $id, $data);
+            log_message('debug', "HR save_job: Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR save_job: Firestore FAILED for {$id}: " . $e->getMessage());
+        }
 
         // ── Auto-create a circular for new job postings ──────────────
         $circularId = '';
@@ -1119,7 +1798,11 @@ class Hr extends MY_Controller
             $circularId = $this->_create_job_circular($id, $data);
             // Store circular reference on the job record
             if ($circularId) {
-                $this->firebase->update($this->_jobs($id), ['circular_id' => $circularId]);
+                try {
+                    $this->fs->updateEntity('hrJobs', $id, ['circular_id' => $circularId]);
+                } catch (\Exception $e) {
+                    log_message('error', "HR save_job: Firestore circular_id update FAILED for {$id}: " . $e->getMessage());
+                }
             }
         }
 
@@ -1138,20 +1821,19 @@ class Hr extends MY_Controller
     private function _create_job_circular(string $jobId, array $job): string
     {
         try {
-            $school   = $this->school_name;
-            $commBase = "Schools/{$school}/Communication";
-
-            // Generate circular ID
-            $counterPath = "{$commBase}/Counters/Circular";
-            $cur  = (int) ($this->firebase->get($counterPath) ?? 0);
+            // Generate circular ID via Firestore counter
+            $circularId = '';
+            $schoolDoc = $this->fs->get('schools', $this->fs->docId('profile'));
+            $counters = (is_array($schoolDoc) && isset($schoolDoc['commCounters'])) ? $schoolDoc['commCounters'] : [];
+            $cur = isset($counters['Circular']) && is_numeric($counters['Circular']) ? (int) $counters['Circular'] : 0;
             $next = $cur + 1;
-            $this->firebase->set($counterPath, $next);
+            $this->fs->update('schools', $this->fs->docId('profile'), ['commCounters.Circular' => $next]);
             $circularId = 'CIR' . str_pad($next, 4, '0', STR_PAD_LEFT);
 
             $title   = "Hiring: " . ($job['title'] ?? 'Open Position');
             $poster  = $this->_build_circular_poster($job, $circularId);
 
-            $this->firebase->set("{$commBase}/Circulars/{$circularId}", [
+            $circularData = [
                 'title'           => $title,
                 'description'     => $poster,
                 'category'        => 'Recruitment',
@@ -1168,10 +1850,13 @@ class Hr extends MY_Controller
                 'source'          => 'hr_recruitment',
                 'source_id'       => $jobId,
                 'is_poster'       => true,
-            ]);
+                'schoolId'        => $this->school_id,
+            ];
+            $this->firebase->firestoreSet('circulars', $this->fs->docId($circularId), $circularData, true);
 
-            // Legacy notices for mobile app
-            $this->firebase->push("Schools/{$school}/All Notices/Announcements", [
+            // Notice for mobile app (Firestore)
+            $noticeId = 'NOTICE_' . uniqid('', true);
+            $this->firebase->firestoreSet('notices', $this->fs->docId($noticeId), [
                 'title'       => "[Job Circular] {$title}",
                 'description' => strip_tags($poster),
                 'priority'    => 'High',
@@ -1180,7 +1865,9 @@ class Hr extends MY_Controller
                 'issued_by'   => $this->admin_name,
                 'date'        => date('Y-m-d'),
                 'created_at'  => date('c'),
-            ]);
+                'schoolId'    => $this->school_id,
+                'type'        => 'announcement',
+            ], true);
 
             log_message('info', "HR: Auto-created circular {$circularId} for job {$jobId}");
             return $circularId;
@@ -1288,36 +1975,53 @@ HTML;
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
-        $existing = $this->firebase->get($this->_jobs($id));
+        // ── Firestore-first read for existence check ─────────────────
+        $existing = null;
+        try {
+            $existing = $this->fs->getEntity('hrJobs', $id);
+        } catch (\Exception $e) {
+            log_message('error', "HR delete_job: Firestore read FAILED for {$id}: " . $e->getMessage());
+        }
         if (!is_array($existing)) {
             $this->json_error('Job posting not found.');
         }
 
-        // Check if applicants exist for this job
-        $applicants = $this->firebase->get($this->_applicants());
-        if (is_array($applicants)) {
-            foreach ($applicants as $a) {
-                if (isset($a['job_id']) && $a['job_id'] === $id) {
-                    $this->json_error('Cannot delete: applicants are linked to this job posting. Delete or reassign applicants first.');
-                }
+        // Check if applicants exist for this job (Firestore)
+        $hasLinkedApplicant = false;
+        try {
+            $fsApps = $this->fs->schoolWhere('hrApplicants', [['job_id', '=', $id]]);
+            if (is_array($fsApps) && !empty($fsApps)) {
+                $hasLinkedApplicant = true;
             }
+        } catch (\Exception $e) {
+            log_message('error', "HR delete_job: Firestore applicant check FAILED: " . $e->getMessage());
+        }
+        if ($hasLinkedApplicant) {
+            $this->json_error('Cannot delete: applicants are linked to this job posting. Delete or reassign applicants first.');
         }
 
-        // Cascade: mark linked circular as Inactive
+        // Cascade: mark linked circular as Inactive (Firestore)
         $circularId = $existing['circular_id'] ?? '';
         if ($circularId !== '') {
-            $commPath = "Schools/{$this->school_name}/Communication/Circulars/{$circularId}";
-            $circ = $this->firebase->get($commPath);
-            if (is_array($circ)) {
-                $this->firebase->update($commPath, [
+            try {
+                $this->firebase->firestoreSet('circulars', $this->fs->docId($circularId), [
                     'status'     => 'Inactive',
                     'updated_at' => date('c'),
                     'updated_by' => $this->admin_id,
-                ]);
+                ], true);
+            } catch (\Exception $e) {
+                log_message('error', "HR delete_job: Firestore circular update FAILED: " . $e->getMessage());
             }
         }
 
-        $this->firebase->delete($this->_jobs($id));
+        // ── Firestore-first delete ──────────────────────────────────
+        try {
+            $this->fs->removeEntity('hrJobs', $id);
+            log_message('debug', "HR delete_job: Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR delete_job: Firestore FAILED for {$id}: " . $e->getMessage());
+        }
+
         $this->json_success(['message' => 'Job posting deleted.' . ($circularId ? " Circular {$circularId} marked inactive." : '')]);
     }
 
@@ -1335,9 +2039,10 @@ HTML;
 
         $school = $this->school_name;
         $job    = null;
+        $circular = null;
 
         if ($jobId) {
-            $job = $this->firebase->get($this->_jobs($jobId));
+            try { $job = $this->fs->getEntity('hrJobs', $jobId); } catch (\Exception $e) {}
             if (!is_array($job)) {
                 echo json_encode(['status' => 'error', 'message' => 'Job not found.']);
                 return;
@@ -1346,10 +2051,14 @@ HTML;
         }
 
         if ($circularId) {
-            $circular = $this->firebase->get("Schools/{$school}/Communication/Circulars/{$circularId}");
+            try {
+                $circular = $this->firebase->firestoreGet('circulars', $this->fs->docId($circularId));
+            } catch (\Exception $e) {}
             if (is_array($circular) && !$job) {
                 $srcId = $circular['source_id'] ?? '';
-                if ($srcId) $job = $this->firebase->get($this->_jobs($srcId));
+                if ($srcId) {
+                    try { $job = $this->fs->getEntity('hrJobs', $srcId); } catch (\Exception $e) {}
+                }
             }
         }
 
@@ -1380,23 +2089,23 @@ HTML;
         if (!$jobId) $this->json_error('Job ID required.');
         $jobId = $this->safe_path_segment($jobId, 'job_id');
 
-        $job = $this->firebase->get($this->_jobs($jobId));
+        $job = null;
+        try { $job = $this->fs->getEntity('hrJobs', $jobId); } catch (\Exception $e) {}
         if (!is_array($job)) $this->json_error('Job posting not found.');
 
         $oldCircularId = $job['circular_id'] ?? '';
 
-        // Delete old circular if it exists
+        // Delete old circular if it exists (Firestore)
         if ($oldCircularId) {
-            $this->firebase->delete(
-                "Schools/{$this->school_name}/Communication/Circulars",
-                $oldCircularId
-            );
+            try {
+                $this->firebase->firestoreDelete('circulars', $this->fs->docId($oldCircularId));
+            } catch (\Exception $e) {}
         }
 
         // Create fresh circular
         $newCircularId = $this->_create_job_circular($jobId, $job);
         if ($newCircularId) {
-            $this->firebase->update($this->_jobs($jobId), ['circular_id' => $newCircularId]);
+            try { $this->fs->updateEntity('hrJobs', $jobId, ['circular_id' => $newCircularId]); } catch (\Exception $e) {}
         }
 
         $this->json_success([
@@ -1420,25 +2129,30 @@ HTML;
 
         $filterJob    = trim($this->input->get('job_id') ?? '');
         $filterStatus = trim($this->input->get('status') ?? '');
-
-        $applicants = $this->firebase->get($this->_applicants());
         $list = [];
-        if (is_array($applicants)) {
-            foreach ($applicants as $id => $a) {
-                if ($filterJob !== '' && isset($a['job_id']) && $a['job_id'] !== $filterJob) {
-                    continue;
-                }
-                if ($filterStatus !== '' && isset($a['status']) && $a['status'] !== $filterStatus) {
-                    continue;
-                }
-                $a['id'] = $id;
-                $list[] = $a;
+        $fromFirestore = false;
+
+        // ── Firestore-first read ────────────────────────────────────
+        try {
+            $conditions = [];
+            if ($filterJob !== '') {
+                $conditions[] = ['job_id', '=', $filterJob];
             }
+            if ($filterStatus !== '') {
+                $conditions[] = ['status', '=', $filterStatus];
+            }
+            $fsDocs = $this->fs->schoolList('hrApplicants', $conditions);
+            if (is_array($fsDocs) && !empty($fsDocs)) {
+                $fromFirestore = true;
+                $list = $fsDocs;
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'HR get_applicants: Firestore read failed: ' . $e->getMessage());
         }
 
         // Sort by applied date descending
         usort($list, function ($a, $b) {
-            return strcmp($b['applied_date'] ?? '', $a['applied_date'] ?? '');
+            return strcmp($b['applied_date'] ?? $b['appliedDate'] ?? '', $a['applied_date'] ?? $a['appliedDate'] ?? '');
         });
 
         $this->json_success(['applicants' => $list]);
@@ -1484,8 +2198,13 @@ HTML;
             $status = 'Applied';
         }
 
-        // Verify job exists
-        $job = $this->firebase->get($this->_jobs($jobId));
+        // Verify job exists (Firestore-first, RTDB fallback)
+        $job = null;
+        try {
+            $job = $this->fs->getEntity('hrJobs', $jobId);
+        } catch (\Exception $e) {
+            log_message('error', "HR save_applicant: Firestore job check FAILED: " . $e->getMessage());
+        }
         if (!is_array($job)) {
             $this->json_error('Job posting not found.');
         }
@@ -1497,10 +2216,14 @@ HTML;
             $id = $this->_next_id('APP', 'Applicant');
         }
 
-        // Preserve applied_date on edit
+        // Preserve applied_date on edit (Firestore)
         $existingApplicant = null;
         if (!$isNew) {
-            $existingApplicant = $this->firebase->get($this->_applicants($id));
+            try {
+                $existingApplicant = $this->fs->getEntity('hrApplicants', $id);
+            } catch (\Exception $e) {
+                log_message('error', "HR save_applicant: Firestore read FAILED for {$id}: " . $e->getMessage());
+            }
         }
 
         $data = [
@@ -1525,7 +2248,14 @@ HTML;
             $data['applied_date'] = $existingApplicant['applied_date'] ?? date('Y-m-d');
         }
 
-        $this->firebase->set($this->_applicants($id), $data);
+        // ── Firestore-first write ────────────────────────────────────
+        try {
+            $this->fs->setEntity('hrApplicants', $id, $data);
+            log_message('debug', "HR save_applicant: Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR save_applicant: Firestore FAILED for {$id}: " . $e->getMessage());
+        }
+
         $this->json_success(['id' => $id, 'message' => $isNew ? 'Applicant added.' : 'Applicant updated.']);
     }
 
@@ -1546,7 +2276,13 @@ HTML;
             $this->json_error('Invalid status.');
         }
 
-        $existing = $this->firebase->get($this->_applicants($id));
+        // ── Firestore-first existence check ─────────────────────────
+        $existing = null;
+        try {
+            $existing = $this->fs->getEntity('hrApplicants', $id);
+        } catch (\Exception $e) {
+            log_message('error', "HR update_applicant_status: Firestore read FAILED for {$id}: " . $e->getMessage());
+        }
         if (!is_array($existing)) {
             $this->json_error('Applicant not found.');
         }
@@ -1560,7 +2296,14 @@ HTML;
             $update['notes'] = $notes;
         }
 
-        $this->firebase->update($this->_applicants($id), $update);
+        // ── Firestore write ────────────────────────────────────
+        try {
+            $this->fs->updateEntity('hrApplicants', $id, $update);
+            log_message('debug', "HR update_applicant_status: Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR update_applicant_status: Firestore FAILED for {$id}: " . $e->getMessage());
+        }
+
         $this->json_success(['message' => "Applicant status updated to {$status}."]);
     }
 
@@ -1574,12 +2317,25 @@ HTML;
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
-        $existing = $this->firebase->get($this->_applicants($id));
+        // ── Firestore-first existence check ─────────────────────────
+        $existing = null;
+        try {
+            $existing = $this->fs->getEntity('hrApplicants', $id);
+        } catch (\Exception $e) {
+            log_message('error', "HR delete_applicant: Firestore read FAILED for {$id}: " . $e->getMessage());
+        }
         if (!is_array($existing)) {
             $this->json_error('Applicant not found.');
         }
 
-        $this->firebase->delete($this->_applicants($id));
+        // ── Firestore delete ──────────────────────────────────
+        try {
+            $this->fs->removeEntity('hrApplicants', $id);
+            log_message('debug', "HR delete_applicant: Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR delete_applicant: Firestore FAILED for {$id}: " . $e->getMessage());
+        }
+
         $this->json_success(['message' => 'Applicant deleted.']);
     }
 
@@ -1589,17 +2345,20 @@ HTML;
 
     /**
      * GET — List all leave types.
+     * Firestore-first → RTDB fallback via helper.
      */
     public function get_leave_types()
     {
         $this->_require_role(self::VIEW_ROLES, 'get_leave_types');
 
-        $types = $this->firebase->get($this->_leave_types());
         $list = [];
-        if (is_array($types)) {
-            foreach ($types as $id => $t) {
-                $t['id'] = $id;
-                $list[] = $t;
+        $allTypes = $this->_fsGetLeaveType('');
+        if (is_array($allTypes)) {
+            foreach ($allTypes as $id => $t) {
+                if (is_array($t)) {
+                    $t['id'] = $id;
+                    $list[] = $t;
+                }
             }
         }
 
@@ -1640,8 +2399,8 @@ HTML;
             $id = $this->_next_id('LT', 'LeaveType');
         }
 
-        // Check duplicate name (excluding self)
-        $existing = $this->firebase->get($this->_leave_types());
+        // Check duplicate name — Firestore-first via helper
+        $existing = $this->_fsGetLeaveType('');
         if (is_array($existing)) {
             foreach ($existing as $eid => $et) {
                 if ($eid !== $id && isset($et['name']) && strtolower($et['name']) === strtolower($name)) {
@@ -1665,7 +2424,19 @@ HTML;
             $data['created_at'] = $now;
         }
 
-        $this->firebase->set($this->_leave_types($id), $data);
+        // 1. Firestore FIRST — update leaveTypes map on schools doc
+        try {
+            $allTypes = is_array($existing) ? $existing : [];
+            $allTypes[$id] = $data;
+            $this->fs->update('schools', $this->fs->schoolId(), [
+                'leaveTypes' => $allTypes,
+                'updatedAt'  => $now,
+            ]);
+            log_message('debug', "HR: save_leave_type -> Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR: save_leave_type -> Firestore FAILED for {$id}: " . $e->getMessage());
+        }
+
         $this->json_success(['id' => $id, 'message' => $isNew ? 'Leave type created.' : 'Leave type updated.']);
     }
 
@@ -1679,25 +2450,43 @@ HTML;
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
-        $existing = $this->firebase->get($this->_leave_types($id));
+        // Verify existence — Firestore-first via helper
+        $allTypes = $this->_fsGetLeaveType('');
+        $existing = is_array($allTypes) && isset($allTypes[$id]) ? $allTypes[$id] : null;
         if (!is_array($existing)) {
             $this->json_error('Leave type not found.');
         }
 
-        // Check if any pending/approved leave requests use this type
-        $requests = $this->firebase->get($this->_leave_req());
-        if (is_array($requests)) {
-            foreach ($requests as $lr) {
-                if (
-                    isset($lr['type_id']) && $lr['type_id'] === $id &&
-                    isset($lr['status']) && in_array($lr['status'], ['Pending', 'Approved'], true)
-                ) {
-                    $this->json_error('Cannot delete: active leave requests exist for this type.');
-                }
+        // Check active requests — Firestore-first via helper
+        $hasActive = false;
+        $allReqs = $this->_fsGetAllLeaveRequests();
+        foreach ($allReqs as $lr) {
+            if (
+                ($lr['type_id'] ?? '') === $id &&
+                isset($lr['status']) && in_array($lr['status'], ['Pending', 'Approved'], true)
+            ) {
+                $hasActive = true;
+                break;
             }
         }
+        if ($hasActive) {
+            $this->json_error('Cannot delete: active leave requests exist for this type.');
+        }
 
-        $this->firebase->delete($this->_leave_types($id));
+        // 1. Firestore FIRST — remove from leaveTypes map
+        try {
+            if (is_array($allTypes)) {
+                unset($allTypes[$id]);
+                $this->fs->update('schools', $this->fs->schoolId(), [
+                    'leaveTypes' => $allTypes,
+                    'updatedAt'  => date('c'),
+                ]);
+            }
+            log_message('debug', "HR: delete_leave_type -> Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR: delete_leave_type -> Firestore FAILED for {$id}: " . $e->getMessage());
+        }
+
         $this->json_success(['message' => 'Leave type deleted.']);
     }
 
@@ -1721,8 +2510,8 @@ HTML;
             ['name' => 'On Duty Leave',        'code' => 'DUTY',     'days_per_year' => 0,  'paid' => true,  'carry_forward' => false, 'max_carry' => 0,  'description' => 'Official duty outside school premises'],
         ];
 
-        // Fetch existing leave types and build a set of uppercase codes
-        $existing = $this->firebase->get($this->_leave_types());
+        // Fetch existing leave types — Firestore-first via helper
+        $existing = $this->_fsGetLeaveType('');
         $existingCodes = [];
         if (is_array($existing)) {
             foreach ($existing as $et) {
@@ -1735,6 +2524,7 @@ HTML;
         $now     = date('c');
         $added   = [];
         $skipped = [];
+        $allTypes = is_array($existing) ? $existing : [];
 
         foreach ($defaults as $def) {
             $code = strtoupper($def['code']);
@@ -1756,8 +2546,21 @@ HTML;
                 'created_at'    => $now,
                 'updated_at'    => $now,
             ];
-            $this->firebase->set($this->_leave_types($id), $data);
+            $allTypes[$id] = $data;
             $added[] = $code;
+        }
+
+        // 1. Firestore FIRST — sync all leave types to schools doc
+        if (!empty($added)) {
+            try {
+                $this->fs->update('schools', $this->fs->schoolId(), [
+                    'leaveTypes' => $allTypes,
+                    'updatedAt'  => $now,
+                ]);
+                log_message('debug', "HR: seed_leave_types -> Firestore OK (" . count($added) . " added)");
+            } catch (\Exception $e) {
+                log_message('error', "HR: seed_leave_types -> Firestore FAILED: " . $e->getMessage());
+            }
         }
 
         $msg = count($added) . ' leave type(s) added';
@@ -1779,19 +2582,29 @@ HTML;
     {
         $this->_require_role(self::VIEW_ROLES, 'get_leave_audit_log');
 
-        $logs = $this->firebase->get($this->_leave_audit());
         $list = [];
-        if (is_array($logs)) {
-            foreach ($logs as $id => $l) {
-                $l['id'] = $id;
-                $list[]  = $l;
+
+        // 1. Firestore FIRST
+        try {
+            $fsDocs = $this->fs->schoolWhere('leaveApplications', [
+                ['type', '==', 'audit'],
+            ], 'timestamp', 'DESC', 200);
+            foreach ($fsDocs as $doc) {
+                $d = $doc['data'];
+                $d['id'] = $doc['id'] ?? '';
+                $list[] = $d;
             }
+            if (!empty($list)) {
+                $this->json_success(['audit_logs' => $list]);
+                return;
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR get_leave_audit_log: Firestore read failed: " . $e->getMessage());
         }
-        // Most recent first
+
         usort($list, function ($a, $b) {
             return strcmp($b['timestamp'] ?? '', $a['timestamp'] ?? '');
         });
-        // Limit to 200
         $list = array_slice($list, 0, 200);
 
         $this->json_success(['audit_logs' => $list]);
@@ -1818,8 +2631,8 @@ HTML;
 
         if ($staffId !== '') {
             $staffId = $this->safe_path_segment($staffId, 'staff_id');
-            // Single staff balances
-            $balances = $this->firebase->get($this->_leave_bal($year, $staffId));
+            // Single staff — Firestore-first via helper
+            $balances = $this->_fsGetLeaveBalance($staffId, $year);
             $this->json_success([
                 'balances' => is_array($balances) ? $balances : [],
                 'staff_id' => $staffId,
@@ -1828,20 +2641,15 @@ HTML;
             return;
         }
 
-        // All staff balances for the year
-        $allBal = $this->firebase->get($this->_leave_bal($year));
-        $result = [];
-        if (is_array($allBal)) {
-            foreach ($allBal as $sid => $types) {
-                $result[$sid] = is_array($types) ? $types : [];
-            }
-        }
+        // All staff balances — Firestore-first via helper
+        $result = $this->_fsGetLeaveBalance('', $year);
+        if (!is_array($result)) $result = [];
 
-        // Also return leave type names so the UI can build column headers
-        $leaveTypes = $this->firebase->get($this->_leave_types());
+        // Leave type names — Firestore-first via helper
         $typeNames = [];
-        if (is_array($leaveTypes)) {
-            foreach ($leaveTypes as $tid => $lt) {
+        $allTypes = $this->_fsGetLeaveType('');
+        if (is_array($allTypes)) {
+            foreach ($allTypes as $tid => $lt) {
                 if (is_array($lt) && isset($lt['name'])) {
                     $typeNames[$tid] = $lt['name'];
                 }
@@ -1865,8 +2673,8 @@ HTML;
             $this->json_error('Invalid year format.');
         }
 
-        // Get all active leave types
-        $leaveTypes = $this->firebase->get($this->_leave_types());
+        // Get all active leave types — Firestore-first via helper
+        $leaveTypes = $this->_fsGetLeaveType('');
         $activeTypes = [];
         if (is_array($leaveTypes)) {
             foreach ($leaveTypes as $tid => $lt) {
@@ -1880,18 +2688,31 @@ HTML;
             $this->json_error('No active leave types found. Please create leave types first.');
         }
 
-        // Get staff from session roster
-        $roster = $this->firebase->get("Schools/{$this->school_name}/{$this->session_year}/Teachers");
-        if (!is_array($roster) || empty($roster)) {
-            $this->json_error('No staff found in the current session roster.');
+        // Get staff — Firestore-first
+        $roster = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
+            if (!empty($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? $d['userId'] ?? '';
+                    if ($sid !== '') $roster[$sid] = $d;
+                }
+            }
+        } catch (\Exception $e) {}
+        // No RTDB fallback — Firestore is the only source of truth
+        if (empty($roster)) {
+            $this->json_error('No staff found. Add staff first.');
         }
 
-        // Determine previous year for carry forward
+        // Determine previous year for carry forward — Firestore-first via helper
         $prevYear = (string) ((int) $year - 1);
-        $prevBalances = $this->firebase->get($this->_leave_bal($prevYear));
+        $prevBalances = $this->_fsGetLeaveBalance('', $prevYear);
+        if (!is_array($prevBalances)) $prevBalances = [];
 
-        // Reconcile: scan all approved leave requests for this year to compute actual used days
-        $allRequests = $this->firebase->get($this->_leave_req());
+        // Reconcile: scan all leave requests — Firestore-first via helper
+        // (filter Approved in the loop below)
+        $allRequests = $this->_fsGetAllLeaveRequests();
         $usedMap = []; // usedMap[staffId][typeId] = total days used
         if (is_array($allRequests)) {
             foreach ($allRequests as $rid => $req) {
@@ -1912,6 +2733,8 @@ HTML;
         $staffCount = 0;
 
         foreach ($roster as $staffId => $rosterData) {
+            // Accumulate ALL types for this staff, then write ONCE
+            $allBalances = [];
             foreach ($activeTypes as $typeId => $lt) {
                 $allocated = (int) ($lt['days_per_year'] ?? 0);
                 $carried = 0;
@@ -1932,15 +2755,17 @@ HTML;
 
                 $balance = $allocated + $carried - $used;
 
-                $balData = [
+                $allBalances[$typeId] = [
                     'allocated' => $allocated,
                     'used'      => $used,
                     'carried'   => $carried,
                     'balance'   => $balance,
                 ];
 
-                $this->firebase->set($this->_leave_bal($year, $staffId, $typeId), $balData);
             }
+
+            // Firestore: write ALL types at once (avoids nested map overwrite issue)
+            $this->_fsSyncLeaveBalance($staffId, $year, $allBalances);
             $staffCount++;
         }
 
@@ -1966,24 +2791,81 @@ HTML;
         $filterStatus  = trim($this->input->get('status') ?? '');
         $filterStaffId = trim($this->input->get('staff_id') ?? '');
 
-        $requests = $this->firebase->get($this->_leave_req());
         $list = [];
-        if (is_array($requests)) {
-            foreach ($requests as $id => $r) {
-                if ($filterStatus !== '' && isset($r['status']) && $r['status'] !== $filterStatus) {
-                    continue;
+
+        // 1. Firestore FIRST — query BOTH HR-created (type=request) AND
+        //    Teacher-app-created (applicantType=staff) leave docs.
+        try {
+            // Query 1: HR-format docs (type=request)
+            $conditions1 = [['type', '==', 'request']];
+            if ($filterStatus !== '') $conditions1[] = ['status', '==', $filterStatus];
+            if ($filterStaffId !== '') $conditions1[] = ['staffId', '==', $filterStaffId];
+            $fsDocs1 = $this->fs->schoolWhere('leaveApplications', $conditions1);
+
+            // Query 2: Teacher-app-format docs (applicantType=staff)
+            $conditions2 = [['applicantType', '==', 'staff']];
+            if ($filterStatus !== '') $conditions2[] = ['status', '==', $filterStatus];
+            if ($filterStaffId !== '') $conditions2[] = ['applicantId', '==', $filterStaffId];
+            $fsDocs2 = $this->fs->schoolWhere('leaveApplications', $conditions2);
+
+            $allDocs = array_merge($fsDocs1 ?: [], $fsDocs2 ?: []);
+
+            // De-duplicate by doc ID
+            $seen = [];
+            foreach ($allDocs as $doc) {
+                $docId = $doc['id'] ?? '';
+                if ($docId === '' || isset($seen[$docId])) continue;
+                $seen[$docId] = true;
+
+                $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                $d['id'] = $d['requestId'] ?? $docId;
+
+                // Normalize Teacher-app format → HR format for consistent UI rendering
+                if (!isset($d['staff_id'])) {
+                    $d['staff_id'] = $d['staffId'] ?? $d['applicantId'] ?? '';
                 }
-                if ($filterStaffId !== '' && isset($r['staff_id']) && $r['staff_id'] !== $filterStaffId) {
-                    continue;
+                if (!isset($d['staff_name'])) {
+                    $d['staff_name'] = $d['staffName'] ?? $d['applicantName'] ?? '';
                 }
-                $r['id'] = $id;
-                $list[] = $r;
+                if (!isset($d['type_code'])) {
+                    $d['type_code'] = $d['typeCode'] ?? $d['leaveType'] ?? '';
+                }
+                if (!isset($d['type_name'])) {
+                    $d['type_name'] = $d['typeName'] ?? $d['leaveType'] ?? '';
+                }
+                if (!isset($d['from_date'])) {
+                    $d['from_date'] = $d['fromDate'] ?? $d['startDate'] ?? '';
+                }
+                if (!isset($d['to_date'])) {
+                    $d['to_date'] = $d['toDate'] ?? $d['endDate'] ?? '';
+                }
+                if (!isset($d['applied_on'])) {
+                    $d['applied_on'] = $d['appliedOn'] ?? $d['appliedAt'] ?? '';
+                }
+                if (!isset($d['decided_by'])) $d['decided_by'] = $d['decidedBy'] ?? $d['approvedBy'] ?? '';
+                if (!isset($d['decided_on'])) $d['decided_on'] = $d['decidedOn'] ?? $d['approvedAt'] ?? '';
+                if (!isset($d['paid_days'])) $d['paid_days'] = $d['paidDays'] ?? 0;
+                if (!isset($d['lwp_days'])) $d['lwp_days'] = $d['lwpDays'] ?? 0;
+                if (!isset($d['days'])) $d['days'] = $d['numberOfDays'] ?? 1;
+
+                $list[] = $d;
             }
+
+            if (!empty($list)) {
+                usort($list, function ($a, $b) {
+                    return strcmp($b['from_date'] ?? '', $a['from_date'] ?? '');
+                });
+                $this->json_success(['leave_requests' => $list]);
+                return;
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR get_leave_requests: Firestore read failed: " . $e->getMessage());
         }
 
-        // Sort by applied_on descending
+        // No RTDB fallback — Firestore is the only source
+        // If Firestore returned empty, that's the truth — no stale RTDB data
         usort($list, function ($a, $b) {
-            return strcmp($b['applied_on'] ?? '', $a['applied_on'] ?? '');
+            return strcmp($b['from_date'] ?? '', $a['from_date'] ?? '');
         });
 
         $this->json_success(['leave_requests' => $list]);
@@ -2019,8 +2901,8 @@ HTML;
         $to   = new DateTime($toDate);
         $days = (int) $from->diff($to)->days + 1;
 
-        // Verify leave type exists and is active
-        $leaveType = $this->firebase->get($this->_leave_types($typeId));
+        // Verify leave type — Firestore-first via helper
+        $leaveType = $this->_fsGetLeaveType($typeId);
         if (!is_array($leaveType)) {
             $this->json_error('Leave type not found.');
         }
@@ -2028,21 +2910,27 @@ HTML;
             $this->json_error('This leave type is inactive.');
         }
 
-        // Verify staff exists in roster
-        $staffProfile = $this->firebase->get("Users/Teachers/{$this->school_name}/{$staffId}");
+        // Verify staff exists in Firestore
+        $staffProfile = null;
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', [['staffId', '==', $staffId]]);
+            if (is_array($fsDocs) && !empty($fsDocs)) {
+                $staffProfile = is_array($fsDocs[0]['data'] ?? null) ? $fsDocs[0]['data'] : $fsDocs[0];
+            }
+        } catch (\Exception $e) {}
         if (!is_array($staffProfile)) {
             $this->json_error('Staff member not found.');
         }
-        $staffName = $staffProfile['Name'] ?? $staffId;
+        $staffName = $staffProfile['Name'] ?? $staffProfile['name'] ?? $staffId;
 
         // Determine if leave type is paid — paid leaves never become LWP
         $isPaidType = filter_var($leaveType['paid'] ?? false, FILTER_VALIDATE_BOOLEAN);
         $leaveCode  = strtoupper(trim($leaveType['code'] ?? ''));
         log_message('debug', "apply_leave: type_id={$typeId}, code={$leaveCode}, paid=" . ($isPaidType ? 'YES' : 'NO') . ", days={$days}, staff={$staffId}");
 
-        // Check leave balance — only apply LWP logic for unpaid leave types
+        // Check leave balance — Firestore-first via helper
         $year = date('Y', strtotime($fromDate));
-        $balance = $this->firebase->get($this->_leave_bal($year, $staffId, $typeId));
+        $balance = $this->_fsGetLeaveBalance($staffId, $year, $typeId);
         $currentBalance = 0;
         if (is_array($balance) && isset($balance['balance'])) {
             $currentBalance = max(0, (int) $balance['balance']);
@@ -2063,9 +2951,9 @@ HTML;
         }
         $lwpWarning = '';
 
-        // Check for overlapping leave requests (Pending or Approved)
-        $existingReqs = $this->firebase->get($this->_leave_req());
-        if (is_array($existingReqs)) {
+        // Check for overlapping leave requests — Firestore-first via helper
+        $existingReqs = $this->_fsGetAllLeaveRequests($staffId);
+        if (!empty($existingReqs)) {
             foreach ($existingReqs as $rid => $er) {
                 if (
                     isset($er['staff_id']) && $er['staff_id'] === $staffId &&
@@ -2122,7 +3010,35 @@ HTML;
             'remarks'             => '',
         ];
 
-        $this->firebase->set($this->_leave_req($reqId), $data);
+        // 1. Firestore FIRST — write leave request
+        try {
+            $fsReqData = array_merge($data, [
+                'schoolId'  => $this->school_id,
+                'requestId' => $reqId,
+                'type'      => 'request',
+                'staffId'   => $staffId,
+                'staffName' => $staffName,
+                'typeId'    => $typeId,
+                'typeName'  => $leaveType['name'] ?? '',
+                'typeCode'  => $leaveCode,
+                'typePaid'  => $isPaidType,
+                'fromDate'  => $fromDate,
+                'toDate'    => $toDate,
+                'paidDays'  => $paidDays,
+                'lwpDays'   => $lwpDays,
+                'payLabel'  => $payLabel,
+                'calculationReason' => $calcReason,
+                'balanceAtApply'    => $currentBalance,
+                'appliedOn' => $data['applied_on'],
+                'decidedBy' => '',
+                'decidedOn' => '',
+                'updatedAt' => date('c'),
+            ]);
+            $this->fs->set('leaveApplications', $this->fs->docId("LR_{$reqId}"), $fsReqData, true);
+            log_message('debug', "HR: apply_leave -> Firestore OK for {$reqId}");
+        } catch (\Exception $e) {
+            log_message('error', "HR: apply_leave -> Firestore FAILED for {$reqId}: " . $e->getMessage());
+        }
 
         // Audit log
         $this->_log_leave_audit([
@@ -2163,20 +3079,30 @@ HTML;
             $this->json_error('Decision must be Approved or Rejected.');
         }
 
-        $request = $this->firebase->get($this->_leave_req($id));
+        // Read request — Firestore-first via helper (normalizes field names)
+        $request = $this->_fsGetLeaveRequest($id);
         if (!is_array($request)) {
             $this->json_error('Leave request not found.');
         }
-        if (($request['status'] ?? '') !== 'Pending') {
+        $fsDocId = $request['_fsDocId'] ?? '';
+
+        $currentStatus = strtolower($request['status'] ?? '');
+        if ($currentStatus !== 'pending') {
             $this->json_error('Only pending requests can be decided.');
         }
 
-        // M-04 FIX: Atomically mark request as "Processing" to prevent concurrent approvals
-        // on the same leave request (optimistic lock via status transition).
-        $this->firebase->update($this->_leave_req($id), ['status' => 'Processing']);
-
-        // Re-read to verify we won the race (another thread may have set it too)
-        $recheck = $this->firebase->get($this->_leave_req($id) . '/status');
+        // M-04 FIX: Atomically mark request as "Processing"
+        if ($fsDocId !== '') {
+            try {
+                $this->firebase->firestoreSet('leaveApplications', $fsDocId, ['status' => 'Processing', 'updatedAt' => date('c')], true);
+            } catch (\Exception $e) {}
+        }
+        // Re-read to verify we won the race (Firestore)
+        $recheck = null;
+        try {
+            $recheckDoc = $this->_fsGetLeaveRequest($id);
+            if (is_array($recheckDoc)) $recheck = $recheckDoc['status'] ?? null;
+        } catch (\Exception $e) {}
         if ($recheck !== 'Processing') {
             $this->json_error('This request is being processed by another user. Please refresh.');
         }
@@ -2187,15 +3113,38 @@ HTML;
         $fromDate = $request['from_date'] ?? '';
         $year     = date('Y', strtotime($fromDate));
 
-        // Fetch leave type config to determine paid/unpaid status
-        $leaveType = $this->firebase->get($this->_leave_types($typeId));
-        $isPaidType = true; // safe default: if leave type config is missing, do NOT deduct
+        // Resolve leave type — by ID or by name (Teacher app sends name, HR sends ID)
+        $leaveType = null;
+        $allTypes = $this->_fsGetLeaveType(''); // get all types
+        if (is_array($allTypes)) {
+            // Try by ID first
+            if ($typeId !== '' && isset($allTypes[$typeId])) {
+                $leaveType = $allTypes[$typeId];
+            } else {
+                // Resolve by name/code match (Teacher-app sends leaveType: "Casual Leave" or "Casual")
+                $searchName = strtolower(trim($request['leaveType'] ?? $request['type_code'] ?? $typeId));
+                foreach ($allTypes as $tid => $lt) {
+                    if (!is_array($lt)) continue;
+                    $ltName = strtolower(trim($lt['name'] ?? ''));
+                    $ltCode = strtolower(trim($lt['code'] ?? ''));
+                    if ($ltName === $searchName || $ltCode === $searchName
+                        || strpos($ltName, $searchName) === 0
+                        || $searchName === $ltCode) {
+                        $leaveType = $lt;
+                        $typeId = $tid; // resolved!
+                        break;
+                    }
+                }
+            }
+        }
+
+        $isPaidType = true; // safe default
         if (is_array($leaveType)) {
             $isPaidType = filter_var($leaveType['paid'] ?? false, FILTER_VALIDATE_BOOLEAN);
             log_message('debug', "decide_leave: type_id={$typeId}, code=" . ($leaveType['code'] ?? '?') . ", paid=" . ($isPaidType ? 'YES' : 'NO') . ", days={$days}, decision={$decision}");
         } else {
-            // Leave type not found — log warning but do NOT assume unpaid
-            log_message('error', "decide_leave: leave type '{$typeId}' not found in config — defaulting to paid (no deduction)");
+            $ltName = $request['leaveType'] ?? $request['type_code'] ?? '?';
+            log_message('error', "decide_leave: leave type '{$typeId}' / '{$ltName}' not found — defaulting to paid");
         }
 
         // If approving, calculate paid/LWP split and deduct from balance
@@ -2207,30 +3156,22 @@ HTML;
                 $paidDays = 0;
                 $lwpDays  = $days;
 
-                // Update balance record to reflect used days even for unpaid types
-                $balance = $this->firebase->get($this->_leave_bal($year, $staffId, $typeId));
+                // Update balance — Firestore-first via helper
+                $balance = $this->_fsGetLeaveBalance($staffId, $year, $typeId);
                 if (is_array($balance)) {
                     $currentUsed    = (int) ($balance['used'] ?? 0);
                     $currentBalance = (int) ($balance['balance'] ?? 0);
-                    $this->firebase->update($this->_leave_bal($year, $staffId, $typeId), [
-                        'used'    => $currentUsed + $days,
-                        'balance' => $currentBalance - $days,
-                    ]);
+                    $newBalData = ['used' => $currentUsed + $days, 'balance' => $currentBalance - $days];
+                    $this->_fsSyncLeaveBalance($staffId, $year, [$typeId => array_merge($balance, $newBalData)]);
                 } else {
-                    // No balance record exists — create one
                     $allocated = 0;
-                    $lt = $this->firebase->get($this->_leave_types($typeId));
-                    if (is_array($lt)) $allocated = (int) ($lt['days_per_year'] ?? 0);
-                    $this->firebase->set($this->_leave_bal($year, $staffId, $typeId), [
-                        'allocated' => $allocated,
-                        'used'      => $days,
-                        'carried'   => 0,
-                        'balance'   => $allocated - $days,
-                    ]);
+                    if (is_array($leaveType)) $allocated = (int) ($leaveType['days_per_year'] ?? 0);
+                    $newBal = ['allocated' => $allocated, 'used' => $days, 'carried' => 0, 'balance' => $allocated - $days];
+                    $this->_fsSyncLeaveBalance($staffId, $year, [$typeId => $newBal]);
                 }
             } else {
-                // Paid leave type — deduct from balance; excess becomes LWP
-                $balance = $this->firebase->get($this->_leave_bal($year, $staffId, $typeId));
+                // Paid leave type — deduct from balance; Firestore-first via helper
+                $balance = $this->_fsGetLeaveBalance($staffId, $year, $typeId);
                 if (is_array($balance)) {
                     $currentBalance = (int) ($balance['balance'] ?? 0);
                     $currentUsed    = (int) ($balance['used'] ?? 0);
@@ -2241,33 +3182,26 @@ HTML;
 
                     // Only deduct the paid portion from balance
                     if ($paidDays > 0) {
-                        $this->firebase->update($this->_leave_bal($year, $staffId, $typeId), [
-                            'used'    => $currentUsed + $paidDays,
-                            'balance' => $currentBalance - $paidDays,
-                        ]);
+                        $paidBalUpdate = ['used' => $currentUsed + $paidDays, 'balance' => $currentBalance - $paidDays];
+                        $this->_fsSyncLeaveBalance($staffId, $year, [$typeId => array_merge(is_array($balance) ? $balance : [], $paidBalUpdate)]);
 
                         // M-04 FIX: Post-write verification — re-read balance to detect concurrent deduction
-                        $verifyBal = $this->firebase->get($this->_leave_bal($year, $staffId, $typeId));
+                        $verifyBal = $this->_fsGetLeaveBalance($staffId, $year, $typeId);
                         if (is_array($verifyBal) && (int) ($verifyBal['balance'] ?? 0) < 0) {
-                            $this->firebase->update($this->_leave_bal($year, $staffId, $typeId), [
-                                'used'    => $currentUsed,
-                                'balance' => $currentBalance,
-                            ]);
-                            $this->firebase->update($this->_leave_req($id), ['status' => 'Pending']);
+                            $this->_fsSyncLeaveBalance($staffId, $year, [$typeId => ['used' => $currentUsed, 'balance' => $currentBalance]]);
+                            try {
+                                $writeDocId2 = $fsDocId !== '' ? $fsDocId : $this->fs->docId("LR_{$id}");
+                                $this->firebase->firestoreSet('leaveApplications', $writeDocId2, ['status' => 'Pending', 'updatedAt' => date('c')], true);
+                            } catch (\Exception $e2) {}
                             $this->json_error('Leave balance was modified concurrently. Please try again.');
                         }
                     }
                 } else {
                     // No balance record for a paid type — create one with 0 allocation
-                    // All days still count as paid (no salary deduction), just no balance to deduct from
                     $paidDays = $days;
                     $lwpDays  = 0;
-                    $this->firebase->set($this->_leave_bal($year, $staffId, $typeId), [
-                        'allocated' => 0,
-                        'used'      => $days,
-                        'carried'   => 0,
-                        'balance'   => 0 - $days,
-                    ]);
+                    $noBal = ['allocated' => 0, 'used' => $days, 'carried' => 0, 'balance' => 0 - $days];
+                    $this->_fsSyncLeaveBalance($staffId, $year, [$typeId => $noBal]);
                     log_message('info', "decide_leave: no balance record for paid type '{$typeId}' / staff '{$staffId}' — treating {$days} day(s) as paid with negative balance");
                 }
             }
@@ -2302,7 +3236,27 @@ HTML;
             'calculation_reason'  => $calcReason,
         ];
 
-        $this->firebase->update($this->_leave_req($id), $updateData);
+        // 1. Firestore FIRST — update leave request decision
+        try {
+            $fsUpdateData = array_merge($updateData, [
+                'decidedBy' => $updateData['decided_by'] ?? '',
+                'decidedOn' => $updateData['decided_on'] ?? '',
+                'approvedBy' => $updateData['decided_by'] ?? '',
+                'paidDays'  => $paidDays,
+                'lwpDays'   => $lwpDays,
+                'typeCode'  => $ltCode,
+                'typePaid'  => $isPaidType,
+                'payLabel'  => $payLabel,
+                'calculationReason' => $calcReason,
+                'updatedAt' => date('c'),
+            ]);
+            // Use the actual Firestore doc ID (works for both HR-format and Teacher-app-format)
+            $writeDocId = $fsDocId !== '' ? $fsDocId : $this->fs->docId("LR_{$id}");
+            $this->firebase->firestoreSet('leaveApplications', $writeDocId, $fsUpdateData, true);
+            log_message('debug', "HR: decide_leave -> Firestore OK for {$writeDocId}");
+        } catch (\Exception $e) {
+            log_message('error', "HR: decide_leave -> Firestore FAILED for {$id}: " . $e->getMessage());
+        }
 
         // On approval, automatically mark attendance as "L" (Leave) for each leave day
         if ($decision === 'Approved') {
@@ -2351,7 +3305,8 @@ HTML;
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
-        $request = $this->firebase->get($this->_leave_req($id));
+        // Read request — Firestore-first via helper (normalizes field names)
+        $request = $this->_fsGetLeaveRequest($id);
         if (!is_array($request)) {
             $this->json_error('Leave request not found.');
         }
@@ -2362,7 +3317,11 @@ HTML;
         }
 
         // M-04 FIX: Lock the request by transitioning to Cancelling status
-        $this->firebase->update($this->_leave_req($id), ['status' => 'Cancelling']);
+        try {
+            $this->fs->update('leaveApplications', $this->fs->docId("LR_{$id}"), ['status' => 'Cancelling', 'updatedAt' => date('c')]);
+        } catch (\Exception $e) {
+            log_message('error', "HR cancel_leave: Firestore Cancelling lock failed: " . $e->getMessage());
+        }
 
         $staffId  = $request['staff_id'] ?? '';
         $typeId   = $request['type_id'] ?? '';
@@ -2376,7 +3335,8 @@ HTML;
         $totalUsedDays = $paidDays + $lwpDays; // total days deducted from used count
         if ($totalUsedDays === 0) $totalUsedDays = $days; // legacy fallback
         if ($currentStatus === 'Approved' && $staffId !== '' && $typeId !== '' && $totalUsedDays > 0) {
-            $balance = $this->firebase->get($this->_leave_bal($year, $staffId, $typeId));
+            // Read balance — Firestore-first via helper
+            $balance = $this->_fsGetLeaveBalance($staffId, $year, $typeId);
             if (is_array($balance)) {
                 $currentUsed    = (int) ($balance['used'] ?? 0);
                 $currentBalance = (int) ($balance['balance'] ?? 0);
@@ -2384,10 +3344,8 @@ HTML;
                 $newUsed    = max(0, $currentUsed - $totalUsedDays);
                 $newBalance = $currentBalance + $totalUsedDays;
 
-                $this->firebase->update($this->_leave_bal($year, $staffId, $typeId), [
-                    'used'    => $newUsed,
-                    'balance' => $newBalance,
-                ]);
+                $restoreData = ['used' => $newUsed, 'balance' => $newBalance];
+                $this->_fsSyncLeaveBalance($staffId, $year, [$typeId => array_merge($balance, $restoreData)]);
             }
         }
 
@@ -2400,12 +3358,24 @@ HTML;
             );
         }
 
-        $this->firebase->update($this->_leave_req($id), [
+        // 1. Firestore FIRST — update to Cancelled
+        $cancelData = [
             'status'     => 'Cancelled',
             'decided_by' => $this->admin_name,
             'decided_on' => date('c'),
             'remarks'    => 'Cancelled' . ($currentStatus === 'Approved' ? ' (balance restored, attendance reverted)' : ''),
-        ]);
+        ];
+        try {
+            $fsCancelData = array_merge($cancelData, [
+                'decidedBy' => $cancelData['decided_by'],
+                'decidedOn' => $cancelData['decided_on'],
+                'updatedAt' => date('c'),
+            ]);
+            $this->fs->update('leaveApplications', $this->fs->docId("LR_{$id}"), $fsCancelData);
+            log_message('debug', "HR: cancel_leave -> Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR: cancel_leave -> Firestore FAILED for {$id}: " . $e->getMessage());
+        }
 
         $this->json_success([
             'message' => 'Leave request cancelled.' . ($currentStatus === 'Approved' ? ' Balance restored, attendance reverted.' : ''),
@@ -2461,15 +3431,22 @@ HTML;
             $attKey    = "{$monthName} {$yearNum}";
             $daysInMonth = (int) $cursor->format('t');
 
+            // Read existing attendance — Firestore summary first
+            $attStr = '';
             $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
-            $attStr  = $this->firebase->get($attPath);
-
-            // Initialize empty attendance string if none exists
-            if (!is_string($attStr) || strlen($attStr) === 0) {
-                $attStr = str_repeat('V', $daysInMonth); // V = vacant/unmarked
+            try {
+                $monthKeyISO = sprintf('%04d-%02d', $yearNum, $monthNum);
+                $fsSummary = $this->firebase->firestoreGet('staffAttendanceSummary', "{$school}_{$staffId}_{$monthKeyISO}");
+                if (is_array($fsSummary) && isset($fsSummary['dayWise'])) {
+                    $attStr = $fsSummary['dayWise'];
+                }
+            } catch (\Exception $e) {
+                log_message('error', "Hr::_apply_leave_to_attendance Firestore summary read failed: " . $e->getMessage());
             }
 
-            // Pad if string is shorter than expected
+            if (!is_string($attStr) || strlen($attStr) === 0) {
+                $attStr = str_repeat('V', $daysInMonth);
+            }
             while (strlen($attStr) < $daysInMonth) {
                 $attStr .= 'V';
             }
@@ -2480,30 +3457,49 @@ HTML;
             if ($currentMark !== 'L') {
                 // Mark as "L" (Leave) — prevents double-counting as Absent
                 $attStr[$idx] = 'L';
-                $this->firebase->set($attPath, $attStr);
+            }
+
+            // Firestore: write/update staffAttendance doc for this day
+            try {
+                $dateISO = $cursor->format('Y-m-d');
+                $fsDocId = "{$school}_{$dateISO}_{$staffId}";
+                $this->firebase->firestoreSet('staffAttendance', $fsDocId, [
+                    'schoolId'  => $this->school_id ?? $school,
+                    'session'   => $session,
+                    'date'      => $dateISO,
+                    'staffId'   => $staffId,
+                    'status'    => 'L',
+                    'markedBy'  => 'leave_approval',
+                    'markedAt'  => date('c'),
+                    'leaveType' => $leaveType,
+                ], true);
+            } catch (\Exception $e) {
+                log_message('error', "Hr::_apply_leave_to_attendance Firestore write failed: " . $e->getMessage());
             }
 
             $cursor->modify('+1 day');
         }
 
-        // Store leave metadata for attendance cross-reference
-        $metaPath = "Schools/{$school}/{$session}/Staff_Attendance/Leave_records/{$staffId}";
-        $existing = $this->firebase->get($metaPath);
-        if (!is_array($existing)) $existing = [];
-
+        // Store leave metadata for attendance cross-reference (Firestore)
         $recordKey = str_replace('-', '', $fromDate) . '_' . str_replace('-', '', $toDate);
-        $existing[$recordKey] = [
-            'from_date'  => $fromDate,
-            'to_date'    => $toDate,
-            'leave_type' => $leaveType,
-            'paid_days'  => $paidDays,
-            'lwp_days'   => $lwpDays,
-            'marked_at'  => date('c'),
-        ];
-        $this->firebase->set($metaPath, $existing);
+        try {
+            $metaDocId = "{$school}_{$staffId}_leave_records";
+            $existingMeta = $this->firebase->firestoreGet('staffAttendanceMeta', $metaDocId);
+            if (!is_array($existingMeta)) $existingMeta = ['schoolId' => $this->school_id, 'staffId' => $staffId, 'session' => $session, 'records' => []];
+            $existingMeta['records'][$recordKey] = [
+                'from_date'  => $fromDate,
+                'to_date'    => $toDate,
+                'leave_type' => $leaveType,
+                'paid_days'  => $paidDays,
+                'lwp_days'   => $lwpDays,
+                'marked_at'  => date('c'),
+            ];
+            $this->firebase->firestoreSet('staffAttendanceMeta', $metaDocId, $existingMeta, true);
+        } catch (\Exception $e) {
+            log_message('error', "Hr::_apply_leave_to_attendance meta write failed: " . $e->getMessage());
+        }
 
-        // Rebuild summary cache for all affected months
-        $this->load->helper('attendance');
+        // Rebuild summary for all affected months — Firestore-first
         $cursor2 = new DateTime($fromDate);
         $end2    = new DateTime($toDate);
         $touchedMonths = [];
@@ -2513,7 +3509,67 @@ HTML;
             $cursor2->modify('+1 day');
         }
         foreach ($touchedMonths as $attK => list($mn, $yr)) {
-            update_staff_att_summary($this->firebase, $school, $session, $staffId, $attK, $mn, $yr);
+            // Build dayWise string from Firestore per-day staffAttendance docs
+            $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $mn, $yr);
+            $dayWise = str_repeat('V', $daysInMonth);
+
+            try {
+                $monthStart = sprintf('%04d-%02d-01', $yr, $mn);
+                $monthEnd   = sprintf('%04d-%02d-%02d', $yr, $mn, $daysInMonth);
+                // Query by staffId only (avoids composite index requirement)
+                // Filter date range client-side
+                $fsDayDocs = $this->fs->schoolWhere('staffAttendance', [
+                    ['staffId', '==', $staffId],
+                ]);
+                foreach ($fsDayDocs as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $dateStr = $d['date'] ?? '';
+                    if ($dateStr < $monthStart || $dateStr > $monthEnd) continue;
+                    $mark = strtoupper(substr($d['status'] ?? 'V', 0, 1));
+                    if ($dateStr !== '') {
+                        $dayNum = (int) date('j', strtotime($dateStr));
+                        if ($dayNum >= 1 && $dayNum <= $daysInMonth) {
+                            $dayWise[$dayNum - 1] = $mark;
+                        }
+                    }
+                }
+            } catch (\Exception $e) {
+                log_message('error', "Hr: Firestore staffAttendance read failed for summary: " . $e->getMessage());
+            }
+
+            // Count marks
+            $present = substr_count($dayWise, 'P');
+            $absent  = substr_count($dayWise, 'A');
+            $leave   = substr_count($dayWise, 'L');
+            $tardy   = substr_count($dayWise, 'T');
+            $holiday = substr_count($dayWise, 'H');
+            $vacation = substr_count($dayWise, 'V');
+
+            $monthKey = sprintf('%04d-%02d', $yr, $mn);
+            $fsDocId = "{$school}_{$staffId}_{$monthKey}";
+
+            // Write to Firestore staffAttendanceSummary
+            try {
+                $this->firebase->firestoreSet('staffAttendanceSummary', $fsDocId, [
+                    'schoolId'   => $this->school_id ?? $school,
+                    'session'    => $session,
+                    'staffId'    => $staffId,
+                    'type'       => 'staff',
+                    'month'      => $monthKey,
+                    'monthLabel' => $attK,
+                    'dayWise'    => $dayWise,
+                    'present'    => $present,
+                    'absent'     => $absent,
+                    'leave'      => $leave,
+                    'holiday'    => $holiday,
+                    'tardy'      => $tardy,
+                    'vacation'   => $vacation,
+                    'updatedAt'  => date('c'),
+                ], true);
+            } catch (\Exception $e) {
+                log_message('error', "Hr: staffAttendanceSummary Firestore write failed: " . $e->getMessage());
+            }
+
         }
     }
 
@@ -2544,37 +3600,47 @@ HTML;
             $attKey    = "{$monthName} {$yearNum}";
             $daysInMonth = (int) $cursor->format('t');
 
+            // Read attendance — Firestore summary first
             $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
-            $attStr  = $this->firebase->get($attPath);
+            $attStr = '';
+            try {
+                $mkISO = sprintf('%04d-%02d', $yearNum, $monthNum);
+                $fsSummary = $this->firebase->firestoreGet('staffAttendanceSummary', "{$school}_{$staffId}_{$mkISO}");
+                if (is_array($fsSummary) && isset($fsSummary['dayWise'])) {
+                    $attStr = $fsSummary['dayWise'];
+                }
+            } catch (\Exception $e) {
+                log_message('error', "Hr::_revert_leave_from_attendance Firestore summary read failed: " . $e->getMessage());
+            }
 
             if (is_string($attStr) && strlen($attStr) >= $dayNum) {
                 $idx = $dayNum - 1;
                 if (strtoupper($attStr[$idx]) === 'L') {
-                    $attStr[$idx] = 'V'; // Reset to vacant
-                    $this->firebase->set($attPath, $attStr);
+                    $attStr[$idx] = 'V';
                 }
             }
+
+            // Firestore: delete the staffAttendance doc for this day
+            try {
+                $dateISO = $cursor->format('Y-m-d');
+                $fsDocId = "{$school}_{$dateISO}_{$staffId}";
+                $this->firebase->firestoreDelete('staffAttendance', $fsDocId);
+            } catch (\Exception $e) {}
 
             $cursor->modify('+1 day');
         }
 
-        // Remove leave metadata record
-        $metaPath = "Schools/{$school}/{$session}/Staff_Attendance/Leave_records/{$staffId}";
+        // Remove leave metadata record from Firestore
         $recordKey = str_replace('-', '', $fromDate) . '_' . str_replace('-', '', $toDate);
-        $this->firebase->delete($metaPath, $recordKey);
-
-        // Rebuild summary cache for all affected months
-        $this->load->helper('attendance');
-        $cursor2 = new DateTime($fromDate);
-        $end2    = new DateTime($toDate);
-        $touchedMonths = [];
-        while ($cursor2 <= $end2) {
-            $mk = $cursor2->format('F Y');
-            $touchedMonths[$mk] = [(int)$cursor2->format('n'), (int)$cursor2->format('Y')];
-            $cursor2->modify('+1 day');
-        }
-        foreach ($touchedMonths as $attK => list($mn, $yr)) {
-            update_staff_att_summary($this->firebase, $school, $session, $staffId, $attK, $mn, $yr);
+        try {
+            $metaDocId = "{$school}_{$staffId}_leave_records";
+            $existingMeta = $this->firebase->firestoreGet('staffAttendanceMeta', $metaDocId);
+            if (is_array($existingMeta) && is_array($existingMeta['records'] ?? null)) {
+                unset($existingMeta['records'][$recordKey]);
+                $this->firebase->firestoreSet('staffAttendanceMeta', $metaDocId, $existingMeta, true);
+            }
+        } catch (\Exception $e) {
+            log_message('error', "Hr::_revert_leave_from_attendance meta delete failed: " . $e->getMessage());
         }
     }
 
@@ -2593,7 +3659,12 @@ HTML;
 
         if ($staffId !== '') {
             $staffId = $this->safe_path_segment($staffId, 'staff_id');
-            $structure = $this->firebase->get($this->_salary($staffId));
+            // Firestore first, RTDB fallback
+            $structure = null;
+            try {
+                $fsDoc = $this->fs->get('salarySlips', $this->fs->docId("SAL_{$staffId}"));
+                if (is_array($fsDoc) && !empty($fsDoc)) $structure = $fsDoc;
+            } catch (\Exception $e) {}
             $this->json_success([
                 'salary_structure' => is_array($structure) ? $structure : null,
                 'staff_id'         => $staffId,
@@ -2601,19 +3672,33 @@ HTML;
             return;
         }
 
-        $all = $this->firebase->get($this->_salary());
+        // Firestore first for listing, RTDB fallback
         $list = [];
-        if (is_array($all)) {
-            foreach ($all as $sid => $s) {
-                $s['staff_id'] = $sid;
-                $list[] = $s;
+        try {
+            $fsDocs = $this->fs->schoolWhere('salarySlips', [['type', '==', 'salary_structure']]);
+            if (!empty($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $s = $doc['data'];
+                    $s['staff_id'] = $s['staffId'] ?? '';
+                    $list[] = $s;
+                }
             }
-        }
+        } catch (\Exception $e) {}
 
-        // Count staff in roster to report coverage
-        $roster = $this->firebase->get("Schools/{$this->school_name}/{$this->session_year}/Teachers");
+        // Count staff in roster to report coverage (Firestore)
+        $roster = [];
+        try {
+            $fsStaff = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
+            if (is_array($fsStaff)) {
+                foreach ($fsStaff as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? $d['userId'] ?? '';
+                    if ($sid !== '') $roster[$sid] = $d;
+                }
+            }
+        } catch (\Exception $e) {}
         $rosterCount = is_array($roster) ? count($roster) : 0;
-        $coveredIds  = is_array($all) ? array_keys($all) : [];
+        $coveredIds  = array_map(function($s) { return $s['staff_id'] ?? ($s['staffId'] ?? ''); }, $list);
         $rosterIds   = is_array($roster) ? array_keys($roster) : [];
         $missing     = array_diff($rosterIds, $coveredIds);
 
@@ -2637,8 +3722,14 @@ HTML;
 
         $staffId = $this->safe_path_segment(trim($this->input->post('staff_id') ?? ''), 'staff_id');
 
-        // Verify staff exists
-        $staffProfile = $this->firebase->get("Users/Teachers/{$this->school_name}/{$staffId}");
+        // Verify staff exists (Firestore)
+        $staffProfile = null;
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', [['staffId', '==', $staffId]]);
+            if (is_array($fsDocs) && !empty($fsDocs)) {
+                $staffProfile = is_array($fsDocs[0]['data'] ?? null) ? $fsDocs[0]['data'] : $fsDocs[0];
+            }
+        } catch (\Exception $e) {}
         if (!is_array($staffProfile)) {
             $this->json_error('Staff member not found.');
         }
@@ -2680,8 +3771,12 @@ HTML;
             'updated_by'       => $this->admin_name,
         ];
 
-        // Preserve created_at, bump version, store audit trail
-        $existingStruct = $this->firebase->get($this->_salary($staffId));
+        // Preserve created_at, bump version, store audit trail (Firestore)
+        $existingStruct = null;
+        try {
+            $fsDoc = $this->fs->get('salarySlips', $this->fs->docId("SAL_{$staffId}"));
+            if (is_array($fsDoc) && !empty($fsDoc)) $existingStruct = $fsDoc;
+        } catch (\Exception $e) {}
         $oldVersion = 0;
         if (is_array($existingStruct)) {
             $data['created_at'] = $existingStruct['created_at'] ?? date('c');
@@ -2697,7 +3792,8 @@ HTML;
         }
         $data['_version'] = $oldVersion + 1;
 
-        $this->firebase->set($this->_salary($staffId), $data);
+        // 1. Firestore FIRST (primary)
+        $this->_fsSyncSalary($staffId, $data);
 
         $gross      = $basic + $hra + $da + $ta + $medical + $otherAllowances;
         // PF/ESI/TDS stored as percentages — compute actual amounts for summary
@@ -2727,38 +3823,52 @@ HTML;
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'salary_id');
 
-        $existing = $this->firebase->get($this->_salary($id));
+        $existing = null;
+        try {
+            $fsDoc = $this->fs->get('salarySlips', $this->fs->docId("SAL_{$id}"));
+            if (is_array($fsDoc) && !empty($fsDoc)) $existing = $fsDoc;
+        } catch (\Exception $e) {}
         if (!is_array($existing)) {
             $this->json_error('Salary structure not found.');
         }
 
-        // Block if any Finalized or Paid payroll includes this staff
-        $runs = $this->firebase->get($this->_payroll_runs());
-        if (is_array($runs)) {
-            foreach ($runs as $runId => $run) {
-                if (!is_array($run)) continue;
-                $status = $run['status'] ?? '';
-                if (!in_array($status, ['Finalized', 'Paid'], true)) continue;
-                $slip = $this->firebase->get($this->_payroll_slips($runId, $id));
-                if (is_array($slip) && !empty($slip)) {
-                    $this->json_error(
-                        "Cannot delete: staff has a {$status} payroll ({$run['month']} {$run['year']}). "
-                        . "Reverse or delete the payroll run first."
-                    );
+        // Block if any Finalized or Paid payroll includes this staff (Firestore)
+        try {
+            $fsRuns = $this->fs->schoolWhere('salarySlips', [['type', '==', 'run']]);
+            if (is_array($fsRuns)) {
+                foreach ($fsRuns as $doc) {
+                    $run = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $status = $run['status'] ?? '';
+                    if (!in_array($status, ['Finalized', 'Paid'], true)) continue;
+                    $parts = explode('_RUN_', $doc['id'], 2);
+                    $runId = isset($parts[1]) ? $parts[1] : $doc['id'];
+                    try {
+                        $fsSlip = $this->fs->get('salarySlips', $this->fs->docId("SLIP_{$runId}_{$id}"));
+                        if (is_array($fsSlip) && !empty($fsSlip)) {
+                            $this->json_error(
+                                "Cannot delete: staff has a {$status} payroll ({$run['month']} {$run['year']}). "
+                                . "Reverse or delete the payroll run first."
+                            );
+                        }
+                    } catch (\Exception $e) {}
                 }
             }
-        }
+        } catch (\Exception $e) {}
 
-        // Archive before deletion for audit trail
+        // Archive before deletion for audit trail (Firestore)
         $archiveData = array_merge($existing, [
             'deleted_at' => date('c'),
             'deleted_by' => $this->admin_name ?? $this->admin_id ?? '',
             'is_deleted' => true,
         ]);
-        $this->firebase->set(
-            "Schools/{$this->school_name}/HR/Salary_Archives/{$id}/" . date('YmdHis'),
-            $archiveData
-        );
+        try {
+            $archiveDocId = $this->fs->docId("SAL_ARCHIVE_{$id}_" . date('YmdHis'));
+            $this->firebase->firestoreSet('salarySlips', $archiveDocId, array_merge($archiveData, [
+                'type' => 'salary_archive', 'schoolId' => $this->school_id, 'staffId' => $id,
+            ]), true);
+        } catch (\Exception $e) {
+            log_message('error', "HR delete_salary archive failed: " . $e->getMessage());
+        }
 
         // Audit log
         $this->_log_leave_audit([
@@ -2772,8 +3882,12 @@ HTML;
                 . ', Version: ' . ($existing['_version'] ?? 1),
         ]);
 
-        // Remove from active structures
-        $this->firebase->delete($this->_salary(), $id);
+        // 1. Firestore FIRST — remove salary doc
+        try {
+            $this->fs->remove('salarySlips', $this->fs->docId("SAL_{$id}"));
+        } catch (\Exception $e) {
+            log_message('error', "HR delete_salary FS failed: " . $e->getMessage());
+        }
 
         $this->json_success(['message' => 'Salary structure deleted and archived.']);
     }
@@ -2789,13 +3903,22 @@ HTML;
     {
         $this->_require_role(self::ADMIN_ROLES, 'get_payroll_runs');
 
-        $runs = $this->firebase->get($this->_payroll_runs());
         $list = [];
-        if (is_array($runs)) {
-            foreach ($runs as $id => $r) {
-                $r['id'] = $id;
-                $list[] = $r;
+
+        // ── Firestore-first ──
+        try {
+            $fsDocs = $this->fs->schoolWhere('salarySlips', [['type', '==', 'run']]);
+            if (!empty($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $r = $doc['data'];
+                    // Extract run ID from doc id (format: {schoolId}_RUN_{runId})
+                    $parts = explode('_RUN_', $doc['id'], 2);
+                    $r['id'] = isset($parts[1]) ? $parts[1] : ($r['id'] ?? $doc['id']);
+                    $list[] = $r;
+                }
             }
+        } catch (\Exception $e) {
+            log_message('error', "HR get_payroll_runs FS failed: " . $e->getMessage());
         }
 
         // Sort by created_at descending
@@ -2832,25 +3955,56 @@ HTML;
         // Check payroll month lock
         $this->_check_payroll_lock($month, $year);
 
-        // Check for existing run
-        $existingRuns = $this->firebase->get($this->_payroll_runs());
-        if (is_array($existingRuns)) {
-            foreach ($existingRuns as $rid => $er) {
-                if (($er['month'] ?? '') === $month && ($er['year'] ?? '') === $year) {
+        // ── Firestore-first: check for existing run ──
+        $existingRunChecked = false;
+        try {
+            $fsRuns = $this->fs->schoolWhere('salarySlips', [
+                ['type', '==', 'run'],
+                ['month', '==', $month],
+                ['year', '==', $year],
+            ]);
+            if (!empty($fsRuns)) {
+                foreach ($fsRuns as $doc) {
+                    $parts = explode('_RUN_', $doc['id'], 2);
+                    $rid = isset($parts[1]) ? $parts[1] : $doc['id'];
                     $this->json_error("A payroll run already exists for {$month} {$year} (ID: {$rid}). Delete or use it.");
                 }
             }
+            $existingRunChecked = true;
+        } catch (\Exception $e) {
+            log_message('error', "HR preflight FS run check failed: " . $e->getMessage());
         }
 
-        // Check roster
-        $roster = $this->firebase->get("Schools/{$this->school_name}/{$this->session_year}/Teachers");
-        if (!is_array($roster) || empty($roster)) {
+        // Check roster (Firestore)
+        $roster = [];
+        try {
+            $fsStaff = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
+            if (is_array($fsStaff)) {
+                foreach ($fsStaff as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? $d['userId'] ?? '';
+                    if ($sid !== '') $roster[$sid] = $d;
+                }
+            }
+        } catch (\Exception $e) {}
+        if (empty($roster)) {
             $this->json_error('No staff found in the current session roster.');
         }
 
-        // Check salary structures coverage
-        $salaryStructures = $this->firebase->get($this->_salary());
-        $staffWithSalary = is_array($salaryStructures) ? array_keys($salaryStructures) : [];
+        // ── Firestore-first: check salary structures coverage ──
+        $staffWithSalary = [];
+        try {
+            $fsSals = $this->fs->schoolWhere('salarySlips', [['type', '==', 'salary_structure']]);
+            if (!empty($fsSals)) {
+                foreach ($fsSals as $doc) {
+                    $sid = $doc['data']['staffId'] ?? '';
+                    if ($sid !== '') $staffWithSalary[] = $sid;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR preflight FS salary check failed: " . $e->getMessage());
+        }
+
         $rosterIds = array_keys($roster);
         $missingStructures = array_diff($rosterIds, $staffWithSalary);
         if (!empty($staffWithSalary)) {
@@ -2869,12 +4023,29 @@ HTML;
         // Check accounting accounts — structured error for preflight UI
         $this->_validate_accounts(['5010', '5020', '2020'], true);
 
-        // Check attendance data
+        // Check attendance data — Firestore-first via staffAttendanceSummary
         $monthYear  = "{$month} {$year}";
-        $attendance = $this->firebase->get(
-            "Schools/{$this->school_name}/{$this->session_year}/Staff_Attendance/{$monthYear}"
-        );
-        if (!is_array($attendance) || empty($attendance)) {
+        $monthNum   = array_search($month, $validMonths) + 1;
+        $monthKey   = sprintf('%04d-%02d', (int) $year, $monthNum);
+        $attendance = [];
+
+        try {
+            $fsSummaries = $this->fs->schoolWhere('staffAttendanceSummary', [
+                ['month', '==', $monthKey],
+            ]);
+            if (!empty($fsSummaries)) {
+                foreach ($fsSummaries as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? '';
+                    $dw  = $d['dayWise'] ?? '';
+                    if ($sid !== '' && $dw !== '') {
+                        $attendance[$sid] = $dw;
+                    }
+                }
+            }
+        } catch (\Exception $e) {}
+
+        if (empty($attendance)) {
             $warnings[] = "No attendance data found for {$month} {$year}. All staff will be treated as fully present.";
         } else {
             $attendanceCount = count($attendance);
@@ -2883,20 +4054,18 @@ HTML;
             }
         }
 
-        // Check pending leave requests for this month
-        $allLeaveReqs = $this->firebase->get($this->_leave_req());
+        // Check pending leave requests for this month — Firestore-first via helper
+        $allLeaveReqs = $this->_fsGetAllLeaveRequests();
         $pendingCount = 0;
-        if (is_array($allLeaveReqs)) {
-            $monthNum   = array_search($month, $validMonths) + 1;
-            $monthStart = sprintf('%04d-%02d-01', (int) $year, $monthNum);
-            $monthEnd   = date('Y-m-t', strtotime($monthStart));
-            foreach ($allLeaveReqs as $rid => $lr) {
-                if (($lr['status'] ?? '') !== 'Pending') continue;
-                $lrFrom = $lr['from_date'] ?? '';
-                $lrTo   = $lr['to_date'] ?? '';
-                if ($lrFrom <= $monthEnd && $lrTo >= $monthStart) {
-                    $pendingCount++;
-                }
+        $monthNum   = array_search($month, $validMonths) + 1;
+        $monthStart = sprintf('%04d-%02d-01', (int) $year, $monthNum);
+        $monthEnd   = date('Y-m-t', strtotime($monthStart));
+        foreach ($allLeaveReqs as $rid => $lr) {
+            if (($lr['status'] ?? '') !== 'Pending') continue;
+            $lrFrom = $lr['from_date'] ?? '';
+            $lrTo   = $lr['to_date'] ?? '';
+            if ($lrFrom <= $monthEnd && $lrTo >= $monthStart) {
+                $pendingCount++;
             }
         }
         if ($pendingCount > 0) {
@@ -2921,9 +4090,18 @@ HTML;
     {
         $this->_require_role(self::ADMIN_ROLES, 'auto_create_payroll_accounts');
 
-        $coaBase = "Schools/{$this->school_name}/Accounts/ChartOfAccounts";
-        $coa     = $this->firebase->get($coaBase);
-        if (!is_array($coa)) $coa = [];
+        // Read existing CoA from Firestore
+        $coa = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('accounting', [['type', '==', 'chartOfAccounts']]);
+            if (is_array($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $code = $d['code'] ?? '';
+                    if ($code !== '') $coa[$code] = $d;
+                }
+            }
+        } catch (\Exception $e) {}
 
         // Seed the FULL chart of accounts (62 accounts), not just the 10 payroll ones
         $now      = date('c');
@@ -2937,8 +4115,14 @@ HTML;
                 $skipped[] = $code;
                 continue;
             }
-            $this->firebase->set("{$coaBase}/{$code}", $acct);
-            $created[] = $code;
+            try {
+                $acct['type'] = 'chartOfAccounts';
+                $acct['schoolId'] = $this->school_id;
+                $this->firebase->firestoreSet('accounting', $this->fs->docId("COA_{$code}"), $acct, true);
+                $created[] = $code;
+            } catch (\Exception $e) {
+                log_message('error', "HR auto_create_payroll_accounts Firestore write failed for {$code}: " . $e->getMessage());
+            }
         }
 
         log_message('info',
@@ -3081,49 +4265,67 @@ HTML;
         // Check payroll month lock
         $this->_check_payroll_lock($month, $year);
 
-        // Check for existing run for the same month/year
-        $existingRuns = $this->firebase->get($this->_payroll_runs());
-        if (is_array($existingRuns)) {
-            foreach ($existingRuns as $rid => $er) {
-                if (
-                    isset($er['month']) && $er['month'] === $month &&
-                    isset($er['year']) && $er['year'] === $year
-                ) {
-                    $this->json_error("A payroll run already exists for {$month} {$year} (ID: {$rid}). Delete or use it.");
+        // Check for existing run for the same month/year (Firestore)
+        try {
+            $fsExRuns = $this->fs->schoolWhere('salarySlips', [
+                ['type', '==', 'run'], ['month', '==', $month], ['year', '==', $year],
+            ]);
+            if (!empty($fsExRuns)) {
+                $parts = explode('_RUN_', $fsExRuns[0]['id'], 2);
+                $rid = isset($parts[1]) ? $parts[1] : $fsExRuns[0]['id'];
+                $this->json_error("A payroll run already exists for {$month} {$year} (ID: {$rid}). Delete or use it.");
+            }
+        } catch (\Exception $e) {}
+
+        // Get staff from Firestore roster
+        $roster = [];
+        try {
+            $fsStaff = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
+            if (is_array($fsStaff)) {
+                foreach ($fsStaff as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? $d['userId'] ?? '';
+                    if ($sid !== '') $roster[$sid] = $d;
                 }
             }
-        }
-
-        // Get staff from session roster
-        $roster = $this->firebase->get("Schools/{$this->school_name}/{$this->session_year}/Teachers");
-        if (!is_array($roster) || empty($roster)) {
+        } catch (\Exception $e) {}
+        if (empty($roster)) {
             $this->json_error('No staff found in the current session roster.');
         }
 
-        // Get all salary structures
-        $salaryStructures = $this->firebase->get($this->_salary());
-        if (!is_array($salaryStructures) || empty($salaryStructures)) {
+        // Get all salary structures (Firestore)
+        $salaryStructures = [];
+        try {
+            $fsSals = $this->fs->schoolWhere('salarySlips', [['type', '==', 'salary_structure']]);
+            if (is_array($fsSals)) {
+                foreach ($fsSals as $doc) {
+                    $sid = $doc['data']['staffId'] ?? '';
+                    if ($sid !== '') $salaryStructures[$sid] = $doc['data'];
+                }
+            }
+        } catch (\Exception $e) {}
+        if (empty($salaryStructures)) {
             $this->json_error('No salary structures found. Please set up salary structures first.');
         }
 
-        // Get staff profiles for names/departments
-        $staffProfiles = $this->firebase->get("Users/Teachers/{$this->school_name}");
+        // Get staff profiles for names/departments (Firestore — already in $roster)
+        $staffProfiles = $roster;
 
         // Validate accounting accounts exist before proceeding (H3)
         // 2030=PF Payable, 2031=ESI Payable, 2032=TDS Payable,
         // 2033=Professional Tax Payable, 2034=Other Deductions Payable
         $this->_validate_accounts(['5010', '5020', '2020', '2030', '2031', '2032', '2033', '2034'], true);
 
-        // Fetch all leave type configs to cross-reference paid/unpaid status
-        $allLeaveTypes = $this->firebase->get($this->_leave_types());
+        // Fetch all leave type configs — Firestore-first via helper
+        $allLeaveTypes = $this->_fsGetLeaveType('');
         $leaveTypeConfig = is_array($allLeaveTypes) ? $allLeaveTypes : [];
 
-        // Get approved leave requests for this month to calculate LWP days per staff
-        $allLeaveReqs = $this->firebase->get($this->_leave_req());
+        // Get approved leave requests for this month — Firestore-first via helper
+        $allLeaveReqs = $this->_fsGetAllLeaveRequests();
         $lwpByStaff       = []; // staffId => total LWP days in this month
         $lwpDaysByStaff   = []; // staffId => array of day-of-month numbers that are LWP
         $leaveDetailStaff = []; // staffId => array of leave detail objects for payslip transparency
-        if (is_array($allLeaveReqs)) {
+        if (!empty($allLeaveReqs)) {
             $monthStart = sprintf('%04d-%02d-01', (int) $year, array_search($month, $validMonths) + 1);
             $monthEnd   = date('Y-m-t', strtotime($monthStart));
             foreach ($allLeaveReqs as $rid => $lr) {
@@ -3196,11 +4398,27 @@ HTML;
             }
         }
 
-        // Get attendance for the month
+        // Get attendance for the month — Firestore-first via staffAttendanceSummary
         $monthYear  = "{$month} {$year}";
-        $attendance = $this->firebase->get(
-            "Schools/{$this->school_name}/{$this->session_year}/Staff_Attendance/{$monthYear}"
-        );
+        $monthNum   = array_search($month, $validMonths) + 1;
+        $monthKey   = sprintf('%04d-%02d', (int) $year, $monthNum);
+        $attendance = [];
+
+        try {
+            $fsSummaries = $this->fs->schoolWhere('staffAttendanceSummary', [
+                ['month', '==', $monthKey],
+            ]);
+            if (!empty($fsSummaries)) {
+                foreach ($fsSummaries as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? '';
+                    $dw  = $d['dayWise'] ?? '';
+                    if ($sid !== '' && $dw !== '') {
+                        $attendance[$sid] = $dw;
+                    }
+                }
+            }
+        } catch (\Exception $e) {}
 
         // HR-5 FIX: Exclude Sundays, 2nd & 4th Saturdays, and school holidays
         $monthNum    = array_search($month, $validMonths) + 1;
@@ -3209,28 +4427,31 @@ HTML;
         // Load school holidays for this month (HR-11 FIX: merge both Events and Attendance holiday sources)
         $holidays = [];
         try {
-            // Source 1: Events module — array of [{date: "YYYY-MM-DD", ...}]
-            $holidayData = $this->firebase->get("Schools/{$this->school_name}/Events/Holidays/{$year}");
-            if (is_array($holidayData)) {
-                foreach ($holidayData as $h) {
-                    $hDate = $h['date'] ?? '';
-                    if ($hDate && (int) date('n', strtotime($hDate)) === $monthNum) {
-                        $holidays[date('j', strtotime($hDate))] = true;
+            // Source 1: Events/holidays from Firestore school doc
+            $schoolDoc = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($schoolDoc)) {
+                $holidayData = $schoolDoc['holidays'] ?? [];
+                if (is_array($holidayData)) {
+                    foreach ($holidayData as $h) {
+                        $hDate = is_string($h) ? $h : ($h['date'] ?? '');
+                        if ($hDate && (int) date('n', strtotime($hDate)) === $monthNum) {
+                            $holidays[(int) date('j', strtotime($hDate))] = true;
+                        }
                     }
                 }
-            }
-            // Source 2: Attendance settings — {"YYYY-MM-DD": "Holiday Name", ...}
-            $attHolidays = $this->firebase->get("Schools/{$this->school_name}/Config/Attendance/holidays");
-            if (is_array($attHolidays)) {
-                foreach ($attHolidays as $date => $name) {
-                    if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $date, $m)) {
-                        if ((int) $m[1] === (int) $year && (int) $m[2] === $monthNum) {
-                            $holidays[(int) $m[3]] = true;
+                // Source 2: Attendance holiday config from school doc
+                $attHolidays = $schoolDoc['attendanceConfig']['holidays'] ?? [];
+                if (is_array($attHolidays)) {
+                    foreach ($attHolidays as $date => $name) {
+                        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $date, $m)) {
+                            if ((int) $m[1] === (int) $year && (int) $m[2] === $monthNum) {
+                                $holidays[(int) $m[3]] = true;
+                            }
                         }
                     }
                 }
             }
-        } catch (Exception $e) {
+        } catch (\Exception $e) {
             // Non-fatal: proceed without holidays
         }
 
@@ -3276,9 +4497,14 @@ HTML;
         $payrollWarnings = [];
         $deptGross       = []; // department → total gross (cost center tracking)
 
-        // Load attendance config for vacant-day handling
-        $attConfig = $this->firebase->get("Schools/{$this->school_name}/Config/AttendanceRules");
-        if (!is_array($attConfig)) $attConfig = [];
+        // Load attendance config for vacant-day handling (Firestore)
+        $attConfig = [];
+        try {
+            $schoolDoc2 = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($schoolDoc2) && is_array($schoolDoc2['attendanceRules'] ?? null)) {
+                $attConfig = $schoolDoc2['attendanceRules'];
+            }
+        } catch (\Exception $e) {}
 
         foreach ($roster as $staffId => $rosterData) {
             $profile = (isset($staffProfiles[$staffId]) && is_array($staffProfiles[$staffId]))
@@ -3364,6 +4590,9 @@ HTML;
 
             // Payable days = working_days - absent - LWP days
             // Paid leave is counted as present (no salary deduction)
+            // Absent counter walks all calendar days, so clamp to workingDays to avoid
+            // weekend/holiday vacancy inflating the deduction above 100%.
+            if ($daysAbsent > $workingDays) $daysAbsent = $workingDays;
             $daysWorked = $workingDays - $daysAbsent - $staffLwpDays;
             if ($daysWorked < 0) $daysWorked = 0;
 
@@ -3371,6 +4600,7 @@ HTML;
             // Paid leave days do NOT reduce salary
             $basic = (float) ($sal['basic'] ?? 0);
             $deductionDays  = $daysAbsent + $staffLwpDays;
+            if ($deductionDays > $workingDays) $deductionDays = $workingDays;
             $absentFraction = ($workingDays > 0) ? ($deductionDays / $workingDays) : 0;
             $effectiveBasic = round($basic * (1 - $absentFraction), 2);
 
@@ -3425,7 +4655,10 @@ HTML;
             $isTeaching = false;
             if (!empty($staffRoles) && is_array($staffRoles)) {
                 if (!isset($_roleDefs)) {
-                    $_roleDefs = $this->firebase->get("Schools/{$this->school_name}/Config/StaffRoles") ?? [];
+                    try {
+                        $schoolDoc3 = $this->fs->get('schools', $this->fs->schoolId());
+                        $_roleDefs = (is_array($schoolDoc3) && is_array($schoolDoc3['staffRoles'] ?? null)) ? $schoolDoc3['staffRoles'] : [];
+                    } catch (\Exception $e) { $_roleDefs = []; }
                     if (!is_array($_roleDefs)) $_roleDefs = [];
                 }
                 foreach ($staffRoles as $_rid) {
@@ -3457,6 +4690,11 @@ HTML;
                 'staff_id'         => $staffId,
                 'staff_name'       => $staffName,
                 'department'       => $department,
+                // Month context — needed for teacher app orderBy('month') and cross-system querying
+                'month'            => $month,
+                'month_key'        => $monthKey,
+                'year'             => (string) $year,
+                'run_id'           => $runId,
                 'basic'            => $effectiveBasic,
                 'hra'              => $hra,
                 'da'               => $da,
@@ -3559,10 +4797,11 @@ HTML;
             'dept_breakdown'   => $deptGross,
         ];
 
-        $this->firebase->set($this->_payroll_runs($runId), $runData);
-
-        // Create individual slips (single batch write instead of N sequential calls)
-        $this->firebase->set($this->_payroll_slips($runId), $slips);
+        // 1. Firestore FIRST — sync payroll run + slips
+        $this->_fsSyncPayrollRun($runId, $runData);
+        foreach ($slips as $sid => $slip) {
+            $this->_fsSyncPayslip($runId, $sid, $slip);
+        }
 
         // ── Expense journal entry (Debit salary expenses, Credit payable accounts) ──
         // DR side: gross salary expense (teaching + non-teaching)
@@ -3597,10 +4836,10 @@ HTML;
 
         $journalId = $this->_create_acct_journal($narration, $journalLines, $runId);
 
-        // Store expense journal ID in run
-        $this->firebase->update($this->_payroll_runs($runId), [
-            'expense_journal_id' => $journalId,
-        ]);
+        // Store expense journal ID in run (Firestore)
+        try {
+            $this->_fsSyncPayrollRun($runId, array_merge($runData, ['expense_journal_id' => $journalId]));
+        } catch (\Exception $e) {}
 
         $this->_log_payroll('generated', $runId, [
             'month' => $month, 'year' => $year,
@@ -3641,19 +4880,37 @@ HTML;
         }
         $runId = $this->safe_path_segment($runId, 'run_id');
 
-        // Verify run exists
-        $run = $this->firebase->get($this->_payroll_runs($runId));
+        // ── Firestore-first: get run ──
+        $run = null;
+        try {
+            $fsRun = $this->fs->get('salarySlips', $this->fs->docId("RUN_{$runId}"));
+            if (is_array($fsRun) && !empty($fsRun)) $run = $fsRun;
+        } catch (\Exception $e) {
+            log_message('error', "HR get_payroll_slips FS run failed: " . $e->getMessage());
+        }
+        if (!is_array($run)) {
+            $run = $this->_fsGetRun($runId);
+        }
         if (!is_array($run)) {
             $this->json_error('Payroll run not found.');
         }
 
-        $slips = $this->firebase->get($this->_payroll_slips($runId));
+        // ── Firestore-first: get slips for this run ──
         $list = [];
-        if (is_array($slips)) {
-            foreach ($slips as $staffId => $s) {
-                $s['staff_id'] = $staffId;
-                $list[] = $s;
+        try {
+            $fsDocs = $this->fs->schoolWhere('salarySlips', [
+                ['type', '==', 'payslip'],
+                ['runId', '==', $runId],
+            ]);
+            if (!empty($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $s = $doc['data'];
+                    $s['staff_id'] = $s['staffId'] ?? '';
+                    $list[] = $s;
+                }
             }
+        } catch (\Exception $e) {
+            log_message('error', "HR get_payroll_slips FS slips failed: " . $e->getMessage());
         }
 
         // Sort by staff name
@@ -3677,7 +4934,7 @@ HTML;
 
         $runId = $this->safe_path_segment(trim($this->input->post('run_id') ?? ''), 'run_id');
 
-        $run = $this->firebase->get($this->_payroll_runs($runId));
+        $run = $this->_fsGetRun($runId);
         if (!is_array($run)) {
             $this->json_error('Payroll run not found.');
         }
@@ -3685,20 +4942,19 @@ HTML;
             $this->json_error('Only Draft payroll runs can be finalized.');
         }
 
-        $this->firebase->update($this->_payroll_runs($runId), [
+        $updateData = [
             'status'       => 'Finalized',
             'finalized_at' => date('c'),
             'finalized_by' => $this->admin_name,
-        ]);
+        ];
 
-        // Batch-update all slip statuses in a single call
-        $slips = $this->firebase->get($this->_payroll_slips($runId));
-        if (is_array($slips)) {
-            $statusPatch = [];
-            foreach ($slips as $staffId => $s) {
-                $statusPatch["{$staffId}/status"] = 'Finalized';
-            }
-            $this->firebase->update($this->_payroll_slips($runId), $statusPatch);
+        // Firestore write
+        $this->_fsSyncPayrollRun($runId, array_merge($run, $updateData));
+
+        // Batch-update all slip statuses (Firestore)
+        $slips = $this->_fsGetAllSlips($runId);
+        foreach ($slips as $staffId => $s) {
+            $this->_fsSyncPayslip($runId, $staffId, array_merge($s, ['status' => 'Finalized']));
         }
 
         $this->_log_payroll('finalized', $runId);
@@ -3717,7 +4973,7 @@ HTML;
 
         $runId = $this->safe_path_segment(trim($this->input->post('run_id') ?? ''), 'run_id');
 
-        $run = $this->firebase->get($this->_payroll_runs($runId));
+        $run = $this->_fsGetRun($runId);
         if (!is_array($run)) {
             $this->json_error('Payroll run not found.');
         }
@@ -3726,20 +4982,19 @@ HTML;
             $this->json_error("Only Finalized runs can be approved. Current status: {$status}.");
         }
 
-        $this->firebase->update($this->_payroll_runs($runId), [
+        $approveData = [
             'status'      => 'Approved',
             'approved_at' => date('c'),
             'approved_by' => $this->admin_name,
-        ]);
+        ];
 
-        // Update slip statuses
-        $slips = $this->firebase->get($this->_payroll_slips($runId));
-        if (is_array($slips)) {
-            $patch = [];
-            foreach ($slips as $sid => $s) {
-                $patch["{$sid}/status"] = 'Approved';
-            }
-            $this->firebase->update($this->_payroll_slips($runId), $patch);
+        // Firestore write
+        $this->_fsSyncPayrollRun($runId, array_merge($run, $approveData));
+
+        // Update slip statuses (Firestore)
+        $slips = $this->_fsGetAllSlips($runId);
+        foreach ($slips as $sid => $s) {
+            $this->_fsSyncPayslip($runId, $sid, array_merge($s, ['status' => 'Approved']));
         }
 
         $this->_log_payroll('approved', $runId);
@@ -3764,9 +5019,30 @@ HTML;
         }
         $staffId = $this->safe_path_segment($staffId, 'staff_id');
 
-        $run  = $this->firebase->get($this->_payroll_runs($runId));
+        // ── Firestore-first: get run ──
+        $run = null;
+        try {
+            $fsRun = $this->fs->get('salarySlips', $this->fs->docId("RUN_{$runId}"));
+            if (is_array($fsRun) && !empty($fsRun)) $run = $fsRun;
+        } catch (\Exception $e) {
+            log_message('error', "HR download_payslip FS run failed: " . $e->getMessage());
+        }
+        if (!is_array($run)) {
+            $run = $this->_fsGetRun($runId);
+        }
         if (!is_array($run)) show_error('Payroll run not found.', 404);
-        $slip = $this->firebase->get($this->_payroll_slips($runId, $staffId));
+
+        // ── Firestore-first: get slip ──
+        $slip = null;
+        try {
+            $fsSlip = $this->fs->get('salarySlips', $this->fs->docId("SLIP_{$runId}_{$staffId}"));
+            if (is_array($fsSlip) && !empty($fsSlip)) $slip = $fsSlip;
+        } catch (\Exception $e) {
+            log_message('error', "HR download_payslip FS slip failed: " . $e->getMessage());
+        }
+        if (!is_array($slip)) {
+            $slip = $this->_fsGetSlip($runId, $staffId);
+        }
         if (!is_array($slip)) show_error('Payslip not found.', 404);
 
         // Only allow download of Finalized/Approved/Paid runs
@@ -3775,9 +5051,16 @@ HTML;
             show_error('Payslip not available yet (still in draft).', 403);
         }
 
-        $profile = $this->firebase->get("Users/Teachers/{$this->school_name}/{$staffId}");
-        $schoolLogo = $this->firebase->get("Schools/{$this->school_name}/Logo") ?: '';
-        $schoolProfile = $this->firebase->get("Schools/{$this->school_name}/Config/Profile");
+        $profile = $this->_fsGetStaffProfile($staffId);
+        $schoolLogo = '';
+        $schoolProfile = [];
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($schoolDoc)) {
+                $schoolLogo = $schoolDoc['logo'] ?? '';
+                $schoolProfile = $schoolDoc['profile'] ?? ($schoolDoc['Profile'] ?? []);
+            }
+        } catch (\Exception $e) {}
         $schoolName = $schoolProfile['name'] ?? ($this->school_display_name ?? $this->school_name);
         $schoolAddr = $schoolProfile['address'] ?? '';
 
@@ -3802,20 +5085,73 @@ HTML;
         $month = trim($this->input->get('month') ?? '');
         $year  = trim($this->input->get('year') ?? '');
 
-        // Resolve run
+        // ── Firestore-first: resolve run + slips ──
         $run = null;
         $slips = [];
         if ($runId !== '') {
             $runId = $this->safe_path_segment($runId, 'run_id');
-            $run = $this->firebase->get($this->_payroll_runs($runId));
-            $slips = $this->firebase->get($this->_payroll_slips($runId)) ?? [];
+
+            // Firestore first for run
+            try {
+                $fsRun = $this->fs->get('salarySlips', $this->fs->docId("RUN_{$runId}"));
+                if (is_array($fsRun) && !empty($fsRun)) $run = $fsRun;
+            } catch (\Exception $e) {}
+            if (!is_array($run)) {
+                $run = $this->_fsGetRun($runId);
+            }
+
+            // Firestore first for slips
+            try {
+                $fsDocs = $this->fs->schoolWhere('salarySlips', [
+                    ['type', '==', 'payslip'],
+                    ['runId', '==', $runId],
+                ]);
+                if (!empty($fsDocs)) {
+                    foreach ($fsDocs as $doc) {
+                        $s = $doc['data'];
+                        $sid = $s['staffId'] ?? '';
+                        if ($sid !== '') $slips[$sid] = $s;
+                    }
+                }
+            } catch (\Exception $e) {}
+            if (empty($slips)) {
+                $slips = $this->_fsGetAllSlips($runId);
+            }
         } elseif ($month !== '' && $year !== '') {
-            $allRuns = $this->firebase->get($this->_payroll_runs());
-            if (is_array($allRuns)) {
+            // Firestore first for finding run by month/year
+            try {
+                $fsRuns = $this->fs->schoolWhere('salarySlips', [
+                    ['type', '==', 'run'],
+                    ['month', '==', $month],
+                    ['year', '==', $year],
+                ], null, 'ASC', 1);
+                if (!empty($fsRuns)) {
+                    $doc = $fsRuns[0];
+                    $run = $doc['data'];
+                    $parts = explode('_RUN_', $doc['id'], 2);
+                    $runId = isset($parts[1]) ? $parts[1] : $doc['id'];
+
+                    $fsDocs = $this->fs->schoolWhere('salarySlips', [
+                        ['type', '==', 'payslip'],
+                        ['runId', '==', $runId],
+                    ]);
+                    foreach ($fsDocs as $sd) {
+                        $s = $sd['data'];
+                        $sid = $s['staffId'] ?? '';
+                        if ($sid !== '') $slips[$sid] = $s;
+                    }
+                }
+            } catch (\Exception $e) {
+                log_message('error', "HR export_payroll_report FS failed: " . $e->getMessage());
+            }
+
+            // Firestore fallback
+            if (!is_array($run)) {
+                $allRuns = $this->_fsGetAllRuns();
                 foreach ($allRuns as $rid => $r) {
                     if (($r['month'] ?? '') === $month && ($r['year'] ?? '') === $year) {
                         $run = $r; $runId = $rid;
-                        $slips = $this->firebase->get($this->_payroll_slips($rid)) ?? [];
+                        $slips = $this->_fsGetAllSlips($rid);
                         break;
                     }
                 }
@@ -3865,11 +5201,17 @@ HTML;
         $month = $run['month'] ?? ''; $year = $run['year'] ?? '';
         $staffName = $p['Name'] ?? ($slip['staff_name'] ?? $staffId);
         $dept = $p['Department'] ?? ($slip['department'] ?? '');
-        $pos = $p['Position'] ?? '';
+        $pos = $p['designation'] ?? $p['Position'] ?? '';
         $doj = $p['Date Of Joining'] ?? '';
         $empId = $staffId;
         $bankName = $p['bankDetails']['bankName'] ?? '';
         $bankAcct = $p['bankDetails']['accountNumber'] ?? '';
+
+        // Phase A statutory IDs
+        $pan = $p['panNumber']    ?? '';
+        $pf  = $p['pfNumber']     ?? '';
+        $esi = $p['esiNumber']    ?? '';
+        $uan = $p['aadharNumber'] ?? '';  // Aadhar displayed as UAN backup
 
         $gross = (float) ($slip['gross'] ?? 0);
         $totalDed = (float) ($slip['total_deductions'] ?? 0);
@@ -3907,6 +5249,11 @@ HTML;
         $h .= '<tr><td class="lbl">Department</td><td>' . htmlspecialchars($dept) . '</td><td class="lbl">Designation</td><td>' . htmlspecialchars($pos) . '</td></tr>';
         $h .= '<tr><td class="lbl">Date of Joining</td><td>' . htmlspecialchars($doj) . '</td><td class="lbl">Working Days</td><td>' . ($slip['working_days'] ?? '-') . ' (' . ($slip['days_worked'] ?? '-') . ' worked)</td></tr>';
         if ($bankName) $h .= '<tr><td class="lbl">Bank</td><td>' . htmlspecialchars($bankName) . '</td><td class="lbl">Account No.</td><td>' . htmlspecialchars($bankAcct) . '</td></tr>';
+        // Statutory IDs row — only show if at least one is filled
+        if ($pan || $pf || $esi) {
+            $h .= '<tr><td class="lbl">PAN</td><td>' . htmlspecialchars($pan ?: '—') . '</td><td class="lbl">PF/UAN No.</td><td>' . htmlspecialchars($pf ?: '—') . '</td></tr>';
+            $h .= '<tr><td class="lbl">ESI No.</td><td>' . htmlspecialchars($esi ?: '—') . '</td><td class="lbl">Aadhar</td><td>' . htmlspecialchars($uan ?: '—') . '</td></tr>';
+        }
         $h .= '</table>';
 
         // Earnings & Deductions side-by-side
@@ -4068,7 +5415,7 @@ HTML;
         }
         if ($paymentDate === '') $paymentDate = date('Y-m-d');
 
-        $run = $this->firebase->get($this->_payroll_runs($runId));
+        $run = $this->_fsGetRun($runId);
         if (!is_array($run)) {
             $this->json_error('Payroll run not found.');
         }
@@ -4148,27 +5495,23 @@ HTML;
             $runUpdate['payment_date']      = $paymentDate;
             $runUpdate['payment_reference'] = $paymentReference;
         }
-        $this->firebase->update($this->_payroll_runs($runId), $runUpdate);
-
-        // Append payment to the payments array
-        $this->firebase->set(
-            $this->_payroll_runs($runId) . "/payments/{$paymentSeq}",
-            $paymentRecord
-        );
+        // Firestore — sync run update + payment record
+        $runLatest = $this->_fsGetRun($runId);
+        $runMerged = array_merge(is_array($runLatest) ? $runLatest : [], $runUpdate);
+        $existingPayments = $runMerged['payments'] ?? [];
+        $existingPayments[$paymentSeq] = $paymentRecord;
+        $runMerged['payments'] = $existingPayments;
+        $this->_fsSyncPayrollRun($runId, $runMerged);
 
         // Update slip statuses only on full payment
         if ($isFullPayment) {
-            $slips = $this->firebase->get($this->_payroll_slips($runId));
-            if (is_array($slips)) {
-                $statusPatch = [];
-                foreach ($slips as $staffId => $s) {
-                    $statusPatch["{$staffId}/status"]            = 'Paid';
-                    $statusPatch["{$staffId}/paid_at"]           = $paidAt;
-                    $statusPatch["{$staffId}/payment_mode"]      = $paymentMode;
-                    $statusPatch["{$staffId}/payment_date"]      = $paymentDate;
-                    $statusPatch["{$staffId}/payment_reference"] = $paymentReference;
-                }
-                $this->firebase->update($this->_payroll_slips($runId), $statusPatch);
+            $slips = $this->_fsGetAllSlips($runId);
+            foreach ($slips as $staffId => $s) {
+                $this->_fsSyncPayslip($runId, $staffId, array_merge($s, [
+                    'status' => 'Paid', 'paid_at' => $paidAt,
+                    'payment_mode' => $paymentMode, 'payment_date' => $paymentDate,
+                    'payment_reference' => $paymentReference,
+                ]));
             }
         }
 
@@ -4209,20 +5552,38 @@ HTML;
         $runId   = $this->safe_path_segment($runId, 'run_id');
         $staffId = $this->safe_path_segment($staffId, 'staff_id');
 
-        // Get run info
-        $run = $this->firebase->get($this->_payroll_runs($runId));
+        // ── Firestore-first: get run ──
+        $run = null;
+        try {
+            $fsRun = $this->fs->get('salarySlips', $this->fs->docId("RUN_{$runId}"));
+            if (is_array($fsRun) && !empty($fsRun)) $run = $fsRun;
+        } catch (\Exception $e) {
+            log_message('error', "HR get_payslip FS run failed: " . $e->getMessage());
+        }
+        if (!is_array($run)) {
+            $run = $this->_fsGetRun($runId);
+        }
         if (!is_array($run)) {
             $this->json_error('Payroll run not found.');
         }
 
-        // Get slip
-        $slip = $this->firebase->get($this->_payroll_slips($runId, $staffId));
+        // ── Firestore-first: get slip ──
+        $slip = null;
+        try {
+            $fsSlip = $this->fs->get('salarySlips', $this->fs->docId("SLIP_{$runId}_{$staffId}"));
+            if (is_array($fsSlip) && !empty($fsSlip)) $slip = $fsSlip;
+        } catch (\Exception $e) {
+            log_message('error', "HR get_payslip FS slip failed: " . $e->getMessage());
+        }
+        if (!is_array($slip)) {
+            $slip = $this->_fsGetSlip($runId, $staffId);
+        }
         if (!is_array($slip)) {
             $this->json_error('Payslip not found for this staff member.');
         }
 
-        // Get staff profile for additional info
-        $staffProfile = $this->firebase->get("Users/Teachers/{$this->school_name}/{$staffId}");
+        // Get staff profile for additional info (Firestore)
+        $staffProfile = $this->_fsGetStaffProfile($staffId);
 
         $this->json_success([
             'run' => [
@@ -4263,7 +5624,16 @@ HTML;
         // If specific run requested, return single slip
         if ($runId !== '') {
             $runId = $this->safe_path_segment($runId, 'run_id');
-            $run   = $this->firebase->get($this->_payroll_runs($runId));
+
+            // ── Firestore-first: get run ──
+            $run = null;
+            try {
+                $fsRun = $this->fs->get('salarySlips', $this->fs->docId("RUN_{$runId}"));
+                if (is_array($fsRun) && !empty($fsRun)) $run = $fsRun;
+            } catch (\Exception $e) {}
+            if (!is_array($run)) {
+                $run = $this->_fsGetRun($runId);
+            }
             if (!is_array($run)) {
                 $this->json_error('Payroll run not found.');
             }
@@ -4271,7 +5641,9 @@ HTML;
             if (!in_array($run['status'] ?? '', ['Finalized', 'Paid'], true)) {
                 $this->json_error('This payroll run is not yet finalized.');
             }
-            $slip = $this->firebase->get($this->_payroll_slips($runId, $staffId));
+
+            // ── Firestore: get slip ──
+            $slip = $this->_fsGetSlip($runId, $staffId);
             if (!is_array($slip)) {
                 $this->json_error('No payslip found for you in this run.');
             }
@@ -4281,35 +5653,86 @@ HTML;
             ]);
         }
 
-        // Otherwise list all runs and return own slips from finalized/paid ones
-        $allRuns = $this->firebase->get($this->_payroll_runs());
-        if (!is_array($allRuns)) {
-            $this->json_success(['payslips' => []]);
+        // ── Firestore-first: list all own payslips ──
+        $result = [];
+        $usedFs = false;
+        try {
+            $fsDocs = $this->fs->schoolWhere('salarySlips', [
+                ['type', '==', 'payslip'],
+                ['staffId', '==', $staffId],
+            ]);
+            if (!empty($fsDocs)) {
+                $usedFs = true;
+                $runCache = [];
+                foreach ($fsDocs as $doc) {
+                    $s = $doc['data'];
+                    $rid = $s['runId'] ?? '';
+                    if ($rid === '') continue;
+
+                    if (!isset($runCache[$rid])) {
+                        $runDoc = null;
+                        try {
+                            $runDoc = $this->fs->get('salarySlips', $this->fs->docId("RUN_{$rid}"));
+                        } catch (\Exception $e) {}
+                        $runCache[$rid] = is_array($runDoc) ? $runDoc : null;
+                    }
+
+                    $run = $runCache[$rid];
+                    if (!is_array($run)) continue;
+                    $status = $run['status'] ?? '';
+                    if (!in_array($status, ['Finalized', 'Paid'], true)) continue;
+
+                    $result[] = [
+                        'run_id' => $rid,
+                        'month'  => $run['month'] ?? '',
+                        'year'   => $run['year'] ?? '',
+                        'status' => $status,
+                        'net_pay'          => $s['net_pay'] ?? 0,
+                        'gross'            => $s['gross'] ?? 0,
+                        'basic'            => $s['basic'] ?? 0,
+                        'total_deductions' => $s['total_deductions'] ?? 0,
+                        'days_worked'      => $s['days_worked'] ?? '',
+                        'days_absent'      => $s['days_absent'] ?? 0,
+                        'lwp_days'         => $s['lwp_days'] ?? 0,
+                        'slip'             => $s,
+                    ];
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR my_payslips FS failed: " . $e->getMessage());
         }
 
-        $result = [];
-        foreach ($allRuns as $rid => $run) {
-            if (!is_array($run)) continue;
-            $status = $run['status'] ?? '';
-            if (!in_array($status, ['Finalized', 'Paid'], true)) continue;
+        // Firestore fallback if first query didn't work
+        if (!$usedFs) {
+            $allRuns = $this->_fsGetAllRuns();
+            if (empty($allRuns)) {
+                $this->json_success(['payslips' => []]);
+                return;
+            }
 
-            $slip = $this->firebase->get($this->_payroll_slips($rid, $staffId));
-            if (!is_array($slip)) continue;
+            foreach ($allRuns as $rid => $run) {
+                if (!is_array($run)) continue;
+                $status = $run['status'] ?? '';
+                if (!in_array($status, ['Finalized', 'Paid'], true)) continue;
 
-            $result[] = [
-                'run_id' => $rid,
-                'month'  => $run['month'] ?? '',
-                'year'   => $run['year'] ?? '',
-                'status' => $status,
-                'net_pay'          => $slip['net_pay'] ?? 0,
-                'gross'            => $slip['gross'] ?? 0,
-                'basic'            => $slip['basic'] ?? 0,
-                'total_deductions' => $slip['total_deductions'] ?? 0,
-                'days_worked'      => $slip['days_worked'] ?? '',
-                'days_absent'      => $slip['days_absent'] ?? 0,
-                'lwp_days'         => $slip['lwp_days'] ?? 0,
-                'slip'             => $slip,
-            ];
+                $slip = $this->_fsGetSlip($rid, $staffId);
+                if (!is_array($slip)) continue;
+
+                $result[] = [
+                    'run_id' => $rid,
+                    'month'  => $run['month'] ?? '',
+                    'year'   => $run['year'] ?? '',
+                    'status' => $status,
+                    'net_pay'          => $slip['net_pay'] ?? 0,
+                    'gross'            => $slip['gross'] ?? 0,
+                    'basic'            => $slip['basic'] ?? 0,
+                    'total_deductions' => $slip['total_deductions'] ?? 0,
+                    'days_worked'      => $slip['days_worked'] ?? '',
+                    'days_absent'      => $slip['days_absent'] ?? 0,
+                    'lwp_days'         => $slip['lwp_days'] ?? 0,
+                    'slip'             => $slip,
+                ];
+            }
         }
 
         // Sort by year desc, month desc
@@ -4333,7 +5756,7 @@ HTML;
 
         $runId = $this->safe_path_segment(trim($this->input->post('run_id') ?? ''), 'run_id');
 
-        $run = $this->firebase->get($this->_payroll_runs($runId));
+        $run = $this->_fsGetRun($runId);
         if (!is_array($run)) {
             $this->json_error('Payroll run not found.');
         }
@@ -4350,17 +5773,22 @@ HTML;
             'total_net' => $run['total_net'] ?? 0,
         ]);
 
-        // Delete slips
-        $this->firebase->delete($this->_payroll_slips($runId));
+        // Firestore — remove run + slip docs
+        try {
+            $slips = $this->_fsGetAllSlips($runId);
+            foreach (array_keys($slips) as $sid) {
+                $this->fs->remove('salarySlips', $this->fs->docId("SLIP_{$runId}_{$sid}"));
+            }
+            $this->fs->remove('salarySlips', $this->fs->docId("RUN_{$runId}"));
+        } catch (\Exception $e) {
+            log_message('error', "HR delete_payroll FS failed: " . $e->getMessage());
+        }
 
-        // Reverse the expense journal entry via proper reversal entry (audit-safe)
+        // Reverse journal entry
         $expenseJournalId = $run['expense_journal_id'] ?? '';
         if ($expenseJournalId !== '') {
             $this->_create_reversal_journal($expenseJournalId, "Payroll run {$runId} deleted");
         }
-
-        // Delete run
-        $this->firebase->delete($this->_payroll_runs($runId));
 
         $this->json_success(['message' => 'Payroll run and associated slips deleted.']);
     }
@@ -4379,28 +5807,33 @@ HTML;
         $filterStaffId = trim($this->input->get('staff_id') ?? '');
         $filterStatus  = trim($this->input->get('status') ?? '');
         $filterPeriod  = trim($this->input->get('period') ?? '');
-
-        $appraisals = $this->firebase->get($this->_appraisals());
         $list = [];
-        if (is_array($appraisals)) {
-            foreach ($appraisals as $id => $a) {
-                if ($filterStaffId !== '' && isset($a['staff_id']) && $a['staff_id'] !== $filterStaffId) {
-                    continue;
-                }
-                if ($filterStatus !== '' && isset($a['status']) && $a['status'] !== $filterStatus) {
-                    continue;
-                }
-                if ($filterPeriod !== '' && isset($a['period']) && $a['period'] !== $filterPeriod) {
-                    continue;
-                }
-                $a['id'] = $id;
-                $list[] = $a;
+        $fromFirestore = false;
+
+        // ── Firestore-first read ────────────────────────────────────
+        try {
+            $conditions = [];
+            if ($filterStaffId !== '') {
+                $conditions[] = ['staff_id', '=', $filterStaffId];
             }
+            if ($filterStatus !== '') {
+                $conditions[] = ['status', '=', $filterStatus];
+            }
+            if ($filterPeriod !== '') {
+                $conditions[] = ['period', '=', $filterPeriod];
+            }
+            $fsDocs = $this->fs->schoolList('appraisals', $conditions);
+            if (is_array($fsDocs) && !empty($fsDocs)) {
+                $fromFirestore = true;
+                $list = $fsDocs;
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'HR get_appraisals: Firestore read failed: ' . $e->getMessage());
         }
 
         // Sort by created_at descending
         usort($list, function ($a, $b) {
-            return strcmp($b['created_at'] ?? '', $a['created_at'] ?? '');
+            return strcmp($b['created_at'] ?? $b['createdAt'] ?? '', $a['created_at'] ?? $a['createdAt'] ?? '');
         });
 
         $this->json_success(['appraisals' => $list]);
@@ -4448,13 +5881,13 @@ HTML;
             }
         }
 
-        // Verify staff exists
-        $staffProfile = $this->firebase->get("Users/Teachers/{$this->school_name}/{$staffId}");
+        // Verify staff exists (Firestore)
+        $staffProfile = $this->_fsGetStaffProfile($staffId);
         if (!is_array($staffProfile)) {
             $this->json_error('Staff member not found.');
         }
-        $staffName  = $staffProfile['Name'] ?? $staffId;
-        $department = $staffProfile['Department'] ?? '';
+        $staffName  = $staffProfile['Name'] ?? $staffProfile['name'] ?? $staffId;
+        $department = $staffProfile['Department'] ?? $staffProfile['department'] ?? '';
 
         if ($department === '') {
             $this->json_error('Selected staff has no department assigned. Please update staff profile first.');
@@ -4466,8 +5899,13 @@ HTML;
         if ($isNew) {
             $id = $this->_next_id('APR', 'Appraisal');
         } else {
-            // Only allow editing Draft appraisals
-            $existing = $this->firebase->get($this->_appraisals($id));
+            // Only allow editing Draft appraisals (Firestore-first, RTDB fallback)
+            $existing = null;
+            try {
+                $existing = $this->fs->getEntity('appraisals', $id);
+            } catch (\Exception $e) {
+                log_message('error', "HR save_appraisal: Firestore read FAILED for {$id}: " . $e->getMessage());
+            }
             if (!is_array($existing)) {
                 $this->json_error('Appraisal not found.');
             }
@@ -4504,7 +5942,14 @@ HTML;
             $data['created_by'] = $this->admin_id;
         }
 
-        $this->firebase->set($this->_appraisals($id), $data);
+        // ── Firestore-first write ────────────────────────────────────
+        try {
+            $this->fs->setEntity('appraisals', $id, $data);
+            log_message('debug', "HR save_appraisal: Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR save_appraisal: Firestore FAILED for {$id}: " . $e->getMessage());
+        }
+
         $this->json_success(['id' => $id, 'message' => $isNew ? 'Appraisal created.' : 'Appraisal updated.']);
     }
 
@@ -4518,7 +5963,14 @@ HTML;
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
-        $appraisal = $this->firebase->get($this->_appraisals($id));
+        // ── Firestore-first read ────────────────────────────────────
+        $appraisal = null;
+        try {
+            $appraisal = $this->fs->getEntity('appraisals', $id);
+        } catch (\Exception $e) {
+            log_message('error', "HR submit_appraisal: Firestore read FAILED for {$id}: " . $e->getMessage());
+        }
+        // Firestore is the only source
         if (!is_array($appraisal)) {
             $this->json_error('Appraisal not found.');
         }
@@ -4532,10 +5984,19 @@ HTML;
             $this->json_error('Overall rating must be set before submitting.');
         }
 
-        $this->firebase->update($this->_appraisals($id), [
+        $update = [
             'status'     => 'Submitted',
             'updated_at' => date('c'),
-        ]);
+        ];
+
+        // ── Firestore-first write ────────────────────────────────────
+        try {
+            $this->fs->updateEntity('appraisals', $id, $update);
+            log_message('debug', "HR submit_appraisal: Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR submit_appraisal: Firestore FAILED for {$id}: " . $e->getMessage());
+        }
+
 
         $this->json_success(['message' => 'Appraisal submitted for review.']);
     }
@@ -4551,7 +6012,14 @@ HTML;
         $id       = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
         $comments = trim($this->input->post('comments') ?? '');
 
-        $appraisal = $this->firebase->get($this->_appraisals($id));
+        // ── Firestore-first read ────────────────────────────────────
+        $appraisal = null;
+        try {
+            $appraisal = $this->fs->getEntity('appraisals', $id);
+        } catch (\Exception $e) {
+            log_message('error', "HR review_appraisal: Firestore read FAILED for {$id}: " . $e->getMessage());
+        }
+        // Firestore is the only source
         if (!is_array($appraisal)) {
             $this->json_error('Appraisal not found.');
         }
@@ -4568,7 +6036,14 @@ HTML;
             $update['comments'] = $existingComments . "\n[Review: " . date('Y-m-d') . '] ' . $comments;
         }
 
-        $this->firebase->update($this->_appraisals($id), $update);
+        // ── Firestore-first write ────────────────────────────────────
+        try {
+            $this->fs->updateEntity('appraisals', $id, $update);
+            log_message('debug', "HR review_appraisal: Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR review_appraisal: Firestore FAILED for {$id}: " . $e->getMessage());
+        }
+
         $this->json_success(['message' => 'Appraisal marked as reviewed.']);
     }
 
@@ -4582,7 +6057,14 @@ HTML;
 
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'id');
 
-        $appraisal = $this->firebase->get($this->_appraisals($id));
+        // ── Firestore-first read ────────────────────────────────────
+        $appraisal = null;
+        try {
+            $appraisal = $this->fs->getEntity('appraisals', $id);
+        } catch (\Exception $e) {
+            log_message('error', "HR delete_appraisal: Firestore read FAILED for {$id}: " . $e->getMessage());
+        }
+        // Firestore is the only source
         if (!is_array($appraisal)) {
             $this->json_error('Appraisal not found.');
         }
@@ -4590,7 +6072,14 @@ HTML;
             $this->json_error('Only Draft appraisals can be deleted.');
         }
 
-        $this->firebase->delete($this->_appraisals($id));
+        // ── Firestore-first delete ──────────────────────────────────
+        try {
+            $this->fs->removeEntity('appraisals', $id);
+            log_message('debug', "HR delete_appraisal: Firestore OK for {$id}");
+        } catch (\Exception $e) {
+            log_message('error', "HR delete_appraisal: Firestore FAILED for {$id}: " . $e->getMessage());
+        }
+
         $this->json_success(['message' => 'Appraisal deleted.']);
     }
 
@@ -4606,39 +6095,34 @@ HTML;
     {
         $this->_require_role(self::VIEW_ROLES, 'get_staff_list');
 
-        // Get roster
-        $roster = $this->firebase->get("Schools/{$this->school_name}/{$this->session_year}/Teachers");
-        if (!is_array($roster) || empty($roster)) {
-            $this->json_success(['staff' => []]);
-            return;
-        }
-
-        // Get profiles
-        $profiles = $this->firebase->get("Users/Teachers/{$this->school_name}");
+        // Firestore-first: read staff directly from staff collection
         $list = [];
-
-        foreach ($roster as $staffId => $rosterData) {
-            $profile = (is_array($profiles) && isset($profiles[$staffId]) && is_array($profiles[$staffId]))
-                ? $profiles[$staffId]
-                : [];
-
-            $list[] = [
-                'id'           => $staffId,
-                'name'         => $profile['Name'] ?? $staffId,
-                'department'   => $profile['Department'] ?? '',
-                'position'     => $profile['Position'] ?? '',
-                'email'        => $profile['Email'] ?? '',
-                'phone'        => $profile['Phone'] ?? '',
-                'staff_roles'  => $profile['staff_roles'] ?? [],
-                'primary_role' => $profile['primary_role'] ?? '',
-            ];
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
+            foreach ($fsDocs as $doc) {
+                $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                $sid = $d['staffId'] ?? $d['userId'] ?? '';
+                if ($sid === '') continue;
+                $list[] = [
+                    'id'           => $sid,
+                    'name'         => $d['Name'] ?? $d['name'] ?? $sid,
+                    'Name'         => $d['Name'] ?? $d['name'] ?? $sid,
+                    'department'   => $d['Department'] ?? $d['department'] ?? '',
+                    'position'     => $d['designation'] ?? $d['Position'] ?? $d['position'] ?? '',
+                    'designation'  => $d['designation'] ?? $d['Position'] ?? '',
+                    'email'        => $d['Email'] ?? $d['email'] ?? '',
+                    'phone'        => $d['Phone Number'] ?? $d['phone'] ?? '',
+                    'staff_roles'  => $d['staff_roles'] ?? [],
+                    'primary_role' => $d['primary_role'] ?? '',
+                ];
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR get_staff_list: Firestore failed: " . $e->getMessage());
+            // Firestore failed — return empty list
+            log_message('error', "HR get_staff_list: Firestore failed completely");
         }
 
-        // Sort alphabetically by name
-        usort($list, function ($a, $b) {
-            return strcmp($a['name'], $b['name']);
-        });
-
+        usort($list, function ($a, $b) { return strcmp($a['name'], $b['name']); });
         $this->json_success(['staff' => $list]);
     }
 
@@ -4656,20 +6140,37 @@ HTML;
         $school  = $this->school_name;
         $session = $this->session_year;
 
-        // Get all staff profiles
-        $profiles = $this->firebase->get("Users/Teachers/{$school}");
-        if (!is_array($profiles)) {
+        // Get all staff profiles (Firestore)
+        $profiles = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', []);
+            if (is_array($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? $d['userId'] ?? '';
+                    if ($sid !== '') $profiles[$sid] = $d;
+                }
+            }
+        } catch (\Exception $e) {}
+        if (empty($profiles)) {
             $this->json_success(['message' => 'No staff found.', 'created' => 0, 'skipped' => 0]);
             return;
         }
 
-        // Get existing structures (single read)
-        $existing = $this->firebase->get($this->_salary());
-        if (!is_array($existing)) $existing = [];
+        // Get existing structures (Firestore)
+        $existing = [];
+        try {
+            $fsSals = $this->fs->schoolWhere('salarySlips', [['type', '==', 'salary_structure']]);
+            if (is_array($fsSals)) {
+                foreach ($fsSals as $doc) {
+                    $sid = $doc['data']['staffId'] ?? '';
+                    if ($sid !== '') $existing[$sid] = $doc['data'];
+                }
+            }
+        } catch (\Exception $e) {}
 
-        // Get roster for current session
-        $roster = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
-        if (!is_array($roster)) $roster = [];
+        // Use staff profiles as roster
+        $roster = $profiles;
 
         $created = [];
         $skipped = [];
@@ -4690,10 +6191,13 @@ HTML;
             if (!is_array($profile)) { $skipped[] = $staffId; continue; }
 
             $salDet = $profile['salaryDetails'] ?? [];
-            $basic  = (float) ($salDet['basicSalary'] ?? 0);
-            $allow  = (float) ($salDet['Allowances'] ?? 0);
+            $basic  = (float) ($salDet['basicSalary'] ?? $salDet['basic_salary'] ?? $salDet['basic'] ?? 0);
+            $allow  = (float) ($salDet['Allowances'] ?? $salDet['allowances'] ?? 0);
 
-            if ($basic <= 0) { $noSalary[] = $staffId; continue; }
+            if ($basic <= 0) {
+                $noSalary[] = $staffId;
+                continue;
+            }
 
             // Compute breakdown
             $hra = round($basic * ($hraPct / 100), 2);
@@ -4718,7 +6222,7 @@ HTML;
                 'updated_by' => $this->admin_name ?? 'system', 'last_synced_at' => $now,
             ];
 
-            $this->firebase->set($this->_salary($staffId), $structure);
+            $this->_fsSyncSalary($staffId, $structure);
             $created[] = $staffId;
         }
 
@@ -4771,9 +6275,51 @@ HTML;
      */
     private function _report_staff()
     {
-        $roster   = $this->firebase->get("Schools/{$this->school_name}/{$this->session_year}/Teachers");
-        $profiles = $this->firebase->get("Users/Teachers/{$this->school_name}");
-        $salaries = $this->firebase->get($this->_salary());
+        // Firestore roster
+        $roster = [];
+        try {
+            $fsStaff = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
+            if (is_array($fsStaff)) {
+                foreach ($fsStaff as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? $d['userId'] ?? '';
+                    if ($sid !== '') $roster[$sid] = true;
+                }
+            }
+        } catch (\Exception $e) {}
+
+        // ── Firestore-first: staff profiles ──
+        $profiles = null;
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', []);
+            if (!empty($fsDocs)) {
+                $profiles = [];
+                foreach ($fsDocs as $doc) {
+                    $d = $doc['data'];
+                    $sid = $d['staffId'] ?? ($d['id'] ?? '');
+                    if ($sid !== '') $profiles[$sid] = $d;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _report_staff FS profiles failed: " . $e->getMessage());
+        }
+        if ($profiles === null) $profiles = [];
+
+        // ── Firestore-first: salary structures ──
+        $salaries = null;
+        try {
+            $fsSals = $this->fs->schoolWhere('salarySlips', [['type', '==', 'salary_structure']]);
+            if (!empty($fsSals)) {
+                $salaries = [];
+                foreach ($fsSals as $doc) {
+                    $sid = $doc['data']['staffId'] ?? '';
+                    if ($sid !== '') $salaries[$sid] = $doc['data'];
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _report_staff FS salaries failed: " . $e->getMessage());
+        }
+        if ($salaries === null) $salaries = [];
 
         $list = [];
         if (is_array($roster)) {
@@ -4821,9 +6367,13 @@ HTML;
      */
     private function _report_leaves()
     {
-        $year     = trim($this->input->get('year') ?? date('Y'));
-        $requests = $this->firebase->get($this->_leave_req());
-        $balances = $this->firebase->get($this->_leave_bal($year));
+        $year = trim($this->input->get('year') ?? date('Y'));
+
+        // ── Firestore-first: leave requests via helper ──
+        $requests = $this->_fsGetAllLeaveRequests();
+
+        // ── Firestore-first: leave balances via helper ──
+        $balances = $this->_fsGetLeaveBalance('', $year);
 
         $summary = [
             'total_requests' => 0,
@@ -4874,7 +6424,23 @@ HTML;
      */
     private function _report_payroll()
     {
-        $runs = $this->firebase->get($this->_payroll_runs());
+        // ── Firestore-first ──
+        $runs = null;
+        try {
+            $fsDocs = $this->fs->schoolWhere('salarySlips', [['type', '==', 'run']]);
+            if (!empty($fsDocs)) {
+                $runs = [];
+                foreach ($fsDocs as $doc) {
+                    $parts = explode('_RUN_', $doc['id'], 2);
+                    $rid = isset($parts[1]) ? $parts[1] : $doc['id'];
+                    $runs[$rid] = $doc['data'];
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _report_payroll FS failed: " . $e->getMessage());
+        }
+        if ($runs === null) $runs = [];
+
         $list = [];
         $totalPaid = 0;
 
@@ -4906,9 +6472,44 @@ HTML;
      */
     private function _report_departments()
     {
-        $depts    = $this->firebase->get($this->_dept());
-        $profiles = $this->firebase->get("Users/Teachers/{$this->school_name}");
-        $roster   = $this->firebase->get("Schools/{$this->school_name}/{$this->session_year}/Teachers");
+        // Departments from Firestore
+        $depts = [];
+        try {
+            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($fsSchool) && is_array($fsSchool['departments'] ?? null)) {
+                $depts = $fsSchool['departments'];
+            }
+        } catch (\Exception $e) {}
+
+        // Roster from Firestore
+        $roster = [];
+        try {
+            $fsStaff = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
+            if (is_array($fsStaff)) {
+                foreach ($fsStaff as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? $d['userId'] ?? '';
+                    if ($sid !== '') $roster[$sid] = true;
+                }
+            }
+        } catch (\Exception $e) {}
+
+        // ── Firestore-first: staff profiles ──
+        $profiles = null;
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', []);
+            if (!empty($fsDocs)) {
+                $profiles = [];
+                foreach ($fsDocs as $doc) {
+                    $d = $doc['data'];
+                    $sid = $d['staffId'] ?? ($d['id'] ?? '');
+                    if ($sid !== '') $profiles[$sid] = $d;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', "HR _report_departments FS failed: " . $e->getMessage());
+        }
+        if ($profiles === null) $profiles = [];
 
         // Count staff per department
         $countByDept = [];
