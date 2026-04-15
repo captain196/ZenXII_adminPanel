@@ -184,6 +184,11 @@ CIR.edit = function(id) {
 };
 
 CIR.save = function() {
+    if (window._cirSaving) return;
+    window._cirSaving = true;
+    var $btn = $('button.cm-btn-primary[onclick*="CIR.save"]');
+    var orig = $btn.html();
+    $btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Saving…');
     var fd = new FormData($('#cirForm')[0]);
     $.ajax({
         url: CM.BASE + 'communication/save_circular',
@@ -191,20 +196,26 @@ CIR.save = function() {
         data: fd,
         processData: false,
         contentType: false,
-        dataType: 'json',
-        success: function(r) {
-            if (r.status === 'success') { CM.toast(r.message||'Saved'); CIR.closeModal(); CIR.load(); }
-            else CM.toast(r.message||'Error','error');
-        },
-        error: function(xhr) { var m='Error';try{m=JSON.parse(xhr.responseText).message||m;}catch(e){} CM.toast(m,'error'); }
+        dataType: 'json'
+    }).done(function(r) {
+        if (r && r.status === 'success') { CM.toast(r.message||'Saved'); CIR.closeModal(); }
+        else CM.toast((r && r.message)||'Failed to save','error');
+    }).fail(function(xhr) {
+        var m='Server error — refreshing list';
+        try { m = JSON.parse(xhr.responseText).message || m; } catch(e){}
+        CM.toast(m,'error');
+    }).always(function(){
+        window._cirSaving = false;
+        $btn.prop('disabled', false).html(orig);
+        CIR.load();
     });
 };
 
 CIR.del = function(id) {
     if (!confirm('Delete this circular?')) return;
     $.post(CM.BASE + 'communication/delete_circular', {id:id}, function(r) {
-        if (r.status === 'success') { CM.toast('Deleted'); CIR.load(); }
-        else CM.toast(r.message||'Error','error');
+        if (r && r.status === 'success') { CM.toast('Deleted'); CIR.load(); }
+        else CM.toast((r && r.message)||'Failed to delete','error');
     }, 'json');
 };
 

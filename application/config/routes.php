@@ -53,13 +53,7 @@ $route['default_controller'] = 'admin_login';
 $route['404_override'] = '';
 $route['translate_uri_dashes'] = FALSE;
 // $route['sync_offline_data'] = 'SyncOfflineData/index'; // REMOVED: unauthenticated stub archived 2026-03-14
-$route['accounts'] = 'Account/fetch_accounts';
-$route['create_account'] = 'Account/create_account';
-$route['edit_account/(:any)'] = 'Account/edit_account/$1';
-$route['delete_account/(:any)'] = 'Account/delete_account/$1';
-$route['calculate_balances'] = 'Account/calculate_balances';
-$route['account/populateTable'] = 'account/populateTable';
-$route['accounts/get'] = 'AccountController/getAccounts';
+// Old Accounts module removed — use Accounting module (see routes below).
 $route['fees/dashboard']                    = 'Fees/fees_dashboard';
 $route['fees/get_dashboard_data']           = 'Fees/get_dashboard_data';
 $route['fees/lookup_student']               = 'fees/lookup_student';
@@ -103,6 +97,8 @@ $route['fees/student_fees']                = 'Fees/student_fees';
 $route['fees/class_fees']                  = 'Fees/class_fees';
 // Data endpoints (POST)
 $route['fees/submit_fees']                 = 'Fees/submit_fees';
+$route['fees/void_test_receipt']           = 'Fees/void_test_receipt';
+$route['fees/verify_test_cleanup']         = 'Fees/verify_test_cleanup';
 $route['fees/fetch_months']                = 'Fees/fetch_months';
 $route['fees/fetch_fee_receipts']          = 'Fees/fetch_fee_receipts';
 $route['fees/search_student']              = 'Fees/search_student';
@@ -152,12 +148,43 @@ $route['superadmin/schools/migrate_existing']           = 'Superadmin_schools/mi
 $route['superadmin/schools/migrate_academic']           = 'Superadmin_schools/migrate_academic_data';
 $route['superadmin/schools/upload_logo']               = 'Superadmin_schools/upload_logo';
 
+// Bootstrap (one-time system init)
+$route['superadmin/bootstrap']                          = 'Superadmin_bootstrap/run';
+$route['superadmin/bootstrap/status']                   = 'Superadmin_bootstrap/status';
+
 // Migration
 $route['superadmin/migration']                          = 'Superadmin_migration/index';
 $route['superadmin/migration/analyze']                  = 'Superadmin_migration/analyze';
 $route['superadmin/migration/get_report']               = 'Superadmin_migration/get_report';
 $route['superadmin/migration/clear_map']                = 'Superadmin_migration/clear_map';
 $route['superadmin/migration/migrate_phone_index']     = 'Superadmin_migration/migrate_phone_index';
+$route['superadmin/migration/migrate_auth']            = 'Superadmin_migration/migrate_auth';
+$route['superadmin/migration/migrate_auth_students']   = 'Superadmin_migration/migrate_auth_students';
+$route['superadmin/migration/seed_counters']           = 'Superadmin_migration/seed_counters';
+$route['superadmin/migration/auth_status']             = 'Superadmin_migration/auth_status';
+$route['superadmin/migration/build_admin_index']       = 'Superadmin_migration/build_admin_index';
+$route['superadmin/migration/sync_firestore']          = 'Superadmin_migration/sync_firestore';
+$route['superadmin/migration/migrate_to_firestore']    = 'Superadmin_migration/migrate_to_firestore';
+$route['superadmin/migration/firestore_status']        = 'Superadmin_migration/firestore_status';
+$route['superadmin/migration/migrate_school']          = 'Superadmin_migration/migrate_school';
+$route['superadmin/migration/migrate_all_schools']     = 'Superadmin_migration/migrate_all_schools';
+$route['superadmin/migration/validate_migration']      = 'Superadmin_migration/validate_migration';
+$route['superadmin/migration/phase2_readiness']        = 'Superadmin_migration/phase2_readiness';
+
+// Phase 1 — class/section canonical shape cleanup (students collection)
+// Query params:  ?dryRun=1   → preview only, no writes
+//                ?execute=1  → apply changes (idempotent, batched)
+//                ?schoolId=  → optional, scope to a single school
+$route['superadmin/migration/cleanup_student_class_section'] = 'Superadmin_migration/cleanup_student_class_section';
+
+// Phase 2 — backfill classOrder/sectionCode/sectionKey for sections + subjectAssignments
+$route['superadmin/migration/cleanup_phase2_class_section']  = 'Superadmin_migration/cleanup_phase2_class_section';
+
+// Phase 3 — fix raw-shape timetable docs (renames doc IDs to canonical sectionKey)
+$route['superadmin/migration/cleanup_phase3_timetables']     = 'Superadmin_migration/cleanup_phase3_timetables';
+
+// Phase 6 — convert legacy examSchedule docs (single `schedule` object → subjects[] array)
+$route['superadmin/migration/cleanup_phase6_exam_schedule']  = 'Superadmin_migration/cleanup_phase6_exam_schedule';
 
 // Plans
 $route['superadmin/plans']                              = 'Superadmin_plans/index';
@@ -178,6 +205,7 @@ $route['superadmin/plans/delete_payment']               = 'Superadmin_plans/dele
 $route['superadmin/plans/generate_invoice']             = 'Superadmin_plans/generate_invoice';
 $route['superadmin/plans/collect_payment']              = 'Superadmin_plans/collect_payment';
 $route['superadmin/plans/fetch_school_payments']        = 'Superadmin_plans/fetch_school_payments';
+$route['superadmin/plans/sync_to_firestore']            = 'Superadmin_plans/sync_to_firestore';
 
 // Reports
 $route['superadmin/reports']                            = 'Superadmin_reports/index';
@@ -245,6 +273,7 @@ $route['school_config/delete_section']                  = 'School_config/delete_
 $route['school_config/get_all_sections']                = 'School_config/get_all_sections';
 $route['school_config/bulk_save_sections']              = 'School_config/bulk_save_sections';
 $route['school_config/get_subjects']                    = 'School_config/get_subjects';
+$route['school_config/get_all_subjects']                = 'School_config/get_all_subjects';
 $route['school_config/get_suggested_subjects']          = 'School_config/get_suggested_subjects';
 $route['school_config/save_subject']                    = 'School_config/save_subject';
 $route['school_config/delete_subject']                  = 'School_config/delete_subject';
@@ -256,6 +285,12 @@ $route['school_config/add_session']                     = 'School_config/add_ses
 $route['school_config/set_active_session']              = 'School_config/set_active_session';
 $route['school_config/test_sessions']                   = 'School_config/test_sessions';
 $route['school_config/sync_sessions']                   = 'School_config/sync_sessions';
+$route['school_config/session_stats']                   = 'School_config/session_stats';
+$route['school_config/check_sessions']                  = 'School_config/check_sessions';
+$route['school_config/delete_session']                  = 'School_config/delete_session';
+$route['school_config/archive_session']                 = 'School_config/archive_session';
+$route['school_config/preview_rollover']                = 'School_config/preview_rollover';
+$route['school_config/rollover_session']                = 'School_config/rollover_session';
 $route['school_config/csrf_token']                      = 'School_config/csrf_token';
 $route['school_config/test_profile']                    = 'School_config/test_profile';
 $route['school_config/test_classes']                    = 'School_config/test_classes';
@@ -269,6 +304,7 @@ $route['school_config/upload_document']                 = 'School_config/upload_
 $route['school_config/save_report_card_template']       = 'School_config/save_report_card_template';
 $route['school_config/admission_payment']               = 'School_config/admission_payment_config';
 $route['school_config/save_admission_payment_config']   = 'School_config/save_admission_payment_config';
+$route['school_config/health_check']                    = 'School_config/health_check';
 
 // ─── Academic Management
 $route['academic']                              = 'Academic/index';
@@ -289,14 +325,20 @@ $route['academic/save_substitute']               = 'Academic/save_substitute';
 $route['academic/update_substitute']             = 'Academic/update_substitute';
 $route['academic/delete_substitute']             = 'Academic/delete_substitute';
 $route['academic/get_teacher_schedule']          = 'Academic/get_teacher_schedule';
-$route['academic/get_subject_assignments']       = 'Academic/get_subject_assignments';
-$route['academic/save_subject_assignments']      = 'Academic/save_subject_assignments';
+$route['academic/get_subject_assignments']            = 'Academic/get_subject_assignments';
+$route['academic/save_subject_assignments']           = 'Academic/save_subject_assignments';
+$route['academic/get_subject_assignments_for_section'] = 'Academic/get_subject_assignments_for_section';
+$route['academic/get_eligible_teachers']              = 'Academic/get_eligible_teachers';
 $route['academic/copy_subject_assignments']      = 'Academic/copy_subject_assignments';
 $route['academic/get_timetable_settings']        = 'Academic/get_timetable_settings';
 $route['academic/save_timetable_settings']       = 'Academic/save_timetable_settings';
 $route['academic/get_section_timetable']         = 'Academic/get_section_timetable';
 $route['academic/save_section_timetable']        = 'Academic/save_section_timetable';
 $route['academic/get_class_subjects']            = 'Academic/get_class_subjects';
+$route['academic/auto_generate_timetable']       = 'Academic/auto_generate_timetable';
+$route['academic/suggest_substitutes']           = 'Academic/suggest_substitutes';
+$route['academic/get_absent_teachers']           = 'Academic/get_absent_teachers';
+$route['academic/get_absent_teacher_schedule']   = 'Academic/get_absent_teacher_schedule';
 
 // ─── Result Management
 $route['result']                                          = 'result/index';
@@ -471,6 +513,9 @@ $route['admission/payment_status/(:any)']       = 'Admission_public/payment_stat
 // ─── Attendance Management ───
 $route['attendance']                         = 'Attendance/index';
 $route['attendance/dashboard_stats']         = 'Attendance/dashboard_stats';
+$route['attendance/debug_push']              = 'Attendance/debug_push';
+$route['attendance/register_test_token']     = 'Attendance/register_test_token';
+$route['attendance/test_push']               = 'Attendance/test_push';
 $route['attendance/student']                 = 'Attendance/student_attendance';
 $route['attendance/staff']                   = 'Attendance/staff_attendance';
 $route['attendance/settings']                = 'Attendance/settings';
@@ -504,6 +549,8 @@ $route['attendance/api_get_classes']         = 'Attendance/api_get_classes';
 $route['attendance/api_get_students']        = 'Attendance/api_get_students';
 $route['attendance/api_get_attendance']      = 'Attendance/api_get_attendance';
 $route['attendance/api_mark_attendance']     = 'Attendance/api_mark_attendance';
+$route['attendance/teacher_notify']          = 'Attendance/teacher_notify';
+$route['attendance/process_push_requests']   = 'Attendance/process_push_requests';
 $route['attendance/health_check']            = 'Attendance/health_check';
 $route['attendance/fetch_audit_logs']        = 'Attendance/fetch_audit_logs';
 $route['attendance/cleanup']                 = 'Attendance/cleanup';
@@ -514,6 +561,10 @@ $route['attendance/unlock_staff_attendance']     = 'Attendance/unlock_staff_atte
 $route['attendance/approve_attendance_request']  = 'Attendance/approve_attendance_request';
 $route['attendance/reject_attendance_request']   = 'Attendance/reject_attendance_request';
 $route['attendance/list_pending_attendance']     = 'Attendance/list_pending_attendance';
+$route['attendance/student_leaves']               = 'Attendance/student_leaves';
+$route['attendance/list_student_leaves']         = 'Attendance/list_student_leaves';
+$route['attendance/approve_student_leave']       = 'Attendance/approve_student_leave';
+$route['attendance/reject_student_leave']        = 'Attendance/reject_student_leave';
 
 // ─── Health Checker
 $route['health_check']                                   = 'Health_check/index';
@@ -732,6 +783,9 @@ $route['fee_management/get_fee_summary']                 = 'Fee_management/get_f
 $route['fee_management/carry_forward_fees']              = 'Fee_management/carry_forward_fees';
 $route['fee_management/migrate_to_demands']             = 'Fee_management/migrate_to_demands';
 
+// Firestore-first migration backfill (admin-only) — drains retry queue + bulk-syncs all fee data
+$route['fee_management/firestore_bulk_sync']             = 'Fee_management/firestore_bulk_sync';
+
 // ============================================================================
 //  OPERATIONS MANAGEMENT
 // ============================================================================
@@ -866,6 +920,7 @@ $route['communication/get_conversations']            = 'Communication/get_conver
 $route['communication/get_messages']                 = 'Communication/get_messages';
 $route['communication/create_conversation']          = 'Communication/create_conversation';
 $route['communication/send_message']                 = 'Communication/send_message';
+$route['communication/delete_conversation']          = 'Communication/delete_conversation';
 $route['communication/mark_read']                    = 'Communication/mark_read';
 $route['communication/get_unread_count']             = 'Communication/get_unread_count';
 $route['communication/search_recipients']            = 'Communication/search_recipients';
@@ -880,6 +935,10 @@ $route['communication/get_circulars']                = 'Communication/get_circul
 $route['communication/save_circular']                = 'Communication/save_circular';
 $route['communication/delete_circular']              = 'Communication/delete_circular';
 $route['communication/acknowledge_circular']         = 'Communication/acknowledge_circular';
+$route['communication/get_circular_acks']            = 'Communication/get_circular_acks';
+
+// Firestore-first migration backfill (admin-only)
+$route['communication/firestore_backfill_circulars'] = 'Communication/firestore_backfill_circulars';
 
 // Templates
 $route['communication/get_templates']                = 'Communication/get_templates';
@@ -1090,6 +1149,7 @@ $route['homework/get_subject_breakdown']             = 'Homework/get_subject_bre
 $route['homework/get_overdue_report']                = 'Homework/get_overdue_report';
 $route['homework/get_trend_data']                    = 'Homework/get_trend_data';
 $route['homework/get_students_for_class']            = 'Homework/get_students_for_class';
+$route['homework/get_class_sections']                = 'Homework/get_class_sections';
 $route['homework/create_homework']                   = 'Homework/create_homework';
 $route['homework/update_homework']                   = 'Homework/update_homework';
 $route['homework/delete_homework']                   = 'Homework/delete_homework';

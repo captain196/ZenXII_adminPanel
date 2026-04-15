@@ -1444,11 +1444,83 @@ class Communication extends MY_Controller
         $this->_require_role(self::RBAC_VIEW_ROLES, 'acknowledge_circular');
         $this->_require_view();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'circular_id');
-        $this->firebase->set(
-            $this->_comm("Circulars/{$id}/acknowledgements/{$this->admin_id}"),
-            date('c')
-        );
-        $this->json_success(['message' => 'Acknowledged.']);
+
+        // Verify circular exists (Firestore).
+        try {
+            $circ = $this->fs->get('circulars', $this->fs->docId($id));
+            if (!is_array($circ)) $this->json_error('Circular not found.');
+        } catch (\Exception $e) {
+            $this->json_error('Failed to read circular.');
+        }
+
+        // One ack doc per (circular, user). Idempotent — re-ack just updates
+        // acknowledgedAt. Flat collection so we can query either by circular
+        // ("who acked CIR0001?") or by user ("which circulars did SSA0001 ack?").
+        $ackDocId = $this->fs->docId2($id, $this->admin_id);
+        $nowIso   = date('c');
+        $payload  = [
+            'schoolId'       => $this->school_id,
+            'circularId'     => $id,
+            'userId'         => $this->admin_id,
+            'userName'       => $this->admin_name,
+            'role'           => $this->_inbox_role(),
+            'acknowledgedAt' => $nowIso,
+        ];
+
+        try {
+            $ok = $this->fs->set('circularAcks', $ackDocId, $payload, true);
+        } catch (\Exception $e) {
+            log_message('error', 'acknowledge_circular Firestore write failed: ' . $e->getMessage());
+            $ok = false;
+        }
+        if (!$ok) {
+            $this->output->set_status_header(503);
+            $this->json_error('Could not record acknowledgement. Please try again.');
+            return;
+        }
+
+        $this->json_success(['message' => 'Acknowledged.', 'acknowledged_at' => $nowIso]);
+    }
+
+    /**
+     * GET — List acknowledgements for a circular, or for the current user.
+     * Params:
+     *   ?circular_id=CIR0001  → list of users who acked that circular
+     *   ?mine=1               → list of circulars the current user has acked
+     */
+    public function get_circular_acks()
+    {
+        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_circular_acks');
+        $this->_require_view();
+
+        $circularId = trim($this->input->get('circular_id') ?? '');
+        $mine       = (int) ($this->input->get('mine') ?? 0) === 1;
+
+        $conditions = [];
+        if ($circularId !== '') {
+            $conditions[] = ['circularId', '==', $this->safe_path_segment($circularId, 'circular_id')];
+        }
+        if ($mine) {
+            $conditions[] = ['userId', '==', $this->admin_id];
+        }
+        if (empty($conditions)) {
+            $this->json_error('Provide circular_id or mine=1.');
+        }
+
+        $list = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('circularAcks', $conditions);
+            if (is_array($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $list[] = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'get_circular_acks Firestore read failed: ' . $e->getMessage());
+        }
+
+        usort($list, fn($a, $b) => strcmp($b['acknowledgedAt'] ?? '', $a['acknowledgedAt'] ?? ''));
+        $this->json_success(['acknowledgements' => $list, 'count' => count($list)]);
     }
 
     // ====================================================================
