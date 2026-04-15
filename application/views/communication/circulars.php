@@ -121,17 +121,29 @@ CIR.load = function() {
                 } else {
                     att = '<span style="color:var(--t3)">None</span>';
                 }
-                var srcBadge = isRecruitment ? ' <span class="cm-badge cm-badge-amber" style="font-size:9px;">HR Job</span>' : '';
+                // HR-sourced circulars are managed by the HR Recruitment module —
+                // editing/deleting here would conflict with the auto-refresh on job save.
+                var isHrManaged = c.source === 'hr_recruitment';
+                var srcBadge = isHrManaged
+                    ? ' <span class="cm-badge cm-badge-amber" style="font-size:9px;" title="Managed by HR Recruitment — edit via HR module">HR Managed</span>'
+                    : (isRecruitment ? ' <span class="cm-badge cm-badge-amber" style="font-size:9px;">Recruitment</span>' : '');
+                var actions = '';
+                if (isRecruitment && c.is_poster) {
+                    actions += '<button class="cm-btn cm-btn-sm cm-btn-outline" onclick="CIR.viewPoster(\'' + CM.esc(c.id) + '\')" style="margin-right:4px;" title="View poster"><i class="fa fa-eye"></i></button> ';
+                }
+                if (isHrManaged) {
+                    actions += '<a class="cm-btn cm-btn-sm cm-btn-outline" href="' + CM.BASE + 'hr/recruitment" title="Edit via HR Recruitment"><i class="fa fa-external-link"></i> HR</a>';
+                } else {
+                    actions += '<button class="cm-btn cm-btn-sm cm-btn-primary" onclick="CIR.edit(\'' + CM.esc(c.id) + '\')"><i class="fa fa-pencil"></i></button> ' +
+                        '<button class="cm-btn cm-btn-sm cm-btn-danger" onclick="CIR.del(\'' + CM.esc(c.id) + '\')"><i class="fa fa-trash"></i></button>';
+                }
                 html += '<tr>' +
                     '<td><strong>' + CM.esc(c.title) + '</strong>' + srcBadge + '</td>' +
                     '<td><span class="cm-badge ' + (catMap[c.category]||'cm-badge-blue') + '">' + CM.esc(c.category) + '</span></td>' +
                     '<td>' + CM.esc(c.target_group||'') + '</td>' +
                     '<td>' + CM.esc(c.issued_date||'') + '</td>' +
                     '<td>' + att + '</td>' +
-                    '<td>' +
-                    (isRecruitment && c.is_poster ? '<button class="cm-btn cm-btn-sm cm-btn-outline" onclick="CIR.viewPoster(\'' + CM.esc(c.id) + '\')" style="margin-right:4px;" title="View poster"><i class="fa fa-eye"></i></button> ' : '') +
-                    '<button class="cm-btn cm-btn-sm cm-btn-primary" onclick="CIR.edit(\'' + CM.esc(c.id) + '\')"><i class="fa fa-pencil"></i></button> ' +
-                    '<button class="cm-btn cm-btn-sm cm-btn-danger" onclick="CIR.del(\'' + CM.esc(c.id) + '\')"><i class="fa fa-trash"></i></button></td>' +
+                    '<td>' + actions + '</td>' +
                     '</tr>';
             });
         }

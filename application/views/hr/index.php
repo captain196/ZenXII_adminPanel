@@ -1707,22 +1707,36 @@ document.addEventListener('DOMContentLoaded', function(){
   }
 
   function editJob(id){
-    // Use cached jobs data instead of a separate API call
-    if(!_jobsCache[id]){ toast('Job not found in cache — refreshing','warning'); loadJobs(); return; }
-    var j=_jobsCache[id];
-    $('#jobId').val(id);
-    $('#jobTitle').val(j.title||'');
-    fillDeptSelect('#jobDept', j.department);
-    $('#jobDescription').val(j.description||'');
-    $('#jobQualifications').val(j.qualifications||'');
-    $('#jobExperience').val(j.experience_required||'');
-    $('#jobPositions').val(j.positions||1);
-    $('#jobSalaryMin').val(j.salary_range_min||'');
-    $('#jobSalaryMax').val(j.salary_range_max||'');
-    $('#jobDeadline').val(j.deadline||'');
-    $('#jobStatus').val(j.status||'Open');
-    $('#modalJobTitle').text('Edit Job Posting');
-    openModal('modalJob');
+    // Always re-fetch latest jobs before opening edit modal so we never
+    // populate from a stale cache (e.g. right after a save .always() reload).
+    var openWith = function(j){
+      $('#jobId').val(id);
+      $('#jobTitle').val(j.title||'');
+      fillDeptSelect('#jobDept', j.department);
+      $('#jobDescription').val(j.description||'');
+      $('#jobQualifications').val(j.qualifications||'');
+      $('#jobExperience').val(j.experience_required||'');
+      $('#jobPositions').val(j.positions||1);
+      $('#jobSalaryMin').val(j.salary_range_min||'');
+      $('#jobSalaryMax').val(j.salary_range_max||'');
+      $('#jobDeadline').val(j.deadline||'');
+      $('#jobStatus').val(j.status||'Open');
+      $('#modalJobTitle').text('Edit Job Posting');
+      openModal('modalJob');
+    };
+    var params = '?status='+($('#filterJobStatus').val()||'')+'&department='+($('#filterJobDept').val()||'');
+    getJSON('hr/get_jobs'+params).then(function(r){
+      var raw = (r&&r.jobs)?r.jobs:(r&&r.data)?r.data:{};
+      var fresh = null;
+      $.each(raw, function(k, j){ if((j&&j.id)===id || k===id){ fresh = j; return false; } });
+      if(!fresh){ toast('Job not found — was it deleted?','error'); loadJobs(); return; }
+      _jobsCache[id] = fresh;
+      openWith(fresh);
+    }).fail(function(){
+      // Fallback: use cache if network fails
+      if(_jobsCache[id]){ openWith(_jobsCache[id]); }
+      else { toast('Could not load job','error'); }
+    });
   }
 
   function saveJob(){

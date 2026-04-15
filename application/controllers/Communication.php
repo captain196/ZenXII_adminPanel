@@ -1214,6 +1214,15 @@ class Communication extends MY_Controller
             $id = $this->_next_id('Circular', 'CIR');
         } else {
             $id = $this->safe_path_segment($id, 'circular_id');
+            // Refuse to overwrite HR-sourced circulars from this module —
+            // they're auto-refreshed by Hr::save_job and direct edits here
+            // would be silently undone on the next job edit.
+            try {
+                $existing = $this->fs->get('circulars', $this->fs->docId($id));
+                if (is_array($existing) && ($existing['source'] ?? '') === 'hr_recruitment') {
+                    $this->json_error('This circular is managed by HR Recruitment. Edit the source job in HR → Recruitment instead.');
+                }
+            } catch (\Exception $e) {}
         }
 
         // Handle file upload
@@ -1331,6 +1340,15 @@ class Communication extends MY_Controller
         $this->_require_role(self::RBAC_MANAGE_ROLES, 'delete_circular');
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'circular_id');
+
+        // Refuse to delete HR-sourced circulars from this module —
+        // they should be removed by deleting the source job in HR.
+        try {
+            $existing = $this->fs->get('circulars', $this->fs->docId($id));
+            if (is_array($existing) && ($existing['source'] ?? '') === 'hr_recruitment') {
+                $this->json_error('This circular is managed by HR Recruitment. Delete the source job in HR → Recruitment to remove it.');
+            }
+        } catch (\Exception $e) {}
 
         // ── TIER A: Firestore-first delete ──────────────────────────────
         try {

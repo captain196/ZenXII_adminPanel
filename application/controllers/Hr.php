@@ -1894,6 +1894,26 @@ class Hr extends MY_Controller
                     log_message('error', "HR save_job: Firestore circular_id update FAILED for {$id}: " . $e->getMessage());
                 }
             }
+        } elseif (!$isNew) {
+            // ── Update path: refresh the existing circular's poster + key fields
+            //    so Communication → Circulars stays in sync with edited job data.
+            $existing = null;
+            try { $existing = $this->fs->getEntity('hrJobs', $id); } catch (\Exception $e) {}
+            $existingCircularId = is_array($existing) ? ($existing['circular_id'] ?? '') : '';
+            if ($existingCircularId) {
+                try {
+                    $refreshedPoster = $this->_build_circular_poster($data, $existingCircularId);
+                    $this->firebase->firestoreSet('circulars', $this->fs->docId($existingCircularId), [
+                        'title'       => 'Hiring: ' . ($data['title'] ?? 'Open Position'),
+                        'description' => $refreshedPoster,
+                        'expiry_date' => $data['deadline'] ?? '',
+                        'updated_at'  => date('c'),
+                    ], true);
+                    $circularId = $existingCircularId;
+                } catch (\Exception $e) {
+                    log_message('error', "HR save_job: circular auto-refresh FAILED for {$id}: " . $e->getMessage());
+                }
+            }
         }
 
         $msg = $isNew ? 'Job posting created.' : 'Job posting updated.';
