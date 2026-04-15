@@ -1977,6 +1977,8 @@ class Hr extends MY_Controller
                 'created_at'  => date('c'),
                 'schoolId'    => $this->school_id,
                 'type'        => 'announcement',
+                'source'      => 'hr_recruitment',
+                'source_id'   => $jobId,
             ], true);
 
             log_message('info', "HR: Auto-created circular {$circularId} for job {$jobId}");

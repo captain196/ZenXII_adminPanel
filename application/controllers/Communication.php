@@ -186,6 +186,88 @@ class Communication extends MY_Controller
         return $prefix . str_pad($next, $pad, '0', STR_PAD_LEFT);
     }
 
+    /**
+     * Dashboard stats read entirely from Firestore (replaces RTDB counts/lists
+     * used by index() + get_dashboard()). Returns:
+     *   [conversations, unread_messages, notices, circulars,
+     *    queue_pending, queue_sent, queue_failed, recent_notices]
+     */
+    private function _fs_comm_stats(): array
+    {
+        $out = [
+            'conversations' => 0, 'unread_messages' => 0,
+            'notices' => 0, 'circulars' => 0,
+            'queue_pending' => 0, 'queue_sent' => 0, 'queue_failed' => 0,
+            'recent_notices' => [],
+        ];
+
+        // Conversations + unread for current user/role
+        try {
+            $role = $this->_inbox_role();
+            $inboxes = $this->fs->schoolWhere('messageInboxes', [
+                ['role',   '==', $role],
+                ['userId', '==', $this->admin_id],
+            ]);
+            if (is_array($inboxes)) {
+                $out['conversations'] = count($inboxes);
+                foreach ($inboxes as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $out['unread_messages'] += (int) ($d['unreadCount'] ?? $d['unread_count'] ?? 0);
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Comm stats inbox FS read failed: ' . $e->getMessage());
+        }
+
+        // Notices — count + 5 most recent
+        try {
+            $fsNotices = $this->fs->schoolWhere('notices', []);
+            if (is_array($fsNotices)) {
+                $recent = [];
+                foreach ($fsNotices as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $rawId = (string) ($doc['id'] ?? '');
+                    $prefix = $this->school_id . '_';
+                    $d['id'] = (strpos($rawId, $prefix) === 0)
+                        ? substr($rawId, strlen($prefix))
+                        : $rawId;
+                    $recent[] = $d;
+                }
+                $out['notices'] = count($recent);
+                usort($recent, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
+                $out['recent_notices'] = array_slice($recent, 0, 5);
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Comm stats notices FS read failed: ' . $e->getMessage());
+        }
+
+        // Circulars count
+        try {
+            $fsCirc = $this->fs->schoolWhere('circulars', []);
+            $out['circulars'] = is_array($fsCirc) ? count($fsCirc) : 0;
+        } catch (\Exception $e) {
+            log_message('error', 'Comm stats circulars FS read failed: ' . $e->getMessage());
+        }
+
+        // Queue statuses
+        try {
+            $fsQueue = $this->fs->schoolWhere('messageQueue', []);
+            if (is_array($fsQueue)) {
+                foreach ($fsQueue as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $s = $d['status'] ?? '';
+                    if ($s === 'pending') $out['queue_pending']++;
+                    elseif ($s === 'sent') $out['queue_sent']++;
+                    elseif ($s === 'failed') $out['queue_failed']++;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Comm stats queue FS read failed: ' . $e->getMessage());
+        }
+
+        return $out;
+    }
+
     // ====================================================================
     //  PAGE ROUTES
     // ====================================================================
@@ -194,65 +276,9 @@ class Communication extends MY_Controller
     {
         $this->_require_role(self::RBAC_VIEW_ROLES, 'comm_view');
 
-        // ── Pre-load dashboard data server-side (no AJAX spinner) ────
-        $role  = $this->_inbox_role();
-        $inbox = $this->firebase->get($this->_comm("Messages/Inbox/{$role}/{$this->admin_id}"));
-        $totalConversations = is_array($inbox) ? count($inbox) : 0;
-        $totalUnread = 0;
-        if (is_array($inbox)) {
-            foreach ($inbox as $conv) {
-                if (is_array($conv)) $totalUnread += (int) ($conv['unread_count'] ?? 0);
-            }
-        }
-
-        $allNotices = $this->firebase->get($this->_comm('Notices'));
-        $noticeCount = 0;
-        $recentNotices = [];
-        if (is_array($allNotices)) {
-            foreach ($allNotices as $id => $n) {
-                if (!is_array($n) || $id === 'Counter') continue;
-                $noticeCount++;
-                $n['id'] = $id;
-                $recentNotices[] = $n;
-            }
-            usort($recentNotices, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
-            $recentNotices = array_slice($recentNotices, 0, 5);
-        }
-
-        $circulars = $this->firebase->shallow_get($this->_comm('Circulars'));
-        $circularCount = is_array($circulars) ? count(array_filter($circulars, fn($k) => $k !== 'Counter', ARRAY_FILTER_USE_KEY)) : 0;
-
-        $queueKeys = $this->firebase->shallow_get($this->_comm('Queue'));
-        $queuePending = 0; $queueSent = 0; $queueFailed = 0;
-        if (is_array($queueKeys)) {
-            $queueCount = count($queueKeys);
-            if ($queueCount <= 200) {
-                $queue = $this->firebase->get($this->_comm('Queue'));
-                if (is_array($queue)) {
-                    foreach ($queue as $q) {
-                        if (!is_array($q)) continue;
-                        $s = $q['status'] ?? '';
-                        if ($s === 'pending') $queuePending++;
-                        elseif ($s === 'sent') $queueSent++;
-                        elseif ($s === 'failed') $queueFailed++;
-                    }
-                }
-            } else {
-                $queuePending = $queueCount;
-            }
-        }
-
-        $data = [
-            'active_tab'     => 'dashboard',
-            'conversations'  => $totalConversations,
-            'unread_messages'=> $totalUnread,
-            'notices'        => $noticeCount,
-            'circulars'      => $circularCount,
-            'queue_pending'  => $queuePending,
-            'queue_sent'     => $queueSent,
-            'queue_failed'   => $queueFailed,
-            'recent_notices' => $recentNotices,
-        ];
+        // Pre-load dashboard data server-side (no AJAX spinner).
+        // All reads are Firestore-only via _fs_comm_stats().
+        $data = array_merge(['active_tab' => 'dashboard'], $this->_fs_comm_stats());
 
         $this->load->view('include/header', $data);
         $this->load->view('communication/index', $data);
@@ -330,71 +356,7 @@ class Communication extends MY_Controller
     {
         $this->_require_role(self::RBAC_VIEW_ROLES, 'get_dashboard');
         $this->_require_view();
-
-        // Count conversations + unread for current user
-        $role = $this->_inbox_role();
-        $inbox = $this->firebase->get($this->_comm("Messages/Inbox/{$role}/{$this->admin_id}"));
-        $totalConversations = is_array($inbox) ? count($inbox) : 0;
-        $totalUnread = 0;
-        if (is_array($inbox)) {
-            foreach ($inbox as $conv) {
-                if (is_array($conv)) $totalUnread += (int) ($conv['unread_count'] ?? 0);
-            }
-        }
-
-        // Count notices + fetch recent in single read (avoid duplicate fetch)
-        $allNotices = $this->firebase->get($this->_comm('Notices'));
-        $noticeCount = 0;
-        $recentNotices = [];
-        if (is_array($allNotices)) {
-            foreach ($allNotices as $id => $n) {
-                if (!is_array($n) || $id === 'Counter') continue;
-                $noticeCount++;
-                $n['id'] = $id;
-                $recentNotices[] = $n;
-            }
-            usort($recentNotices, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
-            $recentNotices = array_slice($recentNotices, 0, 5);
-        }
-
-        // Count circulars (shallow — no need for full data)
-        $circulars = $this->firebase->shallow_get($this->_comm('Circulars'));
-        $circularCount = is_array($circulars) ? count(array_filter($circulars, fn($k) => $k !== 'Counter', ARRAY_FILTER_USE_KEY)) : 0;
-
-        // Queue stats — use shallow_get + selective reads for pending/failed only
-        $queueKeys = $this->firebase->shallow_get($this->_comm('Queue'));
-        $queuePending = 0; $queueSent = 0; $queueFailed = 0;
-        if (is_array($queueKeys)) {
-            // Only fetch status field via targeted reads for recent items
-            // For large queues, rely on counter-based stats
-            $queueCount = count($queueKeys);
-            if ($queueCount <= 200) {
-                $queue = $this->firebase->get($this->_comm('Queue'));
-                if (is_array($queue)) {
-                    foreach ($queue as $q) {
-                        if (!is_array($q)) continue;
-                        $s = $q['status'] ?? '';
-                        if ($s === 'pending') $queuePending++;
-                        elseif ($s === 'sent') $queueSent++;
-                        elseif ($s === 'failed') $queueFailed++;
-                    }
-                }
-            } else {
-                // Approximate: show total count, details via queue page
-                $queuePending = $queueCount;
-            }
-        }
-
-        $this->json_success([
-            'conversations'   => $totalConversations,
-            'unread_messages' => $totalUnread,
-            'notices'         => $noticeCount,
-            'circulars'       => $circularCount,
-            'queue_pending'   => $queuePending,
-            'queue_sent'      => $queueSent,
-            'queue_failed'    => $queueFailed,
-            'recent_notices'  => $recentNotices,
-        ]);
+        $this->json_success($this->_fs_comm_stats());
     }
 
     // ====================================================================
@@ -768,10 +730,14 @@ class Communication extends MY_Controller
         if ($message === '') $this->json_error('Message is required.');
         $this->_validate_length($message, 'Message', self::MAX_MESSAGE_LENGTH);
 
-        // Verify participant
-        $conv = $this->firebase->get($this->_comm("Messages/Conversations/{$convId}"));
+        // Verify participant — Firestore-only lookup on 'conversations' collection.
+        $conv = null;
+        try { $conv = $this->fs->getEntity('conversations', $convId); } catch (\Exception $e) {}
         if (!is_array($conv)) $this->json_error('Conversation not found.');
-        if (!isset($conv['participants'][$this->admin_id])) $this->json_error('Access denied.', 403);
+        $participants = is_array($conv['participants'] ?? null) ? $conv['participants'] : [];
+        $participantIds = is_array($conv['participantIds'] ?? null) ? $conv['participantIds'] : [];
+        $isParticipant = isset($participants[$this->admin_id]) || in_array($this->admin_id, $participantIds, true);
+        if (!$isParticipant) $this->json_error('Access denied.', 403);
 
         $msgId = $this->_add_message($convId, $message);
         $this->json_success(['message_id' => $msgId, 'message' => 'Sent.']);
@@ -950,16 +916,26 @@ class Communication extends MY_Controller
     {
         $this->_require_role(self::RBAC_VIEW_ROLES, 'get_notices');
         $this->_require_view();
-        $all = $this->firebase->get($this->_comm('Notices'));
+
+        // Firestore-only (no RTDB) per project policy.
         $list = [];
-        if (is_array($all)) {
-            foreach ($all as $id => $n) {
-                if (!is_array($n) || $id === 'Counter') continue;
-                $n['id'] = $id;
-                $list[] = $n;
+        try {
+            $fsDocs = $this->fs->schoolWhere('notices', []);
+            if (is_array($fsDocs)) {
+                $prefix = $this->school_id . '_';
+                foreach ($fsDocs as $doc) {
+                    $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
+                    $rawId = (string) ($doc['id'] ?? '');
+                    $r['id'] = (strpos($rawId, $prefix) === 0)
+                        ? substr($rawId, strlen($prefix))
+                        : $rawId;
+                    $list[] = $r;
+                }
             }
-            usort($list, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
+        } catch (\Exception $e) {
+            log_message('error', 'Communication get_notices Firestore read failed: ' . $e->getMessage());
         }
+        usort($list, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
 
         $page  = max(1, (int) ($this->input->get('page') ?? 1));
         $limit = min(100, max(1, (int) ($this->input->get('limit') ?? 50)));
@@ -998,6 +974,14 @@ class Communication extends MY_Controller
             $id = $this->_next_id('Notice', 'NOT');
         } else {
             $id = $this->safe_path_segment($id, 'notice_id');
+            // Refuse to overwrite HR-sourced notices (auto-created alongside
+            // job circulars). They'd be silently reverted on the next job save.
+            try {
+                $existing = $this->fs->get('notices', $this->fs->docId($id));
+                if (is_array($existing) && ($existing['source'] ?? '') === 'hr_recruitment') {
+                    $this->json_error('This notice is managed by HR Recruitment. Edit the source job in HR → Recruitment instead.');
+                }
+            } catch (\Exception $e) {}
         }
 
         $data = [
@@ -1127,12 +1111,20 @@ class Communication extends MY_Controller
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'notice_id');
 
-        // ── TIER A: Firestore-first delete ──────────────────────────────
-        // Apps read from `circulars`. If Firestore delete fails the notice
-        // would remain visible to parents/teachers — abort and keep RTDB
-        // intact so the system stays consistent.
+        // Refuse to delete HR-sourced notices from this module — their
+        // lifecycle is tied to the source job in HR → Recruitment.
         try {
-            $ok = $this->fs->remove('circulars', $this->fs->docId($id));
+            $existing = $this->fs->get('notices', $this->fs->docId($id));
+            if (is_array($existing) && ($existing['source'] ?? '') === 'hr_recruitment') {
+                $this->json_error('This notice is managed by HR Recruitment. Delete the source job in HR → Recruitment to remove it.');
+            }
+        } catch (\Exception $e) {}
+
+        // ── TIER A: Firestore-first delete ──────────────────────────────
+        // If Firestore delete fails the notice would remain visible to
+        // parents/teachers — abort so the system stays consistent.
+        try {
+            $ok = $this->fs->remove('notices', $this->fs->docId($id));
         } catch (\Exception $e) {
             log_message('error', "delete_notice: Firestore remove threw for {$id}: " . $e->getMessage());
             $ok = false;
