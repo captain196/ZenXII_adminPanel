@@ -163,9 +163,22 @@ NTC.save = function() {
         target_group: $('#ntcTarget').val(), priority: $('#ntcPriority').val(), category: $('#ntcCategory').val(), expiry_date: $('#ntcExpiry').val()
     };
     if (!data.title || !data.description) { CM.toast('Title and description are required', 'error'); return; }
-    CM.ajax('communication/save_notice', data, function(r) {
-        CM.toast(r.message || 'Notice saved'); NTC.closeModal(); NTC.load();
-    }, 'POST');
+    if (window._ntcSaving) return;
+    window._ntcSaving = true;
+    var $btn = $('button.cm-btn-primary[onclick*="NTC.save"]');
+    var orig = $btn.html();
+    $btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Saving…');
+    $.post(CM.BASE + 'communication/save_notice', data)
+        .done(function(r){
+            if (r && r.status === 'success') { CM.toast(r.message || 'Notice saved'); NTC.closeModal(); }
+            else CM.toast((r && r.message) || 'Failed to save', 'error');
+        })
+        .fail(function(){ CM.toast('Server error — refreshing list', 'error'); })
+        .always(function(){
+            window._ntcSaving = false;
+            $btn.prop('disabled', false).html(orig);
+            NTC.load();
+        });
 };
 
 NTC.del = function(id) {

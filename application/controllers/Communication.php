@@ -141,27 +141,52 @@ class Communication extends MY_Controller
     {
         try {
             $fsDocId = $this->fs->docId($id);
+            $description = $data['description'] ?? '';
+            $authorName  = $data['created_by_name'] ?? $data['issued_by_name'] ?? $this->admin_name ?? '';
+            $authorId    = $data['created_by'] ?? $data['issued_by'] ?? $this->admin_id ?? '';
+            $createdAt   = $data['created_at'] ?? date('c');
+            $targetGroup = $data['target_group'] ?? 'All School';
+
             $fsData  = [
+                // Android-app canonical shape (Parent/Teacher apps read these).
                 'schoolId'      => $this->school_id,
                 'title'         => $data['title'] ?? '',
-                'body'          => $data['description'] ?? '',
-                'author'        => $data['created_by_name'] ?? $data['issued_by_name'] ?? $this->admin_name ?? '',
-                'authorId'      => $data['created_by'] ?? $data['issued_by'] ?? $this->admin_id ?? '',
+                'body'          => $description,
+                'author'        => $authorName,
+                'authorId'      => $authorId,
                 'category'      => $data['category'] ?? 'General',
                 'priority'      => $data['priority'] ?? 'Normal',
-                'targetType'    => ($data['target_group'] ?? 'All School') === 'All School' ? 'All' : $data['target_group'],
+                'targetType'    => ($targetGroup === 'All School') ? 'All' : $targetGroup,
                 'targetClasses' => [],
                 'targetRoles'   => [],
                 'attachmentUrl' => $data['attachment_url'] ?? '',
                 'status'        => 'sent',  // Android filters by status == "sent"
-                'type'          => $type,    // "notice" or "circular"
+                'type'          => $type,
                 'sentAt'        => date('c'),
                 'updatedAt'     => date('c'),
+                // Admin-view snake_case mirror (matches Communication views
+                // + HR-written notice shape, so get_notices/get_circulars and
+                // the dashboard 'Recent Notices' card render all columns).
+                'description'     => $description,
+                'target_group'    => $targetGroup,
+                'expiry_date'     => $data['expiry_date'] ?? '',
+                'created_by'      => $authorId,
+                'created_by_name' => $authorName,
+                'issued_by'       => $authorId,
+                'issued_by_name'  => $authorName,
+                'issued_date'     => substr($createdAt, 0, 10),
+                'created_at'      => $createdAt,
+                'updated_at'      => date('c'),
+                'attachment_url'  => $data['attachment_url'] ?? '',
+                'attachment_name' => $data['attachment_name'] ?? '',
             ];
 
-            $ok = $this->fs->set('circulars', $fsDocId, $fsData, true);
+            // Route by type — notices and circulars live in separate
+            // Firestore collections (the Android apps read both separately).
+            $collection = ($type === 'notice') ? 'notices' : 'circulars';
+            $ok = $this->fs->set($collection, $fsDocId, $fsData, true);
             if (!$ok) {
-                log_message('error', "Communication::_syncToFirestoreCirculars set returned false for {$id}");
+                log_message('error', "Communication::_syncToFirestoreCirculars set returned false for {$id} ({$collection})");
             }
             return (bool) $ok;
         } catch (\Exception $e) {
@@ -176,13 +201,72 @@ class Communication extends MY_Controller
         $b = "Schools/{$this->school_name}/Communication";
         return $sub !== '' ? "{$b}/{$sub}" : $b;
     }
-    private function _counter(string $type): string { return $this->_comm("Counters/{$type}"); }
+    /**
+     * Map counter type → (Firestore collection, ID prefix) for self-healing
+     * seed on first use. If schools.commCounters.{type} is unset, scan the
+     * collection for the highest existing prefix-NNNN doc id and use that.
+     */
+    private const COUNTER_SEED_SOURCES = [
+        'Conversation' => ['conversations',  'CONV'],
+        'Message'      => ['messages',       'MSG'],
+        'Notice'       => ['notices',        'NOT'],
+        'Circular'     => ['circulars',      'CIR'],
+        'Template'     => ['messageTemplates','TPL'],
+        'Trigger'      => ['messageTriggers','TRG'],
+        'Log'          => ['messageLogs',    'LOG'],
+    ];
+
+    /**
+     * Firestore-only ID minting. Counter map lives on schools/{schoolId}_profile.
+     * Keys are FLAT field names "commCounters.{type}" (literal) — this matches
+     * the existing hrCounters.* / acctCounters.* convention written by HR and
+     * Accounting via Firestore_service::update (which does not expand dot-paths
+     * into nested maps). Non-atomic get-then-update — acceptable at school
+     * scale with the self-healing seed so we never collide with past records.
+     */
     private function _next_id(string $type, string $prefix, int $pad = 4): string
     {
-        $path = $this->_counter($type);
-        $cur  = (int) ($this->firebase->get($path) ?? 0);
+        $profileDocId = $this->fs->docId('profile');
+        $flatKey = "commCounters.{$type}";
+        $doc = null;
+        try { $doc = $this->fs->get('schools', $profileDocId); } catch (\Exception $e) {}
+        $cur = (is_array($doc) && isset($doc[$flatKey]) && is_numeric($doc[$flatKey]))
+            ? (int) $doc[$flatKey]
+            : -1;
+
+        if ($cur < 0) {
+            // Self-heal: scan the target collection for the highest existing prefix-NNNN.
+            $cur = 0;
+            $src = self::COUNTER_SEED_SOURCES[$type] ?? null;
+            if (is_array($src)) {
+                [$collection, $seedPrefix] = $src;
+                try {
+                    $docs = $this->fs->schoolWhere($collection, []);
+                    if (is_array($docs)) {
+                        $schoolPrefix = $this->school_id . '_';
+                        foreach ($docs as $d) {
+                            $rawId = (string) ($d['id'] ?? '');
+                            $trimmed = (strpos($rawId, $schoolPrefix) === 0)
+                                ? substr($rawId, strlen($schoolPrefix))
+                                : $rawId;
+                            if (preg_match('/^' . preg_quote($seedPrefix, '/') . '(\d+)$/', $trimmed, $m)) {
+                                $n = (int) $m[1];
+                                if ($n > $cur) $cur = $n;
+                            }
+                        }
+                    }
+                } catch (\Exception $e) {
+                    log_message('error', "Comm counter seed failed for {$type}: " . $e->getMessage());
+                }
+            }
+        }
+
         $next = $cur + 1;
-        $this->firebase->set($path, $next);
+        try {
+            $this->fs->update('schools', $profileDocId, [$flatKey => $next]);
+        } catch (\Exception $e) {
+            log_message('error', "Comm counter update failed for {$type}: " . $e->getMessage());
+        }
         return $prefix . str_pad($next, $pad, '0', STR_PAD_LEFT);
     }
 
@@ -1006,19 +1090,14 @@ class Communication extends MY_Controller
         // ────────────────────────────────────────────────────────────────
         $fsOk = $this->_syncToFirestoreCirculars($id, $data, 'notice');
         if (!$fsOk) {
-            log_message('error', "save_notice: Firestore-first write failed for {$id} — aborting RTDB write");
+            log_message('error', "save_notice: Firestore write failed for {$id}");
             $this->output->set_status_header(503);
             $this->json_error('Could not save notice to Firestore. No changes were made. Please try again.');
             return;
         }
 
-        // Firestore succeeded — mirror to RTDB.
-        $this->firebase->set($this->_comm("Notices/{$id}"), $data);
-
-        // Dual-write to legacy path for mobile app compatibility
-        if ($isNew) {
-            $this->_distribute_notice_legacy($id, $data);
-        }
+        // RTDB mirror + legacy distribution removed per no-RTDB policy.
+        // Mobile apps read from the `notices` Firestore collection directly.
 
         $this->json_success(['id' => $id, 'message' => 'Notice saved.']);
     }

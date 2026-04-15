@@ -1967,18 +1967,30 @@ class Hr extends MY_Controller
             // Notice for mobile app (Firestore)
             $noticeId = 'NOTICE_' . uniqid('', true);
             $this->firebase->firestoreSet('notices', $this->fs->docId($noticeId), [
-                'title'       => "[Job Circular] {$title}",
-                'description' => strip_tags($poster),
-                'priority'    => 'High',
-                'category'    => 'Recruitment',
-                'target_group'=> 'All Staff',
-                'issued_by'   => $this->admin_name,
-                'date'        => date('Y-m-d'),
-                'created_at'  => date('c'),
-                'schoolId'    => $this->school_id,
-                'type'        => 'announcement',
-                'source'      => 'hr_recruitment',
-                'source_id'   => $jobId,
+                'title'           => "[Job Circular] {$title}",
+                'description'     => strip_tags($poster),
+                'body'            => strip_tags($poster),   // Android canonical
+                'priority'        => 'High',
+                'category'        => 'Recruitment',
+                'target_group'    => 'All Staff',
+                'targetType'      => 'All Staff',            // Android canonical
+                'issued_by'       => $this->admin_id,
+                'issued_by_name'  => $this->admin_name,
+                'created_by'      => $this->admin_id,
+                'created_by_name' => $this->admin_name,
+                'author'          => $this->admin_name,      // Android canonical
+                'authorId'        => $this->admin_id,
+                'date'            => date('Y-m-d'),
+                'issued_date'     => date('Y-m-d'),
+                'created_at'      => date('c'),
+                'sentAt'          => date('c'),              // Android canonical
+                'updated_at'      => date('c'),
+                'updatedAt'       => date('c'),
+                'status'          => 'sent',
+                'schoolId'        => $this->school_id,
+                'type'            => 'announcement',
+                'source'          => 'hr_recruitment',
+                'source_id'       => $jobId,
             ], true);
 
             log_message('info', "HR: Auto-created circular {$circularId} for job {$jobId}");
