@@ -29,6 +29,15 @@
       ]
     },
     {
+      "collectionGroup": "notices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "sentAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "homework",
       "queryScope": "COLLECTION",
       "fields": [

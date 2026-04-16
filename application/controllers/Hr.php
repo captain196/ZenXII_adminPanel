@@ -1943,23 +1943,55 @@ class Hr extends MY_Controller
             $title   = "Hiring: " . ($job['title'] ?? 'Open Position');
             $poster  = $this->_build_circular_poster($job, $circularId);
 
+            // Build a clean plain-text summary for mobile list previews so the
+            // styled HTML poster (stored in `description` for the admin "View
+            // Poster" button) doesn't leak CSS into the Parent/Teacher UI.
+            $deptTxt    = trim((string) ($job['department'] ?? ''));
+            $posTxt     = (int) ($job['positions'] ?? 1);
+            $qualTxt    = trim((string) ($job['qualifications'] ?? ''));
+            $expTxt     = trim((string) ($job['experience_required'] ?? ''));
+            $deadline   = trim((string) ($job['deadline'] ?? ''));
+            $summaryParts = [];
+            if ($deptTxt !== '')  $summaryParts[] = "Department: {$deptTxt}";
+            if ($posTxt > 0)      $summaryParts[] = ($posTxt === 1 ? '1 vacancy' : "{$posTxt} vacancies");
+            if ($qualTxt !== '')  $summaryParts[] = "Qualification: {$qualTxt}";
+            if ($expTxt !== '')   $summaryParts[] = "Experience: {$expTxt}";
+            if ($deadline !== '') $summaryParts[] = "Apply by: {$deadline}";
+            $bodyPlain = implode(' • ', $summaryParts) ?: trim(strip_tags($job['description'] ?? ''));
+
+            $nowIso = date('c');
             $circularData = [
                 'title'           => $title,
                 'description'     => $poster,
+                'body'            => $bodyPlain,                 // Android canonical — plain text
                 'category'        => 'Recruitment',
                 'target_group'    => 'All Staff',
+                'targetType'      => 'All Staff',                // Android canonical
                 'attachment_url'  => '',
                 'attachment_name' => '',
+                'attachmentUrl'   => '',
                 'issued_by'       => $this->admin_id,
                 'issued_by_name'  => $this->admin_name,
+                'issued_by_role'  => $this->admin_role ?? '',
+                'created_by_role' => $this->admin_role ?? '',
+                'author'          => $this->admin_name,          // Android canonical
+                'authorId'        => $this->admin_id,
+                'authorRole'      => $this->admin_role ?? '',
                 'issued_date'     => date('Y-m-d'),
                 'expiry_date'     => $job['deadline'] ?? '',
-                'status'          => 'Active',
-                'created_at'      => date('c'),
-                'updated_at'      => date('c'),
+                // 'sent' is what Teacher/Parent app queries filter by (status == "sent").
+                // Job open/closed lifecycle lives in a separate `jobStatus` field so
+                // the HR module can still gate its own UI.
+                'status'          => 'sent',
+                'jobStatus'       => 'Active',
+                'created_at'      => $nowIso,
+                'updated_at'      => $nowIso,
+                'sentAt'          => $nowIso,                    // Android canonical sort key
+                'updatedAt'       => $nowIso,
                 'source'          => 'hr_recruitment',
                 'source_id'       => $jobId,
                 'is_poster'       => true,
+                'type'            => 'circular',
                 'schoolId'        => $this->school_id,
             ];
             $this->firebase->firestoreSet('circulars', $this->fs->docId($circularId), $circularData, true);
@@ -1976,10 +2008,13 @@ class Hr extends MY_Controller
                 'targetType'      => 'All Staff',            // Android canonical
                 'issued_by'       => $this->admin_id,
                 'issued_by_name'  => $this->admin_name,
+                'issued_by_role'  => $this->admin_role ?? '',
                 'created_by'      => $this->admin_id,
                 'created_by_name' => $this->admin_name,
+                'created_by_role' => $this->admin_role ?? '',
                 'author'          => $this->admin_name,      // Android canonical
                 'authorId'        => $this->admin_id,
+                'authorRole'      => $this->admin_role ?? '',
                 'date'            => date('Y-m-d'),
                 'issued_date'     => date('Y-m-d'),
                 'created_at'      => date('c'),
@@ -1994,6 +2029,30 @@ class Hr extends MY_Controller
             ], true);
 
             log_message('info', "HR: Auto-created circular {$circularId} for job {$jobId}");
+
+            // Push request — Cloud Function dispatches FCM to teachers+staff.
+            // Target is "All Staff" so parents don't receive it (aligns with
+            // the parent app's client-side staff-only filter).
+            try {
+                $pushId = $this->fs->docId('circular_created_' . $circularId);
+                $this->firebase->firestoreSet('pushRequests', $pushId, [
+                    'schoolId'    => $this->school_id,
+                    'mark'        => 'CIRCULAR_CREATED',
+                    'source'      => 'circular_created',
+                    'status'      => 'pending',
+                    'markedBy'    => $this->admin_name,
+                    'markedByRole'=> $this->admin_role ?? '',
+                    'createdAt'   => date('c'),
+                    'title'       => $title,
+                    'body'        => trim(substr($bodyPlain, 0, 140)),
+                    'category'    => 'Recruitment',
+                    'target_group'=> 'All Staff',
+                    'circularId'  => $circularId,
+                    'source_id'   => $jobId,
+                ], true);
+            } catch (\Exception $e) {
+                log_message('error', "HR push request failed for circular {$circularId}: " . $e->getMessage());
+            }
             return $circularId;
         } catch (\Exception $e) {
             log_message('error', "HR: Failed to create circular for job {$jobId}: " . $e->getMessage());

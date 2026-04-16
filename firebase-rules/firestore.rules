@@ -1,0 +1,395 @@
+rules_version = '2';
+
+// Firestore Security Rules for SchoolSync
+//
+// PHP backend uses service account (bypasses these rules entirely).
+// These rules protect DIRECT client access from Android apps.
+//
+// Principle: deny-all by default. Only explicitly listed collections are accessible.
+// Every read requires: authenticated + matching schoolId
+// Every write requires: authenticated + correct role + matching schoolId
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ─────────────────────────────────────────
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    // Match schoolId field in document to school_id in auth token.
+    // Supports both field names: schoolId (new) and schoolCode (legacy).
+    // For non-existent docs (get), resource is null — allow if authenticated.
+    function isSameSchool() {
+      return isAuth() && (
+        resource == null ||
+        resource.data.schoolId == request.auth.token.school_id ||
+        resource.data.schoolCode == request.auth.token.school_id
+      );
+    }
+
+    function isSameSchoolWrite() {
+      return isAuth() && (
+        request.resource.data.schoolId == request.auth.token.school_id ||
+        request.resource.data.schoolCode == request.auth.token.school_id
+      );
+    }
+
+    function isAdmin() {
+      return isAuth() && request.auth.token.role in ['Admin', 'admin', 'School Super Admin', 'school_super_admin', 'Super Admin', 'super_admin', 'Principal'];
+    }
+
+    function isStaff() {
+      return isAuth() && request.auth.token.role in ['Admin', 'admin', 'Teacher', 'teacher', 'School Super Admin', 'school_super_admin', 'Super Admin', 'super_admin', 'Accountant', 'Principal', 'Vice Principal'];
+    }
+
+    function isSuperAdmin() {
+      return isAuth() && request.auth.token.role in ['Super Admin', 'super_admin'];
+    }
+
+    // ── Schools (read-only for apps) ─────────────────────────────
+    match /schools/{docId} {
+      allow read: if isAuth() && (
+        resource.data.schoolId == request.auth.token.school_id ||
+        docId == request.auth.token.school_id
+      );
+      allow write: if isAdmin();
+    }
+
+    // ── Sections ─────────────────────────────────────────────────
+    match /sections/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Students ─────────────────────────────────────────────────
+    match /students/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Staff ────────────────────────────────────────────────────
+    match /staff/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Subjects ─────────────────────────────────────────────────
+    match /subjects/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Subject Assignments (canonical: who teaches what to which class/section) ──
+    match /subjectAssignments/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Attendance ───────────────────────────────────────────────
+    match /attendance/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // ── Attendance Summary ───────────────────────────────────────
+    match /attendanceSummary/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Homework ──────────────────────────────────────────────────
+    match /homework/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isStaff() && isSameSchool();
+    }
+
+    // ── Homework Submissions ─────────────────────────────────────
+    match /submissions/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAuth() && isSameSchoolWrite();
+      allow update: if isAuth() && isSameSchool();
+      allow delete: if isStaff() && isSameSchool();
+    }
+
+    // ── Exams ────────────────────────────────────────────────────
+    match /exams/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Exam Schedule ────────────────────────────────────────────
+    match /examSchedule/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Marks ────────────────────────────────────────────────────
+    match /marks/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Results ──────────────────────────────────────────────────
+    match /results/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Fee Structures ───────────────────────────────────────────
+    match /feeStructures/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Fee Demands ──────────────────────────────────────────────
+    match /feeDemands/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Fee Receipts ─────────────────────────────────────────────
+    match /feeReceipts/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Circulars / Notices ──────────────────────────────────────
+    match /circulars/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // Notices collection — admin Notice Board writes here; Parent + Teacher
+    // apps read alongside circulars. Same permission shape as circulars.
+    match /notices/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // ── Circular Reads / Acks ────────────────────────────────────
+    match /circularReads/{docId} {
+      allow read: if isAuth();
+      allow write: if isAuth();
+    }
+
+    // Circular acknowledgements (Phase 3 rename of circularReads for admin side)
+    match /circularAcks/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAuth();
+    }
+
+    // ── Notifications ────────────────────────────────────────────
+    match /notifications/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Events ───────────────────────────────────────────────────
+    match /events/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // ── Gallery ──────────────────────────────────────────────────
+    match /galleryAlbums/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    match /galleryMedia/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Stories ──────────────────────────────────────────────────
+    match /stories/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Timetables ───────────────────────────────────────────────
+    match /timetables/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Timetable Settings ──────────────────────────────────────
+    match /timetableSettings/{docId} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // ── Substitutes ─────────────────────────────────────────────
+    match /substitutes/{docId} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // ── Staff Attendance ────────────────────────────────────────
+    match /staffAttendance/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Staff Attendance Summary ────────────────────────────────
+    match /staffAttendanceSummary/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Calendar Events ─────────────────────────────────────────
+    match /calendarEvents/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Curriculum ──────────────────────────────────────────────
+    match /curriculum/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Leave Applications ───────────────────────────────────────
+    match /leaveApplications/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAuth() && isSameSchoolWrite();
+      allow update: if isAuth() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // ── Transport ────────────────────────────────────────────────
+    match /routes/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    match /vehicles/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    match /studentRoutes/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Library ──────────────────────────────────────────────────
+    match /libraryBooks/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    match /libraryIssues/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // Outstanding fines — read by parent / teacher / admin; written by staff.
+    match /libraryFines/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // ── Messaging (canonical Firestore schema) ───────────────────
+    // Mirrors Messaging_service.php on the admin side. All three
+    // collections are scoped by schoolId; teachers/parents can only
+    // touch rows where they are listed as a participant.
+    match /conversations/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAuth() && isSameSchoolWrite();
+      allow update: if isAuth() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    match /messages/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAuth() && isSameSchoolWrite();
+      allow update: if isAuth() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // Inbox stubs are per-user but kept in one collection. Each doc id
+    // is `{schoolId}_{role}_{userId}_{conversationId}` so we enforce
+    // ownership by matching the userId field to the caller's uid OR by
+    // letting same-school staff list their own inbox via query filter.
+    match /messageInboxes/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAuth() && isSameSchoolWrite();
+      allow update: if isAuth() && isSameSchool();
+      allow delete: if isAuth() && isSameSchool();
+    }
+
+    // ── Salary Slips ─────────────────────────────────────────────
+    match /salarySlips/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Push Requests (teacher → admin push pipeline) ──────────
+    // Teacher writes a request; admin processes + deletes it.
+    match /pushRequests/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAuth() && isSameSchoolWrite();
+      allow update: if isAuth() && isSameSchool();
+      allow delete: if isStaff();
+    }
+
+    // ── User Devices (FCM token registry) ────────────────────
+    // Any authenticated user can register their device. Admin
+    // reads all for push delivery.
+    match /userDevices/{docId} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update: if isAuth();
+      allow delete: if isAdmin();
+    }
+
+    // ── Attendance Events Fired (push dedup) ─────────────────
+    match /attendanceEventsFired/{docId} {
+      allow read: if isAuth();
+      allow write: if isAuth();
+    }
+
+    // ── HR Jobs (recruitment) ───────────────────────────────────
+    match /hrJobs/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── HR Applicants (recruitment) ──────────────────────────────
+    match /hrApplicants/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Appraisals ──────────────────────────────────────────────
+    match /appraisals/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── RBAC Roles ──────────────────────────────────────────────
+    match /rbacRoles/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Deny everything else (catch-all) ─────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

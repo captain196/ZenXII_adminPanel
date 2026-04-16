@@ -147,6 +147,8 @@ class Communication extends MY_Controller
             $createdAt   = $data['created_at'] ?? date('c');
             $targetGroup = $data['target_group'] ?? 'All School';
 
+            $authorRole  = $data['author_role'] ?? $this->admin_role ?? '';
+
             $fsData  = [
                 // Android-app canonical shape (Parent/Teacher apps read these).
                 'schoolId'      => $this->school_id,
@@ -154,6 +156,7 @@ class Communication extends MY_Controller
                 'body'          => $description,
                 'author'        => $authorName,
                 'authorId'      => $authorId,
+                'authorRole'    => $authorRole,             // e.g. "Admin", "HR Manager"
                 'category'      => $data['category'] ?? 'General',
                 'priority'      => $data['priority'] ?? 'Normal',
                 'targetType'    => ($targetGroup === 'All School') ? 'All' : $targetGroup,
@@ -172,8 +175,10 @@ class Communication extends MY_Controller
                 'expiry_date'     => $data['expiry_date'] ?? '',
                 'created_by'      => $authorId,
                 'created_by_name' => $authorName,
+                'created_by_role' => $authorRole,
                 'issued_by'       => $authorId,
                 'issued_by_name'  => $authorName,
+                'issued_by_role'  => $authorRole,
                 'issued_date'     => substr($createdAt, 0, 10),
                 'created_at'      => $createdAt,
                 'updated_at'      => date('c'),
@@ -896,6 +901,38 @@ class Communication extends MY_Controller
             'lastSeenAt'  => $nowMs,
         ]), true);
 
+        // Push request — Cloud Function fans out FCM to all participants
+        // except the sender. Per-user targeting (unlike notices/circulars).
+        try {
+            $recipientIds = [];
+            if (is_array($conv['participantIds'] ?? null)) {
+                foreach ($conv['participantIds'] as $pid) {
+                    if ($pid !== $this->admin_id) $recipientIds[] = $pid;
+                }
+            } elseif (is_array($conv['participants'] ?? null)) {
+                foreach (array_keys($conv['participants']) as $pid) {
+                    if ($pid !== $this->admin_id) $recipientIds[] = $pid;
+                }
+            }
+            if (!empty($recipientIds)) {
+                $this->fs->set('pushRequests', $this->fs->docId("message_received_{$msgId}"), [
+                    'schoolId'       => $this->school_id,
+                    'mark'           => 'MESSAGE_RECEIVED',
+                    'source'         => 'message_received',
+                    'status'         => 'pending',
+                    'conversationId' => $convId,
+                    'messageId'      => $msgId,
+                    'senderId'       => $this->admin_id,
+                    'senderName'     => $this->admin_name,
+                    'recipientIds'   => $recipientIds,
+                    'body'           => $preview,
+                    'createdAt'      => date('c'),
+                ], false);
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Comm message push enqueue failed: ' . $e->getMessage());
+        }
+
         return $msgId;
     }
 
@@ -1105,7 +1142,58 @@ class Communication extends MY_Controller
         // RTDB mirror + legacy distribution removed per no-RTDB policy.
         // Mobile apps read from the `notices` Firestore collection directly.
 
+        // Push request so the Cloud Function can fan out FCM to parents+teachers
+        // (same pattern as Homework). Best-effort; failure doesn't block the save.
+        if ($isNew) {
+            $this->_enqueue_push_request('NOTICE_CREATED', 'notice_created', $id, [
+                'title'       => $title,
+                'body'        => $this->_truncate_for_push($description),
+                'category'    => $category,
+                'priority'    => $priority,
+                'target_group' => $targetGroup,
+                'noticeId'    => $id,
+            ]);
+        }
+
         $this->json_success(['id' => $id, 'message' => 'Notice saved.']);
+    }
+
+    /**
+     * Writes a doc to the `pushRequests` Firestore collection. A Cloud Function
+     * listens for `status: pending` and dispatches FCM to the matching target.
+     * Mirrors the pattern used by the Teacher app's HomeworkFirestoreRepository.
+     * Best-effort — swallowed exceptions log but don't abort the caller.
+     */
+    private function _enqueue_push_request(
+        string $mark,
+        string $source,
+        string $resourceId,
+        array $extra
+    ): void {
+        try {
+            $reqId = $this->fs->docId($source . '_' . $resourceId);
+            $payload = array_merge([
+                'schoolId'  => $this->school_id,
+                'mark'      => $mark,
+                'source'    => $source,
+                'status'    => 'pending',
+                'markedBy'  => $this->admin_name,
+                'markedByRole' => $this->admin_role ?? '',
+                'createdAt' => date('c'),
+            ], $extra);
+            log_message('debug', "Comm push enqueue → pushRequests/{$reqId} mark={$mark}");
+            $ok = $this->fs->set('pushRequests', $reqId, $payload, false);
+            log_message('debug', "Comm push enqueue result for {$reqId}: " . ($ok ? 'OK' : 'FAILED'));
+        } catch (\Exception $e) {
+            log_message('error', "Comm _enqueue_push_request ({$mark}) threw: " . $e->getMessage());
+        }
+    }
+
+    /** Trim HTML/long text to a push-friendly body length. */
+    private function _truncate_for_push(string $s, int $max = 140): string
+    {
+        $plain = trim(preg_replace('/\s+/', ' ', strip_tags($s)));
+        return (strlen($plain) <= $max) ? $plain : (substr($plain, 0, $max - 1) . '…');
     }
 
     public function delete_notice()
@@ -1315,6 +1403,16 @@ class Communication extends MY_Controller
         // Firestore-only per no-RTDB policy. Mobile apps read the `circulars`
         // collection directly (and the `notices` collection for notices);
         // legacy All-Notices RTDB distribution removed.
+
+        if ($isNew) {
+            $this->_enqueue_push_request('CIRCULAR_CREATED', 'circular_created', $id, [
+                'title'        => $title,
+                'body'         => $this->_truncate_for_push($description),
+                'category'     => $category,
+                'target_group' => $targetGroup,
+                'circularId'   => $id,
+            ]);
+        }
 
         $this->json_success(['id' => $id, 'message' => 'Circular saved.']);
     }
