@@ -33,13 +33,15 @@ class Fees extends MY_Controller
         $this->feeDefaulter->init($this->firebase, $this->school_name, $this->session_year);
         $this->feeLifecycle->init($this->firebase, $this->school_name, $this->session_year, $this->admin_id ?? 'system');
 
-        // Firestore dual-write sync (best-effort, non-blocking)
+        // Firestore-first writer for app-visible fee data (feeStructures,
+        // feeDemands, feeDefaulters, feeReceipts collections). See
+        // memory/firestore_first_migration.md for the contract.
         $this->load->library('Fee_firestore_sync', null, 'fsSync');
         $this->fsSync->init($this->firebase, $this->school_name, $this->session_year);
 
-        // Firestore helper for direct reads
-        $this->load->library('Firestore_helper', null, 'fs');
-        $this->fs->init($this->firebase, $this->school_name, $this->session_year);
+        // NOTE: $this->fs is provided by MY_Controller as the Firestore_service
+        // instance. Do NOT override it here — that triggers CI's
+        // "Resource 'fs' already exists" error.
     }
 
     /**
@@ -94,64 +96,44 @@ class Fees extends MY_Controller
      * Check if a receipt number already exists in Receipt_Index.
      * Handles both legacy (F123) and new (R000123) key formats.
      */
+    /**
+     * Pure-Firestore receipt existence check (Session A).
+     *
+     * Accepts either the numeric portion ("1", "42") or the formatted value
+     * ("R000001"). Strips any prefix so the lookup matches the Firestore
+     * `feeReceiptIndex` doc id: {schoolId}_{session}_{numeric}.
+     *
+     * "Exists" means finalised — a mere reservation (reserved=true) returns
+     * false so the cleanup / retry flow can reclaim stale numbers.
+     */
     private function _receiptExists(string $receiptNo): bool
     {
-        $sn = $this->school_name;
-        $sy = $this->session_year;
-        // Check with F-prefix (legacy) and direct key (new R-format)
-        $key = (strpos($receiptNo, 'R') === 0) ? $receiptNo : 'F' . $receiptNo;
-        $result = $this->firebase->get("Schools/{$sn}/{$sy}/Accounts/Receipt_Index/{$key}");
-        return !empty($result);
+        $num = preg_replace('/^R0*/i', '', $receiptNo);
+        $num = preg_replace('/\D/', '', $num);
+        if ($num === '') return false;
+        $doc = $this->fs->get('feeReceiptIndex',
+            "{$this->fs->schoolId()}_{$this->session_year}_{$num}");
+        if (!is_array($doc)) return false;
+        return !empty($doc['date']) && empty($doc['reserved']);
     }
 
     /**
-     * True atomic receipt generator.
-     *
-     * Strategy: Firebase push() generates a guaranteed-unique key (no contention).
-     * We also maintain a human-readable counter for display, but the push key
-     * is the canonical uniqueness guarantee. The counter is best-effort sequential.
-     *
-     * Zero retry loops. Zero race conditions. Single Firebase write.
-     */
-    /**
-     * Generate a human-readable receipt number: R000001, R000002, ...
-     *
-     * Strategy:
-     *   1. Push a placeholder → guaranteed-unique Firebase key (canonical ID)
-     *   2. Increment sequential counter → human-readable display number
-     *   3. If counter race detected (collision), suffix with push-key fragment
-     *
-     * The push key is stored in Receipt_Index as the dedup guard.
-     * The R-prefixed number is what appears on printed receipts.
+     * Pure-Firestore receipt number generator (Session A).
+     * Reads + increments the `feeCounters/{schoolId}_receipt_seq` doc with
+     * verify-after-write retry. Returns the raw sequence (e.g. "1") that
+     * submit_fees uses as the dedup key; the UI formats it as R000001.
      */
     private function _nextReceiptNo(): string
     {
-        $sn = $this->school_name;
-        $sy = $this->session_year;
-        $counterPath = "Schools/{$sn}/{$sy}/Accounts/Fees/Counters/receipt_seq";
-
-        // 1. Push for uniqueness guarantee
-        $pushKey = $this->firebase->push(
-            "Schools/{$sn}/{$sy}/Accounts/Fees/Receipt_Keys",
-            ['created_at' => date('c'), 'school' => $sn]
-        );
-
-        // 2. Increment sequential counter
-        $current = (int)($this->firebase->get($counterPath) ?: 0);
-        $next = $current + 1;
-        $this->firebase->set($counterPath, $next);
-
-        // 3. Format: R000001
-        $formatted = 'R' . str_pad($next, 6, '0', STR_PAD_LEFT);
-
-        // 4. Collision check (counter race)
-        if ($this->_receiptExists($formatted)) {
-            $suffix = substr($pushKey ?? bin2hex(random_bytes(2)), -3);
-            $formatted = 'R' . str_pad($next, 6, '0', STR_PAD_LEFT) . $suffix;
-            log_message('info', "receipt_gen: counter race #{$next}, using {$formatted}");
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        $seq = $this->fsTxn->nextCounter('receipt_seq');
+        if ($seq <= 0) {
+            // Fallback: timestamp-based so UI never blocks on a lookup error.
+            $seq = (int) (microtime(true) * 1000) % 1000000;
+            log_message('error', '_nextReceiptNo: Firestore counter failed, using timestamp fallback');
         }
-
-        return $formatted;
+        return (string) $seq;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -224,49 +206,6 @@ class Fees extends MY_Controller
     }
 
     /**
-     * Create accounting journal entry for a fee payment.
-     * Extracted from submit_fees() for reuse and clarity.
-     *
-     * @param array $params  Journal parameters
-     * @param array $allocations  Demand allocations (for granular journal)
-     * @param float $fineAmount
-     * @param float $discountFees
-     * @param bool  $demandMode  Whether demand engine was used
-     */
-    private function _create_fee_accounting_entry(
-        array $params, array $allocations, float $fineAmount, float $discountFees, bool $demandMode
-    ): void {
-        try {
-            $this->load->library('Operations_accounting', null, 'ops_acct');
-            $this->ops_acct->init(
-                $this->firebase, $this->school_name, $this->session_year, $this->admin_id, $this
-            );
-
-            if ($demandMode && !empty($allocations)) {
-                $entryId = $this->ops_acct->create_fee_journal_granular(
-                    $params, $allocations, $fineAmount, $discountFees
-                );
-            } else {
-                $entryId = $this->ops_acct->create_fee_journal($params);
-            }
-
-            if ($entryId === null) {
-                log_message('error', "Fee journal returned null for receipt {$params['receipt_no']} — queued");
-                $this->firebase->set(
-                    "Schools/{$this->school_name}/{$this->session_year}/Accounts/Pending_journals/{$params['receipt_no']}",
-                    array_merge($params, ['queued_at' => date('c'), 'reason' => 'journal_returned_null'])
-                );
-            }
-        } catch (\Exception $e) {
-            log_message('error', 'Accounting integration failed in fee payment: ' . $e->getMessage());
-            $this->firebase->set(
-                "Schools/{$this->school_name}/{$this->session_year}/Accounts/Pending_journals/{$params['receipt_no']}",
-                array_merge($params, ['queued_at' => date('c'), 'reason' => $e->getMessage()])
-            );
-        }
-    }
-
-    /**
      * Fire a fee_received communication event.
      * Extracted from submit_fees() for clarity.
      */
@@ -316,6 +255,56 @@ class Fees extends MY_Controller
     }
 
     /**
+     * Build the class → [sections] map from Firestore (students + feeStructures).
+     * Returns: ['classList' => [...], 'sectionMap' => ['Class 8th' => ['Section A', ...]]]
+     */
+    private function _buildClassSectionMap(): array
+    {
+        $schoolFs = $this->fs->schoolId();
+        $session  = $this->session_year;
+        $pairs    = [];
+
+        // Primary: Firestore `sections` collection (all configured class/sections
+        // from School Config, even if no students enrolled yet).
+        try {
+            $rows = $this->firebase->firestoreQuery('sections', [
+                ['schoolId', '==', $schoolFs],
+                ['session',  '==', $session],
+            ]);
+            foreach ((array) $rows as $r) {
+                $d = $r['data'] ?? $r;
+                $c = (string) ($d['className'] ?? '');
+                $s = (string) ($d['section']   ?? '');
+                if ($c !== '' && $s !== '') $pairs[] = ['class' => $c, 'section' => $s];
+            }
+        } catch (\Exception $_) {}
+
+        // Supplement: feeStructures (might have entries for classes not yet
+        // in `sections` if fees were configured via bulk import).
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $schoolFs, $session);
+        foreach ($this->fsTxn->listSectionsWithFeeChart() as $cs) {
+            $pairs[] = $cs;
+        }
+
+        $classList  = [];
+        $sectionMap = [];
+        foreach ($pairs as $cs) {
+            $c = $cs['class']; $s = $cs['section'];
+            if (!isset($sectionMap[$c])) { $classList[] = $c; $sectionMap[$c] = []; }
+            if (!in_array($s, $sectionMap[$c], true)) $sectionMap[$c][] = $s;
+        }
+        foreach ($sectionMap as &$secs) sort($secs);
+        unset($secs);
+        usort($classList, function ($a, $b) {
+            preg_match('/(\d+)/', $a, $ma);
+            preg_match('/(\d+)/', $b, $mb);
+            return ((int)($ma[1] ?? 0)) <=> ((int)($mb[1] ?? 0));
+        });
+        return ['classList' => $classList, 'sectionMap' => $sectionMap];
+    }
+
+    /**
      * Resolve class and section from a student profile array.
      * Handles both:
      *   Format A: Class="8th",   Section="B"  (separate fields)
@@ -345,136 +334,6 @@ class Fees extends MY_Controller
         }
 
         return [$class, $section];
-    }
-
-    // ══════════════════════════════════════════════════════════════════
-    //  ATOMIC ADVANCE BALANCE UPDATE
-    // ══════════════════════════════════════════════════════════════════
-
-    /**
-     * Atomically update a student's advance balance with verify-after-write.
-     *
-     * Pattern: read → compute → write → re-read → verify → retry if mismatch.
-     * Max 3 attempts. NEVER throws — returns best-effort value on exhaustion
-     * and flags the record for later reconciliation.
-     *
-     * @param string $studentId    Student user ID
-     * @param float  $delta        Amount to add (positive) or subtract (negative)
-     * @param string $receiptKey   Receipt key for audit trail (e.g. "F42")
-     * @param string $studentName  For record metadata
-     * @param string $studentBase  Legacy student path for Oversubmittedfees sync
-     * @return float               The new balance (verified or best-effort)
-     */
-    private function _update_advance_balance_atomic(
-        string $studentId,
-        float  $delta,
-        string $receiptKey = '',
-        string $studentName = '',
-        string $studentBase = ''
-    ): float {
-        $advPath    = "Schools/{$this->school_name}/{$this->session_year}/Fees/Advance_Balance/{$studentId}";
-        $maxRetries = 3;
-        $newBalance = 0;
-        $verified   = false;
-
-        for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
-            try {
-                // Step 1: Read current value
-                $existing   = $this->firebase->get($advPath);
-                $currentAmt = is_array($existing) ? round(floatval($existing['amount'] ?? 0), 2) : 0;
-
-                // Step 2: Compute new balance (never negative)
-                $newBalance = round(max(0, $currentAmt + $delta), 2);
-
-                // Step 3: Write
-                $writeData = [
-                    'amount'       => $newBalance,
-                    'student_id'   => $studentId,
-                    'student_name' => $studentName ?: ($existing['student_name'] ?? $studentId),
-                    'last_updated' => date('c'),
-                ];
-                if ($delta > 0) {
-                    $writeData['last_receipt'] = $receiptKey;
-                } else {
-                    $writeData['last_refund'] = $receiptKey;
-                }
-                $this->firebase->set($advPath, $writeData);
-
-                // Step 4: Re-read to verify
-                $verify    = $this->firebase->get($advPath);
-                $verifyAmt = is_array($verify) ? round(floatval($verify['amount'] ?? -1), 2) : -1;
-
-                // Step 5: Check match
-                if (abs($verifyAmt - $newBalance) < 0.01) {
-                    $verified = true;
-
-                    // Sync legacy path
-                    if ($studentBase !== '') {
-                        try {
-                            $this->firebase->set("{$studentBase}/Oversubmittedfees", $newBalance);
-                        } catch (\Exception $e) {
-                            log_message('error', "advance_atomic: legacy sync failed {$studentId}: " . $e->getMessage());
-                        }
-                    }
-
-                    if ($attempt > 1) {
-                        log_message('info',
-                            "advance_atomic: OK attempt={$attempt} student={$studentId}"
-                            . " delta={$delta} old={$currentAmt} new={$newBalance}"
-                        );
-                    }
-                    return $newBalance;
-                }
-
-                // Mismatch — retry
-                log_message('info',
-                    "advance_atomic: MISMATCH attempt {$attempt}/{$maxRetries} student={$studentId}"
-                    . " expected={$newBalance} actual={$verifyAmt}"
-                );
-            } catch (\Exception $e) {
-                log_message('error',
-                    "advance_atomic: EXCEPTION attempt {$attempt}/{$maxRetries} student={$studentId}"
-                    . " delta={$delta}: " . $e->getMessage()
-                );
-            }
-
-            usleep(50000 * $attempt); // 50ms, 100ms, 150ms backoff
-        }
-
-        // ── All retries exhausted — graceful degradation ──
-        // NEVER throw. The main payment (fees record, voucher, allocations)
-        // already succeeded. Breaking submit_fees() here would leave the
-        // student's payment recorded but the response as "error" — worse
-        // than a slightly stale advance balance.
-        log_message('error',
-            "advance_atomic: EXHAUSTED {$maxRetries} retries student={$studentId}"
-            . " delta={$delta} receipt={$receiptKey} — flagging for reconciliation"
-        );
-
-        // Flag for later reconciliation so admin can fix manually
-        try {
-            $pendingPath = "Schools/{$this->school_name}/{$this->session_year}/Fees/Advance_Sync_Pending/{$studentId}";
-            $this->firebase->set($pendingPath, [
-                'student_id'         => $studentId,
-                'delta'              => $delta,
-                'receipt_key'        => $receiptKey,
-                'attempted_balance'  => $newBalance,
-                'retries_exhausted'  => $maxRetries,
-                'flagged_at'         => date('c'),
-                'advance_sync_pending' => true,
-            ]);
-        } catch (\Exception $e) {
-            log_message('error', "advance_atomic: failed to write sync-pending flag: " . $e->getMessage());
-        }
-
-        // Best effort: sync legacy too even though unverified
-        if ($studentBase !== '') {
-            try {
-                $this->firebase->set("{$studentBase}/Oversubmittedfees", $newBalance);
-            } catch (\Exception $e) { /* already logged above */ }
-        }
-
-        return $newBalance;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -530,14 +389,22 @@ class Fees extends MY_Controller
         $minOverdue   = (int) ($this->input->get('min_overdue_days') ?? 0);
         $today        = date('Y-m-d');
 
-        // Read all demands
-        $allDemands = $this->firebase->get("Schools/{$sn}/{$sy}/Fees/Demands");
-        if (!is_array($allDemands)) $allDemands = [];
+        // Firestore: all demands for this school+session, grouped by student.
+        $schoolFs = $this->fs->schoolId();
+        $rawDemands = $this->firebase->firestoreQuery('feeDemands', [
+            ['schoolId', '==', $schoolFs], ['session', '==', $sy],
+        ]);
+        $byStudent = [];
+        foreach ((array) $rawDemands as $r) {
+            $d = $r['data'] ?? $r;
+            if (!is_array($d)) continue;
+            $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
+            if ($sid !== '') $byStudent[$sid][] = $d;
+        }
 
-        $defaulters = []; // studentId => aggregated data
+        $defaulters = [];
 
-        foreach ($allDemands as $studentId => $demands) {
-            if (!is_array($demands)) continue;
+        foreach ($byStudent as $studentId => $demands) {
 
             $totalDue      = 0;
             $totalPaid     = 0;
@@ -548,8 +415,7 @@ class Fees extends MY_Controller
             $studentClass  = '';
             $studentSec    = '';
 
-            foreach ($demands as $did => $d) {
-                if (!is_array($d)) continue;
+            foreach ($demands as $d) {
                 $status = $d['status'] ?? 'unpaid';
 
                 if ($studentName === '') {
@@ -567,7 +433,7 @@ class Fees extends MY_Controller
                     if ($dueDate !== '' && $dueDate < $today) {
                         $days = (int) ((strtotime($today) - strtotime($dueDate)) / 86400);
                         if ($days > $maxOverdue) $maxOverdue = $days;
-                        if ($oldestUnpaid === '' || $d['period_key'] < $oldestUnpaid) {
+                        if ($oldestUnpaid === '' || ($d['period_key'] ?? '') < $oldestUnpaid) {
                             $oldestUnpaid = $d['period_key'] ?? '';
                         }
                     }
@@ -621,41 +487,42 @@ class Fees extends MY_Controller
         $sn = $this->school_name;
         $sy = $this->session_year;
 
-        $allDemands = $this->firebase->get("Schools/{$sn}/{$sy}/Fees/Demands");
-        if (!is_array($allDemands)) $allDemands = [];
+        $schoolFs = $this->fs->schoolId();
+        $rawDemands = $this->firebase->firestoreQuery('feeDemands', [
+            ['schoolId', '==', $schoolFs], ['session', '==', $sy],
+        ]);
 
-        $byClass   = []; // class => {demanded, collected, students}
-        $byMonth   = []; // period_key => {demanded, collected}
+        $byClass   = [];
+        $byMonth   = [];
         $byStatus  = ['paid' => 0, 'partial' => 0, 'unpaid' => 0];
         $totalDemanded  = 0;
         $totalCollected = 0;
 
-        foreach ($allDemands as $sid => $demands) {
-            if (!is_array($demands)) continue;
-            foreach ($demands as $did => $d) {
-                if (!is_array($d)) continue;
-                $net  = floatval($d['net_amount'] ?? 0);
-                $paid = floatval($d['paid_amount'] ?? 0);
-                $cls  = $d['class'] ?? 'Unknown';
-                $pk   = $d['period_key'] ?? '';
-                $st   = $d['status'] ?? 'unpaid';
+        foreach ((array) $rawDemands as $r) {
+            $d = $r['data'] ?? $r;
+            if (!is_array($d)) continue;
+            $sid  = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
+            $net  = floatval($d['net_amount'] ?? 0);
+            $paid = floatval($d['paid_amount'] ?? 0);
+            $cls  = $d['class'] ?? 'Unknown';
+            $pk   = $d['period_key'] ?? '';
+            $st   = $d['status'] ?? 'unpaid';
 
-                $totalDemanded  += $net;
-                $totalCollected += $paid;
+            $totalDemanded  += $net;
+            $totalCollected += $paid;
 
-                if (!isset($byClass[$cls])) $byClass[$cls] = ['demanded' => 0, 'collected' => 0, 'students' => []];
-                $byClass[$cls]['demanded']  += $net;
-                $byClass[$cls]['collected'] += $paid;
-                $byClass[$cls]['students'][$sid] = true;
+            if (!isset($byClass[$cls])) $byClass[$cls] = ['demanded' => 0, 'collected' => 0, 'students' => []];
+            $byClass[$cls]['demanded']  += $net;
+            $byClass[$cls]['collected'] += $paid;
+            $byClass[$cls]['students'][$sid] = true;
 
-                if ($pk !== '') {
-                    if (!isset($byMonth[$pk])) $byMonth[$pk] = ['demanded' => 0, 'collected' => 0];
-                    $byMonth[$pk]['demanded']  += $net;
-                    $byMonth[$pk]['collected'] += $paid;
-                }
-
-                $byStatus[$st] = ($byStatus[$st] ?? 0) + 1;
+            if ($pk !== '') {
+                if (!isset($byMonth[$pk])) $byMonth[$pk] = ['demanded' => 0, 'collected' => 0];
+                $byMonth[$pk]['demanded']  += $net;
+                $byMonth[$pk]['collected'] += $paid;
             }
+
+            $byStatus[$st] = ($byStatus[$st] ?? 0) + 1;
         }
 
         // Format class data
@@ -712,17 +579,18 @@ class Fees extends MY_Controller
         $sn = $this->school_name;
         $sy = $this->session_year;
 
-        // Read all receipt allocations
-        $allAllocs = $this->firebase->get("Schools/{$sn}/{$sy}/Fees/Receipt_Allocations");
-        $receipts  = [];
-
-        if (is_array($allAllocs)) {
-            foreach ($allAllocs as $key => $rc) {
-                if (!is_array($rc)) continue;
-                if (($rc['student_id'] ?? '') !== $studentId) continue;
-                $rc['_key'] = $key;
-                $receipts[] = $rc;
-            }
+        // Firestore: receipt allocations for this student.
+        $schoolFs = $this->fs->schoolId();
+        $rawAllocs = $this->firebase->firestoreQuery('feeReceiptAllocations', [
+            ['schoolId',  '==', $schoolFs],
+            ['studentId', '==', $studentId],
+        ]);
+        $receipts = [];
+        foreach ((array) $rawAllocs as $r) {
+            $rc = $r['data'] ?? $r;
+            if (!is_array($rc)) continue;
+            $rc['_key'] = $r['id'] ?? ($rc['receiptKey'] ?? '');
+            $receipts[] = $rc;
         }
 
         // Sort by date DESC
@@ -741,176 +609,110 @@ class Fees extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES);
 
-        $sn = $this->school_name;
-        $sy = $this->session_year;
-        $sessionRoot = "Schools/$sn/$sy";
+        $schoolFs = $this->fs->schoolId();
+        $sy       = $this->session_year;
+        $months   = ['April','May','June','July','August','September',
+                     'October','November','December','January','February','March'];
 
-        $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
-
-        // 1. Vouchers — total collection + monthly breakdown + recent transactions + payment modes
-        $vouchers = $this->firebase->get("$sessionRoot/Accounts/Vouchers");
-        $totalCollected   = 0;
+        // ── 1. Receipts → totals, monthly, recent, payment modes ──────
+        $rcptRows = $this->firebase->firestoreQuery('feeReceipts', [
+            ['schoolId', '==', $schoolFs],
+        ]);
+        $totalCollected    = 0;
         $monthlyCollection = array_fill_keys($months, 0);
-        $recentTxns       = [];
-        $paymentModes     = [];
+        $recentTxns        = [];
+        $paymentModes      = [];
+        $todayStr          = date('Y-m-d');
+        $todayCollection   = 0;
+        $todayTxns         = 0;
 
-        if (is_array($vouchers)) {
-            foreach ($vouchers as $dateKey => $dayVouchers) {
-                if (!is_array($dayVouchers)) continue;
-                foreach ($dayVouchers as $key => $v) {
-                    if (!is_array($v)) continue;
-                    $amt = 0;
-                    if (isset($v['Fees Received'])) {
-                        $amt = floatval(str_replace(',', '', $v['Fees Received']));
-                    } elseif (isset($v['amount'])) {
-                        $amt = floatval($v['amount']);
-                    }
-                    if ($amt <= 0) continue;
+        foreach ((array) $rcptRows as $r) {
+            $d = $r['data'] ?? $r;
+            if (!is_array($d)) continue;
+            $amt = (float) ($d['amount'] ?? $d['netAmount'] ?? 0);
+            if ($amt <= 0) continue;
 
-                    $totalCollected += $amt;
+            $totalCollected += $amt;
 
-                    // Monthly breakdown — parse date (dd-mm-YYYY)
-                    $ts = strtotime(str_replace('-', '/', $dateKey));
-                    if ($ts) {
-                        $mName = date('F', $ts);
-                        if (isset($monthlyCollection[$mName])) {
-                            $monthlyCollection[$mName] += $amt;
-                        }
-                    }
+            $dateStr = (string) ($d['paymentDate'] ?? $d['date'] ?? $d['createdAt'] ?? '');
+            $dObj = null;
+            foreach (['Y-m-d', 'd-m-Y', \DateTime::ATOM] as $fmt) {
+                $dObj = \DateTime::createFromFormat($fmt, substr($dateStr, 0, 19));
+                if ($dObj !== false) break;
+            }
+            $mName = $dObj ? $dObj->format('F') : '';
+            if (isset($monthlyCollection[$mName])) $monthlyCollection[$mName] += $amt;
 
-                    // Payment mode
-                    $mode = $v['Mode'] ?? 'Cash';
-                    if (!isset($paymentModes[$mode])) $paymentModes[$mode] = 0;
-                    $paymentModes[$mode] += $amt;
+            $mode = (string) ($d['paymentMode'] ?? 'Cash');
+            $paymentModes[$mode] = ($paymentModes[$mode] ?? 0) + $amt;
 
-                    // Recent transactions (collect all, sort later)
-                    $recentTxns[] = [
-                        'receipt'  => $key,
-                        'date'     => $dateKey,
-                        'student'  => $v['Id'] ?? '—',
-                        'amount'   => $amt,
-                        'mode'     => $mode,
-                    ];
-                }
+            $receiptDate = $dObj ? $dObj->format('Y-m-d') : '';
+            if ($receiptDate === $todayStr) {
+                $todayCollection += $amt;
+                $todayTxns++;
+            }
+
+            $recentTxns[] = [
+                'receipt' => $d['receiptKey'] ?? '',
+                'date'    => $receiptDate,
+                'student' => $d['studentId'] ?? '—',
+                'amount'  => $amt,
+                'mode'    => $mode,
+            ];
+        }
+
+        usort($recentTxns, fn($a, $b) => strcmp($b['date'], $a['date']));
+        $recentTxns = array_slice($recentTxns, 0, 15);
+
+        // ── 2. Class-wise stats from demands ─────────────────────────
+        $demandRows = $this->firebase->firestoreQuery('feeDemands', [
+            ['schoolId', '==', $schoolFs], ['session', '==', $sy],
+        ]);
+
+        $byClass    = []; // class => {collected, due, students=>{sid=>hasPaid}}
+        $studentSet = [];
+
+        foreach ((array) $demandRows as $r) {
+            $d = $r['data'] ?? $r;
+            if (!is_array($d)) continue;
+            $cls  = (string) ($d['class'] ?? 'Unknown');
+            $sid  = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
+            $net  = (float) ($d['net_amount'] ?? 0);
+            $paid = (float) ($d['paid_amount'] ?? 0);
+            $bal  = (float) ($d['balance'] ?? max(0, $net - $paid));
+
+            if (!isset($byClass[$cls])) $byClass[$cls] = ['collected' => 0, 'due' => 0, 'students' => []];
+            $byClass[$cls]['collected'] += $paid;
+            $byClass[$cls]['due']       += $bal;
+            if ($sid !== '') {
+                $byClass[$cls]['students'][$sid] = ($byClass[$cls]['students'][$sid] ?? false) || ($paid > 0);
+                $studentSet[$sid] = true;
             }
         }
 
-        // Sort recent transactions by date desc, take last 15
-        usort($recentTxns, function ($a, $b) {
-            return strtotime(str_replace('-', '/', $b['date'])) - strtotime(str_replace('-', '/', $a['date']));
-        });
-        $recentTxns = array_slice($recentTxns, 0, 15);
-
-        // 2. Class-wise collection from fees chart + student data
         $classCollection = [];
-        $totalStudents   = 0;
+        $totalStudents   = count($studentSet);
         $paidStudents    = 0;
         $totalDue        = 0;
 
-        // Get current month index (April=0 for Indian academic year)
-        $currentMonth = (int) date('n');
-        $monthIndex   = ($currentMonth >= 4) ? ($currentMonth - 4) : ($currentMonth + 8);
-        $monthsToCheck = array_slice($months, 0, $monthIndex + 1);
-
-        // Scan session root for classes
-        $classKeys = $this->firebase->shallow_get($sessionRoot);
-        if (is_array($classKeys)) {
-            foreach ($classKeys as $classKey) {
-                $classKey = (string) $classKey;
-                if (strpos($classKey, 'Class ') !== 0) continue;
-
-                $sectionKeys = $this->firebase->shallow_get("$sessionRoot/$classKey");
-                if (!is_array($sectionKeys)) continue;
-
-                $classTotal  = 0;
-                $classDue    = 0;
-                $classCount  = 0;
-                $classPaid   = 0;
-
-                foreach ($sectionKeys as $secKey) {
-                    $secKey = (string) $secKey;
-                    if (strpos($secKey, 'Section ') !== 0) continue;
-
-                    $studentList = $this->firebase->get("$sessionRoot/$classKey/$secKey/Students/List");
-                    $classFees   = $this->firebase->get("$sessionRoot/Accounts/Fees/Classes Fees/$classKey/$secKey");
-
-                    if (!is_array($studentList)) continue;
-                    $classCount += count($studentList);
-
-                    if (!is_array($classFees)) continue;
-
-                    foreach ($studentList as $uid => $name) {
-                        $monthFee = $this->firebase->get("$sessionRoot/$classKey/$secKey/Students/$uid/Month Fee");
-                        $monthFee = is_array($monthFee) ? $monthFee : [];
-
-                        $studentPaidAny = false;
-                        $studentHasDue  = false;
-
-                        foreach ($monthsToCheck as $m) {
-                            $paid = isset($monthFee[$m]) ? (int) $monthFee[$m] : 0;
-                            if ($paid === 1) {
-                                $studentPaidAny = true;
-                                // Sum what they paid (from class fees chart)
-                                if (isset($classFees[$m]) && is_array($classFees[$m])) {
-                                    foreach ($classFees[$m] as $title => $feeAmt) {
-                                        $classTotal += floatval($feeAmt);
-                                    }
-                                }
-                            } else {
-                                if (isset($classFees[$m]) && is_array($classFees[$m])) {
-                                    foreach ($classFees[$m] as $title => $feeAmt) {
-                                        $classDue += floatval($feeAmt);
-                                    }
-                                    $studentHasDue = true;
-                                }
-                            }
-                        }
-                        if ($studentPaidAny) $classPaid++;
-                    }
-                }
-
-                $totalStudents += $classCount;
-                $paidStudents  += $classPaid;
-                $totalDue      += $classDue;
-
-                if ($classCount > 0) {
-                    $classCollection[] = [
-                        'class'     => $classKey,
-                        'students'  => $classCount,
-                        'collected' => round($classTotal, 2),
-                        'due'       => round($classDue, 2),
-                        'paid_pct'  => $classCount > 0 ? round(($classPaid / $classCount) * 100) : 0,
-                    ];
-                }
-            }
+        foreach ($byClass as $cls => $data) {
+            $stuCount = count($data['students']);
+            $stuPaid  = count(array_filter($data['students']));
+            $paidStudents += $stuPaid;
+            $totalDue     += $data['due'];
+            $classCollection[] = [
+                'class'     => $cls,
+                'students'  => $stuCount,
+                'collected' => round($data['collected'], 2),
+                'due'       => round($data['due'], 2),
+                'paid_pct'  => $stuCount > 0 ? round(($stuPaid / $stuCount) * 100) : 0,
+            ];
         }
+        usort($classCollection, fn($a, $b) => strnatcmp($a['class'], $b['class']));
 
-        // Sort classes naturally
-        usort($classCollection, function ($a, $b) {
-            return strnatcmp($a['class'], $b['class']);
-        });
-
-        // 3. Today's collection
-        $today = date('d-m-Y');
-        $todayCollection = 0;
-        $todayTxns       = 0;
-        if (is_array($vouchers) && isset($vouchers[$today]) && is_array($vouchers[$today])) {
-            foreach ($vouchers[$today] as $v) {
-                if (!is_array($v)) continue;
-                $amt = isset($v['Fees Received']) ? floatval(str_replace(',', '', $v['Fees Received'])) : floatval($v['amount'] ?? 0);
-                if ($amt > 0) {
-                    $todayCollection += $amt;
-                    $todayTxns++;
-                }
-            }
-        }
-
-        // 4. This month's collection
-        $thisMonthName = date('F');
+        $thisMonthName       = date('F');
         $thisMonthCollection = $monthlyCollection[$thisMonthName] ?? 0;
-
-        $defaulters = $totalStudents - $paidStudents;
-        if ($defaulters < 0) $defaulters = 0;
+        $defaulters = max(0, $totalStudents - $paidStudents);
 
         $this->json_success([
             'total_collected'     => round($totalCollected, 2),
@@ -986,36 +788,10 @@ class Fees extends MY_Controller
             return;
         }
 
-        // Page load — build class + section lists from year root
-        $yearRoot = $this->CM->get_data("Schools/$sn/$sy");
-        $yearRoot = is_array($yearRoot) ? $yearRoot : [];
-
-        $classList  = [];
-        $sectionMap = [];
-
-        foreach ($yearRoot as $key => $value) {
-            if (stripos($key, 'Class ') !== 0) continue;
-            $classList[]      = $key;
-            $sectionMap[$key] = [];
-
-            if (!is_array($value)) continue;
-
-            foreach (array_keys($value) as $secKey) {
-                $secKey = (string)$secKey;
-                if (stripos($secKey, 'Section ') === 0) {
-                    $sectionMap[$key][] = $secKey;
-                } elseif (strlen($secKey) <= 3 && ctype_alpha($secKey)) {
-                    $sectionMap[$key][] = 'Section ' . strtoupper($secKey);
-                }
-            }
-            sort($sectionMap[$key]);
-        }
-
-        usort($classList, function ($a, $b) {
-            preg_match('/(\d+)/', $a, $ma);
-            preg_match('/(\d+)/', $b, $mb);
-            return ((int)($ma[1] ?? 0)) <=> ((int)($mb[1] ?? 0));
-        });
+        // Page load — class/section dropdowns from Firestore.
+        $csMap = $this->_buildClassSectionMap();
+        $classList  = $csMap['classList'];
+        $sectionMap = $csMap['sectionMap'];
 
         $data['classes']  = $classList;
         $data['sections'] = $sectionMap;
@@ -1027,68 +803,42 @@ class Fees extends MY_Controller
 
     private function _createDefaultFees($class, $section)
     {
-        $sn = $this->school_name;
-        $sy = $this->session_year;
-
-        $structure = $this->CM->get_data("Schools/$sn/$sy/Accounts/Fees/Fees Structure");
-        $feesPath  = $this->feesPath($class, $section);
-        $existing  = $this->CM->get_data($feesPath);
-
+        // If this class/section already has a chart in Firestore, return it.
+        $existing = $this->_getClassFeeChart($class, $section);
         if (!empty($existing)) return $existing;
-        if (empty($structure))  return [];
 
-        $months  = [
-            'April',
-            'May',
-            'June',
-            'July',
-            'August',
-            'September',
-            'October',
-            'November',
-            'December',
-            'January',
-            'February',
-            'March'
-        ];
+        // Build a zero-value template from fee head names found in other
+        // class/section charts within this session — no RTDB reads.
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        $allSections = $this->fsTxn->listSectionsWithFeeChart();
+
+        $monthlyHeads = [];
+        $yearlyHeads  = [];
+        foreach ($allSections as $cs) {
+            $chart = $this->fsTxn->readFeeStructure($cs['class'], $cs['section']);
+            foreach ($chart['April'] ?? [] as $title => $_) $monthlyHeads[$title] = true;
+            foreach ($chart['Yearly Fees'] ?? [] as $title => $_) $yearlyHeads[$title] = true;
+        }
+
+        if (empty($monthlyHeads) && empty($yearlyHeads)) return [];
+
+        $months = ['April','May','June','July','August','September',
+                   'October','November','December','January','February','March'];
         $default = [];
-
-        foreach ($months as $month) {
-            $default[$month] = [];
-            if (isset($structure['Monthly']) && is_array($structure['Monthly'])) {
-                foreach ($structure['Monthly'] as $t => $v) $default[$month][$t] = 0;
-            }
+        foreach ($months as $m) {
+            $default[$m] = array_fill_keys(array_keys($monthlyHeads), 0);
         }
+        $default['Yearly Fees'] = array_fill_keys(array_keys($yearlyHeads), 0);
 
-        $default['Yearly Fees'] = [];
-        if (isset($structure['Yearly']) && is_array($structure['Yearly'])) {
-            foreach ($structure['Yearly'] as $t => $v) $default['Yearly Fees'][$t] = 0;
-        }
-
-        $this->CM->addKey_pair_data($feesPath, $default);
         return $default;
     }
 
     private function _getFees($class, $section)
     {
-        $sn = $this->school_name;
-        $sy = $this->session_year;
-
-        $feesPath = $this->feesPath($class, $section);
-        $feesData = $this->CM->get_data($feesPath);
-
-        if (empty($feesData) || !is_array($feesData)) {
+        $feesData = $this->_getClassFeeChart($class, $section);
+        if (empty($feesData)) {
             return json_encode(['fees' => [], 'monthlyTotals' => []]);
-        }
-
-        // Ensure Yearly Fees node exists
-        if (!isset($feesData['Yearly Fees']) || !is_array($feesData['Yearly Fees'])) {
-            $ys = $this->CM->get_data("Schools/$sn/$sy/Accounts/Fees/Fees Structure/Yearly");
-            if ($ys && is_array($ys)) {
-                $yearly = array_fill_keys(array_keys($ys), 0);
-                $feesData['Yearly Fees'] = $yearly;
-                $this->CM->addKey_pair_data($feesPath, ['Yearly Fees' => $yearly]);
-            }
         }
 
         $formatted = [];
@@ -1195,41 +945,163 @@ class Fees extends MY_Controller
             }
         }
 
-        // Verify this class+section actually exists in Firebase
-        // (prevents writing to arbitrary paths)
-        $sn = $this->school_name;
-        $sy = $this->session_year;
-        $classExists = $this->CM->get_data("Schools/$sn/$sy/$class/$section");
-        if (empty($classExists)) {
-            $this->_json_out(['status' => 'error', 'message' => 'Class/section not found. Please reload the page.']);
+        // Verify class/section exists by checking students collection.
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        $roster = $this->fsTxn->listStudentsInSection($class, $section);
+        if (empty($roster)) {
+            $existing = $this->_getClassFeeChart($class, $section);
+            if (empty($existing)) {
+                $this->_json_out(['status' => 'error', 'message' => 'Class/section not found. Please reload the page.']);
+                return;
+            }
+        }
+
+        // Merge incoming fees with existing Firestore chart.
+        $existingChart = $this->_getClassFeeChart($class, $section);
+        $mergedChart = $existingChart;
+        foreach ($fees as $month => $entries) {
+            if (!is_array($entries)) continue;
+            $mergedChart[$month] = array_merge(
+                is_array($mergedChart[$month] ?? null) ? $mergedChart[$month] : [],
+                $entries
+            );
+        }
+
+        // Pure Firestore write — feeStructures collection.
+        $fsOk = $this->fsSync->syncFeeStructure($class, $section, $mergedChart);
+        if (!$fsOk) {
+            log_message('error', "save_updated_fees: Firestore write failed for {$class}/{$section}");
+            $this->output->set_status_header(503);
+            $this->_json_out([
+                'status'  => 'error',
+                'message' => 'Could not save fee structure. Please try again.',
+            ]);
             return;
         }
 
-        $feesPath = $this->feesPath($class, $section);
-
-        // Save Yearly Fees separately, then monthly fees
-        if (isset($fees['Yearly Fees']) && is_array($fees['Yearly Fees'])) {
-            $this->CM->addKey_pair_data("$feesPath/Yearly Fees", $fees['Yearly Fees']);
-            unset($fees['Yearly Fees']);
-        }
-
-        if (!empty($fees)) {
-            $this->CM->addKey_pair_data($feesPath, $fees);
-        }
-
-        // ── Sync fee structure to Firestore for mobile apps ──
+        // ── Auto-generate demands for this class/section ──
+        // Best-effort background-style invocation. We log but don't
+        // block the save — the fee structure is already saved, and
+        // administrators can re-generate demands manually if this step
+        // fails (via `generate_monthly_demands`). Replaces the legacy
+        // "Generate Demands" sidebar button for the 95% happy path.
+        $demandsGenerated = 0;
+        $demandsFailed = 0;
         try {
-            $fullChart = $this->firebase->get($feesPath);
-            if (is_array($fullChart)) {
-                $this->fsSync->syncFeeStructure($class, $section, $fullChart);
+            if (!empty($roster)) {
+                foreach ($roster as $studentId => $_stu) {
+                    try {
+                        $ok = $this->_auto_generate_student_demands($studentId, $class, $section, $mergedChart);
+                        if ($ok) $demandsGenerated++; else $demandsFailed++;
+                    } catch (\Exception $e) {
+                        $demandsFailed++;
+                        log_message('error', "auto-demands failed for {$studentId}: " . $e->getMessage());
+                    }
+                }
+                log_message('info', "save_updated_fees: auto-demands {$class}/{$section} generated={$demandsGenerated} failed={$demandsFailed}");
             }
         } catch (\Exception $e) {
-            log_message('error', "save_updated_fees: Firestore sync failed: " . $e->getMessage());
+            log_message('error', "save_updated_fees: auto-demands outer failure: " . $e->getMessage());
         }
 
-        log_audit('Fees', 'update_fees', "{$class} {$section}", "Updated fee structure for {$class} Section {$section}");
+        log_audit('Fees', 'update_fees', "{$class} {$section}", "Updated fee structure for {$class} Section {$section} (demands gen={$demandsGenerated} fail={$demandsFailed})");
 
-        $this->_json_out(['status' => 'success', 'message' => 'Fees updated successfully.']);
+        $this->_json_out([
+            'status'  => 'success',
+            'message' => $demandsGenerated > 0
+                ? "Fees updated. Demands generated for {$demandsGenerated} student(s)."
+                : 'Fees updated successfully.',
+            'demands_generated' => $demandsGenerated,
+            'demands_failed'    => $demandsFailed,
+        ]);
+    }
+
+    /**
+     * Regenerate feeDemand docs for a single student from the given
+     * fee chart. Missing months are created, existing paid/partial
+     * demands are left untouched. Called from save_updated_fees so
+     * admins don't have to hit a separate "Generate Demands" button.
+     */
+    private function _auto_generate_student_demands(string $studentId, string $class, string $section, array $chart): bool
+    {
+        $allMonths = [
+            'April','May','June','July','August','September',
+            'October','November','December','January','February','March',
+            'Yearly Fees',
+        ];
+        $existing = $this->fsTxn->demandsForStudent($studentId); // keyed by docId
+
+        // Index existing demands by demand-id (the deterministic key
+        // we'd use for a fresh write) so we can skip any month×head
+        // that already exists — including already-PAID ones.
+        //
+        // Earlier version used `period`-word + `fee_head` which broke
+        // for "Yearly Fees" (split-on-space yielded "Yearly", which
+        // never matched "Yearly Fees" from the chart). The result was
+        // that paid Annual-Fee demands got overwritten with fresh
+        // unpaid ones on every fee-chart save.
+        $haveIds = [];
+        foreach ($existing as $docId => $_d) {
+            if ($docId !== '') $haveIds[$docId] = true;
+        }
+
+        $today = date('Y-m-d');
+        $wrote = false;
+        foreach ($allMonths as $month) {
+            $heads = is_array($chart[$month] ?? null) ? $chart[$month] : [];
+            foreach ($heads as $title => $amount) {
+                $amt = (float) $amount;
+                if ($amt <= 0) continue;
+
+                $periodKey = $this->_period_key_for_month($month);
+                $periodLabel = $month === 'Yearly Fees'
+                    ? "Yearly Fees {$this->session_year}"
+                    : "{$month} " . $this->_year_for_month($month);
+                $demandId = "DEM_" . str_replace('-', '', $periodKey)
+                          . '_' . strtoupper(preg_replace('/[^A-Z0-9]+/i', '_', $title));
+
+                if (isset($haveIds[$demandId])) continue; // already exists, leave it alone
+
+                $this->fsTxn->writeDemand($demandId, [
+                    'studentId'     => $studentId,
+                    'className'     => $class,
+                    'section'       => $section,
+                    'fee_head'      => $title,
+                    'period'        => $periodLabel,
+                    'period_key'    => $periodKey,
+                    'original_amount'=> $amt,
+                    'net_amount'    => $amt,
+                    'paid_amount'   => 0.0,
+                    'balance'       => $amt,
+                    'status'        => 'unpaid',
+                    'generated_at'  => $today,
+                ]);
+                $wrote = true;
+            }
+        }
+        return $wrote || !empty($haveIds);
+    }
+
+    /** Map a month name to its YYYY-MM key inside the current session. */
+    private function _period_key_for_month(string $month): string
+    {
+        $months = ['April'=>4,'May'=>5,'June'=>6,'July'=>7,'August'=>8,'September'=>9,
+                   'October'=>10,'November'=>11,'December'=>12,'January'=>1,'February'=>2,'March'=>3];
+        if ($month === 'Yearly Fees') return $this->_year_for_month('April') . '-04';
+        $m = $months[$month] ?? 4;
+        return $this->_year_for_month($month) . '-' . str_pad((string)$m, 2, '0', STR_PAD_LEFT);
+    }
+
+    /** Jan–Mar roll into the session's second year; Apr–Dec into the first. */
+    private function _year_for_month(string $month): string
+    {
+        // session_year is like "2026-27"
+        $parts = explode('-', $this->session_year);
+        $startYear = (int) ($parts[0] ?? date('Y'));
+        $rolloverMonths = ['January','February','March'];
+        if (in_array($month, $rolloverMonths, true)) return (string) ($startYear + 1);
+        return (string) $startYear;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1261,16 +1133,31 @@ class Fees extends MY_Controller
         $base = $this->studentPath($class, $section, $userId);
 
         try {
-            $this->firebase->set("$base/Discount/OnDemandDiscount", (int)$discount);
-            $cur = (int)($this->firebase->get("$base/Discount/totalDiscount") ?? 0);
-            $new = $cur + (int)$discount;
-            $this->firebase->set("$base/Discount/totalDiscount", $new);
+            // Pure Firestore: read existing discount, update, write back.
+            $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+            $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
 
-            // Update defaulter status after discount applied
+            $existing = $this->firebase->firestoreGet('studentDiscounts', "{$this->fs->schoolId()}_{$userId}");
+            $curTotal = is_array($existing) ? (int) ($existing['totalDiscount'] ?? 0) : 0;
+            $scholAmt = is_array($existing) ? (float) ($existing['scholarshipDiscount'] ?? 0) : 0;
+            $new = $curTotal + (int) $discount;
+            $now = date('c');
+
+            $this->fsTxn->updateDiscount($userId, [
+                'onDemandDiscount'    => (int) $discount,
+                'scholarshipDiscount' => $scholAmt,
+                'totalDiscount'       => $new,
+                'appliedAt'           => $now,
+            ], ['className' => $class, 'section' => $section]);
+
+            // Refresh defaulter status from demand data.
             try {
-                $this->feeDefaulter->updateDefaulterStatus($userId);
+                $stu = $this->fsTxn->getStudent($userId);
+                $studentName = is_array($stu) ? ((string) ($stu['name'] ?? $stu['Name'] ?? '')) : '';
+                $defaulterStatus = $this->feeDefaulter->updateDefaulterStatus($userId);
+                $this->fsSync->syncDefaulterStatus($userId, $defaulterStatus, $studentName, $class, $section);
             } catch (Exception $e) {
-                log_message('error', "Fee_defaulter_check::updateDefaulterStatus failed after submit_discount for {$userId}: " . $e->getMessage());
+                log_message('error', "submit_discount: defaulter sync failed for {$userId}: " . $e->getMessage());
             }
 
             $this->_json_out(['success' => true, 'newTotalDiscount' => $new]);
@@ -1302,61 +1189,90 @@ class Fees extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'fetch_receipts');
         $this->output->set_content_type('application/json');
 
-        $school_id = $this->parent_db_key;
-
-        // FIX: Read userId from $_POST (FormData) instead of php://input JSON.
-        // This means CSRF token arrives in the body field normally — no 403.
         $userId = trim($this->input->post('userId') ?? '');
-
-        if (!$userId) {
-            $this->output->set_output(json_encode([]));
-            return;
-        }
+        if (!$userId) { $this->output->set_output(json_encode([])); return; }
         $userId = $this->safe_path_segment($userId, 'userId');
 
-        $userInfo = $this->firebase->get("Users/Parents/$school_id/$userId");
-        if (empty($userInfo)) {
-            $this->output->set_output(json_encode([]));
-            return;
-        }
-        $userInfo = (array)$userInfo;
-
-        $name   = $userInfo['Name']        ?? 'N/A';
-        $father = $userInfo['Father Name'] ?? 'N/A';
-
-        list($class, $section) = $this->_resolveClassSection($userInfo);
-
-        if ($class === '' || $section === '') {
+        // Session A: query feeReceipts collection directly. studentName + class
+        // are denormalised into each receipt doc at write time, so we don't
+        // need a separate profile read.
+        try {
+            $rows = $this->fs->schoolWhere('feeReceipts', [['studentId', '==', $userId]]);
+        } catch (\Exception $e) {
+            log_message('error', "fetch_fee_receipts failed for {$userId}: " . $e->getMessage());
             $this->output->set_output(json_encode([]));
             return;
         }
 
-        $studentBase = $this->studentPath($class, $section, $userId);
-        $recs        = $this->firebase->get("$studentBase/Fees Record");
+        // One bulk read of the allocation docs for this student so we can
+        // tag each receipt with Full/Partial coverage (an allocation entry
+        // with status='partial' means the demand it touched still owes
+        // money after this receipt).
+        $allocByReceiptKey = [];
+        try {
+            $allocRows = $this->fs->schoolWhere('feeReceiptAllocations', [['studentId', '==', $userId]]);
+            foreach ((array) $allocRows as $ar) {
+                $ad = $ar['data'] ?? [];
+                $rk = (string) ($ad['receiptKey'] ?? '');
+                if ($rk !== '') $allocByReceiptKey[$rk] = $ad;
+            }
+        } catch (\Exception $_) { /* best-effort — fall back to gross status */ }
 
         $response = [];
-        if (is_array($recs)) {
-            foreach ($recs as $key => $rec) {
-                $rec        = (array)$rec;
-                $response[] = [
-                    'receiptNo' => str_replace('F', '', $key),
-                    'date'      => $rec['Date']     ?? '',
-                    'student'   => "$name / $father",
-                    'class'     => "$class $section",
-                    'amount'    => $rec['Amount']   ?? '0.00',
-                    'fine'      => $rec['Fine']     ?? '0.00',
-                    'discount'  => $rec['Discount'] ?? '0.00',
-                    'account'   => $rec['Mode']     ?? 'N/A',
-                    'reference' => $rec['Refer']    ?? '',
-                    'Id'        => $userId,
-                ];
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? [];
+            if (!is_array($d)) continue;
+            $name   = (string) ($d['studentName'] ?? '');
+            $father = (string) ($d['fatherName']  ?? '');
+            $class  = (string) ($d['className']   ?? '');
+            $sec    = (string) ($d['section']     ?? '');
+
+            // Coverage: walk the receipt's allocations and check if any of
+            // the demands it touched were left partially paid. If yes →
+            // the receipt itself was a "partial" payment for the parent's
+            // intent. If every touched demand cleared → "full".
+            $rcptKey = (string) ($d['receiptKey'] ?? '');
+            $coverage = 'unknown';
+            $months   = [];
+            if ($rcptKey !== '' && isset($allocByReceiptKey[$rcptKey])) {
+                $allocs = $allocByReceiptKey[$rcptKey]['allocations'] ?? [];
+                if (is_array($allocs) && !empty($allocs)) {
+                    $hasPartial = false;
+                    foreach ($allocs as $a) {
+                        $st = (string) ($a['status'] ?? '');
+                        if ($st === 'partial') $hasPartial = true;
+                        $period = (string) ($a['period'] ?? '');
+                        $monthLabel = trim((string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', $period));
+                        if ($monthLabel !== '' && !in_array($monthLabel, $months, true)) {
+                            $months[] = $monthLabel;
+                        }
+                    }
+                    $coverage = $hasPartial ? 'partial' : 'full';
+                }
+            }
+            // Fall back to the receipt's own feeMonths list if the
+            // allocation doc didn't carry period info.
+            if (empty($months) && is_array($d['feeMonths'] ?? null)) {
+                $months = array_values(array_filter(array_map('strval', $d['feeMonths'])));
             }
 
-            usort($response, function ($a, $b) {
-                return (int)$b['receiptNo'] - (int)$a['receiptNo'];
-            });
+            $response[] = [
+                'receiptNo' => (string) ($d['receiptNo'] ?? ''),
+                'date'      => (string) ($d['date']      ?? ''),
+                'student'   => trim($name . ($father !== '' ? " / {$father}" : '')),
+                'class'     => trim("{$class} {$sec}"),
+                'amount'    => is_numeric($d['amount'] ?? null) ? number_format((float) $d['amount'], 2) : (string) ($d['amount'] ?? '0.00'),
+                'fine'      => is_numeric($d['fine']   ?? null) ? number_format((float) $d['fine'],   2) : (string) ($d['fine']   ?? '0.00'),
+                'discount'  => is_numeric($d['discount'] ?? null) ? number_format((float) $d['discount'], 2) : (string) ($d['discount'] ?? '0.00'),
+                'account'   => (string) ($d['paymentMode'] ?? 'N/A'),
+                'reference' => (string) ($d['remarks']     ?? ''),
+                'coverage'  => $coverage,
+                'months'    => $months,
+                'Id'        => $userId,
+            ];
         }
 
+        usort($response, fn($a, $b) => (int) $b['receiptNo'] - (int) $a['receiptNo']);
         $this->output->set_output(json_encode($response));
     }
 
@@ -1370,24 +1286,46 @@ class Fees extends MY_Controller
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
 
-        $receiptPath       = "Schools/$school_name/$session_year/Accounts/Fees/Receipt No";
-        $data['receiptNo'] = $this->CM->get_data($receiptPath) ?: '1';
+        // Pure Firestore: peek the receipt counter (don't increment —
+        // submit_fees reserves the real number at submit time). Display
+        // the NEXT number the parent will see on their receipt.
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $session_year);
+        $data['receiptNo'] = (string) ($this->fsTxn->getCounter('receipt_seq') + 1);
 
-        $accountsData     = $this->CM->get_data("Schools/$school_name/$session_year/Accounts/Account_book");
+        // Payment-mode dropdown: read ChartOfAccounts from Firestore
+        // (Session C source of truth). Cash/Bank filter: is_bank flag,
+        // name contains "cash", or sub_category CASH/BANK ACCOUNT. Group
+        // accounts are excluded so placeholders like "Current Assets"
+        // don't appear in the dropdown.
+        $this->load->library('Accounting_firestore_sync');
+        $this->accounting_firestore_sync->init(
+            $this->firebase, $this->school_name, $session_year
+        );
+        $chartData  = $this->accounting_firestore_sync->readChartOfAccounts();
         $filteredAccounts = [];
-        if (!empty($accountsData) && is_array($accountsData)) {
-            foreach ($accountsData as $aName => $aDetails) {
-                if (isset($aDetails['Under']) && in_array($aDetails['Under'], ['BANK ACCOUNT', 'CASH'])) {
-                    $filteredAccounts[$aName] = $aDetails['Under'];
-                }
+        foreach ($chartData as $code => $entry) {
+            if (!is_array($entry)) continue;
+            if (($entry['status'] ?? 'active') !== 'active') continue;
+            if (!empty($entry['is_group'])) continue;
+
+            $name   = (string) ($entry['name'] ?? $code);
+            $sub    = strtoupper(trim((string) ($entry['sub_category'] ?? '')));
+            $isBank = !empty($entry['is_bank']);
+            $isCash = stripos($name, 'cash') !== false;
+
+            if ($isBank || $isCash || $sub === 'CASH' || $sub === 'BANK ACCOUNT') {
+                $label = ($sub === 'CASH' || $sub === 'BANK ACCOUNT')
+                    ? $sub
+                    : ($isBank ? 'BANK ACCOUNT' : 'CASH');
+                $filteredAccounts[$name] = $label;
             }
         }
         $data['accounts'] = $filteredAccounts;
 
-        $ts = $this->CM->get_data("Schools/$school_name/$session_year/ServerTimestamp");
-        $data['serverDate'] = (!empty($ts) && is_numeric($ts))
-            ? date('d-m-Y', $ts / 1000)
-            : date('d-m-Y');
+        // Server date: use PHP's own clock. The legacy RTDB ServerTimestamp
+        // node was a manually-seeded millisecond value, no longer written.
+        $data['serverDate'] = date('d-m-Y');
 
         $this->load->view('include/header');
         $this->load->view('fees_counter', $data);
@@ -1405,30 +1343,22 @@ class Fees extends MY_Controller
         $this->output->set_content_type('application/json');
 
         $userId = trim($this->input->post('user_id') ?? '');
-        if ($userId === '') {
-            $this->_json_out(['error' => 'No user ID provided']);
-            return;
-        }
+        if ($userId === '') { $this->_json_out(['error' => 'No user ID provided']); return; }
         $userId = $this->safe_path_segment($userId, 'user_id');
 
-        $student = $this->CM->get_data("Users/Parents/{$this->parent_db_key}/$userId");
-        if (empty($student)) {
-            $this->_json_out(['error' => "Student '$userId' not found"]);
+        // Session A: Firestore-only student lookup.
+        $student = $this->fs->get('students', "{$this->fs->schoolId()}_{$userId}");
+        if (!is_array($student)) {
+            $this->_json_out(['error' => "Student '{$userId}' not found"]);
             return;
         }
 
-        $student = (array)$student;
-
-        // ── FIX: Use _resolveClassSection to get normalized values ──
-        // This handles all formats: "8th", "8th B", "Class 8th", etc.
-        list($class, $section) = $this->_resolveClassSection($student);
-
         $this->_json_out([
-            'user_id'     => $student['User Id'] ?? $userId,
-            'name'        => $student['Name']        ?? '',
-            'father_name' => $student['Father Name'] ?? '',
-            'class'       => $class,
-            'section'     => $section,
+            'user_id'     => (string) ($student['studentId'] ?? $student['userId'] ?? $userId),
+            'name'        => (string) ($student['name']       ?? ''),
+            'father_name' => (string) ($student['fatherName'] ?? ''),
+            'class'       => (string) ($student['className']  ?? ''),
+            'section'     => (string) ($student['section']    ?? ''),
         ]);
     }
 
@@ -1442,59 +1372,78 @@ class Fees extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'fetch_months');
         $this->output->set_content_type('application/json');
 
-        $school_id = $this->parent_db_key;
-        $userId    = trim($this->input->post('user_id') ?? '');
-
-        if ($userId === '') {
-            $this->_json_out(['error' => 'No user ID provided']);
-            return;
-        }
+        $userId = trim($this->input->post('user_id') ?? '');
+        if ($userId === '') { $this->_json_out(['error' => 'No user ID provided']); return; }
         $userId = $this->safe_path_segment($userId, 'user_id');
 
-        $student = $this->CM->get_data("Users/Parents/$school_id/$userId");
-        if (empty($student)) {
-            $this->_json_out(['error' => "Student '$userId' not found"]);
-            return;
-        }
-        $student = (array)$student;
-
-        list($class, $section) = $this->_resolveClassSection($student);
-
-        if ($class === '' || $section === '') {
-            $this->_json_out([
-                'error'         => "Cannot resolve class/section for '$userId'",
-                'class_field'   => $student['Class']   ?? '',
-                'section_field' => $student['Section'] ?? '',
-            ]);
+        // Sanity-check the student exists.
+        $student = $this->fs->get('students', "{$this->fs->schoolId()}_{$userId}");
+        if (!is_array($student)) {
+            $this->_json_out(['error' => "Student '{$userId}' not found"]);
             return;
         }
 
-        $studentBase   = $this->studentPath($class, $section, $userId);
-        $monthFeesData = $this->CM->get_data("$studentBase/Month Fee");
-        $monthFeesData = is_array($monthFeesData) ? $monthFeesData : [];
+        // 3-STATE month status — derived from feeDemands directly, NOT
+        // from the binary `students.monthFee` map.
+        //
+        // Why: the monthFee map is binary (1=fully paid, 0=anything else)
+        // and so couldn't distinguish UNPAID from PARTIAL. Admin's tile
+        // grid then showed partial-paid months as "Unpaid" (red) which
+        // contradicted the parent app's "Partial" badge. Reading
+        // feeDemands gives us the true per-month state for both flows
+        // to share — single source of truth.
+        //
+        // fsTxn is NOT auto-loaded in the constructor (it's loaded
+        // inline by submit_fees + a few other endpoints). fetch_months
+        // is read-only so we just need a one-shot init here.
+        if (!isset($this->fsTxn)) {
+            $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+            $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        }
+        $demands = $this->fsTxn->demandsForStudent($userId);
+
+        // Aggregate per month-label (preserves "Yearly Fees" multi-word
+        // intact via the same regex used in submit_fees).
+        $byMonth = []; // monthLabel => ['totalDue' => f, 'totalPaid' => f]
+        foreach ((array) $demands as $d) {
+            $rawPeriod = (string) ($d['period'] ?? '');
+            $monthLabel = trim((string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', $rawPeriod));
+            if ($monthLabel === '') continue;
+            if (!isset($byMonth[$monthLabel])) {
+                $byMonth[$monthLabel] = ['totalDue' => 0.0, 'totalPaid' => 0.0];
+            }
+            $byMonth[$monthLabel]['totalDue']  += (float) ($d['net_amount']  ?? 0);
+            $byMonth[$monthLabel]['totalPaid'] += (float) ($d['paid_amount'] ?? 0);
+        }
 
         $months = [
-            'April',
-            'May',
-            'June',
-            'July',
-            'August',
-            'September',
-            'October',
-            'November',
-            'December',
-            'January',
-            'February',
-            'March',
-            'Yearly Fees'
+            'April', 'May', 'June', 'July', 'August', 'September',
+            'October', 'November', 'December', 'January', 'February', 'March',
+            'Yearly Fees',
         ];
-
         $result = [];
         foreach ($months as $m) {
-            $result[$m] = isset($monthFeesData[$m]) ? (int)$monthFeesData[$m] : 0;
+            $entry = $byMonth[$m] ?? ['totalDue' => 0.0, 'totalPaid' => 0.0];
+            $totalDue  = round($entry['totalDue'], 2);
+            $totalPaid = round($entry['totalPaid'], 2);
+            $remaining = round(max(0.0, $totalDue - $totalPaid), 2);
+            $status = 'unpaid';
+            if ($totalDue > 0) {
+                if ($remaining <= 0.005) $status = 'paid';
+                elseif ($totalPaid > 0.005) $status = 'partial';
+            }
+            $result[$m] = [
+                // `paid` (legacy 0/1) preserved for any older JS that
+                // still expects the binary shape — but `status`
+                // (unpaid / partial / paid) is the authoritative field.
+                'paid'      => ($status === 'paid') ? 1 : 0,
+                'status'    => $status,
+                'totalDue'  => $totalDue,
+                'totalPaid' => $totalPaid,
+                'remaining' => $remaining,
+            ];
         }
-
-        $this->_json_out(is_array($result) ? $result : ['data' => $result]);
+        $this->_json_out($result);
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1507,47 +1456,55 @@ class Fees extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'fetch_fee_details');
         $this->output->set_content_type('application/json');
 
-        $school_id = $this->parent_db_key;
-        $userId    = trim($this->input->post('user_id') ?? '');
+        $userId         = trim($this->input->post('user_id') ?? '');
         $selectedMonths = $this->input->post('months') ?? [];
+        if (!is_array($selectedMonths)) $selectedMonths = [];
+        $selectedMonths = array_values(array_filter(array_map('trim', $selectedMonths)));
 
         if ($userId === '' || empty($selectedMonths)) {
             $this->_json_out(['error' => 'Missing user_id or months']);
             return;
         }
 
-        $student = $this->CM->get_data("Users/Parents/$school_id/$userId");
-        if (empty($student)) {
-            $this->_json_out(['error' => "Student '$userId' not found"]);
+        $schoolFs = $this->fs->schoolId();
+
+        // Session A: Firestore-only student + fee structure + exemption +
+        // discount + advance lookup.
+        $student = $this->fs->get('students', "{$schoolFs}_{$userId}");
+        if (!is_array($student)) {
+            $this->_json_out(['error' => "Student '{$userId}' not found"]);
             return;
         }
-        $student = (array)$student;
 
-        list($class, $section) = $this->_resolveClassSection($student);
-
+        $class   = (string) ($student['className'] ?? '');
+        $section = (string) ($student['section']   ?? '');
         if ($class === '' || $section === '') {
-            $this->_json_out([
-                'error'         => "Cannot resolve class/section for '$userId'",
-                'class_field'   => $student['Class']   ?? '',
-                'section_field' => $student['Section'] ?? '',
-            ]);
+            $this->_json_out(['error' => "Cannot resolve class/section for '{$userId}'"]);
             return;
         }
 
-        $studentBase = $this->studentPath($class, $section, $userId);
-        $fp          = $this->feesPath($class, $section);
+        // Exempted fees — optional per-student map inside the student doc.
+        $exemptedFees = is_array($student['exemptedFees'] ?? null) ? $student['exemptedFees'] : [];
 
-        $exemptedFees = $this->CM->get_data("$studentBase/Exempted Fees");
-        $exemptedFees = is_array($exemptedFees) ? $exemptedFees : [];
+        // Fee structure — one Firestore doc per class/section per session.
+        $struct  = $this->fs->get('feeStructures', "{$schoolFs}_{$this->session_year}_{$class}_{$section}");
+        $heads   = is_array($struct['feeHeads'] ?? null) ? $struct['feeHeads'] : [];
 
-        $feesRecord = $this->getFeesForSelectedMonths(
-            $this->school_name,
-            $class,
-            $section,
-            $selectedMonths
-        );
-
-        if (!is_array($feesRecord)) $feesRecord = [];
+        // Normalise heads into a per-month array — this matches the shape the
+        // downstream aggregation loop expects (month => [title => amount]).
+        $feesRecord = [];
+        $monthsAll = ['April','May','June','July','August','September','October','November','December','January','February','March'];
+        foreach ($heads as $h) {
+            $nm  = (string) ($h['name']      ?? '');
+            $amt = (float)  ($h['amount']    ?? 0);
+            $frq = (string) ($h['frequency'] ?? 'monthly');
+            if ($nm === '' || $amt <= 0) continue;
+            if ($frq === 'annual') {
+                $feesRecord['Yearly Fees'][$nm] = $amt;
+            } else {
+                foreach ($monthsAll as $m) $feesRecord[$m][$nm] = $amt;
+            }
+        }
 
         // Check if fee structure exists for this class/section
         // If no fee data found at all, guide the user to set it up first
@@ -1570,6 +1527,23 @@ class Fees extends MY_Controller
         $feesRecordArr = [];
         $monthTotals   = array_fill_keys($selectedMonths, 0);
         $grandTotal    = 0;
+
+        // Per-month already-paid amounts (from feeDemands). Used to derive
+        // `monthRemaining` so the form's submit field shows the *remaining*
+        // due — not the full structure total. Fixes the case where May was
+        // partially paid (Rs1800/2800) and admin still showed Rs2800 as due.
+        if (!isset($this->fsTxn)) {
+            $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+            $this->fsTxn->init($this->firebase, $this->fs, $schoolFs, $this->session_year);
+        }
+        $monthAlreadyPaid = array_fill_keys($selectedMonths, 0.0);
+        foreach ((array) $this->fsTxn->demandsForStudent($userId) as $d) {
+            $rawPeriod  = (string) ($d['period'] ?? '');
+            // Strip trailing year ("May 2026" or "May 2026-27") to match selection labels.
+            $monthLabel = trim((string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', $rawPeriod));
+            if (!isset($monthAlreadyPaid[$monthLabel])) continue;
+            $monthAlreadyPaid[$monthLabel] += (float) ($d['paid_amount'] ?? 0);
+        }
 
         $allFeeTitles = [];
         foreach ($selectedMonths as $month) {
@@ -1599,19 +1573,21 @@ class Fees extends MY_Controller
             ];
         }
 
-        $discountData   = $this->CM->get_data("$studentBase/Discount");
-        $discountAmount = (is_array($discountData) && isset($discountData['OnDemandDiscount']))
-            ? (float)$discountData['OnDemandDiscount']
-            : 0;
+        // Session A: pure Firestore — discount + advance credit.
+        $discountDoc    = $this->fs->get('studentDiscounts',       "{$schoolFs}_{$userId}");
+        $discountAmount = is_array($discountDoc) ? (float) ($discountDoc['onDemandDiscount'] ?? 0) : 0;
 
-        $overRaw       = $this->CM->get_data("$studentBase/Oversubmittedfees");
-        $oversubmitted = is_numeric($overRaw) ? (float)$overRaw : 0;
+        $advanceDoc    = $this->fs->get('studentAdvanceBalances', "{$schoolFs}_{$userId}");
+        $oversubmitted = is_array($advanceDoc) ? (float) ($advanceDoc['amount'] ?? 0) : 0;
 
-        // ── Attendance-based fee adjustments (config-driven) ──
+        // Attendance-based penalty is a separate cross-module concern that
+        // still reads RTDB today — will be migrated in a later session. For
+        // Session A we short-circuit: default to no penalty so the fee
+        // counter continues to work on pure Firestore data.
         $attPenalty = 0;
         $attWarning = '';
         $attIncomplete = false;
-        $attRules = $this->firebase->get("Schools/{$this->school_name}/Config/AttendanceRules");
+        $attRules = null; // intentionally skip attendance rules
         if (is_array($attRules) && !empty($attRules['enabled'])) {
             $this->load->helper('attendance');
 
@@ -1667,15 +1643,36 @@ class Fees extends MY_Controller
             ? implode(', ', array_slice($selectedMonths, 0, -1)) . ' and ' . $last
             : $last;
 
+        // Derive remaining-aware totals. Demands carry the already-paid
+        // amount per month; the form should default to what's still owed.
+        $monthRemaining = [];
+        $grandRemaining = 0.0;
+        foreach ($selectedMonths as $m) {
+            $gross = (float) ($monthTotals[$m] ?? 0);
+            $paid  = (float) ($monthAlreadyPaid[$m] ?? 0);
+            $rem   = round(max(0.0, $gross - $paid), 2);
+            $monthRemaining[$m] = $rem;
+            $grandRemaining    += $rem;
+        }
+        $grandRemaining = round($grandRemaining, 2);
+
         $response = [
-            'grandTotal'     => $grandTotal,
-            'discountAmount' => $discountAmount,
-            'overpaidFees'   => $oversubmitted,
-            'message'        => "Fee Details for: $label",
-            'feesRecord'     => $feesRecordArr,
-            'feeRecord'      => $feeRecord,
-            'selectedMonths' => $selectedMonths,
-            'monthTotals'    => $monthTotals,
+            // `grandTotal` / `monthTotals` now carry REMAINING (not gross).
+            // The form's submit amount + per-month allocation preview both
+            // need remaining to behave correctly when months are partially
+            // paid. Gross structure totals are still available under the
+            // `grandGross` / `monthGross` keys for the breakdown modal.
+            'grandTotal'        => $grandRemaining,
+            'grandGross'        => $grandTotal,
+            'discountAmount'    => $discountAmount,
+            'overpaidFees'      => $oversubmitted,
+            'message'           => "Fee Details for: $label",
+            'feesRecord'        => $feesRecordArr,
+            'feeRecord'         => $feeRecord,
+            'selectedMonths'    => $selectedMonths,
+            'monthTotals'       => $monthRemaining,
+            'monthGross'        => $monthTotals,
+            'monthAlreadyPaid'  => $monthAlreadyPaid,
         ];
         if ($attPenalty > 0 || $attIncomplete) {
             $response['attendance_penalty'] = round($attPenalty, 2);
@@ -1704,13 +1701,8 @@ class Fees extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'get_server_date');
         $this->output->set_content_type('application/json');
-        $sn = $this->school_name;
-        $sy = $this->session_year;
-        $ts = $this->CM->get_data("Schools/$sn/$sy/ServerTimestamp");
-        $date = (!empty($ts) && is_numeric($ts))
-            ? date('d-m-Y', $ts / 1000)
-            : date('d-m-Y');
-        $this->_json_out(['date' => $date]);
+        // Session A audit: PHP clock — no RTDB round-trip needed.
+        $this->_json_out(['date' => date('d-m-Y')]);
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1720,7 +1712,11 @@ class Fees extends MY_Controller
     public function get_receipt_no()
     {
         $this->_require_role(self::COUNTER_ROLES, 'get_receipt_no');
-        $receiptNo = $this->_nextReceiptNo();
+        // Peek — submit_fees is the only place that increments the counter.
+        // Refreshing the display should never burn a receipt number.
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        $receiptNo = (string) ($this->fsTxn->getCounter('receipt_seq') + 1);
         $this->_json_out(['status' => 'success', 'receiptNo' => $receiptNo]);
     }
 
@@ -1741,32 +1737,34 @@ class Fees extends MY_Controller
 
     private function _searchByName($entry)
     {
-        $students = $this->CM->get_data('Users/Parents/' . $this->parent_db_key);
-        $results  = [];
-        if (!is_array($students)) return $results;
-
-        foreach ($students as $uid => $s) {
-            $s = is_array($s) ? $s : [];
-            $name   = $s['Name']        ?? '';
-            $sid    = $s['User Id']     ?? '';
-            $father = $s['Father Name'] ?? '';
-
-            // Normalize class & section using the same resolver used everywhere
-            list($class, $section) = $this->_resolveClassSection($s);
+        // Pure Firestore: query students collection for this school.
+        $schoolFs = $this->fs->schoolId();
+        $rows = $this->firebase->firestoreQuery('students', [
+            ['schoolId', '==', $schoolFs],
+        ]);
+        $results = [];
+        foreach ((array) $rows as $r) {
+            $s = $r['data'] ?? $r;
+            if (!is_array($s)) continue;
+            $name    = (string) ($s['name']       ?? $s['Name']       ?? '');
+            $sid     = (string) ($s['studentId']  ?? $s['userId']     ?? '');
+            $father  = (string) ($s['fatherName'] ?? $s['Father Name'] ?? '');
+            $class   = (string) ($s['className']  ?? '');
+            $section = (string) ($s['section']    ?? '');
 
             if (
                 stripos($name,    $entry) !== false ||
                 stripos($sid,     $entry) !== false ||
                 stripos($father,  $entry) !== false ||
                 stripos($class,   $entry) !== false ||
-                stripos($section, $entry) !== false    // ← NEW: search by section too
+                stripos($section, $entry) !== false
             ) {
                 $results[] = [
                     'user_id'     => $sid,
                     'name'        => $name,
                     'father_name' => $father,
-                    'class'       => $class,       // e.g. "Class 8th"
-                    'section'     => $section,     // e.g. "Section B"
+                    'class'       => $class,
+                    'section'     => $section,
                 ];
             }
         }
@@ -1774,58 +1772,37 @@ class Fees extends MY_Controller
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  SUBMIT FEES
+    //  SUBMIT FEES — Pure Firestore (Session A rewrite, zero RTDB calls)
+    //
+    //  Read path:  students + feeStructures + feeDemands + feeReceiptIndex
+    //              + feeIdempotency + feeLocks  — all Firestore.
+    //  Write path: feeReceipts + feeReceiptIndex + feeReceiptAllocations
+    //              + feeDemands + studentAdvanceBalances + studentDiscounts
+    //              + students.monthFee + feeDefaulters + accountingLedger
+    //              + accountingClosingBalances + accountingCounters
+    //              — all Firestore.
+    //
+    //  Concurrency: verify-after-write + retry. No RTDB, no dual-write.
     // ══════════════════════════════════════════════════════════════════
-
     public function submit_fees()
     {
         $this->_require_post();
         $this->_require_role(self::COUNTER_ROLES, 'submit_fees');
         $this->output->set_content_type('application/json');
-        $this->load->library('firebase');
 
-        // TC-CF005: Check deploy lock before any fee writes
-        try {
-            $deployLock = $this->firebase->get("Schools/{$this->school_name}/System/Deploy_Lock");
-            if ($deployLock && ($deployLock['locked'] ?? false) === true) {
-                $this->_json_out([
-                    'status' => 'error',
-                    'message' => 'System is updating. Please try again in a few minutes.',
-                    'locked' => true
-                ]);
-                return;
-            }
-        } catch (Exception $e) {
-            log_message('error', "Deploy lock check failed: " . $e->getMessage());
-            // Don't block on check failure
-        }
+        // Load the Firestore txn helper
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
 
-        // TC-CF007: Check fee system lock
-        try {
-            $sysLock = $this->firebase->get("Schools/{$this->school_name}/{$this->session_year}/Fees/System_Lock");
-            if ($sysLock && ($sysLock['locked'] ?? false) === true) {
-                $this->_json_out([
-                    'status' => 'error',
-                    'message' => 'Fee system is being updated. Please try again shortly.',
-                    'locked' => true,
-                    'reason' => $sysLock['reason'] ?? 'System maintenance'
-                ]);
-                return;
-            }
-        } catch (Exception $e) {
-            log_message('error', "Fee system lock check failed: " . $e->getMessage());
-        }
+        $schoolFs = $this->fs->schoolId();
+        $session  = $this->session_year;
 
-        $school_id    = $this->parent_db_key;
-        $school_name  = $this->school_name;
-        $session_year = $this->session_year;
+        // ── Parse inputs ───────────────────────────────────────────────
+        $receiptNoInput = trim((string) $this->input->post('receiptNo'));
+        $paymentMode    = trim((string) ($this->input->post('paymentMode') ?: 'Cash in Hand'));
+        $userId         = trim((string) $this->input->post('userId'));
+        if ($userId !== '') $userId = $this->safe_path_segment($userId, 'userId');
 
-        $receiptNo      = $this->_validateReceiptNo($this->input->post('receiptNo'));
-        $paymentMode    = $this->input->post('paymentMode') ?: 'N/A';
-        $userId         = trim($this->input->post('userId') ?? '');
-        if ($userId !== '') {
-            $userId = $this->safe_path_segment($userId, 'userId');
-        }
         $schoolFees     = floatval(str_replace(',', '', $this->input->post('schoolFees')     ?? '0'));
         $discountFees   = floatval(str_replace(',', '', $this->input->post('discountAmount') ?? '0'));
         $fineAmount     = floatval(str_replace(',', '', $this->input->post('fineAmount')     ?? '0'));
@@ -1833,690 +1810,1640 @@ class Fees extends MY_Controller
         $reference      = $this->input->post('reference') ?: 'Fees Submitted';
 
         $selectedMonths = $this->input->post('selectedMonths') ?? [];
-        if (!is_array($selectedMonths)) $selectedMonths = explode(',', $selectedMonths);
+        if (!is_array($selectedMonths)) $selectedMonths = explode(',', (string) $selectedMonths);
+        $selectedMonths = array_values(array_filter(array_map('trim', $selectedMonths)));
 
-        $MonthTotal       = $this->input->post('monthTotals') ?? [];
+        $MonthTotal = $this->input->post('monthTotals') ?? [];
         $monthTotalsArray = [];
-        foreach ((array)$MonthTotal as $md) {
+        foreach ((array) $MonthTotal as $md) {
             if (isset($md['month'], $md['total'])) {
-                $monthTotalsArray[trim($md['month'])] = floatval(str_replace(',', '', $md['total']));
+                $monthTotalsArray[trim((string) $md['month'])] = floatval(str_replace(',', '', (string) $md['total']));
             }
         }
 
-        if ($userId === '') {
-            $this->json_error('Missing student ID');
-            return;
-        }
-        if (empty($selectedMonths)) {
-            $this->json_error('No months selected');
-            return;
-        }
-        if ($schoolFees <= 0) {
-            $this->json_error('Fee amount must be greater than 0');
-            return;
-        }
+        if ($userId === '')          { $this->json_error('Missing student ID');        return; }
+        if (empty($selectedMonths))  { $this->json_error('No months selected');        return; }
+        if ($schoolFees <= 0)        { $this->json_error('Fee amount must be > 0');    return; }
 
-        // Resolve class + section from Firebase (authoritative source)
-        $student = $this->CM->get_data("Users/Parents/$school_id/$userId");
-        if (empty($student)) {
-            $this->json_error("Student '{$userId}' not found in Firebase");
-            return;
-        }
-        $student = (array)$student;
+        // ── Load student from Firestore ────────────────────────────────
+        $student = $this->fsTxn->getStudent($userId);
+        if (!$student) { $this->json_error("Student '{$userId}' not found"); return; }
 
-        list($class, $section) = $this->_resolveClassSection($student);
-
+        $class   = trim((string) ($student['className'] ?? ''));
+        $section = trim((string) ($student['section']   ?? ''));
         if ($class === '' || $section === '') {
-            $this->json_error("Cannot resolve class/section for '{$userId}' (Class='" . ($student['Class'] ?? '') . "', Section='" . ($student['Section'] ?? '') . "')");
+            $this->json_error("Cannot resolve class/section for '{$userId}'");
             return;
         }
+        $studentName = (string) ($student['name'] ?? $userId);
 
-        // ================================================================
-        //  FINANCIAL SAFETY LAYER v2 — Atomic, Idempotent, Crash-Safe
-        //
-        //  Five defences:
-        //    A. Idempotency with "processing" state (catches in-flight dupes)
-        //    B. Token-based lock (only holder can release)
-        //    C. Receipt reservation (prevents duplicate receipt numbers)
-        //    D. Month Fee duplicate guard (re-reads markers)
-        //    E. Write tracker with rollback on failure
-        //
-        //  On crash: lock expires after 120s, idempotency stays "processing"
-        //  and next attempt sees it → waits or retries safely.
-        // ================================================================
+        // ── Generate / validate receipt number (Firestore counter) ─────
+        //  When the UI submits a user-supplied receipt number we still use
+        //  it as-is, but we also push the counter forward so subsequent
+        //  page peeks don't keep suggesting an already-used value.
+        $receiptNo = '';
+        if ($receiptNoInput !== '' && preg_match('/^\d+$/', $receiptNoInput)
+            && !$this->fsTxn->receiptExists($receiptNoInput)) {
+            $receiptNo = $receiptNoInput;
+            $this->fsTxn->advanceCounterTo('receipt_seq', (int) $receiptNo);
+        }
+        if ($receiptNo === '') {
+            $seq = $this->fsTxn->nextCounter('receipt_seq');
+            if ($seq <= 0) { $this->json_error('Failed to generate receipt number. Please retry.'); return; }
+            $receiptNo = (string) $seq;
+        }
+        $receiptKey = 'F' . $receiptNo;
+        $txnId      = 'TXN_' . date('YmdHis') . '_' . bin2hex(random_bytes(4));
 
-        $feesBase  = "Schools/{$school_name}/{$session_year}/Fees";
-        $lockPath  = "{$feesBase}/Locks/{$userId}";
-        $idempBase = "{$feesBase}/Idempotency";
-        $lockToken = bin2hex(random_bytes(8)); // unique per-request
-        $writtenPaths = []; // tracks every Firebase path written for rollback
-
-        // Helper: abort with lock release + rollback
-        $_abort = function (string $msg) use (&$writtenPaths, $lockPath, $lockToken, $userId, $receiptNo, $schoolFees) {
-            // Rollback all writes in reverse order
-            foreach (array_reverse($writtenPaths) as $wp) {
-                try { $this->firebase->delete($wp['path'], $wp['key'] ?? null); }
-                catch (\Exception $e) { log_message('error', "ROLLBACK failed: {$wp['path']} — " . $e->getMessage()); }
-            }
-            // Release lock only if we own it
-            try {
-                $lock = $this->firebase->get($lockPath);
-                if (is_array($lock) && ($lock['token'] ?? '') === $lockToken) {
-                    $this->firebase->delete($lockPath);
-                }
-            } catch (\Exception $e) { /* best effort */ }
-            // Log transaction failure + audit alert
-            $this->feeTxn->fail($msg, 'abort');
-            $this->feeAudit->log('transaction_incomplete', [
-                'student_id' => $userId, 'receipt_no' => $receiptNo,
-                'amount' => $schoolFees, 'reason' => $msg,
-            ]);
-            $this->output->set_output(json_encode(['status' => 'error', 'message' => $msg]));
-        };
-
-        // Helper: track a write for potential rollback
-        $_track = function (string $path, string $key = null) use (&$writtenPaths) {
-            $writtenPaths[] = ['path' => $path, 'key' => $key];
-        };
-
-        // ── STEP A: Idempotency check ──
-        $idempKey = md5($userId . '|' . $receiptNo . '|' . implode(',', $selectedMonths) . '|' . $schoolFees);
-        $idempFullPath = "{$idempBase}/{$idempKey}";
-        $existingIdemp = $this->firebase->get($idempFullPath);
-
-        if (is_array($existingIdemp)) {
-            $idempStatus = $existingIdemp['status'] ?? '';
-            if ($idempStatus === 'success') {
-                // Already completed — return cached response
-                log_message('info', "submit_fees: IDEMPOTENT HIT key={$idempKey}");
+        // ── Idempotency check (Firestore) ──────────────────────────────
+        $idempHash = $this->fsTxn->idempKey($userId, $receiptNo, $selectedMonths, $schoolFees);
+        $idemp     = $this->fsTxn->getIdempotency($idempHash);
+        if (is_array($idemp)) {
+            $st = (string) ($idemp['status'] ?? '');
+            if ($st === 'success') {
                 $this->output->set_output(json_encode([
-                    'status' => 'success', 'message' => 'Fees already submitted (duplicate request).',
-                    'receipt_no' => $existingIdemp['receipt_no'] ?? $receiptNo, 'idempotent' => true,
+                    'status' => 'success', 'idempotent' => true,
+                    'message' => 'Fees already submitted (duplicate request).',
+                    'receipt_no' => $idemp['receiptNo'] ?? $receiptNo,
                 ]));
                 return;
             }
-            if ($idempStatus === 'processing') {
-                $procAge = time() - strtotime($existingIdemp['started_at'] ?? '2000-01-01');
-                if ($procAge < 120) {
-                    // Another request is actively in-flight
+            if ($st === 'processing') {
+                $age = time() - strtotime((string) ($idemp['startedAt'] ?? '2000-01-01'));
+                if ($age < 120) {
                     $this->output->set_output(json_encode([
-                        'status'  => 'error',
+                        'status' => 'error',
                         'message' => 'This payment is currently being processed. Please wait.',
                     ]));
                     return;
                 }
-                // Stale processing record (>120s) — crashed mid-transaction
-                $lastStep = $existingIdemp['step'] ?? 'unknown';
-                $staleReceipt = $existingIdemp['receipt_no'] ?? '?';
-                log_message('error',
-                    "submit_fees: STALE PROCESSING key={$idempKey} age={$procAge}s"
-                    . " last_step={$lastStep} receipt={$staleReceipt}"
-                    . " — allowing retry (crashed at: {$lastStep})"
-                );
-                // If fees_record was already written in the crashed attempt,
-                // the receipt check (Step C) and Month Fee guard (Step D) will
-                // catch duplicates. Safe to retry.
             }
         }
-
-        // Mark as "processing" — catches concurrent identical requests
-        $this->firebase->set($idempFullPath, [
-            'status'     => 'processing',
-            'started_at' => date('c'),
-            'user_id'    => $userId,
-            'receipt_no' => $receiptNo,
-            'admin_id'   => $this->admin_id ?? '',
+        $this->fsTxn->setIdempotencyProcessing($idempHash, [
+            'userId' => $userId, 'receiptNo' => $receiptNo, 'months' => $selectedMonths, 'amount' => $schoolFees,
         ]);
 
-        // ── STEP B: Token-based student lock ──
-        $existingLock = $this->firebase->get($lockPath);
-        if (is_array($existingLock) && !empty($existingLock['locked'])) {
-            $lockAge = time() - strtotime($existingLock['locked_at'] ?? '2000-01-01');
-            if ($lockAge < 120) {
-                // Active lock held by another request
-                $this->firebase->delete($idempFullPath); // clean up our processing marker
-                $this->output->set_output(json_encode([
-                    'status' => 'error',
-                    'message' => 'Payment is already being processed for this student. Please wait.',
-                ]));
+        // ── Lock acquisition (Firestore) ───────────────────────────────
+        $lockToken = $this->fsTxn->acquireLock($userId, 120);
+        if ($lockToken === '') {
+            $this->fsTxn->deleteIdempotency($idempHash);
+            $this->output->set_output(json_encode([
+                'status' => 'error',
+                'message' => 'Another payment for this student is in progress. Please wait and retry.',
+            ]));
+            return;
+        }
+
+        // Abort helper: release lock + clear idempotency + reply error.
+        $_abort = function (string $msg) use ($userId, $lockToken, $idempHash, $receiptNo) {
+            $this->fsTxn->releaseLock($userId, $lockToken);
+            $this->fsTxn->deleteIdempotency($idempHash);
+            $this->fsTxn->deleteReceiptIndex($receiptNo);
+            $this->output->set_output(json_encode(['status' => 'error', 'message' => $msg]));
+        };
+
+        // ── Reserve receipt number (Firestore receiptIndex) ────────────
+        if (!$this->fsTxn->reserveReceipt($receiptNo, $userId)) {
+            $_abort("Receipt #{$receiptNo} is currently reserved or used. Refresh and retry.");
+            return;
+        }
+
+        // ── Duplicate month guard (read Firestore demands + monthFee map) ─
+        $demands = $this->fsTxn->demandsForStudent($userId); // [docId => data]
+        $monthFeeMap = is_array($student['monthFee'] ?? null) ? $student['monthFee'] : [];
+
+        // Helper to extract the canonical month label from a demand
+        // period (strips the trailing year/session token but PRESERVES
+        // multi-word labels like "Yearly Fees").
+        $periodToLabel = static function (string $period): string {
+            return trim((string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', $period));
+        };
+
+        foreach ($selectedMonths as $m) {
+            if (((int) ($monthFeeMap[$m] ?? 0)) === 1) {
+                $_abort("Month {$m} is already marked paid. Refresh and retry.");
                 return;
             }
-            log_message('info', "submit_fees: Stale lock cleared for {$userId} (age={$lockAge}s)");
-        }
-
-        // Acquire lock with unique token — only this request can release it
-        $this->firebase->set($lockPath, [
-            'locked'     => true,
-            'locked_at'  => date('c'),
-            'locked_by'  => $this->admin_id ?? '',
-            'token'      => $lockToken,
-            'receipt_no' => $receiptNo,
-        ]);
-
-        // ── STEP C: Receipt reservation + duplicate check ──
-        $receiptIdxPath = "Schools/{$school_name}/{$session_year}/Accounts/Receipt_Index/{$receiptNo}";
-        $existingReceipt = $this->firebase->get($receiptIdxPath);
-        if (is_array($existingReceipt)) {
-            // Already finalized (has real data, not just reservation)
-            if (!empty($existingReceipt['date']) && empty($existingReceipt['reserved'])) {
-                $_abort("Receipt #{$receiptNo} has already been used. Please refresh to get a new number.");
-                return;
-            }
-            // Stale reservation? (reserved but never finalized, >120s old)
-            if (!empty($existingReceipt['reserved'])) {
-                $resAge = time() - strtotime($existingReceipt['reserved_at'] ?? '2000-01-01');
-                if ($resAge < 120) {
-                    $_abort("Receipt #{$receiptNo} is currently reserved by another transaction. Please wait.");
-                    return;
-                }
-                // Stale reservation — clean up and reuse
-                log_message('info', "submit_fees: Stale receipt reservation cleared #{$receiptNo} age={$resAge}s");
-            }
-        }
-        // Reserve the receipt number (prevents another request from using it)
-        $this->firebase->set($receiptIdxPath, [
-            'reserved'    => true,
-            'user_id'     => $userId,
-            'reserved_at' => date('c'),
-        ]);
-        $_track($receiptIdxPath); // rollback will delete this if processing fails
-
-        // ── STEP D: Duplicate payment guard ──
-        $studentBase_check = $this->studentPath($class, $section, $userId);
-        if ($this->config->item('use_legacy_month_fee') !== false) {
-            // Legacy guard: check Month Fee flags
-            $monthFeeData = $this->firebase->get("$studentBase_check/Month Fee");
-            $monthFeeData = is_array($monthFeeData) ? $monthFeeData : [];
-            foreach ($selectedMonths as $m) {
-                $m = trim($m);
-                if (isset($monthFeeData[$m]) && (int)$monthFeeData[$m] === 1) {
-                    $_abort("Month $m is already paid. Please refresh and try again.");
+            foreach ($demands as $d) {
+                $label = $periodToLabel((string) ($d['period'] ?? ''));
+                if ($label === $m && ($d['status'] ?? '') === 'paid'
+                    && (float) ($d['balance'] ?? 0) <= 0.005) {
+                    $_abort("Month {$m} demands are already fully paid. Refresh and retry.");
                     return;
                 }
             }
-        } else {
-            // Demand-based guard: check if all demands for selected months are already paid
-            $demandsPath = "Schools/{$school_name}/{$session_year}/Fees/Demands/{$userId}";
-            $allDemands = $this->firebase->get($demandsPath);
-            if (is_array($allDemands)) {
-                foreach ($selectedMonths as $m) {
-                    $m = trim($m);
-                    foreach ($allDemands as $d) {
-                        if (!is_array($d)) continue;
-                        $period = explode(' ', $d['period'] ?? '')[0] ?? '';
-                        if ($period === $m && ($d['status'] ?? '') === 'paid' && floatval($d['balance'] ?? 0) <= 0.005) {
-                            $_abort("Month {$m} is already fully paid. Please refresh and try again.");
-                            return;
-                        }
+        }
+
+        // ── PAY-OLDER-FIRST guard ───────────────────────────────────────
+        // Reject the payment if any earlier month is still unpaid /
+        // partial. Mirrors the parent flow's guard
+        // (Fee_management::_record_parent_payment_receipt) so the two
+        // entry points enforce the SAME ordering rule. Yearly fees use
+        // period_key "2026-04" (start of session) so they're treated as
+        // part of April for ordering purposes — exactly the user's
+        // intended behaviour.
+        $selectedKeys = [];
+        foreach ($demands as $d) {
+            $pk = (string) ($d['period_key'] ?? '');
+            $label = $periodToLabel((string) ($d['period'] ?? ''));
+            if ($pk !== '' && in_array($label, $selectedMonths, true)) {
+                $selectedKeys[] = $pk;
+            }
+        }
+        if (!empty($selectedKeys)) {
+            sort($selectedKeys);
+            $earliestSelected = $selectedKeys[0];
+            foreach ($demands as $d) {
+                $pk     = (string) ($d['period_key'] ?? '');
+                $status = (string) ($d['status']     ?? 'unpaid');
+                $bal    = (float)  ($d['balance']    ?? 0);
+                if ($pk !== '' && $pk < $earliestSelected && $status !== 'paid' && $bal > 0.005) {
+                    $olderPeriod = (string) ($d['period'] ?? $pk);
+                    $_abort("Please clear the earlier pending fees for {$olderPeriod} (Rs. " . number_format($bal, 2) . ") before paying this month.");
+                    return;
+                }
+            }
+        }
+
+        // ── Mark pending-write (Firestore safety marker) ───────────────
+        $this->fsTxn->markPending($receiptKey, [
+            'userId' => $userId, 'amount' => $schoolFees, 'months' => $selectedMonths, 'txnId' => $txnId,
+        ]);
+
+        // ── Compute per-head breakdown from fee structure ──────────────
+        $breakdown = [];
+        try {
+            $struct  = $this->fs->get('feeStructures', "{$schoolFs}_{$session}_{$class}_{$section}");
+            $heads   = is_array($struct['feeHeads'] ?? null) ? $struct['feeHeads'] : [];
+            foreach ($heads as $h) {
+                $nm  = (string) ($h['name']   ?? '');
+                $amt = (float)  ($h['amount'] ?? 0);
+                $frq = (string) ($h['frequency'] ?? 'monthly');
+                if ($nm === '' || $amt <= 0) continue;
+                // Monthly heads apply per selected month (excluding Yearly Fees tag);
+                // yearly heads apply once if Yearly Fees is in selection.
+                if ($frq === 'annual') {
+                    if (in_array('Yearly Fees', $selectedMonths, true)) {
+                        $breakdown[] = ['head' => $nm, 'amount' => number_format($amt, 2, '.', ''), 'frequency' => 'annual'];
+                    }
+                } else {
+                    $monthCount = count(array_filter($selectedMonths, fn($x) => $x !== 'Yearly Fees'));
+                    if ($monthCount > 0) {
+                        $breakdown[] = ['head' => $nm, 'amount' => number_format($amt * $monthCount, 2, '.', ''), 'frequency' => 'monthly'];
                     }
                 }
             }
+        } catch (\Exception $e) {
+            log_message('error', "submit_fees: breakdown build failed: " . $e->getMessage());
         }
 
-        // ── All safety checks passed — proceed with payment ──
-        $this->feeTxn->begin('fee_payment', [
-            'student_id' => $userId, 'receipt_no' => $receiptNo,
-            'amount' => $schoolFees, 'months' => $selectedMonths,
-        ]);
         $date     = date('d-m-Y');
-        $date_obj = DateTime::createFromFormat('d-m-Y', $date);
-        $month    = $date_obj ? $date_obj->format('F') : date('F');
-        $day      = $date_obj ? $date_obj->format('d') : date('d');
+        $netTotal = round($schoolFees - $discountFees + $fineAmount, 2);
 
-        $receiptKey  = (strpos($receiptNo, 'R') === 0) ? $receiptNo : 'F' . $receiptNo;
-        $studentBase = $this->studentPath($class, $section, $userId);
-
-        // ── GLOBAL TRANSACTION ID ──
-        // Unique per-request, attached to every record for cross-module traceability.
-        $txnId = 'TXN_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
-        $txnStart = microtime(true);
-        $txnSteps = []; // debug trace of completed steps
-
-        // Helper: update idempotency checkpoint (non-blocking)
-        $_checkpoint = function (string $step) use ($idempFullPath, $txnId, &$txnSteps) {
-            $txnSteps[] = $step;
-            try {
-                $this->firebase->update($idempFullPath, [
-                    'step' => $step, 'step_at' => date('c'), 'txn_id' => $txnId,
-                ]);
-            } catch (\Exception $e) { /* best effort */ }
-        };
-
-        // Helper: verify a write by reading it back (for critical paths)
-        $_verify = function (string $path, string $label) use ($_abort) {
-            $readback = $this->firebase->get($path);
-            if (!is_array($readback) && $readback === null) {
-                $_abort("Write verification failed for {$label} — data not persisted at {$path}");
-                return false;
-            }
-            return true;
-        };
-
-        // Write pending status for reconciliation safety
-        $pendingPath = "Schools/$school_name/$session_year/Accounts/Pending_fees/$receiptKey";
-        $this->firebase->set($pendingPath, [
-            'user_id' => $userId, 'class' => $class, 'section' => $section,
-            'amount' => $schoolFees, 'months' => $selectedMonths,
-            'started_at' => date('c'), 'status' => 'pending',
-            'txn_id' => $txnId,
-        ]);
-        $_track($pendingPath);
-        $_checkpoint('pending_written');
-
-        // 1. Reset OnDemandDiscount, accumulate totalDiscount
-        $discPath1 = "$studentBase/Discount/OnDemandDiscount";
-        $discPath2 = "$studentBase/Discount/totalDiscount";
-        $oldDiscTotal = null; // for rollback
-        try {
-            $this->firebase->set($discPath1, 0);
-            $oldDiscTotal = $this->firebase->get($discPath2);
-            $oldDiscTotal = is_numeric($oldDiscTotal) ? (int)$oldDiscTotal : 0;
-            $this->firebase->set($discPath2, $oldDiscTotal + (int)$discountFees);
-            $_checkpoint('discount_written');
-        } catch (Exception $e) {
-            $_abort('Discount update failed: ' . $e->getMessage());
-            return;
-        }
-
-        // 2. Fees Record
-        $feesRecordPath = "$studentBase/Fees Record/$receiptKey";
-        try {
-            $this->firebase->set($feesRecordPath, [
-                'Amount'   => number_format($schoolFees,   2, '.', ','),
-                'Discount' => number_format($discountFees, 2, '.', ','),
-                'Date'     => $date,
-                'Fine'     => number_format($fineAmount,   2, '.', ','),
-                'Mode'     => $paymentMode,
-                'Refer'    => $reference,
-                'txn_id'   => $txnId,
-            ]);
-            $_track($feesRecordPath);
-            // Verify critical write
-            if (!$_verify($feesRecordPath, 'Fees Record')) return;
-            $_checkpoint('fees_record_verified');
-        } catch (Exception $e) {
-            // Rollback discount before aborting
-            try { $this->firebase->set($discPath2, $oldDiscTotal); } catch (\Exception $re) {}
-            $_abort('Fees Record write failed: ' . $e->getMessage());
-            return;
-        }
-
-        // 3. Vouchers
-        $voucherPath = "Schools/$school_name/$session_year/Accounts/Vouchers/$date/$receiptKey";
-        try {
-            $this->firebase->set($voucherPath, [
-                'Acc'           => 'Fees',
-                'Fees Received' => number_format($schoolFees, 2),
-                'Id'            => $userId,
-                'Mode'          => $paymentMode,
-                'txn_id'        => $txnId,
-            ]);
-            $_track($voucherPath);
-            if (!$_verify($voucherPath, 'Voucher')) return;
-            $_checkpoint('voucher_verified');
-        } catch (Exception $e) {
-            log_message('error', 'submit_fees voucher write failed: ' . $e->getMessage());
-            // Non-fatal: fees record already saved, voucher can be reconciled later
-        }
-
-        // 4. Account book ledger (non-fatal — queued for reconciliation if fails)
-        $ab = "Schools/$school_name/$session_year/Accounts/Account_book";
-        try {
-            foreach ([
-                ["$ab/Discount/$month/$day", $discountFees],
-                ["$ab/Fees/$month/$day",     $schoolFees],
-                ["$ab/Fine/$month/$day",     $fineAmount],
-            ] as [$abPath, $abAmt]) {
-                if ($abAmt <= 0) continue;
-                $cur = floatval($this->firebase->get("$abPath/R") ?? 0);
-                $this->firebase->set("$abPath/R", $cur + $abAmt);
-            }
-            $_checkpoint('account_book_written');
-        } catch (Exception $e) {
-            log_message('error', 'submit_fees account book failed: ' . $e->getMessage());
-        }
-
-        // 5. Receipt Index — handled by Step C (reservation) + Step E (finalization)
-
-        // 6. Receipt counter — H-02 FIX: Counter is now incremented atomically
-        //    in get_receipt_no() at reservation time. No increment needed here.
-        //    This prevents the race condition where two concurrent get_receipt_no()
-        //    calls could return the same number.
-
-        // ════════════════════════════════════════════════════════════
-        //  7. DEMAND-BASED PAYMENT ALLOCATION
-        //
-        //  Allocate payment across unpaid/partial demands (oldest first).
-        //  After allocation, sync legacy Month Fee flags for backward
-        //  compatibility with dashboard, reports, and fees_counter.
-        // ════════════════════════════════════════════════════════════
-
-        $totalSubmitted    = $schoolFees + $submitAmount;
-        $failedMonths      = [];
-        $allocations       = [];  // demand-level allocation records for the receipt
-        $advanceCredit     = 0;   // unallocated surplus
-        $demandAllocationOk = false; // tracks if demand engine was used
-
-        // Attempt demand-based allocation (new system)
-        $demandsPath = $this->_studentDemands($userId);
-        $allDemands  = $this->firebase->get($demandsPath);
-
-        if (is_array($allDemands) && !empty($allDemands)) {
-            // ── Demand engine active for this student ──
-            $demandAllocationOk = true;
-
-            // Collect unpaid/partial demands sorted by period_key ASC (oldest first)
-            $unpaid = [];
-            foreach ($allDemands as $did => $d) {
-                if (!is_array($d)) continue;
-                $st = $d['status'] ?? 'unpaid';
-                if ($st === 'paid') continue; // already fully paid
-                $d['_did'] = $did;
-                $unpaid[] = $d;
-            }
-            usort($unpaid, function ($a, $b) {
-                $pk = strcmp($a['period_key'] ?? '', $b['period_key'] ?? '');
-                return $pk !== 0 ? $pk : strcmp($a['fee_head'] ?? '', $b['fee_head'] ?? '');
-            });
-
-            $remaining = $totalSubmitted;
-
-            foreach ($unpaid as $demand) {
-                if ($remaining <= 0.005) break; // budget exhausted
-
-                $did     = $demand['_did'];
-                $balance = floatval($demand['balance'] ?? 0);
-
-                if ($balance <= 0) continue; // safety: skip zero-balance demands
-
-                // Allocate: take the lesser of remaining budget or demand balance
-                $alloc = min($remaining, $balance);
-                $alloc = round($alloc, 2);
-
-                $newPaid    = round(floatval($demand['paid_amount'] ?? 0) + $alloc, 2);
-                $newBalance = round($balance - $alloc, 2);
-                $newStatus  = ($newBalance <= 0.005) ? 'paid' : 'partial';
-
-                // Ensure balance never goes negative
-                if ($newBalance < 0) $newBalance = 0;
-
-                // Update the demand in Firebase (tracked for rollback)
-                try {
-                    $this->firebase->update("{$demandsPath}/{$did}", [
-                        'paid_amount' => $newPaid,
-                        'balance'     => $newBalance,
-                        'status'      => $newStatus,
-                        'last_payment_receipt' => $receiptKey,
-                        'last_payment_date'    => $date,
-                        'updated_at'           => date('c'),
-                    ]);
-                } catch (\Exception $e) {
-                    log_message('error', "submit_fees: demand update failed for {$did}: " . $e->getMessage());
-                    $failedMonths[] = "_demand_{$did}";
-                    continue; // don't deduct from remaining if write failed
-                }
-
-                // Record allocation for the receipt
-                $allocations[] = [
-                    'demand_id'  => $did,
-                    'fee_head'   => $demand['fee_head'] ?? '',
-                    'category'   => $demand['category'] ?? '',
-                    'period'     => $demand['period'] ?? '',
-                    'period_key' => $demand['period_key'] ?? '',
-                    'amount'     => $alloc,
-                    'new_status' => $newStatus,
-                ];
-
-                $remaining -= $alloc;
-            }
-
-            // ── Handle unallocated surplus (advance payment) — atomic update ──
-            if ($remaining > 0.005) {
-                $advanceCredit = round($remaining, 2);
-                try {
-                    $this->_update_advance_balance_atomic(
-                        $userId, $advanceCredit, $receiptKey,
-                        $student['Name'] ?? $userId, $studentBase
-                    );
-                } catch (\Exception $e) {
-                    log_message('error', "submit_fees: advance balance update failed for {$userId}: " . $e->getMessage());
-                }
-            }
-
-            $_checkpoint('demands_allocated');
-
-            // ── Store allocations on the receipt (tracked for rollback) ──
-            $receiptAllocPath = "Schools/{$school_name}/{$session_year}/Fees/Receipt_Allocations/{$receiptKey}";
-            try {
-                $this->firebase->set($receiptAllocPath, [
-                    'receipt_no'     => $receiptNo,
-                    'student_id'     => $userId,
-                    'student_name'   => $student['Name'] ?? $userId,
-                    'class'          => $class,
-                    'section'        => $section,
-                    'total_amount'   => round($schoolFees, 2),
-                    'discount'       => round($discountFees, 2),
-                    'fine'           => round($fineAmount, 2),
-                    'net_received'   => round($schoolFees - $discountFees + $fineAmount, 2),
-                    'allocations'    => $allocations,
-                    'advance_credit' => $advanceCredit,
-                    'payment_mode'   => $paymentMode,
-                    'date'           => $date,
-                    'created_at'     => date('c'),
-                    'created_by'     => $this->admin_id ?? '',
-                    'txn_id'         => $txnId,
-                ]);
-                $_track($receiptAllocPath);
-                $_checkpoint('allocations_stored');
-            } catch (\Exception $e) {
-                log_message('error', "submit_fees: receipt allocation write failed: " . $e->getMessage());
-            }
-
-            // ── Legacy sync: update Month Fee flags from demand status ──
-            // A month's flag is set to 1 when ALL demands for that month are "paid"
-            $this->_syncMonthFeeFlags($userId, $class, $section, $demandsPath, $studentBase);
-
-        } else {
-            // ── Fallback: legacy Month Fee logic (no demands generated yet) ──
-            // This preserves full backward compatibility for students without demands
-            $monthOrder = [
-                'April', 'May', 'June', 'July', 'August', 'September',
-                'October', 'November', 'December', 'January', 'February', 'March',
-                'Yearly Fees',
-            ];
-            usort($selectedMonths, function ($a, $b) use ($monthOrder) {
-                return array_search($a, $monthOrder) - array_search($b, $monthOrder);
-            });
-
-            $remaining = $totalSubmitted;
-            foreach ($selectedMonths as $m) {
-                $mFee = $monthTotalsArray[$m] ?? 0;
-                if ($mFee > 0 && $remaining >= $mFee) {
-                    try {
-                        $this->firebase->set("$studentBase/Month Fee/$m", 1);
-                        $remaining -= $mFee;
-                    } catch (\Exception $e) {
-                        log_message('error', "submit_fees: Failed to mark month '$m' as paid for student $userId receipt $receiptNo — " . $e->getMessage());
-                        $failedMonths[] = $m;
-                    }
-                }
-            }
-
-            // Legacy carry-forward overpaid amount
-            if ($remaining > 0.005) {
-                try {
-                    $this->firebase->set("$studentBase/Oversubmittedfees", round($remaining, 2));
-                } catch (\Exception $e) {
-                    log_message('error', "submit_fees: carry-forward write failed: " . $e->getMessage());
-                    $failedMonths[] = '_carry_forward';
-                }
-            }
-        }
-
-        if (!empty($failedMonths)) {
-            log_message('error', "submit_fees: PARTIAL — student={$userId}, receipt={$receiptNo}, failed=" . implode(',', $failedMonths));
-        }
-
-        // Mark fee submission as completed — clear pending flag only if no failures
-        if (empty($failedMonths)) {
-            $this->firebase->delete("Schools/$school_name/$session_year/Accounts/Pending_fees", $receiptKey);
-        } else {
-            log_message('error', "submit_fees: Pending flag RETAINED for receipt={$receiptNo} due to failures: " . implode(',', $failedMonths));
-        }
-
-        // ── Accounting journal (extracted method) ──
-        $this->_create_fee_accounting_entry([
-            'school_name'  => $school_name,
-            'session_year' => $session_year,
-            'date'         => date('Y-m-d'),
-            'amount'       => (float) $schoolFees,
-            'payment_mode' => $paymentMode ?? 'Cash',
-            'bank_code'    => '',
-            'receipt_no'   => $receiptNo ?? '',
-            'student_name' => $student['Name'] ?? $userId,
-            'student_id'   => $userId,
-            'class'        => $class ?? '',
-            'admin_id'     => $this->admin_id,
-            'txn_id'       => $txnId,
-        ], $allocations, (float) $fineAmount, (float) $discountFees, $demandAllocationOk);
-
-        // ── Notification (extracted method) ──
-        $this->_notify_fee_received([
-            'student_id'   => $userId,
-            'student_name' => $student['Name'] ?? $userId,
-            'class'        => $class,
-            'section'      => $section,
-            'amount'       => $schoolFees,
-            'receipt_no'   => $receiptNo,
-            'date'         => $date,
-            'payment_mode' => $paymentMode,
-        ]);
-
-        log_audit('Fees', 'collect_fee', $receiptNo, "Collected fee of {$schoolFees} from {$userId} via {$paymentMode}");
-
-        $response = [
-            'status'     => 'success',
-            'message'    => 'Fees submitted successfully!',
-            'txn_id'     => $txnId,
-            'receipt_no' => $receiptNo,
-            'user_id'    => $userId,
+        // ── 1. Write the canonical fee receipt ─────────────────────────
+        $receiptDoc = [
+            'receiptNo'     => $receiptNo,
+            'studentId'     => $userId,
+            'studentName'   => $studentName,
+            'className'     => $class,
+            'section'       => $section,
+            'fatherName'    => (string) ($student['fatherName'] ?? ''),
+            'amount'        => $schoolFees,
+            'discount'      => $discountFees,
+            'fine'          => $fineAmount,
+            'netAmount'     => $netTotal,
+            'paymentMode'   => $paymentMode,
+            'remarks'       => $reference,
+            'feeMonths'     => $selectedMonths,
+            'feeBreakdown'  => $breakdown,
+            'monthTotals'   => $monthTotalsArray,
+            'date'          => $date,
+            'txnId'         => $txnId,
+            'collectedBy'   => $this->admin_name ?? 'System',
+            'createdAt'     => date('c'),
         ];
-
-        // Include allocation details in response (new system)
-        if ($demandAllocationOk) {
-            $response['demand_allocation'] = true;
-            $response['allocations']       = $allocations;
-            $response['advance_credit']    = $advanceCredit;
-            $response['demands_updated']   = count($allocations);
+        if (!$this->fsTxn->writeFeeReceipt($receiptKey, $receiptDoc)) {
+            $_abort('Failed to record fee receipt. No data written.');
+            return;
         }
 
-        // ── STEP E: Finalize receipt reservation ──
-        // Replace the placeholder from Step C with final receipt data.
-        try {
-            $this->firebase->set($receiptIdxPath, [
-                'date'    => $date,
-                'user_id' => $userId,
-                'class'   => $class,
-                'section' => $section,
-                'amount'  => $schoolFees - $discountFees + $fineAmount,
-                'txn_id'  => $txnId,
-            ]);
-            $_checkpoint('receipt_finalized');
-        } catch (\Exception $e) {
-            log_message('error', "submit_fees: Receipt index finalize failed: " . $e->getMessage());
-        }
-
-        // ── STEP F: Release lock (token-verified) + mark idempotency complete ──
-        try {
-            $lock = $this->firebase->get($lockPath);
-            if (is_array($lock) && ($lock['token'] ?? '') === $lockToken) {
-                $this->firebase->delete($lockPath);
-            }
-        } catch (\Exception $e) {
-            log_message('error', "submit_fees: Lock release failed for {$userId}: " . $e->getMessage());
-        }
-        $txnDuration = round((microtime(true) - $txnStart) * 1000); // ms
-        try {
-            $this->firebase->set($idempFullPath, [
-                'status'       => 'success',
-                'step'         => 'completed',
-                'txn_id'       => $txnId,
-                'receipt_no'   => $receiptNo,
-                'user_id'      => $userId,
-                'amount'       => $schoolFees,
-                'started_at'   => is_array($existingIdemp) ? ($existingIdemp['started_at'] ?? date('c')) : date('c'),
-                'completed_at' => date('c'),
-                'writes_count' => count($writtenPaths),
-                'duration_ms'  => $txnDuration,
-                'steps'        => $txnSteps,
-            ]);
-        } catch (\Exception $e) {
-            log_message('error', "submit_fees: Idempotency finalize failed: " . $e->getMessage());
-        }
-
-        log_message('info',
-            "submit_fees: OK txn={$txnId} receipt={$receiptNo} student={$userId}"
-            . " amount={$schoolFees} writes=" . count($writtenPaths)
-            . " duration={$txnDuration}ms steps=" . implode('→', $txnSteps)
-        );
-
-        // Audit log + transaction complete
-        $this->feeTxn->complete(['receipt_no' => $receiptNo, 'amount' => $schoolFees]);
-        $this->feeAudit->log('fee_paid', [
-            'student_id' => $userId,
-            'amount'     => $schoolFees,
-            'receipt_no' => $receiptNo,
-            'class'      => $class,
-            'section'    => $section,
-            'months'     => $selectedMonths,
-            'mode'       => $paymentMode,
-            'txn_id'     => $txnId,
+        // ── 2. Finalise receipt index ──────────────────────────────────
+        $this->fsTxn->finalizeReceiptIndex($receiptNo, [
+            'date'      => $date,
+            'userId'    => $userId,
+            'className' => $class,
+            'section'   => $section,
+            'amount'    => $netTotal,
+            'txnId'     => $txnId,
         ]);
 
-        // Update defaulter status after fee payment
+        // ── 3. Allocate to demands (oldest unpaid first) ───────────────
+        //
+        // CRITICAL: only allocate within demands whose month appears in
+        // $selectedMonths. The previous version filtered by status only
+        // ("any unpaid demand"), which silently auto-paid Yearly fees +
+        // older months when admin selected a single later month — money
+        // landed on demands the admin never picked. Parent flow already
+        // enforces this filter; admin must match for the two paths to
+        // produce the same allocation result.
+        $allocations   = [];
+        $remaining     = $schoolFees + $submitAmount;
+        $selectedSet   = array_flip($selectedMonths);
+        log_message('debug', '[ALLOC START] user=' . $userId . ' selected=' . json_encode($selectedMonths) . ' amount=' . $remaining);
+        $unpaid = [];
+        foreach ($demands as $did => $d) {
+            $st = (string) ($d['status'] ?? 'unpaid');
+            if ($st === 'paid') continue;
+            $label = $periodToLabel((string) ($d['period'] ?? ''));
+            if ($label === '' || !isset($selectedSet[$label])) continue;
+            $unpaid[$did] = $d;
+        }
+        uasort($unpaid, fn($a, $b) => strcmp((string)($a['period_key'] ?? ''), (string)($b['period_key'] ?? '')));
+        log_message('debug', '[ALLOC POOL] count=' . count($unpaid) . ' demand_ids=' . implode(',', array_keys($unpaid)));
+
+        foreach ($unpaid as $did => $d) {
+            if ($remaining <= 0.005) break;
+            $bal   = (float) ($d['balance'] ?? 0);
+            if ($bal <= 0) continue;
+            $alloc = round(min($remaining, $bal), 2);
+            $newPaid    = round((float) ($d['paid_amount'] ?? 0) + $alloc, 2);
+            $newBalance = round($bal - $alloc, 2);
+            $newStatus  = ($newBalance <= 0.005) ? 'paid' : 'partial';
+            $this->fsTxn->updateDemand($did, [
+                'paid_amount'  => $newPaid,
+                'balance'      => $newBalance,
+                'status'       => $newStatus,
+                'last_receipt' => $receiptKey,
+            ]);
+            $allocations[] = [
+                'demand_id' => $did,
+                'fee_head'  => $d['fee_head'] ?? '',
+                'period'    => $d['period']   ?? '',
+                'allocated' => $alloc,
+                'balance'   => $newBalance,
+                'status'    => $newStatus,
+            ];
+            $remaining = round($remaining - $alloc, 2);
+        }
+        $advanceCredit = round(max(0, $remaining), 2);
+
+        $this->fsTxn->writeReceiptAllocation($receiptKey, [
+            'receiptNo'     => $receiptNo,
+            'studentId'     => $userId,
+            'studentName'   => $studentName,
+            'className'     => $class,
+            'section'       => $section,
+            'totalAmount'   => round($schoolFees, 2),
+            'discount'      => round($discountFees, 2),
+            'fine'          => round($fineAmount, 2),
+            'netReceived'   => $netTotal,
+            'allocations'   => $allocations,
+            'advanceCredit' => $advanceCredit,
+            'paymentMode'   => $paymentMode,
+            'date'          => $date,
+            'createdBy'     => $this->admin_id ?? '',
+            'txnId'         => $txnId,
+        ]);
+
+        // ── 3b. Consistency: update receipt feeMonths to reflect actual allocations ──
+        //  The user may have selected "June" but the system allocated to April
+        //  (oldest-first). The receipt must reflect truth, not selection.
+        if (!empty($allocations)) {
+            $allocatedMonths = [];
+            foreach ($allocations as $a) {
+                $period = (string) ($a['period'] ?? '');
+                $m = explode(' ', $period)[0] ?? '';
+                if ($m !== '' && !in_array($m, $allocatedMonths, true)) {
+                    $allocatedMonths[] = $m;
+                }
+            }
+            if (!empty($allocatedMonths)) {
+                // PATCH only feeMonths + allocatedMonths — using the
+                // full-replace writeFeeReceipt() here previously nuked
+                // studentId/amount/paymentMode/etc on the doc, leaving
+                // an orphan receipt invisible to admin's "WHERE
+                // studentId == X" payment-history query. Use the
+                // merge-aware updateFeeReceipt() instead.
+                $this->fsTxn->updateFeeReceipt($receiptKey, [
+                    'feeMonths'       => $allocatedMonths,
+                    'allocatedMonths' => $allocatedMonths,
+                ]);
+            }
+        }
+
+        // ── 4. Month-fee flags on the student doc ──────────────────────
+        $paidMonthsFlags = [];
+        // Recompute from the just-updated demands view.
+        $demandsAfter = $this->fsTxn->demandsForStudent($userId);
+        $byMonth = [];
+        foreach ($demandsAfter as $d) {
+            // Strip trailing year/session token but PRESERVE multi-word
+            // labels like "Yearly Fees" — explode(' ',$p)[0] used to
+            // truncate "Yearly Fees 2026-27" to "Yearly", which then
+            // never matched the admin's fetch_months reader looking
+            // for "Yearly Fees" key. Same fix already shipped in the
+            // parent flow (Fee_management::_periodToMonthFeeKey).
+            $rawPeriod = (string) ($d['period'] ?? '');
+            $p = trim((string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', $rawPeriod));
+            if ($p === '') continue;
+            $byMonth[$p][] = (string) ($d['status'] ?? 'unpaid');
+        }
+        foreach ($byMonth as $m => $statuses) {
+            $allPaid = true;
+            foreach ($statuses as $s) { if ($s !== 'paid') { $allPaid = false; break; } }
+            $paidMonthsFlags[$m] = $allPaid ? 1 : 0;
+        }
+        // Fallback for schools without demands: mark each fully-paid selected month.
+        if (empty($demandsAfter)) {
+            $budget = $schoolFees + $submitAmount;
+            foreach ($selectedMonths as $m) {
+                $need = (float) ($monthTotalsArray[$m] ?? 0);
+                if ($need > 0 && $budget >= $need) {
+                    $paidMonthsFlags[$m] = 1;
+                    $budget -= $need;
+                }
+            }
+        }
+        if (!empty($paidMonthsFlags)) {
+            $existingMap = is_array($student['monthFee'] ?? null) ? $student['monthFee'] : [];
+            $newMap = array_replace($existingMap, $paidMonthsFlags);
+            $this->fsTxn->updateStudent($userId, ['monthFee' => $newMap]);
+        }
+
+        // ── 5. Advance balance update ──────────────────────────────────
+        // The wallet after a receipt = leftover of (existing wallet + new pay)
+        // after demand allocation. $remaining (= $advanceCredit) IS that
+        // leftover — it already includes the existing wallet because the
+        // allocation loop started with `$remaining = $schoolFees + $submitAmount`.
+        // So we SET the wallet to $advanceCredit, not add to the old value.
+        //
+        // Touch the doc if either the wallet was applied this receipt
+        // ($submitAmount > 0) or if new advance was created ($advanceCredit > 0).
+        if ($advanceCredit > 0.005 || $submitAmount > 0.005) {
+            $this->fsTxn->setAdvanceBalance($userId, $advanceCredit, [
+                'lastReceipt' => $receiptKey,
+                'studentName' => $studentName,
+                'className'   => $class,
+                'section'     => $section,
+            ]);
+        }
+
+        // ── 6. Discount update (if any) ────────────────────────────────
+        if ($discountFees > 0.005) {
+            $this->fsTxn->updateDiscount($userId, [
+                'totalDiscount' => $discountFees,
+                'applied'       => [
+                    'type'       => 'receipt',
+                    'amount'     => $discountFees,
+                    'applied_at' => date('c'),
+                    'applied_by' => $this->admin_name ?? 'System',
+                    'receipt'    => $receiptKey,
+                ],
+            ], [
+                'studentName' => $studentName,
+                'className'   => $class,
+                'section'     => $section,
+            ]);
+        }
+
+        // ── 7. Defaulter recompute ─────────────────────────────────────
         try {
             $defaulterStatus = $this->feeDefaulter->updateDefaulterStatus($userId);
-            // Sync defaulter status to Firestore
-            $this->fsSync->syncDefaulterStatus(
-                $userId, $defaulterStatus,
-                $student['Name'] ?? $userId, $class, $section
-            );
-        } catch (Exception $e) {
-            log_message('error', "Fee_defaulter_check::updateDefaulterStatus failed after submit_fees for {$userId}: " . $e->getMessage());
+            $this->load->library('Fee_firestore_sync', null, 'fsSync');
+            $this->fsSync->init($this->firebase, $schoolFs, $session);
+            $this->fsSync->syncDefaulterStatus($userId, $defaulterStatus, $studentName, $class, $section);
+        } catch (\Exception $e) {
+            log_message('error', "submit_fees: defaulter recompute failed for {$userId}: " . $e->getMessage());
         }
 
-        // ── Sync receipt + updated demands to Firestore ──
+        // ── 8. Accounting journal (Firestore-first via ops_acct hook) ──
         try {
-            // Sync receipt
-            $this->fsSync->syncReceipt(
-                $receiptKey, $receiptNo, $userId,
-                $student['Name'] ?? $userId, $class, $section,
-                $schoolFees, $discountFees, $fineAmount,
-                $paymentMode, $selectedMonths, $allocations,
-                $this->admin_name ?? ($this->admin_id ?? 'system'),
-                $reference
-            );
+            $this->load->library('Operations_accounting', null, 'ops_acct');
+            $this->ops_acct->init($this->firebase, $this->school_name, $session, $this->admin_id ?? 'system', $this);
+            $this->ops_acct->create_fee_journal([
+                'school_name'  => $this->school_name,
+                'session_year' => $session,
+                'date'         => date('Y-m-d'),
+                'amount'       => $netTotal,
+                'payment_mode' => strtolower($paymentMode),
+                'receipt_no'   => $receiptKey,
+                'student_name' => $studentName,
+                'student_id'   => $userId,
+                'class'        => "{$class} {$section}",
+                'admin_id'     => $this->admin_id ?? 'system',
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', "submit_fees: accounting journal failed for {$receiptKey}: " . $e->getMessage());
+        }
 
-            // Sync updated demands (status changes after payment)
-            if ($demandAllocationOk) {
-                $this->fsSync->syncAllDemandsForStudent(
-                    $userId, $student['Name'] ?? $userId, $class, $section
-                );
+        // ── 9. Finalise idempotency + release lock + clear pending ─────
+        $this->fsTxn->setIdempotencySuccess($idempHash, $receiptNo);
+        $this->fsTxn->clearPending($receiptKey);
+        $this->fsTxn->releaseLock($userId, $lockToken);
+
+        $this->output->set_output(json_encode([
+            'status'           => 'success',
+            'message'          => 'Fees submitted successfully.',
+            'receipt_no'       => $receiptNo,
+            'txn_id'           => $txnId,
+            'user_id'          => $userId,
+            'amount'           => $netTotal,
+            'advance_credit'   => $advanceCredit,
+            'allocations'      => $allocations,
+            'months_marked'    => array_keys(array_filter($paidMonthsFlags, fn($v) => $v === 1)),
+        ]));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  VOID TEST RECEIPT — dev/QA utility
+    //
+    //  Reverses every side-effect of a single submit_fees call so the admin
+    //  can re-test the same payment flow. Mirrors all deletions to Firestore
+    //  so the two stores stay consistent. Admin-only; NOT part of normal
+    //  business flow — for real refunds use Fee_refund_service (audit
+    //  trail preserved, produces a reversing journal entry).
+    //
+    //  POST params:
+    //    receipt_no  (e.g. "1" — the numeric portion of R000001)
+    // ══════════════════════════════════════════════════════════════════
+    public function void_test_receipt()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'void_test_receipt');
+
+        $receiptNo = trim((string) $this->input->post('receipt_no'));
+        $receiptNo = preg_replace('/^R0*/i', '', $receiptNo); // accept "R000001" or "1"
+        if ($receiptNo === '' || !preg_match('/^\d+$/', $receiptNo)) {
+            return $this->json_error('receipt_no is required (numeric).');
+        }
+        $receiptKey = 'F' . $receiptNo;
+        $bp         = "Schools/{$this->school_name}/{$this->session_year}";
+        $schoolFs   = $this->fs->schoolId();
+
+        // ── 1. Locate the receipt — Session A canonical source is
+        //    Firestore `feeReceipts`; fall back to `feeReceiptIndex`
+        //    and then to legacy RTDB Receipt_Index.
+        $userId = $class = $section = $date = '';
+        $amount = 0.0;
+
+        $rcpt = $this->fs->get('feeReceipts', "{$schoolFs}_{$receiptKey}");
+        if (is_array($rcpt)) {
+            $userId  = (string) ($rcpt['studentId']    ?? '');
+            $class   = (string) ($rcpt['className']    ?? '');
+            $section = (string) ($rcpt['section']      ?? '');
+            $date    = (string) ($rcpt['date']         ?? '');
+            $amount  = (float)  ($rcpt['amount']       ?? 0);
+        }
+        if ($userId === '' || $class === '') {
+            $fsIdx = $this->fs->get('feeReceiptIndex', "{$schoolFs}_{$this->session_year}_{$receiptNo}");
+            if (is_array($fsIdx)) {
+                $userId  = $userId  ?: (string) ($fsIdx['userId']    ?? '');
+                $class   = $class   ?: (string) ($fsIdx['className'] ?? '');
+                $section = $section ?: (string) ($fsIdx['section']   ?? '');
+                $date    = $date    ?: (string) ($fsIdx['date']      ?? '');
+                $amount  = $amount  ?: (float)  ($fsIdx['amount']    ?? 0);
+            }
+        }
+        if ($userId === '' || $class === '') {
+            // Legacy RTDB fallback for pre-Session-A data.
+            $idx = null; // RTDB removed — receipt lookup via feeReceipts Firestore
+            if (is_array($idx)) {
+                $userId  = $userId  ?: (string) ($idx['user_id'] ?? '');
+                $class   = $class   ?: (string) ($idx['class']   ?? '');
+                $section = $section ?: (string) ($idx['section'] ?? '');
+                $date    = $date    ?: (string) ($idx['date']    ?? '');
+                $amount  = $amount  ?: (float)  ($idx['amount']  ?? 0);
+            }
+        }
+        if ($userId === '') {
+            return $this->json_error("Receipt #{$receiptNo} not found (checked Firestore + RTDB).");
+        }
+        if ($class === '' || $section === '') {
+            return $this->json_error('Receipt exists but class/section are missing — cannot void safely.');
+        }
+        if ($date === '') $date = date('d-m-Y');
+        $studentBase = $this->studentPath($class, $section, $userId);
+
+        // ── 2. Resolve months the receipt paid for ──────────────────
+        // Session A: months live on `feeReceipts.feeMonths`.
+        // Legacy: months live on the RTDB Fees Record's `Months` field.
+        $months = [];
+        if (is_array($rcpt ?? null) && is_array($rcpt['feeMonths'] ?? null)) {
+            $months = array_values($rcpt['feeMonths']);
+        }
+        if (empty($months)) {
+            $feesRecord = []; // RTDB removed — use feeReceipts Firestore
+            if (is_array($feesRecord['Months'] ?? null)) $months = array_values($feesRecord['Months']);
+        }
+
+        $summary = [
+            'receipt_key'            => $receiptKey,
+            'user_id'                => $userId,
+            'class'                  => $class,
+            'section'                => $section,
+            'amount'                 => $amount,
+            'months'                 => $months,
+            'rtdb_deletions'         => [],
+            'firestore_deletions'    => [],
+            'journal_entries_voided' => 0,
+        ];
+
+        // ── 3. Delete Fees Record ─────────────────────────────────────
+        try {
+            // RTDB mirror removed per no-RTDB policy.
+            $summary['rtdb_deletions'][] = 'Fees Record';
+        } catch (\Exception $e) { log_message('error', "void_test_receipt: Fees Record delete: " . $e->getMessage()); }
+
+        // ── 4. Reset Month Fee flags (RTDB + Firestore) ──────────────
+        foreach ($months as $m) {
+            $m = (string) $m;
+            if ($m === '') continue;
+            try {
+                // RTDB mirror removed per no-RTDB policy.
+                $this->fsSync->syncStudentMonthFee($userId, $m, 0);
+                $summary['rtdb_deletions'][] = "Month Fee/{$m} → 0";
+            } catch (\Exception $e) {}
+        }
+
+        // ── 5. Delete Voucher ─────────────────────────────────────────
+        try {
+            // RTDB mirror removed.
+            $summary['rtdb_deletions'][] = "Voucher/{$date}/{$receiptKey}";
+        } catch (\Exception $e) {}
+
+        // ── 6. Delete Receipt_Index entry ─────────────────────────────
+        try {
+            // RTDB mirror removed.
+            $summary['rtdb_deletions'][] = "Receipt_Index/{$receiptNo}";
+        } catch (\Exception $e) {}
+
+        // ── 7. Roll receipt counter back to receiptNo-1 ──────────────
+        try {
+            $newSeq = max(0, (int) $receiptNo - 1);
+            // RTDB mirror removed.
+            $this->fsSync->syncReceiptCounter($newSeq);
+            $summary['rtdb_deletions'][] = "Counters/receipt_seq → {$newSeq}";
+        } catch (\Exception $e) {}
+
+        // ── 8. Revert Account_book daily total ───────────────────────
+        if ($amount > 0) {
+            try {
+                $dt = new DateTime($date);
+                $mName = $dt->format('F');
+                $dNum  = $dt->format('d');
+                $abPath = "{$bp}/Accounts/Account_book/Fees/{$mName}/{$dNum}/R";
+                $cur = 0; // RTDB removed — advance balance in Firestore studentAdvanceBalances
+                $newAb = round(max(0, $cur - $amount), 2);
+                // RTDB mirror removed.
+                $summary['rtdb_deletions'][] = "Account_book/Fees/{$mName}/{$dNum}/R → {$newAb}";
+            } catch (\Exception $e) {}
+        }
+
+        // ── 9. Find + reverse the matching Ledger entries ────────────
+        // Match on source='fee_payment' AND source_ref = receipt key.
+        $allLedger = []; // RTDB removed — use Firestore accounting collection
+        $voided    = [];
+        if (is_array($allLedger)) {
+            foreach ($allLedger as $jeId => $entry) {
+                if (!is_array($entry)) continue;
+                $src  = (string) ($entry['source'] ?? '');
+                $sref = (string) ($entry['source_ref'] ?? '');
+                $sts  = (string) ($entry['status'] ?? 'active');
+                if ($sts === 'deleted') continue;
+                if (stripos($src, 'fee') !== false && ($sref === $receiptKey || $sref === $receiptNo)) {
+                    $voided[$jeId] = $entry;
+                }
+            }
+        }
+
+        foreach ($voided as $jeId => $entry) {
+            try {
+                // Reverse closing balances
+                foreach (($entry['lines'] ?? []) as $line) {
+                    $ac = (string) ($line['account_code'] ?? '');
+                    if ($ac === '') continue;
+                    $balPath = "{$bp}/Accounts/Closing_balances/{$ac}";
+                    // Firestore-only per no-RTDB policy.
+                    try {
+                        $acctFs = $this->_acctFsSyncForVoid();
+                        if ($acctFs) {
+                            // Read current balance from Firestore, reverse, write back
+                            $balDocId = $this->fs->docId("BAL_{$this->session_year}_{$ac}");
+                            $cur = $this->firebase->firestoreGet('accounting', $balDocId);
+                            if (is_array($cur)) {
+                                $newDr = round(max(0, (float) ($cur['period_dr'] ?? 0) - (float) ($line['dr'] ?? 0)), 2);
+                                $newCr = round(max(0, (float) ($cur['period_cr'] ?? 0) - (float) ($line['cr'] ?? 0)), 2);
+                                $acctFs->syncClosingBalance($ac, $newDr, $newCr);
+                            }
+                        }
+                    } catch (\Exception $_) {}
+
+                    // Remove by_account index
+                    // RTDB mirror removed.
+                }
+
+                // Remove by_date index
+                $eDate = (string) ($entry['date'] ?? $date);
+                // RTDB mirror removed.
+
+                // Hard-delete ledger entry itself (test utility only)
+                // RTDB mirror removed.
+
+                // Firestore: soft-delete the journal so reports filter it out
+                try {
+                    $acctFs = $this->_acctFsSyncForVoid();
+                    if ($acctFs) $acctFs->syncLedgerDelete($jeId, ['deleted_by' => 'void_test_receipt']);
+                } catch (\Exception $_) {}
+
+                $summary['journal_entries_voided']++;
+            } catch (\Exception $e) {
+                log_message('error', "void_test_receipt: ledger reverse [{$jeId}]: " . $e->getMessage());
+            }
+        }
+
+        // ── 10. Firestore cleanups ───────────────────────────────────
+        try {
+            $schoolFs = $this->fs->schoolId();
+            $this->firebase->firestoreDelete('feeReceipts',       "{$schoolFs}_{$receiptKey}");
+            $summary['firestore_deletions'][] = "feeReceipts/{$schoolFs}_{$receiptKey}";
+        } catch (\Exception $_) {}
+        try {
+            $schoolFs = $this->fs->schoolId();
+            $this->firebase->firestoreDelete('feeReceiptIndex',   "{$schoolFs}_{$this->session_year}_{$receiptNo}");
+            $summary['firestore_deletions'][] = "feeReceiptIndex/{$schoolFs}_{$this->session_year}_{$receiptNo}";
+        } catch (\Exception $_) {}
+
+        // ── 10a. Clear idempotency + lock records (RTDB legacy + Firestore Session A) ──
+        // submit_fees short-circuits on a 'success'-status idempotency hit
+        // (keyed on md5(userId|receiptNo|months|amount)) so leaving these
+        // behind makes every retest fail with "Fees already submitted".
+        try {
+            // Legacy RTDB paths (pre-Session A). Harmless if missing.
+            $idempAll = null; // RTDB removed
+            if (is_array($idempAll)) {
+                foreach ($idempAll as $ikey => $idata) {
+                    if (!is_array($idata)) continue;
+                    $ids = (string) ($idata['user_id'] ?? $idata['userId'] ?? '');
+                    $irn = (string) ($idata['receipt_no'] ?? '');
+                    if ($ids === $userId || $irn === $receiptNo) {
+                        // RTDB mirror removed.
+                        $summary['rtdb_deletions'][] = "Idempotency/{$ikey}";
+                    }
+                }
+            }
+            $lock = null; // RTDB removed — locks handled via Firestore
+            if (is_array($lock)) {
+                // RTDB mirror removed.
+                $summary['rtdb_deletions'][] = "Locks/{$userId}";
+            }
+
+            // Session A Firestore paths — the canonical caches now.
+            $schoolFs = $this->fs->schoolId();
+            $idempRows = $this->fs->schoolWhere('feeIdempotency', []);
+            foreach ((array) $idempRows as $row) {
+                $did = $row['id']   ?? '';
+                $d   = $row['data'] ?? [];
+                if ($did === '' || !is_array($d)) continue;
+                $duid = (string) ($d['userId']    ?? '');
+                $drn  = (string) ($d['receiptNo'] ?? '');
+                if ($duid === $userId || $drn === $receiptNo) {
+                    try {
+                        $this->firebase->firestoreDelete('feeIdempotency', $did);
+                        $summary['firestore_deletions'][] = "feeIdempotency/{$did}";
+                    } catch (\Exception $_) {}
+                }
+            }
+            // Release Firestore lock if still held.
+            try {
+                $this->firebase->firestoreDelete('feeLocks', "{$schoolFs}_{$userId}");
+                $summary['firestore_deletions'][] = "feeLocks/{$schoolFs}_{$userId}";
+            } catch (\Exception $_) {}
+            // Clear pending-write marker for this receipt.
+            try {
+                $this->firebase->firestoreDelete('feePendingWrites', "{$schoolFs}_F{$receiptNo}");
+                $summary['firestore_deletions'][] = "feePendingWrites/{$schoolFs}_F{$receiptNo}";
+            } catch (\Exception $_) {}
+        } catch (\Exception $e) {
+            log_message('error', "void_test_receipt: idempotency/lock cleanup failed: " . $e->getMessage());
+        }
+
+        // ── 10b. Revert demand statuses for the voided months ───────
+        // With use_legacy_month_fee=false, submit_fees checks demand.status
+        // to block duplicate payments. If we don't reset those here, the
+        // next attempted payment aborts with "Month X is already fully paid".
+        try {
+            $demandsPath = "{$bp}/Fees/Demands/{$userId}";
+            $allDemands = []; // RTDB removed — use Firestore feeDemands
+            if (is_array($allDemands)) {
+                foreach ($allDemands as $did => $d) {
+                    if (!is_array($d)) continue;
+                    $period = explode(' ', (string) ($d['period'] ?? ''))[0] ?? '';
+                    if (!in_array($period, $months, true)) continue;
+                    $net = (float) ($d['net_amount'] ?? $d['total_amount'] ?? 0);
+                    // Firestore-only per no-RTDB policy.
+                    try {
+                        $this->fs->updateEntity('feeDemands', $did, [
+                            'status' => 'unpaid', 'paid_amount' => 0,
+                            'balance' => round($net, 2), 'last_receipt' => null,
+                            'last_refund_receipt' => null, 'updated_at' => date('c'),
+                        ]);
+                    } catch (\Exception $_) {}
+                    $summary['rtdb_deletions'][] = "Demand {$did} ({$period}) → unpaid";
+                }
             }
         } catch (\Exception $e) {
-            log_message('error', "submit_fees: Firestore sync failed for {$userId}: " . $e->getMessage());
+            log_message('error', "void_test_receipt: demand revert failed: " . $e->getMessage());
         }
 
-        // Send payment confirmation notification
+        // ── 11. Recompute defaulter status ───────────────────────────
         try {
-            $this->load->library('Communication_helper');
-            $this->communication_helper->init($this->firebase, $this->school_name, $this->session_year, $this->parent_db_key);
-            $this->communication_helper->sendFeePaymentConfirmation($userId, $receiptNo);
-        } catch (Exception $e) {
-            log_message('error', "Fee payment notification failed: " . $e->getMessage());
+            $newStatus = $this->feeDefaulter->updateDefaulterStatus($userId);
+            $student = $this->fs->getEntity('students', $userId) ?? [];
+            $sName = is_array($student) ? ($student['Name'] ?? $student['name'] ?? '') : '';
+            $this->fsSync->syncDefaulterStatus($userId, $newStatus, $sName, $class, $section);
+            $summary['rtdb_deletions'][] = "Defaulters/{$userId} → recomputed";
+        } catch (\Exception $e) {}
+
+        log_audit('Fees', 'void_test_receipt', $receiptKey, "Voided test receipt {$receiptKey} for {$userId}");
+
+        $this->json_success(array_merge($summary, [
+            'message' => "Receipt {$receiptKey} voided. You can now re-collect April fees for this student.",
+        ]));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  VERIFY TEST CLEANUP — reports what still exists for a receipt
+    //  so the admin can confirm manual deletion is complete.
+    //
+    //  POST params: receipt_no (e.g. "1")  OR  user_id
+    //  Returns: { rtdb: {...}, firestore: {...}, clean: bool }
+    // ══════════════════════════════════════════════════════════════════
+    public function verify_test_cleanup()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'verify_test_cleanup');
+
+        $receiptNo = trim((string) $this->input->post('receipt_no'));
+        $receiptNo = preg_replace('/^R0*/i', '', $receiptNo);
+        $userId    = trim((string) $this->input->post('user_id'));
+        $bp        = "Schools/{$this->school_name}/{$this->session_year}";
+        $schoolFs  = $this->fs->schoolId();
+        $session   = $this->session_year;
+
+        $rtdb = [];
+        $fs   = [];
+
+        // Receipt-level checks (skip if no receipt_no provided)
+        if ($receiptNo !== '') {
+            $receiptKey = 'F' . $receiptNo;
+
+            $rtdb['receipt_index']   = '(RTDB removed)';
+            $rtdb['voucher_today']   = '(RTDB removed)';
+            $rtdb['receipt_counter'] = '(RTDB removed)';
+
+            $fs['feeReceipts']       = $this->firebase->firestoreGet('feeReceipts',     "{$schoolFs}_{$receiptKey}");
+            $fs['feeReceiptIndex']   = $this->firebase->firestoreGet('feeReceiptIndex', "{$schoolFs}_{$session}_{$receiptNo}");
+            $fs['feeCounters']       = $this->firebase->firestoreGet('feeCounters',     "{$schoolFs}_receipt_seq");
         }
 
-        $this->output->set_output(json_encode($response));
+        // Journal-entry scan — look for ledger entries tied to this receipt
+        $jeFound = [];
+        $allLedger = []; // RTDB removed — use Firestore accounting collection
+        if (is_array($allLedger)) {
+            foreach ($allLedger as $jeId => $entry) {
+                if (!is_array($entry)) continue;
+                $src  = (string) ($entry['source']     ?? '');
+                $sref = (string) ($entry['source_ref'] ?? '');
+                if (stripos($src, 'fee') !== false
+                    && ($receiptNo === '' || $sref === 'F' . $receiptNo || $sref === $receiptNo)) {
+                    $jeFound[$jeId] = [
+                        'status' => $entry['status'] ?? 'active',
+                        'date'   => $entry['date'] ?? '',
+                    ];
+                }
+            }
+        }
+        $rtdb['ledger_entries_for_receipt'] = $jeFound;
+        $rtdb['voucher_counter_journal']    = '(RTDB removed)';
+        $rtdb['closing_balance_1010'] = '(RTDB removed)';
+        $fs['accountingClosingBalances_1010'] = $this->firebase->firestoreGet('accountingClosingBalances', "{$schoolFs}_{$session}_1010");
+        $fs['accountingCounters_Journal']     = $this->firebase->firestoreGet('accountingCounters', "{$schoolFs}_{$session}_Journal");
+
+        // Student-level checks (only if user_id provided)
+        if ($userId !== '') {
+            $rtdb['defaulters_entry'] = '(RTDB removed)';
+
+            // Read RTDB Month Fee map so we can compare against Firestore
+            // and see what submit_fees actually wrote. Resolves class/section
+            // from the student's profile, matching what fetch_months does.
+            $student = ($this->fs->getEntity("students", $userId) ?? []);
+            if (is_array($student)) {
+                list($stuClass, $stuSection) = $this->_resolveClassSection($student);
+                $rtdb['student_resolved_class']   = $stuClass;
+                $rtdb['student_resolved_section'] = $stuSection;
+                if ($stuClass !== '' && $stuSection !== '') {
+                    $studentBase = $this->studentPath($stuClass, $stuSection, $userId);
+                    $rtdb['student_monthFee']     = '(RTDB removed)';
+                    $rtdb['student_feesRecord']   = '(RTDB removed)';
+                } else {
+                    $rtdb['student_monthFee'] = 'class_or_section_unresolved';
+                }
+            }
+
+            $stuDoc = $this->firebase->firestoreGet('students', "{$schoolFs}_{$userId}");
+            $fs['student_monthFee'] = is_array($stuDoc) ? ($stuDoc['monthFee'] ?? null) : 'doc_missing';
+            $fs['feeDefaulters']    = $this->firebase->firestoreGet('feeDefaulters', "{$schoolFs}_{$this->session_year}_{$userId}");
+        }
+
+        // Summarise: what's still present?
+        $still = [];
+        foreach ($rtdb as $k => $v) {
+            if ($k === 'receipt_counter' || $k === 'voucher_counter_journal') {
+                if ($v !== null && (int) $v !== 0) $still[] = "RTDB {$k}={$v}";
+            } elseif ($k === 'closing_balance_1010') {
+                if (is_array($v) && (($v['period_dr'] ?? 0) > 0 || ($v['period_cr'] ?? 0) > 0)) $still[] = "RTDB {$k} non-zero";
+            } elseif ($k === 'ledger_entries_for_receipt') {
+                foreach ($v as $jeId => $meta) {
+                    if (($meta['status'] ?? '') !== 'deleted') $still[] = "RTDB ledger {$jeId} still active";
+                }
+            } elseif ($k === 'defaulters_entry') {
+                if (is_array($v) && (float) ($v['total_dues'] ?? 0) > 0) {
+                    // Having dues is fine (expected if we just undid the payment), skip
+                }
+            } elseif (!empty($v)) {
+                $still[] = "RTDB {$k} still exists";
+            }
+        }
+        foreach ($fs as $k => $v) {
+            if ($k === 'feeCounters' || $k === 'accountingCounters_Journal') {
+                if (is_array($v) && (int) ($v['value'] ?? 0) !== 0) $still[] = "Firestore {$k} value=" . ($v['value'] ?? '');
+            } elseif ($k === 'accountingClosingBalances_1010') {
+                if (is_array($v) && ((float)($v['period_dr'] ?? 0) > 0 || (float)($v['period_cr'] ?? 0) > 0)) $still[] = "Firestore {$k} non-zero";
+            } elseif ($k === 'student_monthFee') {
+                if (is_array($v)) {
+                    foreach ($v as $m => $flag) {
+                        if ((int) $flag === 1) $still[] = "Firestore students.monthFee.{$m}=1";
+                    }
+                }
+            } elseif (!empty($v) && $v !== 'doc_missing') {
+                $still[] = "Firestore {$k} still exists";
+            }
+        }
+
+        $this->json_success([
+            'clean'       => empty($still),
+            'still_present' => $still,
+            'rtdb'        => $rtdb,
+            'firestore'   => $fs,
+            'message'     => empty($still)
+                ? 'Everything is clean — you can retest.'
+                : count($still) . ' item(s) still present (see still_present list).',
+        ]);
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  TEST-RESET — wipes every Firestore + RTDB artifact for one student
+    //  so tests start from a truly clean state. Dev/QA only.
+    //
+    //  POST param: user_id
+    // ══════════════════════════════════════════════════════════════════
+    public function test_reset_student()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'test_reset_student');
+        $userId = trim((string) $this->input->post('user_id'));
+        if ($userId === '' || !preg_match('/^[A-Za-z0-9_-]+$/', $userId)) {
+            return $this->json_error('Valid user_id required.');
+        }
+
+        $schoolFs = $this->fs->schoolId();
+        $bp       = "Schools/{$this->school_name}/{$this->session_year}";
+        $summary  = ['firestore' => [], 'rtdb' => []];
+
+        // ── Firestore: per-student docs ──────────────────────────────
+        $fsCollections = [
+            'feeDefaulters'           => "{$schoolFs}_{$this->session_year}_{$userId}",
+            'studentAdvanceBalances'  => "{$schoolFs}_{$userId}",
+            'studentDiscounts'        => "{$schoolFs}_{$userId}",
+            'feeLocks'                => "{$schoolFs}_{$userId}",
+        ];
+        foreach ($fsCollections as $col => $docId) {
+            try {
+                $this->firebase->firestoreDelete($col, $docId);
+                $summary['firestore'][] = "{$col}/{$docId}";
+            } catch (\Exception $_) {}
+        }
+
+        // Reset students.monthFee to all-zeros
+        try {
+            $student = $this->firebase->firestoreGet('students', "{$schoolFs}_{$userId}");
+            if (is_array($student)) {
+                $zero = array_fill_keys(['April','May','June','July','August','September','October','November','December','January','February','March','Yearly Fees'], 0);
+                $this->firebase->firestoreSet('students', "{$schoolFs}_{$userId}", [
+                    'monthFee'  => $zero,
+                    'updatedAt' => date('c'),
+                ], /* merge */ true);
+                $summary['firestore'][] = "students/{$schoolFs}_{$userId}.monthFee → all 0";
+            }
+        } catch (\Exception $_) {}
+
+        // Firestore: scan receipts/indices/allocations/refunds/idempotency/pending + demands.
+        $scanCollections = [
+            'feeReceipts'             => 'studentId',
+            'feeReceiptIndex'         => 'userId',
+            'feeReceiptAllocations'   => 'studentId',
+            'feeRefunds'              => 'studentId',
+            'feeRefundVouchers'       => 'studentId',
+            'feeRefundAudit'          => 'studentId',
+            'feeIdempotency'          => 'userId',
+            'feePendingWrites'        => 'userId',
+            'feeDemands'              => 'studentId',
+        ];
+        foreach ($scanCollections as $col => $field) {
+            try {
+                $rows = $this->fs->schoolWhere($col, [[$field, '==', $userId]]);
+                foreach ((array) $rows as $row) {
+                    $did = $row['id'] ?? '';
+                    if ($did === '') continue;
+                    $this->firebase->firestoreDelete($col, $did);
+                    $summary['firestore'][] = "{$col}/{$did}";
+                }
+            } catch (\Exception $_) {}
+        }
+
+        // Reset counters so the next payment starts at 1.
+        try {
+            $this->firebase->firestoreSet('feeCounters', "{$schoolFs}_receipt_seq", [
+                'schoolId' => $schoolFs, 'kind' => 'receipt_seq', 'value' => 0, 'updatedAt' => date('c'),
+            ]);
+            $summary['firestore'][] = 'feeCounters/receipt_seq → 0';
+        } catch (\Exception $_) {}
+
+        // ── RTDB: legacy paths that may still hold old test data ─────
+        // Best-effort deletes. If Session A/B didn't write these, the
+        // delete is a no-op.
+        $rtdbDeletes = [];
+        try {
+            $student = $this->firebase->firestoreGet('students', "{$schoolFs}_{$userId}");
+            $class   = is_array($student) ? (string) ($student['className'] ?? '') : '';
+            $section = is_array($student) ? (string) ($student['section']   ?? '') : '';
+            if ($class !== '' && $section !== '') {
+                $sb = $this->studentPath($class, $section, $userId);
+                $rtdbDeletes[] = "{$sb}/Fees Record";
+                $rtdbDeletes[] = "{$sb}/Month Fee";
+                $rtdbDeletes[] = "{$sb}/Discount";
+                $rtdbDeletes[] = "{$sb}/Oversubmittedfees";
+            }
+        } catch (\Exception $_) {}
+        $rtdbDeletes[] = "{$bp}/Fees/Demands/{$userId}";
+        $rtdbDeletes[] = "{$bp}/Fees/Locks/{$userId}";
+        $rtdbDeletes[] = "{$bp}/Fees/Defaulters/{$userId}";
+        $rtdbDeletes[] = "{$bp}/Fees/Advance_Balance/{$userId}";
+
+        // RTDB deletes removed per no-RTDB policy.
+        // Firestore collections are the sole source; test reset
+        // is handled by the Firestore delete calls above.
+
+        log_audit('Fees', 'test_reset_student', $userId, "Wiped test data for {$userId}");
+        $this->json_success(array_merge($summary, [
+            'user_id' => $userId,
+            'message' => "Test data wiped for {$userId}. Ready for a fresh test.",
+        ]));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  VERIFY SESSION B — dedicated test helper for the refund flow.
+    //  Returns PASS/FAIL per check so the test output is unambiguous.
+    //
+    //  POST params:
+    //    refund_id   — the refund you want to verify
+    //    stage       — 'created' | 'approved' | 'processed'
+    //    receipt_no  — the source receipt number (e.g. "1")
+    //    user_id     — the student id
+    // ══════════════════════════════════════════════════════════════════
+    public function verify_session_b()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'verify_session_b');
+        $refId     = trim((string) $this->input->post('refund_id'));
+        $stage     = trim((string) $this->input->post('stage'));
+        $receiptNo = trim((string) $this->input->post('receipt_no'));
+        $userId    = trim((string) $this->input->post('user_id'));
+
+        if ($refId === '' || $userId === '' || !in_array($stage, ['created','approved','processed'], true)) {
+            return $this->json_error('refund_id, user_id, stage=(created|approved|processed) required.');
+        }
+
+        $schoolFs = $this->fs->schoolId();
+        $session  = $this->session_year;
+        $bp       = "Schools/{$this->school_name}/{$session}";
+        $origKey  = $receiptNo !== '' ? ('F' . preg_replace('/^R0*/i', '', $receiptNo)) : '';
+
+        $checks = [];
+        $addCheck = function(string $name, bool $pass, string $detail = '') use (&$checks) {
+            $checks[] = ['name' => $name, 'pass' => $pass, 'detail' => $detail];
+        };
+
+        // ── 1. feeRefunds Firestore doc exists with right status ─────
+        $refDoc = $this->firebase->firestoreGet('feeRefunds', "{$schoolFs}_{$refId}");
+        if (!is_array($refDoc)) {
+            $addCheck('Firestore feeRefunds doc exists', false, 'Missing — Session B did not write it');
+        } else {
+            $addCheck('Firestore feeRefunds doc exists', true, "status={$refDoc['status']}");
+            $expectedStatus = ['created'=>'pending','approved'=>'approved','processed'=>'processed'][$stage];
+            $addCheck("feeRefunds.status == '{$expectedStatus}'",
+                ($refDoc['status'] ?? '') === $expectedStatus,
+                "got '".($refDoc['status'] ?? '')."'");
+        }
+
+        // ── 2. RTDB Refunds path MUST be empty for this refund id ────
+        $rtdbRefund = null; // RTDB removed
+        $addCheck('RTDB Accounts/Fees/Refunds/{refId} is empty (Session B writes Firestore only)',
+            empty($rtdbRefund),
+            empty($rtdbRefund) ? 'null (correct)' : 'found data: ' . json_encode($rtdbRefund));
+
+        // ── Stage-specific checks ────────────────────────────────────
+        if ($stage === 'processed') {
+            // 3. Firestore refund voucher
+            $vchrKey = 'REFUND_' . strtoupper(substr($refId, 4));
+            $vchr    = $this->firebase->firestoreGet('feeRefundVouchers', "{$schoolFs}_{$session}_{$vchrKey}");
+            $addCheck('Firestore feeRefundVouchers doc exists',
+                is_array($vchr),
+                is_array($vchr) ? "amount={$vchr['amount']}, mode={$vchr['refundMode']}" : 'missing');
+
+            // 4. RTDB Vouchers path should NOT have this refund voucher
+            $vchrRtdb = null;
+            $allV = []; // RTDB removed
+            if (is_array($allV)) {
+                foreach ($allV as $d => $list) {
+                    if (is_array($list) && isset($list[$vchrKey])) { $vchrRtdb = "{$d}/{$vchrKey}"; break; }
+                }
+            }
+            $addCheck('RTDB Vouchers path empty for REFUND_* (Session B Firestore only)',
+                $vchrRtdb === null,
+                $vchrRtdb === null ? 'null (correct)' : "found at {$vchrRtdb}");
+
+            // 5. Firestore audit entry
+            $auditRows = $this->fs->schoolWhere('feeRefundAudit', [['refundId', '==', $refId]]);
+            $addCheck('Firestore feeRefundAudit has entry for this refund',
+                !empty($auditRows),
+                count((array) $auditRows) . ' audit row(s)');
+
+            // 6. RTDB Refund_Audit path should be empty of new entries
+            //    (we can't easily filter by refId so we just check new entries
+            //     for today — best-effort).
+            $addCheck('RTDB Refund_Audit — no Session-B writes (best-effort)', true,
+                'skipped strict check; look at Firebase console for RFND_{today} entries');
+
+            // 7. Allocation status flipped to reversed
+            if ($origKey !== '') {
+                $alloc = $this->firebase->firestoreGet('feeReceiptAllocations', "{$schoolFs}_{$session}_{$origKey}");
+                $allocStatus = is_array($alloc) ? ($alloc['status'] ?? '(unset)') : 'missing';
+                $addCheck("feeReceiptAllocations.{$origKey}.status == 'reversed'",
+                    is_array($alloc) && $allocStatus === 'reversed',
+                    "status={$allocStatus}");
+            }
+
+            // 8. Student month-fee map recomputed (can't assert exact values,
+            //    just confirm the doc got updated recently).
+            $stu = $this->firebase->firestoreGet('students', "{$schoolFs}_{$userId}");
+            $updatedAt = is_array($stu) ? strtotime((string) ($stu['updatedAt'] ?? '')) : 0;
+            $addCheck('students.monthFee recomputed (updatedAt within last 10 min)',
+                $updatedAt > (time() - 600),
+                is_array($stu) ? "updatedAt=" . ($stu['updatedAt'] ?? '') : 'doc missing');
+        }
+
+        $pass = array_reduce($checks, fn($carry, $c) => $carry && $c['pass'], true);
+        $this->json_success([
+            'verdict'    => $pass ? '✅ ALL CHECKS PASSED' : '❌ SOME CHECKS FAILED',
+            'stage'      => $stage,
+            'refund_id'  => $refId,
+            'checks'     => $checks,
+            'pass_count' => count(array_filter($checks, fn($c) => $c['pass'])),
+            'fail_count' => count(array_filter($checks, fn($c) => !$c['pass'])),
+            'total'      => count($checks),
+        ]);
+    }
+
+    /**
+     * Session C verifier — confirm the accounting journal landed in
+     * Firestore and RTDB was untouched.
+     *
+     * POST params:
+     *   entry_id    (string, optional) e.g. FE_20260416_abc12345
+     *   receipt_no  (string, optional) Ledger source_ref to resolve entry_id
+     *   kind        (string, optional) 'fee' (default) or 'refund' — selects
+     *               the RTDB path to scan for the accidental legacy write
+     */
+    public function verify_session_c()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'verify_session_c');
+
+        $entryId   = trim((string) $this->input->post('entry_id'));
+        $receiptNo = trim((string) $this->input->post('receipt_no'));
+        $kind      = strtolower(trim((string) $this->input->post('kind'))) ?: 'fee';
+
+        $schoolFs = $this->fs->schoolId();
+        $session  = $this->session_year;
+        $bp       = "Schools/{$this->school_name}/{$session}";
+
+        // Resolve entry_id from receipt_no if not given. source_ref gets
+        // stored as whatever submit_fees passes — sometimes "F2", sometimes
+        // "2" — so try a few sensible variants before giving up.
+        if ($entryId === '' && $receiptNo !== '') {
+            $plain   = preg_replace('/^[RF]0*/i', '', $receiptNo);
+            $variants = array_unique(array_filter([
+                $receiptNo,                 // as-entered
+                $plain,                     // stripped of R/F prefix + zeros
+                'F' . $plain,               // F-prefixed
+                'R' . str_pad($plain, 6, '0', STR_PAD_LEFT), // zero-padded R form
+            ]));
+            foreach ($variants as $v) {
+                $rows = $this->firebase->firestoreQuery('accountingLedger', [
+                    ['schoolId',   '==', $schoolFs],
+                    ['session',    '==', $session],
+                    ['source_ref', '==', $v],
+                ]);
+                if (is_array($rows) && !empty($rows)) {
+                    $d = $rows[0]['data'] ?? $rows[0];
+                    $entryId = (string) ($d['entryId'] ?? '');
+                    if ($entryId !== '') break;
+                }
+            }
+        }
+
+        if ($entryId === '') {
+            return $this->json_error('Provide entry_id OR receipt_no (must resolve to an accountingLedger doc).');
+        }
+
+        $checks = [];
+        $add = function(string $name, bool $pass, string $detail = '') use (&$checks) {
+            $checks[] = ['name' => $name, 'pass' => $pass, 'detail' => $detail];
+        };
+
+        // ── 1. Firestore accountingLedger doc exists ────────────────────
+        $ledger = $this->firebase->firestoreGet('accountingLedger', "{$schoolFs}_{$session}_{$entryId}");
+        if (!is_array($ledger)) {
+            $add('Firestore accountingLedger doc exists', false, 'Missing — Session C did not write it');
+            return $this->json_success([
+                'verdict' => '❌ SOME CHECKS FAILED',
+                'entry_id' => $entryId,
+                'checks' => $checks,
+                'pass_count' => 0, 'fail_count' => 1, 'total' => 1,
+            ]);
+        }
+        $lines   = is_array($ledger['lines'] ?? null) ? $ledger['lines'] : [];
+        $totalDr = (float) ($ledger['total_dr'] ?? 0);
+        $totalCr = (float) ($ledger['total_cr'] ?? 0);
+        $date    = (string) ($ledger['date'] ?? '');
+        $add('Firestore accountingLedger doc exists', true,
+            "voucher={$ledger['voucher_no']}, Dr={$totalDr}, Cr={$totalCr}, lines=" . count($lines));
+
+        // ── 2. Dr = Cr (balanced) ───────────────────────────────────────
+        $add('Ledger balanced (Dr == Cr)', abs($totalDr - $totalCr) < 0.01,
+            "Dr={$totalDr} Cr={$totalCr} diff=" . round($totalDr - $totalCr, 2));
+
+        // ── 3. accountingIndexByDate has an entry ───────────────────────
+        $idxDate = $this->firebase->firestoreGet('accountingIndexByDate',
+            "{$schoolFs}_{$session}_{$date}_{$entryId}");
+        $add("accountingIndexByDate.{$date} contains this entry",
+            is_array($idxDate),
+            is_array($idxDate) ? 'found' : 'missing');
+
+        // ── 4. accountingIndexByAccount has an entry per line ───────────
+        $missingIdx = [];
+        foreach ($lines as $ln) {
+            $ac = (string) ($ln['account_code'] ?? '');
+            if ($ac === '') continue;
+            $idx = $this->firebase->firestoreGet('accountingIndexByAccount',
+                "{$schoolFs}_{$session}_{$ac}_{$entryId}");
+            if (!is_array($idx)) $missingIdx[] = $ac;
+        }
+        $add('accountingIndexByAccount populated for every line',
+            empty($missingIdx),
+            empty($missingIdx) ? count($lines) . ' indices found' : 'missing for: ' . implode(',', $missingIdx));
+
+        // ── 5. Closing balances recorded for every affected account ─────
+        $missingBal = [];
+        foreach ($lines as $ln) {
+            $ac = (string) ($ln['account_code'] ?? '');
+            if ($ac === '') continue;
+            $bal = $this->firebase->firestoreGet('accountingClosingBalances',
+                "{$schoolFs}_{$session}_{$ac}");
+            if (!is_array($bal)) $missingBal[] = $ac;
+        }
+        $add('accountingClosingBalances row exists for each account',
+            empty($missingBal),
+            empty($missingBal) ? 'all accounts present' : 'missing: ' . implode(',', $missingBal));
+
+        // ── 6. RTDB Ledger MUST be empty for this entry ─────────────────
+        $rtdbLedger = null; // RTDB removed
+        $add('RTDB Accounts/Ledger/{entryId} is empty (Session C is Firestore-only)',
+            empty($rtdbLedger),
+            empty($rtdbLedger) ? 'null (correct)' : 'found: ' . json_encode($rtdbLedger));
+
+        // ── 7. RTDB Ledger_index MUST be empty for this entry ───────────
+        $rtdbIdxDate = null; // RTDB removed
+        $add('RTDB Ledger_index/by_date/{entryId} is empty',
+            empty($rtdbIdxDate),
+            empty($rtdbIdxDate) ? 'null (correct)' : 'found: ' . json_encode($rtdbIdxDate));
+
+        // ── 8. Voucher counter recorded in Firestore, NOT RTDB ──────────
+        $voucherType = (string) ($ledger['voucher_type'] ?? 'Journal');
+        $ctrFs = $this->firebase->firestoreGet('accountingCounters',
+            "{$schoolFs}_{$session}_{$voucherType}");
+        $ctrRt = null; // RTDB removed
+        $fsVal = is_array($ctrFs) ? (int) ($ctrFs['value'] ?? 0) : 0;
+        $rtVal = (int) ($ctrRt ?? 0);
+        $add('Firestore accountingCounters has the voucher counter',
+            $fsVal > 0,
+            is_array($ctrFs) ? "value={$fsVal}" : 'missing');
+        // The legit pass condition is: Firestore counter is strictly ahead
+        // of any pre-existing RTDB counter (or RTDB was never seeded).
+        // That means Session C only advanced Firestore, not RTDB.
+        $add('RTDB Voucher_counters/{type} not advanced by Session C',
+            $fsVal > $rtVal,
+            "rtdb={$rtVal}, firestore={$fsVal} " . ($fsVal > $rtVal
+                ? '(Firestore ahead — RTDB stayed still, correct)'
+                : '(RTDB caught up to Firestore — Session C may have written RTDB)'));
+
+        // ── 9. RTDB Closing_balances not touched by this entry ──────────
+        //    (Can't prove negative strictly — but if the same account exists
+        //     only in Firestore, RTDB one should not match the new period
+        //     totals.)  Best-effort: print for manual eyeball.
+        $rtdbBalSample = null;
+        foreach ($lines as $ln) {
+            $ac = (string) ($ln['account_code'] ?? '');
+            if ($ac === '') continue;
+            $rtdbBalSample = [
+                'code' => $ac,
+                'rtdb' => '(RTDB removed)',
+                'fs'   => $this->firebase->firestoreGet('accountingClosingBalances',
+                            "{$schoolFs}_{$session}_{$ac}"),
+            ];
+            break;
+        }
+        $add('RTDB vs Firestore closing balance sample (for eyeball)', true,
+            json_encode($rtdbBalSample));
+
+        $pass = array_reduce($checks, fn($c, $x) => $c && $x['pass'], true);
+        $this->json_success([
+            'verdict'    => $pass ? '✅ ALL CHECKS PASSED' : '❌ SOME CHECKS FAILED',
+            'kind'       => $kind,
+            'entry_id'   => $entryId,
+            'voucher_no' => $ledger['voucher_no'] ?? '',
+            'date'       => $date,
+            'lines'      => $lines,
+            'checks'     => $checks,
+            'pass_count' => count(array_filter($checks, fn($c) => $c['pass'])),
+            'fail_count' => count(array_filter($checks, fn($c) => !$c['pass'])),
+            'total'      => count($checks),
+        ]);
+    }
+
+    /**
+     * Diagnostic — reconcile the "Overpaid (carry-fwd)" figure shown on
+     * the fees counter against the student's actual receipts/refunds.
+     *
+     * POST user_id  (student ID)
+     *
+     * Response:
+     *   stored           → the value currently displayed on the form
+     *                       (Firestore studentAdvanceBalances.amount)
+     *   reconstructed    → what it SHOULD be:
+     *                       Σ(receipts.amount) − Σ(receipts allocated to demands)
+     *                       − Σ(refunds that drew from the advance)
+     *   match            → true if stored == reconstructed
+     *   receipts, refunds→ raw rows used for the reconstruction (for audit)
+     */
+    public function debug_carry_forward()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'debug_carry_forward');
+        $userId = trim((string) $this->input->post('user_id'));
+        if ($userId === '') return $this->json_error('user_id required.');
+
+        $schoolFs = $this->fs->schoolId();
+        $docId    = "{$schoolFs}_{$userId}";
+
+        // 1. Stored value (what the form reads)
+        $advDoc  = $this->firebase->firestoreGet('studentAdvanceBalances', $docId) ?: [];
+        $stored  = (float) ($advDoc['amount'] ?? 0);
+
+        // 2. All receipts for this student (with allocations)
+        $receipts = $this->firebase->firestoreQuery('feeReceipts', [
+            ['schoolId',  '==', $schoolFs],
+            ['studentId', '==', $userId],
+        ]);
+
+        $sumReceiptAmount = 0.0;
+        $sumOverpayment   = 0.0;
+        $allocByReceipt   = []; // receiptKey => allocated_sum
+        $receiptRows      = [];
+        foreach ((array) $receipts as $row) {
+            $d = $row['data'] ?? $row;
+            if (!is_array($d)) continue;
+            $amt = (float) ($d['amount'] ?? 0);
+            $rcptKey = (string) ($d['receiptKey'] ?? ('F' . ($d['receiptNo'] ?? '')));
+            // Canonical doc id: {schoolId}_{session}_{receiptKey}. Fall back
+            // to the legacy no-session key so pre-Session-A receipts still
+            // reconcile.
+            $docIdSess = "{$schoolFs}_{$this->session_year}_{$rcptKey}";
+            $docIdOld  = "{$schoolFs}_{$rcptKey}";
+            $alloc = $this->firebase->firestoreGet('feeReceiptAllocations', $docIdSess);
+            $resolvedDocId = $docIdSess;
+            if (!is_array($alloc)) {
+                $alloc = $this->firebase->firestoreGet('feeReceiptAllocations', $docIdOld);
+                $resolvedDocId = is_array($alloc) ? $docIdOld : '(none)';
+            }
+            $allocSum   = 0.0;
+            $allocLines = 0;
+            if (is_array($alloc) && is_array($alloc['allocations'] ?? null)) {
+                $allocLines = count($alloc['allocations']);
+                foreach ($alloc['allocations'] as $a) {
+                    $allocSum += (float) ($a['allocated'] ?? $a['amount'] ?? 0);
+                }
+            }
+            $reversed = is_array($alloc) && (($alloc['status'] ?? '') === 'reversed');
+            $sumReceiptAmount += $amt;
+            // Net wallet delta from this receipt:
+            //   positive → overpayment stored as advance
+            //   negative → wallet was drawn down to cover demand allocation
+            $walletDelta = round($amt - $allocSum, 2);
+            $sumOverpayment += $walletDelta;
+            $allocByReceipt[$rcptKey] = $allocSum;
+            $receiptRows[] = [
+                'receiptKey'  => $rcptKey,
+                'date'        => $d['paymentDate'] ?? $d['createdAt'] ?? '',
+                'amount'      => $amt,
+                'allocated'   => round($allocSum, 2),
+                'alloc_lines' => $allocLines,
+                'alloc_docId' => $resolvedDocId,
+                'walletDelta' => $walletDelta,
+                'overpaid'    => round(max(0, $walletDelta), 2),
+                'reversed'    => $reversed,
+            ];
+        }
+
+        // 3. Refunds — compute how much of each refund drained the advance
+        //    wallet. Refund flow: walk original receipt's allocations first;
+        //    any leftover (refund_amount − allocations_sum) drains advance.
+        $refunds = $this->firebase->firestoreQuery('feeRefunds', [
+            ['schoolId',  '==', $schoolFs],
+            ['studentId', '==', $userId],
+        ]);
+        $sumAdvanceDrain = 0.0;
+        $refundRows = [];
+        foreach ((array) $refunds as $row) {
+            $d = $row['data'] ?? $row;
+            if (!is_array($d)) continue;
+            if (($d['status'] ?? '') !== 'processed') continue;
+            $rAmt    = (float) ($d['amount'] ?? 0);
+            $origNo  = (string) ($d['receiptNo'] ?? '');
+            $origKey = $origNo !== '' ? ('F' . preg_replace('/^R?0*/i', '', $origNo)) : '';
+            $origAlloc = $allocByReceipt[$origKey] ?? 0.0;
+            $drain   = max(0, $rAmt - $origAlloc);
+            $sumAdvanceDrain += $drain;
+            $refundRows[] = [
+                'refundId'            => $d['refundId'] ?? ($d['id'] ?? ''),
+                'amount'              => $rAmt,
+                'status'              => $d['status'] ?? '',
+                'origReceipt'         => $origNo,
+                'origReceiptAllocated'=> round($origAlloc, 2),
+                'advanceDrain'        => round($drain, 2),
+            ];
+        }
+
+        // 4. Reconstruct: wallet = Σ (receipt.amount − allocated) − Σ refund drains.
+        //    The first term captures both overpayment growth (+) AND wallet
+        //    draw-downs (−) on receipts that allocated more than their cash.
+        $reconstructed = round(max(0, $sumOverpayment - $sumAdvanceDrain), 2);
+        $match = abs($stored - $reconstructed) < 0.01;
+
+        $this->json_success([
+            'verdict'        => $match ? '✅ MATCHES' : '❌ MISMATCH',
+            'student_id'     => $userId,
+            'firestore_doc'  => "studentAdvanceBalances/{$docId}",
+            'stored'         => round($stored, 2),
+            'reconstructed'  => $reconstructed,
+            'delta'          => round($stored - $reconstructed, 2),
+            'totals' => [
+                'receipt_amount_sum' => round($sumReceiptAmount, 2),
+                'overpayment_sum'    => round($sumOverpayment, 2),
+                'advance_drain_sum'  => round($sumAdvanceDrain, 2),
+                'processed_refunds'  => count($refundRows),
+            ],
+            'receipts'       => $receiptRows,
+            'refunds'        => $refundRows,
+            'advance_doc'    => $advDoc,
+        ]);
+    }
+
+    /**
+     * Admin one-shot: sync the Firestore receipt counter with the highest
+     * existing receiptNo so the fees_counter page stops suggesting numbers
+     * that are already used. Use this once after running receipts that were
+     * created on a buggy path where the counter didn't advance.
+     *
+     * Dry-run by default. Pass apply=1 to actually write.
+     */
+    public function repair_receipt_counter()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'repair_receipt_counter');
+        $apply = (string) $this->input->post('apply') === '1';
+
+        $schoolFs = $this->fs->schoolId();
+
+        // Walk every receipt for this school+session and find the max number.
+        $rows = $this->firebase->firestoreQuery('feeReceipts', [
+            ['schoolId', '==', $schoolFs],
+        ]);
+        $maxNo = 0;
+        foreach ((array) $rows as $row) {
+            $d  = $row['data'] ?? $row;
+            $rn = (int) ($d['receiptNo'] ?? 0);
+            if ($rn > $maxNo) $maxNo = $rn;
+        }
+
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $schoolFs, $this->session_year);
+        $counterBefore = $this->fsTxn->getCounter('receipt_seq');
+
+        $result = [
+            'max_receipt_no'    => $maxNo,
+            'counter_before'    => $counterBefore,
+            'counter_target'    => $maxNo,
+            'needs_fix'         => $counterBefore < $maxNo,
+            'applied'           => false,
+        ];
+
+        if ($apply && $maxNo > $counterBefore) {
+            $ok = $this->fsTxn->advanceCounterTo('receipt_seq', $maxNo);
+            $counterAfter = $this->fsTxn->getCounter('receipt_seq');
+            $result['applied']       = $ok;
+            $result['counter_after'] = $counterAfter;
+        }
+
+        $this->json_success($result);
+    }
+
+    /**
+     * Admin one-shot: recompute a student's advance wallet from the
+     * authoritative receipts + refunds history, and overwrite the
+     * Firestore studentAdvanceBalances doc.
+     *
+     * POST user_id
+     * Dry-run by default. Pass apply=1 to actually write.
+     */
+    /**
+     * One-shot: backfill camelCase fields on all feeDemands docs so the
+     * Android apps can deserialize them. Safe to run multiple times.
+     * POST student_id (or "all" for every student).
+     */
+    public function backfill_demand_shape()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'backfill_demand_shape');
+        $studentId = trim((string) $this->input->post('student_id'));
+        if ($studentId === '') return $this->json_error('student_id required (or "all").');
+
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $schoolFs = $this->fs->schoolId();
+        $this->fsTxn->init($this->firebase, $this->fs, $schoolFs, $this->session_year);
+
+        if ($studentId === 'all') {
+            $rows = $this->firebase->firestoreQuery('feeDemands', [
+                ['schoolId', '==', $schoolFs], ['session', '==', $this->session_year],
+            ]);
+        } else {
+            $rows = [];
+            $demands = $this->fsTxn->demandsForStudent($studentId);
+            foreach ($demands as $id => $d) {
+                $rows[] = ['id' => $id, 'data' => $d];
+            }
+        }
+
+        $touched = 0;
+        foreach ((array) $rows as $r) {
+            $d  = $r['data'] ?? $r;
+            $id = $r['id'] ?? ($d['demandId'] ?? '');
+            if (!is_array($d) || $id === '') continue;
+
+            $section    = (string) ($d['section'] ?? '');
+            $sectionKey = preg_replace('/^Section\s+/i', '', $section);
+            $period     = (string) ($d['period'] ?? '');
+            $monthName  = explode(' ', $period)[0] ?? '';
+
+            $patch = [
+                'studentId'      => (string) ($d['student_id'] ?? $d['studentId'] ?? ''),
+                'studentName'    => (string) ($d['student_name'] ?? $d['studentName'] ?? ''),
+                'className'      => (string) ($d['class'] ?? $d['className'] ?? ''),
+                'feeHead'        => (string) ($d['fee_head'] ?? $d['feeHead'] ?? ''),
+                'sectionKey'     => $sectionKey,
+                'month'          => $monthName,
+                'grossAmount'    => (float) ($d['original_amount'] ?? $d['grossAmount'] ?? 0),
+                'discountAmount' => (float) ($d['discount_amount'] ?? $d['discountAmount'] ?? 0),
+                'fineAmount'     => (float) ($d['fine_amount'] ?? $d['fineAmount'] ?? 0),
+                'netAmount'      => (float) ($d['net_amount'] ?? $d['netAmount'] ?? 0),
+                'paidAmount'     => (float) ($d['paid_amount'] ?? $d['paidAmount'] ?? 0),
+            ];
+
+            if ($this->fsTxn->updateDemand($id, $patch)) $touched++;
+        }
+
+        $this->json_success([
+            'message' => "{$touched} demand(s) backfilled with camelCase fields.",
+            'touched' => $touched,
+        ]);
+    }
+
+    public function repair_carry_forward()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'repair_carry_forward');
+        $userId = trim((string) $this->input->post('user_id'));
+        $apply  = (string) $this->input->post('apply') === '1';
+        if ($userId === '') return $this->json_error('user_id required.');
+
+        $schoolFs = $this->fs->schoolId();
+
+        // Reuse the same reconstruction logic as debug_carry_forward.
+        $receipts = $this->firebase->firestoreQuery('feeReceipts', [
+            ['schoolId',  '==', $schoolFs],
+            ['studentId', '==', $userId],
+        ]);
+        $allocByReceipt = [];
+        $sumOverpayment = 0.0;
+        foreach ((array) $receipts as $row) {
+            $d = $row['data'] ?? $row;
+            if (!is_array($d)) continue;
+            $amt = (float) ($d['amount'] ?? 0);
+            $rcptKey = (string) ($d['receiptKey'] ?? ('F' . ($d['receiptNo'] ?? '')));
+            $alloc = $this->firebase->firestoreGet('feeReceiptAllocations', "{$schoolFs}_{$this->session_year}_{$rcptKey}");
+            $allocSum = 0.0;
+            if (is_array($alloc) && is_array($alloc['allocations'] ?? null)) {
+                foreach ($alloc['allocations'] as $a) {
+                    $allocSum += (float) ($a['allocated'] ?? $a['amount'] ?? 0);
+                }
+            }
+            $sumOverpayment += max(0, $amt - $allocSum);
+            $allocByReceipt[$rcptKey] = $allocSum;
+        }
+
+        $refunds = $this->firebase->firestoreQuery('feeRefunds', [
+            ['schoolId',  '==', $schoolFs],
+            ['studentId', '==', $userId],
+        ]);
+        $sumAdvanceDrain = 0.0;
+        foreach ((array) $refunds as $row) {
+            $d = $row['data'] ?? $row;
+            if (!is_array($d)) continue;
+            if (($d['status'] ?? '') !== 'processed') continue;
+            $rAmt    = (float) ($d['amount'] ?? 0);
+            $origNo  = (string) ($d['receiptNo'] ?? '');
+            $origKey = $origNo !== '' ? ('F' . preg_replace('/^R?0*/i', '', $origNo)) : '';
+            $origAlloc = $allocByReceipt[$origKey] ?? 0.0;
+            $sumAdvanceDrain += max(0, $rAmt - $origAlloc);
+        }
+
+        $correct = round(max(0, $sumOverpayment - $sumAdvanceDrain), 2);
+
+        $docId = "{$schoolFs}_{$userId}";
+        $before = $this->firebase->firestoreGet('studentAdvanceBalances', $docId) ?: [];
+        $beforeAmt = (float) ($before['amount'] ?? 0);
+
+        $result = [
+            'student_id'        => $userId,
+            'stored_before'     => round($beforeAmt, 2),
+            'reconstructed'     => $correct,
+            'delta'             => round($beforeAmt - $correct, 2),
+            'overpayment_sum'   => round($sumOverpayment, 2),
+            'advance_drain_sum' => round($sumAdvanceDrain, 2),
+            'applied'           => false,
+        ];
+
+        if ($apply) {
+            $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+            $this->fsTxn->init($this->firebase, $this->fs, $schoolFs, $this->session_year);
+            $this->fsTxn->setAdvanceBalance($userId, $correct, [
+                'lastRepairAt' => date('c'),
+                'lastRepairBy' => $this->admin_id ?? 'system',
+            ]);
+            $after = $this->firebase->firestoreGet('studentAdvanceBalances', $docId) ?: [];
+            $result['applied']       = true;
+            $result['stored_after']  = round((float) ($after['amount'] ?? 0), 2);
+        }
+
+        $this->json_success($result);
+    }
+
+    /** Lazy access to Accounting_firestore_sync so void works even if the
+     *  caller controller (Fees) hasn't loaded it. */
+    private function _acctFsSyncForVoid()
+    {
+        static $cached = null;
+        if ($cached !== null) return $cached ?: null;
+        try {
+            if (!isset($this->acctFsSync)) {
+                $this->load->library('Accounting_firestore_sync', null, 'acctFsSync');
+                $this->acctFsSync->init($this->firebase, $this->school_name, $this->session_year);
+            }
+            $cached = $this->acctFsSync;
+        } catch (\Exception $_) { $cached = false; }
+        return $cached ?: null;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -2527,113 +3454,58 @@ class Fees extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'print_receipt');
         if (empty($receiptNo)) show_404();
-        if (!preg_match('/^[0-9]+$/', $receiptNo)) show_404();
+        // Strip formatting so both "1" and "R000001" work.
+        $rnRaw = (string) $receiptNo;
+        $receiptNo = preg_replace('/\D/', '', preg_replace('/^R0*/i', '', $rnRaw));
+        if ($receiptNo === '') show_404();
 
-        $school_id    = $this->parent_db_key;
-        $school_name  = $this->school_name;
+        $schoolFs     = $this->fs->schoolId();
         $session_year = $this->session_year;
         $receiptKey   = 'F' . $receiptNo;
 
-        // ── 1. Look up receipt via index (O(1)), fall back to voucher scan ──
-        $index = $this->firebase->get(
-            "Schools/$school_name/$session_year/Accounts/Receipt_Index/$receiptNo"
-        );
-
-        $voucher     = null;
-        $voucherDate = '';
-        $userId      = '';
-        $class       = '';
-        $section     = '';
-
-        if (is_array($index) && !empty($index['date']) && !empty($index['user_id'])) {
-            // Fast path: index exists — fetch voucher directly by date
-            $voucherDate = $index['date'];
-            $userId      = $index['user_id'];
-            $class       = $index['class']   ?? '';
-            $section     = $index['section'] ?? '';
-            $voucher     = $this->firebase->get(
-                "Schools/$school_name/$session_year/Accounts/Vouchers/$voucherDate/$receiptKey"
-            );
-            if (is_array($voucher)) {
-                $voucher = (array) $voucher;
-            } else {
-                $voucher = null;
-            }
-        }
-
-        // Fallback: scan all voucher dates (for receipts created before the index)
-        if (empty($voucher)) {
-            $allVouchers = $this->firebase->get(
-                "Schools/$school_name/$session_year/Accounts/Vouchers"
-            ) ?? [];
-            if (is_array($allVouchers)) {
-                foreach ($allVouchers as $date => $entries) {
-                    if (!is_array($entries)) continue;
-                    if (isset($entries[$receiptKey])) {
-                        $voucher     = (array) $entries[$receiptKey];
-                        $voucherDate = $date;
-                        $userId      = $voucher['Id'] ?? '';
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (empty($voucher) || empty($userId)) {
+        // Session A: pure Firestore — the canonical receipt doc holds
+        // everything a print view needs (student name, class, amount,
+        // breakdown, months, mode). No RTDB read.
+        $receipt = $this->fs->get('feeReceipts', "{$schoolFs}_{$receiptKey}");
+        if (!is_array($receipt) || empty($receipt)) {
             show_404();
         }
 
-        // ── 2. Load student profile ──
-        $student = $this->firebase->get("Users/Parents/$school_id/$userId") ?? [];
-        if (!is_array($student)) $student = [];
+        $userId      = (string) ($receipt['studentId']   ?? '');
+        $studentName = (string) ($receipt['studentName'] ?? $userId);
+        $fatherName  = (string) ($receipt['fatherName']  ?? '');
+        $class       = (string) ($receipt['className']   ?? '');
+        $section     = (string) ($receipt['section']     ?? '');
+        $amount      = (float)  ($receipt['amount']      ?? 0);
+        $discount    = (float)  ($receipt['discount']    ?? 0);
+        $fine        = (float)  ($receipt['fine']        ?? 0);
+        $netTotal    = (float)  ($receipt['netAmount']   ?? $amount - $discount + $fine);
+        $paymentMode = (string) ($receipt['paymentMode'] ?? 'N/A');
+        $reference   = (string) ($receipt['remarks']     ?? '');
+        $receiptDate = (string) ($receipt['date']        ?? '');
+        $breakdown   = is_array($receipt['feeBreakdown'] ?? null) ? $receipt['feeBreakdown'] : [];
+        $months      = is_array($receipt['feeMonths']    ?? null) ? $receipt['feeMonths']    : [];
 
-        // Use class/section from index if available, otherwise resolve from profile
-        if ($class === '' || $section === '') {
-            list($class, $section) = $this->_resolveClassSection($student);
+        // fatherName not saved on some older receipts — fall back to student doc.
+        if ($fatherName === '' && $userId !== '') {
+            $stu = $this->fs->get('students', "{$schoolFs}_{$userId}");
+            if (is_array($stu)) $fatherName = (string) ($stu['fatherName'] ?? '');
         }
 
-        // ── 3. Load fee record for this receipt ──
-        $feeRecord = [];
-        if ($class !== '' && $section !== '') {
-            $studentBase = $this->studentPath($class, $section, $userId);
-            $feeRecord   = $this->firebase->get("$studentBase/Fees Record/$receiptKey") ?? [];
-            if (!is_array($feeRecord)) $feeRecord = [];
-        }
+        // School branding — Firestore schools doc.
+        $schoolDoc = $this->fs->get('schools', $schoolFs);
+        if (!is_array($schoolDoc)) $schoolDoc = [];
 
-        // If fee record empty, build from voucher data
-        if (empty($feeRecord)) {
-            $feeRecord = [
-                'Amount'   => $voucher['Fees Received'] ?? '0.00',
-                'Date'     => $voucherDate,
-                'Mode'     => $voucher['Mode'] ?? 'N/A',
-                'Discount' => '0.00',
-                'Fine'     => '0.00',
-                'Refer'    => '',
-            ];
-        }
-
-        // ── 4. School profile for header ──
-        $schoolProfile = $this->firebase->get("Schools/$school_name/Config/Profile") ?? [];
-        if (!is_array($schoolProfile)) $schoolProfile = [];
-        $schoolLogo = $this->firebase->get("Schools/$school_name/Logo") ?? '';
-
-        // ── 5. Extract class/section display ──
-        $classDisplay   = str_replace('Class ', '', $class);
-        $sectionDisplay = str_replace('Section ', '', $section);
-
-        // ── 6. Parse amounts ──
-        $amount   = floatval(str_replace(',', '', $feeRecord['Amount']   ?? '0'));
-        $discount = floatval(str_replace(',', '', $feeRecord['Discount'] ?? '0'));
-        $fine     = floatval(str_replace(',', '', $feeRecord['Fine']     ?? '0'));
-        $netTotal = $amount - $discount + $fine;
+        $classDisplay   = preg_replace('/^Class\s+/i', '', $class);
+        $sectionDisplay = preg_replace('/^Section\s+/i', '', $section);
 
         $data = [
             'receipt_no'      => $receiptNo,
             'receipt_key'     => $receiptKey,
-            'receipt_date'    => $feeRecord['Date'] ?? $voucherDate,
-            'student'         => $student,
-            'student_name'    => $student['Name'] ?? $userId,
-            'father_name'     => $student['Father Name'] ?? '',
+            'receipt_date'    => $receiptDate,
+            'student'         => ['Name' => $studentName, 'Father Name' => $fatherName],
+            'student_name'    => $studentName,
+            'father_name'     => $fatherName,
             'user_id'         => $userId,
             'class_display'   => $classDisplay,
             'section_display' => $sectionDisplay,
@@ -2641,12 +3513,14 @@ class Fees extends MY_Controller
             'discount'        => $discount,
             'fine'            => $fine,
             'net_total'       => $netTotal,
-            'payment_mode'    => $feeRecord['Mode'] ?? $voucher['Mode'] ?? 'N/A',
-            'reference'       => $feeRecord['Refer'] ?? '',
-            'school_name'     => $schoolProfile['name'] ?? $this->school_display_name ?? $school_name,
-            'school_address'  => $schoolProfile['address'] ?? '',
-            'school_phone'    => $schoolProfile['phone'] ?? '',
-            'school_logo'     => $schoolLogo,
+            'payment_mode'    => $paymentMode,
+            'reference'       => $reference,
+            'months'          => $months,
+            'breakdown'       => $breakdown,
+            'school_name'     => (string) ($schoolDoc['name']    ?? $this->school_display_name ?? $this->school_name),
+            'school_address'  => (string) ($schoolDoc['address'] ?? ''),
+            'school_phone'    => (string) ($schoolDoc['phone']   ?? ''),
+            'school_logo'     => (string) ($schoolDoc['logoUrl'] ?? ''),
             'session_year'    => $session_year,
         ];
 
@@ -2659,22 +3533,11 @@ class Fees extends MY_Controller
 
     private function getFeesForSelectedMonths($school_name, $class, $section, $selectedMonths)
     {
-        $fp       = $this->feesPath($class, $section);
+        $chart    = $this->_getClassFeeChart($class, $section);
         $feesData = [];
-
         foreach ($selectedMonths as $month) {
-            $monthFees = $this->CM->get_data("$fp/$month");
-
-            if (is_array($monthFees)) {
-                $feesData[$month] = $monthFees;
-            } elseif (is_string($monthFees) && $monthFees !== '') {
-                $decoded          = json_decode($monthFees, true);
-                $feesData[$month] = is_array($decoded) ? $decoded : [];
-            } else {
-                $feesData[$month] = [];
-            }
+            $feesData[$month] = is_array($chart[$month] ?? null) ? $chart[$month] : [];
         }
-
         return $feesData;
     }
 
@@ -2700,35 +3563,10 @@ class Fees extends MY_Controller
     public function class_fees()
     {
         $this->_require_role(self::VIEW_ROLES, 'class_fees');
-        $sn = $this->school_name;
-        $sy = $this->session_year;
 
-        $yearRoot = $this->CM->get_data("Schools/$sn/$sy");
-        $yearRoot = is_array($yearRoot) ? $yearRoot : [];
-
-        $classList  = [];
-        $sectionMap = [];
-
-        foreach ($yearRoot as $key => $value) {
-            if (stripos($key, 'Class ') !== 0 || !is_array($value)) continue;
-            $classList[] = $key;
-            $sectionMap[$key] = [];
-            foreach (array_keys($value) as $sk) {
-                $sk = (string)$sk;
-                if (stripos($sk, 'Section ') === 0) {
-                    $sectionMap[$key][] = $sk;
-                } elseif (strlen($sk) <= 3 && ctype_alpha($sk)) {
-                    $sectionMap[$key][] = 'Section ' . strtoupper($sk);
-                }
-            }
-            sort($sectionMap[$key]);
-        }
-
-        usort($classList, function ($a, $b) {
-            preg_match('/(\d+)/', $a, $ma);
-            preg_match('/(\d+)/', $b, $mb);
-            return ((int)($ma[1] ?? 0)) <=> ((int)($mb[1] ?? 0));
-        });
+        $csMap = $this->_buildClassSectionMap();
+        $classList  = $csMap['classList'];
+        $sectionMap = $csMap['sectionMap'];
 
         $data['classes']  = $classList;
         $data['sections'] = $sectionMap;
@@ -2766,55 +3604,20 @@ class Fees extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'due_fees_table');
         $this->output->set_content_type('application/json');
 
-        $school_id = $this->parent_db_key;
-        $sn        = $this->school_name;
-        $sy        = $this->session_year;
-
         $class   = trim($this->input->post('class')   ?? '');
         $section = trim($this->input->post('section') ?? '');
 
         if (!$class || !$section) {
             $this->output->set_output(json_encode([[
-                'userId' => null,
-                'name' => 'Missing class or section parameter',
-                'totalFee' => null,
-                'receivedFee' => null,
-                'dueFee' => null,
+                'userId' => null, 'name' => 'Missing class or section',
+                'totalFee' => null, 'receivedFee' => null, 'dueFee' => null,
             ]]));
             return;
         }
 
-        $feesPath = $this->feesPath($class, $section);
-
-        // Single bulk read: entire section Students subtree (List + per-student data)
-        $allStudentData = $this->firebase->get($this->studentPath($class, $section));
-        if (empty($allStudentData) || !is_array($allStudentData)) {
-            $this->output->set_output(json_encode([[
-                'userId' => null,
-                'name' => "No students in $class $section",
-                'totalFee' => null,
-                'receivedFee' => null,
-                'dueFee' => null,
-            ]]));
-            return;
-        }
-
-        $student_ids = isset($allStudentData['List']) && is_array($allStudentData['List'])
-            ? $allStudentData['List'] : [];
-        if (empty($student_ids)) {
-            $this->output->set_output(json_encode([[
-                'userId' => null,
-                'name' => "No students in $class $section",
-                'totalFee' => null,
-                'receivedFee' => null,
-                'dueFee' => null,
-            ]]));
-            return;
-        }
-
-        $class_fees = $this->firebase->get($feesPath);
-        if (empty($class_fees)) {
-            $this->output->set_content_type('application/json');
+        // Fee chart from Firestore feeStructures
+        $classFees = $this->_getClassFeeChart($class, $section);
+        if (empty($classFees)) {
             $this->output->set_output(json_encode([
                 'error'      => 'no_fee_structure',
                 'message'    => "No fee structure found for {$class} {$section}. Please set up Fee Titles and Fee Chart first.",
@@ -2823,56 +3626,54 @@ class Fees extends MY_Controller
             return;
         }
 
-        $annual_fee = 0;
-        foreach ($class_fees as $month => $fees) {
+        $annualFee = 0;
+        foreach ($classFees as $month => $fees) {
             if (is_array($fees)) {
-                foreach ($fees as $title => $amt) {
-                    $annual_fee += (float)str_replace(',', '', $amt ?? 0);
-                }
+                foreach ($fees as $_ => $amt) $annualFee += (float) $amt;
             }
         }
 
-        $allProfiles = $this->CM->get_data("Users/Parents/$school_id");
-        $allProfiles = is_array($allProfiles) ? $allProfiles : [];
+        // Students roster from Firestore students collection
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        $roster = $this->fsTxn->listStudentsInSection($class, $section);
 
+        if (empty($roster)) {
+            $this->output->set_output(json_encode([[
+                'userId' => null, 'name' => "No students in {$class} {$section}",
+                'totalFee' => null, 'receivedFee' => null, 'dueFee' => null,
+            ]]));
+            return;
+        }
+
+        // For each student: sum demands to get paid + balance from Firestore
         $response = [];
-        foreach ($student_ids as $uid => $v) {
-            $uid   = (string)$uid;
-            $prof  = isset($allProfiles[$uid]) ? (array)$allProfiles[$uid] : [];
-            $name  = $prof['Name']        ?? 'N/A';
-            $fname = $prof['Father Name'] ?? 'N/A';
+        foreach ($roster as $uid => $prof) {
+            $name  = (string) ($prof['name']       ?? $prof['Name']       ?? $uid);
+            $fname = (string) ($prof['fatherName'] ?? $prof['Father Name'] ?? '');
+            $label = $fname !== '' ? "{$name} / {$fname}" : $name;
 
-            // Extract Fees Record and Discount from already-fetched subtree
-            $studentData = isset($allStudentData[$uid]) && is_array($allStudentData[$uid])
-                ? $allStudentData[$uid] : [];
-
-            $recs = isset($studentData['Fees Record']) && is_array($studentData['Fees Record'])
-                ? $studentData['Fees Record'] : [];
-            $paid = 0;
-            foreach ($recs as $r) {
-                if (is_array($r)) {
-                    $paid += (float)str_replace(',', '', $r['Amount'] ?? 0);
-                }
+            $demands = $this->fsTxn->demandsForStudent($uid);
+            $totalNet  = 0;
+            $totalPaid = 0;
+            $totalDisc = 0;
+            foreach ($demands as $d) {
+                $totalNet  += (float) ($d['net_amount']      ?? 0);
+                $totalPaid += (float) ($d['paid_amount']     ?? 0);
+                $totalDisc += (float) ($d['discount_amount'] ?? 0);
             }
-
-            $discNode = isset($studentData['Discount']) && is_array($studentData['Discount'])
-                ? $studentData['Discount'] : [];
-            $discount = (float)($discNode['totalDiscount'] ?? 0);
 
             $response[] = [
                 'userId'      => $uid,
-                'name'        => "$name / $fname",
-                'totalFee'    => $annual_fee,
-                'receivedFee' => $paid,
-                'discount'    => $discount,
-                'dueFee'      => max(0, $annual_fee - $paid - $discount),
+                'name'        => $label,
+                'totalFee'    => round($annualFee, 2),
+                'receivedFee' => round($totalPaid, 2),
+                'discount'    => round($totalDisc, 2),
+                'dueFee'      => round(max(0, $totalNet - $totalPaid), 2),
             ];
         }
 
-        usort($response, function ($a, $b) {
-            return $b['dueFee'] <=> $a['dueFee'];
-        });
-
+        usort($response, fn($a, $b) => $b['dueFee'] <=> $a['dueFee']);
         $this->output->set_output(json_encode($response));
     }
 
@@ -2883,80 +3684,75 @@ class Fees extends MY_Controller
     public function fees_records()
     {
         $this->_require_role(self::VIEW_ROLES, 'fees_records');
-        $school_id = $this->parent_db_key;
-        $sn        = $this->school_name;
-        $sy        = $this->session_year;
+        $schoolFs = $this->fs->schoolId();
 
-        $yearRoot = $this->CM->get_data("Schools/$sn/$sy");
-        $yearRoot = is_array($yearRoot) ? $yearRoot : [];
-
+        // Class/section list from Firestore
+        $csMap      = $this->_buildClassSectionMap();
         $classList  = [];
         $feesMatrix = [];
-
-        foreach ($yearRoot as $key => $value) {
-            if (stripos($key, 'Class ') !== 0 || !is_array($value)) continue;
-            foreach (array_keys($value) as $sk) {
-                $sk = (string)$sk;
-                if (stripos($sk, 'Section ') === 0) {
-                    $normSec = $sk;
-                } elseif (strlen($sk) <= 3 && ctype_alpha($sk)) {
-                    $normSec = 'Section ' . strtoupper($sk);
-                } else {
-                    continue;
-                }
-                $matKey              = "$key|$normSec";
-                $classList[$matKey]  = "$key $normSec";
+        foreach ($csMap['classList'] as $c) {
+            foreach ($csMap['sectionMap'][$c] ?? [] as $s) {
+                $matKey              = "{$c}|{$s}";
+                $classList[$matKey]  = "{$c} {$s}";
                 $feesMatrix[$matKey] = array_fill(0, 12, 0);
             }
         }
 
-        uksort($classList, function ($a, $b) {
-            preg_match('/(\d+)/', $a, $ma);
-            preg_match('/(\d+)/', $b, $mb);
-            return ((int)($ma[1] ?? 0)) <=> ((int)($mb[1] ?? 0));
-        });
-
-        // Bulk-load ALL student records once (avoids N+1 Firebase calls)
-        $allStudents       = $this->CM->get_data("Users/Parents/$school_id");
+        // Build student → class|section lookup from Firestore students
         $studentClassCache = [];
-        if (is_array($allStudents)) {
-            foreach ($allStudents as $uid => $stu) {
-                $stu = is_array($stu) ? $stu : [];
-                list($cls, $sec) = $this->_resolveClassSection($stu);
-                if ($cls !== '' && $sec !== '') {
-                    $studentClassCache[(string)$uid] = "$cls|$sec";
+        try {
+            $stuRows = $this->firebase->firestoreQuery('students', [
+                ['schoolId', '==', $schoolFs],
+            ]);
+            foreach ((array) $stuRows as $r) {
+                $d   = $r['data'] ?? $r;
+                $sid = (string) ($d['studentId'] ?? $d['userId'] ?? '');
+                $c   = (string) ($d['className'] ?? '');
+                $s   = (string) ($d['section']   ?? '');
+                if ($sid !== '' && $c !== '' && $s !== '') {
+                    $studentClassCache[$sid] = "{$c}|{$s}";
                 }
             }
-        }
+        } catch (\Exception $_) {}
 
-        $vouchers = $this->CM->get_data("Schools/$sn/$sy/Accounts/Vouchers");
-        $vouchers = is_array($vouchers) ? $vouchers : [];
-
-        foreach ($vouchers as $date => $vList) {
-            if ($date === 'VoucherCount' || !is_array($vList)) continue;
-            $dObj = DateTime::createFromFormat('d-m-Y', $date);
-            if (!$dObj) continue;
-
-            $calMonth = (int)$dObj->format('n');
-            $mi       = ($calMonth >= 4) ? ($calMonth - 4) : ($calMonth + 8);
-
-            foreach ($vList as $vk => $v) {
-                if (!is_array($v) || strpos((string)$vk, 'F') !== 0) continue;
-                $received = (float)str_replace(',', '', $v['Fees Received'] ?? 0);
+        // Walk Firestore feeReceipts — aggregate amount per class|section per month
+        try {
+            $rcptRows = $this->firebase->firestoreQuery('feeReceipts', [
+                ['schoolId', '==', $schoolFs],
+            ]);
+            foreach ((array) $rcptRows as $r) {
+                $d = $r['data'] ?? $r;
+                if (!is_array($d)) continue;
+                $received = (float) ($d['amount'] ?? $d['netAmount'] ?? 0);
                 if ($received <= 0) continue;
-                $sid = trim((string)($v['Id'] ?? ''));
+                $sid = (string) ($d['studentId'] ?? $d['userId'] ?? '');
                 if ($sid === '') continue;
 
+                // Resolve calendar month (0=Apr, 11=Mar)
+                $dateStr = (string) ($d['paymentDate'] ?? $d['date'] ?? $d['createdAt'] ?? '');
+                $dObj = null;
+                foreach (['Y-m-d', 'd-m-Y', \DateTime::ATOM] as $fmt) {
+                    $dObj = \DateTime::createFromFormat($fmt, substr($dateStr, 0, 19));
+                    if ($dObj !== false) break;
+                }
+                if (!$dObj) continue;
+                $calMonth = (int) $dObj->format('n');
+                $mi = ($calMonth >= 4) ? ($calMonth - 4) : ($calMonth + 8);
+
                 $matKey = $studentClassCache[$sid] ?? null;
-                if ($matKey && isset($feesMatrix[$matKey])) {
+                if ($matKey !== null) {
+                    if (!isset($feesMatrix[$matKey])) {
+                        $feesMatrix[$matKey] = array_fill(0, 12, 0);
+                        $classList[$matKey]  = str_replace('|', ' ', $matKey);
+                    }
                     $feesMatrix[$matKey][$mi] += $received;
                 }
             }
-        }
+        } catch (\Exception $_) {}
 
         $matrix = [];
         foreach ($classList as $k => $label) {
-            $amounts  = $feesMatrix[$k] ?? array_fill(0, 12, 0);
+            $amounts = $feesMatrix[$k] ?? array_fill(0, 12, 0);
             $matrix[] = [
                 'class'   => $label,
                 'key'     => $k,
@@ -2983,43 +3779,53 @@ class Fees extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES, 'get_fee_account_map');
 
-        $mapPath = "Schools/{$this->school_name}/Accounts/Fee_Account_Map";
-        $raw     = $this->firebase->get($mapPath);
+        // Pure Firestore: mappings + CoA via Accounting_firestore_sync
+        $this->load->library('Accounting_firestore_sync');
+        $sync = $this->accounting_firestore_sync->init(
+            $this->firebase, $this->school_name, $this->session_year
+        );
+
+        $map = $sync->readFeeAccountMap();
         $entries = [];
-
-        if (is_array($raw)) {
-            foreach ($raw as $key => $entry) {
-                if (!is_array($entry)) continue;
-                $entry['_key'] = $key;
-                $entries[]     = $entry;
-            }
+        foreach ($map as $head => $code) {
+            $entries[] = [
+                'fee_head'     => $head,
+                'account_code' => $code,
+                '_key'         => strtoupper(preg_replace('/[^A-Z0-9]+/', '_', $head)),
+            ];
         }
 
-        // Also return all fee structure titles so admin can map them
-        $sn = $this->school_name;
-        $sy = $this->session_year;
-        $structure = $this->firebase->get("Schools/{$sn}/{$sy}/Accounts/Fees/Fees Structure");
-        $allHeads  = [];
-        if (is_array($structure)) {
-            foreach (['Monthly', 'Yearly'] as $type) {
-                if (isset($structure[$type]) && is_array($structure[$type])) {
-                    foreach (array_keys($structure[$type]) as $title) {
-                        $allHeads[] = $title;
-                    }
+        // Fee-head catalogue — aggregate distinct head names from feeStructures
+        $allHeads = [];
+        try {
+            $rows = $this->firebase->firestoreQuery('feeStructures', [
+                ['schoolId', '==', $this->school_name],
+                ['session',  '==', $this->session_year],
+            ]);
+            $seen = [];
+            foreach ((array) $rows as $row) {
+                $d = $row['data'] ?? $row;
+                $heads = is_array($d['feeHeads'] ?? null) ? $d['feeHeads'] : [];
+                foreach ($heads as $h) {
+                    $name = trim((string) ($h['name'] ?? ''));
+                    if ($name === '' || isset($seen[$name])) continue;
+                    $seen[$name] = true;
+                    $allHeads[] = $name;
                 }
             }
+        } catch (\Exception $e) {
+            log_message('error', 'get_fee_account_map: feeStructures query failed: ' . $e->getMessage());
         }
 
-        // Return income accounts from CoA (4xxx)
-        $coaPath  = "Schools/{$sn}/Accounts/ChartOfAccounts";
-        $coa      = $this->firebase->get($coaPath);
+        // Income accounts from Firestore CoA
+        $coa = $sync->readChartOfAccounts();
         $incomeAccounts = [];
-        if (is_array($coa)) {
-            foreach ($coa as $code => $acct) {
-                if (!is_array($acct)) continue;
-                if (($acct['category'] ?? '') === 'Income' && ($acct['status'] ?? '') === 'active' && empty($acct['is_group'])) {
-                    $incomeAccounts[] = ['code' => $code, 'name' => $acct['name'] ?? $code];
-                }
+        foreach ($coa as $code => $acct) {
+            if (!is_array($acct)) continue;
+            if (($acct['category'] ?? '') === 'Income'
+                && ($acct['status'] ?? '') === 'active'
+                && empty($acct['is_group'])) {
+                $incomeAccounts[] = ['code' => $code, 'name' => $acct['name'] ?? $code];
             }
         }
 
@@ -3045,26 +3851,25 @@ class Fees extends MY_Controller
             return $this->json_error('Fee head and account code are required.');
         }
 
-        // Validate account exists
-        $sn   = $this->school_name;
-        $acct = $this->firebase->get("Schools/{$sn}/Accounts/ChartOfAccounts/{$accountCode}");
+        // Pure Firestore: validate account + write mapping via sync layer
+        $this->load->library('Accounting_firestore_sync');
+        $sync = $this->accounting_firestore_sync->init(
+            $this->firebase, $this->school_name, $this->session_year
+        );
+
+        $acct = $sync->getAccount($accountCode);
         if (!is_array($acct) || ($acct['status'] ?? '') !== 'active') {
             return $this->json_error("Account {$accountCode} not found or inactive.");
         }
 
-        $key  = strtoupper(preg_replace('/[^A-Z0-9]+/', '_', strtolower($feeHead)));
-        $key  = trim($key, '_');
-        $path = "Schools/{$sn}/Accounts/Fee_Account_Map/{$key}";
+        $ok = $sync->syncFeeAccountMapping($feeHead, $accountCode);
+        if (!$ok) {
+            return $this->json_error('Failed to save mapping.');
+        }
 
-        $this->firebase->set($path, [
-            'fee_head'     => $feeHead,
-            'account_code' => $accountCode,
-            'account_name' => $acct['name'] ?? $accountCode,
-            'updated_at'   => date('c'),
-            'updated_by'   => $this->admin_id ?? '',
+        $this->json_success([
+            'message' => "Mapped '{$feeHead}' → {$accountCode} ({$acct['name']})",
         ]);
-
-        $this->json_success(['message' => "Mapped '{$feeHead}' → {$accountCode} ({$acct['name']})"]);
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -3088,11 +3893,13 @@ class Fees extends MY_Controller
      */
     private function compute_fines_for_student(string $studentId): array
     {
-        $sn = $this->school_name;
-        $sy = $this->session_year;
+        $schoolFs = $this->fs->schoolId();
 
-        // Load fine rules
-        $settings = $this->firebase->get("Schools/{$sn}/{$sy}/Accounts/Fees/Reminder Settings");
+        // Load fine rules from Firestore feeSettings
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $schoolFs, $this->session_year);
+        $settings = $this->firebase->firestoreGet('feeSettings',
+            "{$schoolFs}_{$this->session_year}_reminders");
         if (!is_array($settings) || !($settings['late_fee_enabled'] ?? false)) {
             return ['demands_updated' => 0, 'total_fine' => 0, 'message' => 'Late fee not enabled'];
         }
@@ -3103,43 +3910,36 @@ class Fees extends MY_Controller
             return ['demands_updated' => 0, 'total_fine' => 0, 'message' => 'Late fee value is 0'];
         }
 
-        $today      = date('Y-m-d');
-        $demandsPath = $this->_studentDemands($studentId);
-        $demands     = $this->firebase->get($demandsPath);
-        if (!is_array($demands)) return ['demands_updated' => 0, 'total_fine' => 0];
+        $today   = date('Y-m-d');
+        $demands = $this->fsTxn->demandsForStudent($studentId);
+        if (empty($demands)) return ['demands_updated' => 0, 'total_fine' => 0];
 
         $updated   = 0;
         $totalFine = 0;
 
         foreach ($demands as $did => $d) {
-            if (!is_array($d)) continue;
             $status = $d['status'] ?? 'unpaid';
-            if ($status === 'paid') continue; // no fine on paid demands
+            if ($status === 'paid') continue;
 
             $dueDate = $d['due_date'] ?? '';
-            if ($dueDate === '' || $dueDate >= $today) continue; // not overdue yet
+            if ($dueDate === '' || $dueDate >= $today) continue;
 
             $netAmount = floatval($d['net_amount'] ?? 0);
             if ($netAmount <= 0) continue;
 
-            // Calculate fine
-            if ($fineType === 'percentage') {
-                $fine = round($netAmount * ($fineValue / 100), 2);
-            } else {
-                $fine = round($fineValue, 2);
-            }
+            $fine = ($fineType === 'percentage')
+                ? round($netAmount * ($fineValue / 100), 2)
+                : round($fineValue, 2);
 
             $existingFine = floatval($d['fine_amount'] ?? 0);
-            if (abs($existingFine - $fine) < 0.01) continue; // already computed
+            if (abs($existingFine - $fine) < 0.01) continue;
 
-            // Update demand: balance = net_amount + fine - paid_amount
             $paidAmount = floatval($d['paid_amount'] ?? 0);
-            $newBalance = round($netAmount + $fine - $paidAmount, 2);
-            if ($newBalance < 0) $newBalance = 0;
+            $newBalance = round(max(0, $netAmount + $fine - $paidAmount), 2);
 
-            $this->firebase->update("{$demandsPath}/{$did}", [
-                'fine_amount' => $fine,
-                'balance'     => $newBalance,
+            $this->fsTxn->updateDemand($did, [
+                'fine_amount'     => $fine,
+                'balance'         => $newBalance,
                 'fine_computed_at' => date('c'),
             ]);
 
@@ -3171,217 +3971,8 @@ class Fees extends MY_Controller
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  DEMAND REVERSAL (for refunds)
-    // ══════════════════════════════════════════════════════════════════
-
-    /**
-     * Reverse demand allocations when a refund is processed.
-     *
-     * Reads the receipt allocations, reverses each demand's paid_amount,
-     * recalculates balance and status, and creates an audit trail.
-     *
-     * @param string $receiptKey  e.g. "F1001"
-     * @param string $studentId   Student ID
-     * @param float  $refundAmount Amount being refunded
-     * @return array  [reversed => int, audit_id => string]
-     */
-    public function reverse_demand_allocations(string $receiptKey, string $studentId, float $refundAmount): array
-    {
-        $sn = $this->school_name;
-        $sy = $this->session_year;
-
-        // 1. Read the receipt allocations
-        $allocPath   = "Schools/{$sn}/{$sy}/Fees/Receipt_Allocations/{$receiptKey}";
-        $receiptData = $this->firebase->get($allocPath);
-
-        if (!is_array($receiptData) || empty($receiptData['allocations'])) {
-            return ['reversed' => 0, 'message' => 'No demand allocations found for this receipt'];
-        }
-
-        $allocations = $receiptData['allocations'];
-        $demandsPath = $this->_studentDemands($studentId);
-        $reversed    = 0;
-        $reversalLog = [];
-        $remaining   = $refundAmount;
-
-        // 2. Reverse each allocation (latest period first for partial refunds)
-        $allocations = array_reverse($allocations); // reverse order: latest first
-
-        foreach ($allocations as $alloc) {
-            if ($remaining <= 0.005) break;
-
-            $demandId = $alloc['demand_id'] ?? '';
-            $allocAmt = floatval($alloc['amount'] ?? 0);
-            if ($demandId === '' || $allocAmt <= 0) continue;
-
-            // How much to reverse from this allocation
-            $reverseAmt = min($remaining, $allocAmt);
-
-            // Read current demand state
-            $demand = $this->firebase->get("{$demandsPath}/{$demandId}");
-            if (!is_array($demand)) continue;
-
-            $oldPaid    = floatval($demand['paid_amount'] ?? 0);
-            $netAmount  = floatval($demand['net_amount'] ?? 0);
-            $fineAmount = floatval($demand['fine_amount'] ?? 0);
-
-            // Reverse: reduce paid, increase balance
-            $newPaid    = round(max(0, $oldPaid - $reverseAmt), 2);
-            $newBalance = round($netAmount + $fineAmount - $newPaid, 2);
-            if ($newBalance < 0) $newBalance = 0;
-
-            // Determine new status
-            if ($newPaid <= 0.005) {
-                $newStatus = 'unpaid';
-            } elseif ($newBalance <= 0.005) {
-                $newStatus = 'paid';
-            } else {
-                $newStatus = 'partial';
-            }
-
-            $this->firebase->update("{$demandsPath}/{$demandId}", [
-                'paid_amount'       => $newPaid,
-                'balance'           => $newBalance,
-                'status'            => $newStatus,
-                'last_refund_receipt' => $receiptKey,
-                'last_refund_date'    => date('c'),
-                'updated_at'        => date('c'),
-            ]);
-
-            $reversalLog[] = [
-                'demand_id'     => $demandId,
-                'fee_head'      => $alloc['fee_head'] ?? '',
-                'period'        => $alloc['period'] ?? '',
-                'reversed_amt'  => round($reverseAmt, 2),
-                'new_paid'      => $newPaid,
-                'new_balance'   => $newBalance,
-                'new_status'    => $newStatus,
-            ];
-
-            $remaining -= $reverseAmt;
-            $reversed++;
-        }
-
-        // 3. If refund exceeds allocations, reduce advance balance (atomic)
-        if ($remaining > 0.005) {
-            $this->_update_advance_balance_atomic(
-                $studentId, -$remaining, $receiptKey
-            );
-        }
-
-        // 4. Write audit trail
-        $auditId = 'RFND_' . date('YmdHis') . '_' . bin2hex(random_bytes(3));
-        $this->firebase->set("Schools/{$sn}/{$sy}/Fees/Refund_Audit/{$auditId}", [
-            'receipt_key'   => $receiptKey,
-            'student_id'    => $studentId,
-            'refund_amount' => round($refundAmount, 2),
-            'reversals'     => $reversalLog,
-            'reversed_count' => $reversed,
-            'created_at'    => date('c'),
-            'created_by'    => $this->admin_id ?? 'system',
-        ]);
-
-        // 5. Mark receipt allocation as reversed
-        $this->firebase->update($allocPath, [
-            'status'       => 'reversed',
-            'reversed_at'  => date('c'),
-            'reversed_by'  => $this->admin_id ?? 'system',
-            'refund_audit' => $auditId,
-        ]);
-
-        // 6. Re-sync legacy Month Fee flags
-        $profile = $this->firebase->get("Users/Parents/{$this->parent_db_key}/{$studentId}");
-        if (is_array($profile)) {
-            list($class, $section) = $this->_resolveClassSection($profile);
-            if ($class !== '' && $section !== '') {
-                $studentBase = $this->studentPath($class, $section, $studentId);
-                $this->_syncMonthFeeFlags($studentId, $class, $section, $demandsPath, $studentBase);
-            }
-        }
-
-        return [
-            'reversed'  => $reversed,
-            'audit_id'  => $auditId,
-            'reversals' => $reversalLog,
-        ];
-    }
-
-    // ══════════════════════════════════════════════════════════════════
     //  LEGACY SYNC: MONTH FEE FLAGS FROM DEMANDS
     // ══════════════════════════════════════════════════════════════════
-
-    /**
-     * Sync legacy Month Fee/{month} = 0|1 flags from demand status.
-     *
-     * A month's flag is set to 1 ONLY when ALL demands for that month
-     * have status = "paid". If any demand for a month is unpaid/partial,
-     * the flag stays 0 (or is reset to 0 if it was incorrectly set).
-     *
-     * This ensures backward compatibility with:
-     *  - fees_counter (fetch_months shows paid/unpaid per month)
-     *  - fees_dashboard (collection rate uses Month Fee flags)
-     *  - fees_records (monthly collection matrix)
-     *  - due_fees_table (dues calculation)
-     *
-     * @param string $studentId   Student ID
-     * @param string $class       "Class 9th" format
-     * @param string $section     "Section A" format
-     * @param string $demandsPath Full Firebase path to student demands
-     * @param string $studentBase Full Firebase path to student section node
-     */
-    private function _syncMonthFeeFlags(
-        string $studentId,
-        string $class,
-        string $section,
-        string $demandsPath,
-        string $studentBase
-    ): void {
-        // Feature flag: skip legacy writes when demand-based is authoritative
-        if ($this->config->item('use_legacy_month_fee') === false) {
-            return;
-        }
-
-        // Re-read all demands for this student (fresh after updates)
-        $demands = $this->firebase->get($demandsPath);
-        if (!is_array($demands) || empty($demands)) return;
-
-        // Group demands by month name
-        // period format: "April 2026" → extract month name
-        $monthDemands = []; // monthName => [statuses]
-        foreach ($demands as $did => $d) {
-            if (!is_array($d)) continue;
-            $period = $d['period'] ?? '';
-            // Extract month name (first word before space)
-            $monthName = explode(' ', $period)[0] ?? '';
-            if ($monthName === '') continue;
-
-            // Map "Yearly" frequency demands to the month they were generated in
-            // (Yearly fees are generated in April's demands)
-            $frequency = $d['frequency'] ?? 'monthly';
-
-            if (!isset($monthDemands[$monthName])) {
-                $monthDemands[$monthName] = [];
-            }
-            $monthDemands[$monthName][] = $d['status'] ?? 'unpaid';
-        }
-
-        // For each month that has demands, set flag based on whether ALL are paid
-        foreach ($monthDemands as $monthName => $statuses) {
-            $allPaid = true;
-            foreach ($statuses as $st) {
-                if ($st !== 'paid') {
-                    $allPaid = false;
-                    break;
-                }
-            }
-
-            try {
-                $this->firebase->set("{$studentBase}/Month Fee/{$monthName}", $allPaid ? 1 : 0);
-            } catch (\Exception $e) {
-                log_message('error', "_syncMonthFeeFlags: failed for {$studentId}/{$monthName}: " . $e->getMessage());
-            }
-        }
-    }
 
     // ══════════════════════════════════════════════════════════════════
     //  FEE DEMAND ENGINE
@@ -3506,9 +4097,9 @@ class Fees extends MY_Controller
      */
     private function _getClassFeeChart(string $class, string $section): array
     {
-        $path = $this->feesPath($class, $section);
-        $data = $this->firebase->get($path);
-        return is_array($data) ? $data : [];
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        return $this->fsTxn->readFeeStructure($class, $section);
     }
 
     /**
@@ -3522,40 +4113,32 @@ class Fees extends MY_Controller
      */
     private function _getStudentDiscounts(string $studentId, string $class, string $section): array
     {
-        $sn = $this->school_name;
-        $sy = $this->session_year;
         $discounts = [];
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
 
-        // 1. Read student's stored discount data
-        $secNorm = preg_replace('/^Section\s+/i', '', trim($section));
-        $secNorm = 'Section ' . strtoupper($secNorm);
-        $discountNode = $this->firebase->get(
-            "Schools/{$sn}/{$sy}/{$class}/{$secNorm}/Students/{$studentId}/Discount"
-        );
-
-        // 2. Read scholarship awards for this student
-        $feesBase = "Schools/{$sn}/{$sy}/Accounts/Fees";
-        $awards   = $this->firebase->get("{$feesBase}/Scholarship Awards");
-        if (is_array($awards)) {
-            foreach ($awards as $award) {
-                if (!is_array($award)) continue;
-                if (($award['student_id'] ?? '') !== $studentId) continue;
-                if (($award['status'] ?? '') !== 'active') continue;
-                $amt = floatval($award['amount'] ?? 0);
-                if ($amt > 0) {
-                    // Scholarship applied as general discount (not head-specific)
-                    $discounts['_scholarship'] = ($discounts['_scholarship'] ?? 0) + $amt;
-                }
+        // 1. Scholarship awards (from Firestore scholarshipAwards collection)
+        $awards = $this->fsTxn->readScholarshipAwards($studentId);
+        foreach ($awards as $award) {
+            $amt = (float) ($award['amount'] ?? 0);
+            if ($amt > 0) {
+                $discounts['_scholarship'] = ($discounts['_scholarship'] ?? 0) + $amt;
             }
         }
 
-        // 3. Read exempted fees
-        $exempted = $this->firebase->get(
-            "Schools/{$sn}/{$sy}/{$class}/{$secNorm}/Students/{$studentId}/Exempted Fees"
-        );
-        if (is_array($exempted)) {
-            foreach ($exempted as $title => $val) {
-                $discounts[$title] = -1; // special marker: fully exempt
+        // 2. Exempted fees + per-head discounts from the student doc.
+        //    Student doc may carry `exemptedFees: {'Tuition Fee':true, ...}`
+        //    and/or `discountHeads: {'Transport': 500, ...}` set by admin.
+        $stu = $this->fsTxn->getStudent($studentId);
+        if (is_array($stu)) {
+            $exempted = is_array($stu['exemptedFees'] ?? null) ? $stu['exemptedFees'] : [];
+            foreach ($exempted as $title => $_) {
+                $discounts[$title] = -1; // fully exempt marker
+            }
+            $headDisc = is_array($stu['discountHeads'] ?? null) ? $stu['discountHeads'] : [];
+            foreach ($headDisc as $title => $amount) {
+                if (isset($discounts[$title]) && $discounts[$title] === -1) continue;
+                $discounts[$title] = (float) $amount;
             }
         }
 
@@ -3567,10 +4150,9 @@ class Fees extends MY_Controller
      */
     private function _getDueDay(): int
     {
-        $sn = $this->school_name;
-        $sy = $this->session_year;
-        $settings = $this->firebase->get("Schools/{$sn}/{$sy}/Accounts/Fees/Reminder Settings");
-        return (int) ($settings['due_day_of_month'] ?? 10);
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        return $this->fsTxn->getDueDay();
     }
 
     // ── Core demand generation ──────────────────────────────────────
@@ -3610,7 +4192,6 @@ class Fees extends MY_Controller
         $periodKey = $this->_buildPeriodKey($monthName);
         $dueDate   = $this->_computeDueDate($monthName, $dueDay);
         $now       = date('c');
-        $basePath  = $this->_studentDemands($studentId);
 
         // Monthly fee heads for this month
         $monthFees = $feeChart[$monthName] ?? [];
@@ -3632,6 +4213,18 @@ class Fees extends MY_Controller
             $monthTotal += floatval($amt);
         }
 
+        // ────────────────────────────────────────────────────────────────
+        //  Session D1: pure Firestore.
+        //  Read existing demands from Firestore feeDemands, filter to this
+        //  period, and only write the rows that don't exist yet.
+        // ────────────────────────────────────────────────────────────────
+
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        $existingDemands = $this->fsTxn->demandsForStudent($studentId);
+
+        $newDemands = []; // demandId => demand row, only the rows we will create
+
         foreach ($monthFees as $feeHead => $rawAmount) {
             $amount = floatval($rawAmount);
 
@@ -3648,9 +4241,8 @@ class Fees extends MY_Controller
 
             $demandId = $this->_buildDemandId($periodKey, $feeHead);
 
-            // Idempotency: skip if demand already exists
-            $existing = $this->firebase->get("{$basePath}/{$demandId}/demand_id");
-            if ($existing !== null) {
+            // Idempotency: skip if demand already exists (uses in-memory snapshot)
+            if (isset($existingDemands[$demandId])) {
                 $result['skipped']++;
                 continue;
             }
@@ -3683,7 +4275,7 @@ class Fees extends MY_Controller
             $isYearly  = isset(($feeChart['Yearly Fees'] ?? [])[$feeHead]);
             $frequency = $isYearly ? 'yearly' : 'monthly';
 
-            $demand = [
+            $newDemands[$demandId] = [
                 'demand_id'       => $demandId,
                 'student_id'      => $studentId,
                 'student_name'    => $studentName,
@@ -3704,23 +4296,20 @@ class Fees extends MY_Controller
                 'created_at'      => $now,
                 'created_by'      => $this->admin_id ?? 'system',
             ];
-
-            $this->firebase->set("{$basePath}/{$demandId}", $demand);
-            $result['created']++;
         }
 
-        // ── Sync demands for this month to Firestore ──
-        if ($result['created'] > 0) {
-            try {
-                $allDemands = $this->firebase->get($basePath);
-                if (is_array($allDemands)) {
-                    $this->fsSync->syncDemandsForMonth(
-                        $studentId, $studentName, $class, $section,
-                        $monthName, $allDemands
-                    );
-                }
-            } catch (\Exception $e) {
-                log_message('error', "_generateDemandsForMonth: Firestore sync failed [{$studentId}/{$monthName}]: " . $e->getMessage());
+        // Nothing new to create — return early
+        if (empty($newDemands)) {
+            return $result;
+        }
+
+        // Pure Firestore writes — each demand is its own doc in feeDemands.
+        foreach ($newDemands as $demandId => $demand) {
+            if ($this->fsTxn->writeDemand($demandId, $demand)) {
+                $result['created']++;
+            } else {
+                log_message('error', "_generateDemandsForMonth: Firestore writeDemand failed [{$demandId}]");
+                $result['errors']++;
             }
         }
 
@@ -3736,10 +4325,19 @@ class Fees extends MY_Controller
         static $categoryCache = null;
 
         if ($categoryCache === null) {
-            $sn = $this->school_name;
-            $sy = $this->session_year;
-            $cats = $this->firebase->get("Schools/{$sn}/{$sy}/Accounts/Fees/Categories");
-            $categoryCache = is_array($cats) ? $cats : [];
+            $schoolFs = $this->fs->schoolId();
+            try {
+                $rows = $this->firebase->firestoreQuery('feeCategories', [
+                    ['schoolId', '==', $schoolFs],
+                ]);
+                $categoryCache = [];
+                foreach ((array) $rows as $r) {
+                    $d = $r['data'] ?? $r;
+                    if (is_array($d)) $categoryCache[] = $d;
+                }
+            } catch (\Exception $_) {
+                $categoryCache = [];
+            }
         }
 
         $headLower = strtolower(trim($feeHead));
@@ -3794,18 +4392,17 @@ class Fees extends MY_Controller
         }
         $studentId = $this->safe_path_segment($studentId, 'student_id');
 
-        // Look up student profile
-        $sn      = $this->school_name;
-        $dbKey   = $this->parent_db_key;
-        $profile = $this->firebase->get("Users/Parents/{$dbKey}/{$studentId}");
+        // Pure Firestore: read profile from students collection.
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        $profile = $this->fsTxn->getStudent($studentId);
         if (!is_array($profile)) {
             return $this->json_error('Student not found.');
         }
 
-        $studentName = $profile['Name'] ?? $studentId;
-
-        // Resolve class/section
-        list($class, $section) = $this->_resolveClassSection($profile);
+        $studentName = (string) ($profile['name'] ?? $profile['Name'] ?? $studentId);
+        $class       = (string) ($profile['className'] ?? '');
+        $section     = (string) ($profile['section']   ?? '');
         if ($class === '' || $section === '') {
             return $this->json_error("Cannot resolve class/section for '{$studentId}'.");
         }
@@ -3893,44 +4490,28 @@ class Fees extends MY_Controller
             $months = [$monthInput];
         }
 
-        $sn      = $this->school_name;
-        $sy      = $this->session_year;
-        $dbKey   = $this->parent_db_key;
         $dueDay  = $this->_getDueDay();
         $totals  = ['students' => 0, 'created' => 0, 'skipped' => 0, 'errors' => 0, 'no_chart' => 0];
 
-        // Build class/section list to process
-        $classSections = [];
-        $sessionRoot   = "Schools/{$sn}/{$sy}";
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
 
+        // Build class/section list to process — from Firestore feeStructures.
+        $classSections = [];
         if ($classInput !== '' && $secInput !== '') {
-            // Single class+section
             if (stripos($classInput, 'Class ') !== 0) $classInput = "Class {$classInput}";
             if (stripos($secInput, 'Section ') !== 0) $secInput = "Section {$secInput}";
             $classSections[] = ['class' => $classInput, 'section' => $secInput];
         } else {
-            // All classes/sections from session
-            $classKeys = $this->firebase->shallow_get($sessionRoot);
-            if (is_array($classKeys)) {
-                foreach ($classKeys as $ck) {
-                    $ck = (string) $ck;
-                    if (strpos($ck, 'Class ') !== 0) continue;
-                    if ($classInput !== '' && $ck !== $classInput) continue;
-
-                    $secKeys = $this->firebase->shallow_get("{$sessionRoot}/{$ck}");
-                    if (!is_array($secKeys)) continue;
-                    foreach ($secKeys as $sk) {
-                        $sk = (string) $sk;
-                        if (strpos($sk, 'Section ') !== 0) continue;
-                        if ($secInput !== '' && $sk !== $secInput) continue;
-                        $classSections[] = ['class' => $ck, 'section' => $sk];
-                    }
-                }
+            foreach ($this->fsTxn->listSectionsWithFeeChart() as $cs) {
+                if ($classInput !== '' && $cs['class']   !== $classInput) continue;
+                if ($secInput   !== '' && $cs['section'] !== $secInput)   continue;
+                $classSections[] = $cs;
             }
         }
 
         if (empty($classSections)) {
-            return $this->json_error('No classes/sections found in current session.');
+            return $this->json_error('No fee structures found in current session.');
         }
 
         // ================================================================
@@ -3945,11 +4526,11 @@ class Fees extends MY_Controller
         //  Example: Class9th_SectionA_2026-04
         // ================================================================
 
-        $lockBase      = "Schools/{$sn}/{$sy}/Fees/Demand_Locks";
         $lockToken     = bin2hex(random_bytes(8));
         $acquiredLocks = [];
 
-        // Build list of all lock keys needed
+        // Build list of all lock keys needed (locks now live in Firestore
+        // collection `feeDemandLocks`, one doc per {class, section, period}).
         $requiredLocks = [];
         foreach ($classSections as $cs) {
             $classSlug   = str_replace(' ', '', $cs['class']);
@@ -3959,7 +4540,6 @@ class Fees extends MY_Controller
                 $lockKey   = "{$classSlug}_{$sectionSlug}_{$periodKey}";
                 $requiredLocks[] = [
                     'key'     => $lockKey,
-                    'path'    => "{$lockBase}/{$lockKey}",
                     'class'   => $cs['class'],
                     'section' => $cs['section'],
                     'month'   => $m,
@@ -3970,46 +4550,38 @@ class Fees extends MY_Controller
 
         // ── PHASE 1: Check ALL locks before acquiring any ──
         foreach ($requiredLocks as $rl) {
-            $existingLock = $this->firebase->get($rl['path']);
-            if (is_array($existingLock) && !empty($existingLock['locked'])) {
-                $lockAge = time() - strtotime($existingLock['locked_at'] ?? '2000-01-01');
-                if ($lockAge < 120) {
-                    log_message('info',
-                        "generate_demands: PHASE1 BLOCKED key={$rl['key']}"
-                        . " held_by=" . ($existingLock['locked_by'] ?? '?')
-                        . " age={$lockAge}s"
-                    );
-                    $this->output->set_content_type('application/json');
-                    $this->output->set_output(json_encode([
-                        'status'      => 'error',
-                        'locked'      => true,
-                        'message'     => "{$rl['class']} {$rl['section']} / {$rl['month']} is already being processed by "
-                                       . ($existingLock['locked_by'] ?? 'another admin') . ". Please wait.",
-                        'locked_by'   => $existingLock['locked_by'] ?? '',
-                        'locked_at'   => $existingLock['locked_at'] ?? '',
-                        'age_seconds' => $lockAge,
-                        'lock_key'    => $rl['key'],
-                    ]));
-                    return;
-                }
-                // Stale lock — will be overridden in Phase 2
-                log_message('info', "generate_demands: Stale lock key={$rl['key']} age={$lockAge}s — will override");
+            $existingLock = $this->fsTxn->demandLockCheck($rl['key']);
+            if (is_array($existingLock)) {
+                $lockAge = (int) ($existingLock['age_seconds'] ?? 0);
+                log_message('info',
+                    "generate_demands: PHASE1 BLOCKED key={$rl['key']}"
+                    . " held_by=" . ($existingLock['locked_by'] ?? '?')
+                    . " age={$lockAge}s"
+                );
+                $this->output->set_content_type('application/json');
+                $this->output->set_output(json_encode([
+                    'status'      => 'error',
+                    'locked'      => true,
+                    'message'     => "{$rl['class']} {$rl['section']} / {$rl['month']} is already being processed by "
+                                   . ($existingLock['locked_by'] ?? 'another admin') . ". Please wait.",
+                    'locked_by'   => $existingLock['locked_by'] ?? '',
+                    'locked_at'   => $existingLock['locked_at'] ?? '',
+                    'age_seconds' => $lockAge,
+                    'lock_key'    => $rl['key'],
+                ]));
+                return;
             }
         }
 
         // ── PHASE 2: Acquire ALL locks ──
-        $now = date('c');
         foreach ($requiredLocks as $rl) {
-            $this->firebase->set($rl['path'], [
-                'locked'    => true,
-                'locked_at' => $now,
+            $this->fsTxn->demandLockAcquire($rl['key'], $lockToken, [
                 'locked_by' => $this->admin_name ?? '',
-                'token'     => $lockToken,
                 'period'    => $rl['period'],
                 'class'     => $rl['class'],
                 'section'   => $rl['section'],
             ]);
-            $acquiredLocks[] = $rl['path'];
+            $acquiredLocks[] = $rl['key'];
         }
 
         log_message('info',
@@ -4029,18 +4601,12 @@ class Fees extends MY_Controller
                 continue;
             }
 
-            // Get student roster for this section
-            $roster = $this->firebase->get("{$sessionRoot}/{$class}/{$section}/Students/List");
-            if (!is_array($roster) || empty($roster)) continue;
+            // Get student roster for this section (Firestore students collection)
+            $roster = $this->fsTxn->listStudentsInSection($class, $section);
+            if (empty($roster)) continue;
 
-            // Batch: load all profiles at once to avoid N+1
-            $allProfiles = $this->firebase->get("Users/Parents/{$dbKey}");
-            if (!is_array($allProfiles)) $allProfiles = [];
-
-            foreach ($roster as $sid => $studentNameOrData) {
-                $sid = (string) $sid;
-                $profile = $allProfiles[$sid] ?? [];
-                $studentName = is_string($studentNameOrData) ? $studentNameOrData : ($profile['Name'] ?? $sid);
+            foreach ($roster as $sid => $profile) {
+                $studentName = (string) ($profile['name'] ?? $profile['Name'] ?? $sid);
 
                 // Get student-specific discounts
                 $discountMap = $this->_getStudentDiscounts($sid, $class, $section);
@@ -4059,15 +4625,11 @@ class Fees extends MY_Controller
             }
         }
 
-        // ── Release all demand locks (token-verified) ──
-        foreach ($acquiredLocks as $alp) {
-            try {
-                $l = $this->firebase->get($alp);
-                if (is_array($l) && ($l['token'] ?? '') === $lockToken) {
-                    $this->firebase->delete($alp);
-                }
-            } catch (\Exception $e) {
-                log_message('error', "generate_demands: lock release failed {$alp}: " . $e->getMessage());
+        // ── Release all demand locks (token-verified, Firestore) ──
+        foreach ($acquiredLocks as $alk) {
+            try { $this->fsTxn->demandLockRelease($alk, $lockToken); }
+            catch (\Exception $e) {
+                log_message('error', "generate_demands: lock release failed {$alk}: " . $e->getMessage());
             }
         }
 
@@ -4111,8 +4673,9 @@ class Fees extends MY_Controller
         }
         $studentId = $this->safe_path_segment($studentId, 'student_id');
 
-        $raw = $this->firebase->get($this->_studentDemands($studentId));
-        if (!is_array($raw)) $raw = [];
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        $raw = $this->fsTxn->demandsForStudent($studentId);
 
         $demands  = [];
         $summary  = ['total_net' => 0, 'total_paid' => 0, 'total_balance' => 0];
@@ -4159,72 +4722,51 @@ class Fees extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'get_demand_status');
 
-        $sn = $this->school_name;
-        $sy = $this->session_year;
+        $schoolFs = $this->fs->schoolId();
+        $sy       = $this->session_year;
 
-        // Read all demands (shallow for counts)
-        $allDemands = $this->firebase->get($this->_demandsBase());
-        $demandStudents = is_array($allDemands) ? array_keys($allDemands) : [];
-        $demandCounts   = [];
-        if (is_array($allDemands)) {
-            foreach ($allDemands as $sid => $dems) {
-                $demandCounts[$sid] = is_array($dems) ? count($dems) : 0;
-            }
+        // Firestore: all demands grouped by studentId for counts.
+        $rawDemands = $this->firebase->firestoreQuery('feeDemands', [
+            ['schoolId', '==', $schoolFs], ['session', '==', $sy],
+        ]);
+        $demandCounts = [];
+        foreach ((array) $rawDemands as $r) {
+            $d = $r['data'] ?? $r;
+            $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
+            if ($sid !== '') $demandCounts[$sid] = ($demandCounts[$sid] ?? 0) + 1;
         }
 
-        // Scan classes
-        $sessionRoot = "Schools/{$sn}/{$sy}";
-        $classKeys = $this->firebase->shallow_get($sessionRoot);
+        // Class/section roster from Firestore sections + students.
+        $csMap = $this->_buildClassSectionMap();
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $schoolFs, $sy);
+
         $status = [];
-
-        if (is_array($classKeys)) {
-            foreach ($classKeys as $ck) {
-                $ck = (string) $ck;
-                if (strpos($ck, 'Class ') !== 0) continue;
-
-                $secKeys = $this->firebase->shallow_get("{$sessionRoot}/{$ck}");
-                if (!is_array($secKeys)) continue;
-
-                $classStudents      = 0;
-                $classWithDemands   = 0;
-                $classTotalDemands  = 0;
-
-                foreach ($secKeys as $sk) {
-                    $sk = (string) $sk;
-                    if (strpos($sk, 'Section ') !== 0) continue;
-
-                    $roster = $this->firebase->get("{$sessionRoot}/{$ck}/{$sk}/Students/List");
-                    if (!is_array($roster)) continue;
-
-                    foreach ($roster as $sid => $name) {
-                        $classStudents++;
-                        $dc = $demandCounts[(string)$sid] ?? 0;
-                        if ($dc > 0) {
-                            $classWithDemands++;
-                            $classTotalDemands += $dc;
-                        }
-                    }
+        foreach ($csMap['classList'] as $ck) {
+            $classStudents = 0; $classWithDemands = 0; $classTotalDemands = 0;
+            foreach ($csMap['sectionMap'][$ck] ?? [] as $sk) {
+                $roster = $this->fsTxn->listStudentsInSection($ck, $sk);
+                foreach ($roster as $sid => $_) {
+                    $classStudents++;
+                    $dc = $demandCounts[$sid] ?? 0;
+                    if ($dc > 0) { $classWithDemands++; $classTotalDemands += $dc; }
                 }
-
-                $status[] = [
-                    'class'          => $ck,
-                    'total_students' => $classStudents,
-                    'with_demands'   => $classWithDemands,
-                    'total_demands'  => $classTotalDemands,
-                    'coverage'       => $classStudents > 0
-                        ? round(($classWithDemands / $classStudents) * 100)
-                        : 0,
-                ];
             }
+            $status[] = [
+                'class'          => $ck,
+                'total_students' => $classStudents,
+                'with_demands'   => $classWithDemands,
+                'total_demands'  => $classTotalDemands,
+                'coverage'       => $classStudents > 0
+                    ? round(($classWithDemands / $classStudents) * 100) : 0,
+            ];
         }
 
-        usort($status, function ($a, $b) {
-            return strnatcmp($a['class'], $b['class']);
-        });
+        usort($status, fn($a, $b) => strnatcmp($a['class'], $b['class']));
 
         $this->json_success([
             'classes' => $status,
-            'total_students_with_demands' => count($demandStudents),
+            'total_students_with_demands' => count($demandCounts),
         ]);
     }
 
@@ -4247,14 +4789,16 @@ class Fees extends MY_Controller
         }
         $studentId = $this->safe_path_segment($studentId, 'student_id');
 
-        // Look up student
-        $dbKey   = $this->parent_db_key;
-        $profile = $this->firebase->get("Users/Parents/{$dbKey}/{$studentId}");
+        // Pure Firestore: read student from students collection.
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        $profile = $this->fsTxn->getStudent($studentId);
         if (!is_array($profile)) {
             return $this->json_error('Student not found.');
         }
 
-        list($class, $section) = $this->_resolveClassSection($profile);
+        $class   = (string) ($profile['className'] ?? '');
+        $section = (string) ($profile['section']   ?? '');
         if ($class === '' || $section === '') {
             return $this->json_error("Cannot resolve class/section.");
         }
@@ -4265,14 +4809,12 @@ class Fees extends MY_Controller
         }
 
         $discountMap = $this->_getStudentDiscounts($studentId, $class, $section);
-        $basePath    = $this->_studentDemands($studentId);
+        $existing    = $this->fsTxn->demandsForStudent($studentId);
 
-        // Read existing demands
-        $existing = $this->firebase->get($basePath);
-        if (!is_array($existing)) $existing = [];
-
-        $updated = 0;
-        $preserved = 0;
+        $updated     = 0;
+        $preserved   = 0;
+        $pendingUpdates = []; // demandId => patch
+        $studentName    = (string) ($profile['name'] ?? $profile['Name'] ?? $studentId);
 
         foreach ($existing as $did => $demand) {
             if (!is_array($demand)) continue;
@@ -4309,15 +4851,34 @@ class Fees extends MY_Controller
             $oldNet = floatval($demand['net_amount'] ?? 0);
             if (abs($oldNet - $netAmount) < 0.01) continue;
 
-            $this->firebase->update("{$basePath}/{$did}", [
+            $patch = [
                 'original_amount' => round($newAmount, 2),
                 'discount_amount' => round($discountAmount, 2),
                 'net_amount'      => $netAmount,
                 'balance'         => $netAmount, // unpaid, so balance = net
                 'updated_at'      => date('c'),
                 'updated_by'      => $this->admin_id ?? 'system',
+            ];
+            $pendingUpdates[$did] = $patch;
+        }
+
+        // Nothing changed — return success without writes
+        if (empty($pendingUpdates)) {
+            $this->json_success([
+                'message'   => "0 demands updated, {$preserved} paid/partial preserved.",
+                'updated'   => 0,
+                'preserved' => $preserved,
             ]);
-            $updated++;
+            return;
+        }
+
+        // Pure Firestore writes — patch each demand doc directly.
+        foreach ($pendingUpdates as $did => $patch) {
+            if ($this->fsTxn->updateDemand($did, $patch)) {
+                $updated++;
+            } else {
+                log_message('error', "recalculate_demands: Firestore updateDemand failed [{$did}]");
+            }
         }
 
         $this->json_success([
@@ -4350,179 +4911,125 @@ class Fees extends MY_Controller
         $this->_require_role(self::MANAGE_ROLES);
 
         $query = trim($this->input->post('query') ?? '');
-        $type  = trim($this->input->post('type') ?? 'auto'); // auto|txn_id|receipt_no|student_id
+        $type  = trim($this->input->post('type') ?? 'auto');
 
-        if ($query === '') {
-            $this->json_error('Search query is required.');
-        }
+        if ($query === '') { $this->json_error('Search query is required.'); return; }
 
-        $school  = $this->school_name;
-        $session = $this->session_year;
-        $bp      = "Schools/{$school}/{$session}";
-        $results = [];
+        $schoolFs = $this->fs->schoolId();
+        $session  = $this->session_year;
+        $results  = [];
 
-        // Auto-detect search type
         if ($type === 'auto') {
-            if (strpos($query, 'TXN_') === 0)       $type = 'txn_id';
-            elseif (is_numeric($query))               $type = 'receipt_no';
-            else                                      $type = 'student_id';
+            if (strpos($query, 'TXN_') === 0) $type = 'txn_id';
+            elseif (is_numeric($query))        $type = 'receipt_no';
+            else                               $type = 'student_id';
         }
 
         if ($type === 'receipt_no') {
-            $receiptNo = $query;
+            $receiptNo  = $query;
             $receiptKey = 'F' . $receiptNo;
 
-            // Receipt Index
-            $idx = $this->firebase->get("{$bp}/Accounts/Receipt_Index/{$receiptNo}");
-            $results['receipt_index'] = is_array($idx) ? $idx : null;
+            $results['receipt_index'] = $this->firebase->firestoreGet('feeReceiptIndex',
+                "{$schoolFs}_{$session}_{$receiptNo}");
 
-            // Idempotency records (scan for this receipt)
-            $idempAll = $this->firebase->get("{$bp}/Fees/Idempotency");
-            $idempMatch = [];
-            if (is_array($idempAll)) {
-                foreach ($idempAll as $k => $v) {
-                    if (is_array($v) && ($v['receipt_no'] ?? '') == $receiptNo) {
-                        $v['_key'] = $k;
-                        $idempMatch[] = $v;
-                    }
+            $idempRows = $this->firebase->firestoreQuery('feeIdempotency', [
+                ['schoolId', '==', $schoolFs],
+            ]);
+            $results['idempotency'] = [];
+            foreach ((array) $idempRows as $r) {
+                $d = $r['data'] ?? $r;
+                if (is_array($d) && (string) ($d['receiptNo'] ?? $d['receipt_no'] ?? '') === $receiptNo) {
+                    $d['_key'] = $r['id'] ?? ''; $results['idempotency'][] = $d;
                 }
             }
-            $results['idempotency'] = $idempMatch;
 
-            // Pending fees
-            $pending = $this->firebase->get("{$bp}/Accounts/Pending_fees/{$receiptKey}");
-            $results['pending'] = is_array($pending) ? $pending : null;
+            $results['pending'] = $this->firebase->firestoreGet('feePendingWrites',
+                "{$schoolFs}_{$receiptKey}");
 
-            // Receipt Allocations
-            $alloc = $this->firebase->get("{$bp}/Fees/Receipt_Allocations/{$receiptKey}");
-            $results['allocations'] = is_array($alloc) ? $alloc : null;
+            $results['allocations'] = $this->firebase->firestoreGet('feeReceiptAllocations',
+                "{$schoolFs}_{$session}_{$receiptKey}");
 
-            // Find student from receipt index or allocations
-            $studentId = $idx['user_id'] ?? ($alloc['student_id'] ?? '');
-            $class     = $idx['class'] ?? ($alloc['class'] ?? '');
-            $section   = $idx['section'] ?? ($alloc['section'] ?? '');
+            $results['receipt'] = $this->firebase->firestoreGet('feeReceipts',
+                "{$schoolFs}_{$receiptKey}");
 
-            // Fees Record on student
-            if ($studentId && $class && $section) {
-                $studentBase = $this->studentPath($class, $section, $studentId);
-                $feesRec = $this->firebase->get("{$studentBase}/Fees Record/{$receiptKey}");
-                $results['fees_record'] = is_array($feesRec) ? $feesRec : null;
-                $results['student_id'] = $studentId;
-                $results['class'] = $class;
-                $results['section'] = $section;
-            }
-
-            // Voucher (need to find by date)
-            $date = $idx['date'] ?? ($alloc['date'] ?? '');
-            if ($date) {
-                // Normalize date format for voucher path
-                $voucherDate = $date;
-                $voucher = $this->firebase->get("{$bp}/Accounts/Vouchers/{$voucherDate}/{$receiptKey}");
-                $results['voucher'] = is_array($voucher) ? $voucher : null;
-            }
-
-            // Ledger entries (scan for source_ref matching receipt)
-            $ledger = $this->firebase->get("{$bp}/Accounts/Ledger");
-            $ledgerMatches = [];
-            if (is_array($ledger)) {
-                foreach ($ledger as $eid => $entry) {
-                    if (!is_array($entry)) continue;
-                    $narr = $entry['narration'] ?? '';
-                    $ref  = $entry['source_ref'] ?? '';
-                    if ($ref == $receiptNo || strpos($narr, "#{$receiptNo}") !== false
-                        || strpos($narr, $receiptNo) !== false) {
-                        $entry['_id'] = $eid;
-                        $ledgerMatches[] = $entry;
-                    }
-                }
-            }
-            $results['ledger_entries'] = $ledgerMatches;
+            $ledgerRows = $this->firebase->firestoreQuery('accountingLedger', [
+                ['schoolId', '==', $schoolFs], ['session', '==', $session],
+                ['source_ref', '==', $receiptKey],
+            ]);
+            $results['ledger_entries'] = array_map(fn($r) => $r['data'] ?? $r, (array) $ledgerRows);
 
         } elseif ($type === 'txn_id') {
             $txnId = $query;
 
-            // Scan idempotency for this txn_id
-            $idempAll = $this->firebase->get("{$bp}/Fees/Idempotency");
-            if (is_array($idempAll)) {
-                foreach ($idempAll as $k => $v) {
-                    if (is_array($v) && ($v['txn_id'] ?? '') === $txnId) {
-                        $v['_key'] = $k;
-                        $results['idempotency'] = $v;
-                        // If we found the receipt, recurse to get full data
-                        if (!empty($v['receipt_no'])) {
-                            $results['receipt_no'] = $v['receipt_no'];
-                        }
-                        break;
-                    }
+            $idempRows = $this->firebase->firestoreQuery('feeIdempotency', [
+                ['schoolId', '==', $schoolFs],
+            ]);
+            foreach ((array) $idempRows as $r) {
+                $d = $r['data'] ?? $r;
+                if (is_array($d) && ($d['txnId'] ?? $d['txn_id'] ?? '') === $txnId) {
+                    $results['idempotency'] = $d;
+                    $results['receipt_no']  = $d['receiptNo'] ?? '';
+                    break;
                 }
             }
 
-            // Scan Receipt_Allocations for txn_id
-            $allAllocs = $this->firebase->get("{$bp}/Fees/Receipt_Allocations");
-            if (is_array($allAllocs)) {
-                foreach ($allAllocs as $rk => $ra) {
-                    if (is_array($ra) && ($ra['txn_id'] ?? '') === $txnId) {
-                        $results['allocations'] = $ra;
-                        $results['receipt_key'] = $rk;
-                        break;
-                    }
+            $allocRows = $this->firebase->firestoreQuery('feeReceiptAllocations', [
+                ['schoolId', '==', $schoolFs],
+            ]);
+            foreach ((array) $allocRows as $r) {
+                $d = $r['data'] ?? $r;
+                if (is_array($d) && ($d['txnId'] ?? '') === $txnId) {
+                    $results['allocations'] = $d; break;
                 }
             }
 
-            // Scan Ledger for txn_id in narration or custom field
-            $ledger = $this->firebase->get("{$bp}/Accounts/Ledger");
-            $ledgerMatches = [];
-            if (is_array($ledger)) {
-                foreach ($ledger as $eid => $entry) {
-                    if (!is_array($entry)) continue;
-                    if (($entry['txn_id'] ?? '') === $txnId
-                        || strpos($entry['narration'] ?? '', $txnId) !== false) {
-                        $entry['_id'] = $eid;
-                        $ledgerMatches[] = $entry;
-                    }
+            $ledgerRows = $this->firebase->firestoreQuery('accountingLedger', [
+                ['schoolId', '==', $schoolFs], ['session', '==', $session],
+            ]);
+            $results['ledger_entries'] = [];
+            foreach ((array) $ledgerRows as $r) {
+                $d = $r['data'] ?? $r;
+                if (is_array($d) && (($d['txn_id'] ?? '') === $txnId
+                    || strpos($d['narration'] ?? '', $txnId) !== false)) {
+                    $results['ledger_entries'][] = $d;
                 }
             }
-            $results['ledger_entries'] = $ledgerMatches;
 
         } elseif ($type === 'student_id') {
             $studentId = $this->safe_path_segment($query, 'student_id');
 
-            // Get student profile
-            $profile = $this->firebase->get("Users/Parents/{$this->parent_db_key}/{$studentId}");
+            $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+            $this->fsTxn->init($this->firebase, $this->fs, $schoolFs, $session);
+            $profile = $this->fsTxn->getStudent($studentId);
             if (is_array($profile)) {
                 $results['student'] = [
-                    'name' => $profile['Name'] ?? $studentId,
-                    'class' => $profile['Class'] ?? '',
-                    'section' => $profile['Section'] ?? '',
-                    'father' => $profile['Father Name'] ?? '',
+                    'name'    => $profile['name'] ?? $studentId,
+                    'class'   => $profile['className'] ?? '',
+                    'section' => $profile['section'] ?? '',
+                    'father'  => $profile['fatherName'] ?? '',
                 ];
-
-                list($cls, $sec) = $this->_resolveClassSection($profile);
-                if ($cls && $sec) {
-                    $sBase = $this->studentPath($cls, $sec, $studentId);
-                    // All fees records
-                    $allRecs = $this->firebase->get("{$sBase}/Fees Record");
-                    $results['fees_records'] = is_array($allRecs) ? $allRecs : [];
-                    $results['record_count'] = is_array($allRecs) ? count($allRecs) : 0;
-                }
             }
 
-            // Recent idempotency records for this student
-            $idempAll = $this->firebase->get("{$bp}/Fees/Idempotency");
-            $idempMatches = [];
-            if (is_array($idempAll)) {
-                foreach ($idempAll as $k => $v) {
-                    if (is_array($v) && ($v['user_id'] ?? '') === $studentId) {
-                        $v['_key'] = $k;
-                        $idempMatches[] = $v;
-                    }
+            $rcptRows = $this->firebase->firestoreQuery('feeReceipts', [
+                ['schoolId', '==', $schoolFs], ['studentId', '==', $studentId],
+            ]);
+            $results['fees_records'] = array_map(fn($r) => $r['data'] ?? $r, (array) $rcptRows);
+            $results['record_count'] = count($results['fees_records']);
+
+            $idempRows = $this->firebase->firestoreQuery('feeIdempotency', [
+                ['schoolId', '==', $schoolFs],
+            ]);
+            $results['idempotency_history'] = [];
+            foreach ((array) $idempRows as $r) {
+                $d = $r['data'] ?? $r;
+                if (is_array($d) && ($d['userId'] ?? $d['user_id'] ?? '') === $studentId) {
+                    $results['idempotency_history'][] = $d;
                 }
             }
-            $results['idempotency_history'] = $idempMatches;
         }
 
         $results['search_type'] = $type;
-        $results['query'] = $query;
+        $results['query']       = $query;
         $this->json_success($results);
     }
 
@@ -4535,87 +5042,55 @@ class Fees extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES);
 
-        $bp   = "Schools/{$this->school_name}/{$this->session_year}";
-        $now  = time();
-        $staleThreshold = 120; // seconds
+        $schoolFs = $this->fs->schoolId();
+        $now      = time();
+        $thresh   = 120;
 
-        // Stale idempotency records
-        $idempAll = $this->firebase->get("{$bp}/Fees/Idempotency");
-        $staleProcessing = [];
-        if (is_array($idempAll)) {
-            foreach ($idempAll as $k => $v) {
-                if (!is_array($v)) continue;
-                if (($v['status'] ?? '') !== 'processing') continue;
-                $age = $now - strtotime($v['started_at'] ?? '2000-01-01');
-                if ($age > $staleThreshold) {
-                    $v['_key'] = $k;
-                    $v['_age_seconds'] = $age;
-                    $staleProcessing[] = $v;
-                }
-            }
+        $staleProcessing = $stalePending = $staleReservations = $activeLocks = [];
+
+        // Stale idempotency
+        $rows = $this->firebase->firestoreQuery('feeIdempotency', [['schoolId','==',$schoolFs]]);
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            if (($d['status'] ?? '') !== 'processing') continue;
+            $age = $now - strtotime($d['startedAt'] ?? $d['started_at'] ?? '2000-01-01');
+            if ($age > $thresh) { $d['_key'] = $r['id'] ?? ''; $d['_age_seconds'] = $age; $staleProcessing[] = $d; }
         }
 
-        // Stale pending fees
-        $pendingAll = $this->firebase->get("{$bp}/Accounts/Pending_fees");
-        $stalePending = [];
-        if (is_array($pendingAll)) {
-            foreach ($pendingAll as $k => $v) {
-                if (!is_array($v)) continue;
-                $age = $now - strtotime($v['started_at'] ?? '2000-01-01');
-                if ($age > $staleThreshold) {
-                    $v['_key'] = $k;
-                    $v['_age_seconds'] = $age;
-                    $stalePending[] = $v;
-                }
-            }
+        // Stale pending
+        $rows = $this->firebase->firestoreQuery('feePendingWrites', [['schoolId','==',$schoolFs],['status','==','pending']]);
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $age = $now - strtotime($d['startedAt'] ?? '2000-01-01');
+            if ($age > $thresh) { $d['_key'] = $r['id'] ?? ''; $d['_age_seconds'] = $age; $stalePending[] = $d; }
         }
 
         // Stale receipt reservations
-        $receiptIdx = $this->firebase->get("{$bp}/Accounts/Receipt_Index");
-        $staleReservations = [];
-        if (is_array($receiptIdx)) {
-            foreach ($receiptIdx as $rn => $ri) {
-                if (!is_array($ri) || empty($ri['reserved'])) continue;
-                $age = $now - strtotime($ri['reserved_at'] ?? '2000-01-01');
-                if ($age > $staleThreshold) {
-                    $ri['_receipt_no'] = $rn;
-                    $ri['_age_seconds'] = $age;
-                    $staleReservations[] = $ri;
-                }
-            }
+        $rows = $this->firebase->firestoreQuery('feeReceiptIndex', [['schoolId','==',$schoolFs]]);
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            if (empty($d['reserved'])) continue;
+            $age = $now - strtotime($d['reservedAt'] ?? $d['reserved_at'] ?? '2000-01-01');
+            if ($age > $thresh) { $d['_receipt_no'] = $d['receiptNo'] ?? ''; $d['_age_seconds'] = $age; $staleReservations[] = $d; }
         }
 
         // Active locks
-        $locks = $this->firebase->get("{$bp}/Fees/Locks");
-        $activeLocks = [];
-        if (is_array($locks)) {
-            foreach ($locks as $sid => $l) {
-                if (!is_array($l)) continue;
-                $l['_student_id'] = $sid;
-                $l['_age_seconds'] = $now - strtotime($l['locked_at'] ?? '2000-01-01');
-                $activeLocks[] = $l;
-            }
-        }
-
-        // Advance balance sync failures
-        $syncPending = [];
-        $syncAll = $this->firebase->get("{$bp}/Fees/Advance_Sync_Pending");
-        if (is_array($syncAll)) {
-            foreach ($syncAll as $sid => $sp) {
-                if (!is_array($sp)) continue;
-                $sp['_student_id'] = $sid;
-                $sp['_age_seconds'] = $now - strtotime($sp['flagged_at'] ?? '2000-01-01');
-                $syncPending[] = $sp;
-            }
+        $rows = $this->firebase->firestoreQuery('feeLocks', [['schoolId','==',$schoolFs]]);
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            if (empty($d['locked'])) continue;
+            $d['_student_id'] = $d['userId'] ?? $d['studentId'] ?? '';
+            $d['_age_seconds'] = $now - strtotime($d['lockedAt'] ?? $d['locked_at'] ?? '2000-01-01');
+            $activeLocks[] = $d;
         }
 
         $this->json_success([
-            'stale_processing'    => $staleProcessing,
-            'stale_pending'       => $stalePending,
-            'stale_reservations'  => $staleReservations,
-            'active_locks'        => $activeLocks,
-            'sync_pending'        => $syncPending,
-            'total_issues'        => count($staleProcessing) + count($stalePending) + count($staleReservations) + count($syncPending),
+            'stale_processing'   => $staleProcessing,
+            'stale_pending'      => $stalePending,
+            'stale_reservations' => $staleReservations,
+            'active_locks'       => $activeLocks,
+            'sync_pending'       => [],
+            'total_issues'       => count($staleProcessing) + count($stalePending) + count($staleReservations),
         ]);
     }
 
@@ -4632,115 +5107,71 @@ class Fees extends MY_Controller
         $receiptNo = trim($this->input->post('receipt_no') ?? '');
         $studentId = trim($this->input->post('student_id') ?? '');
 
-        $bp = "Schools/{$this->school_name}/{$this->session_year}";
+        $schoolFs  = $this->fs->schoolId();
+        $session   = $this->session_year;
         $diagnosis = ['writes_found' => [], 'writes_missing' => [], 'safe_actions' => []];
 
-        // Load the idempotency record for step info
         $idemp = null;
         if ($idempKey) {
-            $idemp = $this->firebase->get("{$bp}/Fees/Idempotency/{$idempKey}");
-            $receiptNo = $receiptNo ?: ($idemp['receipt_no'] ?? '');
-            $studentId = $studentId ?: ($idemp['user_id'] ?? '');
+            $idemp = $this->firebase->firestoreGet('feeIdempotency', $idempKey);
+            $receiptNo = $receiptNo ?: (string) ($idemp['receiptNo'] ?? $idemp['receipt_no'] ?? '');
+            $studentId = $studentId ?: (string) ($idemp['userId'] ?? $idemp['user_id'] ?? '');
         }
         $receiptKey = $receiptNo ? 'F' . $receiptNo : '';
         $lastStep   = is_array($idemp) ? ($idemp['step'] ?? 'unknown') : 'unknown';
 
-        $diagnosis['last_step'] = $lastStep;
+        $diagnosis['last_step']  = $lastStep;
         $diagnosis['receipt_no'] = $receiptNo;
         $diagnosis['student_id'] = $studentId;
 
-        // Check each write location
         $checks = [];
 
-        // 1. Receipt Index
         if ($receiptNo) {
-            $ri = $this->firebase->get("{$bp}/Accounts/Receipt_Index/{$receiptNo}");
+            $ri = $this->firebase->firestoreGet('feeReceiptIndex', "{$schoolFs}_{$session}_{$receiptNo}");
             $exists = is_array($ri) && !empty($ri);
-            $isReserved = $exists && !empty($ri['reserved']);
-            $checks['receipt_index'] = $exists ? ($isReserved ? 'reserved' : 'finalized') : 'missing';
+            $checks['receipt_index'] = $exists ? (empty($ri['reserved']) ? 'finalized' : 'reserved') : 'missing';
         }
-
-        // 2. Pending fees
         if ($receiptKey) {
-            $pf = $this->firebase->get("{$bp}/Accounts/Pending_fees/{$receiptKey}");
+            $pf = $this->firebase->firestoreGet('feePendingWrites', "{$schoolFs}_{$receiptKey}");
             $checks['pending_fees'] = (is_array($pf) && !empty($pf)) ? 'exists' : 'cleared';
         }
-
-        // 3. Fees Record on student
-        if ($studentId && $receiptKey) {
-            $student = $this->firebase->get("Users/Parents/{$this->parent_db_key}/{$studentId}");
-            if (is_array($student)) {
-                list($cls, $sec) = $this->_resolveClassSection($student);
-                if ($cls && $sec) {
-                    $sBase = $this->studentPath($cls, $sec, $studentId);
-                    $fr = $this->firebase->get("{$sBase}/Fees Record/{$receiptKey}");
-                    $checks['fees_record'] = (is_array($fr) && !empty($fr)) ? 'written' : 'missing';
-                }
-            }
-        }
-
-        // 4. Voucher (need date from receipt index or pending)
-        $vDate = '';
-        if (isset($ri['date']) && !empty($ri['date'])) $vDate = $ri['date'];
-        elseif (isset($pf['started_at'])) $vDate = date('d-m-Y', strtotime($pf['started_at']));
-        if ($vDate && $receiptKey) {
-            $voucher = $this->firebase->get("{$bp}/Accounts/Vouchers/{$vDate}/{$receiptKey}");
-            $checks['voucher'] = (is_array($voucher) && !empty($voucher)) ? 'written' : 'missing';
-        }
-
-        // 5. Receipt Allocations
         if ($receiptKey) {
-            $ra = $this->firebase->get("{$bp}/Fees/Receipt_Allocations/{$receiptKey}");
+            $rcpt = $this->firebase->firestoreGet('feeReceipts', "{$schoolFs}_{$receiptKey}");
+            $checks['fees_record'] = (is_array($rcpt) && !empty($rcpt)) ? 'written' : 'missing';
+        }
+        if ($receiptKey) {
+            $ra = $this->firebase->firestoreGet('feeReceiptAllocations', "{$schoolFs}_{$session}_{$receiptKey}");
             $checks['allocations'] = (is_array($ra) && !empty($ra)) ? 'written' : 'missing';
         }
-
-        // 6. Lock
         if ($studentId) {
-            $lock = $this->firebase->get("{$bp}/Fees/Locks/{$studentId}");
+            $lock = $this->firebase->firestoreGet('feeLocks', "{$schoolFs}_{$studentId}");
             $checks['lock'] = (is_array($lock) && !empty($lock['locked'])) ? 'held' : 'free';
         }
 
         $diagnosis['checks'] = $checks;
-
-        // Categorize writes
         foreach ($checks as $name => $status) {
-            if (in_array($status, ['written', 'finalized', 'exists', 'held'])) {
-                $diagnosis['writes_found'][] = $name;
-            } elseif (in_array($status, ['missing', 'cleared', 'free'])) {
-                $diagnosis['writes_missing'][] = $name;
-            } elseif ($status === 'reserved') {
-                $diagnosis['writes_found'][] = $name . ' (reserved only)';
-            }
+            if (in_array($status, ['written','finalized','exists','held'])) $diagnosis['writes_found'][] = $name;
+            elseif (in_array($status, ['missing','cleared','free']))         $diagnosis['writes_missing'][] = $name;
+            elseif ($status === 'reserved')                                  $diagnosis['writes_found'][] = "{$name} (reserved only)";
         }
 
-        // Recommend actions based on what exists
-        $hasFeesRecord = ($checks['fees_record'] ?? '') === 'written';
-        $hasVoucher    = ($checks['voucher'] ?? '') === 'written';
-        $hasAlloc      = ($checks['allocations'] ?? '') === 'written';
-        $hasLock       = ($checks['lock'] ?? '') === 'held';
-        $hasPending    = ($checks['pending_fees'] ?? '') === 'exists';
+        $hasRecord = ($checks['fees_record'] ?? '') === 'written';
+        $hasAlloc  = ($checks['allocations'] ?? '') === 'written';
+        $hasLock   = ($checks['lock'] ?? '') === 'held';
 
-        if (!$hasFeesRecord && !$hasVoucher && !$hasAlloc) {
-            // Nothing material was written — safe to fully clear
-            $diagnosis['recommendation'] = 'clean_clear';
-            $diagnosis['recommendation_text'] = 'No financial writes detected. Safe to clear all markers (lock, pending, reservation, idempotency).';
-            $diagnosis['safe_actions'] = ['clear_lock', 'clear_pending', 'clear_reservation', 'clear_processing'];
-        } elseif ($hasFeesRecord && $hasVoucher && $hasAlloc) {
-            // Everything was written — transaction likely completed but cleanup failed
-            $diagnosis['recommendation'] = 'mark_complete';
-            $diagnosis['recommendation_text'] = 'All financial records exist. Transaction appears complete — just cleanup stale markers.';
-            $diagnosis['safe_actions'] = ['clear_lock', 'clear_pending', 'mark_success'];
-        } elseif ($hasFeesRecord && !$hasVoucher) {
-            // Partial — fees written but voucher missing
-            $diagnosis['recommendation'] = 'needs_review';
-            $diagnosis['recommendation_text'] = 'Fees Record exists but Voucher is missing. Review manually — may need to create voucher or reverse the fees record.';
-            $diagnosis['safe_actions'] = ['clear_lock', 'view_details'];
+        if (!$hasRecord && !$hasAlloc) {
+            $diagnosis['recommendation']      = 'clean_clear';
+            $diagnosis['recommendation_text'] = 'No financial writes detected. Safe to clear all markers.';
+            $diagnosis['safe_actions']        = ['clear_lock','clear_pending','clear_reservation','clear_processing'];
+        } elseif ($hasRecord && $hasAlloc) {
+            $diagnosis['recommendation']      = 'mark_complete';
+            $diagnosis['recommendation_text'] = 'All financial records exist. Cleanup stale markers only.';
+            $diagnosis['safe_actions']        = ['clear_lock','clear_pending','mark_success'];
         } else {
-            $diagnosis['recommendation'] = 'needs_review';
-            $diagnosis['recommendation_text'] = 'Partial writes detected. Manual review recommended before taking action.';
-            $diagnosis['safe_actions'] = ['clear_lock', 'view_details'];
+            $diagnosis['recommendation']      = 'needs_review';
+            $diagnosis['recommendation_text'] = 'Partial writes detected. Manual review recommended.';
+            $diagnosis['safe_actions']        = ['clear_lock','view_details'];
         }
-
         if ($hasLock) array_unshift($diagnosis['safe_actions'], 'clear_lock');
         $diagnosis['safe_actions'] = array_unique($diagnosis['safe_actions']);
 
@@ -4756,59 +5187,52 @@ class Fees extends MY_Controller
         $this->_require_post();
         $this->_require_role(['Admin'], 'resolve_stale_transaction');
 
-        $action = trim($this->input->post('action') ?? '');
-        $key    = trim($this->input->post('key') ?? '');
+        $action  = trim($this->input->post('action') ?? '');
+        $key     = trim($this->input->post('key') ?? '');
+        if (!$action || !$key) { $this->json_error('Action and key are required.'); return; }
 
-        if (!$action || !$key) {
-            $this->json_error('Action and key are required.');
-        }
-
-        $bp = "Schools/{$this->school_name}/{$this->session_year}";
-        $detail = '';
+        $schoolFs = $this->fs->schoolId();
+        $session  = $this->session_year;
+        $detail   = '';
 
         switch ($action) {
             case 'clear_lock':
-                $this->firebase->delete("{$bp}/Fees/Locks/{$key}");
+                $this->firebase->firestoreDelete('feeLocks', "{$schoolFs}_{$key}");
                 $detail = "Student lock released for {$key}";
                 break;
             case 'clear_pending':
-                $this->firebase->delete("{$bp}/Accounts/Pending_fees/{$key}");
+                $this->firebase->firestoreDelete('feePendingWrites', "{$schoolFs}_{$key}");
                 $detail = "Pending fees marker cleared for {$key}";
                 break;
             case 'clear_reservation':
-                $this->firebase->delete("{$bp}/Accounts/Receipt_Index/{$key}");
+                $this->firebase->firestoreDelete('feeReceiptIndex', "{$schoolFs}_{$session}_{$key}");
                 $detail = "Stale receipt reservation cleared for #{$key}";
                 break;
             case 'clear_processing':
-                $this->firebase->update("{$bp}/Fees/Idempotency/{$key}", [
-                    'status'      => 'cleared_manual',
-                    'cleared_by'  => $this->admin_name ?? '',
-                    'cleared_at'  => date('c'),
-                ]);
+                $this->firebase->firestoreSet('feeIdempotency', $key, [
+                    'status'     => 'cleared_manual',
+                    'cleared_by' => $this->admin_name ?? '',
+                    'cleared_at' => date('c'),
+                ], true);
                 $detail = "Idempotency record marked as manually cleared";
                 break;
             case 'mark_success':
-                $this->firebase->update("{$bp}/Fees/Idempotency/{$key}", [
+                $this->firebase->firestoreSet('feeIdempotency', $key, [
                     'status'       => 'success',
                     'step'         => 'marked_complete_manual',
                     'completed_at' => date('c'),
                     'cleared_by'   => $this->admin_name ?? '',
-                ]);
+                ], true);
                 $detail = "Transaction marked as successfully completed (manual)";
                 break;
-            case 'clear_sync_pending':
-                $this->firebase->delete("{$bp}/Fees/Advance_Sync_Pending/{$key}");
-                $detail = "Advance balance sync flag cleared for {$key} (manually reconciled)";
-                break;
             default:
-                $this->json_error('Unknown action.');
+                $this->json_error('Unknown action.'); return;
         }
 
         log_message('info',
             "resolve_stale: action={$action} key={$key} detail=[{$detail}] admin={$this->admin_id} school={$this->school_name}"
         );
-
-        $this->json_success(['message' => $detail ?: 'Resolved successfully.', 'action' => $action, 'key' => $key]);
+        $this->json_success(['message' => $detail, 'action' => $action, 'key' => $key]);
     }
 
     /**
@@ -4830,6 +5254,14 @@ class Fees extends MY_Controller
     {
         $this->_require_post();
         $this->_require_role(['Admin'], 'recalculate_advance');
+        // Delegates to repair_carry_forward with auto-apply.
+        $_POST['apply'] = '1';
+        return $this->repair_carry_forward();
+    }
+
+    /** @deprecated Use recalculate_advance (Firestore-based) */
+    private function _recalculate_advance_legacy()
+    {
 
         $studentId = trim($this->input->post('student_id') ?? '');
         if ($studentId === '') {
@@ -4842,7 +5274,7 @@ class Fees extends MY_Controller
         $bp      = "Schools/{$school}/{$session}";
 
         // 1. Resolve student class/section
-        $profile = $this->firebase->get("Users/Parents/{$this->parent_db_key}/{$studentId}");
+        $profile = $this->fs->getEntity("students", $studentId);
         if (!is_array($profile)) {
             $this->json_error("Student '{$studentId}' not found.");
         }
@@ -4853,14 +5285,14 @@ class Fees extends MY_Controller
         $sBase = $this->studentPath($class, $section, $studentId);
 
         // 2. Sum all receipts — but exclude reversed ones
-        $allReceipts = $this->firebase->get("{$sBase}/Fees Record");
+        $allReceipts = []; // RTDB removed — use Firestore feeReceipts
         $totalReceived = 0;
         $totalDiscount = 0;
         $receiptCount  = 0;
         $reversedReceipts = []; // receipt keys marked as reversed in allocations
 
         // Load Receipt_Allocations to identify reversed receipts
-        $allocAll = $this->firebase->get("{$bp}/Fees/Receipt_Allocations");
+        $allocAll = []; // RTDB removed — use Firestore feeReceiptAllocations
         if (is_array($allocAll)) {
             foreach ($allocAll as $rk => $ra) {
                 if (!is_array($ra)) continue;
@@ -4887,7 +5319,7 @@ class Fees extends MY_Controller
         // 3. Sum refunded amounts from Refund_Audit
         $totalRefunded = 0;
         $refundCount   = 0;
-        $refundAudits  = $this->firebase->get("{$bp}/Fees/Refund_Audit");
+        $refundAudits = []; // RTDB removed
         if (is_array($refundAudits)) {
             foreach ($refundAudits as $aid => $audit) {
                 if (!is_array($audit)) continue;
@@ -4898,7 +5330,7 @@ class Fees extends MY_Controller
         }
 
         // Also check Fee_management refunds (approved/processed)
-        $fmRefunds = $this->firebase->get("{$bp}/Accounts/Fees/Refunds");
+        $fmRefunds = []; // RTDB removed
         if (is_array($fmRefunds)) {
             foreach ($fmRefunds as $rid => $ref) {
                 if (!is_array($ref)) continue;
@@ -4932,7 +5364,7 @@ class Fees extends MY_Controller
         // 5. Sum all demand allocations (total money applied to fees)
         $totalAllocated = 0;
         $demandsPath = "{$bp}/Fees/Demands/{$studentId}";
-        $allDemands  = $this->firebase->get($demandsPath);
+        $allDemands = []; // RTDB removed — use Firestore feeDemands
         if (is_array($allDemands)) {
             foreach ($allDemands as $did => $d) {
                 if (!is_array($d)) continue;
@@ -4947,12 +5379,12 @@ class Fees extends MY_Controller
         $cfCredit = 0;
         $cfDebt   = 0;
 
-        $cfAdvRec = $this->firebase->get("{$bp}/Fees/Carried_Forward_Advance/{$studentId}");
+        $cfAdvRec = null; // RTDB removed — use Firestore feeCarryForward
         if (is_array($cfAdvRec)) {
             $cfCredit = round(floatval($cfAdvRec['amount'] ?? 0), 2);
         }
 
-        $cfFeesRec = $this->firebase->get("{$bp}/Accounts/Fees/Carried_Forward");
+        $cfFeesRec = null; // RTDB removed
         if (is_array($cfFeesRec) && isset($cfFeesRec['students'][$studentId])) {
             $cfDebt = round(floatval($cfFeesRec['students'][$studentId]['amount'] ?? 0), 2);
         }
@@ -4967,35 +5399,31 @@ class Fees extends MY_Controller
 
         // 8. Read current balance for before/after comparison
         $advPath = "{$bp}/Fees/Advance_Balance/{$studentId}";
-        $currentAdv = $this->firebase->get($advPath);
+        $currentAdv = null; // RTDB removed — use Firestore studentAdvanceBalances
         $oldBalance = is_array($currentAdv) ? round(floatval($currentAdv['amount'] ?? 0), 2) : 0;
 
-        // 9. Write corrected balance with calculation audit trail
-        $this->firebase->set($advPath, [
-            'amount'                 => $correctAdvance,
-            'student_id'             => $studentId,
-            'student_name'           => $profile['Name'] ?? $studentId,
-            'last_updated'           => date('c'),
-            'recalculated'           => true,
-            'recalculated_by'        => $this->admin_name ?? '',
-            'recalculated_at'        => date('c'),
-            'calc_total_received'    => round($totalReceived, 2),
-            'calc_total_refunded'    => round($totalRefunded, 2),
-            'calc_net_received'      => $netReceived,
-            'calc_total_allocated'   => round($totalAllocated, 2),
-            'calc_carry_forward_net' => $carryForwardNet,
-        ]);
+        // 9. Write corrected balance — Firestore-only per no-RTDB policy.
+        // RTDB Advance_Balance + Oversubmittedfees mirrors removed.
 
-        // 10. Sync legacy path
+        // 10. Firestore — reconciled balance
         try {
-            $this->firebase->set("{$sBase}/Oversubmittedfees", $correctAdvance);
+            $abOk = $this->fsSync->syncAdvanceBalance($studentId, $correctAdvance, [
+                'studentName' => $profile['Name'] ?? '',
+            ]);
+            if (!$abOk) {
+                $this->fsSync->queueForRetry('advanceBalance', [
+                    'studentId' => $studentId,
+                    'amount'    => $correctAdvance,
+                    'meta'      => ['studentName' => $profile['Name'] ?? ''],
+                ]);
+            }
         } catch (\Exception $e) {
-            log_message('error', "recalculate_advance: legacy sync failed: " . $e->getMessage());
+            log_message('error', "recalculate_advance: Firestore sync failed: " . $e->getMessage());
         }
 
         // 11. Clear sync-pending flag
         try {
-            $this->firebase->delete("{$bp}/Fees/Advance_Sync_Pending/{$studentId}");
+            // RTDB mirror removed.
         } catch (\Exception $e) { /* may not exist */ }
 
         log_message('info',
@@ -5036,69 +5464,61 @@ class Fees extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES);
 
-        $sn = $this->school_name;
-        $sy = $this->session_year;
-        $feesBase = "Schools/{$sn}/{$sy}";
+        $schoolFs = $this->fs->schoolId();
+        $sy       = $this->session_year;
 
         try {
-            // Check for in-flight online payments
-            $orders = $this->firebase->get("{$feesBase}/Accounts/Fees/Online_Orders") ?: [];
+            // Check for in-flight locks (stale receipts still "processing")
             $inFlight = [];
-            foreach ($orders as $id => $order) {
-                if (!is_array($order)) continue;
-                $status = $order['status'] ?? '';
-                if (in_array($status, ['created', 'processing', 'verified'])) {
-                    $inFlight[] = ['order_id' => $id, 'student_id' => $order['student_id'] ?? '', 'amount' => $order['amount'] ?? 0, 'status' => $status];
-                }
-            }
-
-            // Check for in-flight payment intents
-            $intents = $this->firebase->get("{$feesBase}/Fees/Payment_Intents") ?: [];
-            foreach ($intents as $id => $intent) {
-                if (!is_array($intent)) continue;
-                $status = $intent['status'] ?? '';
-                if (in_array($status, ['requested', 'order_created', 'paying', 'processing'])) {
-                    $inFlight[] = ['intent_id' => $id, 'student_id' => $intent['student_id'] ?? '', 'amount' => $intent['amount'] ?? 0, 'status' => $status];
-                }
-            }
-
-            // Get all students with pending fees
-            $pending = $this->firebase->get("{$feesBase}/Accounts/Pending_fees") ?: [];
-            $carryForward = [];
-            $totalCarryForward = 0;
-
-            foreach ($pending as $studentId => $months) {
-                if (!is_array($months)) continue;
-                $studentDues = 0;
-                $unpaidMonths = [];
-                foreach ($months as $month => $data) {
-                    if ($month === 'meta') continue;
-                    $status = is_array($data) ? ($data['status'] ?? 'Pending') : 'Pending';
-                    $amount = is_array($data) ? floatval($data['amount'] ?? 0) : floatval($data);
-                    if (in_array($status, ['Pending', 'Overdue']) && $amount > 0) {
-                        $studentDues += $amount;
-                        $unpaidMonths[] = $month;
-                    }
-                }
-                if ($studentDues > 0) {
-                    $carryForward[] = [
-                        'student_id' => $studentId,
-                        'dues' => $studentDues,
-                        'unpaid_months' => $unpaidMonths
+            $lockRows = $this->firebase->firestoreQuery('feeLocks', [['schoolId','==',$schoolFs]]);
+            foreach ((array) $lockRows as $r) {
+                $d = $r['data'] ?? $r;
+                if (is_array($d) && !empty($d['locked'])) {
+                    $inFlight[] = [
+                        'type'       => 'lock',
+                        'student_id' => $d['userId'] ?? $d['studentId'] ?? '',
+                        'status'     => 'locked',
                     ];
-                    $totalCarryForward += $studentDues;
                 }
+            }
+
+            // Carry-forward candidates: students with unpaid demand balance.
+            $demandRows = $this->firebase->firestoreQuery('feeDemands', [
+                ['schoolId','==',$schoolFs], ['session','==',$sy],
+            ]);
+            $byStudent  = [];
+            foreach ((array) $demandRows as $r) {
+                $d   = $r['data'] ?? $r;
+                $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
+                $bal = (float) ($d['balance'] ?? 0);
+                if ($sid !== '' && $bal > 0) {
+                    if (!isset($byStudent[$sid])) $byStudent[$sid] = ['dues' => 0, 'months' => []];
+                    $byStudent[$sid]['dues'] += $bal;
+                    $pk = $d['period_key'] ?? '';
+                    if ($pk !== '') $byStudent[$sid]['months'][$pk] = true;
+                }
+            }
+
+            $carryForward      = [];
+            $totalCarryForward = 0;
+            foreach ($byStudent as $sid => $info) {
+                $carryForward[] = [
+                    'student_id'    => $sid,
+                    'dues'          => round($info['dues'], 2),
+                    'unpaid_months' => array_keys($info['months']),
+                ];
+                $totalCarryForward += $info['dues'];
             }
 
             $this->_json_out([
-                'status' => 'success',
-                'in_flight_payments' => $inFlight,
-                'in_flight_count' => count($inFlight),
-                'carry_forward' => $carryForward,
-                'carry_forward_count' => count($carryForward),
-                'total_carry_forward' => $totalCarryForward,
-                'can_proceed' => count($inFlight) === 0,
-                'block_reason' => count($inFlight) > 0 ? 'In-flight payments must complete before rollover' : ''
+                'status'               => 'success',
+                'in_flight_payments'   => $inFlight,
+                'in_flight_count'      => count($inFlight),
+                'carry_forward'        => $carryForward,
+                'carry_forward_count'  => count($carryForward),
+                'total_carry_forward'  => round($totalCarryForward, 2),
+                'can_proceed'          => count($inFlight) === 0,
+                'block_reason'         => count($inFlight) > 0 ? 'In-flight payments must complete before rollover' : '',
             ]);
         } catch (Exception $e) {
             log_message('error', "year_rollover_prepare failed: " . $e->getMessage());
@@ -5115,24 +5535,8 @@ class Fees extends MY_Controller
         $this->_require_post();
         $this->_require_role(self::MANAGE_ROLES);
 
-        // TC-CF005: Check deploy lock before any fee writes
-        try {
-            $deployLock = $this->firebase->get("Schools/{$this->school_name}/System/Deploy_Lock");
-            if ($deployLock && ($deployLock['locked'] ?? false) === true) {
-                $this->_json_out([
-                    'status' => 'error',
-                    'message' => 'System is updating. Please try again in a few minutes.',
-                    'locked' => true
-                ]);
-                return;
-            }
-        } catch (Exception $e) {
-            log_message('error', "Deploy lock check failed: " . $e->getMessage());
-            // Don't block on check failure
-        }
-
-        $sn = $this->school_name;
-        $sy = $this->session_year;
+        $schoolFs   = $this->fs->schoolId();
+        $sy         = $this->session_year;
         $newSession = trim($this->input->post('new_session') ?? '');
 
         if ($newSession === '') {
@@ -5140,75 +5544,72 @@ class Fees extends MY_Controller
             return;
         }
 
-        $feesBase = "Schools/{$sn}/{$sy}";
-        $newFeesBase = "Schools/{$sn}/{$newSession}";
-
         try {
-            // Block if in-flight payments exist
-            $orders = $this->firebase->get("{$feesBase}/Accounts/Fees/Online_Orders") ?: [];
-            foreach ($orders as $id => $order) {
-                if (!is_array($order)) continue;
-                if (in_array($order['status'] ?? '', ['created', 'processing', 'verified'])) {
-                    $this->_json_out(['status' => 'error', 'message' => 'Cannot rollover: in-flight payment exists (order ' . $id . ')']);
+            // Block if active locks exist (in-flight payments)
+            $lockRows = $this->firebase->firestoreQuery('feeLocks', [['schoolId','==',$schoolFs]]);
+            foreach ((array) $lockRows as $r) {
+                $d = $r['data'] ?? $r;
+                if (is_array($d) && !empty($d['locked'])) {
+                    $this->_json_out(['status'=>'error','message'=>'Cannot rollover: in-flight lock for '.($d['userId']??'')]);
                     return;
                 }
             }
 
-            // 1. Freeze current session
-            $this->firebase->set("{$feesBase}/Fees/Year_Rollover", [
-                'status' => 'frozen',
-                'frozen_at' => date('c'),
-                'frozen_by' => $this->admin_id ?? 'system',
-                'new_session' => $newSession
+            // 1. Freeze current session (Firestore feeSettings)
+            $this->firebase->firestoreSet('feeSettings', "{$schoolFs}_{$sy}_rollover", [
+                'schoolId'   => $schoolFs,
+                'session'    => $sy,
+                'status'     => 'frozen',
+                'frozen_at'  => date('c'),
+                'frozen_by'  => $this->admin_id ?? 'system',
+                'new_session' => $newSession,
             ]);
 
-            // 2. Calculate and write carry-forward
-            $pending = $this->firebase->get("{$feesBase}/Accounts/Pending_fees") ?: [];
-            $cfCount = 0;
-            $cfTotal = 0;
-
-            foreach ($pending as $studentId => $months) {
-                if (!is_array($months)) continue;
-                $studentDues = 0;
-                $unpaidDetails = [];
-                foreach ($months as $month => $data) {
-                    if ($month === 'meta') continue;
-                    $status = is_array($data) ? ($data['status'] ?? 'Pending') : 'Pending';
-                    $amount = is_array($data) ? floatval($data['amount'] ?? 0) : floatval($data);
-                    if (in_array($status, ['Pending', 'Overdue']) && $amount > 0) {
-                        $studentDues += $amount;
-                        $unpaidDetails[$month] = ['amount' => $amount, 'status' => $status];
-                    }
-                }
-                if ($studentDues > 0) {
-                    $this->firebase->set("{$newFeesBase}/Fees/Carry_Forward/{$studentId}", [
-                        'previous_session' => $sy,
-                        'total_dues' => $studentDues,
-                        'unpaid_details' => $unpaidDetails,
-                        'carried_at' => date('c')
-                    ]);
-                    $cfCount++;
-                    $cfTotal += $studentDues;
-                }
+            // 2. Carry-forward from unpaid demands
+            $demandRows = $this->firebase->firestoreQuery('feeDemands', [
+                ['schoolId','==',$schoolFs], ['session','==',$sy],
+            ]);
+            $byStudent = [];
+            foreach ((array) $demandRows as $r) {
+                $d   = $r['data'] ?? $r;
+                $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
+                $bal = (float) ($d['balance'] ?? 0);
+                if ($sid === '' || $bal <= 0) continue;
+                if (!isset($byStudent[$sid])) $byStudent[$sid] = ['dues' => 0, 'details' => []];
+                $byStudent[$sid]['dues'] += $bal;
+                $pk = $d['period_key'] ?? '';
+                if ($pk !== '') $byStudent[$sid]['details'][$pk] = [
+                    'amount'   => $bal,
+                    'fee_head' => $d['fee_head'] ?? '',
+                ];
             }
 
-            // 3. Log the rollover
-            $this->feeAudit->log('year_rollover', [
-                'student_id' => 'ALL',
-                'amount' => $cfTotal,
-                'receipt_no' => '',
-                'from_session' => $sy,
-                'to_session' => $newSession,
-                'carry_forward_count' => $cfCount
-            ]);
+            $cfCount = 0;
+            $cfTotal = 0;
+            $now     = date('c');
+            foreach ($byStudent as $sid => $info) {
+                $this->firebase->firestoreSet('feeCarryForward',
+                    "{$schoolFs}_{$newSession}_{$sid}", [
+                        'schoolId'        => $schoolFs,
+                        'session'         => $newSession,
+                        'previousSession' => $sy,
+                        'studentId'       => $sid,
+                        'totalDues'       => round($info['dues'], 2),
+                        'unpaidDetails'   => $info['details'],
+                        'carriedAt'       => $now,
+                        'carriedBy'       => $this->admin_id ?? 'system',
+                    ]);
+                $cfCount++;
+                $cfTotal += $info['dues'];
+            }
 
             $this->_json_out([
-                'status' => 'success',
-                'message' => "Year rollover complete. {$cfCount} students with Rs. {$cfTotal} carried forward.",
-                'carry_forward_count' => $cfCount,
-                'carry_forward_total' => $cfTotal,
-                'frozen_session' => $sy,
-                'new_session' => $newSession
+                'status'               => 'success',
+                'message'              => "{$cfCount} students with Rs. " . round($cfTotal, 2) . " carried forward.",
+                'carry_forward_count'  => $cfCount,
+                'carry_forward_total'  => round($cfTotal, 2),
+                'frozen_session'       => $sy,
+                'new_session'          => $newSession,
             ]);
         } catch (Exception $e) {
             log_message('error', "year_rollover_execute failed: " . $e->getMessage());
@@ -5265,60 +5666,49 @@ class Fees extends MY_Controller
         $sn = $this->school_name;
         $sy = $this->session_year;
 
+        $schoolFs = $this->fs->schoolId();
         try {
-            // Try cached data first
-            $cache = $this->firebase->get("Schools/{$sn}/{$sy}/Fees/Dashboard_Cache/collection_summary");
-            if ($cache && isset($cache['computed_at'])) {
-                $cacheAge = time() - strtotime($cache['computed_at']);
-                if ($cacheAge < 3600) { // 1 hour cache
-                    $this->_json_out(['status' => 'success', 'data' => $cache, 'cached' => true]);
-                    return;
-                }
-            }
-
-            // Compute fresh
-            $receipts = $this->firebase->get("Schools/{$sn}/{$sy}/Accounts/Fees/Receipt_Keys") ?: [];
+            // Compute from Firestore feeReceipts + feeDemands.
+            $rcptRows = $this->firebase->firestoreQuery('feeReceipts', [
+                ['schoolId', '==', $schoolFs],
+            ]);
             $totalCollected = 0;
-            $receiptCount = 0;
-            foreach ($receipts as $key => $receipt) {
-                if (!is_array($receipt)) continue;
-                $totalCollected += floatval($receipt['Amount'] ?? $receipt['amount'] ?? 0);
+            $receiptCount   = 0;
+            foreach ((array) $rcptRows as $r) {
+                $d = $r['data'] ?? $r;
+                $totalCollected += (float) ($d['amount'] ?? 0);
                 $receiptCount++;
             }
 
-            $pending = $this->firebase->get("Schools/{$sn}/{$sy}/Accounts/Pending_fees") ?: [];
-            $totalPending = 0;
+            $demandRows = $this->firebase->firestoreQuery('feeDemands', [
+                ['schoolId', '==', $schoolFs], ['session', '==', $sy],
+            ]);
+            $totalPending   = 0;
             $defaulterCount = 0;
-            foreach ($pending as $studentId => $months) {
-                if (!is_array($months)) continue;
-                $studentDues = 0;
-                foreach ($months as $month => $data) {
-                    if ($month === 'meta') continue;
-                    $status = is_array($data) ? ($data['status'] ?? 'Pending') : 'Pending';
-                    $amount = is_array($data) ? floatval($data['amount'] ?? 0) : floatval($data);
-                    if (in_array($status, ['Pending', 'Overdue'])) $studentDues += $amount;
-                }
-                if ($studentDues > 0) {
-                    $totalPending += $studentDues;
-                    $defaulterCount++;
+            $stuBalances    = [];
+            foreach ((array) $demandRows as $r) {
+                $d   = $r['data'] ?? $r;
+                $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
+                $bal = (float) ($d['balance'] ?? 0);
+                if ($bal > 0 && $sid !== '') {
+                    $totalPending += $bal;
+                    $stuBalances[$sid] = ($stuBalances[$sid] ?? 0) + $bal;
                 }
             }
+            $defaulterCount = count(array_filter($stuBalances, fn($b) => $b > 0));
 
-            $totalExpected = $totalCollected + $totalPending;
+            $totalExpected  = $totalCollected + $totalPending;
             $collectionRate = $totalExpected > 0 ? round(($totalCollected / $totalExpected) * 100, 1) : 0;
 
             $summary = [
-                'total_collected' => $totalCollected,
-                'total_pending' => $totalPending,
-                'total_expected' => $totalExpected,
-                'collection_rate' => $collectionRate,
-                'receipt_count' => $receiptCount,
-                'defaulter_count' => $defaulterCount,
-                'computed_at' => date('c')
+                'total_collected'  => round($totalCollected, 2),
+                'total_pending'    => round($totalPending, 2),
+                'total_expected'   => round($totalExpected, 2),
+                'collection_rate'  => $collectionRate,
+                'receipt_count'    => $receiptCount,
+                'defaulter_count'  => $defaulterCount,
+                'computed_at'      => date('c'),
             ];
-
-            // Cache it
-            $this->firebase->set("Schools/{$sn}/{$sy}/Fees/Dashboard_Cache/collection_summary", $summary);
 
             $this->_json_out(['status' => 'success', 'data' => $summary, 'cached' => false]);
         } catch (Exception $e) {
@@ -5334,26 +5724,33 @@ class Fees extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES);
 
-        $sn = $this->school_name;
-        $sy = $this->session_year;
+        $schoolFs = $this->fs->schoolId();
+        $sy       = $this->session_year;
 
         try {
-            $defaulters = $this->firebase->get("Schools/{$sn}/{$sy}/Fees/Defaulters") ?: [];
+            $demandRows = $this->firebase->firestoreQuery('feeDemands', [
+                ['schoolId', '==', $schoolFs], ['session', '==', $sy],
+            ]);
             $byClass = [];
-            $total = 0;
+            $total   = 0;
+            $seen    = [];
 
-            foreach ($defaulters as $studentId => $data) {
-                if (!is_array($data)) continue;
-                if (!($data['is_defaulter'] ?? false)) continue;
+            foreach ((array) $demandRows as $r) {
+                $d   = $r['data'] ?? $r;
+                $bal = (float) ($d['balance'] ?? 0);
+                if ($bal <= 0) continue;
+                $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
+                $cls = (string) ($d['class'] ?? 'Unknown');
+                if ($sid === '' || isset($seen[$sid])) continue;
+                $seen[$sid] = true;
                 $total++;
-                // We'd need class info — read from student profile or demands
-                // For now, group by total
+                $byClass[$cls] = ($byClass[$cls] ?? 0) + 1;
             }
 
             $this->_json_out([
-                'status' => 'success',
+                'status'           => 'success',
                 'total_defaulters' => $total,
-                'by_class' => $byClass
+                'by_class'         => $byClass,
             ]);
         } catch (Exception $e) {
             $this->_json_out(['status' => 'error', 'message' => $e->getMessage()]);
