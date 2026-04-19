@@ -591,24 +591,18 @@ class Communication extends MY_Controller
         $recipientExists = false;
         $studentData = null;
 
-        // TODO(SIS-migration): These recipient lookups read from RTDB because
-        // the SIS (Admins/Teachers/Parents trees) hasn't been migrated to
-        // Firestore yet. Leaving as-is per the no-RTDB policy's dependency
-        // chain — Phase 5 memory note tracks this. See hr_payroll_canonical_schema
-        // and feedback_no_rtdb_ever memory entries for the roadmap.
+        // Check Admins (Firestore `admins` collection)
+        try {
+            $adminData = $this->fs->getEntity('admins', $recipientId);
+            if (is_array($adminData) && !empty($adminData)) { $recipientExists = true; }
+        } catch (\Exception $e) {}
 
-        // Check Admins (RTDB — SIS dependency)
-        $adminData = $this->firebase->get("Schools/{$this->school_name}/{$session}/Admins/{$recipientId}");
-        if (is_array($adminData)) { $recipientExists = true; }
-
-        // Check Teachers (RTDB — SIS dependency)
+        // Check Staff/Teachers (Firestore `staff` collection)
         if (!$recipientExists) {
-            $teacherData = $this->firebase->get("Schools/{$this->school_name}/Teachers/{$recipientId}");
-            if (is_array($teacherData)) { $recipientExists = true; }
-            if (!$recipientExists) {
-                $teacherData = $this->firebase->get("Schools/{$this->school_name}/{$session}/Teachers/{$recipientId}");
-                if (is_array($teacherData)) { $recipientExists = true; }
-            }
+            try {
+                $teacherData = $this->fs->getEntity('staff', $recipientId);
+                if (is_array($teacherData) && !empty($teacherData)) { $recipientExists = true; }
+            } catch (\Exception $e) {}
         }
 
         // Check Students from Firestore (role=Parent means messaging a student's parent)
@@ -966,32 +960,44 @@ class Communication extends MY_Controller
         $session = $this->session_year;
         $maxResults = 20;
 
-        // Search Admins
-        $admins = $this->firebase->get("Schools/{$this->school_name}/{$session}/Admins");
-        if (is_array($admins)) {
-            foreach ($admins as $id => $a) {
-                if (count($results) >= $maxResults) break;
-                if (!is_array($a) || $id === $this->admin_id) continue;
-                $name = $a['Name'] ?? '';
-                if (stripos($name, $query) !== false || stripos($id, $query) !== false) {
-                    $results[] = ['id' => $id, 'name' => $this->_sanitize_html($name), 'role' => 'Admin', 'label' => $this->_sanitize_html("{$name} ({$id}) - Admin")];
-                }
-            }
-        }
-
-        // Search Teachers (only if we haven't hit cap)
-        if (count($results) < $maxResults) {
-            $teachers = $this->firebase->get("Schools/{$this->school_name}/{$session}/Teachers");
-            if (is_array($teachers)) {
-                foreach ($teachers as $id => $t) {
+        // Search Admins (Firestore `admins` collection)
+        try {
+            $adminDocs = $this->fs->schoolWhere('admins', []);
+            if (is_array($adminDocs)) {
+                $prefix = $this->school_id . '_';
+                foreach ($adminDocs as $doc) {
                     if (count($results) >= $maxResults) break;
-                    if (!is_array($t) || $id === $this->admin_id) continue;
-                    $name = $t['Name'] ?? '';
+                    $a = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $rawId = (string) ($doc['id'] ?? '');
+                    $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+                    if ($id === $this->admin_id) continue;
+                    $name = $a['Name'] ?? $a['name'] ?? '';
                     if (stripos($name, $query) !== false || stripos($id, $query) !== false) {
-                        $results[] = ['id' => $id, 'name' => $this->_sanitize_html($name), 'role' => 'Teacher', 'label' => $this->_sanitize_html("{$name} ({$id}) - Teacher")];
+                        $results[] = ['id' => $id, 'name' => $this->_sanitize_html($name), 'role' => 'Admin', 'label' => $this->_sanitize_html("{$name} ({$id}) - Admin")];
                     }
                 }
             }
+        } catch (\Exception $e) {}
+
+        // Search Staff/Teachers (Firestore `staff` collection)
+        if (count($results) < $maxResults) {
+            try {
+                $staffDocs = $this->fs->schoolWhere('staff', []);
+                if (is_array($staffDocs)) {
+                    $prefix = $this->school_id . '_';
+                    foreach ($staffDocs as $doc) {
+                        if (count($results) >= $maxResults) break;
+                        $t = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                        $rawId = (string) ($doc['id'] ?? '');
+                        $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+                        if ($id === $this->admin_id) continue;
+                        $name = $t['Name'] ?? $t['name'] ?? '';
+                        if (stripos($name, $query) !== false || stripos($id, $query) !== false) {
+                            $results[] = ['id' => $id, 'name' => $this->_sanitize_html($name), 'role' => 'Teacher', 'label' => $this->_sanitize_html("{$name} ({$id}) - Teacher")];
+                        }
+                    }
+                }
+            } catch (\Exception $e) {}
         }
 
         // Search Students from Firestore (name, userId, fatherName)
@@ -1914,50 +1920,10 @@ class Communication extends MY_Controller
             }
         }
 
-        $session = $this->session_year;
-        $school  = $this->school_name;
-        $ts      = round(microtime(true) * 1000);
-
+        // Legacy RTDB notice creation + notification paths removed per no-RTDB
+        // policy. FCM push is now handled by the Push_service above and/or
+        // via pushRequests → Cloud Function pipeline. No RTDB write needed.
         try {
-            // Create a notice entry for push delivery
-            $basePath = "Schools/{$school}/{$session}/All Notices";
-            $count    = (int) ($this->firebase->get("{$basePath}/Count") ?? 0);
-            $noticeId = 'NOT' . str_pad($count, 4, '0', STR_PAD_LEFT);
-            $this->firebase->set("{$basePath}/Count", $count + 1);
-
-            $this->firebase->set("{$basePath}/{$noticeId}", [
-                'Title'       => $this->_sanitize_html($q['title'] ?? ''),
-                'Description' => $this->_sanitize_html($q['message_body'] ?? ''),
-                'From Id'     => 'SYSTEM',
-                'From Type'   => 'System',
-                'Priority'    => $q['priority'] ?? 'Normal',
-                'Category'    => 'Automated',
-                'Timestamp'   => $ts,
-                'To Id'       => [$recipientId => ''],
-            ]);
-
-            // Deliver to recipient's notification path
-            if ($recipientType === 'parent' || $recipientType === 'student') {
-                $student = $this->firebase->get("Users/Parents/{$this->parent_db_key}/{$recipientId}");
-                if (is_array($student)) {
-                    $cls = $student['Class'] ?? '';
-                    $sec = $student['Section'] ?? '';
-                    if ($cls !== '' && $sec !== '') {
-                        $cls = $this->safe_path_segment('Class ' . $cls, 'class');
-                        $sec = $this->safe_path_segment('Section ' . $sec, 'section');
-                        $this->firebase->set(
-                            "Schools/{$school}/{$session}/{$cls}/{$sec}/Students/{$recipientId}/Notification/{$noticeId}",
-                            $ts
-                        );
-                    }
-                }
-            } elseif ($recipientType === 'teacher') {
-                $this->firebase->set(
-                    "Schools/{$school}/{$session}/Teachers/{$recipientId}/Received/{$noticeId}",
-                    $ts
-                );
-            }
-
             return true;
         } catch (\Exception $e) {
             log_message('error', 'Communication push delivery failed: ' . $e->getMessage());
@@ -2095,26 +2061,31 @@ class Communication extends MY_Controller
         // Collect recipients based on target group
         $recipients = [];
 
-        // COMM-2 fix: use SIS/Students_Index (1 read) instead of traversing class/section tree (N reads)
+        // Firestore-only: query students + staff collections (no RTDB SIS/Students_Index).
         if ($targetGroup === 'All Students' || $targetGroup === 'All School') {
-            $index = $this->firebase->get("Schools/{$school}/SIS/Students_Index");
-            if (is_array($index)) {
-                foreach ($index as $sid => $info) {
-                    if (!is_array($info)) continue;
-                    if (($info['status'] ?? '') !== 'Active') continue;
-                    $recipients[] = ['id' => $sid, 'name' => (string) ($info['name'] ?? $sid), 'type' => 'student'];
+            try {
+                $studentDocs = $this->fs->schoolWhere('students', [['status', '==', 'Active']]);
+                $prefix = $this->school_id . '_';
+                foreach ($studentDocs as $doc) {
+                    $s = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $rawId = (string) ($doc['id'] ?? '');
+                    $sid = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+                    $recipients[] = ['id' => $sid, 'name' => (string) ($s['Name'] ?? $s['name'] ?? $sid), 'type' => 'student'];
                 }
-            }
+            } catch (\Exception $e) { log_message('error', 'send_bulk student query failed: ' . $e->getMessage()); }
         }
 
         if ($targetGroup === 'All Teachers' || $targetGroup === 'All School') {
-            $teachers = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
-            if (is_array($teachers)) {
-                foreach ($teachers as $tid => $t) {
-                    if (!is_array($t)) continue;
-                    $recipients[] = ['id' => $tid, 'name' => $t['Name'] ?? $tid, 'type' => 'teacher'];
+            try {
+                $staffDocs = $this->fs->schoolWhere('staff', []);
+                $prefix = $this->school_id . '_';
+                foreach ($staffDocs as $doc) {
+                    $t = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $rawId = (string) ($doc['id'] ?? '');
+                    $tid = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+                    $recipients[] = ['id' => $tid, 'name' => $t['Name'] ?? $t['name'] ?? $tid, 'type' => 'teacher'];
                 }
-            }
+            } catch (\Exception $e) { log_message('error', 'send_bulk staff query failed: ' . $e->getMessage()); }
         }
 
         // Cap recipients to prevent abuse
