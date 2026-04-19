@@ -165,65 +165,44 @@ class AdminUsers extends MY_Controller
     }
 
     /**
-     * Base Firebase path for admin records.
-     * Uses school_code (login code) - same key Admin_login.php reads/writes.
-     */
-    private function _admin_base(): string
-    {
-        return "Users/Admin/{$this->school_code}";
-    }
-
-    /**
-     * Process pending MongoDB syncs for admins created while Auth API was down.
-     * Runs on every AdminUsers page load. Non-blocking — silently skips if API still down.
+     * Process pending Firebase Auth syncs for admins created while Auth API was down.
+     * Runs on every AdminUsers page load. Non-blocking.
      */
     private function _process_pending_syncs(): void
     {
         try {
-            $pending = $this->firebase->get('System/PendingSync/Admins');
-            if (!is_array($pending) || empty($pending)) return;
+            $pendingDocs = $this->fs->where('systemPendingSyncAdmins', []);
+            if (empty($pendingDocs)) return;
 
-            $this->load->library('auth_client');
             $synced = 0;
-
-            foreach ($pending as $adminId => $data) {
-                if (!is_array($data)) continue;
-
-                // Only sync admins that belong to this school (multi-tenant safe)
+            foreach ($pendingDocs as $doc) {
+                $data    = $doc['data'];
+                $adminId = $doc['id'];
                 if (($data['schoolCode'] ?? '') !== $this->school_name) continue;
 
-                $result = $this->auth_client->sync_admin([
-                    'adminId'           => $adminId,
-                    'name'              => $data['name'] ?? '',
-                    'email'             => $data['email'] ?? '',
-                    'phone'             => $data['phone'] ?? '',
-                    'role'              => $data['role'] ?? '',
-                    'roleLabel'         => $data['roleLabel'] ?? '',
-                    'passwordHash'      => $data['passwordHash'] ?? '',
-                    'schoolId'          => $data['schoolId'] ?? '',
-                    'schoolCode'        => $data['schoolCode'] ?? '',
-                    'parentDbKey'       => $data['parentDbKey'] ?? '',
-                    'createdBy'         => $data['createdBy'] ?? '',
-                    'schoolDisplayName' => $data['schoolDisplayName'] ?? '',
+                $authEmail = Firebase::authEmail($adminId);
+                $created   = $this->firebase->createFirebaseUser($authEmail, 'TempSync_' . bin2hex(random_bytes(8)), [
+                    'uid'         => $adminId,
+                    'displayName' => $data['name'] ?? '',
                 ]);
 
-                if (!empty($result['success']) || !empty($result['adminId'])) {
-                    // Sync succeeded — remove from pending queue
-                    $this->firebase->delete('System/PendingSync/Admins', $adminId);
+                if ($created !== null && $created !== false) {
+                    $this->firebase->setFirebaseClaims($adminId, [
+                        'role'          => $data['roleLabel'] ?? $data['role'] ?? '',
+                        'school_id'     => $data['schoolId'] ?? $this->school_id,
+                        'school_code'   => $data['schoolCode'] ?? $this->school_code,
+                        'parent_db_key' => $data['parentDbKey'] ?? $this->parent_db_key,
+                    ]);
+                    $this->fs->remove('systemPendingSyncAdmins', $adminId);
                     $synced++;
-                    log_message('info', "PendingSync: admin {$adminId} synced to MongoDB successfully");
-                } elseif (!empty($result['unavailable'])) {
-                    // API still down — stop trying (don't hammer a dead service)
-                    break;
+                    log_message('info', "PendingSync: admin {$adminId} synced to Firebase Auth successfully");
                 }
-                // Other errors (validation, duplicate) — keep in queue for manual review
             }
 
             if ($synced > 0) {
-                log_audit('AdminUsers', 'pending_sync', '', "Auto-synced {$synced} pending admin(s) to MongoDB");
+                log_audit('AdminUsers', 'pending_sync', '', "Auto-synced {$synced} pending admin(s) to Firebase Auth");
             }
         } catch (Exception $e) {
-            // Non-blocking — never interrupt page load
             log_message('error', 'AdminUsers::_process_pending_syncs — ' . $e->getMessage());
         }
     }
@@ -274,19 +253,19 @@ class AdminUsers extends MY_Controller
         $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'admin_users_dashboard');
 
         try {
-            $admins = $this->firebase->get($this->_admin_base()) ?? [];
+            $adminDocs = $this->fs->schoolWhere('admins', []);
 
             $total = 0; $active = 0; $disabled = 0;
             $recent = [];
 
-            foreach ($admins as $aid => $a) {
-                if (!is_array($a)) continue;
+            foreach ($adminDocs as $doc) {
+                $a   = $doc['data'];
+                $aid = $a['adminId'] ?? $doc['id'];
                 $total++;
                 $status = $a['Status'] ?? 'Active';
                 if ($status === 'Active') $active++;
                 else $disabled++;
 
-                // Collect last-login info for recent activity
                 $lastLogin = $a['AccessHistory']['LastLogin'] ?? '';
                 if (!empty($lastLogin)) {
                     $recent[] = [
@@ -300,7 +279,6 @@ class AdminUsers extends MY_Controller
                 }
             }
 
-            // Sort by loginTime descending, take top 10
             usort($recent, fn($a, $b) => strcmp($b['loginTime'] ?? '', $a['loginTime'] ?? ''));
             $recent = array_slice($recent, 0, 10);
 
@@ -324,13 +302,13 @@ class AdminUsers extends MY_Controller
         $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'admin_users_list');
 
         try {
-            $raw  = $this->firebase->get($this->_admin_base()) ?? [];
+            $adminDocs = $this->fs->schoolWhere('admins', [], 'Name', 'ASC');
             $rows = [];
-            foreach ($raw as $aid => $a) {
-                if (!is_array($a)) continue;
+            foreach ($adminDocs as $doc) {
+                $a   = $doc['data'];
+                $aid = $a['adminId'] ?? $doc['id'];
                 $rows[] = $this->_normalize_admin($aid, $a);
             }
-            usort($rows, fn($a, $b) => strcmp($a['name'] ?? '', $b['name'] ?? ''));
             $this->json_success(['admins' => $rows]);
         } catch (Exception $e) {
             $this->json_error('Failed to load admin users.');
@@ -369,25 +347,26 @@ class AdminUsers extends MY_Controller
         }
 
         $role     = $this->safe_path_segment($role, 'role');
-        $base     = $this->_admin_base();
-        $school   = $this->school_name;
 
         try {
-            // Verify the role exists
-            $role_data = $this->firebase->get("Schools/{$school}/Roles/{$role}");
-            if (empty($role_data)) {
-                $this->_seed_default_roles($school);
-                $role_data = $this->firebase->get("Schools/{$school}/Roles/{$role}");
-                if (empty($role_data)) {
+            // Verify the role exists in school config
+            $schoolDoc = $this->fs->get('schools', $this->school_id);
+            $allRoles  = $schoolDoc['roles'] ?? [];
+            if (empty($allRoles[$role])) {
+                $this->_seed_default_roles();
+                $schoolDoc = $this->fs->get('schools', $this->school_id);
+                $allRoles  = $schoolDoc['roles'] ?? [];
+                if (empty($allRoles[$role])) {
                     $this->json_error("Role '{$role}' does not exist.");
                     return;
                 }
             }
 
             // Check duplicate email across all admins
-            $all_admins = $this->firebase->get($base) ?? [];
-            foreach ($all_admins as $a) {
-                if (is_array($a) && strtolower($a['Profile']['email'] ?? '') === $email) {
+            $existingAdmins = $this->fs->schoolWhere('admins', []);
+            foreach ($existingAdmins as $doc) {
+                $a = $doc['data'];
+                if (strtolower($a['Profile']['email'] ?? '') === $email) {
                     $this->json_error('An admin with this email already exists.');
                     return;
                 }
@@ -396,73 +375,29 @@ class AdminUsers extends MY_Controller
             // Hash password ONCE — same hash goes to both MongoDB and Firebase
             $hashed_pw = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
 
-            // Auto-generate ADM ID via Auth API (globally unique) + save to MongoDB
-            $admin_id    = null;
-            $mongo_synced = false;
+            // Auto-generate ADM ID via Id_generator
+            $this->load->library('id_generator');
+            $admin_id    = $this->id_generator->generate('ADM');
+            $auth_synced = false;
+
+            // Create Firebase Auth account
             try {
-                $this->load->library('auth_client');
-                $ssa_result = $this->auth_client->sync_admin([
-                    'adminId'           => '__AUTO_ADM__',
-                    'name'              => $name,
-                    'email'             => $email,
-                    'phone'             => $phone,
-                    'role'              => 'admin',
-                    'roleLabel'         => $role,
-                    'passwordHash'      => $hashed_pw,
-                    'schoolId'          => $this->school_code,
-                    'schoolCode'        => $this->school_name,
-                    'parentDbKey'       => $this->parent_db_key,
-                    'createdBy'         => $this->admin_id,
-                    'schoolDisplayName' => $this->school_display_name ?? '',
+                $authEmail = Firebase::authEmail($admin_id);
+                $created   = $this->firebase->createFirebaseUser($authEmail, $password, [
+                    'uid'         => $admin_id,
+                    'displayName' => $name,
                 ]);
-                $admin_id     = $ssa_result['adminId'] ?? null;
-                $mongo_synced = !empty($admin_id);
-            } catch (Exception $e) {
-                log_message('error', 'AdminUsers::create_admin Auth API call failed: ' . $e->getMessage());
-            }
-
-            // FIXED: fallback to local ID generation when Auth API is unavailable
-            if (empty($admin_id)) {
-                $counterPath = "Users/Admin/{$this->school_code}/_Counter";
-                $counter = (int) ($this->firebase->get($counterPath) ?? 0);
-                $counter++;
-                $admin_id = 'ADM' . str_pad($counter, 4, '0', STR_PAD_LEFT);
-
-                // Verify no collision
-                $existing_check = $this->firebase->get("{$base}/{$admin_id}");
-                if (!empty($existing_check)) {
-                    // Scan for next free slot
-                    $all_keys = $this->firebase->shallow_get($base) ?? [];
-                    $maxNum = 0;
-                    if (is_array($all_keys)) {
-                        foreach ($all_keys as $k) {
-                            if (preg_match('/^ADM(\d+)$/', (string)$k, $m)) {
-                                $maxNum = max($maxNum, (int)$m[1]);
-                            }
-                        }
-                    }
-                    $counter  = $maxNum + 1;
-                    $admin_id = 'ADM' . str_pad($counter, 4, '0', STR_PAD_LEFT);
+                if ($created !== null && $created !== false) {
+                    $this->firebase->setFirebaseClaims($admin_id, [
+                        'role'          => $role,
+                        'school_id'     => $this->school_id,
+                        'school_code'   => $this->school_code,
+                        'parent_db_key' => $this->parent_db_key,
+                    ]);
+                    $auth_synced = true;
                 }
-                $this->firebase->set($counterPath, $counter);
-                log_message('info', "AdminUsers::create_admin — Auth API unavailable, generated local ID: {$admin_id}");
-
-                // Queue for MongoDB sync when Auth API comes back
-                $this->firebase->set("System/PendingSync/Admins/{$admin_id}", [
-                    'adminId'           => $admin_id,
-                    'name'              => $name,
-                    'email'             => $email,
-                    'phone'             => $phone,
-                    'role'              => 'admin',
-                    'roleLabel'         => $role,
-                    'passwordHash'      => $hashed_pw,
-                    'schoolId'          => $this->school_code,
-                    'schoolCode'        => $this->school_name,
-                    'parentDbKey'       => $this->parent_db_key,
-                    'createdBy'         => $this->admin_id,
-                    'schoolDisplayName' => $this->school_display_name ?? '',
-                    'queued_at'         => date('Y-m-d H:i:s'),
-                ]);
+            } catch (Exception $e) {
+                log_message('error', 'AdminUsers::create_admin Firebase Auth failed: ' . $e->getMessage());
             }
             $now       = date('Y-m-d H:i:s');
 
@@ -495,13 +430,33 @@ class AdminUsers extends MY_Controller
                 'Privileges'  => ['accountmanagement' => ''],
             ];
 
-            $this->firebase->set("{$base}/{$admin_id}", $admin_data);
+            // ── Firestore admins collection (exclude password) ──
+            $fsData = array_merge($admin_data, [
+                'schoolId' => $this->school_id,
+                'adminId'  => $admin_id,
+                'updatedAt' => date('c'),
+            ]);
+            unset($fsData['Credentials']);
+            $this->fs->set('admins', $this->fs->docId($admin_id), $fsData, true);
+
+            // ── Firestore staff collection dual-write (best-effort) ──
+            try {
+                $this->fs->saveStaff($admin_id, [
+                    'Name'   => $name,
+                    'Email'  => $email,
+                    'Phone'  => $phone,
+                    'Role'   => $role,
+                    'Status' => 'Active',
+                ]);
+            } catch (Exception $staffEx) {
+                log_message('error', "AdminUsers::create_admin — staff dual-write failed: {$staffEx->getMessage()}");
+            }
 
             log_audit('AdminUsers', 'create_admin', $admin_id, "Created admin '{$name}' with role '{$role}'");
 
             $msg = 'Admin created successfully.';
-            if (!$mongo_synced) {
-                $msg .= ' (Note: Auth API was unavailable — admin can log in via Firebase auth only until API syncs.)';
+            if (!$auth_synced) {
+                $msg .= ' (Note: Firebase Auth account could not be created — admin can log in via RTDB credentials only.)';
             }
 
             $this->json_success([
@@ -542,58 +497,70 @@ class AdminUsers extends MY_Controller
 
         $admin_id = $this->safe_path_segment($admin_id, 'admin_id');
         $role     = $this->safe_path_segment($role, 'role');
-        $base     = $this->_admin_base();
 
         try {
-            $existing = $this->firebase->get("{$base}/{$admin_id}");
+            $existing = $this->fs->getEntity('admins', $admin_id);
             if (empty($existing) || !is_array($existing)) {
                 $this->json_error('Admin user not found.');
                 return;
             }
 
             // Duplicate email check (exclude self)
-            $all = $this->firebase->get($base) ?? [];
-            foreach ($all as $aid => $a) {
-                if (!is_array($a) || $aid === $admin_id) continue;
+            $allAdmins = $this->fs->schoolWhere('admins', []);
+            foreach ($allAdmins as $doc) {
+                $a   = $doc['data'];
+                $aid = $a['adminId'] ?? $doc['id'];
+                if ($aid === $admin_id) continue;
                 if (strtolower($a['Profile']['email'] ?? '') === $email) {
                     $this->json_error('Another admin already uses this email.');
                     return;
                 }
             }
 
-            // Update top-level fields that Admin_login reads
-            $this->firebase->update("{$base}/{$admin_id}", [
+            // ── Firestore admins collection update ──
+            $this->fs->updateEntity('admins', $admin_id, [
                 'Name' => $name,
                 'Role' => $role,
+                'Profile' => array_merge($existing['Profile'] ?? [], [
+                    'name'      => $name,
+                    'email'     => $email,
+                    'phone'     => $phone,
+                    'role'      => $role,
+                    'updatedAt' => time(),
+                    'updatedBy' => $this->admin_id,
+                ]),
             ]);
 
-            // Update Profile sub-node
-            $this->firebase->update("{$base}/{$admin_id}/Profile", [
-                'name'      => $name,
-                'email'     => $email,
-                'phone'     => $phone,
-                'role'      => $role,
-                'updatedAt' => time(),
-                'updatedBy' => $this->admin_id,
-            ]);
-
-            // Sync to MongoDB credential store (best-effort, no password change)
+            // ── Firestore staff collection dual-write (best-effort) ──
             try {
-                $this->load->library('auth_client');
-                $this->auth_client->sync_admin([
-                    'adminId'           => $admin_id,
-                    'schoolId'          => $this->school_code,
-                    'schoolCode'        => $this->school_name,
-                    'parentDbKey'       => $this->parent_db_key,
-                    'name'              => $name,
-                    'email'             => $email,
-                    'phone'             => $phone,
-                    'role'              => 'admin',
-                    'roleLabel'         => $role,
-                    'schoolDisplayName' => $this->school_display_name ?? '',
+                $this->fs->update('staff', $this->fs->docId($admin_id), [
+                    'name'   => $name,
+                    'email'  => $email,
+                    'phone'  => $phone,
+                    'role'   => $role,
+                    'updatedAt' => date('c'),
                 ]);
+            } catch (Exception $staffEx) {
+                log_message('error', "AdminUsers::update_admin — staff dual-write failed: {$staffEx->getMessage()}");
+            }
+
+            // Sync to Firebase Auth (best-effort — update display name + claims if role changed)
+            try {
+                $this->firebase->updateFirebaseUser($admin_id, [
+                    'displayName' => $name,
+                    'email'       => Firebase::authEmail($admin_id),
+                ]);
+                $old_role = $existing['Role'] ?? '';
+                if ($old_role !== $role) {
+                    $this->firebase->setFirebaseClaims($admin_id, [
+                        'role'          => $role,
+                        'school_id'     => $this->school_id,
+                        'school_code'   => $this->school_code,
+                        'parent_db_key' => $this->parent_db_key,
+                    ]);
+                }
             } catch (Exception $syncEx) {
-                log_message('error', 'AdminUsers::update_admin — auth sync failed: ' . $syncEx->getMessage());
+                log_message('error', 'AdminUsers::update_admin — Firebase Auth sync failed: ' . $syncEx->getMessage());
             }
 
             log_audit('AdminUsers', 'update_admin', $admin_id, "Updated admin '{$name}'");
@@ -629,18 +596,29 @@ class AdminUsers extends MY_Controller
             return;
         }
 
-        $base = $this->_admin_base();
         try {
-            $existing = $this->firebase->get("{$base}/{$admin_id}");
+            $existing = $this->fs->getEntity('admins', $admin_id);
             if (empty($existing) || !is_array($existing)) {
                 $this->json_error('Admin user not found.');
                 return;
             }
 
-            // Admin_login checks: ($adminData['Status'] ?? '') !== 'Active'
-            $this->firebase->update("{$base}/{$admin_id}", [
-                'Status' => $status_map[$new_status],
+            $mappedStatus = $status_map[$new_status];
+
+            // ── Firestore admins collection ──
+            $this->fs->updateEntity('admins', $admin_id, [
+                'Status' => $mappedStatus,
             ]);
+
+            // ── Firestore staff collection dual-write (best-effort) ──
+            try {
+                $this->fs->update('staff', $this->fs->docId($admin_id), [
+                    'status'    => $mappedStatus,
+                    'updatedAt' => date('c'),
+                ]);
+            } catch (Exception $staffEx) {
+                log_message('error', "AdminUsers::disable_admin — staff dual-write failed: {$staffEx->getMessage()}");
+            }
 
             $name  = $existing['Name'] ?? $existing['Profile']['name'] ?? $admin_id;
             $label = $new_status === 'active' ? 'enabled' : 'disabled';
@@ -668,23 +646,30 @@ class AdminUsers extends MY_Controller
             return;
         }
 
-        $base = $this->_admin_base();
         try {
-            $existing = $this->firebase->get("{$base}/{$admin_id}");
+            $existing = $this->fs->getEntity('admins', $admin_id);
             if (empty($existing) || !is_array($existing)) {
                 $this->json_error('Admin user not found.');
                 return;
             }
 
             $name = $existing['Name'] ?? $existing['Profile']['name'] ?? $admin_id;
-            $this->firebase->delete($base, $admin_id);
 
-            // Remove from MongoDB credential store (best-effort)
+            // ── Firestore admins collection ──
+            $this->fs->removeEntity('admins', $admin_id);
+
+            // ── Firestore staff collection dual-write (best-effort) ──
             try {
-                $this->load->library('auth_client');
-                $this->auth_client->delete_admin($admin_id, $this->school_code);
+                $this->fs->remove('staff', $this->fs->docId($admin_id));
+            } catch (Exception $staffEx) {
+                log_message('error', "AdminUsers::delete_admin — staff dual-write failed: {$staffEx->getMessage()}");
+            }
+
+            // Remove from Firebase Auth (best-effort)
+            try {
+                $this->firebase->deleteFirebaseUser($admin_id);
             } catch (Exception $syncEx) {
-                log_message('error', 'AdminUsers::delete_admin — auth sync failed: ' . $syncEx->getMessage());
+                log_message('error', 'AdminUsers::delete_admin — Firebase Auth delete failed: ' . $syncEx->getMessage());
             }
 
             log_audit('AdminUsers', 'delete_admin', $admin_id, "Deleted admin '{$name}'");
@@ -715,26 +700,24 @@ class AdminUsers extends MY_Controller
             return;
         }
 
-        $base = $this->_admin_base();
         try {
-            $existing = $this->firebase->get("{$base}/{$admin_id}");
+            $existing = $this->fs->getEntity('admins', $admin_id);
             if (empty($existing) || !is_array($existing)) {
                 $this->json_error('Admin user not found.');
                 return;
             }
 
-            // Update Credentials/Password - same nested path Admin_login reads
+            // Password reset — Firebase Auth is the primary auth source now
             $hashed = password_hash($new_password, PASSWORD_BCRYPT, ['cost' => 12]);
-            $this->firebase->update("{$base}/{$admin_id}/Credentials", [
-                'Password' => $hashed,
-            ]);
 
-            // Sync password to MongoDB (best-effort, also invalidates mobile sessions)
+            // RTDB credential write removed — Firebase Auth is the primary auth source.
+            // Passwords are no longer stored in any database (RTDB or Firestore).
+
+            // Sync password to Firebase Auth (best-effort)
             try {
-                $this->load->library('auth_client');
-                $this->auth_client->reset_password($admin_id, $this->school_code, $hashed);
+                $this->firebase->updateFirebaseUser($admin_id, ['password' => $new_password]);
             } catch (Exception $syncEx) {
-                log_message('error', 'AdminUsers::reset_password — auth sync failed: ' . $syncEx->getMessage());
+                log_message('error', 'AdminUsers::reset_password — Firebase Auth sync failed: ' . $syncEx->getMessage());
             }
 
             $name = $existing['Name'] ?? $existing['Profile']['name'] ?? $admin_id;
@@ -755,12 +738,13 @@ class AdminUsers extends MY_Controller
     {
         $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'view_roles');
 
-        $school = $this->school_name;
         try {
-            $raw = $this->firebase->get("Schools/{$school}/Roles") ?? [];
+            $schoolDoc = $this->fs->get('schools', $this->school_id);
+            $raw = $schoolDoc['roles'] ?? [];
             if (empty($raw) || !is_array($raw)) {
-                $this->_seed_default_roles($school);
-                $raw = $this->firebase->get("Schools/{$school}/Roles") ?? [];
+                $this->_seed_default_roles();
+                $schoolDoc = $this->fs->get('schools', $this->school_id);
+                $raw = $schoolDoc['roles'] ?? [];
             }
 
             $roles = [];
@@ -809,32 +793,39 @@ class AdminUsers extends MY_Controller
         // Whitelist permissions against available modules
         $permissions = array_values(array_intersect($permissions, self::AVAILABLE_MODULES));
 
-        $school = $this->school_name;
         try {
-            // Check if editing a system role - only allow permission changes
-            $existing = $this->firebase->get("Schools/{$school}/Roles/{$role_name}");
+            $schoolDoc = $this->fs->get('schools', $this->school_id);
+            $allRoles  = $schoolDoc['roles'] ?? [];
+            $existing  = $allRoles[$role_name] ?? null;
             $is_system = is_array($existing) && !empty($existing['is_system']);
 
-            $role_data = [
+            $role_data = array_merge($existing ?? [], [
                 'label'       => $label,
                 'description' => $description,
                 'permissions' => $permissions,
                 'updatedAt'   => date('Y-m-d H:i:s'),
                 'updatedBy'   => $this->admin_id,
-            ];
+            ]);
 
             if (!$is_system) {
                 $role_data['is_system'] = false;
                 if (empty($existing)) {
                     $role_data['createdAt'] = date('Y-m-d H:i:s');
                     $role_data['createdBy'] = $this->admin_id;
-                    // Custom roles sort after all system roles
                     $role_data['tier']       = 7;
                     $role_data['sort_order'] = 100;
                 }
             }
 
-            $this->firebase->update("Schools/{$school}/Roles/{$role_name}", $role_data);
+            $allRoles[$role_name] = $role_data;
+            $this->fs->update('schools', $this->school_id, ['roles' => $allRoles]);
+
+            // ── Firestore rbacRoles collection ──
+            try {
+                $this->fs->setEntity('rbacRoles', $role_name, $role_data);
+            } catch (Exception $roleEx) {
+                log_message('error', "AdminUsers::save_role — rbacRoles dual-write failed: {$roleEx->getMessage()}");
+            }
 
             // Refresh current admin's cached permissions if their role was just modified
             if ($role_name === $this->admin_role) {
@@ -858,10 +849,11 @@ class AdminUsers extends MY_Controller
         $this->_require_role(['Super Admin', 'Admin'], 'delete_role');
 
         $role_name = $this->safe_path_segment(trim($this->input->post('role_name', TRUE) ?? ''), 'role_name');
-        $school    = $this->school_name;
 
         try {
-            $existing = $this->firebase->get("Schools/{$school}/Roles/{$role_name}");
+            $schoolDoc = $this->fs->get('schools', $this->school_id);
+            $allRoles  = $schoolDoc['roles'] ?? [];
+            $existing  = $allRoles[$role_name] ?? null;
             if (empty($existing) || !is_array($existing)) {
                 $this->json_error('Role not found.');
                 return;
@@ -872,19 +864,26 @@ class AdminUsers extends MY_Controller
             }
 
             // Check if any admin uses this role
-            $admins = $this->firebase->get($this->_admin_base()) ?? [];
-            foreach ($admins as $a) {
-                if (is_array($a)) {
-                    $aRole = $a['Role'] ?? $a['Profile']['role'] ?? '';
-                    $aName = $a['Name'] ?? $a['Profile']['name'] ?? '';
-                    if ($aRole === $role_name) {
-                        $this->json_error("Cannot delete: role is assigned to admin '{$aName}'.");
-                        return;
-                    }
+            $adminDocs = $this->fs->schoolWhere('admins', []);
+            foreach ($adminDocs as $doc) {
+                $a = $doc['data'];
+                $aRole = $a['Role'] ?? $a['Profile']['role'] ?? '';
+                $aName = $a['Name'] ?? $a['Profile']['name'] ?? '';
+                if ($aRole === $role_name) {
+                    $this->json_error("Cannot delete: role is assigned to admin '{$aName}'.");
+                    return;
                 }
             }
 
-            $this->firebase->delete("Schools/{$school}/Roles", $role_name);
+            unset($allRoles[$role_name]);
+            $this->fs->update('schools', $this->school_id, ['roles' => $allRoles]);
+
+            // ── Firestore rbacRoles collection ──
+            try {
+                $this->fs->removeEntity('rbacRoles', $role_name);
+            } catch (Exception $roleEx) {
+                log_message('error', "AdminUsers::delete_role — rbacRoles dual-write failed: {$roleEx->getMessage()}");
+            }
 
             log_audit('AdminUsers', 'delete_role', $role_name, "Deleted role '{$role_name}'");
 
@@ -904,11 +903,12 @@ class AdminUsers extends MY_Controller
         $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'view_login_logs');
 
         try {
-            $admins = $this->firebase->get($this->_admin_base()) ?? [];
+            $adminDocs = $this->fs->schoolWhere('admins', []);
             $rows = [];
 
-            foreach ($admins as $aid => $a) {
-                if (!is_array($a)) continue;
+            foreach ($adminDocs as $doc) {
+                $a   = $doc['data'];
+                $aid = $a['adminId'] ?? $doc['id'];
                 $access    = $a['AccessHistory'] ?? [];
                 $lastLogin = $access['LastLogin'] ?? '';
                 if (empty($lastLogin)) continue;
@@ -943,38 +943,42 @@ class AdminUsers extends MY_Controller
      * Seed/upgrade default roles. Adds missing system roles without overwriting
      * custom permission changes made by school admins to existing roles.
      */
-    private function _seed_default_roles(string $school): void
+    private function _seed_default_roles(): void
     {
         try {
-            $existing = $this->firebase->get("Schools/{$school}/Roles");
-            $existing = is_array($existing) ? $existing : [];
+            $schoolDoc = $this->fs->get('schools', $this->school_id);
+            $existing  = $schoolDoc['roles'] ?? [];
+            if (!is_array($existing)) $existing = [];
+            $changed = false;
 
             foreach (self::DEFAULT_ROLES as $name => $config) {
                 if (isset($existing[$name])) {
-                    // Role exists — only backfill missing metadata fields (tier, sort_order)
-                    // Do NOT overwrite permissions (admin may have customized them)
                     $updates = [];
                     foreach (['tier', 'sort_order', 'is_system'] as $field) {
                         if (!isset($existing[$name][$field]) && isset($config[$field])) {
                             $updates[$field] = $config[$field];
                         }
                     }
-                    // Update label/description only if still matching the OLD default
                     if (($existing[$name]['label'] ?? '') === $name) {
                         $updates['label'] = $config['label'];
                     }
                     if (!empty($updates)) {
                         $updates['updatedAt'] = date('Y-m-d H:i:s');
                         $updates['updatedBy'] = 'system';
-                        $this->firebase->update("Schools/{$school}/Roles/{$name}", $updates);
+                        $existing[$name] = array_merge($existing[$name], $updates);
+                        $changed = true;
                     }
                 } else {
-                    // New role — create it fresh
-                    $this->firebase->set("Schools/{$school}/Roles/{$name}", array_merge($config, [
+                    $existing[$name] = array_merge($config, [
                         'createdAt' => date('Y-m-d H:i:s'),
                         'createdBy' => 'system',
-                    ]));
+                    ]);
+                    $changed = true;
                 }
+            }
+
+            if ($changed) {
+                $this->fs->set('schools', $this->school_id, ['roles' => $existing], true);
             }
         } catch (Exception $e) {
             log_message('error', 'AdminUsers: Failed to seed default roles - ' . $e->getMessage());

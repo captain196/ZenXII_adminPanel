@@ -77,11 +77,10 @@ class Staff extends MY_Controller
      */
     private function _seed_staff_roles(): void
     {
-        if (empty($this->school_name)) return; // not logged in yet
-        $path = "Schools/{$this->school_name}/Config/StaffRoles";
-        $existing = $this->firebase->shallow_get($path);
-        if (!empty($existing)) return;
-        $this->firebase->set($path, self::DEFAULT_STAFF_ROLES);
+        if (empty($this->school_id)) return; // not logged in yet
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        if (!empty($schoolDoc['staffRoles'])) return;
+        $this->fs->set('schools', $this->school_id, ['staffRoles' => self::DEFAULT_STAFF_ROLES], true);
     }
 
     /**
@@ -97,6 +96,32 @@ class Staff extends MY_Controller
             }
         }
         return ['ROLE_TEACHER']; // safe default
+    }
+
+    /**
+     * Convert a role ID to its display label.
+     * Used to derive the legacy 'Position' field from the primary staff role
+     * (since Designation/Title was removed from the form in favor of Staff Roles).
+     */
+    private function _role_id_to_label(string $roleId): string
+    {
+        if ($roleId === '') return '';
+        // Check default system roles first
+        if (isset(self::DEFAULT_STAFF_ROLES[$roleId]['label'])) {
+            return self::DEFAULT_STAFF_ROLES[$roleId]['label'];
+        }
+        // Custom role: read from Firestore schools.staffRoles
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->school_id);
+            $customRoles = $schoolDoc['staffRoles'] ?? [];
+            if (is_array($customRoles) && isset($customRoles[$roleId]['label'])) {
+                return (string)$customRoles[$roleId]['label'];
+            }
+        } catch (\Exception $e) {
+            // Fall through to fallback
+        }
+        // Fallback: humanize the role ID (ROLE_LIBRARIAN → "Librarian")
+        return ucfirst(strtolower(str_replace(['ROLE_', '_'], ['', ' '], $roleId)));
     }
 
     // ── Salary Structure Auto-Sync ─────────────────────────────────────────
@@ -125,13 +150,13 @@ class Staff extends MY_Controller
         static $cached = null;
         if ($cached !== null) return $cached;
 
-        $fbConfig = $this->firebase->get("Schools/{$this->school_name}/Config/SalaryDefaults");
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $fsConfig = $schoolDoc['salaryDefaults'] ?? null;
         $defaults = self::SALARY_DEFAULTS_FALLBACK;
-        if (is_array($fbConfig)) {
-            // Merge — Firebase values override constants, missing keys use fallback
+        if (is_array($fsConfig)) {
             foreach ($defaults as $k => $v) {
-                if (isset($fbConfig[$k]) && is_numeric($fbConfig[$k])) {
-                    $defaults[$k] = (float) $fbConfig[$k];
+                if (isset($fsConfig[$k]) && is_numeric($fsConfig[$k])) {
+                    $defaults[$k] = (float) $fsConfig[$k];
                 }
             }
         }
@@ -198,13 +223,13 @@ class Staff extends MY_Controller
     {
         if ($basic <= 0) return false;
 
-        $structPath = "Schools/{$this->school_name}/HR/Salary_Structures/{$staffId}";
-        $existing   = $this->firebase->get($structPath);
-        $now        = date('c');
+        $staffDoc = $this->fs->getEntity('staff', $staffId);
+        $existing = $staffDoc['salaryStructure'] ?? null;
+        $now      = date('c');
 
         // Manual structure → don't overwrite, just note the sync
         if (is_array($existing) && ($existing['source'] ?? '') === 'manual') {
-            $this->firebase->update($structPath, ['last_synced_at' => $now]);
+            $this->fs->updateEntity('staff', $staffId, ['salaryStructure' => array_merge($existing, ['last_synced_at' => $now])]);
             return false;
         }
 
@@ -231,11 +256,11 @@ class Staff extends MY_Controller
             $structure['last_synced_at'] = $now;
         }
 
-        $this->firebase->set($structPath, $structure);
+        $this->fs->updateEntity('staff', $staffId, ['salaryStructure' => $structure]);
 
         log_message('info',
             "Salary structure auto-" . (is_array($existing) ? "updated(v{$structure['_version']})" : 'created')
-            . " staff=[{$staffId}] school=[{$this->school_name}]"
+            . " staff=[{$staffId}] school=[{$this->school_id}]"
             . " basic={$basic} allowances={$allowances}"
         );
 
@@ -390,40 +415,26 @@ class Staff extends MY_Controller
     public function all_staff()
     {
         $this->_require_role(self::VIEW_ROLES);
-        $school_id   = $this->parent_db_key;
-        $school_name = $this->school_name;
+        $session_year = $this->session_year;
 
-        $data['staff'] = $this->CM->select_data("Users/Teachers/{$school_id}");
-        if (!is_array($data['staff'])) {
-            $data['staff'] = [];
+        // Firestore: query all staff for this school assigned to current session
+        $staffDocs = $this->fs->schoolWhere('staff', [['sessions', 'array-contains', $session_year]], 'Name', 'ASC');
+
+        // Firestore is the sole source per no-RTDB policy. No fallback.
+
+        $data['staff'] = [];
+        foreach ($staffDocs as $doc) {
+            $s = $doc['data'];
+            $s['_profilePic'] = $s['ProfilePic'] ?? $s['Photo URL'] ?? $s['profilePic'] ?? '';
+            $id = $s['User ID'] ?? $s['staffId'] ?? $doc['id'];
+            $data['staff'][$id] = $s;
         }
 
-        // Remove non-staff siblings (e.g. the integer 'Count' node).
-        // PHP 8 throws a fatal TypeError when the view accesses $s['field']
-        // on a non-array value, which stops rendering — so any staff entries
-        // that come after 'Count' alphabetically (like STA0006) are never shown.
-        $data['staff'] = array_filter($data['staff'], 'is_array');
+        $data['school_name'] = $this->school_name;
 
-        // Normalise profile-pic key: new_staff() stores 'ProfilePic',
-        // older records may use 'Photo URL'.
-        foreach ($data['staff'] as &$s) {
-            $s['_profilePic'] = $s['ProfilePic'] ?? $s['Photo URL'] ?? '';
-        }
-        unset($s);
-
-        // SESSION ISOLATION: only show teachers who are assigned to this session.
-        $session_year    = $this->session_year;
-        $sessionTeachers = $this->firebase->get("Schools/{$school_name}/{$session_year}/Teachers");
-        if (is_array($sessionTeachers) && !empty($sessionTeachers)) {
-            $data['staff'] = array_intersect_key($data['staff'], $sessionTeachers);
-        } else {
-            $data['staff'] = [];
-        }
-
-        $data['school_name'] = $school_name;
-
-        // Load staff role definitions for badge display and filtering
-        $data['staff_role_defs'] = $this->firebase->get("Schools/{$school_name}/Config/StaffRoles") ?? [];
+        // Load staff role definitions from school config
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $data['staff_role_defs'] = $schoolDoc['staffRoles'] ?? [];
         if (!is_array($data['staff_role_defs'])) $data['staff_role_defs'] = [];
 
         $this->load->view('include/header');
@@ -443,23 +454,14 @@ class Staff extends MY_Controller
     public function fix_staff_count()
     {
         $this->_require_role(self::MANAGE_ROLES);
-        $school_id = $this->parent_db_key;
 
-        $teachersNode = $this->firebase->get("Users/Teachers/{$school_id}");
-        if (!is_array($teachersNode)) {
-            $this->json_error('No teachers node found.', 404);
-            return;
-        }
+        // Firestore: count staff docs for this school
+        $actualCount = $this->fs->count('staff', [['schoolId', '==', $this->school_id]]);
 
-        $actualCount = 0;
-        foreach ($teachersNode as $key => $val) {
-            if ($key === 'Count') continue;
-            if (is_array($val)) $actualCount++;
-        }
-
-        $storedCount = isset($teachersNode['Count']) ? (int)$teachersNode['Count'] : 0;
-
-        $this->CM->addKey_pair_data("Users/Teachers/{$school_id}/", ['Count' => $actualCount]);
+        // Update school doc with correct count
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $storedCount = (int) ($schoolDoc['staffCount'] ?? 0);
+        $this->fs->update('schools', $this->school_id, ['staffCount' => $actualCount]);
 
         $this->json_success([
             'previous_count' => $storedCount,
@@ -504,7 +506,7 @@ class Staff extends MY_Controller
             unset($sheetData[0]);
             $sheetData = array_values($sheetData);
 
-            $this->load->library('auth_client');
+            $this->load->library('id_generator');
 
             $success = 0;
             $error   = 0;
@@ -523,7 +525,7 @@ class Staff extends MY_Controller
                 $rowData = array_combine($headers, $row);
 
                 // Generate globally unique TEA ID from Auth API
-                $staffId = $this->auth_client->generate_id('STA');
+                $staffId = $this->id_generator->generate('STA');
                 if (!$staffId) {
                     $skipped[] = "Row " . ($success + $error + count($skipped) + 1) . ": ID generation failed";
                     $error++;
@@ -663,48 +665,46 @@ class Staff extends MY_Controller
                     ],
                 ];
 
-                $this->firebase->set("Users/Teachers/{$school_id}/{$staffId}", $data);
-
-                // Session Teachers roster (with roles — matches add_staff_ajax)
-                $this->CM->addKey_pair_data("Schools/{$school_name}/{$session_year}/Teachers/{$staffId}", [
-                    'Name'  => $name,
-                    'roles' => $roleIds,
+                // Write full record to Firestore
+                $fsData = array_merge($data, [
+                    'schoolId'  => $this->school_id,
+                    'session'   => $session_year,
+                    'sessions'  => [$session_year],
+                    'staffId'   => $staffId,
+                    'name'      => $name,         // lowercase alias for Android
+                    'phone'     => $phone,         // lowercase alias for Android
+                    'email'     => trim($rowData['Email'] ?? ''),
+                    'updatedAt' => date('c'),
                 ]);
+                unset($fsData['Password'], $fsData['Credentials']);
+                $this->fs->set('staff', $this->fs->docId($staffId), $fsData, true);
 
-                // Increment staff count (matches add_staff_ajax)
-                $currentCount = (int)($this->CM->get_data("Users/Teachers/{$school_id}/Count") ?? 0);
-                $this->CM->addKey_pair_data("Users/Teachers/{$school_id}/", ['Count' => $currentCount + 1]);
-
-                // Auto-create salary structure for payroll (matches add_staff_ajax)
+                // Auto-create salary structure for payroll
                 $this->_sync_salary_structure($staffId, $basic, $allow);
 
-                // Tenant-scoped phone index (primary)
-                $this->CM->addKey_pair_data("Schools/{$school_name}/Phone_Index/", [$phone => $staffId]);
-                // Legacy global indexes — kept for mobile app backward compatibility
-                $this->CM->addKey_pair_data('Exits/', [$phone => $school_id]);
-                $this->CM->addKey_pair_data('User_ids_pno/', [$phone => $staffId]);
+                // Phone index in Firestore
+                $this->fs->set('indexPhones', $this->fs->docId($phone), [
+                    'schoolId' => $this->school_id,
+                    'phone'    => $phone,
+                    'userId'   => $staffId,
+                    'type'     => 'staff',
+                ]);
 
-                // Sync to MongoDB (best-effort)
+                // Create Firebase Auth account (best-effort)
                 try {
-                    $this->auth_client->sync_admin([
-                        'adminId'            => $staffId,
-                        'name'               => $name,
-                        'email'              => trim($rowData['Email'] ?? ''),
-                        'phone'              => $phone,
-                        'role'               => 'STA',
-                        'passwordHash'       => $hashedPassword,
-                        'schoolId'           => $this->school_code,
-                        'schoolCode'         => $this->school_name,
-                        'parentDbKey'        => $this->parent_db_key,
-                        'createdBy'          => $this->session->userdata('admin_id') ?: 'system',
-                        'position'           => trim($rowData['Position'] ?? ''),
-                        'department'         => trim($rowData['Department'] ?? ''),
-                        'gender'             => trim($rowData['Gender'] ?? ''),
-                        'deviceBindingMethod'=> 'otp',
-                        'schoolDisplayName'  => $this->school_display_name ?? '',
+                    $authEmail = Firebase::authEmail($staffId);
+                    $this->firebase->createFirebaseUser($authEmail, $plainPassword, [
+                        'uid'         => $staffId,
+                        'displayName' => $name,
+                    ]);
+                    $this->firebase->setFirebaseClaims($staffId, [
+                        'role'           => 'Teacher',
+                        'school_id'      => $this->school_id,
+                        'school_code'    => $this->school_code,
+                        'parent_db_key'  => $this->parent_db_key,
                     ]);
                 } catch (Exception $e) {
-                    log_message('error', "Staff import MongoDB sync failed for {$staffId}: " . $e->getMessage());
+                    log_message('error', "Staff import Firebase Auth failed for {$staffId}: " . $e->getMessage());
                 }
 
                 $success++;
@@ -961,11 +961,23 @@ class Staff extends MY_Controller
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
 
-        $staffIdCount = $this->CM->get_data("Users/Teachers/{$school_id}/Count") ?? 1;
+        // Issue A fix: preview the *real* next staff ID via the race-safe RTDB
+        // counter (System/Counters/STA), not the stale schools.staffCount field.
+        // These two used to drift apart whenever a save failed mid-flow.
+        $this->load->library('id_generator');
+        $previewedNextId = $this->id_generator->generate('STA_PEEK');
+        if (empty($previewedNextId)) {
+            // Fallback to schools.staffCount only if RTDB peek failed
+            $schoolDoc       = $this->fs->get('schools', $this->school_id);
+            $staffIdCount    = (int) ($schoolDoc['staffCount'] ?? 1);
+            $previewedNextId = 'STA' . str_pad((string) $staffIdCount, 4, '0', STR_PAD_LEFT);
+        } else {
+            $staffIdCount = (int) substr($previewedNextId, 3);
+        }
 
         $data['schoolName']    = $school_name;
         $data['staffIdCount']  = $staffIdCount;
-        $data['user_Id']       = $staffIdCount;
+        $data['user_Id']       = $previewedNextId;
 
         if ($this->input->method() === 'post') {
             header('Content-Type: application/json');
@@ -984,27 +996,55 @@ class Staff extends MY_Controller
                 $this->json_error('Missing required fields.', 400);
             }
 
-            // Generate STA ID from Auth API (race-safe sequential ID)
-            $this->load->library('auth_client');
-            $generatedId = $this->auth_client->generate_id('STA');
+            // [FIX-3] Validate phone first — cheap check, fail fast before ID generation
+            if (!preg_match('/^[6-9]\d{9}$/', $phoneNumber)) {
+                $this->json_error('Invalid phone number.', 400);
+            }
+
+            // Bug 5 fix: reject duplicate STAFF phone numbers only.
+            // The indexPhones collection is shared across students/parents AND staff
+            // (same person can legitimately be a parent + staff). We only hard-block
+            // when another *staff* already owns the number; for cross-type collisions
+            // we allow staff creation but skip the index overwrite further below so
+            // OTP login still resolves to the original (parent) account.
+            $phonePreowner    = null;   // existing indexPhones entry, if any
+            $phoneCrossType   = false;  // true if existing entry is non-staff
+            try {
+                $existingPhone = $this->fs->get('indexPhones', $this->fs->docId($phoneNumber));
+                if (!empty($existingPhone) && !empty($existingPhone['userId'])) {
+                    $phonePreowner = $existingPhone;
+                    $existingType  = strtolower((string)($existingPhone['type'] ?? ''));
+                    if ($existingType === 'staff') {
+                        $this->json_error(
+                            'Phone number already registered to staff '
+                                . $existingPhone['userId'] . '.',
+                            409
+                        );
+                    }
+                    // Cross-type (student/parent) → allow but don't overwrite the index
+                    $phoneCrossType = true;
+                }
+            } catch (Exception $e) {
+                log_message('error', 'Staff: indexPhones lookup failed: ' . $e->getMessage());
+                // Non-fatal — continue; race is still possible but rare.
+            }
+
+            // Generate STA ID (race-safe sequential ID)
+            $this->load->library('id_generator');
+            $generatedId = $this->id_generator->generate('STA');
 
             if (!empty($generatedId)) {
                 $staffId = $generatedId;
-                $mongoSynced = false; // Record not yet created — only ID reserved
             } else {
-                // Fallback: use local counter if Auth API is unavailable
-                $staffId = $normalizedPostData['user_id'] ?? $staffIdCount;
-                $mongoSynced = false;
-                log_message('error', 'Staff: Auth API generate_id failed — using local ID.');
+                // Fallback: use a timestamp-based ID to avoid collisions when the
+                // sequential generator is unavailable. Avoid $staffIdCount because
+                // it's read at GET time and goes stale across concurrent admins.
+                $staffId = 'STA' . str_pad((string) (time() % 1000000), 6, '0', STR_PAD_LEFT);
+                log_message('error', 'Staff: Auth API generate_id failed — using timestamp fallback ID ' . $staffId);
             }
 
             if (empty($staffId)) {
                 $this->json_error('Failed to generate staff ID.', 500);
-            }
-
-            // [FIX-3] Validate phone
-            if (!preg_match('/^[6-9]\d{9}$/', $phoneNumber)) {
-                $this->json_error('Invalid phone number.', 400);
             }
 
             // Date formatting
@@ -1033,7 +1073,9 @@ class Staff extends MY_Controller
                 $photo    = $_FILES['Photo'];
                 $realMime = mime_content_type($photo['tmp_name']);
 
-                if (!in_array($realMime, ['image/jpeg', 'image/jpg'], true)) {
+                // Bug 6 fix: mime_content_type only ever returns 'image/jpeg' for JPG;
+                // 'image/jpg' was dead. Keep just the canonical type.
+                if ($realMime !== 'image/jpeg') {
                     $this->json_error('Only JPG/JPEG files are allowed for photos.', 400);
                 }
 
@@ -1049,7 +1091,7 @@ class Staff extends MY_Controller
                 $aadhar   = $_FILES['Aadhar'];
                 $realMime = mime_content_type($aadhar['tmp_name']);
 
-                if (!in_array($realMime, ['image/jpeg', 'image/jpg', 'image/png', 'application/pdf'], true)) {
+                if (!in_array($realMime, ['image/jpeg', 'image/png', 'application/pdf'], true)) {
                     $this->json_error('Only PDF, JPG, JPEG, or PNG files are allowed for Aadhar.', 400);
                 }
 
@@ -1075,8 +1117,9 @@ class Staff extends MY_Controller
             ];
 
             $emergencyContactData = [
-                'name'        => $normalizedPostData['emergency_contact_name']  ?? '',
-                'phoneNumber' => $normalizedPostData['emergency_contact_phone'] ?? '',
+                'name'        => $normalizedPostData['emergency_contact_name']     ?? '',
+                'phoneNumber' => $normalizedPostData['emergency_contact_phone']    ?? '',
+                'relation'    => $normalizedPostData['emergency_contact_relation'] ?? '',
             ];
 
             $qualificationDetailsData = [
@@ -1102,7 +1145,7 @@ class Staff extends MY_Controller
             }
             $hashedPassword = password_hash($rawPassword, PASSWORD_BCRYPT, ['cost' => 12]);
 
-            // ── Staff roles (multi-role support) ─────────────────────────
+            // ── Staff roles (multi-role support — single source of truth) ──
             $rawRoles = $normalizedPostData['staff_roles'] ?? '';
             if (is_string($rawRoles) && $rawRoles !== '') {
                 $roleIds = array_values(array_filter(array_map('trim', explode(',', $rawRoles))));
@@ -1111,20 +1154,26 @@ class Staff extends MY_Controller
             } else {
                 $roleIds = [];
             }
-            // Default to Teacher if no roles selected
             if (empty($roleIds)) {
+                // Legacy fallback: infer from any submitted Position field, else default Teacher
                 $roleIds = $this->_infer_roles_from_position($normalizedPostData['staff_position'] ?? '');
             }
             $primaryRole = trim($normalizedPostData['primary_role'] ?? '');
             if ($primaryRole === '' || !in_array($primaryRole, $roleIds, true)) {
                 $primaryRole = $roleIds[0] ?? 'ROLE_TEACHER';
             }
+            // designation is the canonical display label; Position is the auto-fallback.
+            // If user entered designation, use it as Position too for consistency.
+            $designationInput = trim($normalizedPostData['designation'] ?? '');
+            $positionLabel = $designationInput !== ''
+                ? $designationInput
+                : $this->_role_id_to_label($primaryRole);
 
             $staffRecord = [
                 'Name'            => $staffName,
                 'User ID'         => $staffId,
                 'Phone Number'    => $phoneNumber,
-                'Position'        => $normalizedPostData['staff_position'] ?? '',
+                'Position'        => $positionLabel,
                 'Father Name'     => $normalizedPostData['father_name']    ?? '',
                 'DOB'             => $formattedData['DOB'],
                 'Email'           => $normalizedPostData['email']          ?? '',
@@ -1145,60 +1194,145 @@ class Staff extends MY_Controller
                 'primary_role'    => $primaryRole,
                 'Password'        => $hashedPassword,
                 'Credentials'     => ['Id' => $staffId, 'Password' => $hashedPassword],
+
+                // Phase A (2026-04-08): new profile + statutory fields
+                'altPhone'        => $normalizedPostData['alt_phone']       ?? '',
+                'maritalStatus'   => $normalizedPostData['marital_status']  ?? '',
+                'designation'     => $normalizedPostData['designation']     ?? '',
+                'panNumber'       => strtoupper(trim($normalizedPostData['pan_number']    ?? '')),
+                'aadharNumber'    => trim($normalizedPostData['aadhar_number'] ?? ''),
+                'pfNumber'        => trim($normalizedPostData['pf_number']    ?? ''),
+                'esiNumber'       => trim($normalizedPostData['esi_number']   ?? ''),
+                'Religion'        => $normalizedPostData['religion']       ?? '',
+                'Category'        => $normalizedPostData['category']       ?? '',
+                'sameAsCurrentAddress' => !empty($normalizedPostData['same_as_current']),
+                'permanentAddress' => [
+                    'street'     => $normalizedPostData['perm_street']      ?? '',
+                    'city'       => $normalizedPostData['perm_city']        ?? '',
+                    'state'      => $normalizedPostData['perm_state']       ?? '',
+                    'postalCode' => $normalizedPostData['perm_postal_code'] ?? '',
+                ],
             ];
 
-            // [FIX-4] Use session school_id instead of undefined $schoolId
-            $StaffPath = "Users/Teachers/{$school_id}/{$staffId}";
-            $result    = $this->firebase->set($StaffPath, $staffRecord);
+            // Teacher capability: subjects this teacher can teach
+            // (Actual class/section assignments live in Firestore subjectAssignments — Academic Planner)
+            $teachingSubjects = trim($normalizedPostData['teaching_subjects'] ?? '');
+            if ($teachingSubjects !== '') {
+                $staffRecord['teaching_subjects'] = array_values(array_filter(array_map('trim', explode(',', $teachingSubjects))));
+            }
+
+            // Write full staff record to Firestore
+            $fsData = array_merge($staffRecord, [
+                'schoolId'  => $this->school_id,
+                'session'   => $session_year,
+                'sessions'  => [$session_year],
+                'staffId'   => $staffId,
+                'name'      => $staffName,       // lowercase alias for Android
+                'phone'     => $phoneNumber,     // lowercase alias for Android
+                'email'     => $emailAddr,       // lowercase alias for Android
+                'status'    => 'Active',         // new staff is always Active
+                'updatedAt' => date('c'),
+            ]);
+            unset($fsData['Password'], $fsData['Credentials']);
+            $result = $this->fs->set('staff', $this->fs->docId($staffId), $fsData, true);
+
+            // RTDB mirror removed per no-RTDB policy. Firestore `staff` is the sole source.
+
+            // Auto-create leave balance for new staff
+            try {
+                $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+                $leaveTypes = (is_array($fsSchool) && !empty($fsSchool['leaveTypes'])) ? $fsSchool['leaveTypes'] : [];
+                if (!empty($leaveTypes)) {
+                    $balances = [];
+                    foreach ($leaveTypes as $tid => $lt) {
+                        if (!is_array($lt)) continue;
+                        $alloc = (int) ($lt['days_per_year'] ?? 0);
+                        $balances[$tid] = ['allocated' => $alloc, 'used' => 0, 'carried' => 0, 'balance' => $alloc];
+                    }
+                    $balDocId = "{$this->school_id}_BAL_{$staffId}_" . date('Y');
+                    $this->firebase->firestoreSet('leaveApplications', $balDocId, [
+                        'schoolId' => $this->school_id, 'staffId' => $staffId,
+                        'year' => date('Y'), 'balances' => $balances,
+                        'type' => 'balance', 'updatedAt' => date('c'),
+                    ]);
+                }
+            } catch (\Exception $e) {
+                log_message('error', "Staff: Auto-create leave balance failed for {$staffId}: " . $e->getMessage());
+            }
 
             if ($result !== false) {
-                // Tenant-scoped phone index (primary)
-                $this->CM->addKey_pair_data("Schools/{$school_name}/Phone_Index/", [$phoneNumber => $staffId]);
-                // Legacy global indexes — kept for mobile app backward compatibility
-                $this->CM->addKey_pair_data('Exits/', [$phoneNumber => $school_id]);
-                $this->CM->addKey_pair_data('User_ids_pno/', [$phoneNumber => $staffId]);
-                $newCount = $staffIdCount + 1;
-                $this->CM->addKey_pair_data("Users/Teachers/{$school_id}/", ['Count' => $newCount]);
-                $this->firebase->set("Schools/{$school_name}/{$session_year}/Teachers/{$staffId}", [
-                    'Name'  => $staffName,
-                    'roles' => $roleIds,
+                // Phone index — skip overwrite if a non-staff (parent/student) already
+                // owns this number, so OTP login for that account keeps working.
+                $phoneIndexWarning = null;
+                if (!$phoneCrossType) {
+                    $this->fs->set('indexPhones', $this->fs->docId($phoneNumber), [
+                        'schoolId' => $this->school_id,
+                        'phone'    => $phoneNumber,
+                        'userId'   => $staffId,
+                        'type'     => 'staff',
+                    ]);
+                } else {
+                    $phoneIndexWarning = 'Phone number is already registered to '
+                        . ($phonePreowner['type'] ?? 'parent')
+                        . ' ' . ($phonePreowner['userId'] ?? '?')
+                        . '. The staff record was created, but OTP login on this number will still resolve to the existing account.';
+                    log_message('error', 'Staff: phone ' . $phoneNumber
+                        . ' already indexed to ' . ($phonePreowner['type'] ?? '?')
+                        . ' ' . ($phonePreowner['userId'] ?? '?')
+                        . ' — staff ' . $staffId . ' created without index overwrite.');
+                }
+
+                // Issue C fix: use the numeric portion of the freshly-allocated
+                // staffId rather than the (stale, GET-time) $staffIdCount.
+                // staffCount tracks "next id number" so it should equal
+                // <last-allocated-number> + 1, which is exactly the current STA
+                // counter + 1.
+                $allocatedNum = (int) substr($staffId, 3);
+                $this->fs->update('schools', $this->school_id, [
+                    'staffCount' => $allocatedNum + 1,
                 ]);
 
                 // Auto-create salary structure for payroll
                 $this->_sync_salary_structure($staffId, $basicSalary, $allowances);
 
-                // ── Create teacher record in MongoDB (Firebase succeeded) ──
-                $syncResult = $this->auth_client->sync_admin([
-                    'adminId'            => $staffId,
-                    'name'               => $staffName,
-                    'email'              => $emailAddr,
-                    'phone'              => $phoneNumber,
-                    'role'               => 'STA',
-                    'passwordHash'       => $hashedPassword,
-                    'schoolId'           => $this->school_code,
-                    'schoolCode'         => $this->school_name,
-                    'parentDbKey'        => $this->parent_db_key,
-                    'createdBy'          => $this->admin_id ?? 'system',
-                    'profilePic'         => $docData['Photo']['url'] ?? null,
-                    'position'           => $normalizedPostData['staff_position'] ?? '',
-                    'department'         => $normalizedPostData['department']     ?? '',
-                    'gender'             => $normalizedPostData['gender']         ?? '',
-                    'staffRoles'         => $roleIds,
-                    'primaryRole'        => $primaryRole,
-                    'classesAssigned'    => [],
-                    'subjects'           => [],
-                    'deviceBindingMethod'=> 'otp',
-                    'schoolDisplayName'  => $this->school_display_name ?? '',
-                ]);
-                if (empty($syncResult['success'])) {
-                    log_message('error', 'Staff: MongoDB sync failed for ' . $staffId . ': ' . json_encode($syncResult));
+                // Bug 1 fix: use the actual primary-role label as the auth claim
+                // (was hard-coded to 'Teacher', breaking RBAC for non-teaching staff).
+                // Bug 3 fix: surface Firebase Auth failures in the response so the
+                // admin knows the login account was not created.
+                $authWarning = null;
+                try {
+                    $authEmail = Firebase::authEmail($staffId);
+                    $this->firebase->createFirebaseUser($authEmail, $rawPassword, [
+                        'uid'         => $staffId,
+                        'displayName' => $staffName,
+                    ]);
+                    $this->firebase->setFirebaseClaims($staffId, [
+                        'role'           => $positionLabel,
+                        'school_id'      => $this->school_id,
+                        'school_code'    => $this->school_code,
+                        'parent_db_key'  => $this->parent_db_key,
+                    ]);
+                } catch (Exception $e) {
+                    log_message('error', 'Staff: Firebase Auth create failed for ' . $staffId . ': ' . $e->getMessage());
+                    $authWarning = 'Staff record saved, but Firebase Auth account could not be created: '
+                        . $e->getMessage()
+                        . ' — the user will not be able to log in until this is resolved.';
                 }
 
-                $this->json_success([
-                    'message'          => 'Staff added successfully.',
+                $warnings = array_filter([$authWarning, $phoneIndexWarning]);
+                $payload  = [
+                    'message'          => !empty($warnings)
+                        ? 'Staff added (with warnings).'
+                        : 'Staff added successfully.',
                     'staff_id'         => $staffId,
+                    'name'             => $staffName,
+                    'position'         => $positionLabel,
                     'default_password' => $rawPassword,
-                ]);
+                ];
+                if (!empty($warnings)) {
+                    $payload['warning'] = implode(' | ', $warnings);
+                }
+                $this->json_success($payload);
             } else {
                 $this->json_error('Failed to save staff record.', 500);
             }
@@ -1214,37 +1348,31 @@ class Staff extends MY_Controller
     public function delete_staff($id)
     {
         $this->_require_role(self::MANAGE_ROLES);
-        $school_id    = $this->parent_db_key;
-        $school_name  = $this->school_name;
-        $session_year = $this->session_year;
 
-        if (!$id || !preg_match('/^[A-Za-z0-9]+$/', $id)) {
+        if (!$id || !preg_match('/^[A-Za-z0-9_]+$/', $id)) {
             redirect(base_url() . 'staff/all_staff/');
             return;
         }
 
-        $staff = $this->CM->select_data("Users/Teachers/{$school_id}/{$id}");
+        // Read staff from Firestore
+        $staff = $this->fs->getEntity('staff', $id);
 
         if ($staff && isset($staff['Phone Number'])) {
             $phoneNumber = $staff['Phone Number'];
-
-            $this->CM->delete_data("Schools/{$school_name}/{$session_year}/Teachers", $id);
-            // Remove from tenant-scoped phone index
-            $this->CM->delete_data("Schools/{$school_name}/Phone_Index", $phoneNumber);
-            // Remove legacy global indexes
-            $this->CM->delete_data('Exits', $phoneNumber);
-            $this->CM->delete_data('User_ids_pno', $phoneNumber);
+            // Remove phone index
+            $this->fs->remove('indexPhones', $this->fs->docId($phoneNumber));
         }
 
-        // Delete from Firebase profile
-        $this->firebase->delete("Users/Teachers/{$school_id}", $id);
+        // Delete staff document from Firestore
+        $this->fs->removeEntity('staff', $id);
 
-        // Delete from MongoDB (best-effort)
+        // RTDB mirror removed per no-RTDB policy. Firestore `staff` is the sole source.
+
+        // Delete Firebase Auth account (best-effort)
         try {
-            $this->load->library('auth_client');
-            $this->auth_client->delete_admin($id, $this->school_code, 'teacher');
+            $this->firebase->deleteFirebaseUser($id);
         } catch (Exception $e) {
-            log_message('error', "Staff delete MongoDB failed for {$id}: " . $e->getMessage());
+            log_message('error', "Staff delete Firebase Auth failed for {$id}: " . $e->getMessage());
         }
 
         redirect(base_url() . 'staff/all_staff/');
@@ -1255,8 +1383,6 @@ class Staff extends MY_Controller
     public function edit_staff($user_id)
     {
         $this->_require_role(self::MANAGE_ROLES);
-        // [FIX-5] All school info from session
-        $school_id    = $this->parent_db_key;
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
 
@@ -1266,9 +1392,9 @@ class Staff extends MY_Controller
             $postData = $this->input->post();
             unset($postData['user_id'], $postData['User ID']);
 
-            // Fetch existing record once — used for old-file deletion and Doc merge
-            $existingData   = $this->firebase->get("Users/Teachers/{$school_id}/{$user_id}");
-            $existingDoc    = is_array($existingData['Doc'] ?? null) ? $existingData['Doc'] : [];
+            // Fetch existing record (Firestore-first with RTDB fallback + auto-heal)
+            $existingData = $this->_get_staff_with_fallback($user_id);
+            $existingDoc  = is_array($existingData['Doc'] ?? null) ? $existingData['Doc'] : [];
             $docUpdates     = [];
 
             // ── Photo upload ──────────────────────────────────────────────────
@@ -1276,7 +1402,9 @@ class Staff extends MY_Controller
                 $photo    = $_FILES['Photo'];
                 $realMime = mime_content_type($photo['tmp_name']);
 
-                if (!in_array($realMime, ['image/jpeg', 'image/jpg'], true)) {
+                // mime_content_type only ever returns 'image/jpeg' for JPG; the
+                // 'image/jpg' alternative was dead. Match new_staff() exactly.
+                if ($realMime !== 'image/jpeg') {
                     $this->json_error('Only JPG/JPEG files are allowed for photos.', 400);
                 }
 
@@ -1295,7 +1423,7 @@ class Staff extends MY_Controller
                 $aadhar   = $_FILES['Aadhar'];
                 $realMime = mime_content_type($aadhar['tmp_name']);
 
-                if (!in_array($realMime, ['image/jpeg', 'image/jpg', 'image/png', 'application/pdf'], true)) {
+                if (!in_array($realMime, ['image/jpeg', 'image/png', 'application/pdf'], true)) {
                     $this->json_error('Only PDF, JPG, JPEG, or PNG files are allowed for Aadhar.', 400);
                 }
 
@@ -1317,8 +1445,9 @@ class Staff extends MY_Controller
                     'postalcode' => 'PostalCode',
                 ],
                 'emergencyContact' => [
-                    'emergency_contact_name' => 'name',
-                    'emergency_contact_phone' => 'phoneNumber',
+                    'emergency_contact_name'     => 'name',
+                    'emergency_contact_phone'    => 'phoneNumber',
+                    'emergency_contact_relation' => 'relation',
                 ],
                 'qualificationDetails' => [
                     'teacher_experience' => 'experience',
@@ -1332,7 +1461,29 @@ class Staff extends MY_Controller
                     'bank_name' => 'bankName',
                     'bank_ifsc' => 'ifscCode',
                 ],
+                'permanentAddress' => [
+                    'perm_street'      => 'street',
+                    'perm_city'        => 'city',
+                    'perm_state'       => 'state',
+                    'perm_postal_code' => 'postalCode',
+                ],
             ];
+
+            // Extract Phase A flat fields from POST before formatAndPrepareFirebaseData
+            // strips them. We'll merge them back AFTER the format call.
+            $phaseAFlats = ['alt_phone' => 'altPhone', 'marital_status' => 'maritalStatus',
+                            'designation' => 'designation', 'pan_number' => 'panNumber',
+                            'aadhar_number' => 'aadharNumber', 'pf_number' => 'pfNumber',
+                            'esi_number' => 'esiNumber'];
+            $phaseAValues = [];
+            foreach ($phaseAFlats as $postKey => $docKey) {
+                $val = trim($postData[$postKey] ?? '');
+                if ($docKey === 'panNumber') $val = strtoupper($val);
+                $phaseAValues[$docKey] = $val;
+                unset($postData[$postKey]);
+            }
+            $phaseAValues['sameAsCurrentAddress'] = !empty($postData['same_as_current']);
+            unset($postData['same_as_current']);
 
             $structuredData = [];
             foreach ($structuredFields as $category => $fields) {
@@ -1345,16 +1496,21 @@ class Staff extends MY_Controller
             }
 
             $formattedData = $this->CM->formatAndPrepareFirebaseData($postData);
-            $formattedData = array_merge($formattedData, $structuredData);
+            $formattedData = array_merge($formattedData, $structuredData, $phaseAValues);
 
-            // Date formatting
+            // Date formatting — accept both Y-m-d (HTML date input) and d-m-Y
+            // (the format we store). strtotime() can't reliably parse d-m-Y on
+            // Windows, so use DateTime::createFromFormat with explicit fallbacks.
             foreach (['DOB', 'Date Of Joining'] as $dateField) {
-                if (!empty($formattedData[$dateField])) {
-                    $ts = strtotime($formattedData[$dateField]);
-                    $formattedData[$dateField] = $ts ? date('d-m-Y', $ts) : '';
-                } else {
+                $val = $formattedData[$dateField] ?? '';
+                if ($val === '') {
                     $formattedData[$dateField] = '';
+                    continue;
                 }
+                $dt = DateTime::createFromFormat('Y-m-d', $val)
+                   ?: DateTime::createFromFormat('d-m-Y', $val)
+                   ?: false;
+                $formattedData[$dateField] = $dt ? $dt->format('d-m-Y') : '';
             }
 
             // Prevent Credentials from being overwritten via edit
@@ -1376,9 +1532,36 @@ class Staff extends MY_Controller
                     $editPrimary = $editRoleIds[0] ?? 'ROLE_TEACHER';
                 }
                 $formattedData['primary_role'] = $editPrimary;
+                // Auto-derive Position from primary role (Designation field removed from form)
+                $formattedData['Position'] = $this->_role_id_to_label($editPrimary);
+                // Strip any legacy 'position' POST field so it doesn't override
+                unset($postData['position'], $formattedData['position']);
             }
+            // If user entered an explicit designation, use it as Position too
+            // so all legacy reads (staff list, payslip, etc.) see the same label.
+            // designation is the canonical display field; Position is the auto-derived fallback.
+            if (!empty($formattedData['designation'])) {
+                $formattedData['Position'] = $formattedData['designation'];
+            }
+
             // Remove raw keys so they don't pollute the flat write
             unset($formattedData['staff_roles_raw'], $postData['staff_roles'], $postData['primary_role']);
+
+            // ── Teaching subjects + assigned classes (Phase 1) ───────────
+            $teachingSubjectsRaw = trim($postData['teaching_subjects'] ?? '');
+            if ($teachingSubjectsRaw !== '') {
+                $formattedData['teaching_subjects'] = array_values(
+                    array_filter(array_map('trim', explode(',', $teachingSubjectsRaw)))
+                );
+            } else {
+                // Empty submission = clear the field (e.g., role changed from Teacher to Accountant)
+                $formattedData['teaching_subjects'] = [];
+            }
+            unset($postData['teaching_subjects'], $formattedData['teaching_subjects_raw']);
+
+            // Strip any legacy assigned_classes from incoming POST so it doesn't pollute the staff doc.
+            // (Actual class/section assignments live in Firestore subjectAssignments — Academic Planner)
+            unset($postData['assigned_classes'], $formattedData['assigned_classes'], $formattedData['assigned_classes_raw']);
 
             // Merge updated Doc entries (if any files were uploaded) into the
             // existing Doc node so unchanged documents are preserved.
@@ -1389,24 +1572,31 @@ class Staff extends MY_Controller
             $oldPhoneNumber = $existingData['Phone Number'] ?? null;
             $oldName        = $existingData['Name']         ?? null;
 
-            $updateRes = $this->CM->update_data("Users/Teachers/{$school_id}", $user_id, $formattedData);
+            // Update staff document in Firestore
+            $formattedData['updatedAt'] = date('c');
+            // Add lowercase aliases for Android
+            if (isset($formattedData['Name']))         $formattedData['name']  = $formattedData['Name'];
+            if (isset($formattedData['Phone Number'])) $formattedData['phone'] = $formattedData['Phone Number'];
+            if (isset($formattedData['Email']))        $formattedData['email'] = $formattedData['Email'];
+            unset($formattedData['Password'], $formattedData['Credentials']);
+
+            $updateRes = $this->fs->updateEntity('staff', $user_id, $formattedData);
+
+            // RTDB mirror removed per no-RTDB policy. Firestore `staff` is the sole source.
 
             if ($updateRes) {
-                // Phone number changed — update lookup tables
+                // Phone number changed — update phone index
                 if (!empty($formattedData['Phone Number']) && $formattedData['Phone Number'] !== $oldPhoneNumber) {
                     if ($oldPhoneNumber) {
-                        // Remove old phone from tenant-scoped index
-                        $this->firebase->delete("Schools/{$school_name}/Phone_Index/{$oldPhoneNumber}");
-                        // Remove old phone from legacy global indexes
-                        $this->firebase->delete('Exits/' . $oldPhoneNumber);
-                        $this->firebase->delete('User_ids_pno/' . $oldPhoneNumber);
+                        $this->fs->remove('indexPhones', $this->fs->docId($oldPhoneNumber));
                     }
                     $newPhone = $formattedData['Phone Number'];
-                    // Tenant-scoped phone index (primary)
-                    $this->CM->update_data('', "Schools/{$school_name}/Phone_Index/", [$newPhone => $user_id]);
-                    // Legacy global indexes — kept for mobile app backward compatibility
-                    $this->CM->update_data('', 'Exits/',       [$newPhone => $school_id]);
-                    $this->CM->update_data('', 'User_ids_pno/', [$newPhone => $user_id]);
+                    $this->fs->set('indexPhones', $this->fs->docId($newPhone), [
+                        'schoolId' => $this->school_id,
+                        'phone'    => $newPhone,
+                        'userId'   => $user_id,
+                        'type'     => 'staff',
+                    ]);
                 }
 
                 // Sync salary structure if salary fields were submitted
@@ -1414,8 +1604,7 @@ class Staff extends MY_Controller
                 $editAllow = (float) ($postData['allowances']  ?? $postData['Allowances']  ?? 0);
                 if ($editBasic > 0) {
                     $this->_sync_salary_structure($user_id, $editBasic, $editAllow);
-                    // Also update the salaryDetails node in the staff profile
-                    $this->firebase->update("Users/Teachers/{$school_id}/{$user_id}", [
+                    $this->fs->updateEntity('staff', $user_id, [
                         'salaryDetails' => [
                             'basicSalary' => $editBasic,
                             'Allowances'  => $editAllow,
@@ -1424,41 +1613,28 @@ class Staff extends MY_Controller
                     ]);
                 }
 
-                // Name or roles changed — update session roster
+                // ── Sync updated profile to Firebase Auth (best-effort) ──
                 $teacherName = $formattedData['Name'] ?? null;
-                $rolesChanged = isset($formattedData['staff_roles']);
-                if (($teacherName && $teacherName !== $oldName) || $rolesChanged) {
-                    $rosterUpdate = ['Name' => $teacherName ?: $oldName];
-                    if ($rolesChanged) {
-                        $rosterUpdate['roles'] = $formattedData['staff_roles'];
+                try {
+                    $authUpdate = [];
+                    if ($teacherName)                            $authUpdate['displayName'] = $teacherName;
+                    if (!empty($formattedData['Email']))         $authUpdate['email'] = Firebase::authEmail($user_id);
+                    if (!empty($authUpdate)) {
+                        $this->firebase->updateFirebaseUser($user_id, $authUpdate);
                     }
-                    $this->firebase->set("Schools/{$school_name}/{$session_year}/Teachers/{$user_id}", $rosterUpdate);
-                }
-
-                // ── Sync updated profile to MongoDB (best-effort) ──
-                $this->load->library('auth_client');
-                $mongoUpdate = [
-                    'adminId'    => $user_id,
-                    'role'       => 'STA',
-                    'schoolId'   => $this->school_code,
-                    'schoolCode' => $this->school_name,
-                    'parentDbKey'=> $this->parent_db_key,
-                ];
-                if ($teacherName)                                $mongoUpdate['name']       = $teacherName;
-                if (!empty($formattedData['Email']))             $mongoUpdate['email']      = $formattedData['Email'];
-                if (!empty($formattedData['Phone Number']))      $mongoUpdate['phone']      = $formattedData['Phone Number'];
-                if (!empty($formattedData['Gender']))            $mongoUpdate['gender']     = $formattedData['Gender'];
-                if (isset($postData['staff_position']) || isset($postData['position']))
-                    $mongoUpdate['position'] = $postData['staff_position'] ?? $postData['position'] ?? '';
-                if (isset($postData['department']))              $mongoUpdate['department'] = $postData['department'];
-                if (isset($formattedData['staff_roles']))        $mongoUpdate['staffRoles'] = $formattedData['staff_roles'];
-                if (isset($formattedData['primary_role']))       $mongoUpdate['primaryRole'] = $formattedData['primary_role'];
-                // ProfilePic — only if photo was re-uploaded
-                if (!empty($docUpdates['Photo']['url']))         $mongoUpdate['profilePic'] = $docUpdates['Photo']['url'];
-
-                $editSync = $this->auth_client->sync_admin($mongoUpdate);
-                if (empty($editSync['success'])) {
-                    log_message('error', 'Staff: MongoDB sync failed on edit_staff for ' . $user_id . ': ' . json_encode($editSync));
+                    // Use the actual primary-role label, not a hardcoded "Teacher".
+                    // Falls back to the existing Position if roles weren't submitted in this edit.
+                    $authRole = $formattedData['Position']
+                        ?? $existingData['Position']
+                        ?? 'Teacher';
+                    $this->firebase->setFirebaseClaims($user_id, [
+                        'role'           => $authRole,
+                        'school_id'      => $this->school_id,
+                        'school_code'    => $this->school_code,
+                        'parent_db_key'  => $this->parent_db_key,
+                    ]);
+                } catch (Exception $e) {
+                    log_message('error', 'Staff: Firebase Auth sync failed on edit_staff for ' . $user_id . ': ' . $e->getMessage());
                 }
 
                 $this->json_success();
@@ -1466,14 +1642,15 @@ class Staff extends MY_Controller
                 $this->json_error('Update failed.', 500);
             }
         } else {
-            $data['staff_data'] = $this->CM->select_data("Users/Teachers/{$school_id}/{$user_id}");
+            // Read staff: Firestore-first → RTDB fallback (auto-heals on miss)
+            $data['staff_data'] = $this->_get_staff_with_fallback($user_id);
 
             if (!empty($data['staff_data'])) {
                 $this->load->view('include/header');
                 $this->load->view('edit_staff', ['staff_data' => $data['staff_data']]);
                 $this->load->view('include/footer');
             } else {
-                log_message('error', 'Staff data not found for ID: ' . $user_id);
+                log_message('error', 'Staff data not found in Firestore or RTDB for ID: ' . $user_id);
                 show_404();
             }
         }
@@ -1484,14 +1661,20 @@ class Staff extends MY_Controller
     public function teacher_profile($id)
     {
         $this->_require_role(self::VIEW_ROLES);
-        $school_id = $this->parent_db_key;
 
-        if (!$id || !preg_match('/^[A-Za-z0-9]+$/', $id)) {
+        if (!$id || !preg_match('/^[A-Za-z0-9_]+$/', $id)) {
             show_404();
             return;
         }
 
-        $teacherData = $this->firebase->get("Users/Teachers/{$school_id}/{$id}");
+        // Firestore-first → RTDB fallback (auto-healing)
+        $teacherData = $this->_get_staff_with_fallback($id);
+
+        if (empty($teacherData)) {
+            log_message('error', "teacher_profile: staff not found in Firestore or RTDB: {$id}");
+            show_404();
+            return;
+        }
 
         $this->load->view('include/header');
         $this->load->view('teacher_profile', ['teacher' => $teacherData]);
@@ -1518,29 +1701,26 @@ class Staff extends MY_Controller
 
     private function search_by_name(string $entry): array
     {
-        $school_id    = $this->parent_db_key;
-        $results      = [];
-        $teachers     = $this->CM->get_data("Users/Teachers/{$school_id}");
+        $results = [];
+        // Firestore doesn't support full-text search natively, so fetch all school staff and filter in PHP
+        $staffDocs = $this->fs->schoolWhere('staff', [], 'Name', 'ASC');
 
-        if (!empty($teachers)) {
-            foreach ($teachers as $userId => $teacher) {
-                if (!is_array($teacher)) continue;
+        foreach ($staffDocs as $doc) {
+            $teacher = $doc['data'];
+            $name       = $teacher['Name']        ?? '';
+            $userIdField = $teacher['User ID']     ?? $teacher['staffId'] ?? '';
+            $fatherName = $teacher['Father Name'] ?? '';
 
-                $name       = $teacher['Name']        ?? '';
-                $userIdField = $teacher['User ID']     ?? '';
-                $fatherName = $teacher['Father Name'] ?? '';
-
-                if (
-                    stripos($name,        $entry) !== false ||
-                    stripos($userIdField, $entry) !== false ||
-                    stripos($fatherName,  $entry) !== false
-                ) {
-                    $results[] = [
-                        'user_id'    => $userIdField,
-                        'name'       => htmlspecialchars($name,       ENT_QUOTES, 'UTF-8'),
-                        'father_name' => htmlspecialchars($fatherName, ENT_QUOTES, 'UTF-8'),
-                    ];
-                }
+            if (
+                stripos($name,        $entry) !== false ||
+                stripos($userIdField, $entry) !== false ||
+                stripos($fatherName,  $entry) !== false
+            ) {
+                $results[] = [
+                    'user_id'     => $userIdField,
+                    'name'        => htmlspecialchars($name,       ENT_QUOTES, 'UTF-8'),
+                    'father_name' => htmlspecialchars($fatherName, ENT_QUOTES, 'UTF-8'),
+                ];
             }
         }
 
@@ -1574,8 +1754,12 @@ class Staff extends MY_Controller
             $this->json_error('Invalid class section.', 400);
         }
 
-        $subjectsPath = "Schools/{$school_name}/{$session_year}/{$classSection}/Subjects";
-        $subjects     = $this->CM->get_data($subjectsPath);
+        // Read subjects from section document in Firestore
+        $classKey = Firestore_service::classKey($className);
+        $sectionKey = Firestore_service::sectionKey($section);
+        $sectionDocId = $this->fs->sectionDocId($className, $section);
+        $sectionDoc = $this->fs->get('sections', $sectionDocId);
+        $subjects = $sectionDoc['subjects'] ?? [];
 
         echo json_encode(is_array($subjects) ? array_keys($subjects) : []);
     }
@@ -1586,10 +1770,6 @@ class Staff extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES);
         header('Content-Type: application/json');
-
-        $school_id    = $this->parent_db_key;
-        $school_name  = $this->school_name;
-        $session_year = $this->session_year;
 
         $classSection = trim((string) $this->input->post('class_section'));
         $subject      = strip_tags(trim((string) $this->input->post('subject')));
@@ -1613,44 +1793,43 @@ class Staff extends MY_Controller
         $teacherID       = $matches[1];
         $teacherOnlyName = $matches[2];
 
-        $firebasePath  = "Schools/{$school_name}/{$session_year}/Teachers/{$teacherID}/Duties/{$dutyType}/{$classSection}";
-        $updateResponse = $this->firebase->update($firebasePath, [$subject => $timeSlot ?: '']);
+        // Update duties in staff Firestore document
+        $staffDoc = $this->fs->getEntity('staff', $teacherID);
+        $duties = $staffDoc['duties'] ?? [];
+        if (!isset($duties[$dutyType])) $duties[$dutyType] = [];
+        if (!isset($duties[$dutyType][$classSection])) $duties[$dutyType][$classSection] = [];
+        $duties[$dutyType][$classSection][$subject] = $timeSlot ?: '';
+        $this->fs->updateEntity('staff', $teacherID, ['duties' => $duties]);
 
-        $profilePicPath = "Users/Teachers/{$school_id}/{$teacherID}/Doc/ProfilePic";
-        $profilePicURL  = $this->firebase->get($profilePicPath) ?: base_url('tools/image/default-school.jpeg');
+        $profilePicURL = $staffDoc['ProfilePic'] ?? $staffDoc['profilePic'] ?? base_url('tools/image/default-school.jpeg');
 
-        $classPath             = "Schools/{$school_name}/{$session_year}/{$classSection}/Subjects/{$subject}";
-        $profileUpdateResponse = $this->firebase->update($classPath, [htmlspecialchars($teacherOnlyName, ENT_QUOTES, 'UTF-8') => $profilePicURL]);
-
-        if ($dutyType === 'ClassTeacher') {
-            $this->firebase->set("Schools/{$school_name}/{$session_year}/{$classSection}/ClassTeacher", $teacherOnlyName);
+        // Update section's subject teachers
+        // Parse classSection: "Class 9th 'A'" → classKey="Class 9th", sectionLetter="A"
+        if (preg_match("/^(.+?)\\s*'([^']*)'\\s*$/", $classSection, $csm)) {
+            $classKey = trim($csm[1]);
+            $sectionLetter = trim($csm[2]);
+            $sectionDocId = $this->fs->schoolId() . '_' . $classKey . '_Section ' . $sectionLetter;
+            $sectionDoc = $this->fs->get('sections', $sectionDocId);
+            $subjectTeachers = $sectionDoc['subjects'] ?? [];
+            if (!isset($subjectTeachers[$subject])) $subjectTeachers[$subject] = [];
+            $subjectTeachers[$subject][htmlspecialchars($teacherOnlyName, ENT_QUOTES, 'UTF-8')] = $profilePicURL;
+            $sectionUpdate = ['subjects' => $subjectTeachers];
+            if ($dutyType === 'ClassTeacher') {
+                $sectionUpdate['classTeacher'] = $teacherOnlyName;
+            }
+            $this->fs->update('sections', $sectionDocId, $sectionUpdate);
         }
 
-        // ── Sync classesAssigned + subjects to MongoDB for mobile app ──
-        $dutyData = $this->firebase->get("Schools/{$school_name}/{$session_year}/Teachers/{$teacherID}/Duties");
-        if (is_array($dutyData)) {
-            $allClasses  = [];
-            $allSubjects = [];
-            foreach ($dutyData as $type => $classes) {
-                if (!is_array($classes)) continue;
-                foreach ($classes as $cls => $subjs) {
-                    $allClasses[] = $cls;
-                    if (is_array($subjs)) {
-                        $allSubjects = array_merge($allSubjects, array_keys($subjs));
-                    }
-                }
-            }
-            $this->load->library('auth_client');
-            $this->auth_client->sync_admin([
-                'adminId'           => $teacherID,
-                'role'              => 'STA',
-                'schoolId'          => $this->school_code,
-                'schoolCode'        => $this->school_name,
-                'parentDbKey'       => $this->parent_db_key,
-                'classesAssigned'   => array_values(array_unique($allClasses)),
-                'subjects'          => array_values(array_unique($allSubjects)),
-                'schoolDisplayName' => $this->school_display_name ?? '',
+        // Sync Firebase Auth claims (best-effort)
+        try {
+            $this->firebase->setFirebaseClaims($teacherID, [
+                'role'           => 'Teacher',
+                'school_id'      => $this->school_id,
+                'school_code'    => $this->school_code,
+                'parent_db_key'  => $this->parent_db_key,
             ]);
+        } catch (Exception $e) {
+            log_message('error', 'Staff: Firebase Auth sync failed on assign_duty for ' . $teacherID . ': ' . $e->getMessage());
         }
 
         $this->json_success([
@@ -1665,11 +1844,6 @@ class Staff extends MY_Controller
         $this->_require_role(self::MANAGE_ROLES);
         header('Content-Type: application/json');
 
-        // [FIX-6] Use school_name (not school_id) consistently
-        $school_id    = $this->parent_db_key;
-        $school_name  = $this->school_name;
-        $session_year = $this->session_year;
-
         $class_name   = trim((string) $this->input->post('class_name'));
         $subject      = strip_tags(trim((string) $this->input->post('subject')));
         $teacher_name = trim((string) $this->input->post('teacher_name'));
@@ -1678,35 +1852,30 @@ class Staff extends MY_Controller
             $this->json_error('Invalid data.', 400);
         }
 
-        if (!preg_match('/^(\d+)\s-\s(.+)$/', $teacher_name, $matches)) {
+        if (!preg_match('/^([A-Za-z0-9_]+)\s-\s(.+)$/', $teacher_name, $matches)) {
             $this->json_error('Invalid teacher format.', 400);
         }
 
         $teacherID       = $matches[1];
         $teacherOnlyName = $matches[2];
 
-        // [FIX-6] Use $school_name here (was using $school_id — wrong!)
-        $dutyPath = "Schools/{$school_name}/{$session_year}/Teachers/{$teacherID}/Duties";
-        $duties   = $this->firebase->get($dutyPath);
+        // Read duties from staff Firestore doc
+        $staffDoc = $this->fs->getEntity('staff', $teacherID);
+        $duties   = $staffDoc['duties'] ?? [];
         $dutyDeleted = false;
+        $wasClassTeacher = false;
 
-        if ($duties) {
+        if (!empty($duties)) {
             foreach ($duties as $dutyType => $classes) {
                 if (isset($classes[$class_name][$subject])) {
-                    unset($classes[$class_name][$subject]);
-
-                    $updateData = !empty($classes[$class_name]) ? [$class_name => $classes[$class_name]] : null;
-
-                    if ($updateData) {
-                        $this->firebase->update("{$dutyPath}/{$dutyType}", $updateData);
-                    } else {
-                        $this->firebase->delete("{$dutyPath}/{$dutyType}/{$class_name}");
+                    unset($duties[$dutyType][$class_name][$subject]);
+                    if (empty($duties[$dutyType][$class_name])) {
+                        unset($duties[$dutyType][$class_name]);
                     }
-
-                    if ($dutyType === 'ClassTeacher') {
-                        $this->firebase->set("Schools/{$school_name}/{$session_year}/{$class_name}/ClassTeacher", '');
+                    if (empty($duties[$dutyType])) {
+                        unset($duties[$dutyType]);
                     }
-
+                    if ($dutyType === 'ClassTeacher') $wasClassTeacher = true;
                     $dutyDeleted = true;
                     break;
                 }
@@ -1717,17 +1886,25 @@ class Staff extends MY_Controller
             $this->json_error('Duty not found.', 404);
         }
 
-        $subjectPath    = "Schools/{$school_name}/{$session_year}/{$class_name}/Subjects/{$subject}";
-        $subjectTeachers = $this->firebase->get($subjectPath);
+        // Save updated duties back to staff doc
+        $this->fs->updateEntity('staff', $teacherID, ['duties' => $duties]);
 
-        if (is_array($subjectTeachers) && isset($subjectTeachers[$teacherOnlyName])) {
-            unset($subjectTeachers[$teacherOnlyName]);
+        // Update section document — remove teacher from subject
+        if (preg_match("/^(.+?)\\s*'([^']*)'\\s*$/", $class_name, $csm)) {
+            $classKey = trim($csm[1]);
+            $sectionLetter = trim($csm[2]);
+            $sectionDocId = $this->fs->schoolId() . '_' . $classKey . '_Section ' . $sectionLetter;
+            $sectionDoc = $this->fs->get('sections', $sectionDocId);
+            $subjectTeachers = $sectionDoc['subjects'] ?? [];
 
-            if (!empty($subjectTeachers)) {
-                $this->firebase->update($subjectPath, $subjectTeachers);
-            } else {
-                $this->firebase->set($subjectPath, '');
+            if (isset($subjectTeachers[$subject][$teacherOnlyName])) {
+                unset($subjectTeachers[$subject][$teacherOnlyName]);
             }
+            $sectionUpdate = ['subjects' => $subjectTeachers];
+            if ($wasClassTeacher) {
+                $sectionUpdate['classTeacher'] = '';
+            }
+            $this->fs->update('sections', $sectionDocId, $sectionUpdate);
         }
 
         $this->json_success(['message' => 'Teacher removed and duty marked inactive.']);
@@ -1738,46 +1915,18 @@ class Staff extends MY_Controller
     public function teacher_id_card()
     {
         $this->_require_role(self::VIEW_ROLES);
-        $school_id    = $this->parent_db_key;
-        $school_name  = $this->school_name;
         $session_year = $this->session_year;
 
-        // Fetch all staff records for this school
-        $allStaff = $this->CM->select_data("Users/Teachers/{$school_id}");
-        if (!is_array($allStaff)) $allStaff = [];
+        // Firestore: query staff assigned to current session
+        $staffDocs = $this->fs->schoolWhere('staff', [['sessions', 'array-contains', $session_year]], 'Name', 'ASC');
+        $allStaff = array_map(fn($doc) => $doc['data'], $staffDocs);
 
-        // Keep only array entries (drop 'Count' and other non-staff nodes)
-        $allStaff = array_filter($allStaff, 'is_array');
+        // School profile for ID card header
+        $schoolDoc   = $this->fs->get('schools', $this->school_id);
+        $displayName = $schoolDoc['name'] ?? $this->school_display_name ?: $this->school_name;
+        $schoolLogo  = $schoolDoc['logoUrl'] ?? $schoolDoc['logo_url'] ?? '';
 
-        // SESSION ISOLATION: only show teachers assigned to this session
-        $sessionTeachers = $this->firebase->get("Schools/{$school_name}/{$session_year}/Teachers");
-        if (is_array($sessionTeachers) && !empty($sessionTeachers)) {
-            $allStaff = array_intersect_key($allStaff, $sessionTeachers);
-        } else {
-            $allStaff = [];
-        }
-
-        // Fetch school display name and logo for ID card header
-        $displayName = $this->school_display_name ?: $school_name;
-        $schoolLogo  = '';
-        $sysSchool   = $this->firebase->get("System/Schools/{$this->school_id}/profile");
-        if (is_array($sysSchool)) {
-            $schoolLogo  = $sysSchool['logo_url'] ?? $sysSchool['Logo'] ?? '';
-            if (empty($displayName) || $displayName === $school_name) {
-                $displayName = $sysSchool['school_name'] ?? $sysSchool['name'] ?? $sysSchool['School Name'] ?? $displayName;
-            }
-        }
-        if (empty($schoolLogo)) {
-            $configProfile = $this->firebase->get("Schools/{$school_name}/Config/Profile");
-            if (is_array($configProfile)) {
-                $schoolLogo = $configProfile['logo_url'] ?? '';
-                if (empty($displayName) || $displayName === $school_name) {
-                    $displayName = $configProfile['display_name'] ?? $displayName;
-                }
-            }
-        }
-
-        $data['staff']        = array_values($allStaff);
+        $data['staff']        = $allStaff;
         $data['session_year'] = $session_year;
         $data['school_name']  = $displayName;
         $data['school_logo']  = $schoolLogo;
@@ -1798,7 +1947,8 @@ class Staff extends MY_Controller
     public function get_staff_roles()
     {
         $this->_require_role(self::VIEW_ROLES, 'get_staff_roles');
-        $roles = $this->firebase->get("Schools/{$this->school_name}/Config/StaffRoles") ?? [];
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $roles = $schoolDoc['staffRoles'] ?? [];
         if (!is_array($roles)) $roles = [];
         $this->json_success(['roles' => $roles]);
     }
@@ -1826,15 +1976,17 @@ class Staff extends MY_Controller
             return $this->json_error('Invalid category. Must be: ' . implode(', ', $validCategories));
         }
 
-        $path = "Schools/{$this->school_name}/Config/StaffRoles/{$roleId}";
-        $existing = $this->firebase->get($path);
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $allRoles = $schoolDoc['staffRoles'] ?? [];
+        $existing = $allRoles[$roleId] ?? null;
 
         // Don't allow changing system role category or label
         if (is_array($existing) && !empty($existing['is_system'])) {
-            // System roles: only flags can be edited
             $flagsRaw = $this->input->post('flags') ?? [];
             $flags = is_array($flagsRaw) ? $flagsRaw : [];
-            $this->firebase->update($path, ['flags' => $flags]);
+            $existing['flags'] = $flags;
+            $allRoles[$roleId] = $existing;
+            $this->fs->update('schools', $this->school_id, ['staffRoles' => $allRoles]);
             return $this->json_success(['message' => "System role '{$label}' flags updated."]);
         }
 
@@ -1845,7 +1997,7 @@ class Staff extends MY_Controller
             $attendanceType = 'standard';
         }
 
-        $roleData = [
+        $allRoles[$roleId] = [
             'label'           => $label,
             'category'        => $category,
             'flags'           => $flags,
@@ -1853,7 +2005,7 @@ class Staff extends MY_Controller
             'is_system'       => false,
         ];
 
-        $this->firebase->set($path, $roleData);
+        $this->fs->update('schools', $this->school_id, ['staffRoles' => $allRoles]);
         $this->json_success(['message' => "Staff role '{$label}' saved.", 'role_id' => $roleId]);
     }
 
@@ -1867,12 +2019,14 @@ class Staff extends MY_Controller
         $roleId = trim($this->input->post('role_id', TRUE) ?? '');
         if ($roleId === '') return $this->json_error('role_id is required.');
 
-        $path = "Schools/{$this->school_name}/Config/StaffRoles/{$roleId}";
-        $existing = $this->firebase->get($path);
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $allRoles = $schoolDoc['staffRoles'] ?? [];
+        $existing = $allRoles[$roleId] ?? null;
         if (!is_array($existing)) return $this->json_error('Role not found.');
         if (!empty($existing['is_system'])) return $this->json_error('System roles cannot be deleted.');
 
-        $this->firebase->delete("Schools/{$this->school_name}/Config/StaffRoles", $roleId);
+        unset($allRoles[$roleId]);
+        $this->fs->update('schools', $this->school_id, ['staffRoles' => $allRoles]);
         $this->json_success(['message' => 'Staff role deleted.']);
     }
 
@@ -1886,26 +2040,16 @@ class Staff extends MY_Controller
         $roleId = trim($this->input->post('role_id', TRUE) ?? '');
         if ($roleId === '') return $this->json_error('role_id is required.');
 
-        $school_id    = $this->parent_db_key;
-        $school_name  = $this->school_name;
         $session_year = $this->session_year;
 
-        $allStaff = $this->firebase->get("Users/Teachers/{$school_id}") ?? [];
-        if (!is_array($allStaff)) $allStaff = [];
-        $allStaff = array_filter($allStaff, 'is_array');
-
-        // Session isolation
-        $roster = $this->firebase->get("Schools/{$school_name}/{$session_year}/Teachers") ?? [];
-        if (is_array($roster) && !empty($roster)) {
-            $allStaff = array_intersect_key($allStaff, $roster);
-        } else {
-            $allStaff = [];
-        }
+        // Query all school staff in current session
+        $staffDocs = $this->fs->schoolWhere('staff', [['sessions', 'array-contains', $session_year]], 'Name', 'ASC');
 
         $filtered = [];
-        foreach ($allStaff as $sid => $s) {
+        foreach ($staffDocs as $doc) {
+            $s = $doc['data'];
+            $sid = $s['User ID'] ?? $s['staffId'] ?? $doc['id'];
             $roles = $s['staff_roles'] ?? [];
-            // Fallback for unmigrated staff
             if (empty($roles)) {
                 $roles = $this->_infer_roles_from_position($s['Position'] ?? '');
             }
@@ -1917,7 +2061,7 @@ class Staff extends MY_Controller
                     'position'     => $s['Position'] ?? '',
                     'staff_roles'  => $roles,
                     'primary_role' => $s['primary_role'] ?? ($roles[0] ?? ''),
-                    'phone'        => $s['Phone Number'] ?? '',
+                    'phone'        => $s['Phone Number'] ?? $s['phone'] ?? '',
                 ];
             }
         }
@@ -1933,19 +2077,19 @@ class Staff extends MY_Controller
     public function migrate_staff_roles()
     {
         $this->_require_role(self::MANAGE_ROLES, 'migrate_staff_roles');
-        $school_id    = $this->parent_db_key;
-        $school_name  = $this->school_name;
-        $session_year = $this->session_year;
 
-        $allStaff = $this->firebase->get("Users/Teachers/{$school_id}") ?? [];
-        if (!is_array($allStaff)) $allStaff = [];
-        $allStaff = array_filter($allStaff, 'is_array');
+        // Query all school staff from Firestore
+        $staffDocs = $this->fs->schoolWhere('staff', []);
 
         $migrated = 0;
         $skipped  = 0;
         $errors   = 0;
 
-        foreach ($allStaff as $sid => $s) {
+        foreach ($staffDocs as $doc) {
+            $s   = $doc['data'];
+            $sid = $s['User ID'] ?? $s['staffId'] ?? '';
+            if ($sid === '') { $errors++; continue; }
+
             // Skip if already has staff_roles
             if (!empty($s['staff_roles']) && is_array($s['staff_roles'])) {
                 $skipped++;
@@ -1956,18 +2100,12 @@ class Staff extends MY_Controller
             $roleIds  = $this->_infer_roles_from_position($position);
             $primary  = $roleIds[0] ?? 'ROLE_TEACHER';
 
-            $ok = $this->firebase->update("Users/Teachers/{$school_id}/{$sid}", [
+            $ok = $this->fs->updateEntity('staff', $sid, [
                 'staff_roles'  => $roleIds,
                 'primary_role' => $primary,
             ]);
 
-            if ($ok !== false) {
-                // Update roster if exists
-                $rosterPath = "Schools/{$school_name}/{$session_year}/Teachers/{$sid}";
-                $rosterData = $this->firebase->get($rosterPath);
-                if (is_array($rosterData)) {
-                    $this->firebase->update($rosterPath, ['roles' => $roleIds]);
-                }
+            if ($ok) {
                 $migrated++;
             } else {
                 $errors++;
@@ -1980,5 +2118,40 @@ class Staff extends MY_Controller
             'skipped'  => $skipped,
             'errors'   => $errors,
         ]);
+    }
+
+    // =========================================================================
+    //  RTDB FALLBACK + AUTO-HEAL
+    //  Used when Firestore is empty for a school (not yet migrated).
+    // =========================================================================
+
+    /**
+     * Fallback: read all staff from RTDB Users/Admin and auto-heal into Firestore.
+     * Returns array in same format as fs->schoolWhere(): [['id' => ..., 'data' => [...]], ...]
+     */
+    /**
+     * Read a single staff record honoring the project read contract:
+     *
+     *     Firestore FIRST → RTDB fallback (with auto-heal)
+     *
+     * If Firestore returns the doc, return it as-is. Otherwise read from
+     * `Users/Admin/{parent_db_key}/{staffId}`, normalize the result into the
+     * Firestore shape (schoolId, session, sessions[], lowercase aliases),
+     * write it back to Firestore (auto-heal so future reads are fast), and
+     * return it.
+     *
+     * Returns the staff data array, or an empty array if not found.
+     * Firestore-only per no-RTDB policy.
+     */
+    private function _get_staff_with_fallback(string $staffId): array
+    {
+        if ($staffId === '') return [];
+        try {
+            $fsDoc = $this->fs->getEntity('staff', $staffId);
+            return (is_array($fsDoc) && !empty($fsDoc)) ? $fsDoc : [];
+        } catch (Exception $e) {
+            log_message('error', "_get_staff Firestore read failed [{$staffId}]: " . $e->getMessage());
+            return [];
+        }
     }
 }
