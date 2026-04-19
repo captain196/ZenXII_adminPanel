@@ -48,7 +48,7 @@ class Sis extends MY_Controller
         if (!in_array($method, self::PUBLIC_METHODS, true)) {
             require_permission('SIS');
         }
-        $this->crm_base = "Schools/{$this->school_name}/CRM/Admissions";
+        $this->crm_base = "Schools/{$this->school_name}/CRM/Admissions"; // Legacy path (being retired)
         $this->load->helper('notification');
 
         // Fee lifecycle & defaulter check libraries
@@ -2990,6 +2990,91 @@ class Sis extends MY_Controller
     }
 
     /* ══════════════════════════════════════════════════════════════════════
+       CRM Firestore helpers — all CRM entities moved to Firestore:
+         crmApplications, crmInquiries, crmWaitlist, crmSettings
+       Replaces Schools/{school}/CRM/Admissions/* RTDB paths.
+    ══════════════════════════════════════════════════════════════════════ */
+
+    /** List all docs in a CRM collection, keyed by entity ID. */
+    private function _crm_list(string $collection): array
+    {
+        try {
+            $docs = $this->fs->schoolWhere($collection, []);
+        } catch (\Exception $e) {
+            log_message('error', "CRM list {$collection} failed: " . $e->getMessage());
+            return [];
+        }
+        if (!is_array($docs)) return [];
+        $result = [];
+        $prefix = $this->school_id . '_';
+        foreach ($docs as $d) {
+            $r = is_array($d['data'] ?? null) ? $d['data'] : $d;
+            $rawId = (string) ($d['id'] ?? '');
+            $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+            if ($id !== '') $result[$id] = $r;
+        }
+        return $result;
+    }
+
+    /** Get a single CRM doc. */
+    private function _crm_get(string $collection, string $id): ?array
+    {
+        try {
+            $d = $this->fs->getEntity($collection, $id);
+            return (is_array($d) && !empty($d)) ? $d : null;
+        } catch (\Exception $e) {
+            log_message('error', "CRM get {$collection}/{$id} failed: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    /** Write a CRM doc (create or overwrite). */
+    private function _crm_set(string $collection, string $id, array $data): void
+    {
+        try { $this->fs->setEntity($collection, $id, $data); }
+        catch (\Exception $e) { log_message('error', "CRM set {$collection}/{$id} failed: " . $e->getMessage()); }
+    }
+
+    /** Merge-update fields on a CRM doc. */
+    private function _crm_update(string $collection, string $id, array $data): void
+    {
+        try { $this->fs->updateEntity($collection, $id, $data); }
+        catch (\Exception $e) { log_message('error', "CRM update {$collection}/{$id} failed: " . $e->getMessage()); }
+    }
+
+    /** Delete a CRM doc. */
+    private function _crm_delete(string $collection, string $id): void
+    {
+        try { $this->fs->removeEntity($collection, $id); }
+        catch (\Exception $e) { log_message('error', "CRM delete {$collection}/{$id} failed: " . $e->getMessage()); }
+    }
+
+    /** CRM counter — allocates sequential IDs (INQ0001, APP0001, WL0001). */
+    private function _crm_next_id(string $type, string $prefix, int $pad = 4): string
+    {
+        $flatKey = "crmCounters.{$type}";
+        $profileDocId = $this->fs->docId('profile');
+        $doc = null;
+        try { $doc = $this->fs->get('schools', $profileDocId); } catch (\Exception $e) {}
+        $cur = (is_array($doc) && isset($doc[$flatKey]) && is_numeric($doc[$flatKey]))
+            ? (int) $doc[$flatKey] : 0;
+        $next = $cur + 1;
+        try { $this->fs->update('schools', $profileDocId, [$flatKey => $next]); }
+        catch (\Exception $e) { log_message('error', "CRM counter update failed for {$type}: " . $e->getMessage()); }
+        return $prefix . str_pad($next, $pad, '0', STR_PAD_LEFT);
+    }
+
+    /** CRM settings — single doc per school. */
+    private function _crm_get_settings(): array
+    {
+        return $this->_crm_get('crmSettings', 'config') ?? [];
+    }
+    private function _crm_save_settings(array $data): void
+    {
+        $this->_crm_set('crmSettings', 'config', $data);
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
        LEAD SYSTEM — Public admission leads management
        View, filter, and convert public form leads into student admissions
     ══════════════════════════════════════════════════════════════════════ */
@@ -3009,7 +3094,7 @@ class Sis extends MY_Controller
     public function fetch_leads()
     {
         $this->_require_role(self::VIEW_ROLES, 'crm_view');
-        $applications = $this->firebase->get("{$this->crm_base}/Applications") ?? [];
+        $applications = $this->_crm_list('crmApplications');
         if (!is_array($applications)) $applications = [];
 
         $session = $this->session_year;
@@ -3034,7 +3119,7 @@ class Sis extends MY_Controller
         if ($leadId === '') return $this->json_error('Lead ID required.');
         $leadId = $this->safe_path_segment($leadId, 'lead_id');
 
-        $lead = $this->firebase->get("{$this->crm_base}/Applications/{$leadId}");
+        $lead = $this->_crm_get('crmApplications', $leadId);
         if (!is_array($lead)) return $this->json_error('Lead not found.');
         $lead['id'] = $leadId;
         return $this->json_success(['lead' => $lead]);
@@ -3052,14 +3137,14 @@ class Sis extends MY_Controller
         $allowed = ['new', 'contacted', 'interested', 'approved', 'rejected', 'enrolled', 'admitted'];
         if (!in_array($status, $allowed, true)) return $this->json_error('Invalid status.');
 
-        $lead = $this->firebase->get("{$this->crm_base}/Applications/{$leadId}");
+        $lead = $this->_crm_get('crmApplications', $leadId);
         if (!is_array($lead)) return $this->json_error('Lead not found.');
 
         $now = date('Y-m-d H:i:s');
         $history = $lead['history'] ?? [];
         $history[] = ['action' => "Status changed to {$status}", 'by' => $this->admin_name, 'timestamp' => $now];
 
-        $this->firebase->update("{$this->crm_base}/Applications/{$leadId}", [
+        $this->_crm_update("crmApplications", $leadId, [
             'status'     => $status,
             'updated_at' => $now,
             'history'    => $history,
@@ -3078,7 +3163,7 @@ class Sis extends MY_Controller
         if ($leadId === '') return $this->json_error('Lead ID required.');
         $leadId = $this->safe_path_segment($leadId, 'lead_id');
 
-        $lead = $this->firebase->get("{$this->crm_base}/Applications/{$leadId}");
+        $lead = $this->_crm_get('crmApplications', $leadId);
         if (!is_array($lead)) return $this->json_error('Lead not found.');
         $lead['id'] = $leadId;
         return $this->json_success(['lead' => $lead]);
@@ -3091,7 +3176,7 @@ class Sis extends MY_Controller
         $session = $this->session_year;
 
         // Single read — fetch all applications once
-        $applications = $this->firebase->get("{$this->crm_base}/Applications") ?? [];
+        $applications = $this->_crm_list('crmApplications');
         if (!is_array($applications)) $applications = [];
 
         // Filter to current session + compute all metrics in one pass
@@ -3175,10 +3260,10 @@ class Sis extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'crm_view');
         $session = $this->session_year;
 
-        $inquiries    = $this->firebase->get("{$this->crm_base}/Inquiries") ?? [];
-        $applications = $this->firebase->get("{$this->crm_base}/Applications") ?? [];
-        $waitlist     = $this->firebase->get("{$this->crm_base}/Waitlist") ?? [];
-        $settings     = $this->firebase->get("{$this->crm_base}/Settings") ?? [];
+        $inquiries    = $this->_crm_list('crmInquiries');
+        $applications = $this->_crm_list('crmApplications');
+        $waitlist     = $this->_crm_list('crmWaitlist');
+        $settings     = $this->_crm_get_settings();
         if (!is_array($inquiries))    $inquiries = [];
         if (!is_array($applications)) $applications = [];
         if (!is_array($waitlist))     $waitlist = [];
@@ -3238,7 +3323,7 @@ class Sis extends MY_Controller
     public function fetch_inquiries()
     {
         $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
-        $inquiries = $this->firebase->get("{$this->crm_base}/Inquiries") ?? [];
+        $inquiries = $this->_crm_list('crmInquiries');
         if (!is_array($inquiries)) $inquiries = [];
         $session = $this->session_year;
         $result = [];
@@ -3272,20 +3357,19 @@ class Sis extends MY_Controller
 
         $now = date('Y-m-d H:i:s');
         if ($id) {
-            $existing = $this->firebase->get("{$this->crm_base}/Inquiries/{$id}");
+            $existing = $this->_crm_get('crmInquiries', $id);
             if (!is_array($existing)) return $this->json_error('Inquiry not found');
             $data = array_merge($existing, compact('student_name','parent_name','phone','email','class','source','notes','status','follow_up_date') + ['updated_at'=>$now]);
-            $this->firebase->set("{$this->crm_base}/Inquiries/{$id}", $data);
+            $this->_crm_set("crmInquiries", $id, $data);
             // Firestore dual-write: update inquiry
             try { $this->fs->setEntity('crmInquiries', $id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmInquiries failed for {$id}: " . $e->getMessage()); }
         } else {
-            $counter = (int)($this->firebase->get("{$this->crm_base}/Counter") ?? 0) + 1;
-            $id = 'INQ' . str_pad($counter, 5, '0', STR_PAD_LEFT);
+            $id = $this->_crm_next_id('Inquiry', 'INQ', 5);
             $data = compact('student_name','parent_name','phone','email','class','source','notes','status','follow_up_date') + [
                 'inquiry_id'=>$id, 'session'=>$this->session_year, 'created_at'=>$now, 'updated_at'=>$now, 'created_by'=>$this->admin_name,
             ];
-            $this->firebase->set("{$this->crm_base}/Inquiries/{$id}", $data);
-            $this->firebase->set("{$this->crm_base}/Counter", $counter);
+            $this->_crm_set("crmInquiries", $id, $data);
+            // Counter managed by _crm_next_id — no separate write needed.
             // Firestore dual-write: new inquiry
             try { $this->fs->setEntity('crmInquiries', $id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmInquiries failed for {$id}: " . $e->getMessage()); }
         }
@@ -3298,7 +3382,7 @@ class Sis extends MY_Controller
         $id = trim($this->input->post('id') ?? '');
         if (!$id) return $this->json_error('Inquiry ID required');
         $safeId = $this->safe_path_segment($id, 'id');
-        $this->firebase->delete("{$this->crm_base}/Inquiries", $safeId);
+        $this->_crm_delete('crmInquiries', $safeId);
         // Firestore dual-write: delete inquiry
         try { $this->fs->removeEntity('crmInquiries', $safeId); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmInquiries failed: " . $e->getMessage()); }
         return $this->json_success();
@@ -3310,11 +3394,10 @@ class Sis extends MY_Controller
         $inquiry_id = trim($this->input->post('inquiry_id') ?? '');
         if (!$inquiry_id) return $this->json_error('Inquiry ID required');
         $inquiry_id = $this->safe_path_segment($inquiry_id, 'inquiry_id');
-        $inquiry = $this->firebase->get("{$this->crm_base}/Inquiries/{$inquiry_id}");
+        $inquiry = $this->_crm_get('crmInquiries', $inquiry_id);
         if (!is_array($inquiry)) return $this->json_error('Inquiry not found');
 
-        $counter = (int)($this->firebase->get("{$this->crm_base}/Counter") ?? 0) + 1;
-        $app_id = 'APP' . str_pad($counter, 5, '0', STR_PAD_LEFT);
+        $app_id = $this->_crm_next_id('Application', 'APP', 5);
         $now = date('Y-m-d H:i:s');
         $application = [
             'application_id'=>$app_id, 'inquiry_id'=>$inquiry_id,
@@ -3326,9 +3409,9 @@ class Sis extends MY_Controller
             'father_name'=>$inquiry['parent_name']??'', 'mother_name'=>'', 'documents'=>[], 'notes'=>$inquiry['notes']??'',
             'history'=>[['action'=>'Application created from inquiry '.$inquiry_id, 'by'=>$this->admin_name, 'timestamp'=>$now]],
         ];
-        $this->firebase->set("{$this->crm_base}/Applications/{$app_id}", $application);
-        $this->firebase->set("{$this->crm_base}/Counter", $counter);
-        $this->firebase->update("{$this->crm_base}/Inquiries/{$inquiry_id}", ['status'=>'converted','application_id'=>$app_id,'updated_at'=>$now]);
+        $this->_crm_set("crmApplications", $app_id, $application);
+        // Counter managed by _crm_next_id — no separate write needed.
+        $this->_crm_update("crmInquiries", $inquiry_id, ['status'=>'converted','application_id'=>$app_id,'updated_at'=>$now]);
         // Firestore dual-write: new application + inquiry status update
         try {
             $this->fs->setEntity('crmApplications', $app_id, $application);
@@ -3350,7 +3433,7 @@ class Sis extends MY_Controller
     public function fetch_applications()
     {
         $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
-        $applications = $this->firebase->get("{$this->crm_base}/Applications") ?? [];
+        $applications = $this->_crm_list('crmApplications');
         if (!is_array($applications)) $applications = [];
         $session = $this->session_year;
         $result = [];
@@ -3380,24 +3463,23 @@ class Sis extends MY_Controller
         if ($data['email'] !== '' && !filter_var($data['email'], FILTER_VALIDATE_EMAIL)) return $this->json_error('Invalid email address');
 
         if ($id) {
-            $existing = $this->firebase->get("{$this->crm_base}/Applications/{$id}");
+            $existing = $this->_crm_get('crmApplications', $id);
             if (!is_array($existing)) return $this->json_error('Application not found');
             $data['updated_at'] = $now;
             $history = $existing['history'] ?? [];
             $history[] = ['action'=>'Application updated','by'=>$this->admin_name,'timestamp'=>$now];
             $data['history'] = $history;
-            $this->firebase->update("{$this->crm_base}/Applications/{$id}", $data);
+            $this->_crm_update("crmApplications", $id, $data);
             // Firestore dual-write: update application
             try { $this->fs->setEntity('crmApplications', $id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmApplications update failed for {$id}: " . $e->getMessage()); }
             return $this->json_success(['id' => $id]);
         } else {
-            $counter = (int)($this->firebase->get("{$this->crm_base}/Counter") ?? 0) + 1;
-            $app_id = 'APP' . str_pad($counter, 5, '0', STR_PAD_LEFT);
+            $app_id = $this->_crm_next_id('Application', 'APP', 5);
             $data = array_merge($data, ['application_id'=>$app_id,'session'=>$this->session_year,'status'=>'pending','stage'=>'document_collection',
                 'created_at'=>$now,'updated_at'=>$now,'created_by'=>$this->admin_name,'documents'=>[],
                 'history'=>[['action'=>'Application created directly','by'=>$this->admin_name,'timestamp'=>$now]]]);
-            $this->firebase->set("{$this->crm_base}/Applications/{$app_id}", $data);
-            $this->firebase->set("{$this->crm_base}/Counter", $counter);
+            $this->_crm_set("crmApplications", $app_id, $data);
+            // Counter managed by _crm_next_id — no separate write needed.
             // Firestore dual-write: new application
             try { $this->fs->setEntity('crmApplications', $app_id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmApplications create failed for {$app_id}: " . $e->getMessage()); }
             return $this->json_success(['id' => $app_id]);
@@ -3410,7 +3492,7 @@ class Sis extends MY_Controller
         $id = trim($this->input->get('id') ?? '');
         if (!$id) return $this->json_error('Application ID required');
         $id = $this->safe_path_segment($id, 'id');
-        $app = $this->firebase->get("{$this->crm_base}/Applications/{$id}");
+        $app = $this->_crm_get('crmApplications', $id);
         if (!is_array($app)) return $this->json_error('Application not found');
         $app['id'] = $id;
         return $this->json_success(['application' => $app]);
@@ -3422,7 +3504,7 @@ class Sis extends MY_Controller
         $id = trim($this->input->post('id') ?? '');
         if (!$id) return $this->json_error('Application ID required');
         $safeId = $this->safe_path_segment($id, 'id');
-        $this->firebase->delete("{$this->crm_base}/Applications", $safeId);
+        $this->_crm_delete('crmApplications', $safeId);
         // Firestore dual-write: delete application
         try { $this->fs->removeEntity('crmApplications', $safeId); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmApplications failed: " . $e->getMessage()); }
         return $this->json_success();
@@ -3433,7 +3515,7 @@ class Sis extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'crm_view');
         $data['session_year'] = $this->session_year;
         $data['classes']      = $this->_get_crm_classes();
-        $settings = $this->firebase->get("{$this->crm_base}/Settings") ?? [];
+        $settings = $this->_crm_get_settings();
         $data['settings'] = is_array($settings) ? $settings : [];
         $this->load->view('include/header');
         $this->load->view('admission_crm/pipeline', $data);
@@ -3443,9 +3525,9 @@ class Sis extends MY_Controller
     public function fetch_pipeline()
     {
         $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
-        $applications = $this->firebase->get("{$this->crm_base}/Applications") ?? [];
+        $applications = $this->_crm_list('crmApplications');
         if (!is_array($applications)) $applications = [];
-        $settings = $this->firebase->get("{$this->crm_base}/Settings") ?? [];
+        $settings = $this->_crm_get_settings();
         $stages = $settings['stages'] ?? $this->_default_stages();
         $session = $this->session_year;
         $pipeline = [];
@@ -3467,15 +3549,15 @@ class Sis extends MY_Controller
         $stage = $this->input->post('stage');
         if (!$id || !$stage) return $this->json_error('Application ID and stage required');
         $id = $this->safe_path_segment($id, 'id');
-        $settings = $this->firebase->get("{$this->crm_base}/Settings") ?? [];
+        $settings = $this->_crm_get_settings();
         $allowedStages = (is_array($settings) && !empty($settings['stages'])) ? array_keys($settings['stages']) : array_keys($this->_default_stages());
         if (!in_array($stage, $allowedStages, true)) return $this->json_error('Invalid stage: '.$stage);
-        $app = $this->firebase->get("{$this->crm_base}/Applications/{$id}");
+        $app = $this->_crm_get('crmApplications', $id);
         if (!is_array($app)) return $this->json_error('Application not found');
         $now = date('Y-m-d H:i:s');
         $history = $app['history'] ?? [];
         $history[] = ['action'=>"Stage changed: {$app['stage']} → {$stage}",'by'=>$this->admin_name,'timestamp'=>$now];
-        $this->firebase->update("{$this->crm_base}/Applications/{$id}", ['stage'=>$stage,'updated_at'=>$now,'history'=>$history]);
+        $this->_crm_update("crmApplications", $id, ['stage'=>$stage,'updated_at'=>$now,'history'=>$history]);
         // Firestore dual-write: stage update
         try { $this->fs->updateEntity('crmApplications', $id, ['stage'=>$stage,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write update_stage failed: " . $e->getMessage()); }
         return $this->json_success();
@@ -3488,7 +3570,7 @@ class Sis extends MY_Controller
         $remarks = trim($this->input->post('remarks') ?? '');
         if (!$id) return $this->json_error('Application ID required');
         $id = $this->safe_path_segment($id, 'id');
-        $app = $this->firebase->get("{$this->crm_base}/Applications/{$id}");
+        $app = $this->_crm_get('crmApplications', $id);
         if (!is_array($app)) return $this->json_error('Application not found');
         $cs = $app['status'] ?? 'pending';
         if ($cs === 'enrolled') return $this->json_error('Cannot approve an already enrolled application');
@@ -3496,7 +3578,7 @@ class Sis extends MY_Controller
         $now = date('Y-m-d H:i:s');
         $history = $app['history'] ?? [];
         $history[] = ['action'=>'Application approved'.($remarks?": {$remarks}":''),'by'=>$this->admin_name,'timestamp'=>$now];
-        $this->firebase->update("{$this->crm_base}/Applications/{$id}", ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'remarks'=>$remarks,'updated_at'=>$now,'history'=>$history]);
+        $this->_crm_update("crmApplications", $id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'remarks'=>$remarks,'updated_at'=>$now,'history'=>$history]);
         // Firestore dual-write: approve application
         try { $this->fs->updateEntity('crmApplications', $id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'remarks'=>$remarks,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write approve_application failed: " . $e->getMessage()); }
         return $this->json_success();
@@ -3509,7 +3591,7 @@ class Sis extends MY_Controller
         $reason = trim($this->input->post('reason') ?? '');
         if (!$id) return $this->json_error('Application ID required');
         $id = $this->safe_path_segment($id, 'id');
-        $app = $this->firebase->get("{$this->crm_base}/Applications/{$id}");
+        $app = $this->_crm_get('crmApplications', $id);
         if (!is_array($app)) return $this->json_error('Application not found');
         $cs = $app['status'] ?? 'pending';
         if ($cs === 'enrolled') return $this->json_error('Cannot reject an already enrolled application');
@@ -3517,7 +3599,7 @@ class Sis extends MY_Controller
         $now = date('Y-m-d H:i:s');
         $history = $app['history'] ?? [];
         $history[] = ['action'=>'Application rejected'.($reason?": {$reason}":''),'by'=>$this->admin_name,'timestamp'=>$now];
-        $this->firebase->update("{$this->crm_base}/Applications/{$id}", ['status'=>'rejected','stage'=>'rejected','rejected_by'=>$this->admin_name,'rejected_at'=>$now,'reject_reason'=>$reason,'updated_at'=>$now,'history'=>$history]);
+        $this->_crm_update("crmApplications", $id, ['status'=>'rejected','stage'=>'rejected','rejected_by'=>$this->admin_name,'rejected_at'=>$now,'reject_reason'=>$reason,'updated_at'=>$now,'history'=>$history]);
         // Firestore dual-write: reject application
         try { $this->fs->updateEntity('crmApplications', $id, ['status'=>'rejected','stage'=>'rejected','rejected_by'=>$this->admin_name,'rejected_at'=>$now,'reject_reason'=>$reason,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write reject_application failed: " . $e->getMessage()); }
         return $this->json_success();
@@ -3529,7 +3611,7 @@ class Sis extends MY_Controller
         $id = trim($this->input->post('id') ?? '');
         if (!$id) return $this->json_error('Application ID required');
         $id = $this->safe_path_segment($id, 'id');
-        $app = $this->firebase->get("{$this->crm_base}/Applications/{$id}");
+        $app = $this->_crm_get('crmApplications', $id);
         if (!is_array($app)) return $this->json_error('Application not found');
         if (($app['status'] ?? '') !== 'approved') return $this->json_error('Only approved applications can be enrolled');
 
@@ -3567,19 +3649,11 @@ class Sis extends MY_Controller
             "Status"=>"Active",
         ];
 
-        $this->firebase->set("Users/Parents/{$school_id}/{$studentId}", $studentData);
-        // Firestore dual-write: save enrolled student profile
-        try { $this->fs->saveStudent($studentId, $studentData); } catch (\Exception $e) { log_message('error', "Firestore dual-write saveStudent failed for {$studentId}: " . $e->getMessage()); }
-
-        $this->firebase->update("Schools/{$school_name}/{$session}/{$combinedPath}/Students", [$studentId => ['Name'=>$app['student_name']??'']]);
-        $this->firebase->update("Schools/{$school_name}/{$session}/{$combinedPath}/Students/List", [$studentId => $app['student_name']??'']);
-        // Counter already incremented inside _nextStudentId() — no manual write needed
+        // Firestore-only per no-RTDB policy.
+        try { $this->fs->saveStudent($studentId, $studentData); } catch (\Exception $e) { log_message('error', "Firestore saveStudent failed for {$studentId}: " . $e->getMessage()); }
 
         $phone = trim($app['phone'] ?? '');
         if ($phone !== '') {
-            $this->firebase->update("Schools/{$school_name}/Phone_Index", [$phone => $studentId]);
-            $this->firebase->update('Exits', [$phone => $school_id]);
-            $this->firebase->update('User_ids_pno', [$phone => $studentId]);
             // Firestore dual-write: phone index
             try {
                 $this->fs->set('indexPhones', $this->fs->docId($phone), [
@@ -3596,13 +3670,12 @@ class Sis extends MY_Controller
         // Initialize Month Fee markers as unpaid (0) for all 12 months
         $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
         $monthFeeData = array_fill_keys($months, 0);
-        $this->firebase->set("Schools/{$school_name}/{$session}/{$combinedPath}/Students/{$studentId}/Month Fee", $monthFeeData);
-        // Firestore dual-write: month fee init on student doc
+        // Firestore-only per no-RTDB policy.
         try { $this->fs->updateEntity('students', $studentId, ['monthFee' => $monthFeeData]); } catch (\Exception $e) { log_message('error', "Firestore dual-write monthFee failed for {$studentId}: " . $e->getMessage()); }
 
         $history = $app['history'] ?? [];
         $history[] = ['action'=>"Enrolled as {$studentId} in {$className} {$section}",'by'=>$this->admin_name,'timestamp'=>$now];
-        $this->firebase->update("{$this->crm_base}/Applications/{$id}", ['status'=>'enrolled','stage'=>'enrolled','student_id'=>$studentId,'enrolled_at'=>$now,'enrolled_by'=>$this->admin_name,'updated_at'=>$now,'history'=>$history]);
+        $this->_crm_update("crmApplications", $id, ['status'=>'enrolled','stage'=>'enrolled','student_id'=>$studentId,'enrolled_at'=>$now,'enrolled_by'=>$this->admin_name,'updated_at'=>$now,'history'=>$history]);
         // Firestore dual-write: CRM application status
         try { $this->fs->setEntity('crmApplications', $id, ['status'=>'enrolled','stage'=>'enrolled','student_id'=>$studentId,'enrolled_at'=>$now,'enrolled_by'=>$this->admin_name,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmApplications failed for {$id}: " . $e->getMessage()); }
 
@@ -3653,7 +3726,7 @@ class Sis extends MY_Controller
     public function fetch_waitlist()
     {
         $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
-        $waitlist = $this->firebase->get("{$this->crm_base}/Waitlist") ?? [];
+        $waitlist = $this->_crm_list('crmWaitlist');
         if (!is_array($waitlist)) $waitlist = [];
         $session = $this->session_year;
         $result = [];
@@ -3677,19 +3750,18 @@ class Sis extends MY_Controller
         $priority = (int)($this->input->post('priority') ?? 99);
         if (!$app_id) return $this->json_error('Application ID required');
         $app_id = $this->safe_path_segment($app_id, 'application_id');
-        $app = $this->firebase->get("{$this->crm_base}/Applications/{$app_id}");
+        $app = $this->_crm_get('crmApplications', $app_id);
         if (!is_array($app)) return $this->json_error('Application not found');
         $now = date('Y-m-d H:i:s');
-        $counter = (int)($this->firebase->get("{$this->crm_base}/Counter") ?? 0) + 1;
-        $wl_id = 'WL' . str_pad($counter, 5, '0', STR_PAD_LEFT);
+        $wl_id = $this->_crm_next_id('Waitlist', 'WL', 5);
         $waitEntry = ['waitlist_id'=>$wl_id,'application_id'=>$app_id,'student_name'=>$app['student_name']??'','parent_name'=>$app['parent_name']??'',
             'phone'=>$app['phone']??'','class'=>$app['class']??'','session'=>$app['session']??$this->session_year,
             'priority'=>$priority,'reason'=>$reason,'status'=>'waiting','created_at'=>$now,'updated_at'=>$now];
-        $this->firebase->set("{$this->crm_base}/Waitlist/{$wl_id}", $waitEntry);
-        $this->firebase->set("{$this->crm_base}/Counter", $counter);
+        $this->_crm_set("crmWaitlist", $wl_id, $waitEntry);
+        // Counter managed by _crm_next_id — no separate write needed.
         $history = $app['history'] ?? [];
         $history[] = ['action'=>'Added to waitlist','by'=>$this->admin_name,'timestamp'=>$now];
-        $this->firebase->update("{$this->crm_base}/Applications/{$app_id}", ['status'=>'waitlisted','stage'=>'waitlisted','updated_at'=>$now,'history'=>$history]);
+        $this->_crm_update("crmApplications", $app_id, ['status'=>'waitlisted','stage'=>'waitlisted','updated_at'=>$now,'history'=>$history]);
         // Firestore dual-write: waitlist entry + application status
         try {
             $this->fs->setEntity('crmWaitlist', $wl_id, $waitEntry);
@@ -3704,13 +3776,13 @@ class Sis extends MY_Controller
         $id = trim($this->input->post('id') ?? '');
         if (!$id) return $this->json_error('Waitlist ID required');
         $id = $this->safe_path_segment($id, 'id');
-        $entry = $this->firebase->get("{$this->crm_base}/Waitlist/{$id}");
+        $entry = $this->_crm_get('crmWaitlist', $id);
         if (is_array($entry) && !empty($entry['application_id'])) {
-            $this->firebase->update("{$this->crm_base}/Applications/{$entry['application_id']}", ['status'=>'pending','stage'=>'document_collection','updated_at'=>date('Y-m-d H:i:s')]);
+            $this->_crm_update('crmApplications', $entry['application_id'], ['status'=>'pending','stage'=>'document_collection','updated_at'=>date('Y-m-d H:i:s')]);
             // Firestore dual-write: revert application status
             try { $this->fs->updateEntity('crmApplications', $entry['application_id'], ['status'=>'pending','stage'=>'document_collection','updated_at'=>date('Y-m-d H:i:s')]); } catch (\Exception $e) { log_message('error', "Firestore dual-write remove_from_waitlist app failed: " . $e->getMessage()); }
         }
-        $this->firebase->delete("{$this->crm_base}/Waitlist", $id);
+        $this->_crm_delete('crmWaitlist', $id);
         // Firestore dual-write: delete waitlist entry
         try { $this->fs->removeEntity('crmWaitlist', $id); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmWaitlist failed: " . $e->getMessage()); }
         return $this->json_success();
@@ -3722,20 +3794,20 @@ class Sis extends MY_Controller
         $id = trim($this->input->post('id') ?? '');
         if (!$id) return $this->json_error('Waitlist ID required');
         $id = $this->safe_path_segment($id, 'id');
-        $entry = $this->firebase->get("{$this->crm_base}/Waitlist/{$id}");
+        $entry = $this->_crm_get('crmWaitlist', $id);
         if (!is_array($entry)) return $this->json_error('Waitlist entry not found');
         $app_id = $entry['application_id'] ?? '';
         if (!$app_id) return $this->json_error('No linked application');
         $now = date('Y-m-d H:i:s');
-        $app = $this->firebase->get("{$this->crm_base}/Applications/{$app_id}");
+        $app = $this->_crm_get('crmApplications', $app_id);
         if (is_array($app)) {
             $history = $app['history'] ?? [];
             $history[] = ['action'=>'Promoted from waitlist and approved','by'=>$this->admin_name,'timestamp'=>$now];
-            $this->firebase->update("{$this->crm_base}/Applications/{$app_id}", ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'updated_at'=>$now,'history'=>$history]);
+            $this->_crm_update("crmApplications", $app_id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'updated_at'=>$now,'history'=>$history]);
             // Firestore dual-write: approve from waitlist
             try { $this->fs->updateEntity('crmApplications', $app_id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write promote_from_waitlist failed: " . $e->getMessage()); }
         }
-        $this->firebase->delete("{$this->crm_base}/Waitlist", $id);
+        $this->_crm_delete('crmWaitlist', $id);
         // Firestore dual-write: delete waitlist entry
         try { $this->fs->removeEntity('crmWaitlist', $id); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmWaitlist failed: " . $e->getMessage()); }
         return $this->json_success();
@@ -3744,7 +3816,7 @@ class Sis extends MY_Controller
     public function crm_settings()
     {
         $this->_require_role(self::VIEW_ROLES, 'crm_view');
-        $settings = $this->firebase->get("{$this->crm_base}/Settings") ?? [];
+        $settings = $this->_crm_get_settings();
         if (!is_array($settings)) $settings = [];
         $data = ['settings'=>$settings,'session_year'=>$this->session_year,'classes'=>$this->_get_crm_classes()];
         $this->load->view('include/header');
@@ -3755,14 +3827,14 @@ class Sis extends MY_Controller
     public function save_crm_settings()
     {
         $this->_require_role(self::MANAGE_ROLES, 'crm_save_settings');
-        $settings = $this->firebase->get("{$this->crm_base}/Settings") ?? [];
+        $settings = $this->_crm_get_settings();
         if (!is_array($settings)) $settings = [];
         foreach (['stages','class_limits','form_fields','notifications'] as $key) {
             $val = $this->input->post($key);
             if ($val) { $decoded = json_decode($val, true); if (is_array($decoded)) $settings[$key] = $decoded; }
         }
         $settings['updated_at'] = date('Y-m-d H:i:s');
-        $this->firebase->set("{$this->crm_base}/Settings", $settings);
+        $this->_crm_save_settings($settings);
         // Firestore dual-write: CRM settings
         try { $this->fs->setEntity('crmSettings', 'config', $settings); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmSettings failed: " . $e->getMessage()); }
         return $this->json_success();
@@ -3771,7 +3843,7 @@ class Sis extends MY_Controller
     public function get_crm_settings()
     {
         $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
-        $settings = $this->firebase->get("{$this->crm_base}/Settings") ?? [];
+        $settings = $this->_crm_get_settings();
         if (!is_array($settings)) $settings = [];
         if (empty($settings['stages'])) $settings['stages'] = $this->_default_stages();
         return $this->json_success(['settings' => $settings]);
@@ -3780,35 +3852,35 @@ class Sis extends MY_Controller
     public function online_form()
     {
         $school_name = $this->school_name;
-        $settings = $this->firebase->get("{$this->crm_base}/Settings") ?? [];
+        $settings = $this->_crm_get_settings();
         $classes  = $this->_get_crm_classes();
-        $profile  = $this->firebase->get("Schools/{$school_name}/Config/Profile") ?? [];
+        $profileDoc = $this->fs->get('schools', $this->school_id);
+        $profile = is_array($profileDoc) ? $profileDoc : [];
         $data = ['school_name'=>$school_name,'session_year'=>$this->session_year,'settings'=>is_array($settings)?$settings:[],'classes'=>$classes,'profile'=>is_array($profile)?$profile:[]];
         $this->load->view('admission_crm/online_form', $data);
     }
 
     public function submit_online_form()
     {
-        // ── C-03 FIX: Rate limiting — max 10 submissions per IP per 15 minutes ──
+        // ── Rate limiting — max 10 submissions per IP per 15 minutes ──
+        // Firestore-based: one doc per IP, stores recent submission timestamps.
         $clientIp = $this->input->ip_address();
         $ipKey    = preg_replace('/[^a-zA-Z0-9]/', '_', $clientIp);
-        $ratePath = "System/RateLimits/online_form/{$ipKey}";
-        $rateData = $this->firebase->get($ratePath);
-        $windowStart = time() - 900; // 15-minute window
-        if (is_array($rateData)) {
-            $recentCount = 0;
-            foreach ($rateData as $ts => $v) {
-                if ((int) $ts >= $windowStart) {
-                    $recentCount++;
-                } else {
-                    $this->firebase->delete($ratePath, (string) $ts);
-                }
-            }
-            if ($recentCount >= 10) {
+        $rlDocId  = "online_form_{$ipKey}";
+        $windowStart = time() - 900;
+        try {
+            $rlDoc = $this->fs->get('rateLimits', $rlDocId);
+            $timestamps = is_array($rlDoc['timestamps'] ?? null) ? $rlDoc['timestamps'] : [];
+            $recent = array_filter($timestamps, fn($ts) => (int) $ts >= $windowStart);
+            if (count($recent) >= 10) {
                 return $this->json_error('Too many submissions. Please try again later.', 429);
             }
+            $recent[] = time();
+            $this->fs->set('rateLimits', $rlDocId, ['timestamps' => array_values($recent), 'ip' => $clientIp, 'updatedAt' => date('c')], true);
+        } catch (\Exception $e) {
+            log_message('error', 'Rate limit check failed: ' . $e->getMessage());
+            // Fail-open: allow submission if rate-limit check fails
         }
-        $this->firebase->set("{$ratePath}/" . time() . '_' . mt_rand(1000, 9999), 1);
 
         $now = date('Y-m-d H:i:s');
 
@@ -3833,7 +3905,7 @@ class Sis extends MY_Controller
         if (!preg_match('/^\+?\d{10,15}$/', preg_replace('/[\s\-]/','',$data['phone']))) return $this->json_error('Invalid phone number format');
         if ($data['email']!==''&&!filter_var($data['email'],FILTER_VALIDATE_EMAIL)) return $this->json_error('Invalid email address');
 
-        $existingApps = $this->firebase->get("{$this->crm_base}/Applications") ?? [];
+        $existingApps = $this->_crm_list('crmApplications');
         if (is_array($existingApps)) {
             foreach ($existingApps as $ea) {
                 if (!is_array($ea)||($ea['session']??'')!==$this->session_year) continue;
@@ -3843,17 +3915,14 @@ class Sis extends MY_Controller
             }
         }
 
-        $counter = (int)($this->firebase->get("{$this->crm_base}/Counter") ?? 0);
-        $counter++;
-        $inq_id = 'INQ'.str_pad($counter,5,'0',STR_PAD_LEFT);
+        $inq_id = $this->_crm_next_id('Inquiry', 'INQ', 5);
         $inqData = ['inquiry_id'=>$inq_id,'student_name'=>$data['student_name'],'parent_name'=>$data['parent_name'],'phone'=>$data['phone'],'email'=>$data['email'],'class'=>$data['class'],'source'=>'Online Form','status'=>'converted','session'=>$this->session_year,'created_at'=>$now,'updated_at'=>$now,'created_by'=>'Online'];
-        $this->firebase->set("{$this->crm_base}/Inquiries/{$inq_id}", $inqData);
-        $counter++;
-        $app_id = 'APP'.str_pad($counter,5,'0',STR_PAD_LEFT);
+        $this->_crm_set('crmInquiries', $inq_id, $inqData);
+        $app_id = $this->_crm_next_id('Application', 'APP', 5);
         $appData = array_merge($data, ['application_id'=>$app_id,'inquiry_id'=>$inq_id,'session'=>$this->session_year,'status'=>'pending','stage'=>'document_collection','created_at'=>$now,'updated_at'=>$now,'created_by'=>'Online','documents'=>[],'history'=>[['action'=>'Application submitted via online form','by'=>'Online','timestamp'=>$now]]]);
-        $this->firebase->set("{$this->crm_base}/Applications/{$app_id}", $appData);
-        $this->firebase->update("{$this->crm_base}/Inquiries/{$inq_id}", ['application_id'=>$app_id]);
-        $this->firebase->set("{$this->crm_base}/Counter", $counter);
+        $this->_crm_set("crmApplications", $app_id, $appData);
+        $this->_crm_update("crmInquiries", $inq_id, ['application_id'=>$app_id]);
+        // Counter managed by _crm_next_id — no separate write needed.
         // Firestore dual-write: online form inquiry + application
         try {
             $inqData['application_id'] = $app_id;
@@ -3866,9 +3935,9 @@ class Sis extends MY_Controller
     public function fetch_analytics()
     {
         $this->_require_role(self::VIEW_ROLES, 'crm_fetch');
-        $inquiries    = $this->firebase->get("{$this->crm_base}/Inquiries") ?? [];
-        $applications = $this->firebase->get("{$this->crm_base}/Applications") ?? [];
-        $waitlist     = $this->firebase->get("{$this->crm_base}/Waitlist") ?? [];
+        $inquiries    = $this->_crm_list('crmInquiries');
+        $applications = $this->_crm_list('crmApplications');
+        $waitlist     = $this->_crm_list('crmWaitlist');
         if (!is_array($inquiries)) $inquiries=[]; if (!is_array($applications)) $applications=[]; if (!is_array($waitlist)) $waitlist=[];
         $session = $this->session_year;
         $sInq = array_filter($inquiries, fn($i) => is_array($i)&&($i['session']??'')===$session);
