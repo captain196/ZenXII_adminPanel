@@ -56,6 +56,33 @@ class Sis extends MY_Controller
         $this->load->library('Fee_defaulter_check', null, 'feeDefaulter');
         $this->feeLifecycle->init($this->firebase, $this->school_name, $this->session_year, $this->admin_id ?? 'system');
         $this->feeDefaulter->init($this->firebase, $this->school_name, $this->session_year);
+
+        // Entity sync for Firestore dual-writes (Android app data)
+        $this->load->library('entity_firestore_sync', null, 'entity_sync');
+        $this->entity_sync->init($this->firebase, $this->school_name, $this->session_year, $this->school_code);
+    }
+
+    /**
+     * Build class → sections map from Firestore sections collection.
+     * Returns ['9th' => ['A','B'], 'Nursery' => ['A'], ...]
+     */
+    private function _fs_class_map(): array
+    {
+        $sectionDocs = $this->fs->schoolWhere('sections', []);
+        $classMap = [];
+        foreach ($sectionDocs as $doc) {
+            $sd = $doc['data'];
+            $className = $sd['className'] ?? '';
+            $sectionName = $sd['section'] ?? '';
+            if (!$className || !$sectionName) continue;
+            $ordinal = str_replace('Class ', '', $className);
+            $sectionLetter = str_replace('Section ', '', $sectionName);
+            if (!isset($classMap[$ordinal])) $classMap[$ordinal] = [];
+            if (!in_array($sectionLetter, $classMap[$ordinal])) {
+                $classMap[$ordinal][] = $sectionLetter;
+            }
+        }
+        return $classMap;
     }
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -69,13 +96,19 @@ class Sis extends MY_Controller
         $school_name = $this->school_name;
         $session     = $this->session_year;
 
-        // Read lightweight index instead of full Users/Parents tree (OPT 1)
-        $index = $this->firebase->get("Schools/{$school_name}/SIS/Students_Index") ?? [];
-        if (!is_array($index)) $index = [];
-
-        // Auto-build index if empty (first visit or after data migration)
-        if (empty($index)) {
-            $index = $this->_build_index_from_parents($school_id, $school_name);
+        // Read all students from Firestore
+        $studentList = $this->fs->schoolList('students');
+        $index = [];
+        foreach ($studentList as $s) {
+            $uid = $s['studentId'] ?? $s['User Id'] ?? $s['userId'] ?? '';
+            if ($uid === '') continue;
+            $index[$uid] = [
+                'name'    => $s['name'] ?? $s['Name'] ?? '',
+                'class'   => $s['className'] ?? $s['Class'] ?? '',
+                'section' => $s['section'] ?? $s['Section'] ?? '',
+                'status'  => $s['status'] ?? $s['Status'] ?? 'Active',
+                'gender'  => $s['gender'] ?? $s['Gender'] ?? '',
+            ];
         }
 
         // Enrolled in current session (OPT 3: single bulk read)
@@ -105,8 +138,9 @@ class Sis extends MY_Controller
             if (isset($index[$uid])) $enrolledCount++;
         }
 
-        // Recent promotions
-        $promotions = $this->firebase->get("Schools/{$school_name}/SIS/Promotions") ?? [];
+        // Recent promotions from school doc
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $promotions = $schoolDoc['promotions'] ?? [];
         if (!is_array($promotions)) $promotions = [];
         arsort($promotions);
         $recentPromotions = array_slice($promotions, 0, 5, true);
@@ -130,33 +164,9 @@ class Sis extends MY_Controller
     public function students()
     {
         $this->_require_role(self::VIEW_ROLES, 'sis_students');
-        $school_id   = $this->parent_db_key;
-        $school_name = $this->school_name;
-        $session     = $this->session_year;
+        $session = $this->session_year;
 
-        // Build class/section structure for filter dropdowns
-        $classMap = [];
-        $sessionClassKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session}");
-        if (is_array($sessionClassKeys)) {
-            foreach ($sessionClassKeys as $classKey) {
-                if (strpos($classKey, 'Class ') !== 0) continue;
-                $sectionKeys = $this->firebase->shallow_get(
-                    "Schools/{$school_name}/{$session}/{$classKey}"
-                );
-                $sections = [];
-                if (is_array($sectionKeys)) {
-                    foreach ($sectionKeys as $sk) {
-                        if (strpos($sk, 'Section ') === 0) {
-                            $sections[] = str_replace('Section ', '', $sk);
-                        }
-                    }
-                }
-                $ordinal = str_replace('Class ', '', $classKey);
-                $classMap[$ordinal] = $sections;
-            }
-        }
-
-        $data['class_map']    = $classMap;
+        $data['class_map']    = $this->_fs_class_map();
         $data['session_year'] = $session;
 
         $this->load->view('include/header');
@@ -175,34 +185,13 @@ class Sis extends MY_Controller
         $school_name = $this->school_name;
         $session     = $this->session_year;
 
-        // Build class/section map for dropdowns
-        $classMap = [];
-        $sessionClassKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session}");
-        if (is_array($sessionClassKeys)) {
-            foreach ($sessionClassKeys as $classKey) {
-                if (strpos($classKey, 'Class ') !== 0) continue;
-                $sectionKeys = $this->firebase->shallow_get(
-                    "Schools/{$school_name}/{$session}/{$classKey}"
-                );
-                $sections = [];
-                if (is_array($sectionKeys)) {
-                    foreach ($sectionKeys as $sk) {
-                        if (strpos($sk, 'Section ') === 0) {
-                            $sections[] = str_replace('Section ', '', $sk);
-                        }
-                    }
-                }
-                $ordinal = str_replace('Class ', '', $classKey);
-                $classMap[$ordinal] = $sections;
-            }
-        }
+        $classMap = $this->_fs_class_map();
 
-        // Preview next student ID (read-only — does NOT increment counter)
+        // Preview next student ID
         $userId = $this->_peekNextStudentId($school_id);
 
-        // Fee structure for exemptions
-        $feesStructurePath = "Schools/{$school_name}/{$session}/Accounts/Fees/Fees Structure";
-        $exemptedFees = $this->firebase->get($feesStructurePath);
+        // Fee structure for exemptions — read from Firestore feeStructures
+        $exemptedFees = $this->fs->schoolList('feeStructures');
 
         $data['class_map']     = $classMap;
         $data['session_year']  = $session;
@@ -232,8 +221,8 @@ class Sis extends MY_Controller
         // ── Basic fields ────────────────────────────────────────────────
         $name        = trim($this->input->post('name')           ?? '');
         $userId      = trim($this->input->post('user_id')       ?? '');
-        $classOrd    = trim($this->input->post('class')         ?? '');   // "9th"
-        $section     = trim($this->input->post('section')       ?? '');   // "A"
+        $classOrd    = Firestore_service::classKey(trim($this->input->post('class') ?? ''));   // "Class 9th"
+        $section     = Firestore_service::sectionKey(trim($this->input->post('section') ?? ''));   // "Section A"
         $phone       = trim($this->input->post('phone_number')  ?? $this->input->post('phone') ?? '');
         $email       = trim($this->input->post('email')         ?? '');
         $rollNo      = trim($this->input->post('roll_no')       ?? '');
@@ -241,6 +230,11 @@ class Sis extends MY_Controller
         // M-07 FIX: Validate email format before storing
         if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             return $this->json_error('Invalid email address format.');
+        }
+
+        // Phone format guard — matches the pattern in update_profile().
+        if ($phone !== '' && !preg_match('/^[\d\s\+\-\(\)]{6,20}$/', $phone)) {
+            return $this->json_error('Invalid phone number format.');
         }
 
         // ── Dates — format dd-mm-YYYY to match Student.php ──────────
@@ -299,7 +293,7 @@ class Sis extends MY_Controller
         $userId = $generated;
 
         // Check for duplicate — ensures no existing profile is overwritten
-        $existing = $this->firebase->get("Users/Parents/{$school_id}/{$userId}");
+        $existing = $this->_getStudent($userId);
         if (!empty($existing)) {
             return $this->json_error("Student ID {$userId} already exists.");
         }
@@ -308,8 +302,8 @@ class Sis extends MY_Controller
         $password = $this->_generatePassword($name, $dob);
 
         // ── Photo & Document uploads ────────────────────────────────
-        $classKeyForPath = "Class {$classOrd}";
-        $combinedClassPath = "{$classKeyForPath}/Section {$section}";
+        $classKeyForPath = $classOrd;  // Already "Class 8th"
+        $combinedClassPath = "{$classKeyForPath}/{$section}";  // "Class 8th/Section A"
 
         $profilePicUrl = '';
         $docData = [
@@ -392,90 +386,55 @@ class Sis extends MY_Controller
             'Status'         => 'Active',
         ];
 
-        // Save profile
-        $this->firebase->set("Users/Parents/{$school_id}/{$userId}", $studentData);
+        $classKey   = $classOrd;   // Already "Class 8th"
+        $sectionKey = $section;    // Already "Section A"
 
-        // Enroll in session roster
-        $classKey   = "Class {$classOrd}";
-        $sectionKey = "Section {$section}";
-        $rosterPath = "Schools/{$school_name}/{$session}/{$classKey}/{$sectionKey}/Students/List/{$userId}";
-        $this->firebase->set($rosterPath, $name);
+        // ══════════════════════════════════════════════════════════════
+        // 1. FIRESTORE FIRST (primary) — Student profile for Android apps
+        // ══════════════════════════════════════════════════════════════
+        $this->entity_sync->syncStudent($userId, $studentData);
+        $this->entity_sync->syncParent($userId, $studentData);
 
-        // Phone → school mapping (matches Student.php)
+        // Phone index
         if (!empty($phone)) {
-            // Tenant-scoped phone index (primary)
-            $this->firebase->update("Schools/{$school_name}/Phone_Index", [$phone => $userId]);
-            // Legacy global indexes — kept for mobile app backward compatibility
-            $this->firebase->update("Exits", [$phone => $school_id]);
-            $this->firebase->update("User_ids_pno", [$phone => $userId]);
+            $this->fs->set('indexPhones', $this->fs->docId($phone), [
+                'schoolId' => $this->school_id, 'phone' => $phone,
+                'userId' => $userId, 'type' => 'student',
+            ]);
         }
 
-        // Update Students_Index (OPT 1)
-        $this->_update_student_index($school_name, $userId, $name, $classOrd, $section, 'Active', $gender);
-
-        // ── B-A4 FIX: Initialize fee tracking for new student (matches legacy Student.php path) ──
+        // Fee month markers
         try {
-            $feeClassKey = "{$classOrd} '{$section}'";
-            $feeStructurePath = "Schools/{$school_name}/{$session}/Accounts/Fees/Classes Fees/{$feeClassKey}";
-            $classFees = $this->firebase->get($feeStructurePath);
-
-            // Initialize Month Fee markers as unpaid (0) for all months
-            $studentFeePath = "Schools/{$school_name}/{$session}/{$classKey}/{$sectionKey}/Students/{$userId}";
             $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
             $monthFeeInit = [];
-            foreach ($months as $m) {
-                $monthFeeInit[$m] = 0;
-            }
-            $this->firebase->set("{$studentFeePath}/Month Fee", $monthFeeInit);
+            foreach ($months as $m) $monthFeeInit[$m] = 0;
+            $this->fs->updateEntity('students', $userId, ['monthFee' => $monthFeeInit]);
         } catch (Exception $e) {
             log_message('error', "SIS admit fee init failed for {$userId}: " . $e->getMessage());
         }
 
-        // Auto-assign class fees for new admission
-        try {
-            $parentDbKey = $school_id;
-            $this->feeLifecycle->assignInitialFees($userId, $classOrd, $section, $parentDbKey);
-            log_message('info', "Fee_lifecycle: auto-assigned fees for new admission {$userId}");
-        } catch (Exception $e) {
-            log_message('error', "Fee_lifecycle::assignInitialFees failed for {$userId}: " . $e->getMessage());
-        }
-
-        // Log history
-        $this->_log_history($school_id, $userId, 'ADMISSION',
-            "Student admitted to Class {$classOrd} / Section {$section} ({$session})",
-            ['class' => $classOrd, 'section' => $section, 'session' => $session]
-        );
-
-        log_audit('SIS', 'admit_student', $userId, "Admitted student '{$name}' to Class {$classOrd} Section {$section}");
-
-        // ── Subject assignment (merged from studentAdmission) ──────────
+        // Subject assignment
         $classNumber = 0;
         if (preg_match('/\d+/', $classOrd, $classMatch)) {
             $classNumber = (int)$classMatch[0];
         }
         if ($classNumber > 0) {
-            $rawList = $this->firebase->get("Schools/{$school_name}/Subject_list/{$classNumber}");
+            $subjectDocs = $this->fs->schoolWhere('subjects', [['classKey', '==', (string)$classNumber]]);
             $coreSubjects = [];
-            $allSubjects  = [];
-            if (is_array($rawList)) {
-                foreach ($rawList as $code => $item) {
-                    if (!is_array($item)) continue;
-                    $subName = trim($item['subject_name'] ?? $item['name'] ?? '');
-                    if ($subName === '') continue;
-                    $type = strtolower(trim($item['category'] ?? ''));
-                    if ($type !== 'additional') $allSubjects[(string)$code] = $subName;
-                    if ($type === 'core') $coreSubjects[(string)$code] = ['name' => $subName, 'type' => 'core'];
-                }
-            }
-            if (!empty($allSubjects)) {
-                $this->firebase->set("Schools/{$school_name}/{$session}/{$classKey}/All Subjects", $allSubjects);
+            foreach ($subjectDocs as $doc) {
+                $item = $doc['data'];
+                $code = $item['subjectCode'] ?? $item['code'] ?? $doc['id'];
+                $subName = trim($item['name'] ?? $item['subject_name'] ?? '');
+                if ($subName === '') continue;
+                $type = strtolower(trim($item['category'] ?? ''));
+                if ($type === 'core') $coreSubjects[(string)$code] = ['name' => $subName, 'type' => 'core'];
             }
             if (!empty($coreSubjects)) {
-                $this->firebase->set("Users/Parents/{$school_id}/{$userId}/Subjects", $coreSubjects);
+                $this->fs->updateEntity('students', $userId, ['subjects' => $coreSubjects]);
             }
         }
 
-        // Additional subjects selected by user
+        // Additional subjects
         $additionalSubjects = $this->input->post('additional_subjects');
         if (!empty($additionalSubjects) && is_array($additionalSubjects)) {
             $addSubData = [];
@@ -484,14 +443,11 @@ class Sis extends MY_Controller
                 if ($sub !== '') $addSubData[$sub] = '';
             }
             if (!empty($addSubData)) {
-                $this->firebase->set(
-                    "Schools/{$school_name}/{$session}/{$classKey}/{$sectionKey}/Students/{$userId}/Additional Subjects",
-                    $addSubData
-                );
+                $this->fs->updateEntity('students', $userId, ['additionalSubjects' => $addSubData]);
             }
         }
 
-        // Exempted fees selected by user
+        // Exempted fees
         $exemptedFees = $this->input->post('exempted_fees_multiple');
         if (!empty($exemptedFees) && is_array($exemptedFees)) {
             $exemptedData = [];
@@ -500,87 +456,74 @@ class Sis extends MY_Controller
                 if ($feeName !== '') $exemptedData[$feeName] = '';
             }
             if (!empty($exemptedData)) {
-                $this->firebase->set(
-                    "Schools/{$school_name}/{$session}/{$classKey}/{$sectionKey}/Students/{$userId}/Exempted Fees",
-                    $exemptedData
-                );
+                $this->fs->updateEntity('students', $userId, ['exemptedFees' => $exemptedData]);
             }
         }
 
-        // ── Sync student credentials to MongoDB (with retry) ──────────
+        // RTDB mirror removed per no-RTDB policy. Firestore `students` is the sole source.
+
+        // ══════════════════════════════════════════════════════════════
+        // 2. FIREBASE AUTH — Parent app login
+        // ══════════════════════════════════════════════════════════════
         try {
-            $this->load->library('auth_client');
-            $syncPayload = [
-                'studentId'          => $userId,
-                'name'               => $name,
-                'email'              => $email,
-                'phone'              => $phone,
-                'password'           => $password,        // Raw — Node.js will bcrypt it
-                'schoolId'           => $this->school_code,   // Login code (e.g. 10005)
-                'schoolCode'         => $this->school_name,   // Firebase key (e.g. SCH_XXXXXX)
-                'parentDbKey'        => $this->parent_db_key, // Firebase Users/Parents key
-                'parentPhone'        => $guardContact ?: $phone,
-                'createdBy'          => $this->session->userdata('admin_id') ?: 'system',
-                'className'          => $classOrd,
-                'section'            => $section,
-                'rollNo'             => $rollNo,
-                'fatherName'         => $father,
-                'motherName'         => $mother,
-                'dob'                => $dob,
-                'admissionDate'      => $admDate,
-                'gender'             => $gender,
-                'profilePic'         => $profilePicUrl,
-                'schoolDisplayName'  => $this->school_display_name ?? '',
-                'deviceBindingMethod'=> 'otp',  // Mobile login requires OTP to bind new devices
-            ];
-
-            $syncResult = null;
-            $maxAttempts = 2;
-            for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-                $syncResult = $this->auth_client->sync_student($syncPayload);
-                if (!empty($syncResult['success'])) break;
-                if ($attempt < $maxAttempts) usleep(500000); // 500ms before retry
-            }
-
-            if (empty($syncResult['success'])) {
-                log_message('error', "SIS MongoDB sync failed for {$userId} after {$maxAttempts} attempts: "
-                    . ($syncResult['message'] ?? 'unknown')
-                    . ' | payload=' . json_encode(['studentId' => $userId, 'schoolId' => $this->school_code, 'schoolCode' => $this->school_name]));
-            }
+            $authEmail = Firebase::authEmail($userId);
+            $this->firebase->createFirebaseUser($authEmail, $password, [
+                'uid'         => $userId,
+                'displayName' => $name,
+            ]);
+            $this->firebase->setFirebaseClaims($userId, [
+                'role'          => 'student',
+                'school_id'     => $this->school_id,
+                'school_code'   => $this->school_code,
+                'parent_db_key' => $this->parent_db_key,
+            ]);
         } catch (Exception $e) {
-            log_message('error', "SIS MongoDB sync exception for {$userId}: " . $e->getMessage());
+            log_message('error', "SIS Firebase Auth create failed for {$userId}: " . $e->getMessage());
         }
 
-        // LEAD SYSTEM — mark lead as admitted if this admission came from a lead
+        // ══════════════════════════════════════════════════════════════
+        // 4. POST-ADMISSION — Fees, history, leads, notifications
+        // ══════════════════════════════════════════════════════════════
+        try {
+            $this->feeLifecycle->assignInitialFees($userId, $classOrd, $section, $school_id);
+        } catch (Exception $e) {
+            log_message('error', "Fee_lifecycle::assignInitialFees failed for {$userId}: " . $e->getMessage());
+        }
+
+        $this->_log_history($school_id, $userId, 'ADMISSION',
+            "Student admitted to {$classOrd} / {$section} ({$session})",
+            ['class' => $classOrd, 'section' => $section, 'session' => $session]
+        );
+        log_audit('SIS', 'admit_student', $userId, "Admitted student '{$name}' to {$classOrd} {$section}");
+
+        // Lead conversion
         $leadId = trim($this->input->post('lead_id') ?? '');
         if ($leadId !== '' && preg_match('/^[A-Za-z0-9_]+$/', $leadId)) {
             $now = date('Y-m-d H:i:s');
-            $leadPath = "{$this->crm_base}/Applications/{$leadId}";
-            $lead = $this->firebase->get($leadPath);
+            $lead = $this->fs->get('crmApplications', $this->fs->docId($leadId));
             if (is_array($lead)) {
                 $history = $lead['history'] ?? [];
-                $history[] = [
-                    'action'    => "Converted to student {$userId}",
-                    'by'        => $this->admin_name,
-                    'timestamp' => $now,
-                ];
-                $this->firebase->update($leadPath, [
-                    'status'     => 'admitted',
-                    'stage'      => 'enrolled',
-                    'student_id' => $userId,
-                    'updated_at' => $now,
-                    'history'    => $history,
+                $history[] = ['action' => "Converted to student {$userId}", 'by' => $this->admin_name, 'timestamp' => $now];
+                $this->fs->update('crmApplications', $this->fs->docId($leadId), [
+                    'status' => 'admitted', 'stage' => 'enrolled',
+                    'student_id' => $userId, 'updated_at' => $now, 'history' => $history,
                 ]);
-                log_audit('CRM', 'convert_lead', $leadId, "Lead converted to student {$userId}");
             }
         }
 
-        // LEAD SYSTEM — notify parent of confirmed admission (fire-and-forget)
+        // Notify parent
         if ($phone !== '') {
             notify_admission_confirmed($phone, $this->school_display_name ?? $this->school_name, $userId, $name);
         }
 
-        return $this->json_success(['message' => 'Student admitted successfully.', 'user_id' => $userId]);
+        return $this->json_success([
+            'message'  => 'Student admitted successfully.',
+            'user_id'  => $userId,
+            'name'     => $name,
+            'password' => $password,
+            'class'    => str_replace('Class ', '', $classOrd),
+            'section'  => str_replace('Section ', '', $section),
+        ]);
     }
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -627,15 +570,36 @@ class Sis extends MY_Controller
             }
         }
 
+        // Phone aliases: the admission form posts "Phone Number" (Title Case),
+        // but other edit screens / Android push "phone" or "phoneNumber".
+        // Accept any of them and normalize to the canonical "Phone Number" key
+        // (which then maps to Firestore camelCase `phone` below).
+        if (!isset($updates['Phone Number'])) {
+            foreach (['phone', 'phoneNumber', 'phone_number'] as $alias) {
+                $v = $this->input->post($alias);
+                if ($v !== null && trim($v) !== '') {
+                    $updates['Phone Number'] = trim($v);
+                    break;
+                }
+            }
+        }
+
         // M-07 FIX: Validate email format on profile update
         if (isset($updates['Email']) && $updates['Email'] !== '' && !filter_var($updates['Email'], FILTER_VALIDATE_EMAIL)) {
             return $this->json_error('Invalid email address format.');
         }
 
+        // Validate phone format if provided (digits, spaces, +, -, parens).
+        if (isset($updates['Phone Number']) && $updates['Phone Number'] !== ''
+            && !preg_match('/^[\d\s\+\-\(\)]{6,20}$/', $updates['Phone Number'])) {
+            return $this->json_error('Invalid phone number format.');
+        }
+
         // Address is a nested object — posted as Address[Street], Address[City], etc.
         $addrPost = $this->input->post('Address');
         if (is_array($addrPost)) {
-            $existing = $this->firebase->get("Users/Parents/{$school_id}/{$userId}/Address") ?? [];
+            $fsStudent = $this->_getStudent($userId);
+            $existing = ($fsStudent !== null) ? ($fsStudent['Address'] ?? $fsStudent['address'] ?? []) : [];
             $existing = is_array($existing) ? $existing : [];
             $merged   = $existing;
             foreach (['Street', 'City', 'State', 'PostalCode'] as $sub) {
@@ -650,20 +614,43 @@ class Sis extends MY_Controller
             return $this->json_error('No valid fields to update.');
         }
 
-        $this->firebase->update("Users/Parents/{$school_id}/{$userId}", $updates);
+        // RTDB mirror removed per no-RTDB policy. Firestore `students` is the sole source.
+        $updates['updatedAt'] = date('c');
 
-        // Sync Students_Index if name changed (OPT 1)
+        // ── Firestore with camelCase mapping ──────────
+        $fsUpdates = $updates;
+        if (isset($fsUpdates['Name']))         $fsUpdates['name']  = $fsUpdates['Name'];
+        if (isset($fsUpdates['Phone Number'])) {
+            // Mirror Entity_firestore_sync::syncStudent, which writes BOTH
+            // `phone` (Android canonical) and `phoneNumber` (backward compat).
+            $fsUpdates['phone']       = $fsUpdates['Phone Number'];
+            $fsUpdates['phoneNumber'] = $fsUpdates['Phone Number'];
+        }
+        if (isset($fsUpdates['Email']))        $fsUpdates['email'] = $fsUpdates['Email'];
+        if (isset($fsUpdates['Father Name']))  $fsUpdates['fatherName'] = $fsUpdates['Father Name'];
+        if (isset($fsUpdates['Mother Name']))  $fsUpdates['motherName'] = $fsUpdates['Mother Name'];
+        $this->fs->updateEntity('students', $userId, $fsUpdates);
+
+        // ── FIX 4c: Update Firebase Auth displayName if name changed ──
         if (isset($updates['Name'])) {
-            $this->firebase->update(
-                "Schools/{$this->school_name}/SIS/Students_Index/{$userId}",
-                ['name' => $updates['Name']]
-            );
+            try {
+                $this->firebase->updateFirebaseUser($userId, ['displayName' => $updates['Name']]);
+            } catch (\Exception $e) {
+                log_message('error', "update_profile: Firebase Auth update failed for {$userId}: " . $e->getMessage());
+            }
         }
 
         $changed = implode(', ', array_keys($updates));
         $this->_log_history($school_id, $userId, 'PROFILE_UPDATE',
             "Profile updated: {$changed}", $updates
         );
+
+        // Entity sync for Android apps
+        try {
+            $this->entity_sync->syncStudent($userId, $updates);
+        } catch (\Exception $e) {
+            log_message('error', "entity_sync syncStudent failed for {$userId}: " . $e->getMessage());
+        }
 
         log_audit('SIS', 'update_profile', $userId, "Updated student profile: {$changed}");
 
@@ -677,31 +664,9 @@ class Sis extends MY_Controller
     public function promote()
     {
         $this->_require_role(self::MANAGE_ROLES, 'sis_promote');
-        $school_name = $this->school_name;
         $session     = $this->session_year;
 
-        $classMap = [];
-        $sessionClassKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session}");
-        if (is_array($sessionClassKeys)) {
-            foreach ($sessionClassKeys as $classKey) {
-                if (strpos($classKey, 'Class ') !== 0) continue;
-                $sectionKeys = $this->firebase->shallow_get(
-                    "Schools/{$school_name}/{$session}/{$classKey}"
-                );
-                $sections = [];
-                if (is_array($sectionKeys)) {
-                    foreach ($sectionKeys as $sk) {
-                        if (strpos($sk, 'Section ') === 0) {
-                            $sections[] = str_replace('Section ', '', $sk);
-                        }
-                    }
-                }
-                $ordinal = str_replace('Class ', '', $classKey);
-                $classMap[$ordinal] = $sections;
-            }
-        }
-
-        $data['class_map']    = $classMap;
+        $data['class_map']    = $this->_fs_class_map();
         $data['session_year'] = $session;
 
         // Build session options: available sessions + computed next session
@@ -784,12 +749,12 @@ class Sis extends MY_Controller
         }
 
         // Auto-register target session in Sessions list if it doesn't exist yet.
-        // Promotion often targets the NEXT academic year before it's formally created.
         $available = $this->session->userdata('available_sessions') ?? [];
         if (!in_array($toSession, $available, true)) {
             $available[] = $toSession;
             rsort($available);
-            $this->firebase->set("Schools/{$school_name}/Sessions", $available);
+            // Firestore-only per no-RTDB policy.
+            $this->fs->update('schools', $this->school_id, ['sessions' => $available, 'currentSession' => $toSession]);
             $this->session->set_userdata('available_sessions', $available);
         }
 
@@ -798,127 +763,83 @@ class Sis extends MY_Controller
             return $this->json_error('No students found in the selected class/section.');
         }
 
-        // PROM-2 FIX: Check target section capacity before promotion
-        $newClassKey   = "Class {$toClass}";
-        $newSectionKey = "Section {$toSection}";
-        $maxStrength = $this->firebase->get(
-            "Schools/{$school_name}/{$toSession}/{$newClassKey}/{$newSectionKey}/max_strength"
-        );
-        if ($maxStrength) {
-            $existingStudents = $this->firebase->get(
-                "Schools/{$school_name}/{$toSession}/{$newClassKey}/{$newSectionKey}/Students/List"
-            ) ?? [];
-            $currentCount = is_array($existingStudents) ? count($existingStudents) : 0;
+        // Check target section capacity before promotion
+        $newClassKey   = Firestore_service::classKey($toClass);
+        $newSectionKey = Firestore_service::sectionKey($toSection);
+        $targetSectionDoc = $this->fs->get('sections', $this->fs->sectionDocId($toClass, $toSection));
+        $maxStrength = (int) ($targetSectionDoc['maxStrength'] ?? $targetSectionDoc['max_strength'] ?? 0);
+        if ($maxStrength > 0) {
+            $existingStudents = $this->fs->schoolWhere('students', [
+                ['className', '==', $newClassKey], ['section', '==', $newSectionKey], ['status', '==', 'Active'],
+            ]);
+            $currentCount = count($existingStudents);
             $promotionCount = count($students);
             if (($currentCount + $promotionCount) > (int) $maxStrength) {
                 return $this->json_error(
-                    "Target section {$toClass}/{$toSection} capacity exceeded ({$currentCount}/{$maxStrength}). Cannot promote {$promotionCount} student(s)."
+                    "Target section {$newClassKey}/{$newSectionKey} capacity exceeded ({$currentCount}/{$maxStrength}). Cannot promote {$promotionCount} student(s)."
                 );
             }
         }
 
-        $adminName  = $this->session->userdata('admin_name') ?? 'Admin';
-        $promoted   = [];
-        $now        = date('Y-m-d H:i:s');
-        $batchId    = date('YmdHis');
-        $oldClassKey   = "Class {$fromClass}";
-        $historyDesc   = "Promoted from Class {$fromClass}/{$fromSection} to Class {$toClass}/{$toSection} ({$toSession})";
+        $adminName     = $this->session->userdata('admin_name') ?? 'Admin';
+        $promoted      = [];
+        $now           = date('Y-m-d H:i:s');
+        $batchId       = date('YmdHis');
+        $oldClassKey   = Firestore_service::classKey($fromClass);
+        $oldSectionKey = Firestore_service::sectionKey($fromSection);
+        $historyDesc   = "Promoted from {$oldClassKey}/{$oldSectionKey} to {$newClassKey}/{$newSectionKey} ({$toSession})";
         $historyMeta   = [
-            'from_class' => $fromClass, 'from_section' => $fromSection,
-            'to_class' => $toClass, 'to_section' => $toSection, 'to_session' => $toSession,
+            'from_class' => $oldClassKey, 'from_section' => $oldSectionKey,
+            'to_class' => $newClassKey, 'to_section' => $newSectionKey, 'to_session' => $toSession,
         ];
 
-        // OPT 2: Build single multi-path update instead of N × 5 individual operations
-        $batchUpdates = [];
-        $counter      = 0;
-
+        // Build batch map: [ userId => ['name'=>..., 'oldSection'=>...] ]
+        $batchMap = [];
         foreach ($students as $userId => $studentInfo) {
-            $name = $studentInfo['name'] ?? $userId;
-            $counter++;
-
-            // Update profile class/section
-            $batchUpdates["Users/Parents/{$school_id}/{$userId}/Class"]   = $toClass;
-            $batchUpdates["Users/Parents/{$school_id}/{$userId}/Section"] = $toSection;
-
-            // Remove from old roster (null = delete)
-            $actualSection = ($fromSection === 'all')
-                ? ($studentInfo['section'] ?? '')
-                : $fromSection;
-            if (!empty($actualSection)) {
-                $batchUpdates["Schools/{$school_name}/{$session}/{$oldClassKey}/Section {$actualSection}/Students/List/{$userId}"] = null;
-            }
-
-            // Add to new roster
-            $batchUpdates["Schools/{$school_name}/{$toSession}/{$newClassKey}/{$newSectionKey}/Students/List/{$userId}"] = $name;
-
-            // Update Students_Index (OPT 1)
-            $batchUpdates["Schools/{$school_name}/SIS/Students_Index/{$userId}/class"]   = $toClass;
-            $batchUpdates["Schools/{$school_name}/SIS/Students_Index/{$userId}/section"] = $toSection;
-
-            // History entry (generate key client-side for batch inclusion)
-            $histKey = $batchId . '_' . str_pad($counter, 4, '0', STR_PAD_LEFT);
-            $batchUpdates["Users/Parents/{$school_id}/{$userId}/History/{$histKey}"] = [
-                'action'      => 'PROMOTION',
-                'description' => $historyDesc,
-                'changed_by'  => $adminName,
-                'changed_at'  => $now,
-                'metadata'    => $historyMeta,
+            $stuOldSection = ($fromSection === 'all')
+                ? Firestore_service::sectionKey($studentInfo['section'] ?? '')
+                : $oldSectionKey;
+            $batchMap[$userId] = [
+                'name'       => $studentInfo['name'] ?? $userId,
+                'oldSection' => $stuOldSection,
             ];
+        }
 
+        // Single atomic RTDB multi-path update for ALL students
+        $moveResult = $this->dw->batchMoveStudents(
+            $batchMap, $oldClassKey, $session,
+            $newClassKey, $newSectionKey, $toSession
+        );
+
+        // Log history for moved students
+        foreach ($moveResult['moved'] as $userId) {
+            $name = $batchMap[$userId]['name'] ?? $userId;
+            $this->_log_history($school_id, $userId, 'PROMOTION', $historyDesc, $historyMeta);
             $promoted[] = ['user_id' => $userId, 'name' => $name];
         }
 
-        // Promotion batch record
-        $batchUpdates["Schools/{$school_name}/SIS/Promotions/{$batchId}"] = [
-            'session_from' => $session,
-            'session_to'   => $toSession,
-            'promoted_at'  => $now,
-            'promoted_by'  => $adminName,
-            'from_class'   => $fromClass,
-            'from_section' => $fromSection,
-            'to_class'     => $toClass,
-            'to_section'   => $toSection,
-            'students'     => $promoted,
-            'count'        => count($promoted),
-        ];
-
-        // Single atomic write for entire promotion batch
-        $this->firebase->update("", $batchUpdates);
-
-        // ── PROM-1 FIX: Initialize fee structure & subjects in new session for promoted students ──
-        try {
-            // Copy fee structure from old session/class to new session/class if not already present
-            $oldFeeClassKey = "{$fromClass} '{$fromSection}'";
-            $newFeeClassKey = "{$toClass} '{$toSection}'";
-            $oldFeePath = "Schools/{$school_name}/{$session}/Accounts/Fees/Classes Fees/{$oldFeeClassKey}";
-            $newFeePath = "Schools/{$school_name}/{$toSession}/Accounts/Fees/Classes Fees/{$newFeeClassKey}";
-            $existingNewFees = $this->firebase->get($newFeePath);
-            if (empty($existingNewFees)) {
-                $oldFees = $this->firebase->get($oldFeePath);
-                if (is_array($oldFees) && !empty($oldFees)) {
-                    $this->firebase->set($newFeePath, $oldFees);
-                }
-            }
-
-            // Subjects are at Schools/{school}/Subject_list/ — school-wide, session-independent.
-            // No copy needed for subjects — they persist across sessions.
-
-            // Initialize empty attendance node for new session class/section
-            $attendancePath = "Schools/{$school_name}/{$toSession}/{$newClassKey}/{$newSectionKey}/Attendance";
-            $existingAtt = $this->firebase->get($attendancePath);
-            if (empty($existingAtt)) {
-                $this->firebase->set($attendancePath, ['_initialized' => date('c')]);
-            }
-        } catch (Exception $e) {
-            log_message('error', "Promotion session init failed: " . $e->getMessage());
-            // Non-fatal: promotion itself succeeded, initialization is best-effort
+        $skipped = [];
+        foreach ($moveResult['failed'] as $userId) {
+            $skipped[] = ['user_id' => $userId, 'reason' => 'RTDB atomic write failed'];
         }
+
+        // Save promotion batch record
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $promotions = $schoolDoc['promotions'] ?? [];
+        $promotions[$batchId] = [
+            'session_from' => $session, 'session_to' => $toSession,
+            'promoted_at' => $now, 'promoted_by' => $adminName,
+            'from_class' => $oldClassKey, 'from_section' => $oldSectionKey,
+            'to_class' => $newClassKey, 'to_section' => $newSectionKey,
+            'count' => count($promoted),
+        ];
+        $this->fs->update('schools', $this->school_id, ['promotions' => $promotions]);
 
         // Reassign fees for promoted students
         foreach ($promoted as $p) {
             try {
                 $this->feeLifecycle->reassignFeesOnPromotion(
-                    $p['user_id'], $fromClass, $fromSection, $toClass, $toSection, $school_id
+                    $p['user_id'], $oldClassKey, $oldSectionKey, $newClassKey, $newSectionKey, $school_id
                 );
             } catch (Exception $e) {
                 log_message('error', "Fee_lifecycle::reassignFeesOnPromotion failed for {$p['user_id']}: " . $e->getMessage());
@@ -928,7 +849,7 @@ class Sis extends MY_Controller
         return $this->json_success([
             'message'  => count($promoted) . ' student(s) promoted successfully.',
             'promoted' => $promoted,
-            'skipped'  => [],
+            'skipped'  => $skipped,
             'batch_id' => $batchId,
         ]);
     }
@@ -944,13 +865,13 @@ class Sis extends MY_Controller
         $school_name = $this->school_name;
         $session     = $this->session_year;
 
-        // Primary: read from TC index (O(1), populated by issue_tc/cancel_tc)
-        $tcIndex = $this->firebase->get("Schools/{$school_name}/SIS/TC_Index") ?? [];
+        // Read TC index from school doc
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $tcIndex = $schoolDoc['tcIndex'] ?? [];
         if (!is_array($tcIndex)) $tcIndex = [];
 
         $tcRecords = [];
         if (!empty($tcIndex)) {
-            // Fast path: build records directly from index
             foreach ($tcIndex as $tcKey => $tc) {
                 if (!is_array($tc)) continue;
                 $tcRecords[] = [
@@ -967,13 +888,16 @@ class Sis extends MY_Controller
                 ];
             }
         } else {
-            // Fallback: full student scan (backward-compat with data issued before index existed)
-            $allStudents = $this->firebase->get("Users/Parents/{$school_id}") ?? [];
-            if (!is_array($allStudents)) $allStudents = [];
-            foreach (['Count', 'TC Students', ''] as $k) unset($allStudents[$k]);
+            // Fallback: scan students with TC status
+            $tcStudents = $this->fs->schoolWhere('students', [['status', '==', 'TC']]);
+            if (empty($tcStudents)) {
+                $tcStudents = $this->fs->schoolWhere('students', [['Status', '==', 'TC']]);
+            }
 
-            foreach ($allStudents as $uid => $student) {
+            foreach ($tcStudents as $doc) {
+                $student = $this->_normalizeStudentDoc($doc['data']);
                 if (!is_array($student)) continue;
+                $uid = $student['User Id'] ?? $student['studentId'] ?? $doc['id'];
                 $tcs = $student['TC'] ?? [];
                 if (!is_array($tcs)) continue;
                 foreach ($tcs as $tcKey => $tc) {
@@ -1036,7 +960,7 @@ class Sis extends MY_Controller
         if (empty($userId)) return $this->json_error('Student ID required.');
         if (!$this->safe_path_segment($userId)) return $this->json_error('Invalid User ID.');
 
-        $student = $this->firebase->get("Users/Parents/{$school_id}/{$userId}");
+        $student = $this->_getStudent($userId);
         if (empty($student)) return $this->json_error('Student not found.');
 
         // Check outstanding fees — block TC if dues remain (unless force_override is set)
@@ -1068,6 +992,7 @@ class Sis extends MY_Controller
 
         $tcNo      = $this->_get_tc_number($school_name);
         $adminName = $this->session->userdata('admin_name') ?? 'Admin';
+        $tcKey     = 'TC_' . date('YmdHis') . '_' . bin2hex(random_bytes(4));
         $tcData    = [
             'tc_no'       => $tcNo,
             'issued_date' => date('Y-m-d'),
@@ -1078,39 +1003,54 @@ class Sis extends MY_Controller
             'student_name'=> $student['Name'] ?? $userId,
             'class'       => $student['Class'] ?? '',
             'section'     => $student['Section'] ?? '',
+            'user_id'     => $userId,
+            'tc_key'      => $tcKey,
         ];
 
-        // Save TC under student profile
-        $tcKey = $this->firebase->push("Users/Parents/{$school_id}/{$userId}/TC", $tcData);
+        // Update Firestore student doc
+        $tcHistory = $student['TC'] ?? [];
+        $tcHistory[$tcKey] = $tcData;
+        $this->fs->updateEntity('students', $userId, [
+            'status'    => 'TC',
+            'TC'        => $tcHistory,
+            'updatedAt' => date('c'),
+        ]);
 
-        // Mark student status as TC
-        $this->firebase->update("Users/Parents/{$school_id}/{$userId}", ['Status' => 'TC']);
+        // Store TC in school's tcIndex for fast listing
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $tcIndex = $schoolDoc['tcIndex'] ?? [];
+        $tcIndex[$tcKey] = $tcData;
+        $this->fs->update('schools', $this->school_id, ['tcIndex' => $tcIndex]);
 
-        // Sync Students_Index (OPT 1)
-        $this->firebase->update(
-            "Schools/{$school_name}/SIS/Students_Index/{$userId}",
-            ['status' => 'TC']
-        );
-
-        // Remove from current session roster (mirrors withdraw_student behaviour)
-        $session    = $this->session_year;
-        $classOrd   = $student['Class']   ?? '';
-        $sectionLtr = $student['Section'] ?? '';
-        if (!empty($classOrd) && !empty($sectionLtr)) {
-            $rosterBase = "Schools/{$school_name}/{$session}/Class {$classOrd}/Section {$sectionLtr}/Students";
-            // Primary roster path
-            $this->firebase->delete("{$rosterBase}/List", $userId);
-            // Legacy flat path
-            $this->firebase->delete($rosterBase, $userId);
+        // ── FIX 2a: Remove from RTDB roster ──────────────────────────
+        $stuClass   = Firestore_service::classKey($student['Class'] ?? $student['className'] ?? '');
+        $stuSection = Firestore_service::sectionKey($student['Section'] ?? $student['section'] ?? '');
+        if ($stuClass && $stuSection) {
+            $this->dw->removeFromRoster($stuClass, $stuSection, $userId);
         }
 
-        // Write to TC index for O(1) listing (avoids full student scan in tc_list)
-        $this->firebase->set("Schools/{$school_name}/SIS/TC_Index/{$tcKey}", array_merge($tcData, [
-            'user_id' => $userId,
-            'tc_key'  => $tcKey,
-        ]));
+        // Firestore student doc already carries status=TC (see fs->updateEntity
+        // above). No RTDB mirror — Firestore is the source of truth.
 
-        // Log history
+        // ── Disable Firebase Auth (prevent login) ────────────────────
+        try {
+            $this->firebase->updateFirebaseUser($userId, ['disabled' => true]);
+        } catch (\Exception $e) {
+            log_message('error', "TC: disableFirebaseUser failed for {$userId}: " . $e->getMessage());
+        }
+
+        // Entity sync for Android apps
+        try {
+            $this->entity_sync->syncStudent($userId, [
+                'Name'    => $student['Name'] ?? $userId,
+                'Class'   => $stuClass,
+                'Section' => $stuSection,
+                'Status'  => 'TC',
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', "entity_sync syncStudent TC failed for {$userId}: " . $e->getMessage());
+        }
+
         $this->_log_history($school_id, $userId, 'TC_ISSUED',
             "Transfer Certificate issued (TC#{$tcNo}) — Reason: {$reason}",
             ['tc_no' => $tcNo, 'destination' => $destination]
@@ -1134,55 +1074,58 @@ class Sis extends MY_Controller
         $school_id   = $this->parent_db_key;
         $school_name = $this->school_name;
 
-        // Fetch student profile — retry once on failure (Firebase connectivity is intermittent)
-        $student = $this->firebase->get("Users/Parents/{$school_id}/{$userId}");
-        if ($student === null || $student === false) {
-            usleep(300000); // 300ms
-            $student = $this->firebase->get("Users/Parents/{$school_id}/{$userId}");
+        // Dues-based blocking — applied per the school's policy doc
+        // `feeSettings/{school}_{session}_blocking_policy.block_tc`.
+        // Admins can bypass with ?force_override=1 if the policy
+        // permits it. Runs BEFORE student fetch so we don't leak an
+        // unauthorised preview.
+        try {
+            $this->load->library('Fee_dues_check', null, 'duesCheck');
+            $this->duesCheck->init($this->firebase, $this->school_name, $this->session_year);
+            $override = (bool) $this->input->get('force_override');
+            $verdict  = $this->duesCheck->check($userId, 'tc', $override);
+            if ($verdict['blocked']) {
+                // Keep the HTML error (this is a printable page, not JSON).
+                $this->output->set_status_header(403);
+                echo '<!DOCTYPE html><html><head><title>TC Withheld</title><style>body{font:15px/1.5 system-ui;padding:60px;color:#334155;text-align:center;}h1{color:#dc2626;}a{color:#0f766e;}</style></head><body>'
+                   . '<h1>Transfer Certificate Withheld</h1>'
+                   . '<p>' . htmlspecialchars($verdict['message']) . '</p>'
+                   . '<p><a href="' . base_url('sis/tc_list') . '">← Back to TC list</a></p>'
+                   . '</body></html>';
+                return;
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'print_tc: dues check failed: ' . $e->getMessage());
         }
+
+        // Fetch student profile from Firestore
+        $student = $this->_getStudent($userId);
         if (empty($student)) {
-            log_message('error', "print_tc: student not found — school_id={$school_id} userId={$userId}");
-
-            // If Firebase is intermittently down, try reading TC data from the TC_Index as fallback
-            if ($tcKey) {
-                $indexTc = $this->firebase->get("Schools/{$school_name}/SIS/TC_Index/{$tcKey}");
-                if (!empty($indexTc) && is_array($indexTc)) {
-                    // Build minimal student data from the TC_Index entry
-                    $student = [
-                        'User Id' => $indexTc['user_id'] ?? $userId,
-                        'Name'    => $indexTc['student_name'] ?? $indexTc['name'] ?? $userId,
-                        'Class'   => $indexTc['class'] ?? '',
-                        'Section' => $indexTc['section'] ?? '',
-                    ];
-                    $tc = $indexTc;
-                }
-            }
-            if (empty($student)) show_404();
+            log_message('error', "print_tc: student not found — userId={$userId}");
+            show_404();
         }
 
-        if (!isset($tc)) {
-            $tc = null;
-            if ($tcKey) {
-                $tc = $this->firebase->get("Users/Parents/{$school_id}/{$userId}/TC/{$tcKey}");
-            }
-            // Fallback: get the active TC
-            if (empty($tc) && is_array($student['TC'] ?? null)) {
-                foreach ($student['TC'] as $k => $t) {
-                    if (is_array($t) && ($t['status'] ?? '') === 'active') {
-                        $tc = $t;
-                        break;
-                    }
+        $tc = null;
+        if ($tcKey && isset($student['TC'][$tcKey])) {
+            $tc = $student['TC'][$tcKey];
+        }
+        // Fallback: get the active TC
+        if (empty($tc) && is_array($student['TC'] ?? null)) {
+            foreach ($student['TC'] as $k => $t) {
+                if (is_array($t) && ($t['status'] ?? '') === 'active') {
+                    $tc = $t;
+                    break;
                 }
             }
         }
 
         if (empty($tc)) {
-            log_message('error', "print_tc: TC not found — school_id={$school_id} userId={$userId} tcKey={$tcKey}");
+            log_message('error', "print_tc: TC not found — userId={$userId} tcKey={$tcKey}");
             show_404();
         }
 
         // School profile for header
-        $schoolProfile = $this->firebase->get("System/Schools/{$school_name}/profile") ?? [];
+        $schoolProfile = $this->fs->get('schools', $this->school_id) ?? [];
 
         $data['student']       = $student;
         $data['tc']            = $tc;
@@ -1211,32 +1154,48 @@ class Sis extends MY_Controller
         if (!$this->safe_path_segment($userId)) return $this->json_error('Invalid User ID.');
         if (!$this->safe_path_segment($tcKey))  return $this->json_error('Invalid TC key.');
 
-        $cancelled = ['status' => 'cancelled', 'cancelled_at' => date('Y-m-d H:i:s')];
-        $this->firebase->update("Users/Parents/{$school_id}/{$userId}/TC/{$tcKey}", $cancelled);
+        // Cancel TC in student doc
+        $student = $this->_getStudent($userId);
+        $tcHistory = $student['TC'] ?? [];
+        if (isset($tcHistory[$tcKey])) {
+            $tcHistory[$tcKey]['status'] = 'cancelled';
+            $tcHistory[$tcKey]['cancelled_at'] = date('Y-m-d H:i:s');
+        }
+        $this->fs->updateEntity('students', $userId, [
+            'status' => 'Active',
+            'TC' => $tcHistory, 'updatedAt' => date('c'),
+        ]);
 
-        // Mirror cancellation to TC index
-        $this->firebase->update("Schools/{$school_name}/SIS/TC_Index/{$tcKey}", $cancelled);
+        // Update school's tcIndex
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $tcIdx = $schoolDoc['tcIndex'] ?? [];
+        if (isset($tcIdx[$tcKey])) {
+            $tcIdx[$tcKey]['status'] = 'cancelled';
+            $tcIdx[$tcKey]['cancelled_at'] = date('Y-m-d H:i:s');
+            $this->fs->update('schools', $this->school_id, ['tcIndex' => $tcIdx]);
+        }
 
-        $this->firebase->update("Users/Parents/{$school_id}/{$userId}", ['Status' => 'Active']);
+        // Re-add student to RTDB roster
+        $stuClass   = Firestore_service::classKey($student['Class'] ?? $student['className'] ?? '');
+        $stuSection = Firestore_service::sectionKey($student['Section'] ?? $student['section'] ?? '');
+        $stuName    = $student['Name'] ?? $student['name'] ?? $userId;
+        if ($stuClass && $stuSection) {
+            $this->dw->addToRoster($stuClass, $stuSection, $userId, $stuName);
+        }
 
-        // Sync Students_Index (OPT 1)
-        $this->firebase->update(
-            "Schools/{$school_name}/SIS/Students_Index/{$userId}",
-            ['status' => 'Active']
-        );
+        // Firestore student doc already carries status=Active (see updateEntity
+        // above). No RTDB mirror — Firestore is the source of truth.
 
-        // Re-add student to session roster (reverse of issue_tc roster removal)
-        $student = $this->firebase->get("Users/Parents/{$school_id}/{$userId}");
-        if (!empty($student) && is_array($student)) {
-            $classOrd   = $student['Class']   ?? '';
-            $sectionLtr = $student['Section'] ?? '';
-            $session    = $this->session_year;
-            if (!empty($classOrd) && !empty($sectionLtr)) {
-                $rosterBase = "Schools/{$school_name}/{$session}/Class {$classOrd}/Section {$sectionLtr}/Students";
-                $rosterName = $student['Name'] ?? $userId;
-                // Primary roster path — flat string value (consistent with all other roster writes)
-                $this->firebase->set("{$rosterBase}/List/{$userId}", $rosterName);
-            }
+        // Re-enable Firebase Auth
+        try { $this->firebase->updateFirebaseUser($userId, ['disabled' => false]); } catch (\Exception $e) {}
+
+        // Entity sync for Android apps
+        try {
+            $this->entity_sync->syncStudent($userId, [
+                'Name' => $stuName, 'Class' => $stuClass, 'Section' => $stuSection, 'Status' => 'Active',
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', "entity_sync cancel_tc failed for {$userId}: " . $e->getMessage());
         }
 
         $this->_log_history($school_id, $userId, 'TC_CANCELLED',
@@ -1270,12 +1229,12 @@ class Sis extends MY_Controller
         if (empty($userId)) return $this->json_error('User ID required.');
         if (!$this->safe_path_segment($userId)) return $this->json_error('Invalid User ID.');
 
-        $student = $this->firebase->get("Users/Parents/{$school_id}/{$userId}");
+        $student = $this->_getStudent($userId);
         if (empty($student) || !is_array($student)) {
             return $this->json_error('Student not found.');
         }
 
-        if (($student['Status'] ?? '') === 'Inactive') {
+        if (($student['status'] ?? $student['Status'] ?? '') === 'Inactive') {
             return $this->json_error('Student is already inactive.');
         }
 
@@ -1296,36 +1255,38 @@ class Sis extends MY_Controller
             }
         }
 
-        // Mark as Inactive
-        $this->firebase->update("Users/Parents/{$school_id}/{$userId}", ['Status' => 'Inactive']);
+        // ── FIX 2: Remove from RTDB roster ───────────────────────────
+        $stuClass   = Firestore_service::classKey($student['Class'] ?? $student['className'] ?? '');
+        $stuSection = Firestore_service::sectionKey($student['Section'] ?? $student['section'] ?? '');
+        if ($stuClass && $stuSection) {
+            $this->dw->removeFromRoster($stuClass, $stuSection, $userId);
+        }
+
+        // Mark as Inactive in Firestore (source of truth — no RTDB mirror).
+        $this->fs->updateEntity('students', $userId, ['status' => 'Inactive', 'updatedAt' => date('c')]);
+
+        // Entity sync for Android apps
+        try {
+            $this->entity_sync->syncStudent($userId, [
+                'Name'    => $student['Name'] ?? $student['name'] ?? $userId,
+                'Class'   => $stuClass,
+                'Section' => $stuSection,
+                'Status'  => 'Inactive',
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', "entity_sync syncStudent failed for {$userId}: " . $e->getMessage());
+        }
 
         // Freeze fee records for withdrawn student
         try {
             $this->feeLifecycle->freezeFeesOnSoftDelete($userId);
-            log_message('info', "Fee_lifecycle: froze fees for withdrawn student {$userId}");
         } catch (Exception $e) {
             log_message('error', "Fee_lifecycle::freezeFeesOnSoftDelete failed for {$userId}: " . $e->getMessage());
         }
 
-        // Sync Students_Index (OPT 1)
-        $this->firebase->update(
-            "Schools/{$school_name}/SIS/Students_Index/{$userId}",
-            ['status' => 'Inactive']
-        );
-
-        // Remove from current session roster
-        $classOrd   = $student['Class']   ?? '';
-        $sectionLtr = $student['Section'] ?? '';
-        if (!empty($classOrd) && !empty($sectionLtr)) {
-            $this->firebase->delete(
-                "Schools/{$school_name}/{$session}/Class {$classOrd}/Section {$sectionLtr}/Students/List",
-                $userId
-            );
-        }
-
         $this->_log_history($school_id, $userId, 'WITHDRAWAL',
             "Student withdrawn: {$reason}",
-            ['reason' => $reason, 'session' => $session, 'class' => $classOrd, 'section' => $sectionLtr]
+            ['reason' => $reason, 'session' => $session, 'class' => $stuClass, 'section' => $stuSection]
         );
 
         return $this->json_success(['message' => 'Student withdrawn and marked Inactive.']);
@@ -1352,20 +1313,22 @@ class Sis extends MY_Controller
             return $this->json_error('Status must be Active or Inactive.');
         }
 
-        $student = $this->firebase->get("Users/Parents/{$school_id}/{$userId}");
+        $student = $this->_getStudent($userId);
         if (empty($student)) return $this->json_error('Student not found.');
 
-        $this->firebase->update("Users/Parents/{$school_id}/{$userId}", ['Status' => $newStatus]);
-
-        // Sync Students_Index (OPT 1)
-        $this->firebase->update(
-            "Schools/{$this->school_name}/SIS/Students_Index/{$userId}",
-            ['status' => $newStatus]
-        );
+        // Phase 1 (2026-04-08): write camelCase only. The legacy `Status`
+        // (capital S) duplicate caused case-sensitivity collisions in the
+        // Teacher app's StudentDoc Kotlin class — see
+        // memory/firestore_class_section_canonical.md for the full story.
+        $this->fs->updateEntity('students', $userId, ['status' => $newStatus, 'updatedAt' => date('c')]);
 
         $this->_log_history($school_id, $userId, 'STATUS_CHANGE',
             "Status changed to {$newStatus}", ['status' => $newStatus]
         );
+
+        // Firestore sync for Android apps (entity_sync loaded in constructor)
+        $this->entity_sync->syncStudent($userId, ['Status' => $newStatus]);
+        $this->entity_sync->syncParent($userId, ['Status' => $newStatus]);
 
         return $this->json_success(['message' => "Status updated to {$newStatus}."]);
     }
@@ -1380,7 +1343,7 @@ class Sis extends MY_Controller
         if (empty($userId) || !$this->safe_path_segment($userId)) show_404();
 
         $school_id = $this->parent_db_key;
-        $student   = $this->firebase->get("Users/Parents/{$school_id}/{$userId}");
+        $student = $this->_getStudent($userId);
         if (empty($student)) show_404();
 
         $data['student'] = $student;
@@ -1449,11 +1412,10 @@ class Sis extends MY_Controller
                 $thumbUrl = $url;
             }
 
-            $this->firebase->update(
-                "Users/Parents/{$school_id}/{$userId}/Doc",
-                [$docLabel => ['url' => $url, 'thumbnail' => $thumbUrl,
-                               'uploaded_at' => date('Y-m-d H:i:s')]]
-            );
+            // Firestore-only per no-RTDB policy.
+            $this->fs->updateEntity('students', $userId, [
+                "doc.{$docLabel}" => ['url' => $url, 'thumbnail' => $thumbUrl, 'uploaded_at' => date('Y-m-d H:i:s')]
+            ]);
 
             $this->_log_history($school_id, $userId, 'DOCUMENT_UPLOAD',
                 "Document uploaded: {$docLabel}", ['doc_label' => $docLabel]
@@ -1484,7 +1446,14 @@ class Sis extends MY_Controller
         }
         if (!$this->safe_path_segment($userId)) return $this->json_error('Invalid User ID.');
 
-        $this->firebase->delete("Users/Parents/{$school_id}/{$userId}/Doc", $docLabel);
+        // Remove document entry from student's documents map.
+        // Phase 1 (2026-04-08): canonical key is `documents` (camelCase). The
+        // legacy capitalised `Doc` key was the second leak alongside `Status`
+        // — see memory/firestore_class_section_canonical.md.
+        $studentDoc = $this->_getStudent($userId);
+        $docMap = $studentDoc['documents'] ?? $studentDoc['Doc'] ?? [];
+        unset($docMap[$docLabel]);
+        $this->fs->updateEntity('students', $userId, ['documents' => $docMap]);
 
         $this->_log_history($school_id, $userId, 'DOCUMENT_DELETE',
             "Document deleted: {$docLabel}", ['doc_label' => $docLabel]
@@ -1503,10 +1472,12 @@ class Sis extends MY_Controller
         if (empty($userId) || !$this->safe_path_segment($userId)) show_404();
 
         $school_id = $this->parent_db_key;
-        $student   = $this->firebase->get("Users/Parents/{$school_id}/{$userId}");
+        // Firestore-first read, RTDB fallback
+        $student = $this->_getStudent($userId);
         if (empty($student)) show_404();
 
-        $history = $this->firebase->get("Users/Parents/{$school_id}/{$userId}/History") ?? [];
+        $studentDoc = $this->_getStudent($userId);
+        $history = $studentDoc['History'] ?? [];
         if (!is_array($history)) $history = [];
 
         uasort($history, fn($a, $b) =>
@@ -1532,30 +1503,21 @@ class Sis extends MY_Controller
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
 
-        $allStudents = $this->CM->select_data('Users/Parents/' . $school_id);
-        if (!is_array($allStudents)) $allStudents = [];
-        foreach (['Count', 'TC Students', ''] as $k) unset($allStudents[$k]);
-        $allStudents = array_filter($allStudents, function ($s) {
-            return is_array($s) && !empty($s['User Id']);
-        });
-
-        $enrolledIds = [];
-        if (!empty($school_name)) {
-            $sessionClassKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session_year}");
-            if (!is_array($sessionClassKeys)) $sessionClassKeys = [];
-            foreach ($sessionClassKeys as $classKey) {
-                if (strpos($classKey, 'Class ') !== 0) continue;
-                $sectionKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session_year}/{$classKey}");
-                if (!is_array($sectionKeys)) continue;
-                foreach ($sectionKeys as $sectionKey) {
-                    if (strpos($sectionKey, 'Section ') !== 0) continue;
-                    $list = $this->CM->select_data("Schools/{$school_name}/{$session_year}/{$classKey}/{$sectionKey}/Students/List");
-                    if (is_array($list)) {
-                        foreach (array_keys($list) as $sid) $enrolledIds[$sid] = true;
-                    }
-                }
-            }
+        $allStudentDocs = $this->fs->schoolWhere('students', [['status', '==', 'Active']], 'name', 'ASC');
+        if (empty($allStudentDocs)) {
+            $allStudentDocs = $this->fs->schoolWhere('students', [['Status', '==', 'Active']], 'Name', 'ASC');
         }
+        $allStudents = [];
+        foreach ($allStudentDocs as $doc) {
+            $s = $this->_normalizeStudentDoc($doc['data']);
+            if (!$s) continue;
+            $uid = $s['User Id'] ?? $s['studentId'] ?? $doc['id'];
+            $s['User Id'] = $uid;
+            $allStudents[$uid] = $s;
+        }
+
+        // Enrolled IDs from Firestore
+        $enrolledIds = $this->_get_enrolled_ids();
 
         $students = array_values(array_filter($allStudents, function ($s) use ($enrolledIds) {
             return isset($enrolledIds[$s['User Id']]);
@@ -1570,16 +1532,16 @@ class Sis extends MY_Controller
         });
 
         // Fetch school profile for display
-        $profile = $this->firebase->get("Schools/{$school_name}/Config/Profile");
-        if (!is_array($profile)) $profile = [];
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $profile = is_array($schoolDoc) ? $schoolDoc : [];
 
         $data['students']       = $students;
         $data['session_year']   = $session_year;
         $data['school_name']    = $school_name;
         $data['school_profile'] = [
-            'school_name' => $profile['display_name'] ?? $this->school_display_name,
-            'address'     => $profile['address'] ?? '',
-            'logo'        => $profile['logo'] ?? '',
+            'school_name' => $profile['name'] ?? $profile['display_name'] ?? $this->school_display_name ?? '',
+            'address'     => $profile['address'] ?? $profile['city'] ?? '',
+            'logo'        => $profile['logoUrl'] ?? $profile['logo_url'] ?? $profile['logo'] ?? '',
             'phone'       => $profile['phone'] ?? '',
         ];
 
@@ -1596,30 +1558,13 @@ class Sis extends MY_Controller
     public function rebuild_index()
     {
         $this->_require_role(self::MANAGE_ROLES, 'sis_rebuild_index');
-        $school_id   = $this->parent_db_key;
-        $school_name = $this->school_name;
 
-        $allStudents = $this->firebase->get("Users/Parents/{$school_id}") ?? [];
-        if (!is_array($allStudents)) $allStudents = [];
-        foreach (['Count', 'TC Students', ''] as $k) unset($allStudents[$k]);
-
-        $index = [];
-        foreach ($allStudents as $uid => $s) {
-            if (!is_array($s) || empty($s['User Id'])) continue;
-            $index[$uid] = [
-                'name'    => $s['Name']    ?? '',
-                'class'   => $s['Class']   ?? '',
-                'section' => $s['Section'] ?? '',
-                'status'  => $s['Status']  ?? 'Active',
-                'gender'  => $s['Gender']  ?? '',
-            ];
-        }
-
-        $this->firebase->set("Schools/{$school_name}/SIS/Students_Index", $index);
+        // In Firestore, the students collection IS the index — no separate index needed.
+        $count = $this->fs->count('students', [['schoolId', '==', $this->school_id]]);
 
         return $this->json_success([
-            'message' => 'Students_Index rebuilt.',
-            'count'   => count($index),
+            'message' => 'Students index is the Firestore students collection. No rebuild needed.',
+            'count'   => $count,
         ]);
     }
 
@@ -1643,24 +1588,33 @@ class Sis extends MY_Controller
         $page        = max(1, (int)($this->input->post('page') ?? 1));
         $perPage     = 30;
 
-        // OPT 1: Read lightweight index instead of full Users/Parents tree
-        $index = $this->firebase->get("Schools/{$school_name}/SIS/Students_Index") ?? [];
-        if (!is_array($index)) $index = [];
-
-        // Auto-build index if empty
-        if (empty($index)) {
-            $index = $this->_build_index_from_parents($school_id, $school_name);
+        // Read from Firestore students collection
+        $studentList = $this->fs->schoolList('students');
+        $index = [];
+        foreach ($studentList as $s) {
+            $uid = $s['studentId'] ?? $s['User Id'] ?? $s['userId'] ?? '';
+            if ($uid === '') continue;
+            $index[$uid] = [
+                'name'    => $s['name'] ?? $s['Name'] ?? '',
+                'class'   => $s['className'] ?? $s['Class'] ?? '',
+                'section' => $s['section'] ?? $s['Section'] ?? '',
+                'status'  => $s['status'] ?? $s['Status'] ?? 'Active',
+                'gender'  => $s['gender'] ?? $s['Gender'] ?? '',
+            ];
         }
 
         $enrolledIds = $this->_get_enrolled_ids();
 
         // Filter using index fields (name, class, section, status) + userId
+        // Dropdown sends stripped values ("8th", "A") but index has prefixed ("Class 8th", "Section A")
         $filtered = [];
         foreach ($index as $uid => $entry) {
             if (!is_array($entry)) continue;
             if (!isset($enrolledIds[$uid])) continue;
-            if ($classFilter && ($entry['class'] ?? '') !== $classFilter) continue;
-            if ($secFilter   && ($entry['section'] ?? '') !== $secFilter) continue;
+            $entryClass = str_replace('Class ', '', $entry['class'] ?? '');
+            $entrySec   = str_replace('Section ', '', $entry['section'] ?? '');
+            if ($classFilter && $entryClass !== $classFilter) continue;
+            if ($secFilter   && $entrySec   !== $secFilter) continue;
             if ($filterGender !== '' && strcasecmp($entry['gender'] ?? '', $filterGender) !== 0) continue;
             if ($query) {
                 $haystack = strtolower(($entry['name'] ?? '') . ' ' . $uid);
@@ -1683,29 +1637,28 @@ class Sis extends MY_Controller
         $results = [];
         foreach ($pagedKeys as $uid) {
             $entry   = $filtered[$uid];
-            $profile = $this->firebase->get("Users/Parents/{$school_id}/{$uid}");
+            $profile = $this->_getStudent($uid);
 
-            $photo = '';
-            if (is_array($profile)) {
-                if (!empty($profile['Profile Pic']) && is_string($profile['Profile Pic'])) {
-                    $photo = $profile['Profile Pic'];
-                } elseif (!empty($profile['Doc']['Photo'])) {
-                    $p = $profile['Doc']['Photo'];
-                    $photo = is_array($p) ? ($p['url'] ?? '') : (string)$p;
-                }
+            $p = is_array($profile) ? $profile : [];
+
+            // Photo: check all possible field names
+            $photo = $p['Profile Pic'] ?? $p['profilePic'] ?? $p['profile_pic'] ?? '';
+            if ($photo === '' && !empty($p['Doc']['Photo'])) {
+                $dp = $p['Doc']['Photo'];
+                $photo = is_array($dp) ? ($dp['url'] ?? '') : (string)$dp;
             }
 
             $results[] = [
                 'user_id'        => $uid,
-                'name'           => $entry['name'] ?? '',
-                'father_name'    => is_array($profile) ? ($profile['Father Name'] ?? '') : '',
-                'class'          => $entry['class'] ?? '',
-                'section'        => $entry['section'] ?? '',
-                'phone'          => is_array($profile) ? ($profile['Phone Number'] ?? '') : '',
-                'gender'         => is_array($profile) ? ($profile['Gender'] ?? '') : '',
-                'admission_date' => is_array($profile) ? ($profile['Admission Date'] ?? '') : '',
-                'dob'            => is_array($profile) ? ($profile['DOB'] ?? '') : '',
-                'status'         => $entry['status'] ?? 'Active',
+                'name'           => $entry['name'] ?? $p['name'] ?? $p['Name'] ?? '',
+                'father_name'    => $p['Father Name'] ?? $p['fatherName'] ?? $p['father_name'] ?? '',
+                'class'          => str_replace('Class ', '', $entry['class'] ?? $p['className'] ?? $p['Class'] ?? ''),
+                'section'        => str_replace('Section ', '', $entry['section'] ?? $p['section'] ?? $p['Section'] ?? ''),
+                'phone'          => $p['Phone Number'] ?? $p['phone'] ?? $p['Phone'] ?? '',
+                'gender'         => $entry['gender'] ?? $p['Gender'] ?? $p['gender'] ?? '',
+                'admission_date' => $p['Admission Date'] ?? $p['admissionDate'] ?? $p['admission_date'] ?? '',
+                'dob'            => $p['DOB'] ?? $p['dob'] ?? '',
+                'status'         => $entry['status'] ?? $p['status'] ?? $p['Status'] ?? 'Active',
                 'photo'          => $photo,
             ];
         }
@@ -1731,7 +1684,8 @@ class Sis extends MY_Controller
         if (empty($userId)) return $this->json_error('User ID required.');
         if (!$this->safe_path_segment($userId)) return $this->json_error('Invalid User ID.');
 
-        $student = $this->firebase->get("Users/Parents/{$school_id}/{$userId}");
+        // Firestore-first read, RTDB fallback
+        $student = $this->_getStudent($userId);
         if (empty($student)) return $this->json_error('Student not found.');
 
         return $this->json_success(['student' => $student]);
@@ -1740,45 +1694,19 @@ class Sis extends MY_Controller
     public function get_classes()
     {
         $this->_require_role(self::VIEW_ROLES, 'sis_get_classes');
-        $school_name = $this->school_name;
-        $session     = $this->session_year;
-
-        $classKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session}");
-        $classes   = [];
-        if (is_array($classKeys)) {
-            foreach ($classKeys as $k) {
-                if (strpos($k, 'Class ') === 0) {
-                    $classes[] = str_replace('Class ', '', $k);
-                }
-            }
-        }
-
-        return $this->json_success(['classes' => $classes]);
+        $classMap = $this->_fs_class_map();
+        return $this->json_success(['classes' => array_keys($classMap)]);
     }
 
     public function get_sections()
     {
         $this->_require_role(self::VIEW_ROLES, 'sis_get_sections');
-        $school_name = $this->school_name;
-        $session     = $this->session_year;
-        $classOrd    = trim($this->input->get('class') ?? $this->input->post('class') ?? '');
+        $classOrd = trim($this->input->get('class') ?? $this->input->post('class') ?? '');
 
         if (empty($classOrd)) return $this->json_error('Class required.');
-        if (!$this->safe_path_segment($classOrd)) return $this->json_error('Invalid class value.');
 
-        $classKey    = "Class {$classOrd}";
-        $sectionKeys = $this->firebase->shallow_get(
-            "Schools/{$school_name}/{$session}/{$classKey}"
-        );
-
-        $sections = [];
-        if (is_array($sectionKeys)) {
-            foreach ($sectionKeys as $sk) {
-                if (strpos($sk, 'Section ') === 0) {
-                    $sections[] = str_replace('Section ', '', $sk);
-                }
-            }
-        }
+        $classMap = $this->_fs_class_map();
+        $sections = $classMap[$classOrd] ?? [];
 
         return $this->json_success(['sections' => $sections]);
     }
@@ -1793,27 +1721,20 @@ class Sis extends MY_Controller
      */
     private function _build_index_from_parents(string $school_id, string $school_name): array
     {
-        $allStudents = $this->firebase->get("Users/Parents/{$school_id}") ?? [];
-        if (!is_array($allStudents)) return [];
-        foreach (['Count', 'TC Students', ''] as $k) unset($allStudents[$k]);
-
+        // In Firestore, students collection IS the index
+        $studentList = $this->fs->schoolList('students');
         $index = [];
-        foreach ($allStudents as $uid => $s) {
-            if (!is_array($s) || empty($s['User Id'])) continue;
+        foreach ($studentList as $s) {
+            $uid = $s['studentId'] ?? $s['User Id'] ?? $s['userId'] ?? '';
+            if ($uid === '') continue;
             $index[$uid] = [
-                'name'    => $s['Name']    ?? '',
-                'class'   => $s['Class']   ?? '',
-                'section' => $s['Section'] ?? '',
-                'status'  => $s['Status']  ?? 'Active',
-                'gender'  => $s['Gender']  ?? '',
+                'name'    => $s['name'] ?? $s['Name'] ?? '',
+                'class'   => $s['className'] ?? $s['Class'] ?? '',
+                'section' => $s['section'] ?? $s['Section'] ?? '',
+                'status'  => $s['status'] ?? $s['Status'] ?? 'Active',
+                'gender'  => $s['gender'] ?? $s['Gender'] ?? '',
             ];
         }
-
-        // Persist so subsequent requests use the fast index path
-        if (!empty($index)) {
-            $this->firebase->set("Schools/{$school_name}/SIS/Students_Index", $index);
-        }
-
         return $index;
     }
 
@@ -1903,13 +1824,112 @@ class Sis extends MY_Controller
         string $status,
         string $gender = ''
     ): void {
-        $this->firebase->set("Schools/{$schoolName}/SIS/Students_Index/{$userId}", [
-            'name'    => $name,
-            'class'   => $class,
-            'section' => $section,
-            'status'  => $status,
-            'gender'  => $gender,
-        ]);
+        // No-op: Students_Index is no longer needed — data lives in students collection
+    }
+
+    /**
+     * Read a student from Firestore and normalize field names.
+     * Single read — no duplicates.
+     */
+    private function _getStudent(string $userId): ?array
+    {
+        $doc = $this->fs->getEntity('students', $userId);
+        return $this->_normalizeStudentDoc($doc);
+    }
+
+    /**
+     * Normalize a Firestore student doc to include both Title Case (RTDB legacy)
+     * and camelCase (Firestore native) field names.
+     *
+     * The controller and views historically used Title Case keys ('Name', 'Father Name',
+     * 'Phone Number', 'Class', etc.) from RTDB. Firestore docs use camelCase
+     * ('name', 'fatherName', 'phone', 'className', etc.).
+     *
+     * This method ensures both conventions exist so all downstream code works
+     * regardless of which format the source document used.
+     */
+    private function _normalizeStudentDoc(?array $doc): ?array
+    {
+        if (!is_array($doc) || empty($doc)) return $doc;
+
+        // Map: camelCase → Title Case (only set if missing)
+        $camelToTitle = [
+            'name'             => 'Name',
+            'fatherName'       => 'Father Name',
+            'motherName'       => 'Mother Name',
+            'phone'            => 'Phone Number',
+            'phoneNumber'      => 'Phone Number',
+            'email'            => 'Email',
+            'className'        => 'Class',
+            'section'          => 'Section',
+            'rollNo'           => 'Roll No',
+            'gender'           => 'Gender',
+            'dob'              => 'DOB',
+            'admissionDate'    => 'Admission Date',
+            'status'           => 'Status',
+            'profilePic'       => 'Profile Pic',
+            'studentId'        => 'User Id',
+            'bloodGroup'       => 'Blood Group',
+            'category'         => 'Category',
+            'religion'         => 'Religion',
+            'nationality'      => 'Nationality',
+            'fatherOccupation' => 'Father Occupation',
+            'motherOccupation' => 'Mother Occupation',
+            'guardContact'     => 'Guard Contact',
+            'guardRelation'    => 'Guard Relation',
+            'preClass'         => 'Pre Class',
+            'preSchool'        => 'Pre School',
+            'preMarks'         => 'Pre Marks',
+            'address'          => 'Address',
+            'documents'        => 'Doc',
+        ];
+
+        // Map: Title Case → camelCase
+        $titleToCamel = [
+            'Name'              => 'name',
+            'Father Name'       => 'fatherName',
+            'Mother Name'       => 'motherName',
+            'Phone Number'      => 'phone',
+            'Email'             => 'email',
+            'Class'             => 'className',
+            'Section'           => 'section',
+            'Roll No'           => 'rollNo',
+            'Gender'            => 'gender',
+            'DOB'               => 'dob',
+            'Admission Date'    => 'admissionDate',
+            'Status'            => 'status',
+            'Profile Pic'       => 'profilePic',
+            'User Id'           => 'studentId',
+            'Blood Group'       => 'bloodGroup',
+            'Category'          => 'category',
+            'Religion'          => 'religion',
+            'Nationality'       => 'nationality',
+            'Father Occupation' => 'fatherOccupation',
+            'Mother Occupation' => 'motherOccupation',
+            'Guard Contact'     => 'guardContact',
+            'Guard Relation'    => 'guardRelation',
+            'Pre Class'         => 'preClass',
+            'Pre School'        => 'preSchool',
+            'Pre Marks'         => 'preMarks',
+            'Address'           => 'address',
+            'Doc'               => 'documents',
+        ];
+
+        // Fill missing Title Case from camelCase
+        foreach ($camelToTitle as $camel => $title) {
+            if (!isset($doc[$title]) && isset($doc[$camel])) {
+                $doc[$title] = $doc[$camel];
+            }
+        }
+
+        // Fill missing camelCase from Title Case
+        foreach ($titleToCamel as $title => $camel) {
+            if (!isset($doc[$camel]) && isset($doc[$title])) {
+                $doc[$camel] = $doc[$title];
+            }
+        }
+
+        return $doc;
     }
 
     /**
@@ -1930,7 +1950,12 @@ class Sis extends MY_Controller
             'changed_at'  => date('Y-m-d H:i:s'),
             'metadata'    => $metadata,
         ];
-        $this->firebase->push("Users/Parents/{$schoolId}/{$userId}/History", $entry);
+        // Append history to student doc
+        $student = $this->_getStudent($userId);
+        $history = $student['History'] ?? [];
+        $histKey = date('YmdHis') . '_' . bin2hex(random_bytes(3));
+        $history[$histKey] = $entry;
+        $this->fs->updateEntity('students', $userId, ['History' => $history]);
     }
 
     /**
@@ -1940,14 +1965,14 @@ class Sis extends MY_Controller
      */
     private function _peekNextStudentId(string $schoolId): string
     {
+        // Read counter directly from RTDB (faster, no OAuth token refresh needed)
         try {
-            $this->load->library('auth_client');
-            $id = $this->auth_client->generate_id('STU_PEEK');
-            if ($id) return $id;
+            // Firestore-only counter peek. Read from the Firestore system counter.
+            $counter = $this->fs->getCounter('STU');
+            return 'STU' . str_pad($counter + 1, 4, '0', STR_PAD_LEFT);
         } catch (Exception $e) {
-            log_message('error', 'peekNextStudentId Auth API failed: ' . $e->getMessage());
+            log_message('error', 'peekNextStudentId failed: ' . $e->getMessage());
         }
-        // Fallback: show placeholder if Auth API is down
         return 'STU****';
     }
 
@@ -1959,11 +1984,11 @@ class Sis extends MY_Controller
     private function _nextStudentId(string $schoolId): ?string
     {
         try {
-            $this->load->library('auth_client');
-            $userId = $this->auth_client->generate_id('STU');
+            $this->load->library('id_generator');
+            $userId = $this->id_generator->generate('STU');
             if ($userId) return $userId;
         } catch (Exception $e) {
-            log_message('error', 'nextStudentId Auth API failed: ' . $e->getMessage());
+            log_message('error', 'nextStudentId failed: ' . $e->getMessage());
         }
         return null;
     }
@@ -1974,12 +1999,12 @@ class Sis extends MY_Controller
      */
     private function _get_tc_number(string $schoolName): string
     {
-        $counterPath = "Schools/{$schoolName}/SIS/TC_Counter";
-        $current     = (int)($this->firebase->get($counterPath) ?? 0);
-        $next        = $current + 1;
-        $this->firebase->set($counterPath, $next);
-        $year   = date('Y');
-        $code   = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', substr($schoolName, 0, 6)));
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
+        $current = (int) ($schoolDoc['tcCounter'] ?? 0);
+        $next = $current + 1;
+        $this->fs->update('schools', $this->school_id, ['tcCounter' => $next]);
+        $year = date('Y');
+        $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', substr($schoolName, 0, 6)));
         return "TC-{$code}-{$year}-" . str_pad($next, 4, '0', STR_PAD_LEFT);
     }
 
@@ -2017,32 +2042,32 @@ class Sis extends MY_Controller
 
         $school_name = $this->school_name;
         $session     = $this->session_year;
-        $classOrd    = trim($student['Class']   ?? '');
-        $sectionLtr  = trim($student['Section'] ?? '');
+        // Accept both Title Case (legacy admission doc) and camelCase (Firestore
+        // canonical from Entity_firestore_sync::syncStudent). Without the
+        // fallback a student doc that only carries `className`/`section`
+        // would short-circuit the dues check and silently allow a TC
+        // through when the primary clearance service is unavailable.
+        $classOrd    = trim($student['Class']   ?? $student['className'] ?? '');
+        $sectionLtr  = trim($student['Section'] ?? $student['section']   ?? '');
 
         $result = ['has_dues' => false, 'total_due' => 0, 'unpaid_months' => [], 'summary' => ''];
 
         if ($classOrd === '' || $sectionLtr === '') return $result;
 
-        // FIXED: use $sectionLtr directly (consistent with Fees.php and other SIS methods)
-        $classKey    = "Class {$classOrd}";
-        $sectionKey  = "Section {$sectionLtr}";
+        // FIXED: use Firestore_service helpers (idempotent — safe if already prefixed)
+        $classKey    = Firestore_service::classKey($classOrd);
+        $sectionKey  = Firestore_service::sectionKey($sectionLtr);
 
-        // Read the student's month-wise payment status
-        $studentFees = $this->firebase->get(
-            "Schools/{$school_name}/{$session}/{$classKey}/{$sectionKey}/Students/{$userId}/Month Fee"
-        );
+        // Read student's month-wise payment status from student doc
+        $studentDoc = $this->_getStudent($userId);
+        $studentFees = $studentDoc['monthFee'] ?? $studentDoc['Month Fee'] ?? [];
         if (!is_array($studentFees)) $studentFees = [];
 
-        // Read the class fee structure to calculate amounts
-        $classFees = $this->firebase->get(
-            "Schools/{$school_name}/{$session}/Accounts/Fees/Classes Fees/{$classKey}/{$sectionKey}"
-        );
-        if (!is_array($classFees)) {
-            // FIXED: no fee chart configured yet — count unpaid months but can't calculate amount
-            log_message('debug', "_check_outstanding_dues: no fee chart for {$classKey}/{$sectionKey}, userId={$userId}");
-            $classFees = [];
-        }
+        // Read class fee structure from Firestore (docId includes session)
+        $feeDocId = $this->fs->sectionDocId($classOrd, $sectionLtr);
+        $feeStructDoc = $this->fs->get('feeStructures', $feeDocId);
+        $classFees = $feeStructDoc['heads'] ?? $feeStructDoc ?? [];
+        if (!is_array($classFees)) $classFees = [];
 
         $months = [
             'April','May','June','July','August','September',
@@ -2110,38 +2135,33 @@ class Sis extends MY_Controller
      */
     private function _get_enrolled_ids(): array
     {
-        $school_name = $this->school_name;
-        $session     = $this->session_year;
-        $enrolledIds = [];
+        // Get all active students for this school.
+        // Supports both field naming conventions:
+        //   - 'status' (camelCase, new docs)
+        //   - 'Status' (Title Case, legacy docs)
+        //   - 'session' (single string) or 'sessions' (array)
+        $studentDocs = $this->fs->schoolWhere('students', [['status', '==', 'Active']]);
 
-        $sessionRoot = $this->firebase->get("Schools/{$school_name}/{$session}");
-        if (!is_array($sessionRoot)) return $enrolledIds;
-
-        foreach ($sessionRoot as $classKey => $classData) {
-            if (strpos($classKey, 'Class ') !== 0 || !is_array($classData)) continue;
-            foreach ($classData as $sectionKey => $sectionData) {
-                if (strpos($sectionKey, 'Section ') !== 0 || !is_array($sectionData)) continue;
-                $studentsNode = $sectionData['Students'] ?? [];
-                if (!is_array($studentsNode)) continue;
-
-                // New format: Students/List/{userId} = "Name"
-                $list = $studentsNode['List'] ?? [];
-                if (is_array($list) && !empty($list)) {
-                    foreach (array_keys($list) as $sid) {
-                        if (is_string($sid) && $sid !== '' && $sid !== 'Count') {
-                            $enrolledIds[$sid] = true;
-                        }
-                    }
-                } else {
-                    // Legacy format: Students/{userId} = {Name: "..."}
-                    foreach ($studentsNode as $sid => $data) {
-                        if (!is_string($sid) || $sid === '' || $sid === 'List' || $sid === 'Count') continue;
-                        $enrolledIds[$sid] = true;
-                    }
-                }
-            }
+        // Fallback: if no results with camelCase, try Title Case
+        if (empty($studentDocs)) {
+            $studentDocs = $this->fs->schoolWhere('students', [['Status', '==', 'Active']]);
         }
 
+        $enrolledIds = [];
+        $currentSession = $this->session_year;
+        foreach ($studentDocs as $doc) {
+            $d   = $doc['data'];
+            $uid = $d['studentId'] ?? $d['User Id'] ?? $d['userId'] ?? $doc['id'];
+
+            // Check session enrollment: support both string and array format
+            $sessions = $d['sessions'] ?? null;
+            $session  = $d['session']  ?? null;
+
+            if (is_array($sessions) && !in_array($currentSession, $sessions, true)) continue;
+            if (!is_array($sessions) && is_string($session) && $session !== '' && $session !== $currentSession) continue;
+
+            $enrolledIds[$uid] = true;
+        }
         return $enrolledIds;
     }
 
@@ -2154,88 +2174,33 @@ class Sis extends MY_Controller
         string $section,
         string $session
     ): array {
-        $school_id   = $this->parent_db_key;
-        $school_name = $this->school_name;
-        $classKey    = "Class {$classOrd}";
-        $students    = [];
-
+        $classKey = Firestore_service::classKey($classOrd);
+        // Scope by session too — without this, bulk operations pull students
+        // whose record still references the queried class but whose session
+        // has already moved on (e.g. pending-rollback cases, Alumni with
+        // stale className).
+        $conditions = [
+            ['className', '==', $classKey],
+            ['status',    '==', 'Active'],
+            ['session',   '==', $session],
+        ];
         if ($section && $section !== 'all') {
-            $students = $this->_fetch_section_students(
-                $school_name, $session, $classKey, "Section {$section}", $classOrd, $section
-            );
-        } else {
-            // All sections in this class
-            $sectionKeys = $this->firebase->shallow_get(
-                "Schools/{$school_name}/{$session}/{$classKey}"
-            );
-            if (is_array($sectionKeys)) {
-                foreach ($sectionKeys as $sk) {
-                    if (strpos($sk, 'Section ') !== 0) continue;
-                    $sec = str_replace('Section ', '', $sk);
-                    $sectionStudents = $this->_fetch_section_students(
-                        $school_name, $session, $classKey, $sk, $classOrd, $sec
-                    );
-                    $students += $sectionStudents;
-                }
-            }
+            $sectionKey = Firestore_service::sectionKey($section);
+            $conditions[] = ['section', '==', $sectionKey];
         }
+        $studentDocs = $this->fs->schoolWhere('students', $conditions, 'name', 'ASC');
 
-        return $students;
-    }
-
-    /**
-     * Fetch students from a specific section.
-     * Checks Students/List first (new format: {userId: "Name"}).
-     * Falls back to Students/ root (legacy format: {userId: {Name: "..."}}).
-     */
-    private function _fetch_section_students(
-        string $school_name, string $session, string $classKey,
-        string $sectionKey, string $classOrd, string $section
-    ): array {
         $students = [];
-        $basePath = "Schools/{$school_name}/{$session}/{$classKey}/{$sectionKey}/Students";
-
-        // Try new format first: Students/List/{userId} = "Name"
-        $list = $this->firebase->get("{$basePath}/List");
-        if (is_array($list) && !empty($list)) {
-            foreach ($list as $uid => $name) {
-                if (!is_string($uid) || $uid === '' || $uid === 'Count') continue;
-                $students[$uid] = [
-                    'user_id' => $uid,
-                    'name'    => is_string($name) ? $name : ($name['Name'] ?? $uid),
-                    'class'   => $classOrd,
-                    'section' => $section,
-                ];
-            }
-            return $students;
+        foreach ($studentDocs as $doc) {
+            $s = $doc['data'];
+            $uid = $s['studentId'] ?? $s['User Id'] ?? $doc['id'];
+            $students[$uid] = [
+                'user_id' => $uid,
+                'name'    => $s['name'] ?? $s['Name'] ?? $uid,
+                'class'   => $s['className'] ?? $s['Class'] ?? $classOrd,
+                'section' => $s['section'] ?? $s['Section'] ?? $section,
+            ];
         }
-
-        // Fallback: legacy format — Students/{userId} = {Name: "...", ...}
-        $allStudentData = $this->firebase->get($basePath);
-        if (is_array($allStudentData)) {
-            foreach ($allStudentData as $uid => $data) {
-                // Skip non-student keys
-                if (!is_string($uid) || $uid === '' || $uid === 'List' || $uid === 'Count') continue;
-                if (is_array($data)) {
-                    $name = $data['Name'] ?? $data['name'] ?? $uid;
-                    $students[$uid] = [
-                        'user_id' => $uid,
-                        'name'    => $name,
-                        'class'   => $classOrd,
-                        'section' => $section,
-                    ];
-                } elseif (is_string($data)) {
-                    // Could be flat: Students/{userId} = "Name"
-                    $students[$uid] = [
-                        'user_id' => $uid,
-                        'name'    => $data,
-                        'class'   => $classOrd,
-                        'section' => $section,
-                    ];
-                }
-            }
-        }
-
         return $students;
     }
 
@@ -2295,8 +2260,8 @@ class Sis extends MY_Controller
             $error   = 0;
             $skipped = [];
 
-            // Load Auth API for globally unique student IDs
-            $this->load->library('auth_client');
+            // Load ID generator for globally unique student IDs
+            $this->load->library('id_generator');
 
             $subjectCache = [];
 
@@ -2324,8 +2289,9 @@ class Sis extends MY_Controller
                     }
                 }
 
-                $className = $classNumber . $suffix;
-                $combinedClass = "Class {$className}/Section {$section}";
+                $className = Firestore_service::classKey($classNumber . $suffix);
+                $section   = Firestore_service::sectionKey($section);
+                $combinedClass = "{$className}/{$section}";
 
                 // Generate globally unique student ID from central counter
                 $studentId = $this->_nextStudentId($school_id);
@@ -2344,7 +2310,7 @@ class Sis extends MY_Controller
 
                 $studentData = [
                     "Name" => $studentName, "User Id" => $studentId, "DOB" => $formattedDOB,
-                    "Admission Date" => $formattedAdmDate, "Class" => $className, "Section" => $section,
+                    "Admission Date" => $formattedAdmDate, "Class" => $className, "Section" => $section,  // Already prefixed via classKey/sectionKey
                     "Gender" => trim($rowData['Gender'] ?? ''), "Blood Group" => trim($rowData['Blood Group'] ?? ''),
                     "Category" => trim($rowData['Category'] ?? ''), "Religion" => trim($rowData['Religion'] ?? ''),
                     "Nationality" => trim($rowData['Nationality'] ?? ''),
@@ -2369,15 +2335,21 @@ class Sis extends MY_Controller
                     ],
                 ];
 
-                $this->firebase->update("Users/Parents/{$school_id}/{$studentId}", $studentData);
-                $this->CM->addKey_pair_data("Schools/{$school_name}/{$session_year}/{$combinedClass}/Students/", [$studentId => ['Name' => $studentName]]);
-                $this->CM->addKey_pair_data("Schools/{$school_name}/{$session_year}/{$combinedClass}/Students/List/", [$studentId => $studentName]);
+                // Firestore-only per no-RTDB policy. RTDB profile + roster mirror removed.
+                $this->fs->saveStudent($studentId, $studentData);
 
                 $phone = trim($rowData['Phone Number'] ?? '');
                 if ($phone !== '') {
                     $this->CM->addKey_pair_data("Schools/{$school_name}/Phone_Index/", [$phone => $studentId]);
                     $this->CM->addKey_pair_data('Exits/', [$phone => $school_id]);
                     $this->CM->addKey_pair_data('User_ids_pno/', [$phone => $studentId]);
+                    // Firestore dual-write: phone index
+                    try {
+                        $this->fs->set('indexPhones', $this->fs->docId($phone), [
+                            'schoolId' => $this->school_id, 'phone' => $phone,
+                            'userId' => $studentId, 'type' => 'student',
+                        ]);
+                    } catch (\Exception $e) { log_message('error', "Firestore dual-write indexPhones failed: " . $e->getMessage()); }
                 }
 
                 // Update Students_Index
@@ -2385,15 +2357,16 @@ class Sis extends MY_Controller
 
                 // Initialize Month Fee markers as unpaid (0) for all 12 months
                 try {
-                    $classKey   = "Class {$className}";
-                    $sectionKey = "Section {$section}";
+                    $classKey   = $className;   // Already prefixed ("Class 8th")
+                    $sectionKey = $section;    // Already prefixed ("Section A")
                     $studentFeePath = "Schools/{$school_name}/{$session_year}/{$classKey}/{$sectionKey}/Students/{$studentId}";
                     $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
                     $monthFeeInit = [];
                     foreach ($months as $m) {
                         $monthFeeInit[$m] = 0;
                     }
-                    $this->firebase->set("{$studentFeePath}/Month Fee", $monthFeeInit);
+                    // Firestore-only per no-RTDB policy.
+                    $this->fs->updateEntity('students', $studentId, ['monthFee' => $monthFeeInit]);
                 } catch (Exception $e) {
                     log_message('error', "SIS import fee init failed for {$studentId}: " . $e->getMessage());
                 }
@@ -2408,7 +2381,17 @@ class Sis extends MY_Controller
                 // Subject assignment
                 if (!isset($subjectCache[$classNumber])) {
                     $subjectCache[$classNumber] = ['core' => [], 'allSubjects' => [], 'additionalSubjects' => []];
-                    $rawList = $this->firebase->get("Schools/{$school_name}/Subject_list/{$classNumber}");
+                    // Firestore first → RTDB fallback
+                    $rawList = [];
+                    $fsDocs = $this->fs->schoolWhere('subjects', [['classKey', '==', (string)$classNumber]]);
+                    if (is_array($fsDocs) && !empty($fsDocs)) {
+                        foreach ($fsDocs as $doc) {
+                            $d = $doc['data'] ?? $doc;
+                            $code = $d['subject_code'] ?? $d['code'] ?? '';
+                            if ($code !== '') $rawList[$code] = $d;
+                        }
+                    }
+                    // RTDB subject fallback removed per no-RTDB policy.
                     if (is_array($rawList)) {
                         foreach ($rawList as $code => $item) {
                             if (!is_array($item)) continue;
@@ -2425,51 +2408,37 @@ class Sis extends MY_Controller
                             }
                         }
                     }
-                    if (!empty($subjectCache[$classNumber]['allSubjects'])) {
-                        $this->firebase->set("Schools/{$school_name}/{$session_year}/Class {$className}/All Subjects", $subjectCache[$classNumber]['allSubjects']);
-                    }
+                    // RTDB All Subjects mirror removed per no-RTDB policy.
                 }
 
                 if (!empty($subjectCache[$classNumber]['core'])) {
-                    $this->firebase->set("Users/Parents/{$school_id}/{$studentId}/Subjects", $subjectCache[$classNumber]['core']);
+                    // Firestore-only per no-RTDB policy.
+                    $this->fs->updateEntity('students', $studentId, ['subjects' => $subjectCache[$classNumber]['core']]);
                 }
                 if (!empty($subjectCache[$classNumber]['additionalSubjects'])) {
-                    $this->firebase->set("Schools/{$school_name}/{$session_year}/{$combinedClass}/Students/{$studentId}/Additional Subjects", $subjectCache[$classNumber]['additionalSubjects']);
+                    $this->fs->updateEntity('students', $studentId, ['additionalSubjects' => $subjectCache[$classNumber]['additionalSubjects']]);
                 }
 
-                // Sync to MongoDB (best-effort, don't block import on failure)
+                // Create Firebase Auth user (best-effort, don't block import on failure)
                 try {
-                    $email   = trim($rowData['Email'] ?? '');
-                    $phone   = trim($rowData['Phone Number'] ?? '');
-                    $father  = trim($rowData['Father Name'] ?? '');
-                    $mother  = trim($rowData['Mother Name'] ?? '');
-                    $guardPh = trim($rowData['Guard Contact'] ?? '');
-                    $this->auth_client->sync_student([
-                        'studentId'          => $studentId,
-                        'name'               => $studentName,
-                        'email'              => $email,
-                        'phone'              => $phone,
-                        'password'           => $password,
-                        'schoolId'           => $this->school_code,
-                        'schoolCode'         => $this->school_name,
-                        'parentDbKey'        => $this->parent_db_key,
-                        'parentPhone'        => $guardPh ?: $phone,
-                        'createdBy'          => $this->session->userdata('admin_id') ?: 'system',
-                        'className'          => $className,
-                        'section'            => $section,
-                        'rollNo'             => trim($rowData['Roll No'] ?? ''),
-                        'fatherName'         => $father,
-                        'motherName'         => $mother,
-                        'dob'                => $formattedDOB,
-                        'admissionDate'      => $formattedAdmDate,
-                        'gender'             => trim($rowData['Gender'] ?? ''),
-                        'profilePic'         => '',
-                        'schoolDisplayName'  => $this->school_display_name ?? '',
-                        'deviceBindingMethod'=> 'otp',
+                    $authEmail = Firebase::authEmail($studentId);
+                    $this->firebase->createFirebaseUser($authEmail, $password, [
+                        'uid'         => $studentId,
+                        'displayName' => $studentName,
+                    ]);
+                    $this->firebase->setFirebaseClaims($studentId, [
+                        'role'          => 'student',
+                        'school_id'     => $this->school_id,
+                        'school_code'   => $this->school_code,
+                        'parent_db_key' => $this->parent_db_key,
                     ]);
                 } catch (Exception $e) {
-                    log_message('error', "SIS import MongoDB sync failed for {$studentId}: " . $e->getMessage());
+                    log_message('error', "SIS import Firebase Auth create failed for {$studentId}: " . $e->getMessage());
                 }
+
+                // Firestore sync for Android apps (entity_sync loaded in constructor)
+                $this->entity_sync->syncStudent($studentId, $studentData);
+                $this->entity_sync->syncParent($studentId, $studentData);
 
                 $success++;
             }
@@ -2513,13 +2482,34 @@ class Sis extends MY_Controller
             return;
         }
         $className = $this->safe_path_segment($className, 'class_name');
-        $keys = $this->firebase->shallow_get("Schools/{$school_name}/{$session_year}/{$className}");
-        // FIXED: shallow_get can return null/false if path doesn't exist — guard against foreach on non-array
-        if (!is_array($keys)) $keys = [];
+
+        // Normalize to canonical "Class 8th" format. The JS may send raw
+        // values like "8th", "8", "LKG", or already-prefixed "Class 8th".
+        // Use the Phase 1 normalizer which handles all variants.
+        require_once APPPATH . 'libraries/Entity_firestore_sync.php';
+        $cs = Entity_firestore_sync::normalizeClassSection($className, '');
+        $classKey = $cs['className'] !== '' ? $cs['className'] : 'Class ' . $className;
+
+        // Firestore first → RTDB fallback
         $sections = [];
-        foreach ($keys as $key) {
-            if (strpos($key, 'Section ') === 0) $sections[] = str_replace('Section ', '', $key);
-        }
+        try {
+            $fsDocs = $this->fs->schoolWhere('sections', [['className', '==', $classKey]]);
+            if (is_array($fsDocs) && !empty($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    // Firestore_rest_client::query() returns [{id, data: {...}}]
+                    $d   = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sec = $d['section'] ?? '';
+                    if ($sec !== '') {
+                        // Return just the letter: "Section A" → "A"
+                        $sections[] = str_replace('Section ', '', $sec);
+                    }
+                }
+                $sections = array_values(array_unique($sections));
+                sort($sections);
+            }
+        } catch (\Exception $e) {}
+
+        // RTDB fallback removed per no-RTDB policy. Firestore `sections` is the sole source.
         header('Content-Type: application/json');
         echo json_encode($sections);
     }
@@ -2539,7 +2529,19 @@ class Sis extends MY_Controller
             return;
         }
         $classKey = (int)$m[0];
-        $subjectData = $this->CM->get_data("Schools/{$school_name}/Subject_list/{$classKey}");
+        // Firestore first → RTDB fallback
+        $subjectData = [];
+        $fsDocs = $this->fs->schoolWhere('subjects', [['classKey', '==', (string)$classKey]]);
+        if (is_array($fsDocs) && !empty($fsDocs)) {
+            foreach ($fsDocs as $doc) {
+                $d = $doc['data'] ?? $doc;
+                $code = $d['subject_code'] ?? $d['code'] ?? '';
+                if ($code !== '') $subjectData[$code] = $d;
+            }
+        }
+        if (empty($subjectData)) {
+            $subjectData = $this->CM->get_data("Schools/{$school_name}/Subject_list/{$classKey}");
+        }
         $subjects = [];
         if (is_array($subjectData)) {
             foreach ($subjectData as $code => $item) {
@@ -2566,35 +2568,30 @@ class Sis extends MY_Controller
         $school_id    = $this->parent_db_key;
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
-        $studentPath = "Users/Parents/{$school_id}/{$userId}";
-        $existing    = $this->CM->select_data($studentPath);
+        $existing = $this->_getStudent($userId);
         if (!$existing) { show_404(); return; }
 
-        $classKey          = trim($existing['Class']);
-        $sectionKey        = trim($existing['Section']);
-        $combinedClassPath = "Class {$classKey}/Section {$sectionKey}";
+        $classKey          = Firestore_service::classKey(trim($existing['Class'] ?? ''));
+        $sectionKey        = Firestore_service::sectionKey(trim($existing['Section'] ?? ''));
+        $combinedClassPath = "{$classKey}/{$sectionKey}";
 
         if ($this->input->method() !== 'post') {
-            $additionalPath = "Schools/$school_name/$session_year/$combinedClassPath/Students/$userId/Additional Subjects";
-            $data['additional_subjects'] = $this->firebase->get($additionalPath) ?? [];
-            $exemptedPath = "Schools/$school_name/$session_year/$combinedClassPath/Students/$userId/Exempted Fees";
-            $rawFees = $this->firebase->get($exemptedPath);
-            $data['selected_exempted_fees'] = is_array($rawFees) ? $rawFees : [];
-            $feesStructurePath = "Schools/$school_name/$session_year/Accounts/Fees/Fees Structure";
-            $data['exemptedFees'] = $this->firebase->get($feesStructurePath);
+            // Read additional subjects and exempted fees from student doc
+            $data['additional_subjects'] = $existing['additionalSubjects'] ?? $existing['Additional Subjects'] ?? [];
+            $data['selected_exempted_fees'] = $existing['exemptedFees'] ?? $existing['Exempted Fees'] ?? [];
+            if (!is_array($data['selected_exempted_fees'])) $data['selected_exempted_fees'] = [];
+            $data['exemptedFees'] = $this->fs->schoolList('feeStructures');
 
             $classNumKey = null;
-            if (preg_match('/\d+/', $existing['Class'], $m)) $classNumKey = (int)$m[0];
+            if (preg_match('/\d+/', $existing['Class'] ?? '', $m)) $classNumKey = (int)$m[0];
             $allSubjects = [];
             if ($classNumKey) {
-                $subjectData = $this->CM->get_data("Schools/$school_name/Subject_list/$classNumKey");
-                if (is_array($subjectData)) {
-                    foreach ($subjectData as $code => $item) {
-                        if (!is_array($item)) continue;
-                        $category = strtolower(trim($item['category'] ?? ''));
-                        $name     = trim($item['subject_name'] ?? $item['name'] ?? '');
-                        if ($name !== '' && in_array($category, ['additional', 'skill-based'], true)) $allSubjects[] = $name;
-                    }
+                $subjectDocs = $this->fs->schoolWhere('subjects', [['classKey', '==', (string)$classNumKey]]);
+                foreach ($subjectDocs as $doc) {
+                    $item = $doc['data'];
+                    $category = strtolower(trim($item['category'] ?? ''));
+                    $name     = trim($item['name'] ?? $item['subject_name'] ?? '');
+                    if ($name !== '' && in_array($category, ['additional', 'skill-based'], true)) $allSubjects[] = $name;
                 }
             }
             $data['allSubjects']  = array_values(array_unique($allSubjects));
@@ -2683,7 +2680,13 @@ class Sis extends MY_Controller
             }
         }
 
-        $this->firebase->update("Users/Parents/$school_id/$userId", $updateData);
+        // Update student in Firestore
+        $updateData['updatedAt'] = date('c');
+        if (isset($updateData['Name'])) $updateData['name'] = $updateData['Name'];
+        if (isset($updateData['Phone Number'])) $updateData['phone'] = $updateData['Phone Number'];
+        if (isset($updateData['Email'])) $updateData['email'] = $updateData['Email'];
+        if (isset($updateData['Class'])) $updateData['className'] = $updateData['Class'];
+        if (isset($updateData['Section'])) $updateData['section'] = $updateData['Section'];
 
         // Additional subjects
         $additionalSubjects = [];
@@ -2693,7 +2696,7 @@ class Sis extends MY_Controller
                 if ($sub !== '') $additionalSubjects[$sub] = "";
             }
         }
-        $this->firebase->set("Schools/$school_name/$session_year/$combinedClassPath/Students/$userId/Additional Subjects", $additionalSubjects);
+        $updateData['additionalSubjects'] = $additionalSubjects;
 
         // Exempted fees
         $exemptedFeesData = [];
@@ -2703,7 +2706,17 @@ class Sis extends MY_Controller
                 if ($fee !== '') $exemptedFeesData[$fee] = "";
             }
         }
-        $this->firebase->set("Schools/$school_name/$session_year/$combinedClassPath/Students/$userId/Exempted Fees", $exemptedFeesData);
+        $updateData['exemptedFees'] = $exemptedFeesData;
+
+        $this->fs->updateEntity('students', $userId, $updateData);
+
+        // RTDB mirror removed per no-RTDB policy.
+
+        // Entity sync: update student in Firestore (Android apps)
+        try {
+            $this->entity_sync->syncStudent($userId, $updateData);
+            $this->entity_sync->syncParent($userId, $updateData);
+        } catch (\Exception $e) { log_message('error', "entity_sync syncStudent failed for {$userId}: " . $e->getMessage()); }
 
         $response = ['status' => 'success', 'message' => 'Student updated successfully'];
         if ($photoUpdated) $response['photo_notice'] = 'Profile photo updated with thumbnail.';
@@ -2731,7 +2744,7 @@ class Sis extends MY_Controller
         $school_id    = $this->parent_db_key;
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
-        $student = $this->CM->select_data("Users/Parents/{$school_id}/{$id}");
+        $student = $this->_getStudent($id);
         if (!$student) {
             if ($isAjax) return $this->json_error('Student not found');
             redirect('sis/students'); return;
@@ -2745,39 +2758,51 @@ class Sis extends MY_Controller
             $this->session->set_flashdata('error', 'Class or Section missing');
             redirect('sis/students'); return;
         }
-        $combinedClassPath = "Class {$class}/Section {$section}";
+        $class   = Firestore_service::classKey($class);
+        $section = Firestore_service::sectionKey($section);
+        $combinedClassPath = "{$class}/{$section}";
 
-        // Preserve fee records before deleting student
+        // Preserve fee records
         try {
             $this->feeLifecycle->freezeFeesOnSoftDelete($id);
-            log_message('info', "Fee_lifecycle: preserved fee records before deleting student {$id}");
         } catch (Exception $e) {
             log_message('error', "Fee_lifecycle::freezeFeesOnSoftDelete failed for {$id}: " . $e->getMessage());
         }
 
-        // FIXED: storage path now includes Section (was "Class X/{id}", should be "Class X/Section Y/{id}")
-        $this->CM->delete_folder_from_firebase_storage("{$school_name}/Students/{$combinedClassPath}/{$id}");
-        // Also clean upload_document() storage path (uses school_id not school_name)
-        $this->CM->delete_folder_from_firebase_storage("Students/{$school_id}/{$id}");
+        // Determine if this is a hard delete or soft delete
+        $hardDelete = $this->input->post('hard_delete') === 'true';
 
-        // Remove from class roster
-        $this->CM->delete_data("Schools/{$school_name}/{$session_year}/{$combinedClassPath}/Students", $id);
-        $this->CM->delete_data("Schools/{$school_name}/{$session_year}/{$combinedClassPath}/Students/List", $id);
+        if ($hardDelete) {
+            // ── HARD DELETE: permanent removal ──────────────────────
+            $this->dw->removeFromRoster($class, $section, $id);
+            $this->dw->hardDeleteStudent($id);
 
-        // FIXED: delete student profile from Users/Parents (was never deleted — orphaned data)
-        $this->CM->delete_data("Users/Parents/{$school_id}", $id);
+            // Clean storage
+            $this->CM->delete_folder_from_firebase_storage("{$school_name}/Students/{$combinedClassPath}/{$id}");
+            $this->CM->delete_folder_from_firebase_storage("Students/{$school_id}/{$id}");
 
-        // FIXED: delete from Students_Index (was never deleted — orphaned index entry)
-        $this->firebase->delete("Schools/{$school_name}/SIS/Students_Index", $id);
+            // Clean Firestore + phone index
+            $this->fs->removeEntity('students', $id);
+            if (!empty($phoneNumber)) {
+                $this->fs->remove('indexPhones', $this->fs->docId($phoneNumber));
+            }
 
-        // Clean phone indexes
-        if (!empty($phoneNumber)) {
-            $this->CM->delete_data("Schools/{$school_name}/Phone_Index", $phoneNumber);
-            $this->CM->delete_data('User_ids_pno', $phoneNumber);
-            $this->CM->delete_data('Exits', $phoneNumber);
+            // Delete Firebase Auth account
+            try { $this->firebase->deleteFirebaseUser($id); } catch (Exception $e) {}
+
+            log_audit('SIS', 'hard_delete_student', $id, "Permanently deleted student '{$student['Name']}' from {$class} {$section}");
+        } else {
+            // ── SOFT DELETE (default): recoverable ─────────────────
+            $reason = trim($this->input->post('reason') ?? '') ?: 'Deleted by admin';
+            $this->dw->softDeleteStudent($id, $class, $section, $reason);
+
+            $this->_log_history($school_id, $id, 'DELETED',
+                "Student soft-deleted: {$reason}",
+                ['class' => $class, 'section' => $section, 'reason' => $reason]
+            );
+
+            log_audit('SIS', 'soft_delete_student', $id, "Soft-deleted student '{$student['Name']}' from {$class} {$section}");
         }
-
-        log_audit('SIS', 'delete_student', $id, "Deleted student '{$student['Name']}' from Class {$class} Section {$section}");
 
         // FIXED: return JSON for AJAX, redirect for direct form POST
         if ($isAjax) {
@@ -2800,33 +2825,34 @@ class Sis extends MY_Controller
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
 
-        $studentData = $this->firebase->get("Users/Parents/{$school_id}/{$userId}");
+        $studentData = $this->_getStudent($userId);
         if (!$studentData) { show_error("Student not found"); return; }
 
-        $class   = $studentData['Class']   ?? '';
-        $section = $studentData['Section'] ?? '';
-        $basePath = "Schools/$school_name/$session_year/Class {$class}/Section $section";
+        $class   = Firestore_service::classKey($studentData['Class'] ?? '');
+        $section = Firestore_service::sectionKey($studentData['Section'] ?? '');
+        $basePath = "Schools/$school_name/$session_year/{$class}/{$section}";
 
         // Subjects
         $subjectsList = [];
         if (!empty($class)) {
-            $classNumber = preg_replace('/[^0-9]/', '', $class);
-            $subjects = $this->firebase->get("Schools/$school_name/Subject_list/$classNumber");
-            if (!empty($subjects) && is_array($subjects)) {
-                foreach ($subjects as $sd) {
-                    $sn = $sd['subject_name'] ?? $sd['name'] ?? '';
+            $classNumber = (int) preg_replace('/[^0-9]/', '', $class);
+            if ($classNumber > 0) {
+                $subjectDocs = $this->fs->schoolWhere('subjects', [['classKey', '==', (string)$classNumber]]);
+                foreach ($subjectDocs as $doc) {
+                    $sn = $doc['data']['name'] ?? $doc['data']['subject_name'] ?? '';
                     if ($sn !== '') $subjectsList[] = $sn;
                 }
             }
         }
 
-        $additionalSubjects = $this->firebase->get("$basePath/Students/$userId/Additional Subjects");
-        $finalSubjectsList = array_unique(array_merge($subjectsList, array_keys($additionalSubjects ?? [])));
+        // Read additional subjects and fees from student doc in Firestore
+        $additionalSubjects = $studentData['additionalSubjects'] ?? $studentData['Additional Subjects'] ?? [];
+        $finalSubjectsList = array_unique(array_merge($subjectsList, array_keys(is_array($additionalSubjects) ? $additionalSubjects : [])));
 
-        $rawExempted = $this->firebase->get("$basePath/Students/$userId/Exempted Fees");
+        $rawExempted = $studentData['exemptedFees'] ?? $studentData['Exempted Fees'] ?? [];
         $exemptedFees = is_array($rawExempted) ? $rawExempted : [];
 
-        $discountData = $this->firebase->get("$basePath/Students/$userId/Discount");
+        $discountData = $studentData['Discount'] ?? $studentData['discount'] ?? null;
         $totalDiscount   = isset($discountData['totalDiscount'])   ? (float)$discountData['totalDiscount']   : 0;
         $currentDiscount = isset($discountData['currentDiscount']) ? (float)$discountData['currentDiscount'] : 0;
 
@@ -2888,20 +2914,14 @@ class Sis extends MY_Controller
     public function attendance()
     {
         $this->_require_role(self::VIEW_ROLES);
-        $school_name  = $this->school_name;
-        $session_year = $this->session_year;
-        $data = $this->CM->select_data("Schools/{$school_name}/{$session_year}");
+        $sectionDocs = $this->fs->schoolWhere('sections', []);
         $ClassesData = [];
-        if (is_array($data)) {
-            foreach ($data as $key => $value) {
-                if (strpos($key, 'Class ') === 0 && is_array($value)) {
-                    foreach ($value as $sectionKey => $sectionValue) {
-                        if (strpos($sectionKey, 'Section ') === 0) {
-                            $ClassesData[] = ['class_name' => $key, 'section' => str_replace('Section ', '', $sectionKey)];
-                        }
-                    }
-                }
-            }
+        foreach ($sectionDocs as $doc) {
+            $sd = $doc['data'];
+            $ClassesData[] = [
+                'class_name' => $sd['className'] ?? '',
+                'section'    => str_replace('Section ', '', $sd['section'] ?? ''),
+            ];
         }
         $viewData['Classes'] = $ClassesData;
         $this->load->view('include/header');
@@ -2937,9 +2957,15 @@ class Sis extends MY_Controller
 
         $class   = $this->safe_path_segment($class, 'class');
         $section = $this->safe_path_segment($section, 'section');
-        $basePath = "Schools/{$school_name}/{$session_year}/{$class}/Section {$section}/Students";
-        $studentsList = $this->firebase->get("$basePath/List");
-        if (empty($studentsList) || !is_array($studentsList)) {
+
+        // Get students from Firestore (use prefixed format for queries)
+        $classKey = Firestore_service::classKey($class);
+        $sectionKey = Firestore_service::sectionKey($section);
+        $studentDocs = $this->fs->schoolWhere('students', [
+            ['Class', '==', $classKey], ['Section', '==', $sectionKey], ['Status', '==', 'Active'],
+        ], 'Name', 'ASC');
+
+        if (empty($studentDocs)) {
             echo json_encode(["error" => "No students found for this class/section."]);
             return;
         }
@@ -2947,8 +2973,14 @@ class Sis extends MY_Controller
         $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNumber, $year);
         $sundays     = $this->_getSundays($year, $monthNumber);
         $studentsData = [];
-        foreach ($studentsList as $studentId => $studentName) {
-            $attendanceString = $this->firebase->get("$basePath/$studentId/Attendance/$month $year");
+        foreach ($studentDocs as $doc) {
+            $s = $doc['data'];
+            $studentId = $s['User Id'] ?? $s['studentId'] ?? $doc['id'];
+            $studentName = $s['Name'] ?? $s['name'] ?? $studentId;
+            // Attendance from Firestore attendance collection
+            $attDocId = $this->fs->docId2($studentId, date('Y-m', mktime(0, 0, 0, $monthNumber, 1, $year)));
+            $attDoc = $this->fs->get('attendanceSummary', $attDocId);
+            $attendanceString = $attDoc['dayWise'] ?? '';
             if (empty($attendanceString) || !is_string($attendanceString)) $attendanceString = str_repeat('V', $daysInMonth);
             $attendanceArray = array_pad(str_split($attendanceString), $daysInMonth, 'V');
             $displayName = is_string($studentName) ? $studentName : ($studentName['Name'] ?? (string)$studentId);
@@ -3032,6 +3064,8 @@ class Sis extends MY_Controller
             'updated_at' => $now,
             'history'    => $history,
         ]);
+        // Firestore dual-write: lead status update
+        try { $this->fs->updateEntity('crmApplications', $leadId, ['status' => $status, 'updated_at' => $now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write update_lead_status failed: " . $e->getMessage()); }
         log_audit('CRM', 'update_lead_status', $leadId, "Lead status changed to '{$status}' for " . ($lead['student_name'] ?? ''));
         return $this->json_success(['message' => 'Status updated.']);
     }
@@ -3242,6 +3276,8 @@ class Sis extends MY_Controller
             if (!is_array($existing)) return $this->json_error('Inquiry not found');
             $data = array_merge($existing, compact('student_name','parent_name','phone','email','class','source','notes','status','follow_up_date') + ['updated_at'=>$now]);
             $this->firebase->set("{$this->crm_base}/Inquiries/{$id}", $data);
+            // Firestore dual-write: update inquiry
+            try { $this->fs->setEntity('crmInquiries', $id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmInquiries failed for {$id}: " . $e->getMessage()); }
         } else {
             $counter = (int)($this->firebase->get("{$this->crm_base}/Counter") ?? 0) + 1;
             $id = 'INQ' . str_pad($counter, 5, '0', STR_PAD_LEFT);
@@ -3250,6 +3286,8 @@ class Sis extends MY_Controller
             ];
             $this->firebase->set("{$this->crm_base}/Inquiries/{$id}", $data);
             $this->firebase->set("{$this->crm_base}/Counter", $counter);
+            // Firestore dual-write: new inquiry
+            try { $this->fs->setEntity('crmInquiries', $id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmInquiries failed for {$id}: " . $e->getMessage()); }
         }
         return $this->json_success(['id' => $id]);
     }
@@ -3259,7 +3297,10 @@ class Sis extends MY_Controller
         $this->_require_role(self::MANAGE_ROLES, 'crm_delete_inquiry');
         $id = trim($this->input->post('id') ?? '');
         if (!$id) return $this->json_error('Inquiry ID required');
-        $this->firebase->delete("{$this->crm_base}/Inquiries", $this->safe_path_segment($id, 'id'));
+        $safeId = $this->safe_path_segment($id, 'id');
+        $this->firebase->delete("{$this->crm_base}/Inquiries", $safeId);
+        // Firestore dual-write: delete inquiry
+        try { $this->fs->removeEntity('crmInquiries', $safeId); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmInquiries failed: " . $e->getMessage()); }
         return $this->json_success();
     }
 
@@ -3288,6 +3329,11 @@ class Sis extends MY_Controller
         $this->firebase->set("{$this->crm_base}/Applications/{$app_id}", $application);
         $this->firebase->set("{$this->crm_base}/Counter", $counter);
         $this->firebase->update("{$this->crm_base}/Inquiries/{$inquiry_id}", ['status'=>'converted','application_id'=>$app_id,'updated_at'=>$now]);
+        // Firestore dual-write: new application + inquiry status update
+        try {
+            $this->fs->setEntity('crmApplications', $app_id, $application);
+            $this->fs->updateEntity('crmInquiries', $inquiry_id, ['status'=>'converted','application_id'=>$app_id,'updated_at'=>$now]);
+        } catch (\Exception $e) { log_message('error', "Firestore dual-write convert_to_application failed: " . $e->getMessage()); }
         return $this->json_success(['application_id' => $app_id]);
     }
 
@@ -3341,6 +3387,8 @@ class Sis extends MY_Controller
             $history[] = ['action'=>'Application updated','by'=>$this->admin_name,'timestamp'=>$now];
             $data['history'] = $history;
             $this->firebase->update("{$this->crm_base}/Applications/{$id}", $data);
+            // Firestore dual-write: update application
+            try { $this->fs->setEntity('crmApplications', $id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmApplications update failed for {$id}: " . $e->getMessage()); }
             return $this->json_success(['id' => $id]);
         } else {
             $counter = (int)($this->firebase->get("{$this->crm_base}/Counter") ?? 0) + 1;
@@ -3350,6 +3398,8 @@ class Sis extends MY_Controller
                 'history'=>[['action'=>'Application created directly','by'=>$this->admin_name,'timestamp'=>$now]]]);
             $this->firebase->set("{$this->crm_base}/Applications/{$app_id}", $data);
             $this->firebase->set("{$this->crm_base}/Counter", $counter);
+            // Firestore dual-write: new application
+            try { $this->fs->setEntity('crmApplications', $app_id, $data); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmApplications create failed for {$app_id}: " . $e->getMessage()); }
             return $this->json_success(['id' => $app_id]);
         }
     }
@@ -3371,7 +3421,10 @@ class Sis extends MY_Controller
         $this->_require_role(self::MANAGE_ROLES, 'crm_delete_app');
         $id = trim($this->input->post('id') ?? '');
         if (!$id) return $this->json_error('Application ID required');
-        $this->firebase->delete("{$this->crm_base}/Applications", $this->safe_path_segment($id, 'id'));
+        $safeId = $this->safe_path_segment($id, 'id');
+        $this->firebase->delete("{$this->crm_base}/Applications", $safeId);
+        // Firestore dual-write: delete application
+        try { $this->fs->removeEntity('crmApplications', $safeId); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmApplications failed: " . $e->getMessage()); }
         return $this->json_success();
     }
 
@@ -3423,6 +3476,8 @@ class Sis extends MY_Controller
         $history = $app['history'] ?? [];
         $history[] = ['action'=>"Stage changed: {$app['stage']} → {$stage}",'by'=>$this->admin_name,'timestamp'=>$now];
         $this->firebase->update("{$this->crm_base}/Applications/{$id}", ['stage'=>$stage,'updated_at'=>$now,'history'=>$history]);
+        // Firestore dual-write: stage update
+        try { $this->fs->updateEntity('crmApplications', $id, ['stage'=>$stage,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write update_stage failed: " . $e->getMessage()); }
         return $this->json_success();
     }
 
@@ -3442,6 +3497,8 @@ class Sis extends MY_Controller
         $history = $app['history'] ?? [];
         $history[] = ['action'=>'Application approved'.($remarks?": {$remarks}":''),'by'=>$this->admin_name,'timestamp'=>$now];
         $this->firebase->update("{$this->crm_base}/Applications/{$id}", ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'remarks'=>$remarks,'updated_at'=>$now,'history'=>$history]);
+        // Firestore dual-write: approve application
+        try { $this->fs->updateEntity('crmApplications', $id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'remarks'=>$remarks,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write approve_application failed: " . $e->getMessage()); }
         return $this->json_success();
     }
 
@@ -3461,6 +3518,8 @@ class Sis extends MY_Controller
         $history = $app['history'] ?? [];
         $history[] = ['action'=>'Application rejected'.($reason?": {$reason}":''),'by'=>$this->admin_name,'timestamp'=>$now];
         $this->firebase->update("{$this->crm_base}/Applications/{$id}", ['status'=>'rejected','stage'=>'rejected','rejected_by'=>$this->admin_name,'rejected_at'=>$now,'reject_reason'=>$reason,'updated_at'=>$now,'history'=>$history]);
+        // Firestore dual-write: reject application
+        try { $this->fs->updateEntity('crmApplications', $id, ['status'=>'rejected','stage'=>'rejected','rejected_by'=>$this->admin_name,'rejected_at'=>$now,'reject_reason'=>$reason,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write reject_application failed: " . $e->getMessage()); }
         return $this->json_success();
     }
 
@@ -3482,17 +3541,17 @@ class Sis extends MY_Controller
         if (!$studentId) {
             return $this->json_error('Failed to generate unique student ID. Please try again.');
         }
-        $className = trim($app['class'] ?? '');
-        $section = trim($app['section'] ?? 'A');
+        $className = Firestore_service::classKey(trim($app['class'] ?? ''));
+        $section = Firestore_service::sectionKey(trim($app['section'] ?? 'A'));
         if ($className === '') return $this->json_error('Class not specified in application');
 
-        $combinedPath = "Class {$className}/Section {$section}";
+        $combinedPath = "{$className}/{$section}";
         $formattedDOB = !empty($app['dob']) ? date('d-m-Y', strtotime($app['dob'])) : '';
         $now = date('Y-m-d H:i:s');
 
         $studentData = [
             "Name"=>$app['student_name']??'', "User Id"=>$studentId, "DOB"=>$formattedDOB,
-            "Admission Date"=>date('d-m-Y'), "Class"=>$className, "Section"=>$section,
+            "Admission Date"=>date('d-m-Y'), "Class"=>$className, "Section"=>$section,  // Already prefixed via classKey/sectionKey
             "Gender"=>$app['gender']??'', "Blood Group"=>$app['blood_group']??'',
             "Category"=>$app['category']??'', "Religion"=>$app['religion']??'',
             "Nationality"=>$app['nationality']??'',
@@ -3509,6 +3568,9 @@ class Sis extends MY_Controller
         ];
 
         $this->firebase->set("Users/Parents/{$school_id}/{$studentId}", $studentData);
+        // Firestore dual-write: save enrolled student profile
+        try { $this->fs->saveStudent($studentId, $studentData); } catch (\Exception $e) { log_message('error', "Firestore dual-write saveStudent failed for {$studentId}: " . $e->getMessage()); }
+
         $this->firebase->update("Schools/{$school_name}/{$session}/{$combinedPath}/Students", [$studentId => ['Name'=>$app['student_name']??'']]);
         $this->firebase->update("Schools/{$school_name}/{$session}/{$combinedPath}/Students/List", [$studentId => $app['student_name']??'']);
         // Counter already incremented inside _nextStudentId() — no manual write needed
@@ -3518,6 +3580,13 @@ class Sis extends MY_Controller
             $this->firebase->update("Schools/{$school_name}/Phone_Index", [$phone => $studentId]);
             $this->firebase->update('Exits', [$phone => $school_id]);
             $this->firebase->update('User_ids_pno', [$phone => $studentId]);
+            // Firestore dual-write: phone index
+            try {
+                $this->fs->set('indexPhones', $this->fs->docId($phone), [
+                    'schoolId' => $this->school_id, 'phone' => $phone,
+                    'userId' => $studentId, 'type' => 'student',
+                ]);
+            } catch (\Exception $e) { log_message('error', "Firestore dual-write indexPhones failed: " . $e->getMessage()); }
         }
 
         // Update Students_Index (matches save_admission pattern)
@@ -3528,40 +3597,31 @@ class Sis extends MY_Controller
         $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
         $monthFeeData = array_fill_keys($months, 0);
         $this->firebase->set("Schools/{$school_name}/{$session}/{$combinedPath}/Students/{$studentId}/Month Fee", $monthFeeData);
+        // Firestore dual-write: month fee init on student doc
+        try { $this->fs->updateEntity('students', $studentId, ['monthFee' => $monthFeeData]); } catch (\Exception $e) { log_message('error', "Firestore dual-write monthFee failed for {$studentId}: " . $e->getMessage()); }
 
         $history = $app['history'] ?? [];
-        $history[] = ['action'=>"Enrolled as {$studentId} in Class {$className} Section {$section}",'by'=>$this->admin_name,'timestamp'=>$now];
+        $history[] = ['action'=>"Enrolled as {$studentId} in {$className} {$section}",'by'=>$this->admin_name,'timestamp'=>$now];
         $this->firebase->update("{$this->crm_base}/Applications/{$id}", ['status'=>'enrolled','stage'=>'enrolled','student_id'=>$studentId,'enrolled_at'=>$now,'enrolled_by'=>$this->admin_name,'updated_at'=>$now,'history'=>$history]);
+        // Firestore dual-write: CRM application status
+        try { $this->fs->setEntity('crmApplications', $id, ['status'=>'enrolled','stage'=>'enrolled','student_id'=>$studentId,'enrolled_at'=>$now,'enrolled_by'=>$this->admin_name,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmApplications failed for {$id}: " . $e->getMessage()); }
 
-        // ── Sync student credentials to MongoDB (best-effort) ──────────
+        // ── Create Firebase Auth user (best-effort) ──────────
         try {
-            $this->load->library('auth_client');
             $password = $studentData['Password'] ?? '';
-            $this->auth_client->sync_student([
-                'studentId'          => $studentId,
-                'name'               => $app['student_name'] ?? '',
-                'email'              => $app['email'] ?? '',
-                'phone'              => $phone,
-                'password'           => $password,
-                'schoolId'           => $this->school_code,
-                'schoolCode'         => $this->school_name,
-                'parentDbKey'        => $this->parent_db_key,
-                'parentPhone'        => $app['guardian_phone'] ?? $phone,
-                'createdBy'          => $this->session->userdata('admin_id') ?: 'system',
-                'className'          => $className,
-                'section'            => $section,
-                'rollNo'             => '',
-                'fatherName'         => $app['father_name'] ?? '',
-                'motherName'         => $app['mother_name'] ?? '',
-                'dob'                => $studentData['DOB'] ?? '',
-                'admissionDate'      => $studentData['Admission Date'] ?? '',
-                'gender'             => $app['gender'] ?? '',
-                'profilePic'         => '',
-                'schoolDisplayName'  => $this->school_display_name ?? '',
-                'deviceBindingMethod'=> 'otp',
+            $authEmail = Firebase::authEmail($studentId);
+            $this->firebase->createFirebaseUser($authEmail, $password, [
+                'uid'         => $studentId,
+                'displayName' => $app['student_name'] ?? '',
+            ]);
+            $this->firebase->setFirebaseClaims($studentId, [
+                'role'          => 'student',
+                'school_id'     => $this->school_id,
+                'school_code'   => $this->school_code,
+                'parent_db_key' => $this->parent_db_key,
             ]);
         } catch (Exception $e) {
-            log_message('error', "SIS enroll MongoDB sync exception for {$studentId}: " . $e->getMessage());
+            log_message('error', "SIS enroll Firebase Auth create failed for {$studentId}: " . $e->getMessage());
         }
 
         // Auto-assign class fees for enrolled student
@@ -3572,6 +3632,10 @@ class Sis extends MY_Controller
         } catch (Exception $e) {
             log_message('error', "Fee_lifecycle::assignInitialFees failed for {$studentId}: " . $e->getMessage());
         }
+
+        // Firestore sync for Android apps (entity_sync loaded in constructor)
+        $this->entity_sync->syncStudent($studentId, $studentData);
+        $this->entity_sync->syncParent($studentId, $studentData);
 
         return $this->json_success(['student_id'=>$studentId,'class'=>$className,'section'=>$section]);
     }
@@ -3626,6 +3690,11 @@ class Sis extends MY_Controller
         $history = $app['history'] ?? [];
         $history[] = ['action'=>'Added to waitlist','by'=>$this->admin_name,'timestamp'=>$now];
         $this->firebase->update("{$this->crm_base}/Applications/{$app_id}", ['status'=>'waitlisted','stage'=>'waitlisted','updated_at'=>$now,'history'=>$history]);
+        // Firestore dual-write: waitlist entry + application status
+        try {
+            $this->fs->setEntity('crmWaitlist', $wl_id, $waitEntry);
+            $this->fs->updateEntity('crmApplications', $app_id, ['status'=>'waitlisted','stage'=>'waitlisted','updated_at'=>$now]);
+        } catch (\Exception $e) { log_message('error', "Firestore dual-write add_to_waitlist failed: " . $e->getMessage()); }
         return $this->json_success(['id' => $wl_id]);
     }
 
@@ -3638,8 +3707,12 @@ class Sis extends MY_Controller
         $entry = $this->firebase->get("{$this->crm_base}/Waitlist/{$id}");
         if (is_array($entry) && !empty($entry['application_id'])) {
             $this->firebase->update("{$this->crm_base}/Applications/{$entry['application_id']}", ['status'=>'pending','stage'=>'document_collection','updated_at'=>date('Y-m-d H:i:s')]);
+            // Firestore dual-write: revert application status
+            try { $this->fs->updateEntity('crmApplications', $entry['application_id'], ['status'=>'pending','stage'=>'document_collection','updated_at'=>date('Y-m-d H:i:s')]); } catch (\Exception $e) { log_message('error', "Firestore dual-write remove_from_waitlist app failed: " . $e->getMessage()); }
         }
         $this->firebase->delete("{$this->crm_base}/Waitlist", $id);
+        // Firestore dual-write: delete waitlist entry
+        try { $this->fs->removeEntity('crmWaitlist', $id); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmWaitlist failed: " . $e->getMessage()); }
         return $this->json_success();
     }
 
@@ -3659,8 +3732,12 @@ class Sis extends MY_Controller
             $history = $app['history'] ?? [];
             $history[] = ['action'=>'Promoted from waitlist and approved','by'=>$this->admin_name,'timestamp'=>$now];
             $this->firebase->update("{$this->crm_base}/Applications/{$app_id}", ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'updated_at'=>$now,'history'=>$history]);
+            // Firestore dual-write: approve from waitlist
+            try { $this->fs->updateEntity('crmApplications', $app_id, ['status'=>'approved','stage'=>'approved','approved_by'=>$this->admin_name,'approved_at'=>$now,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write promote_from_waitlist failed: " . $e->getMessage()); }
         }
         $this->firebase->delete("{$this->crm_base}/Waitlist", $id);
+        // Firestore dual-write: delete waitlist entry
+        try { $this->fs->removeEntity('crmWaitlist', $id); } catch (\Exception $e) { log_message('error', "Firestore dual-write delete crmWaitlist failed: " . $e->getMessage()); }
         return $this->json_success();
     }
 
@@ -3686,6 +3763,8 @@ class Sis extends MY_Controller
         }
         $settings['updated_at'] = date('Y-m-d H:i:s');
         $this->firebase->set("{$this->crm_base}/Settings", $settings);
+        // Firestore dual-write: CRM settings
+        try { $this->fs->setEntity('crmSettings', 'config', $settings); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmSettings failed: " . $e->getMessage()); }
         return $this->json_success();
     }
 
@@ -3767,13 +3846,20 @@ class Sis extends MY_Controller
         $counter = (int)($this->firebase->get("{$this->crm_base}/Counter") ?? 0);
         $counter++;
         $inq_id = 'INQ'.str_pad($counter,5,'0',STR_PAD_LEFT);
-        $this->firebase->set("{$this->crm_base}/Inquiries/{$inq_id}", ['inquiry_id'=>$inq_id,'student_name'=>$data['student_name'],'parent_name'=>$data['parent_name'],'phone'=>$data['phone'],'email'=>$data['email'],'class'=>$data['class'],'source'=>'Online Form','status'=>'converted','session'=>$this->session_year,'created_at'=>$now,'updated_at'=>$now,'created_by'=>'Online']);
+        $inqData = ['inquiry_id'=>$inq_id,'student_name'=>$data['student_name'],'parent_name'=>$data['parent_name'],'phone'=>$data['phone'],'email'=>$data['email'],'class'=>$data['class'],'source'=>'Online Form','status'=>'converted','session'=>$this->session_year,'created_at'=>$now,'updated_at'=>$now,'created_by'=>'Online'];
+        $this->firebase->set("{$this->crm_base}/Inquiries/{$inq_id}", $inqData);
         $counter++;
         $app_id = 'APP'.str_pad($counter,5,'0',STR_PAD_LEFT);
         $appData = array_merge($data, ['application_id'=>$app_id,'inquiry_id'=>$inq_id,'session'=>$this->session_year,'status'=>'pending','stage'=>'document_collection','created_at'=>$now,'updated_at'=>$now,'created_by'=>'Online','documents'=>[],'history'=>[['action'=>'Application submitted via online form','by'=>'Online','timestamp'=>$now]]]);
         $this->firebase->set("{$this->crm_base}/Applications/{$app_id}", $appData);
         $this->firebase->update("{$this->crm_base}/Inquiries/{$inq_id}", ['application_id'=>$app_id]);
         $this->firebase->set("{$this->crm_base}/Counter", $counter);
+        // Firestore dual-write: online form inquiry + application
+        try {
+            $inqData['application_id'] = $app_id;
+            $this->fs->setEntity('crmInquiries', $inq_id, $inqData);
+            $this->fs->setEntity('crmApplications', $app_id, $appData);
+        } catch (\Exception $e) { log_message('error', "Firestore dual-write submit_online_form failed: " . $e->getMessage()); }
         return $this->json_success(['application_id' => $app_id]);
     }
 
@@ -3855,19 +3941,11 @@ class Sis extends MY_Controller
 
     private function _getFees($className, $section)
     {
-        $school_name = $this->school_name;
-        $session_year = $this->session_year;
-        $path = "Schools/{$school_name}/{$session_year}/Accounts/Fees/Classes Fees/{$className} '{$section}'";
-        $feesData = $this->CM->get_data($path);
-        if ($feesData && !empty($feesData)) {
-            if (!isset($feesData['Yearly Fees']) || !is_array($feesData['Yearly Fees'])) {
-                $feesStructure = $this->CM->get_data("Schools/$school_name/$session_year/Accounts/Fees/Fees Structure/Yearly");
-                if ($feesStructure && is_array($feesStructure)) {
-                    $yearlyFees = array_fill_keys(array_keys($feesStructure), 0);
-                    $feesData['Yearly Fees'] = $yearlyFees;
-                    $this->CM->addKey_pair_data($path, ['Yearly Fees' => $yearlyFees]);
-                }
-            }
+        // Read fee structure from Firestore (docId includes session)
+        $feeDocId = $this->fs->sectionDocId($className, $section);
+        $feeDoc = $this->fs->get('feeStructures', $feeDocId);
+        $feesData = $feeDoc['heads'] ?? $feeDoc ?? [];
+        if (!empty($feesData) && is_array($feesData)) {
             $formattedFees = [];
             $monthlyTotals = [];
             foreach ($feesData as $month => $fees) {
@@ -3906,19 +3984,14 @@ class Sis extends MY_Controller
 
     private function _get_crm_classes()
     {
-        $school_name = $this->school_name;
-        $session     = $this->session_year;
+        $sectionDocs = $this->fs->schoolWhere('sections', []);
         $classes = [];
-        $sessionKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session}");
-        if (!is_array($sessionKeys)) return $classes;
-        foreach ($sessionKeys as $key) {
-            if (strpos($key, 'Class ') !== 0) continue;
-            $sectionKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session}/{$key}");
-            if (!is_array($sectionKeys)) continue;
-            foreach ($sectionKeys as $sk) {
-                if (strpos($sk, 'Section ') !== 0) continue;
-                $sec = str_replace('Section ', '', $sk);
-                $classes[] = ['class_name'=>$key, 'section'=>$sec, 'label'=>$key.' / Section '.$sec];
+        foreach ($sectionDocs as $doc) {
+            $sd = $doc['data'];
+            $className = $sd['className'] ?? '';
+            $sec = str_replace('Section ', '', $sd['section'] ?? '');
+            if ($className && $sec) {
+                $classes[] = ['class_name' => $className, 'section' => $sec, 'label' => $className . ' / Section ' . $sec];
             }
         }
         return $classes;
