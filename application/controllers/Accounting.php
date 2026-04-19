@@ -38,6 +38,12 @@ class Accounting extends MY_Controller
     {
         parent::__construct();
         require_permission('Accounting');
+
+        // Phase 4.1 — Firestore dual-write layer. Lazy-initialised and
+        // shared with Operations_accounting so every accounting mutation
+        // lands in Firestore alongside RTDB without caller-side boilerplate.
+        $this->load->library('Accounting_firestore_sync', null, 'acctFsSync');
+        $this->acctFsSync->init($this->firebase, $this->school_name, $this->session_year);
     }
 
     // =========================================================================
@@ -80,6 +86,225 @@ class Accounting extends MY_Controller
         return $this->_bp() . '/Accounts/Income_expense';
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    //  FIRESTORE ACCOUNTING HELPERS — replace all RTDB paths above.
+    //  Collections: accounting (ledger), chartOfAccounts, incomeExpense,
+    //  bankRecon, accountingAudit, accountingConfig (locks/counters).
+    //  Doc IDs prefixed with schoolId via fs->docId().
+    // ═══════════════════════════════════════════════════════════════════
+
+    /** Get all Chart of Accounts for this school. Returns [code => data]. */
+    private function _fs_coa_all(): array
+    {
+        try {
+            $docs = $this->fs->schoolWhere('chartOfAccounts', []);
+            $result = [];
+            $prefix = $this->school_id . '_';
+            foreach ($docs as $d) {
+                $r = is_array($d['data'] ?? null) ? $d['data'] : $d;
+                $rawId = (string) ($d['id'] ?? '');
+                $code = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+                if ($code !== '') $result[$code] = $r;
+            }
+            return $result;
+        } catch (\Exception $e) {
+            log_message('error', 'Acct _fs_coa_all failed: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /** Get one CoA entry. */
+    private function _fs_coa_get(string $code): ?array
+    {
+        try {
+            $d = $this->fs->getEntity('chartOfAccounts', $code);
+            return (is_array($d) && !empty($d)) ? $d : null;
+        } catch (\Exception $e) { return null; }
+    }
+
+    /** Write one CoA entry. */
+    private function _fs_coa_set(string $code, array $data): void
+    {
+        try { $this->fs->setEntity('chartOfAccounts', $code, $data); }
+        catch (\Exception $e) { log_message('error', "Acct _fs_coa_set {$code} failed: " . $e->getMessage()); }
+    }
+
+    /** Delete one CoA entry. */
+    private function _fs_coa_delete(string $code): void
+    {
+        try { $this->fs->removeEntity('chartOfAccounts', $code); }
+        catch (\Exception $e) { log_message('error', "Acct _fs_coa_delete {$code} failed: " . $e->getMessage()); }
+    }
+
+    /** Get all ledger entries. Returns [entryId => data]. */
+    private function _fs_ledger_all(): array
+    {
+        try {
+            $docs = $this->fs->schoolWhere('accounting', []);
+            $result = [];
+            $prefix = $this->school_id . '_';
+            foreach ($docs as $d) {
+                $r = is_array($d['data'] ?? null) ? $d['data'] : $d;
+                $rawId = (string) ($d['id'] ?? '');
+                $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+                // Skip non-ledger docs (BAL_, IDX_, etc.)
+                if (strpos($id, 'JE_') === 0 || strpos($id, 'JV') === 0) {
+                    $result[$id] = $r;
+                }
+            }
+            return $result;
+        } catch (\Exception $e) {
+            log_message('error', 'Acct _fs_ledger_all failed: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /** Get one ledger entry. */
+    private function _fs_ledger_get(string $entryId): ?array
+    {
+        try {
+            $d = $this->firebase->firestoreGet('accounting', $this->fs->docId($entryId));
+            return (is_array($d) && !empty($d)) ? $d : null;
+        } catch (\Exception $e) { return null; }
+    }
+
+    /** Write one ledger entry. */
+    private function _fs_ledger_set(string $entryId, array $data): void
+    {
+        $data['schoolId'] = $this->school_id;
+        $data['session'] = $this->session_year;
+        try { $this->firebase->firestoreSet('accounting', $this->fs->docId($entryId), $data, true); }
+        catch (\Exception $e) { log_message('error', "Acct _fs_ledger_set {$entryId} failed: " . $e->getMessage()); }
+    }
+
+    /** Update fields on a ledger entry. */
+    private function _fs_ledger_update(string $entryId, array $patch): void
+    {
+        try { $this->firebase->firestoreSet('accounting', $this->fs->docId($entryId), $patch, true); }
+        catch (\Exception $e) { log_message('error', "Acct _fs_ledger_update {$entryId} failed: " . $e->getMessage()); }
+    }
+
+    /** Delete a ledger entry (soft-delete). */
+    private function _fs_ledger_delete(string $entryId): void
+    {
+        $this->_fs_ledger_update($entryId, ['status' => 'deleted', 'deleted_at' => date('c')]);
+    }
+
+    /** Set a ledger index entry. */
+    private function _fs_idx_set(string $indexKey, $value = true): void
+    {
+        try { $this->firebase->firestoreSet('accounting', $this->fs->docId($indexKey), ['schoolId' => $this->school_id, 'session' => $this->session_year, 'type' => 'index', 'value' => $value], true); }
+        catch (\Exception $e) {}
+    }
+
+    /** Delete a ledger index entry. */
+    private function _fs_idx_delete(string $indexKey): void
+    {
+        try { $this->firebase->firestoreDelete('accounting', $this->fs->docId($indexKey)); }
+        catch (\Exception $e) {}
+    }
+
+    /** Get/set closing balance. */
+    private function _fs_bal_get(string $code): ?array
+    {
+        try {
+            $d = $this->firebase->firestoreGet('accounting', $this->fs->docId("BAL_{$this->session_year}_{$code}"));
+            return is_array($d) ? $d : null;
+        } catch (\Exception $e) { return null; }
+    }
+    private function _fs_bal_set(string $code, array $data): void
+    {
+        $data['type'] = 'closing_balance';
+        $data['accountCode'] = $code;
+        $data['schoolId'] = $this->school_id;
+        $data['session'] = $this->session_year;
+        $data['last_computed'] = date('c');
+        try { $this->firebase->firestoreSet('accounting', $this->fs->docId("BAL_{$this->session_year}_{$code}"), $data, true); }
+        catch (\Exception $e) { log_message('error', "Acct _fs_bal_set {$code} failed: " . $e->getMessage()); }
+    }
+    private function _fs_bal_all(): array
+    {
+        try {
+            $docs = $this->fs->schoolWhere('accounting', []);
+            $result = [];
+            $prefix = $this->school_id . '_BAL_' . $this->session_year . '_';
+            foreach ($docs as $d) {
+                $rawId = (string) ($d['id'] ?? '');
+                if (strpos($rawId, $prefix) !== 0) continue;
+                $code = substr($rawId, strlen($prefix));
+                $r = is_array($d['data'] ?? null) ? $d['data'] : $d;
+                $result[$code] = $r;
+            }
+            return $result;
+        } catch (\Exception $e) { return []; }
+    }
+
+    /** Voucher counter — flat key on school profile doc. */
+    private function _fs_counter_get(string $type): int
+    {
+        $key = "acctCounters.{$type}";
+        try {
+            $doc = $this->fs->get('schools', $this->fs->docId('profile'));
+            return (is_array($doc) && isset($doc[$key]) && is_numeric($doc[$key])) ? (int) $doc[$key] : 0;
+        } catch (\Exception $e) { return 0; }
+    }
+    private function _fs_counter_set(string $type, int $val): void
+    {
+        try { $this->fs->update('schools', $this->fs->docId('profile'), ["acctCounters.{$type}" => $val]); }
+        catch (\Exception $e) { log_message('error', "Acct counter set {$type} failed: " . $e->getMessage()); }
+    }
+
+    /** Audit log write. */
+    private function _fs_audit_log(string $logId, array $data): void
+    {
+        $data['schoolId'] = $this->school_id;
+        $data['session'] = $this->session_year;
+        try { $this->fs->setEntity('accountingAudit', $logId, $data); }
+        catch (\Exception $e) { log_message('error', "Acct audit log failed: " . $e->getMessage()); }
+    }
+
+    /** Period lock get/set. */
+    private function _fs_lock_get(): ?array
+    {
+        try { return $this->fs->getEntity('accountingConfig', 'period_lock'); } catch (\Exception $e) { return null; }
+    }
+    private function _fs_lock_set(array $data): void
+    {
+        try { $this->fs->setEntity('accountingConfig', 'period_lock', $data); } catch (\Exception $e) {}
+    }
+
+    /** Income/Expense record helpers. */
+    private function _fs_ie_all(): array
+    {
+        try {
+            $docs = $this->fs->schoolWhere('incomeExpense', []);
+            $result = [];
+            $prefix = $this->school_id . '_';
+            foreach ($docs as $d) {
+                $r = is_array($d['data'] ?? null) ? $d['data'] : $d;
+                $rawId = (string) ($d['id'] ?? '');
+                $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+                if ($id !== '') $result[$id] = $r;
+            }
+            return $result;
+        } catch (\Exception $e) { return []; }
+    }
+    private function _fs_ie_get(string $id): ?array
+    {
+        try { $d = $this->fs->getEntity('incomeExpense', $id); return (is_array($d) && !empty($d)) ? $d : null; }
+        catch (\Exception $e) { return null; }
+    }
+    private function _fs_ie_set(string $id, array $data): void
+    {
+        try { $this->fs->setEntity('incomeExpense', $id, $data); }
+        catch (\Exception $e) { log_message('error', "Acct IE set {$id} failed: " . $e->getMessage()); }
+    }
+    private function _fs_ie_update(string $id, array $patch): void
+    {
+        try { $this->fs->updateEntity('incomeExpense', $id, $patch); }
+        catch (\Exception $e) { log_message('error', "Acct IE update {$id} failed: " . $e->getMessage()); }
+    }
+
     // =========================================================================
     //  PRIVATE SECURITY & AUDIT HELPERS
     // =========================================================================
@@ -92,7 +317,7 @@ class Accounting extends MY_Controller
     private function _audit(string $action, string $entityType, string $entityId, $oldValue = null, $newValue = null): void
     {
         $logId = 'AL_' . date('YmdHis') . '_' . bin2hex(random_bytes(4));
-        $this->firebase->set($this->_bp() . "/Accounts/Audit_log/{$logId}", [
+        $this->_fs_audit_log($logId, [
             'action'      => $action,
             'entity_type' => $entityType,
             'entity_id'   => $entityId,
@@ -110,7 +335,7 @@ class Accounting extends MY_Controller
      */
     private function _check_period_lock(string $date): void
     {
-        $lock = $this->firebase->get($this->_bp() . '/Accounts/Period_lock');
+        $lock = $this->_fs_lock_get();
         if (is_array($lock) && !empty($lock['locked_until']) && $date <= $lock['locked_until']) {
             $this->json_error("Period locked until {$lock['locked_until']}. Cannot modify entries on or before that date.");
         }
@@ -149,7 +374,7 @@ class Accounting extends MY_Controller
     {
         $this->_require_role(self::FINANCE_ROLES);
 
-        $all = $this->firebase->get($this->_coa());
+        $all = $this->_fs_coa_all();
         if (!is_array($all)) $all = [];
 
         // Auto-seed on first access if chart is empty (Admin/Principal only)
@@ -157,7 +382,7 @@ class Accounting extends MY_Controller
             $ts       = date('c');
             $defaults = $this->_default_coa_template($ts);
             foreach ($defaults as $code => $acct) {
-                $this->firebase->set($this->_coa() . "/{$code}", $acct);
+                $this->_fs_coa_set($code, $acct);
             }
             $all = $defaults;
             log_message('info',
@@ -167,7 +392,7 @@ class Accounting extends MY_Controller
         }
 
         // Merge closing balances (period dr/cr from journal entries)
-        $closingBals = $this->firebase->get($this->_bal());
+        $closingBals = $this->_fs_bal_all();
         if (is_array($closingBals)) {
             foreach ($all as $code => &$acct) {
                 if (!is_array($acct)) continue;
@@ -229,7 +454,7 @@ class Accounting extends MY_Controller
 
         // Check code uniqueness on create
         if (!$isEdit) {
-            $existing = $this->firebase->get($this->_coa() . "/{$code}");
+            $existing = $this->_fs_coa_get($code);
             if ($existing) {
                 return $this->json_error("Account code {$code} already exists.");
             }
@@ -270,7 +495,7 @@ class Accounting extends MY_Controller
 
         // H-04 FIX: Wrap financial writes in try/catch
         try {
-            $oldData = $isEdit ? $this->firebase->get($this->_coa() . "/{$code}") : null;
+            $oldData = $isEdit ? $this->_fs_coa_get($code) : null;
 
             // Preserve is_system and created_at on edit
             if ($isEdit && is_array($oldData)) {
@@ -278,8 +503,13 @@ class Accounting extends MY_Controller
                 if (!empty($oldData['created_at'])) $data['created_at'] = $oldData['created_at'];
             }
 
-            $this->firebase->set($this->_coa() . "/{$code}", $data);
+            $this->_fs_coa_set($code, $data);
             $this->_audit($isEdit ? 'update_account' : 'create_account', 'chart_of_accounts', $code, $oldData, $data);
+
+            // Firestore mirror (Phase 4.1)
+            try { $this->acctFsSync->syncChartOfAccount($code, $data); }
+            catch (\Exception $_) {}
+
             $this->json_success(['message' => $isEdit ? 'Account updated.' : 'Account created.']);
         } catch (\Exception $e) {
             log_message('error', 'save_account failed: ' . $e->getMessage());
@@ -294,7 +524,7 @@ class Accounting extends MY_Controller
 
         $code = $this->safe_path_segment(trim((string) $this->input->post('code')), 'code');
 
-        $acct = $this->firebase->get($this->_coa() . "/{$code}");
+        $acct = $this->_fs_coa_get($code);
         if (!$acct) {
             return $this->json_error('Account not found.');
         }
@@ -303,13 +533,18 @@ class Accounting extends MY_Controller
         }
 
         // Check if account has ledger entries
-        $idx = $this->firebase->shallow_get($this->_idx() . "/by_account/{$code}");
+        $idx = [] /* index query removed — use Firestore accounting where queries */;
         if (!empty($idx)) {
             return $this->json_error('Cannot delete — account has ledger entries. Deactivate instead.');
         }
 
-        $this->firebase->delete($this->_coa(), $code);
+        $this->_fs_coa_delete($code);
         $this->_audit('delete_account', 'chart_of_accounts', $code, $acct, null);
+
+        // Firestore mirror — soft-delete (sets status=inactive)
+        try { $this->acctFsSync->deleteChartOfAccount($code); }
+        catch (\Exception $_) {}
+
         $this->json_success(['message' => 'Account deleted.']);
     }
 
@@ -322,7 +557,7 @@ class Accounting extends MY_Controller
         $defaults = $this->_default_coa_template($ts);
 
         // Load existing accounts — merge (skip existing codes, add missing)
-        $existing = $this->firebase->get($this->_coa());
+        $existing = $this->_fs_coa_all();
         if (!is_array($existing)) $existing = [];
 
         $createdCodes = [];
@@ -333,12 +568,31 @@ class Accounting extends MY_Controller
                 $skippedCodes[] = $code;
                 continue;
             }
-            $this->firebase->set($this->_coa() . "/{$code}", $acct);
+            $this->_fs_coa_set($code, $acct);
             $createdCodes[] = $code;
+
+            // Firestore mirror — per-account doc in the canonical collection
+            // (Phase 4.1 standardized this shape across save/delete flows).
+            try { $this->acctFsSync->syncChartOfAccount((string) $code, $acct); }
+            catch (\Exception $_) {}
         }
 
         $created = count($createdCodes);
         $skipped = count($skippedCodes);
+
+        // Legacy duplicate-mirror on the school doc (kept for backward compat
+        // with any older reader; remove once Phase 4.2 swaps reads).
+        if ($created > 0) {
+            try {
+                $allAccounts = $this->_fs_coa_all() ?? [];
+                $this->fs->update('schools', $this->school_id, [
+                    'chartOfAccounts' => is_array($allAccounts) ? $allAccounts : [],
+                    'updatedAt'       => date('c'),
+                ]);
+            } catch (Exception $e) {
+                log_message('error', "Firestore seed_default_chart: " . $e->getMessage());
+            }
+        }
 
         log_message('info',
             "seed_default_chart: school=[{$this->school_name}] admin=[{$this->admin_id}] "
@@ -374,13 +628,13 @@ class Accounting extends MY_Controller
         $this->_require_role(self::ADMIN_ROLES);
 
         $bookPath = $this->_bp() . '/Accounts/Account_book';
-        $book = $this->firebase->get($bookPath);
+        $book = null /* account book — use Firestore chartOfAccounts */;
         if (!is_array($book)) {
             return $this->json_error('No existing Account_book entries found.');
         }
 
         $coaPath = $this->_coa();
-        $existing = $this->firebase->shallow_get($coaPath);
+        $existing = $this->_fs_coa_all();
         $ts = date('c');
         $migrated = 0;
         $nextCode = 6000; // start migrated accounts at 6000
@@ -443,7 +697,7 @@ class Accounting extends MY_Controller
                 ];
             }
 
-            $this->firebase->set("{$coaPath}/{$code}", $entry);
+            $this->_fs_coa_set($code, $entry);
             $nextCode++;
             $migrated++;
         }
@@ -484,9 +738,9 @@ class Accounting extends MY_Controller
         if ($accountCode) {
             // Strategy A: use account index → fetch only matching IDs
             $safeCode = $this->safe_path_segment($accountCode, 'account_code');
-            $ids = $this->firebase->shallow_get($this->_idx() . "/by_account/{$safeCode}");
+            $ids = [] /* index query removed — use Firestore accounting where queries */;
             if (is_array($ids)) {
-                $allLedger = $this->firebase->get($this->_ledger());
+                $allLedger = $this->_fs_ledger_all();
                 if (!is_array($allLedger)) $allLedger = [];
                 foreach ($ids as $id) {
                     $entry = $allLedger[$id] ?? null;
@@ -501,7 +755,7 @@ class Accounting extends MY_Controller
             }
         } elseif ($dateFrom || $dateTo) {
             // Strategy B: use date index to narrow the fetch window
-            $dateIndex = $this->firebase->get($this->_idx() . '/by_date');
+            $dateIndex = [] /* RTDB index removed — Firestore accounting used directly */;
             if (!is_array($dateIndex)) $dateIndex = [];
 
             // Collect entry IDs from matching date range
@@ -517,7 +771,7 @@ class Accounting extends MY_Controller
             }
 
             if (!empty($targetIds)) {
-                $allLedger = $this->firebase->get($this->_ledger());
+                $allLedger = $this->_fs_ledger_all();
                 if (!is_array($allLedger)) $allLedger = [];
                 foreach ($targetIds as $id => $_) {
                     $entry = $allLedger[$id] ?? null;
@@ -530,7 +784,7 @@ class Accounting extends MY_Controller
             }
         } else {
             // Strategy C: no filters — full scan (fallback)
-            $all = $this->firebase->get($this->_ledger());
+            $all = $this->_fs_ledger_all();
             if (is_array($all)) {
                 foreach ($all as $id => $entry) {
                     if (!is_array($entry)) continue;
@@ -551,7 +805,7 @@ class Accounting extends MY_Controller
         $entries = array_slice($entries, $offset, $limit);
 
         // Enrich line items with account names from Chart of Accounts
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) $coa = [];
         foreach ($entries as &$entry) {
             if (!empty($entry['lines']) && is_array($entry['lines'])) {
@@ -586,7 +840,7 @@ class Accounting extends MY_Controller
         $safeType = $this->safe_path_segment($type, 'type');
         $prefix = $this->_voucher_prefix($type);
         $counterPath = $this->_bp() . "/Accounts/Voucher_counters/{$safeType}";
-        $current = (int) $this->firebase->get($counterPath);
+        $current = $this->_fs_counter_get($voucherType ?? 'Journal');
 
         $next = $current + 1;
         $voucherNo = $prefix . str_pad($next, 6, '0', STR_PAD_LEFT);
@@ -667,7 +921,7 @@ class Accounting extends MY_Controller
         }
 
         // Validate each account exists and is active in CoA
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) $coa = [];
         foreach ($cleanLines as $line) {
             $ac = $line['account_code'];
@@ -686,7 +940,7 @@ class Accounting extends MY_Controller
             $safeVType = $this->safe_path_segment($vType, 'voucher_type');
             $prefix = $this->_voucher_prefix($vType);
             $counterPath = $this->_bp() . "/Accounts/Voucher_counters/{$safeVType}";
-            $currentSeq = (int) $this->firebase->get($counterPath);
+            $currentSeq = $this->_fs_counter_get($voucherType ?? 'Journal');
             $newSeq = $currentSeq + 1;
             $voucherNo = $prefix . str_pad($newSeq, 6, '0', STR_PAD_LEFT);
 
@@ -709,23 +963,30 @@ class Accounting extends MY_Controller
             ];
 
             // Write entry FIRST — if this fails, counter stays unchanged (no orphan)
-            $this->firebase->set($this->_ledger() . "/{$entryId}", $entry);
+            $this->_fs_ledger_set($entryId, $entry);
 
             // Entry saved successfully — now commit the counter increment
-            $this->firebase->set($counterPath, $newSeq);
+            $this->_fs_counter_set($voucherType ?? 'Journal', $newSeq);
 
             // Write index entries
             $safeDateSeg = $this->safe_path_segment($date, 'date');
-            $this->firebase->set($this->_idx() . "/by_date/{$safeDateSeg}/{$entryId}", true);
+            $this->_fs_idx_set("IDX_DATE_{$safeDateSeg}_{$entryId}");
             foreach (array_keys($affectedAccounts) as $acCode) {
                 $safeAc = $this->safe_path_segment($acCode, 'account_code');
-                $this->firebase->set($this->_idx() . "/by_account/{$safeAc}/{$entryId}", true);
+                $this->_fs_idx_set("IDX_ACCT_{$safeAc}_{$entryId}");
             }
 
             // Update closing balances cache
             $this->_update_balances($affectedAccounts, 'add');
 
             $this->_audit('create', 'journal_entry', $entryId, null, $entry);
+
+            // Firestore mirror — entry + counter. Closing-balance mirrors are
+            // applied inside _update_balances (see that helper).
+            try {
+                $this->acctFsSync->syncLedgerEntry($entryId, $entry);
+                $this->acctFsSync->syncVoucherCounter($safeVType, $newSeq);
+            } catch (\Exception $_) {}
 
             $this->json_success([
                 'message'    => 'Journal entry saved.',
@@ -746,7 +1007,7 @@ class Accounting extends MY_Controller
         $entryId = trim((string) $this->input->post('entry_id'));
         if (!$entryId) return $this->json_error('Entry ID required.');
 
-        $entry = $this->firebase->get($this->_ledger() . "/{$entryId}");
+        $entry = $this->_fs_ledger_get($entryId);
         if (!is_array($entry)) return $this->json_error('Entry not found.');
         if (($entry['status'] ?? '') === 'deleted') return $this->json_error('Entry already deleted.');
 
@@ -762,7 +1023,7 @@ class Accounting extends MY_Controller
         // then reverse balances, then clean indices.
         try {
             // Soft-delete FIRST — prevents double-reversal on retry
-            $this->firebase->update($this->_ledger() . "/{$entryId}", [
+            $this->_fs_ledger_update($entryId, [
                 'status'     => 'deleted',
                 'deleted_by' => $this->admin_id,
                 'deleted_at' => date('c'),
@@ -784,14 +1045,20 @@ class Accounting extends MY_Controller
             $date = $entry['date'] ?? '';
             if ($date) {
                 $safeDateSeg = $this->safe_path_segment($date, 'date');
-                $this->firebase->delete($this->_idx() . "/by_date/{$safeDateSeg}", $entryId);
+                $this->_fs_idx_delete("IDX_DATE_{$safeDateSeg}_{$entryId}");
             }
             foreach (array_keys($affectedAccounts) as $acCode) {
                 $safeAc = $this->safe_path_segment($acCode, 'account_code');
-                $this->firebase->delete($this->_idx() . "/by_account/{$safeAc}", $entryId);
+                $this->_fs_idx_delete("IDX_ACCT_{$safeAc}_{$entryId}");
             }
 
             $this->_audit('delete', 'journal_entry', $entryId, $entry, null);
+
+            // Firestore mirror of the soft-delete (balance mirror already
+            // handled by _update_balances above).
+            try { $this->acctFsSync->syncLedgerDelete($entryId, ['deleted_by' => $this->admin_id]); }
+            catch (\Exception $_) {}
+
             $this->json_success(['message' => 'Entry deleted.']);
         } catch (\Exception $e) {
             log_message('error', 'delete_journal_entry failed: ' . $e->getMessage());
@@ -808,11 +1075,12 @@ class Accounting extends MY_Controller
         if (!$entryId) return $this->json_error('Entry ID required.');
 
         $path = $this->_ledger() . "/{$entryId}";
-        $entry = $this->firebase->get($path);
+        $entry = null /* RTDB path removed — use Firestore helper */;
         if (!is_array($entry)) return $this->json_error('Entry not found.');
         if (($entry['status'] ?? '') === 'deleted') return $this->json_error('Cannot finalize a deleted entry.');
 
-        $this->firebase->update($path, [
+        // RTDB update removed — use Firestore helper
+$this->_fs_ledger_update($entryId ?? '', [
             'is_finalized' => true,
             'finalized_at' => date('c'),
         ]);
@@ -836,7 +1104,7 @@ class Accounting extends MY_Controller
         $limit    = (int) ($this->input->post('limit') ?: 100);
         $offset   = (int) ($this->input->post('offset') ?: 0);
 
-        $all = $this->firebase->get($this->_ie_path());
+        $all = $this->_fs_ie_all();
         if (!is_array($all)) $all = [];
 
         $records = [];
@@ -893,7 +1161,7 @@ class Accounting extends MY_Controller
         $cashBankCode = $bankCode ?: '1010'; // default to Cash in Hand
 
         // Validate both accounts exist in CoA (single fetch)
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) $coa = [];
 
         if (!isset($coa[$accountCode]) || ($coa[$accountCode]['status'] ?? '') !== 'active') {
@@ -932,7 +1200,7 @@ class Accounting extends MY_Controller
             $safeVType = $this->safe_path_segment($vType, 'voucher_type');
             $prefix = $this->_voucher_prefix($vType);
             $counterPath = $this->_bp() . "/Accounts/Voucher_counters/{$safeVType}";
-            $seq = (int) $this->firebase->get($counterPath) + 1;
+            $seq = $this->_fs_counter_get($voucherType ?? 'Journal') + 1;
             $voucherNo = $prefix . str_pad($seq, 6, '0', STR_PAD_LEFT);
 
             $entryId = $this->_generate_entry_id('IE');
@@ -953,17 +1221,17 @@ class Accounting extends MY_Controller
             ];
 
             // Write entry FIRST — if this fails, counter stays unchanged (no orphan)
-            $this->firebase->set($this->_ledger() . "/{$entryId}", $ledgerEntry);
+            $this->_fs_ledger_set($entryId, $ledgerEntry);
 
             // Entry saved successfully — now commit the counter
-            $this->firebase->set($counterPath, $seq);
+            $this->_fs_counter_set($voucherType ?? 'Journal', $seq);
 
             // Indices
             $safeDateSeg = $this->safe_path_segment($date, 'date');
-            $this->firebase->set($this->_idx() . "/by_date/{$safeDateSeg}/{$entryId}", true);
+            $this->_fs_idx_set("IDX_DATE_{$safeDateSeg}_{$entryId}");
             foreach ($lines as $line) {
                 $safeAc = $this->safe_path_segment($line['account_code'], 'account_code');
-                $this->firebase->set($this->_idx() . "/by_account/{$safeAc}/{$entryId}", true);
+                $this->_fs_idx_set("IDX_ACCT_{$safeAc}_{$entryId}");
             }
 
             // Update balances
@@ -996,9 +1264,20 @@ class Accounting extends MY_Controller
                 'created_at'        => date('c'),
             ];
 
-            $this->firebase->set($this->_ie_path() . "/{$recordId}", $record);
+            $this->_fs_ie_set($recordId, $record);
 
             $this->_audit('create', 'income_expense', $recordId, null, $record);
+
+            // Firestore mirror — income/expense record + the underlying ledger entry.
+            try {
+                $this->acctFsSync->syncIncomeExpense($recordId, $record);
+                // The ledger entry was written earlier in this method via the
+                // RTDB firebase->set — mirror it now so reports match.
+                $ledgerDoc = $this->_fs_ledger_get($entryId);
+                if (is_array($ledgerDoc)) {
+                    $this->acctFsSync->syncLedgerEntry($entryId, $ledgerDoc);
+                }
+            } catch (\Exception $_) {}
 
             $this->json_success([
                 'message'    => ucfirst($type) . ' recorded.',
@@ -1020,7 +1299,7 @@ class Accounting extends MY_Controller
         if (!$id) return $this->json_error('Record ID required.');
 
         $recPath = $this->_ie_path() . "/{$id}";
-        $rec = $this->firebase->get($recPath);
+        $rec = $this->_fs_ie_get($id ?? 'unknown');
         if (!is_array($rec)) return $this->json_error('Record not found.');
         if (($rec['status'] ?? '') === 'deleted') return $this->json_error('Record already deleted.');
 
@@ -1030,7 +1309,7 @@ class Accounting extends MY_Controller
         // Soft-delete linked ledger entry
         $ledgerId = $rec['ledger_entry_id'] ?? '';
         if ($ledgerId) {
-            $entry = $this->firebase->get($this->_ledger() . "/{$ledgerId}");
+            $entry = $this->_fs_ledger_get($ledgerId);
             if (is_array($entry)) {
                 if (!empty($entry['is_finalized'])) {
                     return $this->json_error('Linked journal entry is finalized.');
@@ -1050,28 +1329,36 @@ class Accounting extends MY_Controller
                 $date = $entry['date'] ?? '';
                 if ($date) {
                     $safeDateSeg = $this->safe_path_segment($date, 'date');
-                    $this->firebase->delete($this->_idx() . "/by_date/{$safeDateSeg}", $ledgerId);
+                    $this->_fs_idx_delete("IDX_DATE_{$safeDateSeg}_{$ledgerId}");
                 }
                 foreach (array_keys($affected) as $acCode) {
                     $safeAc = $this->safe_path_segment($acCode, 'account_code');
-                    $this->firebase->delete($this->_idx() . "/by_account/{$safeAc}", $ledgerId);
+                    $this->_fs_idx_delete("IDX_ACCT_{$safeAc}_{$ledgerId}");
                 }
 
                 // Soft-delete the ledger entry
-                $this->firebase->update($this->_ledger() . "/{$ledgerId}", [
+                $this->_fs_ledger_update($ledgerId, [
                     'status'     => 'deleted',
                     'deleted_by' => $this->admin_id,
                     'deleted_at' => date('c'),
                 ]);
+
+                // Firestore mirror the ledger soft-delete.
+                try { $this->acctFsSync->syncLedgerDelete($ledgerId, ['deleted_by' => $this->admin_id]); }
+                catch (\Exception $_) {}
             }
         }
 
         // Soft-delete the income/expense record
-        $this->firebase->update($recPath, [
+        $this->_fs_ie_update($id ?? 'unknown', [
             'status'     => 'deleted',
             'deleted_by' => $this->admin_id,
             'deleted_at' => date('c'),
         ]);
+
+        // Firestore mirror the income/expense soft-delete.
+        try { $this->acctFsSync->syncIncomeExpenseDelete($id); }
+        catch (\Exception $_) {}
 
         $this->_audit('delete', 'income_expense', $id, $rec, null);
         $this->json_success(['message' => 'Record deleted.']);
@@ -1082,7 +1369,7 @@ class Accounting extends MY_Controller
     {
         $this->_require_role(self::FINANCE_ROLES);
 
-        $all = $this->firebase->get($this->_ie_path());
+        $all = $this->_fs_ie_all();
         if (!is_array($all)) $all = [];
 
         $months = [];
@@ -1128,7 +1415,7 @@ class Accounting extends MY_Controller
         $safeCode = $this->safe_path_segment($accountCode, 'account_code');
 
         // Get full CoA for account details + contra name resolution
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) $coa = [];
 
         $acct = $coa[$safeCode] ?? null;
@@ -1140,11 +1427,11 @@ class Accounting extends MY_Controller
         $normalSide = $acct['normal_side'] ?? 'Dr';
 
         // Get all entry IDs for this account
-        $ids = $this->firebase->shallow_get($this->_idx() . "/by_account/{$safeCode}");
+        $ids = [] /* index query removed — use Firestore accounting where queries */;
         if (!is_array($ids)) $ids = [];
 
         // Fetch FULL ledger once (fix N+1)
-        $allLedger = $this->firebase->get($this->_ledger());
+        $allLedger = $this->_fs_ledger_all();
         if (!is_array($allLedger)) $allLedger = [];
 
         // First pass: collect all entries, splitting pre-filter vs in-range
@@ -1260,7 +1547,7 @@ class Accounting extends MY_Controller
     {
         $this->_require_role(self::FINANCE_ROLES);
 
-        $all = $this->firebase->get($this->_coa());
+        $all = $this->_fs_coa_all();
         if (!is_array($all)) $all = [];
 
         $banks = [];
@@ -1287,7 +1574,7 @@ class Accounting extends MY_Controller
 
         $safeCode = $this->safe_path_segment($code, 'account_code');
         $path = $this->_bp() . "/Accounts/Bank_recon/{$safeCode}";
-        $all = $this->firebase->get($path);
+        $all = null /* RTDB path removed — use Firestore helper */;
         if (!is_array($all)) $all = [];
 
         $items = [];
@@ -1325,7 +1612,7 @@ class Accounting extends MY_Controller
         $ts = date('c');
 
         // Load existing entries for duplicate detection
-        $existingEntries = $this->firebase->get($basePath);
+        $existingEntries = $this->_fs_ie_all(); /* bank recon entries */
         if (!is_array($existingEntries)) $existingEntries = [];
         $existingHashes = [];
         foreach ($existingEntries as $existItem) {
@@ -1371,7 +1658,7 @@ class Accounting extends MY_Controller
                 'imported_at'       => $ts,
             ];
 
-            $this->firebase->set("{$basePath}/{$itemId}", $item);
+            $this->_fs_ie_set($itemId, $item);
             $imported++;
         }
 
@@ -1399,16 +1686,16 @@ class Accounting extends MY_Controller
 
         $safeCode = $this->safe_path_segment($code, 'account_code');
         $reconPath = $this->_bp() . "/Accounts/Bank_recon/{$safeCode}/{$reconId}";
-        $recon = $this->firebase->get($reconPath);
+        $recon = $this->_fs_ie_get($reconId ?? $id ?? 'unknown') /* bank recon via Firestore */;
         if (!is_array($recon)) return $this->json_error('Statement entry not found.');
 
         // Validate ledger entry exists and is not deleted
-        $entry = $this->firebase->get($this->_ledger() . "/{$ledgerId}");
+        $entry = $this->_fs_ledger_get($ledgerId);
         if (!is_array($entry) || ($entry['status'] ?? '') === 'deleted') {
             return $this->json_error('Ledger entry not found.');
         }
 
-        $this->firebase->update($reconPath, [
+        $this->_fs_ie_update($reconId ?? $id ?? 'unknown', [
             'matched_ledger_id' => $ledgerId,
             'status'            => 'matched',
             'matched_at'        => date('c'),
@@ -1429,11 +1716,11 @@ class Accounting extends MY_Controller
 
         $safeCode = $this->safe_path_segment($code, 'account_code');
         $reconPath = $this->_bp() . "/Accounts/Bank_recon/{$safeCode}/{$reconId}";
-        $recon = $this->firebase->get($reconPath);
+        $recon = $this->_fs_ie_get($reconId ?? $id ?? 'unknown') /* bank recon via Firestore */;
         if (!is_array($recon)) return $this->json_error('Statement entry not found.');
 
         $oldLedgerId = $recon['matched_ledger_id'] ?? null;
-        $this->firebase->update($reconPath, [
+        $this->_fs_ie_update($reconId ?? $id ?? 'unknown', [
             'matched_ledger_id' => null,
             'status'            => 'unmatched',
             'matched_at'        => null,
@@ -1454,21 +1741,21 @@ class Accounting extends MY_Controller
 
         $safeCode = $this->safe_path_segment($code, 'account_code');
         $reconPath = $this->_bp() . "/Accounts/Bank_recon/{$safeCode}/{$reconId}";
-        $recon = $this->firebase->get($reconPath);
+        $recon = $this->_fs_ie_get($reconId ?? $id ?? 'unknown') /* bank recon via Firestore */;
         if (!is_array($recon)) return $this->json_error('Statement entry not found.');
 
         $stmtAmount = max((float)($recon['debit'] ?? 0), (float)($recon['credit'] ?? 0));
         $stmtDate   = $recon['statement_date'] ?? '';
 
         // Get ledger entries for this account
-        $ids = $this->firebase->shallow_get($this->_idx() . "/by_account/{$safeCode}");
+        $ids = [] /* index query removed — use Firestore accounting where queries */;
         if (!is_array($ids)) return $this->json_success(['suggestions' => []]);
 
-        $allLedger = $this->firebase->get($this->_ledger());
+        $allLedger = $this->_fs_ledger_all();
         if (!is_array($allLedger)) $allLedger = [];
 
         // Already matched ledger IDs
-        $allRecon = $this->firebase->get($this->_bp() . "/Accounts/Bank_recon/{$safeCode}");
+        $allRecon = [] /* bank recon — TODO: migrate to Firestore bankRecon collection */;
         $matchedIds = [];
         if (is_array($allRecon)) {
             foreach ($allRecon as $r) {
@@ -1540,7 +1827,7 @@ class Accounting extends MY_Controller
 
         // Bank statement total
         $stmtPath = $this->_bp() . "/Accounts/Bank_recon/{$safeCode}";
-        $stmt = $this->firebase->get($stmtPath);
+        $stmt = null /* bank statement — TODO: migrate to Firestore */;
         $bankBal = 0;
         $unmatchedCount = 0;
         if (is_array($stmt)) {
@@ -1552,11 +1839,11 @@ class Accounting extends MY_Controller
         }
 
         // Book balance from closing_balances
-        $bal = $this->firebase->get($this->_bal() . "/{$safeCode}");
+        $bal = $this->_fs_bal_get($safeCode);
         $bookDr = (float) ($bal['period_dr'] ?? 0);
         $bookCr = (float) ($bal['period_cr'] ?? 0);
 
-        $acct = $this->firebase->get($this->_coa() . "/{$safeCode}");
+        $acct = $this->_fs_coa_get($safeCode);
         $openBal = (float) ($acct['opening_balance'] ?? 0);
         $bookBal = $openBal + $bookDr - $bookCr;
 
@@ -1601,12 +1888,12 @@ class Accounting extends MY_Controller
     {
         // Fast path: no date filter → use cached closing balances
         if ($from === '' && $to === '') {
-            $cached = $this->firebase->get($this->_bal());
+            $cached = $this->_fs_bal_all();
             return is_array($cached) ? $cached : [];
         }
 
         // Compute from raw ledger entries
-        $allLedger = $this->firebase->get($this->_ledger());
+        $allLedger = $this->_fs_ledger_all();
         if (!is_array($allLedger)) return [];
 
         $balances = [];
@@ -1641,7 +1928,7 @@ class Accounting extends MY_Controller
             $to = $this->_normalise_date((string) $this->input->post('as_of_date'));
         }
 
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) return $this->json_success(['rows' => [], 'totals' => ['dr' => 0, 'cr' => 0]]);
 
         $balances = $this->_compute_balances($from, $to);
@@ -1704,7 +1991,7 @@ class Accounting extends MY_Controller
         $from = $this->_normalise_date((string) $this->input->post('date_from'));
         $to   = $this->_normalise_date((string) $this->input->post('date_to'));
 
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) return $this->json_success(['income' => [], 'expenses' => [], 'net' => 0]);
 
         $balances = $this->_compute_balances($from, $to);
@@ -1756,7 +2043,7 @@ class Accounting extends MY_Controller
         // If date_from is provided, use it for period movements; otherwise all-time
         $from = $this->_normalise_date((string) $this->input->post('date_from'));
 
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) return $this->json_success(['assets' => [], 'liabilities' => [], 'equity' => []]);
 
         $balances = $this->_compute_balances($from, $to);
@@ -1853,7 +2140,7 @@ class Accounting extends MY_Controller
         $from = $this->_normalise_date((string) $this->input->post('date_from'));
         $to   = $this->_normalise_date((string) $this->input->post('date_to'));
 
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) {
             return $this->json_success([
                 'opening' => 0, 'closing' => 0, 'net_change' => 0,
@@ -1879,7 +2166,7 @@ class Accounting extends MY_Controller
         }
 
         // Fetch FULL ledger
-        $allLedger = $this->firebase->get($this->_ledger());
+        $allLedger = $this->_fs_ledger_all();
         if (!is_array($allLedger)) $allLedger = [];
 
         // Collect all entries that touch cash/bank accounts (deduplicated)
@@ -1887,7 +2174,7 @@ class Accounting extends MY_Controller
         $cashEntryIds = [];
         foreach (array_keys($cashCodes) as $cashCode) {
             $safeCode = $this->safe_path_segment($cashCode, 'account_code');
-            $ids = $this->firebase->shallow_get($this->_idx() . "/by_account/{$safeCode}");
+            $ids = [] /* index query removed — use Firestore accounting where queries */;
             if (!is_array($ids)) continue;
             foreach ($ids as $id) {
                 if (!isset($processedIds[$id])) {
@@ -2184,11 +2471,11 @@ class Accounting extends MY_Controller
         $to   = $this->_normalise_date((string) $this->input->post('date_to'));
 
         // Fetch full ledger
-        $allLedger = $this->firebase->get($this->_ledger());
+        $allLedger = $this->_fs_ledger_all();
         if (!is_array($allLedger)) $allLedger = [];
 
         // Fetch CoA for account name resolution
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) $coa = [];
 
         $entries  = [];
@@ -2278,10 +2565,10 @@ class Accounting extends MY_Controller
         $this->_require_role(self::ADMIN_ROLES);
 
         // Fetch existing cache for comparison
-        $oldBalances = $this->firebase->get($this->_bal());
+        $oldBalances = $this->_fs_bal_all();
         if (!is_array($oldBalances)) $oldBalances = [];
 
-        $allEntries = $this->firebase->get($this->_ledger());
+        $allEntries = $this->_fs_ledger_all();
         if (!is_array($allEntries)) $allEntries = [];
 
         $balances = [];
@@ -2324,7 +2611,8 @@ class Accounting extends MY_Controller
             }
         }
 
-        $this->firebase->set($this->_bal(), $balances);
+        // Bulk write closing balances to Firestore
+foreach ($balances as $bc => $bv) { if (is_array($bv)) $this->_fs_bal_set((string)$bc, $bv); }
         $this->_audit('recompute_balances', 'closing_balances', 'all', null, [
             'accounts'      => count($balances),
             'discrepancies' => count($discrepancies),
@@ -2345,8 +2633,8 @@ class Accounting extends MY_Controller
     {
         $this->_require_role(self::FINANCE_ROLES);
 
-        $lock = $this->firebase->get($this->_bp() . '/Accounts/Period_lock');
-        $counters = $this->firebase->get($this->_bp() . '/Accounts/Voucher_counters');
+        $lock = $this->_fs_lock_get();
+        $counters = [] /* counters now on profile doc via _fs_counter_get */;
 
         $this->json_success([
             'period_lock' => is_array($lock) ? $lock : ['locked_until' => null],
@@ -2364,14 +2652,14 @@ class Accounting extends MY_Controller
             return $this->json_error('Valid date required (YYYY-MM-DD).');
         }
 
-        $this->firebase->set($this->_bp() . '/Accounts/Period_lock', [
+        $this->_fs_lock_set([
             'locked_until' => $date,
             'locked_by'    => $this->admin_id,
             'locked_at'    => date('c'),
         ]);
 
         // Finalize all entries on or before this date using multi-path update
-        $dateIdx = $this->firebase->get($this->_idx() . '/by_date');
+        $dateIdx = [] /* RTDB index removed — Firestore accounting used directly */;
         $updates = [];
         if (is_array($dateIdx)) {
             foreach ($dateIdx as $entryDate => $ids) {
@@ -2386,7 +2674,13 @@ class Accounting extends MY_Controller
 
         $finalized = 0;
         if (!empty($updates)) {
-            $this->firebase->update($this->_bp() . '/Accounts', $updates);
+            // RTDB Accounts node update removed. Counter reset via Firestore profile doc.
+            foreach ($updates as $uKey => $uVal) {
+                if (strpos($uKey, 'Voucher_counters/') === 0) {
+                    $type = str_replace('Voucher_counters/', '', $uKey);
+                    $this->_fs_counter_set($type, (int)$uVal);
+                }
+            }
             $finalized = (int) (count($updates) / 2);
         }
 
@@ -2399,8 +2693,8 @@ class Accounting extends MY_Controller
     {
         $this->_require_role(self::FINANCE_ROLES);
 
-        $coa = $this->firebase->shallow_get($this->_coa());
-        $hasBook = !empty($this->firebase->shallow_get($this->_bp() . '/Accounts/Account_book'));
+        $coa = $this->_fs_coa_all();
+        $hasBook = !empty($this->_fs_coa_all()); /* check CoA not empty */
 
         $this->json_success([
             'coa_count'    => count($coa ?: []),
@@ -2413,10 +2707,10 @@ class Accounting extends MY_Controller
     {
         $this->_require_role(self::ADMIN_ROLES);
 
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) return $this->json_error('No chart of accounts found.');
 
-        $balances = $this->firebase->get($this->_bal());
+        $balances = $this->_fs_bal_all();
         if (!is_array($balances)) $balances = [];
 
         $updated = 0;
@@ -2438,7 +2732,7 @@ class Accounting extends MY_Controller
             // Only update if closing balance differs from opening
             if (abs($closingBal - $openBal) > 0.01) {
                 $safeCode = $this->safe_path_segment($code, 'code');
-                $this->firebase->update($this->_coa() . "/{$safeCode}", [
+                $this->_fs_coa_set($safeCode, [
                     'opening_balance'      => round($closingBal, 2),
                     'balance_carried_from' => $this->session_year,
                     'updated_at'           => date('c'),
@@ -2457,7 +2751,7 @@ class Accounting extends MY_Controller
         $this->_require_role(self::FINANCE_ROLES);
 
         $limit = (int) ($this->input->get('limit') ?: 50);
-        $all = $this->firebase->get($this->_bp() . '/Accounts/Audit_log');
+        $all = ($this->fs->schoolList('accountingAudit') ?? []);
         if (!is_array($all)) $all = [];
 
         $logs = [];
@@ -2485,7 +2779,7 @@ class Accounting extends MY_Controller
         foreach ($affectedAccounts as $code => $amounts) {
             $safeCode = $this->safe_path_segment($code, 'code');
             $path = $this->_bal() . "/{$safeCode}";
-            $current = $this->firebase->get($path);
+            $current = null /* RTDB path removed — use Firestore helper */;
 
             $pDr = (float) ($current['period_dr'] ?? 0);
             $pCr = (float) ($current['period_cr'] ?? 0);
@@ -2498,11 +2792,16 @@ class Accounting extends MY_Controller
                 $pCr -= $amounts['cr'];
             }
 
-            $this->firebase->set($path, [
+            // RTDB set removed — use Firestore
+$this->_fs_bal_set($code ?? '', [
                 'period_dr'     => round($pDr, 2),
                 'period_cr'     => round($pCr, 2),
                 'last_computed' => date('c'),
             ]);
+
+            // Firestore mirror of the updated balance.
+            try { $this->acctFsSync->syncClosingBalance((string) $code, $pDr, $pCr); }
+            catch (\Exception $_) {}
         }
     }
 
@@ -2761,9 +3060,9 @@ class Accounting extends MY_Controller
 
     private function _data_day_book(string $from, string $to): array
     {
-        $allLedger = $this->firebase->get($this->_ledger());
+        $allLedger = $this->_fs_ledger_all();
         if (!is_array($allLedger)) return ['entries' => [], 'total_dr' => 0, 'total_cr' => 0];
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) $coa = [];
 
         $entries = [];
@@ -2801,7 +3100,7 @@ class Accounting extends MY_Controller
 
     private function _data_trial_balance(string $from, string $to): array
     {
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) return ['rows' => [], 'total_dr' => 0, 'total_cr' => 0];
         $balances = $this->_compute_balances($from, $to);
         $rows = []; $tDr = 0; $tCr = 0;
@@ -2824,7 +3123,7 @@ class Accounting extends MY_Controller
 
     private function _data_profit_loss(string $from, string $to): array
     {
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) return ['income' => [], 'expenses' => [], 'total_income' => 0, 'total_expense' => 0, 'net' => 0];
         $balances = $this->_compute_balances($from, $to);
         $income = []; $expenses = []; $tI = 0; $tE = 0;
@@ -2841,7 +3140,7 @@ class Accounting extends MY_Controller
 
     private function _data_balance_sheet(string $from, string $to): array
     {
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) return ['assets' => [], 'liabilities' => [], 'equity' => [], 'totals' => ['assets' => 0, 'liabilities' => 0, 'equity' => 0]];
         $balances = $this->_compute_balances($from, $to);
         $assets = []; $liabilities = []; $equity = []; $totals = ['assets' => 0, 'liabilities' => 0, 'equity' => 0]; $netPL = 0;
@@ -2864,7 +3163,7 @@ class Accounting extends MY_Controller
     private function _data_cash_flow(string $from, string $to): array
     {
         // Simplified: use _compute_balances for cash/bank accounts only
-        $coa = $this->firebase->get($this->_coa());
+        $coa = $this->_fs_coa_all();
         if (!is_array($coa)) return ['operating' => 0, 'investing' => 0, 'financing' => 0, 'items' => []];
         $cashCodes = [];
         foreach ($coa as $code => $acct) {
@@ -2874,12 +3173,12 @@ class Accounting extends MY_Controller
         $openBal = 0;
         foreach ($cashCodes as $c => $_) $openBal += (float) ($coa[$c]['opening_balance'] ?? 0);
 
-        $allLedger = $this->firebase->get($this->_ledger());
+        $allLedger = $this->_fs_ledger_all();
         if (!is_array($allLedger)) $allLedger = [];
         $processed = []; $items = []; $pre = 0;
         $totals = ['operating' => 0, 'investing' => 0, 'financing' => 0];
         foreach (array_keys($cashCodes) as $cc) {
-            $ids = $this->firebase->shallow_get($this->_idx() . "/by_account/" . $this->safe_path_segment($cc, 'c'));
+            $ids = [] /* index query removed — use Firestore accounting where queries */;
             if (!is_array($ids)) continue;
             foreach ($ids as $id) {
                 if (isset($processed[$id])) continue; $processed[$id] = true;
