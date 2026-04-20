@@ -4,18 +4,37 @@ defined('BASEPATH') or exit('No direct script access allowed');
 class FeeCollectionService
 {
     /**
-     * Move of Fees::submit_fees() body. No behavioural changes.
+     * Unified fee-collection pipeline.
      *
-     * Returns null when the response has already been written to
-     * $controller->output (every original path that used set_output()
-     * directly or went through the $_abort closure), or
-     * ['json_error' => 'message'] when the original path called
-     * $this->json_error($message) — the controller renders that via its
-     * protected json_error().
+     *   P1 (current): widened $data contract so parent flows (wallet, later
+     *   Razorpay) can reach the same service without touching counter behaviour.
+     *   Every new key defaults to the counter's current value.
+     *
+     * Response contract:
+     *   - write_response_to_output = true  (counter default):
+     *       service writes JSON to $controller->output, returns:
+     *         null                               on success / direct output,
+     *         ['json_error' => 'message']        on user-validation errors
+     *                                            (controller shim calls json_error).
+     *   - write_response_to_output = false (parent flows):
+     *       service never writes output. Returns:
+     *         ['ok' => true,  'http_code' => 200, 'message' => …, 'data' => [ … ]]
+     *         ['ok' => false, 'http_code' => int, 'message' => …]
      */
     public function submit($controller, $data = null): ?array
     {
         $data = is_array($data) ? $data : [];
+        $writeToOutput = $data['write_response_to_output'] ?? true;
+
+        // Unified early-error helper (for input-validation failures BEFORE
+        // the lock + idempotency records are taken). Preserves the counter's
+        // existing ['json_error' => …] contract when writing to output.
+        $_earlyError = function (string $msg, int $httpCode = 400) use ($writeToOutput): array {
+            if (!$writeToOutput) {
+                return ['ok' => false, 'message' => $msg, 'http_code' => $httpCode];
+            }
+            return ['json_error' => $msg];
+        };
 
         // Load the Firestore txn helper
         $controller->load->library('Fee_firestore_txn', null, 'fsTxn');
@@ -25,17 +44,43 @@ class FeeCollectionService
         $session  = $data['session_year'];
 
         // ── Parse inputs ───────────────────────────────────────────────
-        $receiptNoInput = trim((string) $controller->input->post('receiptNo'));
-        $paymentMode    = trim((string) ($controller->input->post('paymentMode') ?: 'Cash in Hand'));
+        //  Precedence: $data override (parent flows) → POST (counter) → default.
+        //  Counter passes neither receipt_no_input/payment_mode/amount/…, so all
+        //  fall-throughs hit the original POST reads and behaviour is unchanged.
+        $receiptNoInput = isset($data['receipt_no_input'])
+            ? (string) $data['receipt_no_input']
+            : trim((string) $controller->input->post('receiptNo'));
+
+        $paymentMode    = isset($data['payment_mode'])
+            ? (string) $data['payment_mode']
+            : trim((string) ($controller->input->post('paymentMode') ?: 'Cash in Hand'));
+
         $userId         = (string) ($data['safe_user_id'] ?? '');
 
-        $schoolFees     = floatval(str_replace(',', '', $controller->input->post('schoolFees')     ?? '0'));
-        $discountFees   = floatval(str_replace(',', '', $controller->input->post('discountAmount') ?? '0'));
-        $fineAmount     = floatval(str_replace(',', '', $controller->input->post('fineAmount')     ?? '0'));
-        $submitAmount   = floatval(str_replace(',', '', $controller->input->post('submitAmount')   ?? '0'));
-        $reference      = $controller->input->post('reference') ?: 'Fees Submitted';
+        $schoolFees     = isset($data['amount'])
+            ? (float) $data['amount']
+            : floatval(str_replace(',', '', $controller->input->post('schoolFees') ?? '0'));
 
-        $selectedMonths = $controller->input->post('selectedMonths') ?? [];
+        $discountFees   = isset($data['discount'])
+            ? (float) $data['discount']
+            : floatval(str_replace(',', '', $controller->input->post('discountAmount') ?? '0'));
+
+        $fineAmount     = isset($data['fine'])
+            ? (float) $data['fine']
+            : floatval(str_replace(',', '', $controller->input->post('fineAmount') ?? '0'));
+
+        $submitAmount   = isset($data['submit_amount'])
+            ? (float) $data['submit_amount']
+            : floatval(str_replace(',', '', $controller->input->post('submitAmount') ?? '0'));
+
+        $reference      = $data['remarks']
+            ?? ($controller->input->post('reference') ?: 'Fees Submitted');
+
+        if (isset($data['selected_months'])) {
+            $selectedMonths = $data['selected_months'];
+        } else {
+            $selectedMonths = $controller->input->post('selectedMonths') ?? [];
+        }
         if (!is_array($selectedMonths)) $selectedMonths = explode(',', (string) $selectedMonths);
         $selectedMonths = array_values(array_filter(array_map('trim', $selectedMonths)));
 
@@ -47,18 +92,18 @@ class FeeCollectionService
             }
         }
 
-        if ($userId === '')          { return ['json_error' => 'Missing student ID']; }
-        if (empty($selectedMonths))  { return ['json_error' => 'No months selected']; }
-        if ($schoolFees <= 0)        { return ['json_error' => 'Fee amount must be > 0']; }
+        if ($userId === '')          { return $_earlyError('Missing student ID'); }
+        if (empty($selectedMonths))  { return $_earlyError('No months selected'); }
+        if ($schoolFees <= 0)        { return $_earlyError('Fee amount must be > 0'); }
 
         // ── Load student from Firestore ────────────────────────────────
         $student = $controller->fsTxn->getStudent($userId);
-        if (!$student) { return ['json_error' => "Student '{$userId}' not found"]; }
+        if (!$student) { return $_earlyError("Student '{$userId}' not found", 404); }
 
         $class   = trim((string) ($student['className'] ?? ''));
         $section = trim((string) ($student['section']   ?? ''));
         if ($class === '' || $section === '') {
-            return ['json_error' => "Cannot resolve class/section for '{$userId}'"];
+            return $_earlyError("Cannot resolve class/section for '{$userId}'");
         }
         $studentName = (string) ($student['name'] ?? $userId);
 
@@ -74,11 +119,11 @@ class FeeCollectionService
         }
         if ($receiptNo === '') {
             $seq = $controller->fsTxn->nextCounter('receipt_seq');
-            if ($seq <= 0) { return ['json_error' => 'Failed to generate receipt number. Please retry.']; }
+            if ($seq <= 0) { return $_earlyError('Failed to generate receipt number. Please retry.', 500); }
             $receiptNo = (string) $seq;
         }
         $receiptKey = 'F' . $receiptNo;
-        $txnId      = 'TXN_' . date('YmdHis') . '_' . bin2hex(random_bytes(4));
+        $txnId      = ($data['txn_prefix'] ?? 'TXN_') . date('YmdHis') . '_' . bin2hex(random_bytes(4));
 
         // ── Idempotency check (Firestore) ──────────────────────────────
         $idempHash = $controller->fsTxn->idempKey($userId, $receiptNo, $selectedMonths, $schoolFees);
@@ -86,16 +131,30 @@ class FeeCollectionService
         if (is_array($idemp)) {
             $st = (string) ($idemp['status'] ?? '');
             if ($st === 'success') {
+                $dupReceiptNo = $idemp['receiptNo'] ?? $receiptNo;
+                if (!$writeToOutput) {
+                    return [
+                        'ok' => true, 'http_code' => 200, 'idempotent' => true,
+                        'message' => 'Fees already submitted (duplicate request).',
+                        'data' => ['receipt_no' => $dupReceiptNo],
+                    ];
+                }
                 $controller->output->set_output(json_encode([
                     'status' => 'success', 'idempotent' => true,
                     'message' => 'Fees already submitted (duplicate request).',
-                    'receipt_no' => $idemp['receiptNo'] ?? $receiptNo,
+                    'receipt_no' => $dupReceiptNo,
                 ]));
                 return null;
             }
             if ($st === 'processing') {
                 $age = time() - strtotime((string) ($idemp['startedAt'] ?? '2000-01-01'));
                 if ($age < 120) {
+                    if (!$writeToOutput) {
+                        return [
+                            'ok' => false, 'http_code' => 409,
+                            'message' => 'This payment is currently being processed. Please wait.',
+                        ];
+                    }
                     $controller->output->set_output(json_encode([
                         'status' => 'error',
                         'message' => 'This payment is currently being processed. Please wait.',
@@ -112,6 +171,12 @@ class FeeCollectionService
         $lockToken = $controller->fsTxn->acquireLock($userId, 120);
         if ($lockToken === '') {
             $controller->fsTxn->deleteIdempotency($idempHash);
+            if (!$writeToOutput) {
+                return [
+                    'ok' => false, 'http_code' => 423,
+                    'message' => 'Another payment for this student is in progress. Please wait and retry.',
+                ];
+            }
             $controller->output->set_output(json_encode([
                 'status' => 'error',
                 'message' => 'Another payment for this student is in progress. Please wait and retry.',
@@ -119,18 +184,23 @@ class FeeCollectionService
             return null;
         }
 
-        // Abort helper: release lock + clear idempotency + reply error.
-        $_abort = function (string $msg) use ($controller, $userId, $lockToken, $idempHash, $receiptNo) {
+        // Abort helper: release lock + clear idempotency + emit error.
+        //   Dual-mode: if $writeToOutput, writes counter-style JSON + returns null;
+        //   otherwise returns the struct the caller-shim will render.
+        $_abort = function (string $msg, int $httpCode = 400) use ($controller, $userId, $lockToken, $idempHash, $receiptNo, $writeToOutput): ?array {
             $controller->fsTxn->releaseLock($userId, $lockToken);
             $controller->fsTxn->deleteIdempotency($idempHash);
             $controller->fsTxn->deleteReceiptIndex($receiptNo);
+            if (!$writeToOutput) {
+                return ['ok' => false, 'message' => $msg, 'http_code' => $httpCode];
+            }
             $controller->output->set_output(json_encode(['status' => 'error', 'message' => $msg]));
+            return null;
         };
 
         // ── Reserve receipt number (Firestore receiptIndex) ────────────
         if (!$controller->fsTxn->reserveReceipt($receiptNo, $userId)) {
-            $_abort("Receipt #{$receiptNo} is currently reserved or used. Refresh and retry.");
-            return null;
+            return $_abort("Receipt #{$receiptNo} is currently reserved or used. Refresh and retry.", 409);
         }
 
         // ── Duplicate month guard (feeDemands is single source of truth) ─
@@ -173,8 +243,7 @@ class FeeCollectionService
                     }
                 }
                 if ($allPaid) {
-                    $_abort("Month {$m} is already fully paid. Refresh and retry.");
-                    return null;
+                    return $_abort("Month {$m} is already fully paid. Refresh and retry.", 409);
                 }
             }
         }
@@ -187,25 +256,28 @@ class FeeCollectionService
         // period_key "2026-04" (start of session) so they're treated as
         // part of April for ordering purposes — exactly the user's
         // intended behaviour.
-        $selectedKeys = [];
-        foreach ($demands as $d) {
-            $pk = (string) ($d['period_key'] ?? '');
-            $label = $periodToLabel((string) ($d['period'] ?? ''));
-            if ($pk !== '' && in_array($label, $selectedMonths, true)) {
-                $selectedKeys[] = $pk;
-            }
-        }
-        if (!empty($selectedKeys)) {
-            sort($selectedKeys);
-            $earliestSelected = $selectedKeys[0];
+        // The wallet flow historically skipped this guard; preserved via
+        // skip_pay_older_first_guard until that is addressed separately.
+        if (!($data['skip_pay_older_first_guard'] ?? false)) {
+            $selectedKeys = [];
             foreach ($demands as $d) {
-                $pk     = (string) ($d['period_key'] ?? '');
-                $status = (string) ($d['status']     ?? 'unpaid');
-                $bal    = (float)  ($d['balance']    ?? 0);
-                if ($pk !== '' && $pk < $earliestSelected && $status !== 'paid' && $bal > 0.005) {
-                    $olderPeriod = (string) ($d['period'] ?? $pk);
-                    $_abort("Please clear the earlier pending fees for {$olderPeriod} (Rs. " . number_format($bal, 2) . ") before paying this month.");
-                    return null;
+                $pk = (string) ($d['period_key'] ?? '');
+                $label = $periodToLabel((string) ($d['period'] ?? ''));
+                if ($pk !== '' && in_array($label, $selectedMonths, true)) {
+                    $selectedKeys[] = $pk;
+                }
+            }
+            if (!empty($selectedKeys)) {
+                sort($selectedKeys);
+                $earliestSelected = $selectedKeys[0];
+                foreach ($demands as $d) {
+                    $pk     = (string) ($d['period_key'] ?? '');
+                    $status = (string) ($d['status']     ?? 'unpaid');
+                    $bal    = (float)  ($d['balance']    ?? 0);
+                    if ($pk !== '' && $pk < $earliestSelected && $status !== 'paid' && $bal > 0.005) {
+                        $olderPeriod = (string) ($d['period'] ?? $pk);
+                        return $_abort("Please clear the earlier pending fees for {$olderPeriod} (Rs. " . number_format($bal, 2) . ") before paying this month.", 409);
+                    }
                 }
             }
         }
@@ -278,12 +350,11 @@ class FeeCollectionService
             'monthTotals'      => $monthTotalsArray,
             'date'             => $date,
             'txnId'            => $txnId,
-            'collectedBy'      => $data['admin_name'] ?? 'System',
+            'collectedBy'      => $data['collected_by'] ?? $data['admin_name'] ?? 'System',
             'createdAt'        => date('c'),
         ];
         if (!$controller->fsTxn->writeFeeReceipt($receiptKey, $receiptDoc)) {
-            $_abort('Failed to record fee receipt. No data written.');
-            return null;
+            return $_abort('Failed to record fee receipt. No data written.', 500);
         }
 
         // ── 2. Finalise receipt index ──────────────────────────────────
@@ -369,7 +440,7 @@ class FeeCollectionService
             'advanceCredit' => $advanceCredit,
             'paymentMode'   => $paymentMode,
             'date'          => $date,
-            'createdBy'     => $data['admin_id'] ?? '',
+            'createdBy'     => $data['created_by'] ?? $data['admin_id'] ?? '',
             'txnId'         => $txnId,
         ]);
 
@@ -451,21 +522,37 @@ class FeeCollectionService
         }
 
         // ── 5. Advance balance update ──────────────────────────────────
-        // The wallet after a receipt = leftover of (existing wallet + new pay)
-        // after demand allocation. $remaining (= $advanceCredit) IS that
-        // leftover — it already includes the existing wallet because the
-        // allocation loop started with `$remaining = $schoolFees + $submitAmount`.
-        // So we SET the wallet to $advanceCredit, not add to the old value.
-        //
-        // Touch the doc if either the wallet was applied this receipt
-        // ($submitAmount > 0) or if new advance was created ($advanceCredit > 0).
-        if ($advanceCredit > 0.005 || $submitAmount > 0.005) {
-            $controller->fsTxn->setAdvanceBalance($userId, $advanceCredit, [
+        // Two modes:
+        //   'set_leftover' (counter default)  — wallet ← leftover of
+        //     ($schoolFees + $submitAmount) after allocation. $advanceCredit
+        //     IS that leftover; it already includes the existing wallet
+        //     because the allocation loop started with
+        //     `$remaining = $schoolFees + $submitAmount`. Only touch the doc
+        //     if the wallet was applied ($submitAmount > 0) OR a new advance
+        //     was created ($advanceCredit > 0).
+        //   'debit_total' (parent-wallet)     — wallet ← $wallet_before
+        //     minus $schoolFees. Caller has already validated the balance.
+        $walletMode  = $data['wallet_mode'] ?? 'set_leftover';
+        $walletAfter = null; // populated only when the wallet doc is touched
+        if ($walletMode === 'debit_total') {
+            $walletBefore = (float) ($data['wallet_before'] ?? 0);
+            $walletAfter  = round($walletBefore - $schoolFees, 2);
+            $controller->fsTxn->setAdvanceBalance($userId, $walletAfter, [
                 'lastReceipt' => $receiptKey,
                 'studentName' => $studentName,
                 'className'   => $class,
                 'section'     => $section,
             ]);
+        } else {
+            if ($advanceCredit > 0.005 || $submitAmount > 0.005) {
+                $controller->fsTxn->setAdvanceBalance($userId, $advanceCredit, [
+                    'lastReceipt' => $receiptKey,
+                    'studentName' => $studentName,
+                    'className'   => $class,
+                    'section'     => $section,
+                ]);
+                $walletAfter = $advanceCredit;
+            }
         }
 
         // ── 6. Discount update (if any) ────────────────────────────────
@@ -476,7 +563,7 @@ class FeeCollectionService
                     'type'       => 'receipt',
                     'amount'     => $discountFees,
                     'applied_at' => date('c'),
-                    'applied_by' => $data['admin_name'] ?? 'System',
+                    'applied_by' => $data['collected_by'] ?? $data['admin_name'] ?? 'System',
                     'receipt'    => $receiptKey,
                 ],
             ], [
@@ -505,21 +592,44 @@ class FeeCollectionService
         // So we flush the response and run the slow bits in a
         // shutdown handler. Mirrors the parent Razorpay flow's
         // _record_parent_payment_receipt deferral pattern.
-        $controller->output->set_output(json_encode([
-            'status'           => 'success',
-            'message'          => 'Fees submitted successfully.',
-            'receipt_no'       => $receiptNo,
-            'txn_id'           => $txnId,
-            'user_id'          => $userId,
-            'amount'           => $netTotal,
-            'advance_credit'   => $advanceCredit,
-            'allocations'      => $allocations,
-            'months_marked'    => array_keys(array_filter($paidMonthsFlags, fn($v) => $v === 1)),
-        ]));
+        $monthsMarked = array_keys(array_filter($paidMonthsFlags, fn($v) => $v === 1));
+        $successReturn = null;
+        if (!$writeToOutput) {
+            $successReturn = [
+                'ok' => true,
+                'http_code' => 200,
+                'message' => 'Fees submitted successfully.',
+                'data' => [
+                    'receipt_no'       => $receiptNo,
+                    'receipt_key'      => $receiptKey,
+                    'txn_id'           => $txnId,
+                    'user_id'          => $userId,
+                    'amount'           => $netTotal,
+                    'amount_paid'      => $schoolFees,
+                    'advance_credit'   => $advanceCredit,
+                    'wallet_after'     => $walletAfter,
+                    'allocations'      => $allocations,
+                    'allocated_months' => $allocatedMonths,
+                    'months_marked'    => $monthsMarked,
+                ],
+            ];
+        } else {
+            $controller->output->set_output(json_encode([
+                'status'           => 'success',
+                'message'          => 'Fees submitted successfully.',
+                'receipt_no'       => $receiptNo,
+                'txn_id'           => $txnId,
+                'user_id'          => $userId,
+                'amount'           => $netTotal,
+                'advance_credit'   => $advanceCredit,
+                'allocations'      => $allocations,
+                'months_marked'    => $monthsMarked,
+            ]));
+        }
 
         // ── 8 + 9 deferred. Capture the values we need by-value into
         //    the closure (no $this references that might be torn down).
-        $feeDefaulter = $controller->feeDefaulter;
+        $feeDefaulter = $controller->feeDefaulter ?? null;
         $firebase     = $controller->firebase;
         $schoolName   = $data['school_name'];
         $sessionYear  = $session;
@@ -543,42 +653,51 @@ class FeeCollectionService
             'schoolFs'    => $schoolFs,
         ];
         $ci = $controller; // for library loading inside the closure
+        $deferDefaulter  = $data['defer_defaulter']  ?? true;
+        $deferAccounting = $data['defer_accounting'] ?? true;
 
-        register_shutdown_function(function () use (
-            $ci, $feeDefaulter, $firebase, $schoolName, $sessionYear, $adminId,
-            $opsAcctPayload, $defaulterCtx, $userId, $receiptKey
-        ) {
-            // Flush the response so the cashier sees "Submitted" before
-            // these slow operations begin.
-            if (function_exists('fastcgi_finish_request')) {
-                @fastcgi_finish_request();
-            }
+        if ($deferDefaulter || $deferAccounting) {
+            register_shutdown_function(function () use (
+                $ci, $feeDefaulter, $firebase, $schoolName, $sessionYear, $adminId,
+                $opsAcctPayload, $defaulterCtx, $userId, $receiptKey,
+                $deferDefaulter, $deferAccounting
+            ) {
+                // Flush the response so the cashier sees "Submitted" before
+                // these slow operations begin.
+                if (function_exists('fastcgi_finish_request')) {
+                    @fastcgi_finish_request();
+                }
 
-            // Defaulter recompute + sync.
-            try {
-                $defaulterStatus = $feeDefaulter->updateDefaulterStatus($userId);
-                $ci->load->library('Fee_firestore_sync', null, 'fsSyncDeferred');
-                $ci->fsSyncDeferred->init($firebase, $defaulterCtx['schoolFs'], $sessionYear);
-                $ci->fsSyncDeferred->syncDefaulterStatus(
-                    $userId, $defaulterStatus,
-                    $defaulterCtx['studentName'], $defaulterCtx['className'], $defaulterCtx['section']
-                );
-                log_message('debug', "[SUBMIT DEFAULTER SYNCED] student={$userId} (post-response)");
-            } catch (\Exception $e) {
-                log_message('error', "submit_fees: deferred defaulter sync failed for {$userId}: " . $e->getMessage());
-            }
+                // Defaulter recompute + sync.
+                if ($deferDefaulter && $feeDefaulter !== null) {
+                    try {
+                        $defaulterStatus = $feeDefaulter->updateDefaulterStatus($userId);
+                        $ci->load->library('Fee_firestore_sync', null, 'fsSyncDeferred');
+                        $ci->fsSyncDeferred->init($firebase, $defaulterCtx['schoolFs'], $sessionYear);
+                        $ci->fsSyncDeferred->syncDefaulterStatus(
+                            $userId, $defaulterStatus,
+                            $defaulterCtx['studentName'], $defaulterCtx['className'], $defaulterCtx['section']
+                        );
+                        log_message('debug', "[SUBMIT DEFAULTER SYNCED] student={$userId} (post-response)");
+                    } catch (\Exception $e) {
+                        log_message('error', "submit_fees: deferred defaulter sync failed for {$userId}: " . $e->getMessage());
+                    }
+                }
 
-            // Accounting journal (still uses the same pipeline).
-            try {
-                $ci->load->library('Operations_accounting', null, 'opsAcctDeferred');
-                $ci->opsAcctDeferred->init($firebase, $schoolName, $sessionYear, $adminId, $ci);
-                $ci->opsAcctDeferred->create_fee_journal($opsAcctPayload);
-                log_message('debug', "[SUBMIT JOURNAL POSTED] receipt={$receiptKey} (post-response)");
-            } catch (\Exception $e) {
-                log_message('error', "submit_fees: deferred accounting journal failed for {$receiptKey}: " . $e->getMessage());
-            }
-        });
+                // Accounting journal (still uses the same pipeline).
+                if ($deferAccounting) {
+                    try {
+                        $ci->load->library('Operations_accounting', null, 'opsAcctDeferred');
+                        $ci->opsAcctDeferred->init($firebase, $schoolName, $sessionYear, $adminId, $ci);
+                        $ci->opsAcctDeferred->create_fee_journal($opsAcctPayload);
+                        log_message('debug', "[SUBMIT JOURNAL POSTED] receipt={$receiptKey} (post-response)");
+                    } catch (\Exception $e) {
+                        log_message('error', "submit_fees: deferred accounting journal failed for {$receiptKey}: " . $e->getMessage());
+                    }
+                }
+            });
+        }
 
-        return null;
+        return $successReturn;
     }
 }
