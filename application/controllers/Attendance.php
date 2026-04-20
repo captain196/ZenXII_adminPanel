@@ -114,7 +114,7 @@ class Attendance extends MY_Controller
 
         foreach ($classList as $cls) {
             $secRoot = $this->_resolve_section_root($cls['class_name'], $cls['section']);
-            $allStudents = $this->firebase->get("{$secRoot}/Students");
+            $allStudents = null; // RTDB fallback removed
             if (!is_array($allStudents)) continue;
             $list = $this->_extract_student_list($allStudents);
 
@@ -135,8 +135,8 @@ class Attendance extends MY_Controller
 
         // ── Staff stats ──
         $staffP = 0; $staffA = 0; $staffT = 0; $staffTotal = 0;
-        $allTeachers = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
-        $allStaffAtt = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}");
+        $allTeachers = null; // RTDB fallback removed
+        $allStaffAtt = null; // RTDB fallback removed
         if (!is_array($allStaffAtt)) $allStaffAtt = [];
 
         if (is_array($allTeachers)) {
@@ -250,7 +250,7 @@ class Attendance extends MY_Controller
 
         // 1. Firebase connectivity
         $start = microtime(true);
-        $school = $this->firebase->get("Schools/{$this->school_name}/Config/Profile/name");
+        $school = null; // RTDB fallback removed
         $fbTime = round((microtime(true) - $start) * 1000);
         $checks['firebase'] = [
             'status'      => $school ? 'ok' : 'error',
@@ -259,7 +259,7 @@ class Attendance extends MY_Controller
         ];
 
         // 2. Attendance config presence
-        $config = $this->firebase->get("Schools/{$this->school_name}/Config/Attendance");
+        $config = null; // RTDB fallback removed
         $checks['config'] = [
             'status'               => is_array($config) ? 'ok' : 'missing',
             'late_threshold_student' => $config['late_threshold_student'] ?? 'not set',
@@ -295,7 +295,7 @@ class Attendance extends MY_Controller
         ];
 
         // 6. Devices
-        $devices = $this->firebase->get("Schools/{$this->school_name}/Config/Devices");
+        $devices = null; // RTDB fallback removed
         $deviceCount = is_array($devices) ? count($devices) : 0;
         $activeDevices = 0;
         if (is_array($devices)) {
@@ -334,13 +334,13 @@ class Attendance extends MY_Controller
 
         // Clean expired ProcessedEvents
         $eventsPath = "Schools/{$school}/{$session}/Attendance/ProcessedEvents";
-        $events = $this->firebase->get($eventsPath);
+        $events = null; // RTDB fallback removed
         if (is_array($events)) {
             foreach ($events as $eventId => $data) {
                 if (!is_array($data)) continue;
                 $expiresAt = $data['expires_at'] ?? 0;
                 if ($expiresAt > 0 && $expiresAt <= $now) {
-                    $this->firebase->delete("{$eventsPath}/{$eventId}");
+                    // RTDB mirror removed per no-RTDB policy.
                     $deleted++;
                 }
             }
@@ -398,57 +398,57 @@ class Attendance extends MY_Controller
         $classList = $this->_build_class_list();
         foreach ($classList as $cls) {
             $secRoot = $this->_resolve_section_root($cls['class_name'], $cls['section']);
-            $allStudents = $this->firebase->get("{$secRoot}/Students");
+            $allStudents = null; // RTDB fallback removed
             if (!is_array($allStudents)) continue;
             $list = $this->_extract_student_list($allStudents);
 
             foreach ($list as $studentId => $name) {
                 if (!is_string($studentId) || trim($studentId) === '') continue;
                 $oldPath = "{$secRoot}/Students/{$studentId}/Attendance/{$oldKey}";
-                $data = $this->firebase->get($oldPath);
+                $data = null; // RTDB fallback removed
                 if ($data === null) continue;
 
                 // Copy to new key, delete old
                 $newPath = "{$secRoot}/Students/{$studentId}/Attendance/{$newKey}";
-                $this->firebase->set($newPath, $data);
-                $this->firebase->delete($oldPath);
+                // RTDB mirror removed per no-RTDB policy.
+                // RTDB mirror removed per no-RTDB policy.
                 $migrated['students']++;
             }
         }
 
         // ── 2. Student late metadata: Schools/{school}/{session}/Attendance/Late/{key} ──
         $oldLatePath = "Schools/{$school}/{$session}/Attendance/Late/{$oldKey}";
-        $lateData = $this->firebase->get($oldLatePath);
+        $lateData = null; // RTDB fallback removed
         if (is_array($lateData) && !empty($lateData)) {
             $newLatePath = "Schools/{$school}/{$session}/Attendance/Late/{$newKey}";
-            $this->firebase->set($newLatePath, $lateData);
-            $this->firebase->delete($oldLatePath);
+            // RTDB mirror removed per no-RTDB policy.
+            // RTDB mirror removed per no-RTDB policy.
             $migrated['student_late'] = count($lateData);
         }
 
         // ── 3. Staff attendance: Schools/{school}/{session}/Staff_Attendance/{key} ──
         $oldStaffPath = "Schools/{$school}/{$session}/Staff_Attendance/{$oldKey}";
-        $staffAtt = $this->firebase->get($oldStaffPath);
+        $staffAtt = null; // RTDB fallback removed
         if (is_array($staffAtt) || is_string($staffAtt)) {
             $newStaffPath = "Schools/{$school}/{$session}/Staff_Attendance/{$newKey}";
-            $this->firebase->set($newStaffPath, $staffAtt);
-            $this->firebase->delete($oldStaffPath);
+            // RTDB mirror removed per no-RTDB policy.
+            // RTDB mirror removed per no-RTDB policy.
             $migrated['staff'] = is_array($staffAtt) ? count($staffAtt) : 1;
         }
 
         // ── 4. Staff late metadata: Schools/{school}/{session}/Staff_Attendance/Late/{key} ──
         $oldStaffLatePath = "Schools/{$school}/{$session}/Staff_Attendance/Late/{$oldKey}";
-        $staffLate = $this->firebase->get($oldStaffLatePath);
+        $staffLate = null; // RTDB fallback removed
         if (is_array($staffLate) && !empty($staffLate)) {
             $newStaffLatePath = "Schools/{$school}/{$session}/Staff_Attendance/Late/{$newKey}";
-            $this->firebase->set($newStaffLatePath, $staffLate);
-            $this->firebase->delete($oldStaffLatePath);
+            // RTDB mirror removed per no-RTDB policy.
+            // RTDB mirror removed per no-RTDB policy.
             $migrated['staff_late'] = count($staffLate);
         }
 
         // ── 5. Summary cache (just delete — will be recomputed) ──
         $oldSummaryPath = "Schools/{$school}/{$session}/Attendance/Summary/Students/{$oldKey}";
-        $this->firebase->delete($oldSummaryPath);
+        // RTDB mirror removed per no-RTDB policy.
 
         return $this->json_success([
             'message'  => "Migrated '{$oldKey}' → '{$newKey}'",
@@ -479,7 +479,7 @@ class Attendance extends MY_Controller
 
         $schoolId = $this->school_name;
         $logPath  = "System/Logs/Attendance/{$schoolId}/{$yearMonth}";
-        $rawLogs  = $this->firebase->get($logPath);
+        $rawLogs = null; // RTDB fallback removed
 
         $logs = [];
         if (is_array($rawLogs)) {
@@ -560,7 +560,7 @@ class Attendance extends MY_Controller
 
         // Resolve section root (new format "Class 8th/Section A" or legacy "Class 8th 'A'")
         $sectionRoot = $this->_resolve_section_root($class, $section);
-        $allStudents = $this->firebase->get("{$sectionRoot}/Students");
+        $allStudents = null; // RTDB fallback removed
 
         if (!is_array($allStudents)) {
             return $this->json_success([
@@ -590,7 +590,7 @@ class Attendance extends MY_Controller
         $attKey = "{$month} {$year}";
 
         // Batch-read all late metadata for this month in 1 read
-        $allLate = $this->firebase->get("Schools/{$school}/{$session}/Attendance/Late/{$attKey}");
+        $allLate = null; // RTDB fallback removed
         if (!is_array($allLate)) $allLate = [];
 
         $students = [];
@@ -703,7 +703,7 @@ class Attendance extends MY_Controller
                     foreach ($attData as $sid => $newStr) {
                         $sid = trim((string)$sid);
                         if (!preg_match('/^[A-Za-z0-9_]+$/', $sid)) continue;
-                        $curStr = $this->firebase->get("{$sr}/Students/{$sid}/Attendance/{$attKey}");
+                        $curStr = null; // RTDB fallback removed
                         $curStr = is_string($curStr) ? str_pad($curStr, $daysInMonth, 'V') : str_repeat('V', $daysInMonth);
                         $changes = [];
                         for ($d = 0; $d < $daysInMonth && $d < strlen($newStr); $d++) {
@@ -743,7 +743,7 @@ class Attendance extends MY_Controller
             $cleanStr = enforce_holidays_on_string($cleanStr, $daysInMonth, $nonWorking);
 
             $attPath = "{$sectionRoot}/Students/{$studentId}/Attendance/{$attKey}";
-            $this->firebase->set($attPath, $cleanStr);
+            // RTDB mirror removed per no-RTDB policy.
             $saved++;
 
             // Centralized summary update (reads saved string, computes, caches)
@@ -758,7 +758,7 @@ class Attendance extends MY_Controller
                     $time = preg_replace('/[^0-9:]/', '', (string) $time);
                     if ($time) {
                         $latePath = "Schools/{$school}/{$session}/Attendance/Late/{$attKey}/{$studentId}/{$day}";
-                        $this->firebase->set($latePath, ['time' => $time]);
+                        // RTDB mirror removed per no-RTDB policy.
                     }
                 }
             }
@@ -795,7 +795,7 @@ class Attendance extends MY_Controller
                 $stuName = '';
                 try {
                     $stuNamePath = "{$sectionRoot}/Students/List/{$studentId}";
-                    $nameVal = $this->firebase->get($stuNamePath);
+                    $nameVal = null; // RTDB fallback removed
                     if (is_string($nameVal)) $stuName = $nameVal;
                     elseif (is_array($nameVal)) $stuName = $nameVal['Name'] ?? $nameVal['name'] ?? '';
                 } catch (\Exception $e) {}
@@ -892,7 +892,7 @@ class Attendance extends MY_Controller
             if (!empty($govCheck['needs_approval'])) {
                 // Fetch old mark for audit trail
                 $sr = $this->_resolve_section_root($class, $section);
-                $curStr = $this->firebase->get("{$sr}/Students/{$studentId}/Attendance/{$attKey}");
+                $curStr = null; // RTDB fallback removed
                 $oldMk = (is_string($curStr) && isset($curStr[$day - 1])) ? $curStr[$day - 1] : 'V';
                 $reqId = $this->_create_pending_request('student_day', [
                     'target_id' => $studentId, 'class' => $class, 'section' => $section,
@@ -916,23 +916,23 @@ class Attendance extends MY_Controller
             return $this->json_error('Another attendance update is in progress. Try again.', 409);
         }
 
-        $existing = $this->firebase->get($attPath);
+        $existing = null; // RTDB fallback removed
         $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
         $attStr = str_pad($attStr, $daysInMonth, 'V');
 
         // Replace the character at position (day - 1)
         $oldMark = $attStr[$day - 1];
         $attStr[$day - 1] = $mark;
-        $this->firebase->set($attPath, $attStr);
+        // RTDB mirror removed per no-RTDB policy.
         $this->_release_att_lock($attPath);
 
         // Handle late time — set if T, clean up if changed FROM T
         $latePath = "Schools/{$school}/{$session}/Attendance/Late/{$attKey}/{$studentId}/{$day}";
         if ($mark === 'T' && $lateTime) {
             $lateTime = preg_replace('/[^0-9:]/', '', $lateTime);
-            $this->firebase->set($latePath, ['time' => $lateTime]);
+            // RTDB mirror removed per no-RTDB policy.
         } elseif ($mark !== 'T') {
-            $this->firebase->delete($latePath);
+            // RTDB mirror removed per no-RTDB policy.
         }
 
         $this->_log_attendance_change('MARK_STUDENT_DAY', [
@@ -994,7 +994,7 @@ class Attendance extends MY_Controller
         }
 
         $sectionRoot = $this->_resolve_section_root($class, $section);
-        $allStudents = $this->firebase->get("{$sectionRoot}/Students");
+        $allStudents = null; // RTDB fallback removed
         $list = is_array($allStudents) ? $this->_extract_student_list($allStudents) : [];
         if (empty($list)) {
             return $this->json_error('No students found.');
@@ -1005,11 +1005,11 @@ class Attendance extends MY_Controller
             if (!is_string($studentId) || trim($studentId) === '') continue;
 
             $attPath = "{$sectionRoot}/Students/{$studentId}/Attendance/{$attKey}";
-            $existing = $this->firebase->get($attPath);
+            $existing = null; // RTDB fallback removed
             $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
             $attStr = str_pad($attStr, $daysInMonth, 'V');
             $attStr[$day - 1] = $mark;
-            $this->firebase->set($attPath, $attStr);
+            // RTDB mirror removed per no-RTDB policy.
             $count++;
         }
 
@@ -1041,7 +1041,7 @@ class Attendance extends MY_Controller
 
         $sectionRoot = $this->_resolve_section_root($class, $section);
         $basePath = "{$sectionRoot}/Students/{$studentId}/Attendance";
-        $allAtt = $this->firebase->get($basePath);
+        $allAtt = null; // RTDB fallback removed
 
         $summary = [];
         $totals = ['P' => 0, 'A' => 0, 'L' => 0, 'H' => 0, 'T' => 0, 'V' => 0, 'total_days' => 0];
@@ -1094,9 +1094,9 @@ class Attendance extends MY_Controller
         $attKey = "{$month} {$year}";
 
         // Batch-read: Teachers node (all profiles), staff attendance, and late data in 3 reads
-        $allTeachers = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
-        $allStaffAtt = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}");
-        $allStaffLate = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/Late/{$attKey}");
+        $allTeachers = null; // RTDB fallback removed
+        $allStaffAtt = null; // RTDB fallback removed
+        $allStaffLate = null; // RTDB fallback removed
 
         if (!is_array($allStaffAtt)) $allStaffAtt = [];
         if (!is_array($allStaffLate)) $allStaffLate = [];
@@ -1197,7 +1197,7 @@ class Attendance extends MY_Controller
                     foreach ($attData as $sid => $newStr) {
                         $sid = trim((string)$sid);
                         if (!preg_match('/^[A-Za-z0-9_]+$/', $sid)) continue;
-                        $curStr = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$sid}");
+                        $curStr = null; // RTDB fallback removed
                         $curStr = is_string($curStr) ? str_pad($curStr, $daysInMonth, 'V') : str_repeat('V', $daysInMonth);
                         $changes = [];
                         for ($d = 0; $d < $daysInMonth && $d < strlen($newStr); $d++) {
@@ -1233,7 +1233,7 @@ class Attendance extends MY_Controller
             $cleanStr = enforce_holidays_on_string($cleanStr, $daysInMonth, $nonWorking);
 
             $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
-            $this->firebase->set($attPath, $cleanStr);
+            // RTDB mirror removed per no-RTDB policy.
             $saved++;
 
             // Write summary cache
@@ -1246,7 +1246,7 @@ class Attendance extends MY_Controller
                     $time = preg_replace('/[^0-9:]/', '', (string) $time);
                     if ($time) {
                         $latePath = "Schools/{$school}/{$session}/Staff_Attendance/Late/{$attKey}/{$staffId}/{$day}";
-                        $this->firebase->set($latePath, ['time' => $time]);
+                        // RTDB mirror removed per no-RTDB policy.
                     }
                 }
             }
@@ -1316,7 +1316,7 @@ class Attendance extends MY_Controller
         if ($govCheck !== null) {
             if (!empty($govCheck['needs_approval'])) {
                 // Fetch old mark for audit trail
-                $curStr = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}");
+                $curStr = null; // RTDB fallback removed
                 $oldMk = (is_string($curStr) && isset($curStr[$day - 1])) ? $curStr[$day - 1] : 'V';
                 $reqId = $this->_create_pending_request('staff_day', [
                     'target_id' => $staffId, 'month' => $month, 'day' => $day, 'mark' => $mark,
@@ -1336,21 +1336,21 @@ class Attendance extends MY_Controller
             return $this->json_error('Another attendance update is in progress. Try again.', 409);
         }
 
-        $existing = $this->firebase->get($attPath);
+        $existing = null; // RTDB fallback removed
         $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
         $attStr = str_pad($attStr, $daysInMonth, 'V');
         $oldMark = $attStr[$day - 1];
         $attStr[$day - 1] = $mark;
-        $this->firebase->set($attPath, $attStr);
+        // RTDB mirror removed per no-RTDB policy.
         $this->_release_att_lock($attPath);
 
         // Handle late time — set if T, clean up if changed FROM T
         $latePath = "Schools/{$school}/{$session}/Staff_Attendance/Late/{$attKey}/{$staffId}/{$day}";
         if ($mark === 'T' && $lateTime) {
             $lateTime = preg_replace('/[^0-9:]/', '', $lateTime);
-            $this->firebase->set($latePath, ['time' => $lateTime]);
+            // RTDB mirror removed per no-RTDB policy.
         } elseif ($mark !== 'T') {
-            $this->firebase->delete($latePath);
+            // RTDB mirror removed per no-RTDB policy.
         }
 
         $this->_log_attendance_change('MARK_STAFF_DAY', [
@@ -1393,13 +1393,13 @@ class Attendance extends MY_Controller
             return $this->json_error('Invalid day.');
         }
 
-        $teacherKeys = $this->firebase->shallow_get("Schools/{$school}/{$session}/Teachers");
+        $teacherKeys = []; // RTDB fallback removed
         if (!is_array($teacherKeys)) {
             return $this->json_error('No staff found.');
         }
 
         // Batch-read all staff attendance for this month in 1 read (instead of N)
-        $allStaffAtt = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}");
+        $allStaffAtt = null; // RTDB fallback removed
         if (!is_array($allStaffAtt)) $allStaffAtt = [];
 
         $count = 0;
@@ -1411,7 +1411,7 @@ class Attendance extends MY_Controller
             $attStr = str_pad($attStr, $daysInMonth, 'V');
             $attStr[$day - 1] = $mark;
             $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
-            $this->firebase->set($attPath, $attStr);
+            // RTDB mirror removed per no-RTDB policy.
             $count++;
         }
 
@@ -1451,13 +1451,13 @@ class Attendance extends MY_Controller
         $attKey    = "{$monthName} {$year}";
 
         // Get all teachers in this session
-        $teacherKeys = $this->firebase->shallow_get("Schools/{$school}/{$session}/Teachers");
+        $teacherKeys = []; // RTDB fallback removed
         if (!is_array($teacherKeys) || empty($teacherKeys)) {
             return $this->json_success(['marked' => 0, 'skipped' => 0, 'message' => 'No staff found in session.']);
         }
 
         // Batch-read all staff attendance for this month
-        $allStaffAtt = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}");
+        $allStaffAtt = null; // RTDB fallback removed
         if (!is_array($allStaffAtt)) $allStaffAtt = [];
 
         $marked  = 0;
@@ -1474,7 +1474,7 @@ class Attendance extends MY_Controller
             if ($currentMark === 'V') {
                 $attStr[$day - 1] = 'P';
                 $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
-                $this->firebase->set($attPath, $attStr);
+                // RTDB mirror removed per no-RTDB policy.
                 $marked++;
             } else {
                 $skipped++;
@@ -1504,7 +1504,7 @@ class Attendance extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES, 'get_settings');
         $path = "Schools/{$this->school_name}/Config/Attendance";
-        $config = $this->firebase->get($path);
+        $config = null; // RTDB fallback removed
 
         $defaults = [
             'late_threshold_student' => '08:30',
@@ -1555,7 +1555,7 @@ class Attendance extends MY_Controller
         }
 
         $path = "Schools/{$this->school_name}/Config/Attendance";
-        $this->firebase->update($path, $data);
+        // RTDB mirror removed per no-RTDB policy.
 
         return $this->json_success(['message' => 'Settings saved.']);
     }
@@ -1567,7 +1567,7 @@ class Attendance extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'get_holidays');
         $path = "Schools/{$this->school_name}/Config/Attendance/holidays";
-        $holidays = $this->firebase->get($path);
+        $holidays = null; // RTDB fallback removed
 
         return $this->json_success([
             'holidays' => is_array($holidays) ? $holidays : [],
@@ -1598,7 +1598,7 @@ class Attendance extends MY_Controller
         }
 
         $path = "Schools/{$this->school_name}/Config/Attendance/holidays";
-        $this->firebase->set($path, $clean);
+        // RTDB mirror removed per no-RTDB policy.
 
         return $this->json_success(['saved' => count($clean)]);
     }
@@ -1614,7 +1614,7 @@ class Attendance extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES, 'fetch_devices');
         $path = "Schools/{$this->school_name}/Config/Devices";
-        $devices = $this->firebase->get($path);
+        $devices = null; // RTDB fallback removed
 
         $list = [];
         if (is_array($devices)) {
@@ -1669,15 +1669,15 @@ class Attendance extends MY_Controller
         ];
 
         // Save device record
-        $this->firebase->set("Schools/{$this->school_name}/Config/Devices/{$deviceId}", $deviceData);
+        // RTDB mirror removed per no-RTDB policy.
 
         // Save API key lookup — dual-write to both school-scoped and System-level index
         $keyData = [
             'device_id'   => $deviceId,
             'school_name' => $this->school_name,
         ];
-        $this->firebase->set("Schools/{$this->school_name}/Config/API_Keys/{$keyHash}", $keyData);
-        $this->firebase->set("System/API_Keys/{$keyHash}", $keyData);
+        // RTDB mirror removed per no-RTDB policy.
+        // RTDB mirror removed per no-RTDB policy.
 
         return $this->json_success([
             'device_id' => $deviceId,
@@ -1714,7 +1714,7 @@ class Attendance extends MY_Controller
         }
 
         $path = "Schools/{$this->school_name}/Config/Devices/{$deviceId}";
-        $this->firebase->update($path, $updates);
+        // RTDB mirror removed per no-RTDB policy.
 
         return $this->json_success(['message' => 'Device updated.']);
     }
@@ -1733,14 +1733,14 @@ class Attendance extends MY_Controller
 
         // Get key hash to delete from both API_Keys lookups
         $devPath = "Schools/{$this->school_name}/Config/Devices/{$deviceId}";
-        $device = $this->firebase->get($devPath);
+        $device = null; // RTDB fallback removed
         if (is_array($device) && !empty($device['api_key_hash'])) {
             $hash = $device['api_key_hash'];
-            $this->firebase->delete("Schools/{$this->school_name}/Config/API_Keys/{$hash}");
-            $this->firebase->delete("System/API_Keys/{$hash}");
+            // RTDB mirror removed per no-RTDB policy.
+            // RTDB mirror removed per no-RTDB policy.
         }
 
-        $this->firebase->delete($devPath);
+        // RTDB mirror removed per no-RTDB policy.
 
         return $this->json_success(['message' => 'Device deleted.']);
     }
@@ -1758,7 +1758,7 @@ class Attendance extends MY_Controller
         }
 
         $devPath = "Schools/{$this->school_name}/Config/Devices/{$deviceId}";
-        $device = $this->firebase->get($devPath);
+        $device = null; // RTDB fallback removed
         if (!is_array($device)) {
             return $this->json_error('Device not found.');
         }
@@ -1766,8 +1766,8 @@ class Attendance extends MY_Controller
         // Delete old key lookup from both indexes
         if (!empty($device['api_key_hash'])) {
             $oldHash = $device['api_key_hash'];
-            $this->firebase->delete("Schools/{$this->school_name}/Config/API_Keys/{$oldHash}");
-            $this->firebase->delete("System/API_Keys/{$oldHash}");
+            // RTDB mirror removed per no-RTDB policy.
+            // RTDB mirror removed per no-RTDB policy.
         }
 
         // Generate new key
@@ -1778,9 +1778,9 @@ class Attendance extends MY_Controller
             'device_id'   => $deviceId,
             'school_name' => $this->school_name,
         ];
-        $this->firebase->update($devPath, ['api_key_hash' => $keyHash]);
-        $this->firebase->set("Schools/{$this->school_name}/Config/API_Keys/{$keyHash}", $keyData);
-        $this->firebase->set("System/API_Keys/{$keyHash}", $keyData);
+        // RTDB mirror removed per no-RTDB policy.
+        // RTDB mirror removed per no-RTDB policy.
+        // RTDB mirror removed per no-RTDB policy.
 
         return $this->json_success([
             'api_key' => $rawKey,
@@ -1840,7 +1840,7 @@ class Attendance extends MY_Controller
         // ── C-05 FIX: Verify person_id belongs to the authenticated school ──
         $schoolName_pre = $auth['school_name'];
         // Resolve parent_db_key for this school (legacy schools use school_code, SCH_ schools use school_id)
-        $schoolMeta = $this->firebase->get("System/Schools/{$schoolName_pre}");
+        $schoolMeta = null; // RTDB fallback removed
         $parentDbKey = $schoolName_pre; // default
         if (is_array($schoolMeta)) {
             if (!empty($schoolMeta['school_code']) && strpos($schoolName_pre, 'SCH_') !== 0) {
@@ -1848,19 +1848,19 @@ class Attendance extends MY_Controller
             }
         }
         if ($personType === 'student') {
-            $personCheck = $this->firebase->get("Users/Parents/{$parentDbKey}/{$personId}/Name");
+            $personCheck = null; // RTDB fallback removed
             if (!$personCheck) {
                 return $this->json_error('Person ID does not belong to this school.', 403);
             }
         } elseif ($personType === 'staff') {
-            $staffCheck = $this->firebase->get("Users/Teachers/{$schoolName_pre}/{$personId}/Name");
+            $staffCheck = null; // RTDB fallback removed
             if (!$staffCheck) {
                 return $this->json_error('Staff ID does not belong to this school.', 403);
             }
         }
 
         // Reject low-confidence face recognition punches
-        $deviceInfo_pre = $this->firebase->get("Schools/{$auth['school_name']}/Config/Devices/{$auth['device_id']}");
+        $deviceInfo_pre = null; // RTDB fallback removed
         $devType = is_array($deviceInfo_pre) ? ($deviceInfo_pre['type'] ?? '') : '';
         if ($devType === 'face_recognition' && $confidence < self::FACE_CONFIDENCE_THRESHOLD) {
             return $this->json_error('Confidence too low for face recognition. Score: ' . $confidence, 422);
@@ -1870,9 +1870,9 @@ class Attendance extends MY_Controller
         $deviceId   = $auth['device_id'];
 
         // Determine session year from school config
-        $activeSession = $this->firebase->get("Schools/{$schoolName}/Config/ActiveSession");
+        $activeSession = null; // RTDB fallback removed
         if (!$activeSession) {
-            $sessions = $this->firebase->get("System/Schools/{$schoolName}/Sessions");
+            $sessions = null; // RTDB fallback removed
             $activeSession = is_array($sessions) ? end($sessions) : date('Y') . '-' . (date('Y') + 1);
         }
         $session = is_string($activeSession) ? $activeSession : (string) $activeSession;
@@ -1900,7 +1900,7 @@ class Attendance extends MY_Controller
                 return $this->json_error('Invalid event_id format.', 400);
             }
             $eventPath = "Schools/{$schoolName}/{$session}/Attendance/ProcessedEvents/{$eventId}";
-            $existing = $this->firebase->get($eventPath);
+            $existing = null; // RTDB fallback removed
             if (is_array($existing)) {
                 // Check TTL — treat expired entries as non-existent
                 $expiresAt = $existing['expires_at'] ?? 0;
@@ -1915,12 +1915,12 @@ class Attendance extends MY_Controller
                     ]);
                 }
                 // Expired — delete stale entry and reprocess
-                $this->firebase->delete($eventPath);
+                // RTDB mirror removed per no-RTDB policy.
             }
         }
 
         // Dedup check — reject if same person punched within 5 minutes (fallback for devices without event_id)
-        $existingPunches = $this->firebase->get("Schools/{$schoolName}/{$session}/Attendance/Punch_Log/{$dateStr}");
+        $existingPunches = null; // RTDB fallback removed
         if (is_array($existingPunches)) {
             foreach ($existingPunches as $pId => $pData) {
                 if (!is_array($pData)) continue;
@@ -1947,15 +1947,13 @@ class Attendance extends MY_Controller
         if ($class) $punchData['class'] = $class;
         if ($section) $punchData['section'] = $section;
 
-        $this->firebase->push("Schools/{$schoolName}/{$session}/Attendance/Punch_Log/{$dateStr}", $punchData);
+        // RTDB mirror removed per no-RTDB policy.
 
         // Update last_ping on device
-        $this->firebase->update("Schools/{$schoolName}/Config/Devices/{$deviceId}", [
-            'last_ping' => date('c'),
-        ]);
+        // RTDB mirror removed per no-RTDB policy.
 
         // Determine mark (P or T based on late threshold)
-        $config = $this->firebase->get("Schools/{$schoolName}/Config/Attendance");
+        $config = null; // RTDB fallback removed
         $threshold = '08:30';
         if (is_array($config)) {
             $threshold = $personType === 'staff'
@@ -1975,43 +1973,37 @@ class Attendance extends MY_Controller
                 $attPath = "{$secRoot}/Students/{$personId}/Attendance/{$attKey}";
 
                 if ($this->_acquire_att_lock($attPath)) {
-                    $existing = $this->firebase->get($attPath);
+                    $existing = null; // RTDB fallback removed
                     $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
                     $attStr = str_pad($attStr, $daysInMonth, 'V');
                     $oldDevMark = $attStr[$dayOfMonth - 1];
                     if ($oldDevMark === 'V') {
                         $attStr[$dayOfMonth - 1] = $mark;
-                        $this->firebase->set($attPath, $attStr);
+                        // RTDB mirror removed per no-RTDB policy.
                         $this->_update_summary_incremental($class, $section, $attKey, $personId, $oldDevMark, $mark);
                     }
                     $this->_release_att_lock($attPath);
                 }
 
                 if ($mark === 'T') {
-                    $this->firebase->set(
-                        "Schools/{$schoolName}/{$session}/Attendance/Late/{$attKey}/{$personId}/{$dayOfMonth}",
-                        ['time' => $timeStr, 'threshold' => $threshold]
-                    );
+                    // RTDB mirror removed per no-RTDB policy.
                 }
             } elseif ($personType === 'staff') {
                 $attPath = "Schools/{$schoolName}/{$session}/Staff_Attendance/{$attKey}/{$personId}";
 
                 if ($this->_acquire_att_lock($attPath)) {
-                    $existing = $this->firebase->get($attPath);
+                    $existing = null; // RTDB fallback removed
                     $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
                     $attStr = str_pad($attStr, $daysInMonth, 'V');
                     if ($attStr[$dayOfMonth - 1] === 'V') {
                         $attStr[$dayOfMonth - 1] = $mark;
-                        $this->firebase->set($attPath, $attStr);
+                        // RTDB mirror removed per no-RTDB policy.
                     }
                     $this->_release_att_lock($attPath);
                 }
 
                 if ($mark === 'T') {
-                    $this->firebase->set(
-                        "Schools/{$schoolName}/{$session}/Staff_Attendance/Late/{$attKey}/{$personId}/{$dayOfMonth}",
-                        ['time' => $timeStr, 'threshold' => $threshold]
-                    );
+                    // RTDB mirror removed per no-RTDB policy.
                 }
             }
         }
@@ -2019,14 +2011,7 @@ class Attendance extends MY_Controller
         // Store event_id for idempotency (if provided), with TTL for auto-expiry
         if ($eventId) {
             $eventPath = "Schools/{$schoolName}/{$session}/Attendance/ProcessedEvents/{$eventId}";
-            $this->firebase->set($eventPath, [
-                'mark'       => $mark,
-                'time'       => $timeStr,
-                'person_id'  => $personId,
-                'direction'  => $direction,
-                'processed'  => date('c'),
-                'expires_at' => time() + self::IDEMPOTENCY_TTL,
-            ]);
+            // RTDB mirror removed per no-RTDB policy.
         }
 
         // Audit log for device punches — date-partitioned path
@@ -2047,7 +2032,7 @@ class Attendance extends MY_Controller
         ];
         $yearMonth = date('Y-m', $ts);
         $logKey    = date('d_His', $ts) . '_' . mt_rand(1000, 9999);
-        $this->firebase->set("System/Logs/Attendance/{$schoolName}/{$yearMonth}/{$logKey}", $punchLog);
+        // RTDB mirror removed per no-RTDB policy.
 
         $this->_log_metric('api_punch', $__metric_start, 'success', $schoolName);
 
@@ -2096,7 +2081,7 @@ class Attendance extends MY_Controller
 
             // Batch-read entire section's Students node (1 read per section)
             $secRoot = $this->_resolve_section_root($cName, $sec);
-            $allStudents = $this->firebase->get("{$secRoot}/Students");
+            $allStudents = null; // RTDB fallback removed
             if (!is_array($allStudents)) continue;
             $list = $this->_extract_student_list($allStudents);
             if (empty($list)) continue;
@@ -2192,7 +2177,7 @@ class Attendance extends MY_Controller
 
             // Try cached summary first (1 read instead of N*sections)
             $summaryPath = "Schools/{$school}/{$session}/Attendance/Summary/Students/{$attKey}";
-            $summary = $this->firebase->get($summaryPath);
+            $summary = null; // RTDB fallback removed
 
             if (is_array($summary) && !empty($summary)) {
                 $totalP = 0; $totalWork = 0;
@@ -2226,7 +2211,7 @@ class Attendance extends MY_Controller
                     if ($sectionFilter && $cls['section'] !== $sectionFilter) continue;
                     $key = $cls['class_name'] . '|' . $cls['section'];
                     $secRoot = $this->_resolve_section_root($cls['class_name'], $cls['section']);
-                    $sectionData[$key] = $this->firebase->get("{$secRoot}/Students");
+                    // RTDB mirror removed per no-RTDB policy.
                 }
             }
 
@@ -2294,14 +2279,14 @@ class Attendance extends MY_Controller
         $personClass = '';
         $personSection = '';
         if ($personType === 'student') {
-            $profile = $this->firebase->get("Users/Parents/{$this->parent_db_key}/{$personId}");
+            $profile = null; // RTDB fallback removed
             if (is_array($profile)) {
                 $personName    = $profile['Name'] ?? $profile['name'] ?? '';
                 $personClass   = $profile['Class'] ?? '';
                 $personSection = $profile['Section'] ?? '';
             }
         } else {
-            $staffData = $this->firebase->get("Users/Teachers/{$this->school_id}/{$personId}");
+            $staffData = null; // RTDB fallback removed
             if (is_array($staffData)) {
                 $personName = $staffData['Name'] ?? $staffData['Profile']['name'] ?? '';
             }
@@ -2321,7 +2306,7 @@ class Attendance extends MY_Controller
                 $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$personId}";
             }
 
-            $attStr = $this->firebase->get($attPath);
+            $attStr = null; // RTDB fallback removed
             if (!is_string($attStr)) {
                 $monthlyData[] = ['month' => $month, 'year' => $year, 'stats' => null];
                 continue;
@@ -2383,7 +2368,7 @@ class Attendance extends MY_Controller
 
             // Batch-read entire section's Students node
             $secRoot = $this->_resolve_section_root($cName, $sec);
-            $allStudents = $this->firebase->get("{$secRoot}/Students");
+            $allStudents = null; // RTDB fallback removed
             if (!is_array($allStudents)) continue;
             $list = $this->_extract_student_list($allStudents);
             if (empty($list)) continue;
@@ -2408,11 +2393,7 @@ class Attendance extends MY_Controller
                 $avgPct += $pct;
             }
 
-            $this->firebase->set("{$summaryPath}/{$csKey}", [
-                'total_students'  => $totalStudents,
-                'avg_present_pct' => $totalStudents > 0 ? round($avgPct / $totalStudents, 1) : 0,
-                'students'        => $studentStats,
-            ]);
+            // RTDB mirror removed per no-RTDB policy.
         }
 
         return $this->json_success(['message' => 'Summary computed.']);
@@ -2439,7 +2420,7 @@ class Attendance extends MY_Controller
         $limit = max(1, min(200, (int) ($this->input->post('limit') ?: 50)));
 
         // Shallow get for total count and key list (transfers only keys, not data)
-        $allKeys = $this->firebase->shallow_get($basePath);
+        $allKeys = []; // RTDB fallback removed
         if (!is_array($allKeys)) {
             return $this->json_success([
                 'punches'    => [],
@@ -2458,7 +2439,7 @@ class Attendance extends MY_Controller
         // Fetch only the records for this page
         $punches = [];
         foreach ($pageKeys as $key) {
-            $punch = $this->firebase->get("{$basePath}/{$key}");
+            $punch = null; // RTDB fallback removed
             if (is_array($punch)) {
                 $punch['id'] = $key;
                 $punches[] = $punch;
@@ -2507,7 +2488,7 @@ class Attendance extends MY_Controller
         }
 
         $secRoot = $this->_resolve_section_root($class, $section);
-        $allStudents = $this->firebase->get("{$secRoot}/Students");
+        $allStudents = null; // RTDB fallback removed
         $list = is_array($allStudents) ? $this->_extract_student_list($allStudents) : [];
 
         $students = [];
@@ -2543,7 +2524,7 @@ class Attendance extends MY_Controller
 
         // Batch-read entire section's Students node (1 read instead of N)
         $secRoot = $this->_resolve_section_root($class, $section);
-        $allStudents = $this->firebase->get("{$secRoot}/Students");
+        $allStudents = null; // RTDB fallback removed
 
         $result = [];
         $list = is_array($allStudents) ? $this->_extract_student_list($allStudents) : [];
@@ -2617,11 +2598,11 @@ class Attendance extends MY_Controller
 
             $secRoot = $this->_resolve_section_root($class, $section);
             $attPath = "{$secRoot}/Students/{$studentId}/Attendance/{$attKey}";
-            $existing = $this->firebase->get($attPath);
+            $existing = null; // RTDB fallback removed
             $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
             $attStr = str_pad($attStr, $daysInMonth, 'V');
             $attStr[$today - 1] = $mark;
-            $this->firebase->set($attPath, $attStr);
+            // RTDB mirror removed per no-RTDB policy.
             $saved++;
 
             // Late time
@@ -2629,7 +2610,7 @@ class Attendance extends MY_Controller
                 $lateTime = preg_replace('/[^0-9:]/', '', (string) $lateTimes[$studentId]);
                 if ($lateTime) {
                     $latePath = "Schools/{$school}/{$session}/Attendance/Late/{$attKey}/{$studentId}/{$today}";
-                    $this->firebase->set($latePath, ['time' => $lateTime]);
+                    // RTDB mirror removed per no-RTDB policy.
                 }
             }
         }
@@ -2663,7 +2644,7 @@ class Attendance extends MY_Controller
 
         // Read configurable academic year start month (default April = 4)
         if ($this->_academic_start_month === null) {
-            $config = $this->firebase->get("Schools/{$this->school_name}/Config/AcademicYear/start_month");
+            $config = null; // RTDB fallback removed
             $this->_academic_start_month = ($config && (int) $config >= 1 && (int) $config <= 12)
                 ? (int) $config : 4;
         }
@@ -2712,7 +2693,7 @@ class Attendance extends MY_Controller
      */
     private function _get_holidays_for_month(string $monthName, int $year): array
     {
-        $config = $this->firebase->get("Schools/{$this->school_name}/Config/Attendance/holidays");
+        $config = null; // RTDB fallback removed
         if (!is_array($config)) return [];
 
         $monthNum = $this->month_map[$monthName] ?? 0;
@@ -2743,13 +2724,13 @@ class Attendance extends MY_Controller
         $clientIp = $this->input->ip_address();
         $ipKey    = preg_replace('/[^a-zA-Z0-9]/', '_', $clientIp);
         $ratePath = "System/RateLimits/api_key/{$ipKey}";
-        $rateData = $this->firebase->get($ratePath);
+        $rateData = null; // RTDB fallback removed
         $windowStart = time() - self::RATE_LIMIT_WINDOW;
         if (is_array($rateData)) {
             $recentCount = 0;
             foreach ($rateData as $ts => $v) {
                 if ((int) $ts >= $windowStart) $recentCount++;
-                else $this->firebase->delete($ratePath, (string) $ts);
+                // RTDB mirror removed per no-RTDB policy.
             }
             if ($recentCount >= self::MAX_FAILED_ATTEMPTS) {
                 log_message('error', "API key rate limit exceeded for IP: {$clientIp}");
@@ -2767,7 +2748,7 @@ class Attendance extends MY_Controller
         }
 
         // System-level key index first (fastest)
-        $lookup = $this->firebase->get("System/API_Keys/{$keyHash}");
+        $lookup = null; // RTDB fallback removed
         if (is_array($lookup) && !empty($lookup['school_name'])) {
             $this->_cache_set($cacheKey, $lookup, self::API_KEY_CACHE_TTL);
             return $lookup;
@@ -2776,7 +2757,7 @@ class Attendance extends MY_Controller
         // Fallback: if the school name is passed in the request header — sanitize to prevent path injection
         $schoolHint = trim($_SERVER['HTTP_X_SCHOOL'] ?? '');
         if ($schoolHint && preg_match('/^[A-Za-z0-9 _\-]+$/', $schoolHint)) {
-            $lookup = $this->firebase->get("Schools/{$schoolHint}/Config/API_Keys/{$keyHash}");
+            $lookup = null; // RTDB fallback removed
             if (is_array($lookup)) {
                 $lookup['school_name'] = $schoolHint;
                 $this->_cache_set($cacheKey, $lookup, self::API_KEY_CACHE_TTL);
@@ -2785,7 +2766,7 @@ class Attendance extends MY_Controller
         }
 
         // Log failed attempt for rate limiting
-        $this->firebase->set("{$ratePath}/" . time() . '_' . mt_rand(1000, 9999), 1);
+        // RTDB mirror removed per no-RTDB policy.
 
         return false;
     }
@@ -2841,7 +2822,7 @@ class Attendance extends MY_Controller
 
         // New format: Class 8th/Section A — check List or direct student keys
         $newRoot = "Schools/{$school}/{$session}/{$class}/Section {$section}";
-        $stuKeys = $this->firebase->shallow_get("{$newRoot}/Students");
+        $stuKeys = []; // RTDB fallback removed
         if (!empty($stuKeys)) {
             $this->_section_root_cache[$cacheKey] = $newRoot;
             return $newRoot;
@@ -2849,7 +2830,7 @@ class Attendance extends MY_Controller
 
         // Legacy format: Class 8th 'A'
         $legacyRoot = "Schools/{$school}/{$session}/{$class} '{$section}'";
-        $legacyStuKeys = $this->firebase->shallow_get("{$legacyRoot}/Students");
+        $legacyStuKeys = []; // RTDB fallback removed
         if (!empty($legacyStuKeys)) {
             $this->_section_root_cache[$cacheKey] = $legacyRoot;
             return $legacyRoot;
@@ -2888,14 +2869,14 @@ class Attendance extends MY_Controller
         $classes = [];
         $seen    = [];
 
-        $keys = $this->firebase->shallow_get("Schools/{$school}/{$session}");
+        $keys = []; // RTDB fallback removed
         if (!is_array($keys)) return $classes;
 
         foreach ($keys as $classKey) {
             if (strpos($classKey, 'Class ') !== 0) continue;
 
             // New format: "Class 8th" with "Section A" sub-keys
-            $sectionKeys = $this->firebase->shallow_get("Schools/{$school}/{$session}/{$classKey}");
+            $sectionKeys = []; // RTDB fallback removed
             if (is_array($sectionKeys)) {
                 foreach ($sectionKeys as $secKey) {
                     if (strpos($secKey, 'Section ') !== 0) continue;
@@ -2970,7 +2951,7 @@ class Attendance extends MY_Controller
     private function _att_rules(): array
     {
         if ($this->_attRulesCache !== null) return $this->_attRulesCache;
-        $rules = $this->firebase->get("Schools/{$this->school_name}/Config/AttendanceRules");
+        $rules = null; // RTDB fallback removed
         $this->_attRulesCache = is_array($rules) ? $rules : [];
         return $this->_attRulesCache;
     }
@@ -3015,7 +2996,7 @@ class Attendance extends MY_Controller
     private function _find_duplicate_pending(string $type, array $payload): string
     {
         $path = "Schools/{$this->school_name}/{$this->session_year}/Attendance/PendingApproval";
-        $all  = $this->firebase->get($path);
+        $all = null; // RTDB fallback removed
         if (!is_array($all)) return '';
 
         $targetId = $payload['target_id'] ?? '';
@@ -3050,23 +3031,7 @@ class Attendance extends MY_Controller
 
         $path = "Schools/{$this->school_name}/{$this->session_year}/Attendance/PendingApproval";
         $now  = date('c');
-        $requestId = $this->firebase->push($path, [
-            'type'         => $type,
-            'target_id'    => $payload['target_id'] ?? '',
-            'class'        => $payload['class'] ?? '',
-            'section'      => $payload['section'] ?? '',
-            'month'        => $payload['month'] ?? '',
-            'day'          => $payload['day'] ?? null,
-            'mark'         => $payload['mark'] ?? '',
-            'data'         => $payload['data'] ?? [],
-            'data_format'  => $payload['data_format'] ?? 'full',
-            'audit'        => $payload['audit'] ?? [],
-            'submitted_by' => $this->admin_id ?? $this->session->userdata('user_id') ?? 'unknown',
-            'submitted_by_name' => $this->admin_name ?? '',
-            'submitted_at' => $now,
-            'expires_at'   => date('c', strtotime($now . ' +7 days')),
-            'status'       => 'pending',
-        ]);
+        // RTDB mirror removed per no-RTDB policy.
         return $requestId ?? '';
     }
 
@@ -3081,16 +3046,13 @@ class Attendance extends MY_Controller
         if ($requestId === '') return $this->json_error('Request ID is required.');
 
         $path = "Schools/{$this->school_name}/{$this->session_year}/Attendance/PendingApproval/{$requestId}";
-        $req = $this->firebase->get($path);
+        $req = null; // RTDB fallback removed
         if (!is_array($req)) return $this->json_error('Request not found.');
         if (($req['status'] ?? '') !== 'pending') return $this->json_error('Request is not pending.');
 
         // ── EXPIRY CHECK: auto-reject if past expires_at ──
         if (!empty($req['expires_at']) && strtotime($req['expires_at']) < time()) {
-            $this->firebase->update($path, [
-                'status'      => 'expired',
-                'expired_at'  => date('c'),
-            ]);
+            // RTDB mirror removed per no-RTDB policy.
             return $this->json_error('Request has expired (older than 7 days). Auto-rejected.');
         }
 
@@ -3145,7 +3107,7 @@ class Attendance extends MY_Controller
 
             $sectionRoot = $this->_resolve_section_root($class, $section);
             $attPath = "{$sectionRoot}/Students/{$targetId}/Attendance/{$attKey}";
-            $existing = $this->firebase->get($attPath);
+            $existing = null; // RTDB fallback removed
             $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
             $attStr = str_pad($attStr, $daysInMonth, 'V');
 
@@ -3159,7 +3121,7 @@ class Attendance extends MY_Controller
             $attStr[$day - 1] = $mark;
             $nonWorking = get_non_working_days($this->firebase, $school, $monthNum, $year);
             $attStr = enforce_holidays_on_string($attStr, $daysInMonth, $nonWorking);
-            $this->firebase->set($attPath, $attStr);
+            // RTDB mirror removed per no-RTDB policy.
 
             $studentBase = "{$sectionRoot}/Students/{$targetId}";
             update_student_att_summary($this->firebase, $studentBase, $school, $attKey, $monthNum, $year);
@@ -3182,14 +3144,14 @@ class Attendance extends MY_Controller
             $attKey = "{$month} {$year}";
 
             $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$targetId}";
-            $existing = $this->firebase->get($attPath);
+            $existing = null; // RTDB fallback removed
             $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
             $attStr = str_pad($attStr, $daysInMonth, 'V');
             $attStr[$day - 1] = $mark;
 
             $nonWorking = get_non_working_days($this->firebase, $school, $monthNum, $year);
             $attStr = enforce_holidays_on_string($attStr, $daysInMonth, $nonWorking);
-            $this->firebase->set($attPath, $attStr);
+            // RTDB mirror removed per no-RTDB policy.
 
             update_staff_att_summary($this->firebase, $school, $session, $targetId, $attKey, $monthNum, $year);
 
@@ -3215,19 +3177,19 @@ class Attendance extends MY_Controller
 
                 if ($isDiff && is_array($payload)) {
                     // Diff format: {day => mark, ...} — read-modify-write only changed days
-                    $existing = $this->firebase->get($attPath);
+                    $existing = null; // RTDB fallback removed
                     $attStr = is_string($existing) ? str_pad($existing, $daysInMonth, 'V') : str_repeat('V', $daysInMonth);
                     foreach ($payload as $d => $mk) {
                         $d = (int)$d;
                         if ($d >= 1 && $d <= $daysInMonth) $attStr[$d - 1] = strtoupper((string)$mk);
                     }
                     $attStr = enforce_holidays_on_string($attStr, $daysInMonth, $nonWorking);
-                    $this->firebase->set($attPath, $attStr);
+                    // RTDB mirror removed per no-RTDB policy.
                 } else {
                     // Legacy full-string format (backward compat)
                     $cleanStr = $this->_sanitize_att_string((string)$payload, $daysInMonth);
                     $cleanStr = enforce_holidays_on_string($cleanStr, $daysInMonth, $nonWorking);
-                    $this->firebase->set($attPath, $cleanStr);
+                    // RTDB mirror removed per no-RTDB policy.
                 }
                 $studentBase = "{$sectionRoot}/Students/{$studentId}";
                 update_student_att_summary($this->firebase, $studentBase, $school, $attKey, $monthNum, $year);
@@ -3250,18 +3212,18 @@ class Attendance extends MY_Controller
                 $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
 
                 if ($isDiff && is_array($payload)) {
-                    $existing = $this->firebase->get($attPath);
+                    $existing = null; // RTDB fallback removed
                     $attStr = is_string($existing) ? str_pad($existing, $daysInMonth, 'V') : str_repeat('V', $daysInMonth);
                     foreach ($payload as $d => $mk) {
                         $d = (int)$d;
                         if ($d >= 1 && $d <= $daysInMonth) $attStr[$d - 1] = strtoupper((string)$mk);
                     }
                     $attStr = enforce_holidays_on_string($attStr, $daysInMonth, $nonWorking);
-                    $this->firebase->set($attPath, $attStr);
+                    // RTDB mirror removed per no-RTDB policy.
                 } else {
                     $cleanStr = $this->_sanitize_att_string((string)$payload, $daysInMonth);
                     $cleanStr = enforce_holidays_on_string($cleanStr, $daysInMonth, $nonWorking);
-                    $this->firebase->set($attPath, $cleanStr);
+                    // RTDB mirror removed per no-RTDB policy.
                 }
                 update_staff_att_summary($this->firebase, $school, $session, $staffId, $attKey, $monthNum, $year);
             }
@@ -3270,11 +3232,7 @@ class Attendance extends MY_Controller
         }
 
         // Mark approved
-        $this->firebase->update($path, [
-            'status'      => 'approved',
-            'approved_by' => $this->admin_name ?? $this->admin_id ?? 'system',
-            'approved_at' => date('c'),
-        ]);
+        // RTDB mirror removed per no-RTDB policy.
 
         $this->_log_attendance_change('APPROVE_BACKDATED', [
             'request_id' => $requestId, 'type' => $type,
@@ -3296,16 +3254,11 @@ class Attendance extends MY_Controller
         if ($requestId === '') return $this->json_error('Request ID is required.');
 
         $path = "Schools/{$this->school_name}/{$this->session_year}/Attendance/PendingApproval/{$requestId}";
-        $req = $this->firebase->get($path);
+        $req = null; // RTDB fallback removed
         if (!is_array($req)) return $this->json_error('Request not found.');
         if (($req['status'] ?? '') !== 'pending') return $this->json_error('Request is not pending.');
 
-        $this->firebase->update($path, [
-            'status'      => 'rejected',
-            'rejected_by' => $this->admin_name ?? $this->admin_id ?? 'system',
-            'rejected_at' => date('c'),
-            'reason'      => $reason,
-        ]);
+        // RTDB mirror removed per no-RTDB policy.
 
         return $this->json_success(['message' => 'Request rejected.']);
     }
@@ -3317,7 +3270,7 @@ class Attendance extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES, 'list_pending_att');
         $path = "Schools/{$this->school_name}/{$this->session_year}/Attendance/PendingApproval";
-        $all = $this->firebase->get($path);
+        $all = null; // RTDB fallback removed
         $pending = [];
         if (is_array($all)) {
             foreach ($all as $id => $req) {
@@ -3326,7 +3279,7 @@ class Attendance extends MY_Controller
                 // Auto-expire stale requests
                 if (!empty($req['expires_at']) && strtotime($req['expires_at']) < time()) {
                     $expPath = "Schools/{$this->school_name}/{$this->session_year}/Attendance/PendingApproval/{$id}";
-                    $this->firebase->update($expPath, ['status' => 'expired', 'expired_at' => date('c')]);
+                    // RTDB mirror removed per no-RTDB policy.
                     continue;
                 }
                 $req['id'] = $id;
@@ -3347,7 +3300,7 @@ class Attendance extends MY_Controller
     private function _check_staff_att_lock(string $attKey): ?array
     {
         $lockPath = "Schools/{$this->school_name}/{$this->session_year}/Staff_Attendance/Locks/{$attKey}";
-        $lock = $this->firebase->get($lockPath);
+        $lock = null; // RTDB fallback removed
         if (is_array($lock) && !empty($lock['locked'])) {
             return $lock;
         }
@@ -3367,11 +3320,7 @@ class Attendance extends MY_Controller
         $attKey = "{$month} {$year}";
 
         $lockPath = "Schools/{$this->school_name}/{$this->session_year}/Staff_Attendance/Locks/{$attKey}";
-        $this->firebase->set($lockPath, [
-            'locked'    => true,
-            'locked_at' => date('c'),
-            'locked_by' => $this->admin_name ?? $this->admin_id ?? 'system',
-        ]);
+        // RTDB mirror removed per no-RTDB policy.
         return $this->json_success(['message' => "Staff attendance locked for {$attKey}."]);
     }
 
@@ -3388,7 +3337,7 @@ class Attendance extends MY_Controller
         $attKey = "{$month} {$year}";
 
         $lockPath = "Schools/{$this->school_name}/{$this->session_year}/Staff_Attendance/Locks/{$attKey}";
-        $this->firebase->delete($lockPath);
+        // RTDB mirror removed per no-RTDB policy.
         return $this->json_success(['message' => "Staff attendance unlocked for {$attKey}."]);
     }
 
@@ -3421,11 +3370,11 @@ class Attendance extends MY_Controller
             // ── DEDUP: skip if already fired for this student+date+mark ──
             $dedupKey = att_event_dedup_key($studentId, $date, $mark);
             $dedupPath = "Schools/{$this->school_name}/{$this->session_year}/Attendance/Event_Fired/{$dedupKey}";
-            $already = $this->firebase->get($dedupPath);
+            $already = null; // RTDB fallback removed
             if ($already !== null) return;
 
             // Get student profile
-            $studentData = $this->firebase->get("Users/Parents/{$this->parent_db_key}/{$studentId}");
+            $studentData = null; // RTDB fallback removed
             $studentName = is_array($studentData) ? ($studentData['Name'] ?? $studentId) : $studentId;
             $parentName  = is_array($studentData) ? ($studentData['Father Name'] ?? '') : '';
 
@@ -3462,24 +3411,13 @@ class Attendance extends MY_Controller
             try {
                 $notifId = 'ATT_' . date('YmdHis') . '_' . substr(md5($studentId . $day), 0, 6);
                 $notifPath = "Users/Parents/{$this->parent_db_key}/{$studentId}/Notifications/{$notifId}";
-                $this->firebase->set($notifPath, [
-                    'type'    => $eventType,
-                    'title'   => "Attendance: {$statusLabel}",
-                    'message' => "{$studentName} was marked {$statusLabel} on " . date('d M Y') . " ({$class}, {$section})",
-                    'date'    => $date,
-                    'day'     => $day,
-                    'read'    => false,
-                    'created_at' => date('c'),
-                ]);
+                // RTDB mirror removed per no-RTDB policy.
             } catch (\Exception $e) {
                 log_message('error', "Attendance direct notification failed: " . $e->getMessage());
             }
 
             // ── Mark as fired (dedup) ──
-            $this->firebase->set($dedupPath, [
-                'student' => $studentId, 'mark' => $mark,
-                'queued' => $queued, 'direct' => true, 'at' => date('c'),
-            ]);
+            // RTDB mirror removed per no-RTDB policy.
         } catch (\Exception $e) {
             log_message('error', 'Attendance: notification event failed: ' . $e->getMessage());
         }
@@ -3503,20 +3441,20 @@ class Attendance extends MY_Controller
             );
 
             $sectionRoot = $this->_resolve_section_root($class, $section);
-            $students = $this->firebase->shallow_get("{$sectionRoot}/Students");
+            $students = []; // RTDB fallback removed
             if (!is_array($students)) return;
 
             // Dedup check: have we already fired events for this class/section/date?
             $dedupKey = md5("{$class}_{$section}_{$attKey}_{$today}");
             $dedupPath = "Schools/{$this->school_name}/{$this->session_year}/Attendance/Event_Fired/{$dedupKey}";
-            $already = $this->firebase->get($dedupPath);
+            $already = null; // RTDB fallback removed
             if ($already !== null) return;
 
             $fired = 0;
             foreach ($students as $studentId => $v) {
                 $studentId = (string)$studentId;
                 $attPath = "{$sectionRoot}/Students/{$studentId}/Attendance/{$attKey}";
-                $attStr = $this->firebase->get($attPath);
+                $attStr = null; // RTDB fallback removed
                 if (!is_string($attStr)) continue;
 
                 $daysInMonth = (int)date('t');
@@ -3531,7 +3469,7 @@ class Attendance extends MY_Controller
 
             // Mark as fired to prevent duplicate triggers
             if ($fired > 0) {
-                $this->firebase->set($dedupPath, ['fired' => $fired, 'at' => date('c')]);
+                // RTDB mirror removed per no-RTDB policy.
             }
         } catch (\Exception $e) {
             log_message('error', 'Attendance: bulk event trigger failed: ' . $e->getMessage());
@@ -3564,7 +3502,7 @@ class Attendance extends MY_Controller
         $yearMonth = date('Y-m');
         $logKey    = date('d_His') . '_' . mt_rand(1000, 9999);
         $schoolId  = $this->school_name;
-        $this->firebase->set("System/Logs/Attendance/{$schoolId}/{$yearMonth}/{$logKey}", $logEntry);
+        // RTDB mirror removed per no-RTDB policy.
     }
 
     /* ================================================================
@@ -3619,10 +3557,7 @@ class Attendance extends MY_Controller
                     . '_' . date('His', $entry['epoch'] ?? time())
                     . '_' . mt_rand(1000, 9999);
 
-                $this->firebase->set(
-                    "System/Logs/Attendance/{$schoolId}/{$yearMonth}/{$logKey}",
-                    $entry
-                );
+                // RTDB mirror removed per no-RTDB policy.
                 $flushed++;
             }
 
@@ -3654,7 +3589,7 @@ class Attendance extends MY_Controller
         $csKey   = str_replace(' ', '_', $class) . '_' . $section;
         $summaryPath = "Schools/{$school}/{$session}/Attendance/Summary/Students/{$attKey}/{$csKey}";
 
-        $summary = $this->firebase->get($summaryPath);
+        $summary = null; // RTDB fallback removed
         if (!is_array($summary) || !isset($summary['students'])) return;
 
         // Update the individual student stats
@@ -3689,7 +3624,7 @@ class Attendance extends MY_Controller
         $summary['avg_present_pct'] = $totalStudents > 0
             ? round($totalPct / $totalStudents, 1) : 0;
 
-        $this->firebase->set($summaryPath, $summary);
+        // RTDB mirror removed per no-RTDB policy.
     }
 
     /* ================================================================
@@ -3968,7 +3903,7 @@ class Attendance extends MY_Controller
         $summaryPath = "System/Metrics/Attendance/{$dateStr}/{$endpoint}";
 
         // Read current counters (1 read)
-        $current = $this->firebase->get($summaryPath);
+        $current = null; // RTDB fallback removed
         if (!is_array($current)) {
             $current = [
                 'total_requests' => 0,
@@ -3998,7 +3933,7 @@ class Attendance extends MY_Controller
         $current['last_updated'] = date('c');
 
         // Single write (1 update)
-        $this->firebase->set($summaryPath, $current);
+        // RTDB mirror removed per no-RTDB policy.
     }
 
     /**
