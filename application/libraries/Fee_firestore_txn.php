@@ -311,6 +311,22 @@ class Fee_firestore_txn
         } catch (\Exception $_) { return false; }
     }
 
+    /**
+     * Token-independent lock release — used by the admin "unstick" flow
+     * (R.7) when a crash orphaned a lock whose token is no longer known.
+     * NEVER call from the regular payment/refund path; that path must
+     * always present its own token via releaseLock() so we don't steal
+     * an actively-held lock from a concurrent in-flight operation.
+     */
+    public function forceReleaseLock(string $userId): bool
+    {
+        if (!$this->ready || $userId === '') return false;
+        $docId = "{$this->schoolId}_{$userId}";
+        try {
+            return (bool) $this->firebase->firestoreDelete(self::COL_LOCKS, $docId);
+        } catch (\Exception $_) { return false; }
+    }
+
     // ─── Idempotency ───────────────────────────────────────────────────
 
     public function idempKey(string $userId, string $receiptNo, array $months, float $amount): string

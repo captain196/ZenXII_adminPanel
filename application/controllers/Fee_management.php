@@ -1883,6 +1883,108 @@ class Fee_management extends MY_Controller
         $this->json_success($result['data']);
     }
 
+    /**
+     * POST — Unstick a refund left stranded in 'processing' status.
+     * Params: refund_id (required)
+     *
+     * R.7 rescue endpoint. When a crash / timeout interrupts
+     * Fee_refund_service::process() after it flips the refund doc to
+     * 'processing' but before it marks 'processed', the doc stays stuck
+     * and cannot be re-tried because both the `processLock` timestamp
+     * and the per-student `feeLocks` doc may outlive the 5-minute TTL
+     * without being released. This endpoint:
+     *   1. Verifies the stored `processLock` is actually stale
+     *      (older than LOCK_TTL = 300s) — refuses otherwise, so we
+     *      never steal from an in-flight process().
+     *   2. Rolls the refund doc back to 'approved' + clears processLock.
+     *   3. Force-releases the per-student feeLocks entry (token-blind).
+     *   4. Deletes the feeIdempotency hash so a retry can proceed.
+     * Admin then re-clicks "Process" on the refund row.
+     */
+    public function unstick_refund()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'unstick_refund');
+        $this->_bootFsTxn();
+
+        $refId = trim((string) $this->_post('refund_id'));
+        if ($refId === '') $this->json_error('Refund ID is required.');
+        $refId = $this->safe_path_segment($refId, 'refund_id');
+
+        $refund = $this->fsTxn->getRefund($refId);
+        if (!is_array($refund)) {
+            $this->json_error('Refund not found.');
+        }
+
+        $status = (string) ($refund['status'] ?? '');
+        if ($status !== 'processing') {
+            $this->json_error("Only 'processing' refunds can be unstuck. Current status: '{$status}'.");
+        }
+
+        // Fee_refund_service uses LOCK_TTL = 300. Match it here so an
+        // admin can't race an in-flight process() that's still inside
+        // its own lock window.
+        $lockTsRaw = (string) ($refund['processLock'] ?? $refund['process_lock'] ?? '');
+        $lockTs    = $lockTsRaw !== '' ? strtotime($lockTsRaw) : 0;
+        $age       = $lockTs ? (time() - $lockTs) : PHP_INT_MAX;
+        if ($lockTs && $age < 300) {
+            $wait = 300 - $age;
+            $this->json_error("Refund is still within its processing window. Wait {$wait}s before unsticking.");
+        }
+
+        $studentId     = (string) ($refund['studentId']  ?? $refund['student_id']  ?? '');
+        $origReceiptNo = (string) ($refund['receiptNo']  ?? $refund['receipt_no']  ?? '');
+        $amount        = (float)  ($refund['amount']     ?? 0);
+
+        // 1. Roll the refund doc back to 'approved' so the admin can retry.
+        $this->fsTxn->writeRefund($refId, [
+            'status'      => 'approved',
+            'processLock' => '',
+        ]);
+
+        // 2. Force-release the per-student lock (token-blind) so the
+        //    next process() attempt can reacquire it.
+        $lockReleased = false;
+        if ($studentId !== '') {
+            $lockReleased = $this->fsTxn->forceReleaseLock($studentId);
+        }
+
+        // 3. Clear the idempotency marker. Rebuild the exact hash
+        //    Fee_refund_service used when it entered the processing
+        //    window, so the deletion lands on the same doc.
+        $idempCleared = false;
+        if ($studentId !== '' && $amount > 0) {
+            $idempHash    = $this->fsTxn->idempKey($studentId, $refId, [$origReceiptNo], $amount);
+            $idempCleared = $this->fsTxn->deleteIdempotency($idempHash);
+        }
+
+        log_message('warning', "Fee_management::unstick_refund rescued {$refId} (student={$studentId} age={$age}s)");
+
+        // Best-effort audit.
+        try {
+            $this->load->library('Fee_audit', null, 'fee_audit');
+            $this->fee_audit->init(
+                $this->firebase, "{$this->sessionRoot}/Fees",
+                $this->admin_id ?? 'system', $this->admin_name ?? 'System',
+                $this->school_name
+            );
+            $this->fee_audit->log('refund_unstuck', [
+                'refund_id'     => $refId,
+                'student_id'    => $studentId,
+                'prior_age_s'   => $age,
+                'lock_released' => $lockReleased,
+                'idemp_cleared' => $idempCleared,
+            ]);
+        } catch (\Exception $_) { /* audit is non-critical */ }
+
+        $this->json_success([
+            'message'        => 'Refund reset to approved. Click Process to retry.',
+            'refund_id'      => $refId,
+            'prior_age_s'    => $age,
+            'lock_released'  => $lockReleased,
+            'idemp_cleared'  => $idempCleared,
+        ]);
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //  FEE REMINDERS (AJAX)
     // ══════════════════════════════════════════════════════════════════

@@ -60,6 +60,7 @@
         <button class="fm-pill active" data-status="all">All</button>
         <button class="fm-pill" data-status="pending">Pending</button>
         <button class="fm-pill" data-status="approved">Approved</button>
+        <button class="fm-pill" data-status="processing">Processing</button>
         <button class="fm-pill" data-status="processed">Processed</button>
         <button class="fm-pill" data-status="rejected">Rejected</button>
       </div>
@@ -94,6 +95,11 @@
               <div class="fm-form-group">
                 <label class="fm-label">Class / Section</label>
                 <input type="text" class="fm-input fm-readonly" id="rfClassSection" readonly tabindex="-1">
+                <!-- Hidden split-out fields so the controller gets an
+                     unambiguous class + section pair, not a combined string
+                     that has to be parsed. Populated by lookupStudent(). -->
+                <input type="hidden" id="rfClassHidden">
+                <input type="hidden" id="rfSectionHidden">
               </div>
             </div>
             <div class="col-md-3 col-sm-6">
@@ -114,7 +120,11 @@
             <div class="col-md-3 col-sm-6">
               <div class="fm-form-group">
                 <label class="fm-label">Receipt No <span class="fm-req">*</span></label>
-                <input type="text" class="fm-input" id="rfReceiptNo" name="receipt_no" placeholder="e.g. F000012" required>
+                <input type="text" class="fm-input" id="rfReceiptNo" name="receipt_no"
+                       placeholder="e.g. 1  (or R000001 / F1 — any form works)" required>
+                <small class="fm-form-hint" style="margin-top:4px;display:block;color:var(--t3);font-size:0.78rem;">
+                    Enter whatever receipt number you saw after collecting the fee — numeric ("1"), formatted ("R000001"), or F-prefixed ("F1"). The system normalises all forms.
+                </small>
               </div>
             </div>
             <div class="col-md-3 col-sm-6">
@@ -185,7 +195,11 @@
 </div>
 
 <!-- ── Process Refund Modal ── -->
-<div class="modal fade" id="processModal" tabindex="-1" role="dialog">
+<!-- Process modal: static backdrop + ESC disabled so a stray click or
+     keystroke mid-process can't dismiss the dialog while an AJAX write is
+     in flight. User must use Cancel or OK to close. -->
+<div class="modal fade" id="processModal" tabindex="-1" role="dialog"
+     data-backdrop="static" data-keyboard="false">
   <div class="modal-dialog fm-modal-dialog" role="document">
     <div class="modal-content fm-modal-content">
       <div class="fm-modal-header">
@@ -225,10 +239,10 @@
           <label class="fm-label">Refund Mode <span class="fm-req">*</span></label>
           <select class="fm-select" id="pmRefundMode" required>
             <option value="">-- Select Mode --</option>
-            <option value="Cash">Cash</option>
-            <option value="Bank Transfer">Bank Transfer</option>
-            <option value="Cheque">Cheque</option>
-            <option value="Adjustment">Adjustment</option>
+            <option value="cash">Cash</option>
+            <option value="bank_transfer">Bank Transfer</option>
+            <option value="cheque">Cheque</option>
+            <option value="online">Online / Adjustment</option>
           </select>
         </div>
         <div class="fm-form-group">
@@ -368,38 +382,77 @@ document.addEventListener('DOMContentLoaded', function() {
 
   function statusBadge(s) {
     var cls = {
-      pending:   'fm-badge-pending',
-      approved:  'fm-badge-approved',
-      processed: 'fm-badge-processed',
-      rejected:  'fm-badge-rejected'
+      pending:    'fm-badge-pending',
+      approved:   'fm-badge-approved',
+      processing: 'fm-badge-processing',
+      processed:  'fm-badge-processed',
+      rejected:   'fm-badge-rejected'
     };
     var label = s.charAt(0).toUpperCase() + s.slice(1);
     return '<span class="fm-badge ' + (cls[s] || '') + '">' + label + '</span>';
   }
 
+  // Escape user-supplied text before injecting into HTML attributes.
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"'`]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c])); }
+
   function actionButtons(item) {
     var s = (item.status || '').toLowerCase();
-    var id = item.id;
+    var id = esc(item.id);
     var btns = '';
     if (s === 'pending') {
-      btns += '<button class="fm-btn-xs fm-btn-approve" onclick="approveRefund(\'' + id + '\')" title="Approve"><i class="fa fa-check"></i></button>';
-      btns += '<button class="fm-btn-xs fm-btn-reject" onclick="rejectRefund(\'' + id + '\')" title="Reject"><i class="fa fa-times"></i></button>';
+      btns += '<button class="fm-btn-xs fm-btn-approve" data-action="approve" data-id="' + id + '" title="Approve"><i class="fa fa-check"></i></button>';
+      btns += '<button class="fm-btn-xs fm-btn-reject"  data-action="reject"  data-id="' + id + '" title="Reject"><i class="fa fa-times"></i></button>';
     } else if (s === 'approved') {
-      btns += '<button class="fm-btn-xs fm-btn-process" onclick="showProcessModal(\'' + id + '\')" title="Process"><i class="fa fa-cog"></i> Process</button>';
+      btns += '<button class="fm-btn-xs fm-btn-process" data-action="process" data-id="' + id + '" title="Process"><i class="fa fa-cog"></i> Process</button>';
+    } else if (s === 'processing') {
+      // R.7: rescue action for refunds stuck in 'processing' (crash
+      // interrupted the service between status flip and mark 'processed').
+      // The controller enforces the 5-min TTL so misclicks on a still-active
+      // refund are rejected server-side.
+      btns += '<button class="fm-btn-xs fm-btn-unstick" data-action="unstick" data-id="' + id + '" title="Unstick (rescue stuck refund)"><i class="fa fa-unlock"></i> Unstick</button>';
     }
-    btns += '<button class="fm-btn-xs fm-btn-view" onclick="showDetails(\'' + id + '\')" title="View"><i class="fa fa-eye"></i></button>';
+    btns += '<button class="fm-btn-xs fm-btn-view" data-action="view" data-id="' + id + '" title="View"><i class="fa fa-eye"></i></button>';
     return btns;
   }
 
   /* ── Load Refunds ── */
+  // Tracks in-flight fetch so double-clicks on filter pills don't race.
+  var loadingRefunds = false;
   function loadRefunds(status) {
+    if (loadingRefunds) return;
+    loadingRefunds = true;
     status = status || 'all';
-    var $tbody = $('#refundsTableBody');
-    $tbody.html('<tr class="fm-empty-row"><td colspan="9"><div class="fm-empty-state"><i class="fa fa-spinner fa-spin"></i><p>Loading...</p></div></td></tr>');
+
+    var $tbody  = $('#refundsTableBody');
+    var $pills  = $('.fm-pill');
+    var $refBtn = $('#btnRefresh');
+
+    $pills.prop('disabled', true).addClass('fm-disabled');
+    $refBtn.prop('disabled', true);
+    var refOriginal = $refBtn.html();
+    $refBtn.html('<i class="fa fa-spinner fa-spin"></i>');
+
+    // Preserve scroll so Approve/Reject/Process don't jump the user to the
+    // top after a redraw.
+    var preservedScroll = window.scrollY;
+
+    var skeleton = '';
+    for (var k = 0; k < 5; k++) {
+      skeleton += '<tr class="fm-skel-row"><td colspan="9"><div class="fm-skel"></div></td></tr>';
+    }
+    $tbody.html(skeleton);
 
     ajaxPost('fee_management/fetch_refunds', { status: status }, function(err, res) {
-      if (err || !res || !res.success) {
-        $tbody.html('<tr class="fm-empty-row"><td colspan="9"><div class="fm-empty-state"><i class="fa fa-exclamation-triangle"></i><p>' + (err || 'Failed to load refunds') + '</p></div></td></tr>');
+      loadingRefunds = false;
+      $pills.prop('disabled', false).removeClass('fm-disabled');
+      $refBtn.prop('disabled', false).html(refOriginal);
+
+      if (err || !res || (res.status !== 'success' && res.success !== true)) {
+        // Use .text() via jQuery so error strings can't inject HTML.
+        var $errRow = $('<tr class="fm-empty-row"><td colspan="9"><div class="fm-empty-state"><i class="fa fa-exclamation-triangle"></i><p></p></div></td></tr>');
+        $errRow.find('p').text(err || 'Failed to load refunds');
+        $tbody.empty().append($errRow);
         return;
       }
       var items = res.refunds || [];
@@ -414,7 +467,19 @@ document.addEventListener('DOMContentLoaded', function() {
       $('#statRejected').text(stats.rejected || 0);
 
       if (!items.length) {
-        $tbody.html('<tr class="fm-empty-row"><td colspan="9"><div class="fm-empty-state"><i class="fa fa-inbox"></i><p>No refund records found</p></div></td></tr>');
+        // Contextual empty state so the user knows whether to change the
+        // filter or create their first refund.
+        var emptyMsg = ({
+          all:        'No refund records yet. Click "New Refund" to create one.',
+          pending:    'No refunds awaiting approval.',
+          approved:   'No approved refunds waiting to be processed.',
+          processing: 'No refunds currently in-flight. If any appear and stay here >5 min, use Unstick.',
+          processed:  'No processed refunds in the history.',
+          rejected:   'No rejected refunds.'
+        }[status]) || 'No refund records found.';
+        var $empty = $('<tr class="fm-empty-row"><td colspan="9"><div class="fm-empty-state"><i class="fa fa-inbox"></i><p></p></div></td></tr>');
+        $empty.find('p').text(emptyMsg);
+        $tbody.empty().append($empty);
         return;
       }
 
@@ -423,17 +488,18 @@ document.addEventListener('DOMContentLoaded', function() {
         var r = items[i];
         html += '<tr>'
           + '<td>' + (i + 1) + '</td>'
-          + '<td>' + fmtDate(r.date) + '</td>'
-          + '<td class="fm-text-name">' + (r.student_name || '--') + '</td>'
-          + '<td>' + (r.class_section || '--') + '</td>'
-          + '<td>' + (r.fee_title || '--') + '</td>'
-          + '<td><code class="fm-code">' + (r.receipt_no || '--') + '</code></td>'
-          + '<td class="text-right fm-text-money">' + fmtAmount(r.amount) + '</td>'
+          + '<td>' + esc(fmtDate(r.date)) + '</td>'
+          + '<td class="fm-text-name">' + esc(r.student_name || '--') + '</td>'
+          + '<td>' + esc(r.class_section || '--') + '</td>'
+          + '<td>' + esc(r.fee_title || '--') + '</td>'
+          + '<td><code class="fm-code">' + esc(r.receipt_no || '--') + '</code></td>'
+          + '<td class="text-right fm-text-money">' + esc(fmtAmount(r.amount)) + '</td>'
           + '<td class="text-center">' + statusBadge(r.status || 'pending') + '</td>'
           + '<td class="text-center fm-actions">' + actionButtons(r) + '</td>'
           + '</tr>';
       }
       $tbody.html(html);
+      window.scrollTo({ top: preservedScroll, behavior: 'instant' });
     });
   }
 
@@ -457,7 +523,9 @@ document.addEventListener('DOMContentLoaded', function() {
     var data = {
       student_id:    sid,
       student_name:  name,
-      class_section: $('#rfClassSection').val(),
+      class:         $('#rfClassHidden').val(),    // explicit — don't parse class_section on the server
+      section:       $('#rfSectionHidden').val(),
+      class_section: $('#rfClassSection').val(),   // kept for backward compat; controller prefers class+section
       fee_title:     $('#rfFeeTitle').val(),
       receipt_no:    $('#rfReceiptNo').val().trim(),
       amount:        $('#rfAmount').val(),
@@ -473,13 +541,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
     ajaxPost('fee_management/create_refund', data, function(err, res) {
       $btn.prop('disabled', false).html('<i class="fa fa-paper-plane"></i> Submit Request');
-      if (err || !res || !res.success) {
+      if (err || !res || (res.status !== 'success' && res.success !== true)) {
         showToast(err || res.message || 'Failed to create refund', 'error');
         return;
       }
       showToast('Refund request created successfully', 'success');
       $('#createRefundForm')[0].reset();
-      $('#rfStudentName, #rfClassSection').val('');
+      $('#rfStudentName, #rfClassSection, #rfClassHidden, #rfSectionHidden').val('');
       $('#studentLookupStatus').text('');
       loadRefunds(activeFilter);
     });
@@ -491,7 +559,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var $hint = $('#studentLookupStatus');
     if (!uid) {
       $hint.text('').removeClass('fm-hint-ok fm-hint-err');
-      $('#rfStudentName, #rfClassSection').val('');
+      $('#rfStudentName, #rfClassSection, #rfClassHidden, #rfSectionHidden').val('');
       return;
     }
     $hint.text('Looking up...').removeClass('fm-hint-ok fm-hint-err');
@@ -499,37 +567,85 @@ document.addEventListener('DOMContentLoaded', function() {
     ajaxPost('fees/lookup_student', { user_id: uid }, function(err, res) {
       if (err || !res || !res.name) {
         $hint.text('Student not found').addClass('fm-hint-err').removeClass('fm-hint-ok');
-        $('#rfStudentName, #rfClassSection').val('');
+        $('#rfStudentName, #rfClassSection, #rfClassHidden, #rfSectionHidden').val('');
         return;
       }
       $hint.text('Found').addClass('fm-hint-ok').removeClass('fm-hint-err');
+      var cls = res.class   || '';
+      var sec = res.section || '';
       $('#rfStudentName').val(res.name);
-      $('#rfClassSection').val(res.class || '');
+      $('#rfClassSection').val(cls + (sec ? ' / ' + sec : ''));
+      $('#rfClassHidden').val(cls);
+      $('#rfSectionHidden').val(sec);
     });
   }
 
-  /* ── Approve / Reject ── */
-  window.approveRefund = function(id) {
-    if (!confirm('Approve this refund request?')) return;
-    ajaxPost('fee_management/approve_refund', { refund_id: id }, function(err, res) {
-      if (err || !res || !res.success) {
-        showToast(err || 'Approval failed', 'error');
+  /* ── Approve / Reject — spinner + confirm + prevent double-submit ── */
+  // Reusable lifecycle action that:
+  //   1. Asks for confirmation
+  //   2. Disables the button + shows spinner
+  //   3. Hits the endpoint
+  //   4. Toasts the result and refreshes the list on success
+  function doLifecycleAction(opts) {
+    if (opts.confirmMsg && !confirm(opts.confirmMsg)) return;
+    var $btn = opts.button;
+    if ($btn && $btn.length) {
+      if ($btn.data('pending')) return; // already in flight
+      $btn.data('pending', true);
+      $btn.data('original-html', $btn.html());
+      $btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i>');
+    }
+    ajaxPost(opts.url, opts.payload, function(err, res) {
+      if ($btn && $btn.length) {
+        $btn.prop('disabled', false).html($btn.data('original-html') || $btn.html());
+        $btn.data('pending', false);
+      }
+      if (err || !res || (res.status !== 'success' && res.success !== true)) {
+        showToast(err || (res && res.message) || opts.failMsg || 'Action failed', 'error');
         return;
       }
-      showToast('Refund approved', 'success');
+      showToast(opts.successMsg || 'Done', 'success');
+      // Defensive: clear the list-load guard before refresh so any in-flight
+      // or stuck fetch doesn't silently drop the reload.
+      loadingRefunds = false;
       loadRefunds(activeFilter);
+    });
+  }
+
+  window.approveRefund = function(id, $btn) {
+    doLifecycleAction({
+      url: 'fee_management/approve_refund',
+      payload: { refund_id: id },
+      confirmMsg: 'Approve this refund request? The refund will then be ready for processing.',
+      successMsg: 'Refund approved.',
+      failMsg: 'Approval failed.',
+      button: $btn,
     });
   };
 
-  window.rejectRefund = function(id) {
-    if (!confirm('Reject this refund request?')) return;
-    ajaxPost('fee_management/reject_refund', { refund_id: id }, function(err, res) {
-      if (err || !res || !res.success) {
-        showToast(err || 'Rejection failed', 'error');
-        return;
-      }
-      showToast('Refund rejected', 'success');
-      loadRefunds(activeFilter);
+  window.rejectRefund = function(id, $btn) {
+    doLifecycleAction({
+      url: 'fee_management/reject_refund',
+      payload: { refund_id: id },
+      confirmMsg: 'Reject this refund request? The refund will be marked rejected and cannot be processed.',
+      successMsg: 'Refund rejected.',
+      failMsg: 'Rejection failed.',
+      button: $btn,
+    });
+  };
+
+  window.unstickRefund = function(id, $btn) {
+    doLifecycleAction({
+      url: 'fee_management/unstick_refund',
+      payload: { refund_id: id },
+      confirmMsg:
+        'Rescue this stuck refund?\n\n' +
+        'Use ONLY if a prior processing attempt crashed and this refund has been stuck in "processing" for more than 5 minutes. ' +
+        'The refund will be reset to "approved" so you can click Process again. ' +
+        'Server will refuse if the refund is still actively being processed.',
+      successMsg: 'Refund reset to approved. Click Process to retry.',
+      failMsg: 'Could not unstick refund.',
+      button: $btn,
     });
   };
 
@@ -537,6 +653,8 @@ document.addEventListener('DOMContentLoaded', function() {
   window.showProcessModal = function(id) {
     var item = refundsCache.find(function(r) { return r.id === id; });
     if (!item) return;
+    // Reset every field before populating so nothing leaks from a prior
+    // refund the user was looking at.
     $('#processRefundId').val(id);
     $('#pmStudentName').text(item.student_name || '--');
     $('#pmClass').text(item.class_section || '--');
@@ -546,32 +664,64 @@ document.addEventListener('DOMContentLoaded', function() {
     $('#pmReason').text(item.reason || '--');
     $('#pmRefundMode').val('');
     $('#pmRemarks').val('');
+    // Ensure the button isn't stuck in "pending" from a prior cancelled run.
+    $('#btnProcessRefund').data('pending', false)
+        .prop('disabled', false)
+        .html('<i class="fa fa-check"></i> Process Refund');
     $('#processModal').modal('show');
   };
 
   function processRefund() {
+    var $btn = $('#btnProcessRefund');
+    if ($btn.data('pending')) return; // prevent double-submit
+
     var id   = $('#processRefundId').val();
     var mode = $('#pmRefundMode').val();
-    if (!mode) {
-      showToast('Please select a refund mode', 'error');
+    if (!id) { showToast('Refund ID is missing. Reopen the dialog.', 'error'); return; }
+    if (!mode) { showToast('Please select a refund mode', 'error'); return; }
+
+    // Destructive: explicit confirmation before money is moved.
+    var item   = refundsCache.find(function(r){ return r.id === id; });
+    var amount = item ? fmtAmount(item.amount) : '';
+    var name   = item ? (item.student_name || '') : '';
+    if (!confirm(
+        'Process this refund?\n\n' +
+        'Student: ' + name + '\n' +
+        'Amount:  ' + amount + '\n' +
+        'Mode:    ' + mode + '\n\n' +
+        'This will reverse the original allocations and post an accounting journal. ' +
+        'It cannot be undone from the UI.')) {
       return;
     }
-    var $btn = $('#btnProcessRefund');
-    $btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Processing...');
+
+    $btn.data('pending', true)
+        .prop('disabled', true)
+        .html('<i class="fa fa-spinner fa-spin"></i> Processing...');
 
     ajaxPost('fee_management/process_refund', {
       refund_id:   id,
       refund_mode: mode,
       remarks:     $('#pmRemarks').val().trim()
     }, function(err, res) {
-      $btn.prop('disabled', false).html('<i class="fa fa-check"></i> Process Refund');
-      if (err || !res || !res.success) {
-        showToast(err || 'Processing failed', 'error');
+      $btn.data('pending', false)
+          .prop('disabled', false)
+          .html('<i class="fa fa-check"></i> Process Refund');
+      if (err || !res || (res.status !== 'success' && res.success !== true)) {
+        showToast(err || (res && res.message) || 'Processing failed', 'error');
         return;
       }
       showToast('Refund processed successfully', 'success');
       $('#processModal').modal('hide');
-      loadRefunds(activeFilter);
+
+      // Jump to the "All" filter + the "Processed" pill highlight so the
+      // just-processed row is guaranteed to be visible with its new green
+      // badge (would disappear from view if the user was on "Approved").
+      // Small delay gives Firestore a moment to propagate the status flip
+      // before we re-query — otherwise we can fetch a stale "approved" read.
+      loadingRefunds = false; // defensive: clear any stuck guard
+      setTimeout(function() {
+        filterByStatus('processed');
+      }, 400);
     });
   }
 
@@ -615,7 +765,22 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   /* ── Event Bindings ── */
+  // Delegated handlers for the action buttons (rows are re-rendered on
+  // every refresh, so listeners must attach at tbody level).
+  $('#refundsTableBody').on('click', '[data-action]', function() {
+    var $btn = $(this);
+    var action = $btn.data('action');
+    var id     = $btn.data('id');
+    if (!id) return;
+    if      (action === 'approve') approveRefund(id, $btn);
+    else if (action === 'reject')  rejectRefund(id, $btn);
+    else if (action === 'process') showProcessModal(id);
+    else if (action === 'unstick') unstickRefund(id, $btn);
+    else if (action === 'view')    showDetails(id);
+  });
+
   $('.fm-pill').on('click', function() {
+    if ($(this).prop('disabled') || $(this).hasClass('fm-disabled')) return;
     filterByStatus($(this).data('status'));
   });
 
@@ -633,7 +798,7 @@ document.addEventListener('DOMContentLoaded', function() {
   $('#createRefundForm').on('submit', createRefund);
 
   $('#btnResetForm').on('click', function() {
-    $('#rfStudentName, #rfClassSection').val('');
+    $('#rfStudentName, #rfClassSection, #rfClassHidden, #rfSectionHidden').val('');
     $('#studentLookupStatus').text('').removeClass('fm-hint-ok fm-hint-err');
   });
 
@@ -905,6 +1070,8 @@ document.addEventListener('DOMContentLoaded', function() {
 .fm-btn-reject:hover { background: rgba(224,92,111,.22); }
 .fm-btn-process { background: rgba(59,130,246,.12); color: #3b82f6; }
 .fm-btn-process:hover { background: rgba(59,130,246,.22); }
+.fm-btn-unstick { background: rgba(234,179,8,.14); color: #b45309; }
+.fm-btn-unstick:hover { background: rgba(234,179,8,.26); }
 .fm-btn-view { background: var(--gold-dim); color: var(--gold); }
 .fm-btn-view:hover { background: var(--gold-ring); }
 
@@ -959,10 +1126,11 @@ document.addEventListener('DOMContentLoaded', function() {
   text-transform: uppercase;
   letter-spacing: .3px;
 }
-.fm-badge-pending   { background: rgba(217,119,6,.12); color: #d97706; }
-.fm-badge-approved  { background: rgba(59,130,246,.12); color: #3b82f6; }
-.fm-badge-processed { background: rgba(21,128,61,.12);  color: #15803d; }
-.fm-badge-rejected  { background: rgba(224,92,111,.12); color: #E05C6F; }
+.fm-badge-pending    { background: rgba(217,119,6,.12); color: #d97706; }
+.fm-badge-approved   { background: rgba(59,130,246,.12); color: #3b82f6; }
+.fm-badge-processing { background: rgba(234,179,8,.14); color: #b45309; }
+.fm-badge-processed  { background: rgba(21,128,61,.12); color: #15803d; }
+.fm-badge-rejected   { background: rgba(224,92,111,.12); color: #E05C6F; }
 
 /* ── Empty State ── */
 .fm-empty-state {
@@ -972,6 +1140,30 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 .fm-empty-state i { font-size: 2rem; margin-bottom: 8px; display: block; opacity: .5; }
 .fm-empty-state p { margin: 0; font-size: .82rem; }
+
+/* ── Loading skeleton rows ── */
+.fm-skel-row td { padding: 10px !important; }
+.fm-skel {
+  height: 16px;
+  border-radius: 4px;
+  background: linear-gradient(90deg,
+    rgba(255,255,255,.03) 0%,
+    rgba(255,255,255,.08) 50%,
+    rgba(255,255,255,.03) 100%);
+  background-size: 200% 100%;
+  animation: fm-skel-shimmer 1.2s ease-in-out infinite;
+}
+@keyframes fm-skel-shimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+/* Disabled filter pills (during refresh) */
+.fm-pill.fm-disabled, .fm-pill:disabled {
+  opacity: .5;
+  pointer-events: none;
+  cursor: wait;
+}
 
 /* ── Modal ── */
 .fm-modal-dialog { max-width: 520px; }
@@ -1090,4 +1282,74 @@ document.addEventListener('DOMContentLoaded', function() {
   .fm-form-actions { flex-direction: column; }
   .fm-form-actions .fm-btn { width: 100%; justify-content: center; }
 }
+
+/* ============================================================
+   READABILITY UPGRADE — the original styles were optimised for
+   dense dashboards; as a transactional admin page the text was
+   too small and strained the eye. These overrides bump type
+   scale across the board without touching layout.
+   ============================================================ */
+.fm-page-title              { font-size: 1.65rem; }
+.fm-page-title i            { font-size: 1.35rem; }
+.fm-page-sub                { font-size: 0.95rem; }
+
+/* Stat cards */
+.fm-stat-value              { font-size: 1.75rem; }
+.fm-stat-label              { font-size: 0.85rem; letter-spacing: .02em; }
+
+/* Filter pills */
+.fm-pill                    { font-size: 0.9rem;  padding: 8px 16px; }
+
+/* Card headers + cards */
+.fm-card-title              { font-size: 1.1rem; }
+.fm-card-title i            { font-size: 1rem; }
+
+/* Forms */
+.fm-label                   { font-size: 0.9rem; font-weight: 600; letter-spacing: .01em; }
+.fm-input, .fm-select, .fm-textarea { font-size: 0.95rem; padding: 9px 12px; }
+.fm-hint-ok, .fm-hint-err,
+.fm-form-hint               { font-size: 0.82rem; }
+.fm-req                     { font-size: 0.9rem; }
+
+/* Table */
+.fm-table                   { font-size: 0.95rem; }
+.fm-table th                { font-size: 0.8rem;  padding: 10px 12px; letter-spacing: .03em; }
+.fm-table td                { font-size: 0.92rem; padding: 11px 12px; }
+.fm-code                    { font-size: 0.88rem; padding: 2px 8px; }
+
+/* Status badges */
+.fm-badge                   { font-size: 0.78rem; padding: 4px 10px; font-weight: 700; letter-spacing: .02em; }
+
+/* Action buttons in rows */
+.fm-btn                     { font-size: 0.92rem; padding: 8px 14px; }
+.fm-btn-sm                  { font-size: 0.82rem; padding: 6px 12px; }
+.fm-btn-xs                  { font-size: 0.82rem; padding: 5px 10px; min-width: 30px; }
+.fm-btn-xs i                { font-size: 0.92rem; }
+.fm-actions .fm-btn-xs      { margin: 0 2px; }
+
+/* Empty state */
+.fm-empty-state i           { font-size: 2.2rem; margin-bottom: 10px; }
+.fm-empty-state p           { font-size: 0.95rem; }
+
+/* Modal */
+.fm-modal-content           { font-size: 0.95rem; }
+.fm-modal-header h4,
+.fm-modal-header h5         { font-size: 1.15rem; }
+.fm-detail-label            { font-size: 0.82rem; font-weight: 600; letter-spacing: .02em; }
+.fm-detail-value            { font-size: 0.95rem; }
+
+/* Toast */
+.fm-toast                   { font-size: 0.9rem; padding: 12px 18px; }
+.fm-toast i                 { font-size: 1rem; }
+
+/* Improve status-badge contrast a hair — WCAG friendlier */
+.fm-badge-pending           { background:#fff3cd; color:#7a4d00; }
+.fm-badge-approved          { background:#d4e8ff; color:#0a4a99; }
+.fm-badge-processing        { background:#fff0c2; color:#8a4b00; }
+.fm-badge-processed         { background:#d4f5e0; color:#0d6433; }
+.fm-badge-rejected          { background:#ffe0e0; color:#951a1a; }
+
+/* Line-height breathing room across the whole page */
+#refundsTableBody tr td     { line-height: 1.45; }
+.fm-card                    { line-height: 1.5; }
 </style>
