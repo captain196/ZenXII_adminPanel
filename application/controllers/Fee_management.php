@@ -2925,7 +2925,12 @@ class Fee_management extends MY_Controller
             'txn_prefix'                 => 'WAL_',
             'wallet_mode'                => 'debit_total',
             'wallet_before'              => $walletBefore,
-            'skip_pay_older_first_guard' => true,
+            // Wallet now enforces PAY-OLDER-FIRST like the counter and
+            // Razorpay paths — a parent can no longer pay June from the
+            // wallet while April still has an unpaid balance. The service
+            // will return HTTP 409 with a message naming the oldest
+            // outstanding period so the app can surface it cleanly.
+            'skip_pay_older_first_guard' => false,
             'defer_defaulter'            => false,
             'defer_accounting'           => false,
             'write_response_to_output'   => false,
