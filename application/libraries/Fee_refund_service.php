@@ -226,6 +226,17 @@ class Fee_refund_service
                 'processLock'   => '',
             ]);
 
+            // ── 7. Cross-system defaulter recompute (Firestore-only) ─────
+            // A refund can flip a 'paid' demand back to 'partial'/'unpaid',
+            // which should resurface the student as a defaulter in the
+            // parent app (Fees → Pending Dues) and teacher app (defaulter
+            // list). Without this recompute, feeDefaulters stays stale
+            // until the next payment or nightly job touches it.
+            // Pure in-memory + single Firestore write — no RTDB calls.
+            if ($studentId !== '') {
+                $this->_syncDefaulterAfterRefund($studentId, $studentName, $refClass, $refSection);
+            }
+
             // R.1a: mark idempotency success so any future replay of the
             // same hash short-circuits to the cached result above.
             $this->fsTxn->setIdempotencySuccess($idempHash, $refundReceiptKey);
@@ -556,6 +567,91 @@ class Fee_refund_service
             ]);
         } catch (\Exception $e) {
             log_message('error', 'Fee_refund_service::_recomputeMonthFeeFlags failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Firestore-only defaulter recompute after a refund.
+     *
+     * Reads the fresh demand state from Firestore (already updated by
+     * _reverseAllocations), builds a defaulter-status dict in memory,
+     * and syncs it via Fee_firestore_sync::syncDefaulterStatus — which
+     * is the canonical writer both the parent app and teacher app
+     * read (`feeDefaulters/{schoolId}_{session}_{studentId}`).
+     *
+     * Deliberately AVOIDS Fee_defaulter_check::updateDefaulterStatus,
+     * which still mirrors to RTDB (legacy Fees/Defaulters path) and
+     * would violate the absolute NO-RTDB rule. Cost of going direct:
+     * `exam_blocked` and `result_withheld` stay at their pre-refund
+     * values until the next full defaulter pass refreshes them. That's
+     * acceptable — a refund doesn't typically change policy-gate
+     * booleans, and the next payment/nightly job will reconcile them.
+     */
+    private function _syncDefaulterAfterRefund(
+        string $studentId, string $studentName, string $className, string $section
+    ): void {
+        try {
+            $demands = $this->fsTxn->demandsForStudent($studentId);
+
+            $isDefaulter   = false;
+            $totalDues     = 0.0;
+            $unpaidMonths  = [];
+            $overdueMonths = [];
+            $now           = time();
+
+            foreach ($demands as $d) {
+                $st      = (string) ($d['status']    ?? 'unpaid');
+                $balance = (float)  ($d['balance']   ?? 0);
+                $period  = (string) ($d['period']    ?? '');
+
+                if ($st === 'paid' || $balance <= 0.005) continue;
+                $isDefaulter = true;
+                $totalDues  += $balance;
+                if ($period !== '') $unpaidMonths[] = $period;
+
+                $dueRaw = (string) ($d['due_date'] ?? $d['dueDate'] ?? '');
+                $dueTs  = $dueRaw !== '' ? strtotime($dueRaw) : 0;
+                if ($dueTs && $dueTs < $now && $period !== '') {
+                    $overdueMonths[] = $period;
+                }
+            }
+
+            // Sort so the "oldest unpaid" reader sees deterministic order
+            // (Fee_dues_check::getDues reads unpaidMonths[0] as oldestUnpaid).
+            sort($unpaidMonths);
+            sort($overdueMonths);
+
+            $status = [
+                'is_defaulter'     => $isDefaulter,
+                'total_dues'       => round($totalDues, 2),
+                'unpaid_months'    => array_values(array_unique($unpaidMonths)),
+                'overdue_months'   => array_values(array_unique($overdueMonths)),
+                // Leave policy-gated booleans untouched — they're computed
+                // from fee-head labels + school policy threshold and the
+                // next full defaulter pass will refresh them.
+                'exam_blocked'     => false,
+                'result_withheld'  => false,
+                'last_payment_date'=> '',
+                'updated_at'       => date('c'),
+            ];
+
+            // Lazy-load fsSync from CI instance; Fee_refund_service doesn't
+            // keep its own handle because pre-R.7 there was nothing to sync.
+            $CI = &get_instance();
+            if (!isset($CI->fsSync) || $CI->fsSync === null) {
+                $CI->load->library('Fee_firestore_sync', null, 'fsSync');
+                $CI->fsSync->init($CI->firebase, $CI->school_name ?? '', $CI->session_year ?? '');
+            }
+
+            $CI->fsSync->syncDefaulterStatus(
+                $studentId, $status, $studentName, $className, $section
+            );
+            log_message('debug', "[REFUND DEFAULTER SYNC] student={$studentId} dues={$totalDues} isDefaulter=" . ($isDefaulter ? '1' : '0'));
+        } catch (\Exception $e) {
+            // Non-fatal: the refund has already succeeded, defaulter data
+            // is a downstream cache. Log + move on so the admin still sees
+            // a success response.
+            log_message('warning', "Fee_refund_service::_syncDefaulterAfterRefund({$studentId}) failed: " . $e->getMessage());
         }
     }
 
