@@ -31,6 +31,13 @@ class Fee_management extends MY_Controller
     /** @var array|null Firebase ID-token claims for parent-app API calls */
     private $_parent_claims = null;
 
+    /** @var string|null Cached raw body for webhook — avoids a second
+     *  file_get_contents('php://input') call later in payment_webhook(),
+     *  since the stream is not guaranteed to be rewindable on every PHP
+     *  SAPI configuration. Populated by the constructor when the request
+     *  is a webhook; null otherwise. */
+    private $_webhookRawBody = null;
+
     public function __construct()
     {
         $uri = $_SERVER['REQUEST_URI'] ?? '';
@@ -48,22 +55,44 @@ class Fee_management extends MY_Controller
         );
 
         if ($isWebhook) {
-            // Skip MY_Controller auth — use CI_Controller directly
+            // Skip MY_Controller auth — use CI_Controller directly.
+            // Razorpay webhooks are stateless (no session cookie), so we
+            // CANNOT rely on $this->session->userdata() to resolve the
+            // school — the earlier implementation did, and it would reject
+            // every real Razorpay delivery with HTTP 400. Instead we peek
+            // at the incoming payload for the order_id and look it up in
+            // feeOnlineOrders (whose docs carry schoolId + session as
+            // top-level fields — see Payment_service::create_order).
             CI_Controller::__construct();
             $this->load->library('firebase');
-            // Resolve school from the webhook payload or a header
-            // For now, use the first school in the system (single-school mode)
-            // In multi-school: pass school_code in webhook URL or headers
-            $this->school_name  = $this->session->userdata('school_name') ?? '';
-            $this->session_year = $this->session->userdata('session_year') ?? '';
-            // If no session, try to resolve from webhook config
-            if ($this->school_name === '') {
-                // Webhook must include school context — reject if missing
+
+            // Cache the raw body here so payment_webhook() does not have
+            // to re-read a potentially-consumed php://input stream.
+            $this->_webhookRawBody = (string) file_get_contents('php://input');
+            $body = json_decode($this->_webhookRawBody, true);
+            if (!is_array($body)) {
+                $body = $this->input->post() ?: [];
+            }
+            $orderId = trim((string) (
+                $body['razorpay_order_id']
+                ?? $body['order_id']
+                ?? $body['gateway_order_id']
+                ?? ''
+            ));
+
+            $ctx = $orderId !== '' ? $this->resolveSchoolFromOrder($orderId) : null;
+
+            if (!is_array($ctx) || ($ctx['school'] ?? '') === '' || ($ctx['session'] ?? '') === '') {
+                log_message('error', "[WEBHOOK CONTEXT FAILED] order=" . ($orderId !== '' ? $orderId : '(missing)'));
                 header('Content-Type: application/json');
                 http_response_code(400);
-                echo json_encode(['status' => 'error', 'message' => 'Webhook requires school context. Use school-specific webhook URL.']);
+                echo json_encode(['status' => 'error', 'message' => 'Invalid order context']);
                 exit;
             }
+
+            $this->school_name  = $ctx['school'];
+            $this->session_year = $ctx['session'];
+            log_message('debug', "[WEBHOOK CONTEXT RESOLVED] school={$this->school_name} session={$this->session_year} order={$orderId}");
         } else if ($isParentApi) {
             // Parent-app API — verify Firebase ID token, derive school context
             CI_Controller::__construct();
@@ -2836,6 +2865,55 @@ class Fee_management extends MY_Controller
     }
 
     /**
+     * Resolve {school, session} context for a webhook by looking up the
+     * order doc via its gateway_order_id. Called from the controller
+     * constructor BEFORE $this->school_name / $this->session_year are
+     * known, so this method must avoid any lookup that requires school
+     * context (uses firestoreQuery without a schoolId filter).
+     *
+     * Returns ['school' => ..., 'session' => ...] on success, or null if
+     * the order doc is missing or malformed. Logs errors; caller decides
+     * the HTTP response shape.
+     */
+    private function resolveSchoolFromOrder(string $orderId): ?array
+    {
+        if ($orderId === '') {
+            return null;
+        }
+        try {
+            $rows = $this->firebase->firestoreQuery(
+                'feeOnlineOrders',
+                [['gateway_order_id', '==', $orderId]],
+                null, 'ASC', 1
+            );
+        } catch (\Exception $e) {
+            log_message('error', "resolveSchoolFromOrder: query threw for order={$orderId}: " . $e->getMessage());
+            return null;
+        }
+
+        $orderDoc = null;
+        foreach ((array) $rows as $row) {
+            $orderDoc = is_array($row['data'] ?? null) ? $row['data'] : $row;
+            break;
+        }
+        if (!is_array($orderDoc)) {
+            return null;
+        }
+
+        $schoolName = (string) ($orderDoc['schoolId'] ?? '');
+        $session    = (string) ($orderDoc['session']  ?? '');
+        if ($schoolName === '') {
+            return null;
+        }
+        // If session isn't on the order doc (old data / mock gateway), fall
+        // back to the school's currently-active session.
+        if ($session === '') {
+            $session = $this->_resolve_active_session($schoolName);
+        }
+        return ['school' => $schoolName, 'session' => $session];
+    }
+
+    /**
      * Resolve the active session for a school (used by parent-app API
      * endpoints that don't have a CI session). Reads the active-session
      * config from Firestore, then falls back to RTDB config.
@@ -3584,7 +3662,10 @@ class Fee_management extends MY_Controller
             return;
         }
 
-        $rawBody = file_get_contents('php://input');
+        // Prefer the body the constructor already cached — php://input is
+        // not reliably rewindable across every PHP SAPI configuration, and
+        // the constructor had to read it first to resolve school context.
+        $rawBody = $this->_webhookRawBody ?? (string) file_get_contents('php://input');
         $payload = json_decode($rawBody, true);
         if (!is_array($payload)) $payload = $this->input->post() ?: [];
 
