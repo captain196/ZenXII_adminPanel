@@ -169,7 +169,7 @@ class Fee_refund_service
                     'processLock' => '',
                 ]);
                 $this->fsTxn->deleteIdempotency($idempHash);
-                log_message('warning',
+                log_message('error',
                     "Fee_refund_service::process({$refId}) rejected — {$demandResult['failure_code']}: " .
                     $demandResult['failure_message']);
                 return [
@@ -348,7 +348,7 @@ class Fee_refund_service
                 $curAdv = $this->fsTxn->getAdvanceBalance($studentId);
                 if ($curAdv + 0.005 < $remaining) {
                     $shortfall = round($remaining - $curAdv, 2);
-                    log_message('warning',
+                    log_message('error',
                         "[REFUND WALLET DEFICIT] refund={$refId} student={$studentId} " .
                         "overflow={$remaining} walletHas={$curAdv} shortfall={$shortfall}");
                     return [
@@ -498,7 +498,7 @@ class Fee_refund_service
                 // ── Fallback: sequential writes, matching the pre-R.2
                 //    behaviour verbatim. Same end state, slower. Mirrors
                 //    FeeCollectionService's batch-fallback strategy.
-                log_message('warning', "[REFUND BATCH FALLBACK] batch commit failed for refund={$refId}; falling back to sequential writes");
+                log_message('error', "[REFUND BATCH FALLBACK] batch commit failed for refund={$refId}; falling back to sequential writes");
 
                 foreach ($demandUpdates as $did => $patch) {
                     $this->fsTxn->updateDemand($did, $patch);
@@ -651,7 +651,7 @@ class Fee_refund_service
             // Non-fatal: the refund has already succeeded, defaulter data
             // is a downstream cache. Log + move on so the admin still sees
             // a success response.
-            log_message('warning', "Fee_refund_service::_syncDefaulterAfterRefund({$studentId}) failed: " . $e->getMessage());
+            log_message('error', "Fee_refund_service::_syncDefaulterAfterRefund({$studentId}) failed: " . $e->getMessage());
         }
     }
 

@@ -1957,7 +1957,7 @@ class Fee_management extends MY_Controller
             $idempCleared = $this->fsTxn->deleteIdempotency($idempHash);
         }
 
-        log_message('warning', "Fee_management::unstick_refund rescued {$refId} (student={$studentId} age={$age}s)");
+        log_message('info', "Fee_management::unstick_refund rescued {$refId} (student={$studentId} age={$age}s)");
 
         // Best-effort audit.
         try {
