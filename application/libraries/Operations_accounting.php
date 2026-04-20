@@ -74,23 +74,28 @@ class Operations_accounting
      */
     public function next_id(string $counterPath, string $prefix, int $pad = 4): string
     {
-        $maxAttempts = 3;
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            $cur  = (int) ($this->firebase->get($counterPath) ?? 0);
-            $next = $cur + 1;
-            $this->firebase->set($counterPath, $next);
+        // Pure Firestore: use the counterPath as a Firestore collection key.
+        // Convert RTDB path like "Schools/{s}/{y}/Library/Counters/book"
+        // into a Firestore doc in `opsCounters` collection.
+        $docId = preg_replace('/[\/\s]+/', '_', trim($counterPath, '/'));
+        $col   = 'opsCounters';
 
-            // Verify-after-write: re-read to confirm we own this value
-            $verify = $this->firebase->get($counterPath);
-            if ((int) $verify === $next) {
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
+            $cur  = $this->firebase->firestoreGet($col, $docId);
+            $curV = is_array($cur) ? (int) ($cur['value'] ?? 0) : 0;
+            $next = $curV + 1;
+            $this->firebase->firestoreSet($col, $docId, [
+                'value'     => $next,
+                'prefix'    => $prefix,
+                'updatedAt' => date('c'),
+            ]);
+            $verify = $this->firebase->firestoreGet($col, $docId);
+            if (is_array($verify) && (int) ($verify['value'] ?? 0) === $next) {
                 return $prefix . str_pad($next, $pad, '0', STR_PAD_LEFT);
             }
-            // Another writer overwrote — retry with their higher value
-            usleep(50000 * $attempt); // 50ms, 100ms, 150ms backoff
+            usleep(50000 * $attempt);
         }
-        // Fallback: use timestamp-based unique suffix to guarantee uniqueness
-        $fallback = (int) ($this->firebase->get($counterPath) ?? 0) + 1;
-        $this->firebase->set($counterPath, $fallback);
+        $fallback = (int) (microtime(true) * 1000) % 1000000;
         return $prefix . str_pad($fallback, $pad, '0', STR_PAD_LEFT) . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
     }
 
@@ -126,20 +131,22 @@ class Operations_accounting
         $index = $CI->cache->get($cacheKey);
 
         if ($index === false) {
-            // Cache miss — load from Firebase and build lightweight index
-            $students = $this->firebase->get("Users/Parents/{$dbKey}");
+            // Cache miss — load from Firestore students collection.
+            $schoolFs = $this->school_name;
+            $stuRows  = $this->firebase->firestoreQuery('students', [
+                ['schoolId', '==', $schoolFs],
+            ]);
             $index = [];
-            if (is_array($students)) {
-                foreach ($students as $sid => $s) {
-                    if (!is_array($s)) continue;
-                    $index[] = [
-                        'id'      => $sid,
-                        'name'    => $s['Name'] ?? $sid,
-                        'class'   => $s['Class'] ?? '',
-                        'section' => $s['Section'] ?? '',
-                        'user_id' => $s['User Id'] ?? $sid,
-                    ];
-                }
+            foreach ((array) $stuRows as $r) {
+                $s = $r['data'] ?? $r;
+                if (!is_array($s)) continue;
+                $index[] = [
+                    'id'      => (string) ($s['studentId'] ?? $s['userId'] ?? ''),
+                    'name'    => (string) ($s['name'] ?? $s['Name'] ?? ''),
+                    'class'   => (string) ($s['className'] ?? ''),
+                    'section' => (string) ($s['section'] ?? ''),
+                    'user_id' => (string) ($s['studentId'] ?? $s['userId'] ?? ''),
+                ];
             }
             // Cache for 5 minutes (300 seconds)
             $CI->cache->save($cacheKey, $index, 300);
@@ -213,13 +220,13 @@ class Operations_accounting
      */
     public function validate_accounts(array $codes): void
     {
-        $coaBase = "Schools/{$this->school_name}/Accounts/ChartOfAccounts";
-        $coa = $this->firebase->get($coaBase);
-        if (!is_array($coa)) $coa = [];
-
+        // Session C: Chart of Accounts lives in Firestore `chartOfAccounts`
+        // keyed `{schoolId}_{code}`. Read per-code — avoids loading the full
+        // chart just to check a couple of entries.
+        $sync = $this->_acctFsSync();
         $missing = [];
         foreach ($codes as $code) {
-            $acct = $coa[$code] ?? null;
+            $acct = $sync ? $sync->getAccount((string) $code) : null;
             if (!is_array($acct) || ($acct['status'] ?? '') !== 'active') {
                 $missing[] = $code;
             }
@@ -253,22 +260,25 @@ class Operations_accounting
      */
     public function create_journal(string $narration, array $lines, string $source = '', string $sourceRef = ''): string
     {
-        // Validate minimum 2 lines for double-entry
+        // Session C: pure-Firestore journal creation. Ledger, indices, closing
+        // balances and voucher counters all live in Firestore collections.
+        // Zero RTDB calls in this method.
+
         if (count($lines) < 2) {
             $this->CI->json_error('Journal entry requires at least 2 line items.');
         }
 
-        $bp = "Schools/{$this->school_name}/{$this->session_year}";
+        $sync = $this->_acctFsSync();
+        if (!$sync) {
+            $this->CI->json_error('Accounting service is not available. Please try again.');
+        }
 
-        // Fetch CoA once for account name resolution and group-account guard
-        $coaBase  = "Schools/{$this->school_name}/Accounts/ChartOfAccounts";
-        $coa      = $this->firebase->get($coaBase);
-        if (!is_array($coa)) $coa = [];
+        // Load CoA once (for name resolution + group-account guard).
+        $coa = $sync->readChartOfAccounts();
 
         $totalDr  = 0;
         $totalCr  = 0;
         $affected = [];
-
         foreach ($lines as &$ln) {
             $dr = round((float) ($ln['dr'] ?? 0), 2);
             $cr = round((float) ($ln['cr'] ?? 0), 2);
@@ -277,17 +287,13 @@ class Operations_accounting
             $totalDr += $dr;
             $totalCr += $cr;
 
-            // Resolve account name from already-fetched CoA
-            $acCode = $ln['account_code'] ?? '';
-            $acct = $coa[$acCode] ?? null;
+            $acCode = (string) ($ln['account_code'] ?? '');
+            $acct   = $coa[$acCode] ?? null;
             $ln['account_name'] = is_array($acct) ? ($acct['name'] ?? $acCode) : $acCode;
 
-            // Guard: reject group accounts
             if (is_array($acct) && !empty($acct['is_group'])) {
                 $this->CI->json_error("Account {$acCode} is a group account — cannot post directly.");
             }
-
-            // Aggregate by account code
             if ($acCode !== '') {
                 $affected[$acCode] = [
                     'dr' => ($affected[$acCode]['dr'] ?? 0) + $dr,
@@ -297,39 +303,18 @@ class Operations_accounting
         }
         unset($ln);
 
-        // Double-entry validation: total debit must equal total credit
         if (abs($totalDr - $totalCr) > 0.01) {
             $this->CI->json_error("Unbalanced journal: Debit ({$totalDr}) does not equal Credit ({$totalCr}).");
         }
 
-        // Generate voucher number (after validation to avoid wasting sequence numbers)
-        // Uses verify-after-write + retry pattern to handle concurrent writers
-        $counterPath = "{$bp}/Accounts/Voucher_counters/Journal";
-        $voucherNo   = '';
-        $seq         = 0;
-        $maxAttempts  = 3;
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            $seq = (int) ($this->firebase->get($counterPath) ?? 0) + 1;
-            $this->firebase->set($counterPath, $seq);
-
-            // Verify-after-write: re-read to confirm we own this value
-            $verify = $this->firebase->get($counterPath);
-            if ((int) $verify === $seq) {
-                $voucherNo = 'JV-' . str_pad($seq, 6, '0', STR_PAD_LEFT);
-                break;
-            }
-            // Another writer overwrote — retry with their higher value
-            usleep(50000 * $attempt); // 50ms, 100ms, 150ms backoff
+        // Voucher counter (Firestore nextCounter with verify-after-write).
+        $seq = $sync->nextCounter('Journal');
+        if ($seq <= 0) {
+            // Fallback ID so the journal isn't lost if the counter service hiccups.
+            $seq = (int) (microtime(true) * 1000) % 1000000;
         }
-        if ($voucherNo === '') {
-            // All retries failed — use timestamp-based fallback to guarantee uniqueness
-            $seq = (int) ($this->firebase->get($counterPath) ?? 0) + 1;
-            $this->firebase->set($counterPath, $seq);
-            $voucherNo = 'JV-' . str_pad($seq, 6, '0', STR_PAD_LEFT) . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
-        }
-
-        // Generate entry ID
-        $entryId = 'JE_' . date('YmdHis') . '_' . bin2hex(random_bytes(4));
+        $voucherNo = 'JV-' . str_pad($seq, 6, '0', STR_PAD_LEFT);
+        $entryId   = 'JE_' . date('YmdHis') . '_' . bin2hex(random_bytes(4));
 
         $entry = [
             'date'         => date('Y-m-d'),
@@ -347,42 +332,51 @@ class Operations_accounting
             'created_at'   => date('c'),
         ];
 
-        // Write ledger entry
-        $this->firebase->set("{$bp}/Accounts/Ledger/{$entryId}", $entry);
-
-        // Write indices
-        $today = date('Y-m-d');
-        $this->firebase->set("{$bp}/Accounts/Ledger_index/by_date/{$today}/{$entryId}", true);
-        foreach (array_keys($affected) as $acCode) {
-            $this->firebase->set("{$bp}/Accounts/Ledger_index/by_account/{$acCode}/{$entryId}", true);
+        // Write to Firestore: ledger doc + per-date index + per-account indices.
+        if (!$sync->syncLedgerEntry($entryId, $entry)) {
+            $this->CI->json_error('Failed to record journal entry. Nothing was written.');
         }
 
-        // Update closing balances — verify-after-write + retry for concurrency safety
+        // Update closing balances. Read-modify-write per account; on mismatch,
+        // a short backoff retry keeps concurrent writers consistent.
         foreach ($affected as $code => $amounts) {
-            $balPath = "{$bp}/Accounts/Closing_balances/{$code}";
             for ($retry = 0; $retry < 3; $retry++) {
-                $current = $this->firebase->get($balPath);
-                if (!is_array($current)) $current = ['period_dr' => 0, 'period_cr' => 0];
-                $newBal = [
-                    'period_dr'     => round((float) ($current['period_dr'] ?? 0) + $amounts['dr'], 2),
-                    'period_cr'     => round((float) ($current['period_cr'] ?? 0) + $amounts['cr'], 2),
-                    'last_computed' => date('c'),
-                ];
-                $this->firebase->set($balPath, $newBal);
-                $verify = $this->firebase->get($balPath);
-                if (is_array($verify)
-                    && abs((float) ($verify['period_dr'] ?? 0) - $newBal['period_dr']) < 0.01
-                    && abs((float) ($verify['period_cr'] ?? 0) - $newBal['period_cr']) < 0.01) {
+                $cur = $sync->readClosingBalance((string) $code);
+                $newDr = round($cur['period_dr'] + $amounts['dr'], 2);
+                $newCr = round($cur['period_cr'] + $amounts['cr'], 2);
+                if ($sync->syncClosingBalance((string) $code, $newDr, $newCr)) {
                     break;
                 }
                 usleep(50000 * ($retry + 1));
                 if ($retry === 2) {
-                    log_message('error', "Closing balance verify-after-write failed for {$code} after 3 retries (journal {$entryId})");
+                    log_message('error', "Closing balance write failed for {$code} after 3 retries (journal {$entryId})");
                 }
             }
         }
 
         return $entryId;
+    }
+
+    /**
+     * Lazy-load and return the Firestore sync library, or null if unavailable.
+     * Keeps Operations_accounting non-fatal when sync isn't yet configured.
+     */
+    private function _acctFsSync()
+    {
+        static $cached = null;
+        if ($cached !== null) return $cached ?: null;
+        try {
+            $CI =& get_instance();
+            if (!isset($CI->acctFsSync)) {
+                $CI->load->library('Accounting_firestore_sync', null, 'acctFsSync');
+                $CI->acctFsSync->init($this->firebase, $this->school_name, $this->session_year);
+            }
+            $cached = $CI->acctFsSync;
+        } catch (\Exception $e) {
+            log_message('error', 'Operations_accounting::_acctFsSync init failed: ' . $e->getMessage());
+            $cached = false;
+        }
+        return $cached ?: null;
     }
 
     // ====================================================================
@@ -402,30 +396,30 @@ class Operations_accounting
      */
     public function create_fee_journal(array $params): ?string
     {
-        $school   = $params['school_name'];
-        $session  = $params['session_year'];
+        // Session C: pure-Firestore fee journal. Dr Cash/Bank, Cr Fee Income.
         $date     = $params['date'] ?? date('Y-m-d');
         $amount   = round((float) ($params['amount'] ?? 0), 2);
         $payMode  = strtolower(trim($params['payment_mode'] ?? 'cash'));
         $bankCode = trim($params['bank_code'] ?? '');
-        $receipt  = $params['receipt_no'] ?? '';
+        $receipt  = $params['receipt_no']   ?? '';
         $student  = $params['student_name'] ?? '';
-        $stuId    = $params['student_id'] ?? '';
-        $class    = $params['class'] ?? '';
+        $stuId    = $params['student_id']   ?? '';
+        $class    = $params['class']        ?? '';
         $adminId  = $params['admin_id'] ?? $this->admin_id;
 
         if ($amount <= 0) return null;
 
-        // Single fetch: full CoA
-        $coaPath = "Schools/{$school}/Accounts/ChartOfAccounts";
-        $coa = $this->firebase->get($coaPath);
-        if (!is_array($coa) || empty($coa)) return null; // Accounting not set up
+        $sync = $this->_acctFsSync();
+        if (!$sync) return null;
 
-        // Select cash/bank account based on payment mode
-        if ($bankCode && isset($coa[$bankCode])) {
+        $coa = $sync->readChartOfAccounts();
+        if (empty($coa)) return null; // Accounting not set up
+
+        // Select cash/bank account based on payment mode.
+        if ($bankCode !== '' && isset($coa[$bankCode])) {
             $cashBankCode = $bankCode;
-        } elseif (in_array($payMode, ['bank', 'cheque', 'upi', 'neft', 'rtgs', 'online'])) {
-            $cashBankCode = '1010'; // fallback
+        } elseif (in_array($payMode, ['bank', 'cheque', 'upi', 'neft', 'rtgs', 'online', 'bank_transfer'], true)) {
+            $cashBankCode = '1010'; // safe fallback if no bank account configured
             foreach ($coa as $code => $acct) {
                 if (!empty($acct['is_bank']) && ($acct['status'] ?? '') === 'active') {
                     $cashBankCode = $code;
@@ -438,52 +432,27 @@ class Operations_accounting
 
         $feeIncomeCode = '4010'; // Tuition Fees
 
-        // Validate both accounts from already-fetched CoA
-        $cashAcct = $coa[$cashBankCode] ?? null;
+        $cashAcct = $coa[$cashBankCode]  ?? null;
         $feeAcct  = $coa[$feeIncomeCode] ?? null;
         if (!is_array($cashAcct) || ($cashAcct['status'] ?? '') !== 'active') {
-            log_message('error', "Fee journal: cash/bank account {$cashBankCode} missing/inactive for {$school}");
+            log_message('error', "Fee journal: cash/bank account {$cashBankCode} missing/inactive");
             return null;
         }
         if (!is_array($feeAcct) || ($feeAcct['status'] ?? '') !== 'active') {
-            log_message('error', "Fee journal: fee income account {$feeIncomeCode} missing/inactive for {$school}");
+            log_message('error', "Fee journal: fee income account {$feeIncomeCode} missing/inactive");
             return null;
         }
 
         $narration = "Fee payment: {$student} ({$stuId}) - {$class}" . ($receipt ? " Rcpt#{$receipt}" : '');
-        $bp = "Schools/{$school}/{$session}";
 
-        // Generate entry ID
-        $entryId = 'FE_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
-
-        // Voucher counter — verify-after-write + retry pattern for concurrency safety
-        $counterPath = "{$bp}/Accounts/Voucher_counters/Fee";
-        $voucherNo   = '';
-        $seq         = 0;
-        $maxAttempts  = 3;
-        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            $seq = (int) ($this->firebase->get($counterPath) ?? 0) + 1;
-            $this->firebase->set($counterPath, $seq);
-
-            // Verify-after-write: re-read to confirm we own this value
-            $verify = $this->firebase->get($counterPath);
-            if ((int) $verify === $seq) {
-                $voucherNo = 'FV-' . str_pad($seq, 6, '0', STR_PAD_LEFT);
-                break;
-            }
-            // Another writer overwrote — retry with their higher value
-            usleep(50000 * $attempt);
-        }
-        if ($voucherNo === '') {
-            // All retries failed — timestamp-based fallback guarantees uniqueness
-            $seq = (int) ($this->firebase->get($counterPath) ?? 0) + 1;
-            $this->firebase->set($counterPath, $seq);
-            $voucherNo = 'FV-' . str_pad($seq, 6, '0', STR_PAD_LEFT) . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
-        }
+        $seq = $sync->nextCounter('Fee');
+        if ($seq <= 0) $seq = (int) (microtime(true) * 1000) % 1000000;
+        $voucherNo = 'FV-' . str_pad($seq, 6, '0', STR_PAD_LEFT);
+        $entryId   = 'FE_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
 
         $lines = [
             ['account_code' => $cashBankCode,  'account_name' => $cashAcct['name'] ?? $cashBankCode,  'dr' => $amount, 'cr' => 0,       'narration' => $narration],
-            ['account_code' => $feeIncomeCode, 'account_name' => $feeAcct['name'] ?? $feeIncomeCode, 'dr' => 0,       'cr' => $amount, 'narration' => $narration],
+            ['account_code' => $feeIncomeCode, 'account_name' => $feeAcct['name']  ?? $feeIncomeCode, 'dr' => 0,       'cr' => $amount, 'narration' => $narration],
         ];
 
         $entry = [
@@ -502,40 +471,18 @@ class Operations_accounting
             'created_at'   => date('c'),
         ];
 
-        // Write ledger entry (counter already written in verify-after-write loop above)
-        $this->firebase->set("{$bp}/Accounts/Ledger/{$entryId}", $entry);
+        if (!$sync->syncLedgerEntry($entryId, $entry)) return null;
 
-        // Write indices
-        $this->firebase->set("{$bp}/Accounts/Ledger_index/by_date/{$date}/{$entryId}", true);
-        $this->firebase->set("{$bp}/Accounts/Ledger_index/by_account/{$cashBankCode}/{$entryId}", true);
-        $this->firebase->set("{$bp}/Accounts/Ledger_index/by_account/{$feeIncomeCode}/{$entryId}", true);
-
-        // Update closing balances — verify-after-write + retry for concurrency safety
-        $balPath = "{$bp}/Accounts/Closing_balances";
-        foreach ([$cashBankCode, $feeIncomeCode] as $ac) {
+        // Closing balances for Cash (Dr) and Fee Income (Cr).
+        foreach ([[$cashBankCode, $amount, 0.0], [$feeIncomeCode, 0.0, $amount]] as [$ac, $dr, $cr]) {
             for ($retry = 0; $retry < 3; $retry++) {
-                $cur = $this->firebase->get("{$balPath}/{$ac}");
-                if (!is_array($cur)) $cur = ['period_dr' => 0, 'period_cr' => 0];
-                $pDr = (float) ($cur['period_dr'] ?? 0);
-                $pCr = (float) ($cur['period_cr'] ?? 0);
-                if ($ac === $cashBankCode) {
-                    $newDr = round($pDr + $amount, 2);
-                    $newCr = round($pCr, 2);
-                } else {
-                    $newDr = round($pDr, 2);
-                    $newCr = round($pCr + $amount, 2);
-                }
-                $newBal = ['period_dr' => $newDr, 'period_cr' => $newCr, 'last_computed' => date('c')];
-                $this->firebase->set("{$balPath}/{$ac}", $newBal);
-                $verify = $this->firebase->get("{$balPath}/{$ac}");
-                if (is_array($verify)
-                    && abs((float) ($verify['period_dr'] ?? 0) - $newDr) < 0.01
-                    && abs((float) ($verify['period_cr'] ?? 0) - $newCr) < 0.01) {
-                    break;
-                }
+                $cur = $sync->readClosingBalance((string) $ac);
+                $newDr = round($cur['period_dr'] + $dr, 2);
+                $newCr = round($cur['period_cr'] + $cr, 2);
+                if ($sync->syncClosingBalance((string) $ac, $newDr, $newCr)) break;
                 usleep(50000 * ($retry + 1));
                 if ($retry === 2) {
-                    log_message('error', "Fee closing balance verify-after-write failed for {$ac} after 3 retries (entry {$entryId})");
+                    log_message('error', "Fee closing balance write failed for {$ac} (entry {$entryId})");
                 }
             }
         }
@@ -569,23 +516,15 @@ class Operations_accounting
      */
     public function get_fee_account_map(array $coa): array
     {
-        // 1. Try configured map from Firebase
-        $mapPath = "Schools/{$this->school_name}/Accounts/Fee_Account_Map";
-        $configMap = $this->firebase->get($mapPath);
+        $sync = $this->_acctFsSync();
+        if (!$sync) return [];
+        $configMap = $sync->readFeeAccountMap();
         $map = [];
-
-        if (is_array($configMap)) {
-            foreach ($configMap as $key => $entry) {
-                if (!is_array($entry)) continue;
-                $head = strtolower(trim($entry['fee_head'] ?? $key));
-                $code = trim($entry['account_code'] ?? '');
-                // Only use mapping if account exists and is active
-                if ($code !== '' && isset($coa[$code]) && ($coa[$code]['status'] ?? '') === 'active') {
-                    $map[$head] = $code;
-                }
+        foreach ($configMap as $head => $code) {
+            if ($code !== '' && isset($coa[$code]) && ($coa[$code]['status'] ?? '') === 'active') {
+                $map[$head] = $code;
             }
         }
-
         return $map;
     }
 
@@ -666,8 +605,6 @@ class Operations_accounting
             return $this->create_fee_journal($params);
         }
 
-        $school   = $params['school_name'];
-        $session  = $params['session_year'];
         $date     = $params['date'] ?? date('Y-m-d');
         $amount   = round((float) ($params['amount'] ?? 0), 2);
         $payMode  = strtolower(trim($params['payment_mode'] ?? 'cash'));
@@ -680,10 +617,11 @@ class Operations_accounting
 
         if ($amount <= 0) return null;
 
-        // Single fetch: full CoA
-        $coaPath = "Schools/{$school}/Accounts/ChartOfAccounts";
-        $coa = $this->firebase->get($coaPath);
-        if (!is_array($coa) || empty($coa)) return null;
+        // Pure Firestore: load CoA from Firestore
+        $sync = $this->_acctFsSync();
+        if (!$sync) return null;
+        $coa = $sync->readChartOfAccounts();
+        if (empty($coa)) return null;
 
         // ── Resolve cash/bank debit account ──
         if ($bankCode && isset($coa[$bankCode])) {
@@ -923,25 +861,10 @@ class Operations_accounting
             return $this->create_fee_journal($params);
         }
 
-        // ── Generate voucher number ──
-        $bp = "Schools/{$school}/{$session}";
-        $counterPath = "{$bp}/Accounts/Voucher_counters/Fee";
-        $voucherNo   = '';
-        for ($attempt = 1; $attempt <= 3; $attempt++) {
-            $seq = (int) ($this->firebase->get($counterPath) ?? 0) + 1;
-            $this->firebase->set($counterPath, $seq);
-            $verify = $this->firebase->get($counterPath);
-            if ((int) $verify === $seq) {
-                $voucherNo = 'FV-' . str_pad($seq, 6, '0', STR_PAD_LEFT);
-                break;
-            }
-            usleep(50000 * $attempt);
-        }
-        if ($voucherNo === '') {
-            $seq = (int) ($this->firebase->get($counterPath) ?? 0) + 1;
-            $this->firebase->set($counterPath, $seq);
-            $voucherNo = 'FV-' . str_pad($seq, 6, '0', STR_PAD_LEFT) . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
-        }
+        // ── Generate voucher number (pure Firestore counter) ──
+        $seq = $sync->nextCounter('Fee');
+        if ($seq <= 0) $seq = (int) (microtime(true) * 1000) % 1000000;
+        $voucherNo = 'FV-' . str_pad($seq, 6, '0', STR_PAD_LEFT);
 
         // ── Generate entry ID ──
         $entryId = 'FE_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
@@ -962,36 +885,19 @@ class Operations_accounting
             'created_at'   => date('c'),
         ];
 
-        // ── Write ledger entry ──
-        $this->firebase->set("{$bp}/Accounts/Ledger/{$entryId}", $entry);
+        // ── Write ledger entry + indices (pure Firestore) ──
+        if (!$sync->syncLedgerEntry($entryId, $entry)) return null;
 
-        // ── Write indices ──
-        $this->firebase->set("{$bp}/Accounts/Ledger_index/by_date/{$date}/{$entryId}", true);
-        foreach (array_keys($affected) as $acCode) {
-            $this->firebase->set("{$bp}/Accounts/Ledger_index/by_account/{$acCode}/{$entryId}", true);
-        }
-
-        // ── Update closing balances ──
-        $balPath = "{$bp}/Accounts/Closing_balances";
+        // ── Update closing balances (pure Firestore, per-account verify+retry) ──
         foreach ($affected as $ac => $amounts) {
             for ($retry = 0; $retry < 3; $retry++) {
-                $cur = $this->firebase->get("{$balPath}/{$ac}");
-                if (!is_array($cur)) $cur = ['period_dr' => 0, 'period_cr' => 0];
-                $newBal = [
-                    'period_dr'     => round((float) ($cur['period_dr'] ?? 0) + $amounts['dr'], 2),
-                    'period_cr'     => round((float) ($cur['period_cr'] ?? 0) + $amounts['cr'], 2),
-                    'last_computed' => date('c'),
-                ];
-                $this->firebase->set("{$balPath}/{$ac}", $newBal);
-                $verify = $this->firebase->get("{$balPath}/{$ac}");
-                if (is_array($verify)
-                    && abs((float) ($verify['period_dr'] ?? 0) - $newBal['period_dr']) < 0.01
-                    && abs((float) ($verify['period_cr'] ?? 0) - $newBal['period_cr']) < 0.01) {
-                    break;
-                }
+                $cur   = $sync->readClosingBalance((string) $ac);
+                $newDr = round($cur['period_dr'] + (float) $amounts['dr'], 2);
+                $newCr = round($cur['period_cr'] + (float) $amounts['cr'], 2);
+                if ($sync->syncClosingBalance((string) $ac, $newDr, $newCr)) break;
                 usleep(50000 * ($retry + 1));
                 if ($retry === 2) {
-                    log_message('error', "Granular fee closing balance verify failed for {$ac} (entry {$entryId})");
+                    log_message('error', "Granular fee closing balance write failed for {$ac} (entry {$entryId})");
                 }
             }
         }
@@ -1014,14 +920,8 @@ class Operations_accounting
      */
     public function save_fee_account_mapping(string $feeHead, string $accountCode): void
     {
-        $key = strtoupper(preg_replace('/[^A-Z0-9]+/', '_', strtolower(trim($feeHead))));
-        $key = trim($key, '_');
-        $path = "Schools/{$this->school_name}/Accounts/Fee_Account_Map/{$key}";
-        $this->firebase->set($path, [
-            'fee_head'     => trim($feeHead),
-            'account_code' => trim($accountCode),
-            'updated_at'   => date('c'),
-        ]);
+        $sync = $this->_acctFsSync();
+        if ($sync) $sync->syncFeeAccountMapping($feeHead, $accountCode);
     }
 
     // ====================================================================
@@ -1040,24 +940,38 @@ class Operations_accounting
      */
     public function create_refund_journal(array $params): ?string
     {
+        // Session C: pure-Firestore refund reversal. Dr Fee Income, Cr Cash/Bank.
         $amount     = round((float) ($params['amount'] ?? 0), 2);
         $refundMode = strtolower(trim($params['refund_mode'] ?? 'cash'));
         $student    = $params['student_name'] ?? '';
-        $stuId      = $params['student_id'] ?? '';
-        $class      = $params['class'] ?? '';
-        $refId      = $params['refund_id'] ?? '';
-        $origRcpt   = $params['receipt_no'] ?? '';
+        $stuId      = $params['student_id']   ?? '';
+        $class      = $params['class']        ?? '';
+        $refId      = $params['refund_id']    ?? '';
+        $origRcpt   = $params['receipt_no']   ?? '';
 
         if ($amount <= 0) return null;
 
-        // Single fetch: full CoA
-        $coaPath = "Schools/{$this->school_name}/Accounts/ChartOfAccounts";
-        $coa = $this->firebase->get($coaPath);
-        if (!is_array($coa) || empty($coa)) return null;
+        $sync = $this->_acctFsSync();
+        if (!$sync) return null;
 
-        // Select cash/bank account based on refund mode
-        if (in_array($refundMode, ['bank_transfer', 'cheque', 'online', 'upi', 'neft'])) {
-            $cashBankCode = '1010'; // fallback
+        // R.5: idempotency guard. If a journal for this refund was already
+        // posted (e.g. prior attempt succeeded but the refund-doc write
+        // failed, or admin is retrying via retry_refund_journal), skip
+        // creating a duplicate ledger entry and return the existing ID.
+        if ($refId !== '') {
+            $existing = $sync->findJournalBySourceRef('fee_refund', $refId);
+            if (is_array($existing) && !empty($existing['entryId'])) {
+                log_message('debug', "create_refund_journal: idempotent — existing journal {$existing['entryId']} found for refund={$refId}");
+                return (string) $existing['entryId'];
+            }
+        }
+
+        $coa = $sync->readChartOfAccounts();
+        if (empty($coa)) return null;
+
+        // Pick cash/bank account based on refund mode.
+        if (in_array($refundMode, ['bank_transfer', 'cheque', 'online', 'upi', 'neft'], true)) {
+            $cashBankCode = '1010';
             foreach ($coa as $code => $acct) {
                 if (!empty($acct['is_bank']) && ($acct['status'] ?? '') === 'active') {
                     $cashBankCode = $code;
@@ -1065,13 +979,11 @@ class Operations_accounting
                 }
             }
         } else {
-            $cashBankCode = '1010'; // Cash in Hand
+            $cashBankCode = '1010';
         }
 
-        $feeIncomeCode = '4010'; // Tuition Fees
-
-        // Validate both accounts
-        $cashAcct = $coa[$cashBankCode] ?? null;
+        $feeIncomeCode = '4010';
+        $cashAcct = $coa[$cashBankCode]  ?? null;
         $feeAcct  = $coa[$feeIncomeCode] ?? null;
         if (!is_array($cashAcct) || ($cashAcct['status'] ?? '') !== 'active') {
             log_message('error', "Refund journal: cash/bank account {$cashBankCode} missing/inactive");
@@ -1133,9 +1045,21 @@ class Operations_accounting
 
         if ($amount <= 0) return null;
 
-        $coaPath = "Schools/{$this->school_name}/Accounts/ChartOfAccounts";
-        $coa = $this->firebase->get($coaPath);
-        if (!is_array($coa) || empty($coa)) return null;
+        // Pure Firestore CoA fetch
+        $sync = $this->_acctFsSync();
+        if (!$sync) return null;
+
+        // R.5: idempotency guard (see create_refund_journal for rationale).
+        if ($refId !== '') {
+            $existing = $sync->findJournalBySourceRef('fee_refund', $refId);
+            if (is_array($existing) && !empty($existing['entryId'])) {
+                log_message('debug', "create_refund_journal_granular: idempotent — existing journal {$existing['entryId']} found for refund={$refId}");
+                return (string) $existing['entryId'];
+            }
+        }
+
+        $coa = $sync->readChartOfAccounts();
+        if (empty($coa)) return null;
 
         // Resolve cash/bank account
         if (in_array($refundMode, ['bank_transfer', 'cheque', 'online', 'upi', 'neft'])) {

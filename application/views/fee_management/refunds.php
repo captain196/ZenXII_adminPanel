@@ -411,6 +411,12 @@ document.addEventListener('DOMContentLoaded', function() {
       // The controller enforces the 5-min TTL so misclicks on a still-active
       // refund are rejected server-side.
       btns += '<button class="fm-btn-xs fm-btn-unstick" data-action="unstick" data-id="' + id + '" title="Unstick (rescue stuck refund)"><i class="fa fa-unlock"></i> Unstick</button>';
+    } else if (s === 'processed' && item.journalPosted === false) {
+      // R.5: refund went through but the accounting journal post failed.
+      // The demands are already reversed and the voucher is written — only
+      // the ledger entry is missing. Clicking Retry Journal hits the
+      // idempotent poster; on success the warning icon disappears.
+      btns += '<button class="fm-btn-xs fm-btn-retry-journal" data-action="retry-journal" data-id="' + id + '" title="Journal post failed — click to retry"><i class="fa fa-exclamation-triangle"></i> Retry Journal</button>';
     }
     btns += '<button class="fm-btn-xs fm-btn-view" data-action="view" data-id="' + id + '" title="View"><i class="fa fa-eye"></i></button>';
     return btns;
@@ -634,6 +640,21 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   };
 
+  window.retryJournal = function(id, $btn) {
+    doLifecycleAction({
+      url: 'fee_management/retry_refund_journal',
+      payload: { refund_id: id },
+      confirmMsg:
+        'Retry the accounting journal post for this refund?\n\n' +
+        'The refund itself is already complete (demands reversed, voucher issued). ' +
+        'This only re-attempts the ledger entry. Safe to click repeatedly — the poster ' +
+        'is idempotent and will not create a duplicate journal.',
+      successMsg: 'Journal posted.',
+      failMsg: 'Journal retry failed.',
+      button: $btn,
+    });
+  };
+
   window.unstickRefund = function(id, $btn) {
     doLifecycleAction({
       url: 'fee_management/unstick_refund',
@@ -772,11 +793,12 @@ document.addEventListener('DOMContentLoaded', function() {
     var action = $btn.data('action');
     var id     = $btn.data('id');
     if (!id) return;
-    if      (action === 'approve') approveRefund(id, $btn);
-    else if (action === 'reject')  rejectRefund(id, $btn);
-    else if (action === 'process') showProcessModal(id);
-    else if (action === 'unstick') unstickRefund(id, $btn);
-    else if (action === 'view')    showDetails(id);
+    if      (action === 'approve')        approveRefund(id, $btn);
+    else if (action === 'reject')         rejectRefund(id, $btn);
+    else if (action === 'process')        showProcessModal(id);
+    else if (action === 'unstick')        unstickRefund(id, $btn);
+    else if (action === 'retry-journal')  retryJournal(id, $btn);
+    else if (action === 'view')           showDetails(id);
   });
 
   $('.fm-pill').on('click', function() {
@@ -1072,6 +1094,8 @@ document.addEventListener('DOMContentLoaded', function() {
 .fm-btn-process:hover { background: rgba(59,130,246,.22); }
 .fm-btn-unstick { background: rgba(234,179,8,.14); color: #b45309; }
 .fm-btn-unstick:hover { background: rgba(234,179,8,.26); }
+.fm-btn-retry-journal { background: rgba(224,92,111,.12); color: #c1354a; }
+.fm-btn-retry-journal:hover { background: rgba(224,92,111,.22); }
 .fm-btn-view { background: var(--gold-dim); color: var(--gold); }
 .fm-btn-view:hover { background: var(--gold-ring); }
 

@@ -214,17 +214,41 @@ class Fee_refund_service
             ]);
 
             // ── 5. Post accounting reversal journal (Session C bridge) ───
-            $this->_postReversalJournal($refund, $amount, $refundMode, $refId, $allocations);
+            // R.5: capture the result. If it fails, the refund is STILL
+            // marked processed — demands/voucher are already written and
+            // reversing them to get back to 'approved' risks a messier
+            // hole (re-applying paid_amounts without a second transaction).
+            // Instead we record journalPosted=false on the refund doc so
+            // the admin can retry via Fee_management::retry_refund_journal.
+            $journalResult = $this->_postReversalJournal($refund, $amount, $refundMode, $refId, $allocations);
 
             // ── 6. Mark the refund processed ─────────────────────────────
-            $this->fsTxn->writeRefund($refId, [
-                'status'        => 'processed',
-                'processedDate' => date('Y-m-d H:i:s'),
-                'processedBy'   => $this->adminName,
-                'refundMode'    => $refundMode,
-                'voucherKey'    => $refundReceiptKey,
-                'processLock'   => '',
-            ]);
+            // Merge in the journal-state fields so a single write closes
+            // the refund transaction cleanly, success or partial.
+            $markProcessed = [
+                'status'               => 'processed',
+                'processedDate'        => date('Y-m-d H:i:s'),
+                'processedBy'          => $this->adminName,
+                'refundMode'           => $refundMode,
+                'voucherKey'           => $refundReceiptKey,
+                'processLock'          => '',
+                'journalLastAttemptAt' => date('c'),
+                'journalRetryCount'    => 1,
+            ];
+            if ($journalResult['posted']) {
+                $markProcessed['journalPosted']    = true;
+                $markProcessed['journalEntryId']   = $journalResult['entryId'];
+                $markProcessed['journalPostedAt']  = date('c');
+                $markProcessed['journalLastError'] = '';
+            } else {
+                $markProcessed['journalPosted']    = false;
+                $markProcessed['journalEntryId']   = null;
+                $markProcessed['journalLastError'] = (string) ($journalResult['error'] ?? 'unknown');
+                log_message('error',
+                    "Fee_refund_service: refund {$refId} processed but journal FAILED — " .
+                    "admin must retry via retry_refund_journal. Error: {$journalResult['error']}");
+            }
+            $this->fsTxn->writeRefund($refId, $markProcessed);
 
             // ── 7. Cross-system defaulter recompute (Firestore-only) ─────
             // A refund can flip a 'paid' demand back to 'partial'/'unpaid',
@@ -241,12 +265,17 @@ class Fee_refund_service
             // same hash short-circuits to the cached result above.
             $this->fsTxn->setIdempotencySuccess($idempHash, $refundReceiptKey);
 
-            log_message('info', "Fee_refund_service: {$refId} processed — amount={$amount}");
+            log_message('info', "Fee_refund_service: {$refId} processed — amount={$amount} journalPosted=" . ($journalResult['posted'] ? '1' : '0'));
 
             $response = [
-                'message'     => 'Refund processed successfully.',
-                'voucher_key' => $refundReceiptKey,
-                'refund_id'   => $refId,
+                'message'         => $journalResult['posted']
+                    ? 'Refund processed successfully.'
+                    : 'Refund processed. Journal post failed — click Retry Journal on the refund row to complete the ledger entry.',
+                'voucher_key'     => $refundReceiptKey,
+                'refund_id'       => $refId,
+                'journal_posted'  => (bool) $journalResult['posted'],
+                'journal_entry_id'=> $journalResult['entryId'],
+                'journal_error'   => $journalResult['error'],
             ];
             if ($demandResult !== null) $response['demand_reversal'] = $demandResult;
             return ['ok' => true, 'data' => $response];
@@ -656,15 +685,25 @@ class Fee_refund_service
     }
 
     /**
-     * Post the reversing accounting journal. Operations_accounting still
-     * writes the ledger entry to RTDB (+ Firestore mirror from Phase 4.1).
-     * Full Firestore-only ledger is Session C scope — keeping the existing
-     * call in place here is the correct seam until that lands.
+     * Post the reversing accounting journal. Returns a status dict so the
+     * caller can record the outcome on the refund doc (R.5).
+     *
+     * Return shape:
+     *   ['posted' => bool, 'entryId' => string|null, 'error' => string|null]
+     *
+     * Posted=true means the ledger entry is present (either just-created
+     * or already there — the idempotency guard in Operations_accounting
+     * returns the existing entryId when a journal with the same
+     * source_ref exists). Posted=false means the write genuinely failed
+     * and the refund doc should carry a journalPosted=false flag so the
+     * admin can retry via Fee_management::retry_refund_journal.
      */
     private function _postReversalJournal(
         array $refund, float $amount, string $mode, string $refId, array $allocations
-    ): void {
-        if ($this->opsAcct === null) return;
+    ): array {
+        if ($this->opsAcct === null) {
+            return ['posted' => false, 'entryId' => null, 'error' => 'ops_acct service not available'];
+        }
         try {
             $p = [
                 'student_name' => (string) ($refund['student_name'] ?? $refund['studentName'] ?? ''),
@@ -675,13 +714,83 @@ class Fee_refund_service
                 'refund_id'    => $refId,
                 'receipt_no'   => (string) ($refund['receipt_no']   ?? $refund['receiptNo']   ?? ''),
             ];
-            if (!empty($allocations)) {
-                $this->opsAcct->create_refund_journal_granular($p, $allocations);
-            } else {
-                $this->opsAcct->create_refund_journal($p);
+            $entryId = !empty($allocations)
+                ? $this->opsAcct->create_refund_journal_granular($p, $allocations)
+                : $this->opsAcct->create_refund_journal($p);
+
+            if ($entryId === null || $entryId === '') {
+                // Returned-null failure (missing CoA / inactive accounts /
+                // unbalanced lines). Error already went to error_log inside
+                // Operations_accounting; surface a concise message here.
+                return ['posted' => false, 'entryId' => null,
+                        'error' => 'Journal post returned null — check chart-of-accounts and logs'];
             }
+            return ['posted' => true, 'entryId' => $entryId, 'error' => null];
         } catch (\Exception $e) {
             log_message('error', 'Fee_refund_service::_postReversalJournal: ' . $e->getMessage());
+            return ['posted' => false, 'entryId' => null, 'error' => $e->getMessage()];
         }
+    }
+
+    /**
+     * Re-attempt the journal post for a refund that was processed but whose
+     * journal write failed. Called by Fee_management::retry_refund_journal.
+     * Reads the refund doc fresh, rebuilds the allocations list (if any),
+     * and invokes the idempotent journal poster. Updates the refund doc
+     * with the new journal state so the UI indicator can clear.
+     *
+     * @return array ['ok' => bool, 'error' => string|null, 'entryId' => string|null]
+     */
+    public function retryJournal(string $refId): array
+    {
+        $refund = $this->fsTxn->getRefund($refId);
+        if (!is_array($refund)) {
+            return ['ok' => false, 'error' => 'Refund not found.', 'entryId' => null];
+        }
+        if (($refund['status'] ?? '') !== 'processed') {
+            return ['ok' => false,
+                    'error' => "Only processed refunds can have their journal retried (current: " . ($refund['status'] ?? '?') . ").",
+                    'entryId' => null];
+        }
+        if (!empty($refund['journalPosted'])) {
+            return ['ok' => true, 'error' => null,
+                    'entryId' => (string) ($refund['journalEntryId'] ?? ''),
+                    'already' => true];
+        }
+
+        $amount         = (float)  ($refund['amount']    ?? 0);
+        $mode           = (string) ($refund['refundMode'] ?? $refund['refund_mode'] ?? 'cash');
+        $origReceiptNo  = (string) ($refund['receiptNo']  ?? $refund['receipt_no']  ?? '');
+        $origReceiptKey = $origReceiptNo !== '' ? 'F' . $origReceiptNo : '';
+        $allocations    = [];
+        if ($origReceiptKey !== '') {
+            $alloc = $this->fsTxn->getReceiptAllocation($origReceiptKey);
+            if (is_array($alloc) && is_array($alloc['allocations'] ?? null)) {
+                $allocations = $alloc['allocations'];
+            }
+        }
+
+        $result = $this->_postReversalJournal($refund, $amount, $mode, $refId, $allocations);
+
+        $patch = [
+            'journalLastAttemptAt' => date('c'),
+            'journalRetryCount'    => (int) ($refund['journalRetryCount'] ?? 0) + 1,
+        ];
+        if ($result['posted']) {
+            $patch['journalPosted']    = true;
+            $patch['journalEntryId']   = $result['entryId'];
+            $patch['journalPostedAt']  = date('c');
+            $patch['journalLastError'] = '';
+        } else {
+            $patch['journalPosted']    = false;
+            $patch['journalLastError'] = (string) $result['error'];
+        }
+        $this->fsTxn->writeRefund($refId, $patch);
+
+        return [
+            'ok'      => (bool) $result['posted'],
+            'error'   => $result['error'],
+            'entryId' => $result['entryId'],
+        ];
     }
 }

@@ -1985,6 +1985,63 @@ class Fee_management extends MY_Controller
         ]);
     }
 
+    /**
+     * POST — Retry the accounting journal post for a refund that was
+     * processed but whose journal write failed (R.5).
+     *
+     * Params: refund_id (required)
+     *
+     * The refund itself is already complete — demands reversed, voucher
+     * written, student notified. Only the ledger entry is missing. This
+     * endpoint hits the idempotent journal poster: if a journal for this
+     * refund already exists it returns that one; otherwise it posts a
+     * fresh entry. Either way, the refund doc's journalPosted flag gets
+     * set so the UI warning clears.
+     */
+    public function retry_refund_journal()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'retry_refund_journal');
+        $this->_bootFsTxn();
+
+        $refId = trim((string) $this->_post('refund_id'));
+        if ($refId === '') $this->json_error('Refund ID is required.');
+        $refId = $this->safe_path_segment($refId, 'refund_id');
+
+        // Operations_accounting + Fee_refund_service boot is identical to
+        // process_refund — keep parity so both endpoints share CoA state.
+        $this->load->library('Operations_accounting', null, 'ops_acct');
+        $this->ops_acct->init(
+            $this->firebase, $this->school_name, $this->session_year,
+            $this->admin_id ?? 'system', $this
+        );
+
+        $this->load->library('Fee_refund_service', null, 'refund_svc');
+        $this->refund_svc->init(
+            $this->fsTxn,
+            $this->admin_name ?? 'System',
+            $this->admin_id ?? 'system',
+            $this->ops_acct
+        );
+
+        $result = $this->refund_svc->retryJournal($refId);
+
+        if (!$result['ok']) {
+            log_message('error', "retry_refund_journal failed for {$refId}: " . ($result['error'] ?? ''));
+            $this->json_error($result['error'] ?? 'Journal retry failed.');
+        }
+
+        $msg = !empty($result['already'])
+            ? 'Journal was already posted — nothing to retry.'
+            : 'Journal posted successfully.';
+
+        $this->json_success([
+            'message'          => $msg,
+            'refund_id'        => $refId,
+            'journal_entry_id' => $result['entryId'],
+            'already_posted'   => !empty($result['already']),
+        ]);
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //  FEE REMINDERS (AJAX)
     // ══════════════════════════════════════════════════════════════════
