@@ -2,379 +2,375 @@
 defined('BASEPATH') or exit('No direct script access allowed');
 
 /**
- * Fee_refund_service — Orchestrator for refund processing.
+ * Fee_refund_service — Pure-Firestore refund orchestrator.
  *
- * Delegates to:
- *   - RefundValidator  (idempotency, locking, status checks)
- *   - RefundProcessor  (demand reversal, legacy month flags, advance balance)
- *   - RefundAccounting (voucher, account book, journal entries)
+ * SESSION B of the Firestore-only migration. Every read/write the service
+ * performs goes through Fee_firestore_txn (Firestore-only). The only
+ * external RTDB touchpoint left is the accounting journal reversal via
+ * Operations_accounting — that's explicitly deferred to Session C.
+ *
+ * Flow:
+ *   1. Validate + lock         (feeRefunds doc status transition)
+ *   2. Reverse demands         (feeDemands rows) + build audit trail
+ *   3. Reduce advance balance  (studentAdvanceBalances doc)
+ *   4. Write refund voucher    (feeRefundVouchers doc — Firestore replacement
+ *                                for legacy RTDB Accounts/Vouchers/{date}/REFUND_*)
+ *   5. Post reversal journal   (ops_acct — Session C bridge, still RTDB-backed)
+ *   6. Mark refund processed   (feeRefunds doc)
+ *
+ * Dependency injection is simpler than the prior version — only fsTxn +
+ * ops_acct are required. Fee_audit is kept optional (cross-cutting).
  */
 class Fee_refund_service
 {
-    private $firebase;
-    private $sessionRoot;
-    private $feesBase;
-    private $adminName;
-    private $adminId;
-    private $opsAcct;
+    /** @var Fee_firestore_txn */ private $fsTxn;
+    /** @var object */          private $opsAcct;
+    /** @var string */          private $adminName;
+    /** @var string */          private $adminId;
 
-    public function init($firebase, string $sessionRoot, string $feesBase, string $adminName, string $adminId, $opsAcct = null): self
+    private const LOCK_TTL = 300; // 5 min
+
+    public function init($fsTxn, string $adminName, string $adminId, $opsAcct = null): self
     {
-        $this->firebase    = $firebase;
-        $this->sessionRoot = $sessionRoot;
-        $this->feesBase    = $feesBase;
-        $this->adminName   = $adminName;
-        $this->adminId     = $adminId;
-        $this->opsAcct     = $opsAcct;
+        $this->fsTxn     = $fsTxn;
+        $this->adminName = $adminName;
+        $this->adminId   = $adminId;
+        $this->opsAcct   = $opsAcct;
         return $this;
     }
 
     /**
-     * Process a refund end-to-end.
+     * Process an approved refund end-to-end.
      *
-     * @return array ['ok' => bool, 'data' => [...]] or ['ok' => false, 'error' => '...']
+     * @return array ['ok' => bool, 'data' => [...], 'error' => '...']
      */
     public function process(string $refId, string $refundMode): array
     {
-        $validator  = new _RefundValidator($this->firebase, $this->feesBase);
-        $processor  = new _RefundProcessor($this->firebase, $this->sessionRoot, $this->feesBase, $this->adminId);
-        $accounting = new _RefundAccounting($this->firebase, $this->sessionRoot, $this->adminName, $this->opsAcct);
-
-        // ── 1. Validate & lock ──
-        $validation = $validator->validateAndLock($refId);
-        if (!$validation['ok']) {
-            return $validation;
-        }
-        $refund = $validation['refund'];
-        $amount = floatval($refund['amount'] ?? 0);
-
-        if ($amount <= 0) {
-            $validator->releaseLock($refId, 'approved');
-            return ['ok' => false, 'error' => 'Refund amount must be greater than zero.'];
-        }
-
-        // ── 2. Create voucher + reverse fees ──
-        $receiptKey     = 'REFUND_' . strtoupper(substr($refId, 4));
-        $studentId      = $refund['student_id'] ?? '';
-        $origReceiptNo  = $refund['receipt_no'] ?? '';
-        $refClass       = $refund['class'] ?? '';
-        $refSection     = $refund['section'] ?? '';
-
-        $voucherResult = $accounting->createVoucher($refund, $amount, $refundMode, $refId, $receiptKey);
-        $demandResult  = null;
-        $allocations   = [];
-
-        if ($studentId !== '' && $origReceiptNo !== '') {
-            $demandResult = $processor->reverseDemands(
-                $studentId, $origReceiptNo, $amount, $refId, $receiptKey, $allocations
-            );
-        }
-
-        if ($studentId !== '' && $refClass !== '' && $refSection !== '') {
-            $processor->reverseLegacyMonthFlags(
-                $studentId, $origReceiptNo, $refClass, $refSection, $amount, $demandResult
-            );
-        }
-
-        // ── 3. Accounting entries ──
-        $accounting->reverseAccountBook($studentId, $origReceiptNo, $refClass, $refSection, $amount);
-        $accounting->createJournal($refund, $amount, $refundMode, $refId, $allocations);
-
-        // ── 4. Mark processed ──
-        $this->firebase->update("{$this->feesBase}/Refunds/{$refId}", [
-            'status'         => 'processed',
-            'processed_date' => date('Y-m-d H:i:s'),
-            'processed_by'   => $this->adminName,
-            'refund_mode'    => $refundMode,
-            'voucher_key'    => $receiptKey,
-            'process_lock'   => null,
-        ]);
-
-        log_message('info', "Fee_refund_service: {$refId} processed — amount={$amount}");
-
-        $response = ['message' => 'Refund processed successfully.', 'voucher_key' => $receiptKey, 'refund_id' => $refId];
-        if ($demandResult !== null) $response['demand_reversal'] = $demandResult;
-        return ['ok' => true, 'data' => $response];
-    }
-}
-
-// ═════════════════════════════════════════════════════════════════════
-//  SUB-CLASS 1: RefundValidator
-// ═════════════════════════════════════════════════════════════════════
-
-class _RefundValidator
-{
-    private $firebase;
-    private $feesBase;
-    private const LOCK_TTL = 300;
-
-    public function __construct($firebase, string $feesBase)
-    {
-        $this->firebase = $firebase;
-        $this->feesBase = $feesBase;
-    }
-
-    public function validateAndLock(string $refId): array
-    {
-        $refund = $this->firebase->get("{$this->feesBase}/Refunds/{$refId}");
+        // ── 1. Validate (existing doc-status + processLock checks) ───
+        // These remain an independent first line of defense. The NEW
+        // request-hash + per-student lock below are additive layers.
+        $refund = $this->fsTxn->getRefund($refId);
         if (!is_array($refund)) {
             return ['ok' => false, 'error' => 'Refund not found.'];
         }
 
-        $status = $refund['status'] ?? '';
-
+        $status = (string) ($refund['status'] ?? '');
         if ($status === 'processed') {
-            log_message('info', "_RefundValidator: {$refId} already processed — idempotent");
-            return [
-                'ok' => true,
-                'data' => ['message' => 'Refund already processed.', 'refund_id' => $refId, 'idempotent' => true],
-            ];
+            return ['ok' => true, 'data' => [
+                'message' => 'Refund already processed.', 'refund_id' => $refId, 'idempotent' => true,
+            ]];
         }
 
         if ($status === 'processing') {
-            $lockTime = strtotime($refund['process_lock'] ?? '');
+            $lockTime = strtotime((string) ($refund['processLock'] ?? $refund['process_lock'] ?? ''));
             if ($lockTime && (time() - $lockTime) < self::LOCK_TTL) {
                 return ['ok' => false, 'error' => 'Refund is currently being processed. Please wait.'];
             }
-            log_message('info', "_RefundValidator: stale lock on {$refId}, retrying");
+            log_message('info', "Fee_refund_service: stale lock on {$refId}, retrying");
         } elseif ($status !== 'approved') {
             return ['ok' => false, 'error' => "Only approved refunds can be processed. Current status: '{$status}'."];
         }
 
-        // Acquire lock
-        $this->firebase->update("{$this->feesBase}/Refunds/{$refId}", [
-            'status' => 'processing', 'process_lock' => date('c'),
+        // Derive the fields we need for the request-hash key BEFORE any
+        // state change. Same precedence the old code used at the top of
+        // the processing block.
+        $studentId     = (string) ($refund['student_id']   ?? $refund['studentId']   ?? '');
+        $origReceiptNo = (string) ($refund['receipt_no']   ?? $refund['receiptNo']   ?? '');
+        $amount        = (float)  ($refund['amount'] ?? 0);
+
+        if ($studentId === '') {
+            return ['ok' => false, 'error' => 'Refund record missing student_id.'];
+        }
+
+        // ── R.1a: Request-hash idempotency (feeIdempotency) ──────────
+        // Mirrors FeeCollectionService::submit L133-173 exactly. The
+        // hash uniquely identifies this refund attempt; a duplicate
+        // process() call with the same (studentId, refId, receiptNo,
+        // amount) short-circuits here instead of double-reversing.
+        $idempHash = $this->fsTxn->idempKey($studentId, $refId, [$origReceiptNo], $amount);
+        $idemp     = $this->fsTxn->getIdempotency($idempHash);
+        if (is_array($idemp)) {
+            $st = (string) ($idemp['status'] ?? '');
+            if ($st === 'success') {
+                return ['ok' => true, 'data' => [
+                    'message' => 'Refund already processed.', 'refund_id' => $refId, 'idempotent' => true,
+                ]];
+            }
+            if ($st === 'processing') {
+                $age = time() - strtotime((string) ($idemp['startedAt'] ?? '2000-01-01'));
+                if ($age < 120) {
+                    return ['ok' => false, 'error' => 'This refund is currently being processed. Please wait.'];
+                }
+                // Older than 120s → stale marker, allow retry (overwrite below).
+            }
+        }
+        $this->fsTxn->setIdempotencyProcessing($idempHash, [
+            'kind'       => 'refund',
+            'refundId'   => $refId,
+            'studentId'  => $studentId,
+            'receiptNo'  => $origReceiptNo,
+            'amount'     => $amount,
+            'refundMode' => $refundMode,
         ]);
 
-        return ['ok' => true, 'refund' => $refund];
+        // ── R.1b: Per-student lock (feeLocks) ───────────────────────
+        // 120s TTL matching FeeCollectionService. Serialises with
+        // concurrent payments on the same student — before this, a
+        // refund could race with a parent-app Razorpay verify on the
+        // same student and read stale demand balances mid-write.
+        $lockToken = $this->fsTxn->acquireLock($studentId, 120);
+        if ($lockToken === '') {
+            $this->fsTxn->deleteIdempotency($idempHash);
+            return ['ok' => false, 'error' => 'Another fee operation for this student is in progress. Please wait and retry.'];
+        }
+
+        try {
+            // Existing refund-doc 'processing' marker — preserved.
+            $this->fsTxn->writeRefund($refId, [
+                'status'      => 'processing',
+                'processLock' => date('c'),
+            ]);
+
+            if ($amount <= 0) {
+                // Roll refund doc back to 'approved' and clear both safety
+                // markers so the admin can re-trigger after fixing amount.
+                $this->fsTxn->writeRefund($refId, ['status' => 'approved', 'processLock' => '']);
+                $this->fsTxn->deleteIdempotency($idempHash);
+                return ['ok' => false, 'error' => 'Refund amount must be greater than zero.'];
+            }
+
+            $refundReceiptKey = 'REFUND_' . strtoupper(substr($refId, 4));
+            $studentName   = (string) ($refund['student_name'] ?? $refund['studentName'] ?? '');
+            $refClass      = (string) ($refund['class']        ?? $refund['className']   ?? '');
+            $refSection    = (string) ($refund['section']      ?? '');
+            $origReceiptKey= $origReceiptNo !== '' ? 'F' . $origReceiptNo : '';
+
+            // ── 2. Reverse the original receipt's allocations ────────────
+            $demandResult = null;
+            $allocations  = [];
+            if ($studentId !== '' && $origReceiptKey !== '') {
+                $demandResult = $this->_reverseAllocations(
+                    $studentId, $origReceiptKey, $amount, $refId, $refundReceiptKey, $allocations
+                );
+            }
+
+            // ── 3. Update legacy month-fee flag on the student doc ──────
+            // Always runs when we have a studentId — even if no demands were
+            // reversed — so the student doc gets an `updatedAt` touch and
+            // downstream audits can see "last refund affected this student".
+            if ($studentId !== '') {
+                $this->_recomputeMonthFeeFlags($studentId);
+            }
+
+            // ── 4. Write the refund voucher (Firestore) ──────────────────
+            $this->fsTxn->writeRefundVoucher($refundReceiptKey, [
+                'type'         => 'refund',
+                'refundId'     => $refId,
+                'studentId'    => $studentId,
+                'studentName'  => $studentName,
+                'className'    => $refClass,
+                'section'      => $refSection,
+                'feeTitle'     => (string) ($refund['fee_title'] ?? $refund['feeTitle'] ?? ''),
+                'amount'       => -$amount,
+                'refundMode'   => $refundMode,
+                'origReceiptNo'=> $origReceiptNo,
+                'reason'       => (string) ($refund['reason']  ?? ''),
+                'processedBy'  => $this->adminName,
+                'processedAt'  => date('c'),
+            ]);
+
+            // ── 5. Post accounting reversal journal (Session C bridge) ───
+            $this->_postReversalJournal($refund, $amount, $refundMode, $refId, $allocations);
+
+            // ── 6. Mark the refund processed ─────────────────────────────
+            $this->fsTxn->writeRefund($refId, [
+                'status'        => 'processed',
+                'processedDate' => date('Y-m-d H:i:s'),
+                'processedBy'   => $this->adminName,
+                'refundMode'    => $refundMode,
+                'voucherKey'    => $refundReceiptKey,
+                'processLock'   => '',
+            ]);
+
+            // R.1a: mark idempotency success so any future replay of the
+            // same hash short-circuits to the cached result above.
+            $this->fsTxn->setIdempotencySuccess($idempHash, $refundReceiptKey);
+
+            log_message('info', "Fee_refund_service: {$refId} processed — amount={$amount}");
+
+            $response = [
+                'message'     => 'Refund processed successfully.',
+                'voucher_key' => $refundReceiptKey,
+                'refund_id'   => $refId,
+            ];
+            if ($demandResult !== null) $response['demand_reversal'] = $demandResult;
+            return ['ok' => true, 'data' => $response];
+        } catch (\Exception $e) {
+            // Any unexpected throw inside the processing block. The
+            // refund doc stays in 'processing' for manual inspection;
+            // clearing the idempotency marker lets the admin retry
+            // after fixing the underlying cause.
+            $this->fsTxn->deleteIdempotency($idempHash);
+            log_message('error', "Fee_refund_service::process({$refId}) threw: " . $e->getMessage());
+            return ['ok' => false, 'error' => 'Refund processing failed: ' . $e->getMessage()];
+        } finally {
+            // R.1b: ALWAYS release the per-student lock, whether we
+            // succeeded, hit the amount<=0 rollback, or threw.
+            $this->fsTxn->releaseLock($studentId, $lockToken);
+        }
     }
 
-    public function releaseLock(string $refId, string $restoreStatus): void
-    {
-        $this->firebase->update("{$this->feesBase}/Refunds/{$refId}", [
-            'status' => $restoreStatus, 'process_lock' => null,
-        ]);
-    }
-}
+    // ──────────────────────────────────────────────────────────────────
+    //  Private helpers
+    // ──────────────────────────────────────────────────────────────────
 
-// ═════════════════════════════════════════════════════════════════════
-//  SUB-CLASS 2: RefundProcessor
-// ═════════════════════════════════════════════════════════════════════
-
-class _RefundProcessor
-{
-    private $firebase;
-    private $sessionRoot;
-    private $feesBase;
-    private $adminId;
-
-    public function __construct($firebase, string $sessionRoot, string $feesBase, string $adminId)
-    {
-        $this->firebase    = $firebase;
-        $this->sessionRoot = $sessionRoot;
-        $this->feesBase    = $feesBase;
-        $this->adminId     = $adminId;
-    }
-
-    public function reverseDemands(
-        string $studentId, string $origReceiptNo, float $amount,
-        string $refId, string $receiptKey, array &$allocationsOut
+    /**
+     * Reverse allocations on the original receipt.
+     *
+     * Reads the receipt's allocation record from Firestore, walks the
+     * allocation lines in reverse (newest first), and reduces each
+     * matching demand's paid_amount. Any excess (refund amount > sum of
+     * allocations) reduces the student's advance balance.
+     */
+    private function _reverseAllocations(
+        string $studentId, string $origReceiptKey, float $amount,
+        string $refId, string $refundReceiptKey, array &$allocationsOut
     ): ?array {
-        $allocPath = "{$this->sessionRoot}/Fees/Receipt_Allocations/{$origReceiptNo}";
-        $allocData = $this->firebase->get($allocPath);
-
-        if (!is_array($allocData) || empty($allocData['allocations'])) return null;
-        if (($allocData['status'] ?? '') === 'reversed') {
+        $alloc       = $this->fsTxn->getReceiptAllocation($origReceiptKey);
+        $allocLines  = (is_array($alloc) && is_array($alloc['allocations'] ?? null)) ? $alloc['allocations'] : [];
+        $alreadyDone = is_array($alloc) && (($alloc['status'] ?? '') === 'reversed');
+        if ($alreadyDone) {
             return ['reversed' => 0, 'already_reversed' => true];
         }
 
         try {
-            $allocationsOut = $allocData['allocations'];
-            $demandsBase = "{$this->sessionRoot}/Fees/Demands/{$studentId}";
-            $reversed = 0;
-            $log = [];
-            $remaining = $amount;
+            $allocationsOut = $allocLines;
+            $demands    = $this->fsTxn->demandsForStudent($studentId);
+            $reversed   = 0;
+            $log        = [];
+            $remaining  = $amount;
 
-            foreach (array_reverse($allocationsOut) as $alloc) {
+            foreach (array_reverse($allocationsOut) as $a) {
                 if ($remaining <= 0.005) break;
-                $did = $alloc['demand_id'] ?? '';
-                $allocAmt = floatval($alloc['amount'] ?? 0);
+                $did      = (string) ($a['demand_id'] ?? '');
+                $allocAmt = (float)  ($a['allocated'] ?? $a['amount'] ?? 0);
                 if ($did === '' || $allocAmt <= 0) continue;
+                if (!isset($demands[$did])) continue;
 
                 $reverseAmt = min($remaining, $allocAmt);
-                $demand = $this->firebase->get("{$demandsBase}/{$did}");
-                if (!is_array($demand)) continue;
+                $d          = $demands[$did];
+                $oldPaid    = (float) ($d['paid_amount'] ?? 0);
+                $net        = (float) ($d['net_amount']  ?? $d['netAmount']  ?? 0);
+                $fine       = (float) ($d['fine_amount'] ?? $d['fineAmount'] ?? 0);
+                $newPaid    = round(max(0, $oldPaid - $reverseAmt), 2);
+                $newBal     = round(max(0, $net + $fine - $newPaid), 2);
+                $newStatus  = ($newPaid <= 0.005) ? 'unpaid'
+                            : (($newBal <= 0.005) ? 'paid' : 'partial');
 
-                $oldPaid   = floatval($demand['paid_amount'] ?? 0);
-                $net       = floatval($demand['net_amount'] ?? 0);
-                $fine      = floatval($demand['fine_amount'] ?? 0);
-                $newPaid   = round(max(0, $oldPaid - $reverseAmt), 2);
-                $newBal    = round(max(0, $net + $fine - $newPaid), 2);
-                $newStatus = ($newPaid <= 0.005) ? 'unpaid' : (($newBal <= 0.005) ? 'paid' : 'partial');
-
-                $this->firebase->update("{$demandsBase}/{$did}", [
-                    'paid_amount' => $newPaid, 'balance' => $newBal, 'status' => $newStatus,
-                    'last_refund_receipt' => $receiptKey, 'last_refund_date' => date('c'), 'updated_at' => date('c'),
+                $this->fsTxn->updateDemand($did, [
+                    'paid_amount'         => $newPaid,
+                    'balance'             => $newBal,
+                    'status'              => $newStatus,
+                    'last_refund_receipt' => $refundReceiptKey,
+                    'last_refund_date'    => date('c'),
                 ]);
-                $log[] = ['demand_id' => $did, 'fee_head' => $alloc['fee_head'] ?? '', 'period' => $alloc['period'] ?? '', 'reversed_amt' => round($reverseAmt, 2), 'new_status' => $newStatus];
+
+                $log[] = [
+                    'demand_id'    => $did,
+                    'fee_head'     => $a['fee_head'] ?? '',
+                    'period'       => $a['period']   ?? '',
+                    'reversed_amt' => round($reverseAmt, 2),
+                    'new_status'   => $newStatus,
+                ];
                 $remaining -= $reverseAmt;
                 $reversed++;
             }
 
-            // Reduce advance balance if excess
+            // Any leftover amount reduces the advance balance.
             if ($remaining > 0.005) {
-                $advPath = "{$this->sessionRoot}/Fees/Advance_Balance/{$studentId}";
-                $adv = $this->firebase->get($advPath);
-                $advAmt = is_array($adv) ? floatval($adv['amount'] ?? 0) : 0;
-                $this->firebase->set($advPath, ['amount' => round(max(0, $advAmt - $remaining), 2), 'last_updated' => date('c'), 'last_refund' => $receiptKey]);
+                $curAdv = $this->fsTxn->getAdvanceBalance($studentId);
+                $newAdv = round(max(0, $curAdv - $remaining), 2);
+                $this->fsTxn->setAdvanceBalance($studentId, $newAdv, [
+                    'lastRefund' => $refundReceiptKey,
+                ]);
             }
 
+            // Audit trail + mark allocation reversed.
             $auditId = 'RFND_' . date('YmdHis') . '_' . bin2hex(random_bytes(3));
-            $this->firebase->set("{$this->sessionRoot}/Fees/Refund_Audit/{$auditId}", [
-                'receipt_key' => $origReceiptNo, 'refund_id' => $refId, 'student_id' => $studentId,
-                'refund_amount' => round($amount, 2), 'reversals' => $log, 'reversed_count' => $reversed,
-                'created_at' => date('c'), 'created_by' => $this->adminId,
+            $this->fsTxn->writeRefundAudit($auditId, [
+                'receiptKey'     => $origReceiptKey,
+                'refundId'       => $refId,
+                'refundReceipt'  => $refundReceiptKey,
+                'studentId'      => $studentId,
+                'refundAmount'   => round($amount, 2),
+                'reversals'      => $log,
+                'reversedCount'  => $reversed,
+                'createdAt'      => date('c'),
+                'createdBy'      => $this->adminId,
             ]);
-            $this->firebase->update($allocPath, ['status' => 'reversed', 'reversed_at' => date('c'), 'refund_audit' => $auditId]);
+            $this->fsTxn->markAllocationReversed($origReceiptKey, $auditId);
+
             return ['reversed' => $reversed, 'audit_id' => $auditId];
         } catch (\Exception $e) {
-            log_message('error', '_RefundProcessor::reverseDemands failed: ' . $e->getMessage());
+            log_message('error', 'Fee_refund_service::_reverseAllocations failed: ' . $e->getMessage());
             return null;
         }
     }
 
-    public function reverseLegacyMonthFlags(
-        string $studentId, string $origReceiptNo, string $class, string $section,
-        float $amount, ?array $demandResult
+    /**
+     * After reversing demands, recompute the `monthFee` map on the student
+     * doc so paid months flip to 0 if their demands are no longer fully paid.
+     */
+    private function _recomputeMonthFeeFlags(string $studentId): void
+    {
+        try {
+            $demands = $this->fsTxn->demandsForStudent($studentId);
+
+            // Recompute only the months that actually have demands. The
+            // remaining map stays intact (we don't want to wipe April=1 just
+            // because a later month is empty).
+            $flags = [];
+            foreach ($demands as $d) {
+                $p = explode(' ', (string) ($d['period'] ?? ''))[0] ?? '';
+                if ($p === '') continue;
+                if (!isset($flags[$p])) $flags[$p] = 1;
+                if (($d['status'] ?? 'unpaid') !== 'paid') $flags[$p] = 0;
+            }
+
+            // Always touch the student doc so the refund audit trail has a
+            // timestamp even if no demand statuses shifted (e.g. school is on
+            // the legacy month-fee flag model rather than demand-based).
+            $student  = $this->fsTxn->getStudent($studentId);
+            $existing = is_array($student['monthFee'] ?? null) ? $student['monthFee'] : [];
+            $merged   = empty($flags) ? $existing : array_replace($existing, $flags);
+            $this->fsTxn->updateStudent($studentId, [
+                'monthFee'    => $merged,
+                'lastRefundAt'=> date('c'),
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'Fee_refund_service::_recomputeMonthFeeFlags failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Post the reversing accounting journal. Operations_accounting still
+     * writes the ledger entry to RTDB (+ Firestore mirror from Phase 4.1).
+     * Full Firestore-only ledger is Session C scope — keeping the existing
+     * call in place here is the correct seam until that lands.
+     */
+    private function _postReversalJournal(
+        array $refund, float $amount, string $mode, string $refId, array $allocations
     ): void {
-        // Feature flag: skip legacy writes if disabled
-        $CI =& get_instance();
-        if (isset($CI->config) && $CI->config->item('use_legacy_month_fee') === false) {
-            return;
-        }
-
-        try {
-            list($cn, $sn) = $this->_normalizeCS($class, $section);
-            $studentBase = "{$this->sessionRoot}/{$cn}/{$sn}/Students/{$studentId}";
-
-            if ($demandResult !== null && ($demandResult['reversed'] ?? 0) > 0) {
-                $demandsBase = "{$this->sessionRoot}/Fees/Demands/{$studentId}";
-                $allDemands = $this->firebase->get($demandsBase);
-                if (is_array($allDemands)) {
-                    $ms = [];
-                    foreach ($allDemands as $d) {
-                        if (!is_array($d)) continue;
-                        $mn = explode(' ', $d['period'] ?? '')[0] ?? '';
-                        if ($mn === '') continue;
-                        $ms[$mn][] = $d['status'] ?? 'unpaid';
-                    }
-                    foreach ($ms as $mn => $sts) {
-                        $paid = !in_array('unpaid', $sts) && !in_array('partial', $sts);
-                        $this->firebase->set("{$studentBase}/Month Fee/{$mn}", $paid ? 1 : 0);
-                    }
-                }
-            } else {
-                $orig = $this->firebase->get("{$studentBase}/Fees Record/{$origReceiptNo}");
-                if (!is_array($orig)) return;
-                $mf = $this->firebase->get("{$studentBase}/Month Fee");
-                $mf = is_array($mf) ? $mf : [];
-                $rem = $amount;
-                $fp = "{$this->sessionRoot}/Accounts/Fees/Classes Fees/{$cn}/{$sn}";
-                $cf = $this->firebase->get($fp);
-                $cf = is_array($cf) ? $cf : [];
-                $months = ['April','May','June','July','August','September','October','November','December','January','February','March','Yearly Fees'];
-                foreach (array_reverse($months) as $m) {
-                    if ($rem <= 0) break;
-                    if (!isset($mf[$m]) || (int)$mf[$m] !== 1) continue;
-                    $t = 0;
-                    if (isset($cf[$m]) && is_array($cf[$m])) {
-                        foreach ($cf[$m] as $_ => $a) $t += floatval(str_replace(',', '', $a));
-                    }
-                    if ($t <= 0) $t = $rem;
-                    if ($rem >= $t) { $this->firebase->set("{$studentBase}/Month Fee/{$m}", 0); $rem -= $t; }
-                }
-                if ($rem > 0.005) {
-                    $os = floatval($this->firebase->get("{$studentBase}/Oversubmittedfees") ?? 0);
-                    $this->firebase->set("{$studentBase}/Oversubmittedfees", round(max(0, $os - $rem), 2));
-                }
-            }
-        } catch (\Exception $e) {
-            log_message('error', '_RefundProcessor::reverseLegacyMonthFlags: ' . $e->getMessage());
-        }
-    }
-
-    private function _normalizeCS(string $c, string $s): array
-    {
-        $c = trim($c);
-        if (stripos($c, 'Class ') !== 0) $c = 'Class ' . $c;
-        $s = trim($s);
-        if (stripos($s, 'Section ') !== 0) $s = 'Section ' . strtoupper($s);
-        return [$c, $s];
-    }
-}
-
-// ═════════════════════════════════════════════════════════════════════
-//  SUB-CLASS 3: RefundAccounting
-// ═════════════════════════════════════════════════════════════════════
-
-class _RefundAccounting
-{
-    private $firebase;
-    private $sessionRoot;
-    private $adminName;
-    private $opsAcct;
-
-    public function __construct($firebase, string $sessionRoot, string $adminName, $opsAcct = null)
-    {
-        $this->firebase    = $firebase;
-        $this->sessionRoot = $sessionRoot;
-        $this->adminName   = $adminName;
-        $this->opsAcct     = $opsAcct;
-    }
-
-    public function createVoucher(array $refund, float $amount, string $mode, string $refId, string $receiptKey): void
-    {
-        $today = date('Y-m-d');
-        $this->firebase->set("{$this->sessionRoot}/Accounts/Vouchers/{$today}/{$receiptKey}", [
-            'type' => 'refund', 'student_id' => $refund['student_id'] ?? '', 'student_name' => $refund['student_name'] ?? '',
-            'class' => $refund['class'] ?? '', 'section' => $refund['section'] ?? '', 'fee_title' => $refund['fee_title'] ?? '',
-            'amount' => -$amount, 'refund_mode' => $mode, 'receipt_no' => $refund['receipt_no'] ?? '', 'refund_id' => $refId,
-            'reason' => $refund['reason'] ?? '', 'processed_by' => $this->adminName, 'timestamp' => date('Y-m-d H:i:s'),
-        ]);
-    }
-
-    public function reverseAccountBook(string $studentId, string $receiptNo, string $class, string $section, float $amount): void
-    {
-        try {
-            $origDate = '';
-            if ($studentId !== '' && $receiptNo !== '' && $class !== '' && $section !== '') {
-                $c = trim($class); if (stripos($c, 'Class ') !== 0) $c = 'Class ' . $c;
-                $s = trim($section); if (stripos($s, 'Section ') !== 0) $s = 'Section ' . strtoupper($s);
-                $sb = "{$this->sessionRoot}/{$c}/{$s}/Students/{$studentId}";
-                $orig = $this->firebase->get("{$sb}/Fees Record/{$receiptNo}");
-                if (is_array($orig) && isset($orig['Date'])) $origDate = $orig['Date'];
-            }
-            $d = ($origDate !== '') ? \DateTime::createFromFormat('d-m-Y', $origDate) : new \DateTime();
-            $mon = $d ? $d->format('F') : date('F');
-            $day = $d ? $d->format('d') : date('d');
-            $ab = "{$this->sessionRoot}/Accounts/Account_book";
-            $curF = floatval($this->firebase->get("{$ab}/Fees/{$mon}/{$day}/R") ?? 0);
-            $this->firebase->set("{$ab}/Fees/{$mon}/{$day}/R", max(0, $curF - $amount));
-            $curR = floatval($this->firebase->get("{$ab}/Refunds/{$mon}/{$day}/R") ?? 0);
-            $this->firebase->set("{$ab}/Refunds/{$mon}/{$day}/R", $curR + $amount);
-        } catch (\Exception $e) {
-            log_message('error', '_RefundAccounting::reverseAccountBook: ' . $e->getMessage());
-        }
-    }
-
-    public function createJournal(array $refund, float $amount, string $mode, string $refId, array $allocations): void
-    {
         if ($this->opsAcct === null) return;
         try {
             $p = [
-                'student_name' => $refund['student_name'] ?? '', 'student_id' => $refund['student_id'] ?? '',
-                'class' => $refund['class'] ?? '', 'amount' => $amount, 'refund_mode' => $mode,
-                'refund_id' => $refId, 'receipt_no' => $refund['receipt_no'] ?? '',
+                'student_name' => (string) ($refund['student_name'] ?? $refund['studentName'] ?? ''),
+                'student_id'   => (string) ($refund['student_id']   ?? $refund['studentId']   ?? ''),
+                'class'        => (string) ($refund['class']        ?? $refund['className']   ?? ''),
+                'amount'       => $amount,
+                'refund_mode'  => $mode,
+                'refund_id'    => $refId,
+                'receipt_no'   => (string) ($refund['receipt_no']   ?? $refund['receiptNo']   ?? ''),
             ];
             if (!empty($allocations)) {
                 $this->opsAcct->create_refund_journal_granular($p, $allocations);
@@ -382,7 +378,7 @@ class _RefundAccounting
                 $this->opsAcct->create_refund_journal($p);
             }
         } catch (\Exception $e) {
-            log_message('error', '_RefundAccounting::createJournal: ' . $e->getMessage());
+            log_message('error', 'Fee_refund_service::_postReversalJournal: ' . $e->getMessage());
         }
     }
 }
