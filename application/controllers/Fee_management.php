@@ -1854,10 +1854,33 @@ class Fee_management extends MY_Controller
             $this->ops_acct
         );
 
-        $result = $this->refund_svc->process($refId, $refundMode);
+        // R.6: admin may pass acknowledge_stale=1 to force-refund a receipt
+        // whose demands are now owned by a newer receipt. Without this flag
+        // the service returns STALE_ALLOCATION; with it, the amount is
+        // routed entirely to the student's wallet so the newer receipt's
+        // state stays intact.
+        $ackStale = (bool) $this->_post('acknowledge_stale')
+                 || ($this->_post('acknowledge_stale') === '1');
+
+        $result = $this->refund_svc->process($refId, $refundMode, [
+            'acknowledge_stale' => $ackStale,
+        ]);
 
         if (!$result['ok']) {
             log_message('error', "process_refund failed for {$refId}: " . ($result['error'] ?? ''));
+            // R.6: surface structured detail for STALE_ALLOCATION so the
+            // UI can show a "Process anyway (to wallet)" override prompt.
+            if (($result['code'] ?? '') === 'STALE_ALLOCATION') {
+                $this->output->set_content_type('application/json');
+                $this->output->set_output(json_encode([
+                    'status'        => 'error',
+                    'code'          => 'STALE_ALLOCATION',
+                    'message'       => $result['error'],
+                    'conflicts'     => $result['conflicts']     ?? [],
+                    'superseded_by' => $result['superseded_by'] ?? [],
+                ]));
+                return;
+            }
             $this->json_error($result['error'] ?? 'Refund processing failed.');
         }
 

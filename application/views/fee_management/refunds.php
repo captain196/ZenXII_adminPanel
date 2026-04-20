@@ -719,19 +719,66 @@ document.addEventListener('DOMContentLoaded', function() {
         .prop('disabled', true)
         .html('<i class="fa fa-spinner fa-spin"></i> Processing...');
 
+    submitProcessRefund(id, mode, false);
+  }
+
+  // R.6: split out the actual POST so the stale-allocation override path
+  // can retry with acknowledge_stale=1 without repeating the whole modal
+  // setup. Called twice: first without ack, then if server returns
+  // STALE_ALLOCATION, admin confirms and we resubmit with ack=true.
+  function submitProcessRefund(id, mode, ackStale) {
+    var $btn = $('#btnProcessRefund');
     ajaxPost('fee_management/process_refund', {
-      refund_id:   id,
-      refund_mode: mode,
-      remarks:     $('#pmRemarks').val().trim()
+      refund_id:         id,
+      refund_mode:       mode,
+      remarks:           $('#pmRemarks').val().trim(),
+      acknowledge_stale: ackStale ? '1' : '0'
     }, function(err, res) {
       $btn.data('pending', false)
           .prop('disabled', false)
           .html('<i class="fa fa-check"></i> Process Refund');
+
+      // R.6: stale-allocation branch. The server refused because another
+      // receipt now owns one or more of this receipt's demands. Offer a
+      // wallet-route override instead of silently corrupting newer state.
+      if (res && res.status === 'error' && res.code === 'STALE_ALLOCATION') {
+        var conflicts = Array.isArray(res.conflicts) ? res.conflicts : [];
+        var supers    = Array.isArray(res.superseded_by) ? res.superseded_by : [];
+        var detail = conflicts.map(function(c) {
+          return '  • ' + (c.period || c.demand_id || '(demand)') +
+                 '  (superseded by: #' + (c.superseded_by || []).join(', #') + ')';
+        }).join('\n') || '  (see server log)';
+        var msg =
+          'Cannot refund this receipt normally — some of its demands have been re-paid ' +
+          'by newer receipt(s): #' + supers.join(', #') + '.\n\n' +
+          'Conflicting demands:\n' + detail + '\n\n' +
+          'You can force-refund by routing the amount to the student\'s wallet instead of ' +
+          'reducing demand balances. The newer receipt(s) stay intact.\n\n' +
+          'Proceed with wallet-route refund?';
+        if (confirm(msg)) {
+          $btn.data('pending', true).prop('disabled', true)
+              .html('<i class="fa fa-spinner fa-spin"></i> Processing...');
+          submitProcessRefund(id, mode, true);
+        } else {
+          showToast('Refund cancelled. Reverse the newer receipt(s) first if you need a normal refund.', 'error');
+        }
+        return;
+      }
+
       if (err || !res || (res.status !== 'success' && res.success !== true)) {
         showToast(err || (res && res.message) || 'Processing failed', 'error');
         return;
       }
-      showToast('Refund processed successfully', 'success');
+      // Journal-post may have failed even though the refund succeeded
+      // (R.5). Surface a warning so the admin notices the Retry Journal
+      // button on the row.
+      if (res.journal_posted === false) {
+        showToast(res.message || 'Refund processed — journal post failed.', 'error');
+      } else {
+        showToast(ackStale
+          ? 'Refund processed (routed to wallet due to stale allocations).'
+          : 'Refund processed successfully', 'success');
+      }
       $('#processModal').modal('hide');
 
       // Jump to the "All" filter + the "Processed" pill highlight so the

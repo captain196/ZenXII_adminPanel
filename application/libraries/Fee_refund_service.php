@@ -42,10 +42,21 @@ class Fee_refund_service
     /**
      * Process an approved refund end-to-end.
      *
+     * @param string $refId        Refund doc ID (ref_xxx)
+     * @param string $refundMode   cash | bank_transfer | cheque | online
+     * @param array  $options
+     *     acknowledge_stale (bool): R.6 — if true, proceed with a refund
+     *     whose allocated demands have been re-paid by a newer receipt.
+     *     The amount bypasses demand reduction (which would corrupt the
+     *     newer receipt's state) and goes entirely to the student's
+     *     advance balance instead. Default false → refuse with
+     *     STALE_ALLOCATION.
+     *
      * @return array ['ok' => bool, 'data' => [...], 'error' => '...']
      */
-    public function process(string $refId, string $refundMode): array
+    public function process(string $refId, string $refundMode, array $options = []): array
     {
+        $ackStale = !empty($options['acknowledge_stale']);
         // ── 1. Validate (existing doc-status + processLock checks) ───
         // These remain an independent first line of defense. The NEW
         // request-hash + per-student lock below are additive layers.
@@ -150,7 +161,8 @@ class Fee_refund_service
             $allocations  = [];
             if ($studentId !== '' && $origReceiptKey !== '') {
                 $demandResult = $this->_reverseAllocations(
-                    $studentId, $origReceiptKey, $amount, $refId, $refundReceiptKey, $allocations
+                    $studentId, $origReceiptKey, $amount, $refId, $refundReceiptKey, $allocations,
+                    $ackStale
                 );
             }
 
@@ -176,6 +188,8 @@ class Fee_refund_service
                     'ok'       => false,
                     'error'    => $demandResult['failure_message'],
                     'code'     => $demandResult['failure_code'],
+                    'conflicts'=> $demandResult['conflicts']     ?? null,   // R.6
+                    'superseded_by' => $demandResult['superseded_by'] ?? null, // R.6
                     'details'  => [
                         'overflow'       => $demandResult['overflow']       ?? null,
                         'wallet_balance' => $demandResult['wallet_balance'] ?? null,
@@ -305,10 +319,19 @@ class Fee_refund_service
      * allocation lines in reverse (newest first), and reduces each
      * matching demand's paid_amount. Any excess (refund amount > sum of
      * allocations) reduces the student's advance balance.
+     *
+     * @param bool $ackStale  R.6: when true, skip demand-reduction for any
+     *                        demand superseded by a newer non-reversed
+     *                        allocation, routing the full amount to wallet
+     *                        instead of corrupting the newer receipt's
+     *                        ownership of the demand balance. Default false
+     *                        → return STALE_ALLOCATION failure and let
+     *                        process() roll back.
      */
     private function _reverseAllocations(
         string $studentId, string $origReceiptKey, float $amount,
-        string $refId, string $refundReceiptKey, array &$allocationsOut
+        string $refId, string $refundReceiptKey, array &$allocationsOut,
+        bool $ackStale = false
     ): ?array {
         $alloc       = $this->fsTxn->getReceiptAllocation($origReceiptKey);
         $allocLines  = (is_array($alloc) && is_array($alloc['allocations'] ?? null)) ? $alloc['allocations'] : [];
@@ -325,6 +348,71 @@ class Fee_refund_service
             $remaining  = $amount;
             $demandUpdates = []; // demandId → patch dict; collected for batch + fallback
 
+            // ── R.6: stale-allocation detection ──
+            // For each demand_id this receipt allocated against, check
+            // whether ANOTHER non-reversed allocation (from a newer
+            // receipt) currently points to the same demand. If yes, that
+            // newer receipt owns the demand's paid_amount now — reducing
+            // it here would corrupt the newer receipt's state and leave
+            // the books inconsistent. Collect conflicts up-front so we
+            // can fail fast before any write lands.
+            $staleDemandIds = [];                // demandId => [receiptNo, ...]
+            $otherAllocs    = $this->fsTxn->allocationsForStudent($studentId);
+            $myDocId        = "{$this->fsTxn->getSchoolId()}_{$this->fsTxn->getSession()}_{$origReceiptKey}";
+            $ourDemandIds   = [];
+            foreach ($allocLines as $a) {
+                $did = (string) ($a['demand_id'] ?? '');
+                if ($did !== '') $ourDemandIds[$did] = true;
+            }
+            foreach ($otherAllocs as $alloc) {
+                if (($alloc['_docId'] ?? '') === $myDocId) continue; // ourselves — skip
+                $otherRcpt = (string) ($alloc['receiptNo'] ?? $alloc['receipt_no'] ?? '');
+                foreach (($alloc['allocations'] ?? []) as $line) {
+                    $did = (string) ($line['demand_id'] ?? '');
+                    if ($did === '' || empty($ourDemandIds[$did])) continue;
+                    $staleDemandIds[$did][] = [
+                        'receipt_no' => $otherRcpt,
+                        'allocated'  => (float) ($line['allocated'] ?? $line['amount'] ?? 0),
+                    ];
+                }
+            }
+
+            if (!empty($staleDemandIds) && !$ackStale) {
+                // Build a human-readable conflict list for the UI + API.
+                $conflicts = [];
+                foreach ($staleDemandIds as $did => $supers) {
+                    $period = '';
+                    foreach ($allocLines as $a) {
+                        if ((string) ($a['demand_id'] ?? '') === $did) {
+                            $period = (string) ($a['period'] ?? '');
+                            break;
+                        }
+                    }
+                    $byRcpt = array_values(array_unique(array_column($supers, 'receipt_no')));
+                    $conflicts[] = [
+                        'demand_id'      => $did,
+                        'period'         => $period,
+                        'superseded_by'  => $byRcpt,
+                    ];
+                }
+                $rcptList = array_unique(array_merge(...array_map(
+                    fn($c) => $c['superseded_by'], $conflicts
+                )));
+                log_message('error',
+                    "[REFUND STALE ALLOCATION] refund={$refId} origReceipt={$origReceiptKey} " .
+                    "conflicts=" . count($conflicts) . " superseded_by=" . implode(',', $rcptList));
+                return [
+                    'failed'          => true,
+                    'failure_code'    => 'STALE_ALLOCATION',
+                    'failure_message' => 'This receipt\'s demands have been re-paid by newer receipt(s) #' .
+                        implode(', #', $rcptList) . '. Refunding now would corrupt the newer receipt\'s state. ' .
+                        'Reverse or refund the newer receipt first, OR retry with "Acknowledge stale" to route ' .
+                        'the refund amount to the student\'s wallet instead of reducing demand balances.',
+                    'conflicts'       => $conflicts,
+                    'superseded_by'   => array_values($rcptList),
+                ];
+            }
+
             // ── Step 1: compute reversal IN MEMORY (no writes) ──
             foreach (array_reverse($allocationsOut) as $a) {
                 if ($remaining <= 0.005) break;
@@ -332,6 +420,28 @@ class Fee_refund_service
                 $allocAmt = (float)  ($a['allocated'] ?? $a['amount'] ?? 0);
                 if ($did === '' || $allocAmt <= 0) continue;
                 if (!isset($demands[$did])) continue;
+
+                // R.6 override path: for any demand claimed by a newer
+                // receipt, DON'T reduce the demand — pass the amount
+                // through to wallet overflow so Step 2 books it as
+                // advance balance. The allocation doc still gets marked
+                // 'reversed' below so the refund audit trail is clean.
+                if ($ackStale && isset($staleDemandIds[$did])) {
+                    $log[] = [
+                        'demand_id'    => $did,
+                        'fee_head'     => $a['fee_head'] ?? '',
+                        'period'       => $a['period']   ?? '',
+                        'reversed_amt' => 0,
+                        'new_status'   => ($demands[$did]['status'] ?? 'unpaid'),
+                        'stale_override' => true,
+                        'superseded_by' => array_values(array_unique(
+                            array_column($staleDemandIds[$did], 'receipt_no')
+                        )),
+                    ];
+                    // DON'T decrement $remaining — full amount flows to
+                    // wallet via Step 2's overflow handling.
+                    continue;
+                }
 
                 $reverseAmt = min($remaining, $allocAmt);
                 $d          = $demands[$did];

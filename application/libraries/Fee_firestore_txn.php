@@ -982,6 +982,39 @@ class Fee_firestore_txn
         } catch (\Exception $_) { return null; }
     }
 
+    /**
+     * All non-reversed allocation docs for a student in the current session.
+     * Used by the R.6 stale-allocation guard — the refund flow needs to
+     * detect whether another newer receipt already covers a demand whose
+     * allocation it's about to reverse. Filters status != 'reversed' in
+     * memory since Firestore can't do negated equality in a composite
+     * query without extra indices.
+     */
+    public function allocationsForStudent(string $studentId): array
+    {
+        if (!$this->ready || $studentId === '') return [];
+        try {
+            $rows = $this->fs->schoolWhere(self::COL_RCPT_ALLOC, [
+                ['session',   '==', $this->session],
+                ['studentId', '==', $studentId],
+            ]);
+            $out = [];
+            foreach ((array) $rows as $r) {
+                $d = $r['data'] ?? [];
+                if (!is_array($d)) continue;
+                if (($d['status'] ?? '') === 'reversed') continue;
+                $id = $r['id'] ?? '';
+                if ($id === '') continue;
+                $d['_docId'] = $id;
+                $out[] = $d;
+            }
+            return $out;
+        } catch (\Exception $e) {
+            log_message('error', "Fee_firestore_txn::allocationsForStudent({$studentId}) failed: " . $e->getMessage());
+            return [];
+        }
+    }
+
     /** Mark an allocation record as reversed (refund audit hook). */
     public function markAllocationReversed(string $receiptKey, string $auditId): bool
     {
