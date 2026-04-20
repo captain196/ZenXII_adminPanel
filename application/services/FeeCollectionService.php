@@ -123,7 +123,12 @@ class FeeCollectionService
             $receiptNo = (string) $seq;
         }
         $receiptKey = 'F' . $receiptNo;
-        $txnId      = ($data['txn_prefix'] ?? 'TXN_') . date('YmdHis') . '_' . bin2hex(random_bytes(4));
+        // txn_id precedence: explicit $data['txn_id'] (Razorpay generates its
+        // own 'RZP_YmdHis_hex6' upstream so we must preserve it byte-exact)
+        // → otherwise compose from txn_prefix + our 8-hex random.
+        $txnId      = isset($data['txn_id']) && $data['txn_id'] !== ''
+            ? (string) $data['txn_id']
+            : (($data['txn_prefix'] ?? 'TXN_') . date('YmdHis') . '_' . bin2hex(random_bytes(4)));
 
         // ── Idempotency check (Firestore) ──────────────────────────────
         $idempHash = $controller->fsTxn->idempKey($userId, $receiptNo, $selectedMonths, $schoolFees);
@@ -224,26 +229,33 @@ class FeeCollectionService
             return trim((string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', $period));
         };
 
-        foreach ($selectedMonths as $m) {
-            // A month is "fully paid" iff EVERY demand for that month is
-            // status='paid' AND balance <= 0.005. Bail early when true so
-            // the cashier can't accidentally double-pay.
-            $monthDemands = [];
-            foreach ($demands as $d) {
-                if ($periodToLabel((string) ($d['period'] ?? '')) === $m) {
-                    $monthDemands[] = $d;
-                }
-            }
-            if (!empty($monthDemands)) {
-                $allPaid = true;
-                foreach ($monthDemands as $d) {
-                    if (($d['status'] ?? '') !== 'paid' || (float) ($d['balance'] ?? 0) > 0.005) {
-                        $allPaid = false;
-                        break;
+        // Razorpay path sets skip_duplicate_month_guard=true to preserve its
+        // pre-P3 behaviour: a gateway payment against an already-fully-paid
+        // month was silently accepted and the overflow went to wallet. We
+        // keep that semantics for now; a separate phase will decide whether
+        // to tighten it.
+        if (!($data['skip_duplicate_month_guard'] ?? false)) {
+            foreach ($selectedMonths as $m) {
+                // A month is "fully paid" iff EVERY demand for that month is
+                // status='paid' AND balance <= 0.005. Bail early when true so
+                // the cashier can't accidentally double-pay.
+                $monthDemands = [];
+                foreach ($demands as $d) {
+                    if ($periodToLabel((string) ($d['period'] ?? '')) === $m) {
+                        $monthDemands[] = $d;
                     }
                 }
-                if ($allPaid) {
-                    return $_abort("Month {$m} is already fully paid. Refresh and retry.", 409);
+                if (!empty($monthDemands)) {
+                    $allPaid = true;
+                    foreach ($monthDemands as $d) {
+                        if (($d['status'] ?? '') !== 'paid' || (float) ($d['balance'] ?? 0) > 0.005) {
+                            $allPaid = false;
+                            break;
+                        }
+                    }
+                    if ($allPaid) {
+                        return $_abort("Month {$m} is already fully paid. Refresh and retry.", 409);
+                    }
                 }
             }
         }
@@ -282,40 +294,322 @@ class FeeCollectionService
             }
         }
 
-        // ── Mark pending-write (Firestore safety marker) ───────────────
-        $controller->fsTxn->markPending($receiptKey, [
-            'userId' => $userId, 'amount' => $schoolFees, 'months' => $selectedMonths, 'txnId' => $txnId,
-        ]);
+        // Shared scaffolding for BOTH write paths (batch + sequential). Each
+        // path MUST populate $allocations / $allocatedMonths / $advanceCredit /
+        // $paidMonthsFlags — the wallet / discount / finalize / response code
+        // below reads these unconditionally.
+        $batchMode       = $data['batch_mode'] ?? false;
+        $batchCompleted  = false;
+        $allocations     = [];
+        $allocatedMonths = [];
+        $advanceCredit   = 0.0;
+        $paidMonthsFlags = [];
 
-        // ── Compute per-head breakdown from fee structure ──────────────
-        $breakdown = [];
-        try {
-            $struct  = $controller->fs->get('feeStructures', "{$schoolFs}_{$session}_{$class}_{$section}");
-            $heads   = is_array($struct['feeHeads'] ?? null) ? $struct['feeHeads'] : [];
-            foreach ($heads as $h) {
-                $nm  = (string) ($h['name']   ?? '');
-                $amt = (float)  ($h['amount'] ?? 0);
-                $frq = (string) ($h['frequency'] ?? 'monthly');
-                if ($nm === '' || $amt <= 0) continue;
-                // Monthly heads apply per selected month (excluding Yearly Fees tag);
-                // yearly heads apply once if Yearly Fees is in selection.
-                if ($frq === 'annual') {
-                    if (in_array('Yearly Fees', $selectedMonths, true)) {
-                        $breakdown[] = ['head' => $nm, 'amount' => number_format($amt, 2, '.', ''), 'frequency' => 'annual'];
-                    }
-                } else {
-                    $monthCount = count(array_filter($selectedMonths, fn($x) => $x !== 'Yearly Fees'));
-                    if ($monthCount > 0) {
+        if ($batchMode) {
+            // ═══════════════════════════════════════════════════════════════
+            //  BATCH PATH — mirrors Fee_management::_record_parent_payment_receipt
+            //  L2470–2772 byte-for-byte. Compute allocation + monthFee in
+            //  memory, build ONE batch payload, commit atomically.
+            // ═══════════════════════════════════════════════════════════════
+
+            // Breakdown (same computation as sequential; duplicated for
+            // isolation so a future sequential edit doesn't silently
+            // change the batch receipt shape).
+            $breakdown = [];
+            try {
+                $struct  = $controller->fs->get('feeStructures', "{$schoolFs}_{$session}_{$class}_{$section}");
+                $heads   = is_array($struct['feeHeads'] ?? null) ? $struct['feeHeads'] : [];
+                $monthCount = count(array_filter($selectedMonths, fn($x) => $x !== 'Yearly Fees'));
+                foreach ($heads as $h) {
+                    $nm  = (string) ($h['name']   ?? '');
+                    $amt = (float)  ($h['amount'] ?? 0);
+                    $frq = (string) ($h['frequency'] ?? 'monthly');
+                    if ($nm === '' || $amt <= 0) continue;
+                    if ($frq === 'annual') {
+                        if (in_array('Yearly Fees', $selectedMonths, true)) {
+                            $breakdown[] = ['head' => $nm, 'amount' => number_format($amt, 2, '.', ''), 'frequency' => 'annual'];
+                        }
+                    } elseif ($monthCount > 0) {
                         $breakdown[] = ['head' => $nm, 'amount' => number_format($amt * $monthCount, 2, '.', ''), 'frequency' => 'monthly'];
                     }
                 }
+            } catch (\Exception $e) {
+                log_message('error', "FeeCollectionService: batch breakdown build failed: " . $e->getMessage());
             }
-        } catch (\Exception $e) {
-            log_message('error', "submit_fees: breakdown build failed: " . $e->getMessage());
+
+            $date     = date('d-m-Y');
+            $netTotal = round($schoolFees - $discountFees + $fineAmount, 2);
+            $now      = date('c');
+
+            // Pre-allocate (in memory, no writes).
+            $remaining      = $schoolFees + $submitAmount;
+            $selectedSet    = array_flip($selectedMonths);
+            $yearlyExplicit = isset($selectedSet['Yearly Fees']);
+            $unpaid = [];
+            foreach ($demands as $did => $d) {
+                if ((string) ($d['status'] ?? 'unpaid') === 'paid') continue;
+                $label = $periodToLabel((string) ($d['period'] ?? ''));
+                if ($label === '' || !isset($selectedSet[$label])) continue;
+                $isYearlyDemand = (string) ($d['period_type'] ?? $d['periodType'] ?? '') === 'yearly';
+                if ($isYearlyDemand && !$yearlyExplicit) continue;
+                $unpaid[$did] = $d;
+            }
+            uasort($unpaid, fn($a, $b) => strcmp((string)($a['period_key'] ?? ''), (string)($b['period_key'] ?? '')));
+
+            log_message('debug', "[FCS BATCH ALLOC] student={$userId} unpaid_pool=" . count($unpaid) . " remaining={$remaining}");
+            $allocationsForBatch = [];
+            foreach ($unpaid as $did => $d) {
+                if ($remaining <= 0.005) break;
+                $bal = (float) ($d['balance'] ?? 0);
+                if ($bal <= 0) continue;
+                $alloc = round(min($remaining, $bal), 2);
+                $newPaid    = round((float) ($d['paid_amount'] ?? 0) + $alloc, 2);
+                $newBalance = round($bal - $alloc, 2);
+                $newStatus  = ($newBalance <= 0.005) ? 'paid' : 'partial';
+                $allocationsForBatch[] = [
+                    'demand_id' => $did,
+                    'fee_head'  => $d['fee_head'] ?? '',
+                    'period'    => $d['period']   ?? '',
+                    'allocated' => $alloc,
+                    'balance'   => $newBalance,
+                    'status'    => $newStatus,
+                    'new_paid'  => $newPaid, // internal, stripped before persist
+                ];
+                $remaining = round($remaining - $alloc, 2);
+            }
+            $advanceCreditBatch = round(max(0.0, $remaining), 2);
+
+            // Allocated months (from periodToMonth — preserves "Yearly Fees").
+            $allocatedMonthsBatch = [];
+            foreach ($allocationsForBatch as $a) {
+                $m = Fee_firestore_txn::periodToMonth((string) ($a['period'] ?? ''));
+                if ($m !== '' && !in_array($m, $allocatedMonthsBatch, true)) {
+                    $allocatedMonthsBatch[] = $m;
+                }
+            }
+            $effectiveMonths = !empty($allocatedMonthsBatch) ? $allocatedMonthsBatch : $selectedMonths;
+
+            // monthFee flags from in-memory post-allocation snapshot. Uses
+            // the SAME regex as the sequential path's $periodToLabel so
+            // batch and fallback produce identical keys.
+            $demandStateAfter = $demands;
+            foreach ($allocationsForBatch as $a) {
+                $did = $a['demand_id'] ?? '';
+                if ($did !== '' && isset($demandStateAfter[$did])) {
+                    $demandStateAfter[$did]['status']      = $a['status'];
+                    $demandStateAfter[$did]['balance']     = $a['balance'];
+                    $demandStateAfter[$did]['paid_amount'] = $a['new_paid'];
+                }
+            }
+            $byMonthBatch = [];
+            foreach ($demandStateAfter as $d) {
+                $p = $periodToLabel((string) ($d['period'] ?? ''));
+                if ($p === '') continue;
+                $byMonthBatch[$p][] = (string) ($d['status'] ?? 'unpaid');
+            }
+            $paidMonthsFlagsBatch = [];
+            foreach ($byMonthBatch as $m => $statuses) {
+                $allPaid = true;
+                foreach ($statuses as $s) { if ($s !== 'paid') { $allPaid = false; break; } }
+                $paidMonthsFlagsBatch[$m] = $allPaid ? 1 : 0;
+            }
+            $mergedMonthFee = !empty($paidMonthsFlagsBatch)
+                ? array_replace(is_array($student['monthFee'] ?? null) ? $student['monthFee'] : [], $paidMonthsFlagsBatch)
+                : null;
+
+            $allocatedAmountSumBatch = round((float) $schoolFees - (float) $advanceCreditBatch, 2);
+
+            // Build batch payload.
+            $batchOps = [];
+
+            // 1. Per-demand updates (merge=true; keeps period_key, fee_head).
+            foreach ($allocationsForBatch as $a) {
+                $batchOps[] = [
+                    'op'         => 'set',
+                    'collection' => 'feeDemands',
+                    'docId'      => $a['demand_id'],
+                    'merge'      => true,
+                    'data'       => [
+                        'paid_amount'  => $a['new_paid'],
+                        'paidAmount'   => $a['new_paid'],
+                        'balance'      => $a['balance'],
+                        'status'       => $a['status'],
+                        'last_receipt' => $receiptKey,
+                        'updatedAt'    => $now,
+                    ],
+                ];
+            }
+
+            // 2. Receipt (full replace; final allocated_amount / advance_credit
+            //    baked in — no post-patch needed).
+            $batchOps[] = [
+                'op'         => 'set',
+                'collection' => 'feeReceipts',
+                'docId'      => "{$schoolFs}_{$receiptKey}",
+                'merge'      => false,
+                'data'       => [
+                    'receiptNo'        => $receiptNo,
+                    'receiptKey'       => $receiptKey,
+                    'schoolId'         => $schoolFs,
+                    'session'          => $session,
+                    'studentId'        => $userId,
+                    'studentName'      => $studentName,
+                    'className'        => $class,
+                    'section'          => $section,
+                    'fatherName'       => (string) ($student['fatherName'] ?? ''),
+                    'amount'           => $schoolFees,
+                    'input_amount'     => $schoolFees,
+                    'inputAmount'      => $schoolFees,
+                    'allocated_amount' => $allocatedAmountSumBatch,
+                    'allocatedAmount'  => $allocatedAmountSumBatch,
+                    'advance_credit'   => $advanceCreditBatch,
+                    'advanceCredit'    => $advanceCreditBatch,
+                    'discount'         => $discountFees,
+                    'fine'             => $fineAmount,
+                    'netAmount'        => $netTotal,
+                    'paymentMode'      => $paymentMode,
+                    'remarks'          => $reference,
+                    'feeMonths'        => $effectiveMonths,
+                    'allocatedMonths'  => $allocatedMonthsBatch,
+                    'feeBreakdown'     => $breakdown,
+                    'date'             => $date,
+                    'txnId'            => $txnId,
+                    'collectedBy'      => $data['collected_by'] ?? $data['admin_name'] ?? 'System',
+                    'createdAt'        => $now,
+                    'updatedAt'        => $now,
+                ],
+            ];
+
+            // 3. Receipt index (merge, clears reservation flag).
+            $batchOps[] = [
+                'op'         => 'set',
+                'collection' => 'feeReceiptIndex',
+                'docId'      => "{$schoolFs}_{$session}_{$receiptNo}",
+                'merge'      => true,
+                'data'       => [
+                    'schoolId'   => $schoolFs,
+                    'session'    => $session,
+                    'receiptNo'  => $receiptNo,
+                    'reserved'   => false,
+                    'reservedAt' => '',
+                    'date'       => $date,
+                    'userId'     => $userId,
+                    'className'  => $class,
+                    'section'    => $section,
+                    'amount'     => $netTotal,
+                    'txnId'      => $txnId,
+                    'updatedAt'  => $now,
+                ],
+            ];
+
+            // 4. Receipt allocation (full doc; strip internal new_paid field).
+            $allocationsForDoc = array_map(function ($a) {
+                unset($a['new_paid']);
+                return $a;
+            }, $allocationsForBatch);
+            $batchOps[] = [
+                'op'         => 'set',
+                'collection' => 'feeReceiptAllocations',
+                'docId'      => "{$schoolFs}_{$session}_{$receiptKey}",
+                'merge'      => false,
+                'data'       => [
+                    'schoolId'      => $schoolFs,
+                    'session'       => $session,
+                    'receiptKey'    => $receiptKey,
+                    'receiptNo'     => $receiptNo,
+                    'studentId'     => $userId,
+                    'studentName'   => $studentName,
+                    'className'     => $class,
+                    'section'       => $section,
+                    'totalAmount'   => round($schoolFees, 2),
+                    'discount'      => round($discountFees, 2),
+                    'fine'          => round($fineAmount, 2),
+                    'netReceived'   => $netTotal,
+                    'allocations'   => $allocationsForDoc,
+                    'advanceCredit' => $advanceCreditBatch,
+                    'paymentMode'   => $paymentMode,
+                    'date'          => $date,
+                    'createdBy'     => $data['created_by'] ?? $data['admin_id'] ?? '',
+                    'txnId'         => $txnId,
+                    'updatedAt'     => $now,
+                ],
+            ];
+
+            // 5. Student monthFee (merge).
+            if ($mergedMonthFee !== null) {
+                $batchOps[] = [
+                    'op'         => 'set',
+                    'collection' => 'students',
+                    'docId'      => "{$schoolFs}_{$userId}",
+                    'merge'      => true,
+                    'data'       => [
+                        'monthFee'  => $mergedMonthFee,
+                        'updatedAt' => $now,
+                    ],
+                ];
+            }
+
+            log_message('debug', "[FCS BATCH COMMIT] ops=" . count($batchOps) . " receipt={$receiptKey}");
+            $batchCompleted = (bool) $controller->firebase->firestoreCommitBatch($batchOps);
+            log_message('debug', "[FCS BATCH COMMIT] ok=" . ($batchCompleted ? 'true' : 'false'));
+
+            if ($batchCompleted) {
+                // Expose the same variable shape the sequential path produces
+                // so downstream wallet / response code works identically.
+                $allocations     = $allocationsForDoc;
+                $allocatedMonths = $allocatedMonthsBatch;
+                $advanceCredit   = $advanceCreditBatch;
+                $paidMonthsFlags = $paidMonthsFlagsBatch;
+            } else {
+                log_message('warning', "[FCS BATCH FALLBACK] receipt={$receiptKey} — commit failed, falling through to sequential writes");
+                // Reset shared vars; sequential path will repopulate.
+                $allocations     = [];
+                $allocatedMonths = [];
+                $advanceCredit   = 0.0;
+                $paidMonthsFlags = [];
+            }
         }
 
-        $date     = date('d-m-Y');
-        $netTotal = round($schoolFees - $discountFees + $fineAmount, 2);
+        if (!$batchCompleted) {
+            // ═══════════════════════════════════════════════════════════════
+            //  SEQUENTIAL PATH — unchanged from P1/P2. Runs for counter,
+            //  parent-wallet, and as a fallback when batch commit fails.
+            // ═══════════════════════════════════════════════════════════════
+
+            // ── Mark pending-write (Firestore safety marker) ───────────────
+            $controller->fsTxn->markPending($receiptKey, [
+                'userId' => $userId, 'amount' => $schoolFees, 'months' => $selectedMonths, 'txnId' => $txnId,
+            ]);
+
+            // ── Compute per-head breakdown from fee structure ──────────────
+            $breakdown = [];
+            try {
+                $struct  = $controller->fs->get('feeStructures', "{$schoolFs}_{$session}_{$class}_{$section}");
+                $heads   = is_array($struct['feeHeads'] ?? null) ? $struct['feeHeads'] : [];
+                foreach ($heads as $h) {
+                    $nm  = (string) ($h['name']   ?? '');
+                    $amt = (float)  ($h['amount'] ?? 0);
+                    $frq = (string) ($h['frequency'] ?? 'monthly');
+                    if ($nm === '' || $amt <= 0) continue;
+                    // Monthly heads apply per selected month (excluding Yearly Fees tag);
+                    // yearly heads apply once if Yearly Fees is in selection.
+                    if ($frq === 'annual') {
+                        if (in_array('Yearly Fees', $selectedMonths, true)) {
+                            $breakdown[] = ['head' => $nm, 'amount' => number_format($amt, 2, '.', ''), 'frequency' => 'annual'];
+                        }
+                    } else {
+                        $monthCount = count(array_filter($selectedMonths, fn($x) => $x !== 'Yearly Fees'));
+                        if ($monthCount > 0) {
+                            $breakdown[] = ['head' => $nm, 'amount' => number_format($amt * $monthCount, 2, '.', ''), 'frequency' => 'monthly'];
+                        }
+                    }
+                }
+            } catch (\Exception $e) {
+                log_message('error', "submit_fees: breakdown build failed: " . $e->getMessage());
+            }
+
+            $date     = date('d-m-Y');
+            $netTotal = round($schoolFees - $discountFees + $fineAmount, 2);
 
         // ── 1. Write the canonical fee receipt ─────────────────────────
         // Receipt fields (post-Phase-11 standardization):
@@ -520,6 +814,7 @@ class FeeCollectionService
             $newMap = array_replace($existingMap, $paidMonthsFlags);
             $controller->fsTxn->updateStudent($userId, ['monthFee' => $newMap]);
         }
+        } // end if (!$batchCompleted) — sequential path
 
         // ── 5. Advance balance update ──────────────────────────────────
         // Two modes:
@@ -543,6 +838,26 @@ class FeeCollectionService
                 'className'   => $class,
                 'section'     => $section,
             ]);
+        } elseif ($walletMode === 'credit_overflow') {
+            // Razorpay path: ADD the allocation leftover to the student's
+            // existing wallet balance (never SET). Mirrors
+            // _record_parent_payment_receipt L2786–2802 byte-for-byte.
+            if ($advanceCredit > 0.005) {
+                try {
+                    $walletBefore = (float) $controller->fsTxn->getAdvanceBalance($userId);
+                    $walletAfter  = round($walletBefore + $advanceCredit, 2);
+                    $controller->fsTxn->setAdvanceBalance($userId, $walletAfter, [
+                        'studentName' => $studentName,
+                        'className'   => $class,
+                        'section'     => $section,
+                        'lastReceipt' => $receiptKey,
+                        'lastCredit'  => $advanceCredit,
+                        'lastCreditAt'=> date('c'),
+                    ]);
+                } catch (\Exception $e) {
+                    log_message('error', "FeeCollectionService: wallet credit_overflow failed [{$userId}] +{$advanceCredit}: " . $e->getMessage());
+                }
+            }
         } else {
             if ($advanceCredit > 0.005 || $submitAmount > 0.005) {
                 $controller->fsTxn->setAdvanceBalance($userId, $advanceCredit, [

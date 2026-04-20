@@ -3104,19 +3104,56 @@ class Fee_management extends MY_Controller
         $feeMonths = is_array($order['fee_months'] ?? null) ? $order['fee_months'] : [];
         $paidAmount = round((float) ($order['amount'] ?? 0), 2);
 
-        $result = $this->_record_parent_payment_receipt([
-            'student_id'     => $studentId,
-            'fee_months'     => $feeMonths,
-            'paid_amount'    => $paidAmount,
-            'payment_mode'   => 'Online - Razorpay',
-            'remarks'        => "Razorpay {$gwPaymentId}",
-            'txn_id'         => 'RZP_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(3)), 0, 6),
-            'gateway_order'  => $gwOrderId,
-            'gateway_payment'=> $gwPaymentId,
-            'collected_by'   => 'parent_app',
+        // ── Delegate receipt pipeline to FeeCollectionService (P3) ────
+        // Upstream of this point we've already done auth, dedup,
+        // signature verify, amount re-derivation from the stored order,
+        // cross-student guard. The service runs the (now-shared)
+        // reserveReceipt → PAY-OLDER-FIRST → allocate → batch-commit →
+        // wallet-credit → release-lock sequence. Razorpay-specific
+        // post-processing (markPaymentProcessed, order.paid, pending
+        // fallback) stays here so the service never has to know about
+        // feeProcessedPayments or feeOnlineOrders.
+        require_once APPPATH . 'services/FeeCollectionService.php';
+        $service = new FeeCollectionService();
+        $result = $service->submit($this, [
+            'source'                     => 'parent-razorpay',
+            'admin_id'                   => 'parent_app',
+            'admin_name'                 => 'parent_app',
+            'school_name'                => $this->school_name,
+            'session_year'               => $this->session_year,
+            'safe_user_id'               => $studentId,
+            'amount'                     => $paidAmount,
+            'discount'                   => 0.0,
+            'fine'                       => 0.0,
+            'submit_amount'              => 0.0,
+            'selected_months'            => $feeMonths,
+            'payment_mode'               => 'Online - Razorpay',
+            'remarks'                    => "Razorpay {$gwPaymentId}",
+            'collected_by'               => 'parent_app',
+            'created_by'                 => 'parent_app',
+            // Preserve Razorpay's 6-hex txn_id format byte-for-byte.
+            'txn_id'                     => 'RZP_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(3)), 0, 6),
+            'batch_mode'                 => true,
+            'wallet_mode'                => 'credit_overflow',
+            // Razorpay's parent_create_order enforces PAY-OLDER-FIRST
+            // upstream, and the service re-runs it (belt-and-braces,
+            // matching _record_parent_payment_receipt L2417-2442). So
+            // leave skip_pay_older_first_guard at its default (false).
+            // Pre-P3, _record_parent_payment_receipt did NOT run a
+            // duplicate-month guard — the allocation loop would just
+            // skip paid demands and push the overflow to wallet. Keep
+            // that behaviour.
+            'skip_duplicate_month_guard' => true,
+            'defer_defaulter'            => true,
+            'defer_accounting'           => false,
+            'write_response_to_output'   => false,
         ]);
 
-        if (!$result['ok']) {
+        // Service contract: returns an array. ok=true + data{} on success,
+        // ok=false + message + http_code on any failure past the shim's
+        // upstream validation. A null return indicates an internal bug.
+        if (!is_array($result) || !($result['ok'] ?? false)) {
+            $errMsg = is_array($result) ? (string) ($result['message'] ?? 'Payment processing failed.') : 'Internal error (null service result).';
             // Razorpay has already captured the money but our receipt
             // pipeline failed (Firestore quota, transient outage, etc.).
             // Drop a feePendingWrites marker so the admin reconciliation
@@ -3135,7 +3172,7 @@ class Fee_management extends MY_Controller
                         'amount'      => $paidAmount,
                         'feeMonths'   => $feeMonths,
                         'status'      => 'pending',
-                        'lastError'   => (string) $result['error'],
+                        'lastError'   => $errMsg,
                         'failedAt'    => date('c'),
                         'updatedAt'   => date('c'),
                     ]
@@ -3148,10 +3185,15 @@ class Fee_management extends MY_Controller
                 'success' => false,
                 'pending' => true,
                 'error'   => 'Payment received and being processed. Please refresh in a minute.',
-                'details' => $result['error'],
+                'details' => $errMsg,
             ]);
             return;
         }
+
+        $resultData  = $result['data'] ?? [];
+        $receiptNo   = (string) ($resultData['receipt_no']  ?? '');
+        $receiptKey  = (string) ($resultData['receipt_key'] ?? '');
+        $allocMonths = $resultData['allocated_months'] ?? [];
 
         // Mark the gateway payment_id as processed so any retry from
         // Razorpay (network blip, app reinstall, etc.) short-circuits at
@@ -3161,8 +3203,8 @@ class Fee_management extends MY_Controller
         try {
             $this->fsTxn->markPaymentProcessed(
                 $gwPaymentId,
-                (string) $result['receipt_no'],
-                (string) $result['receipt_key'],
+                $receiptNo,
+                $receiptKey,
                 $studentId
             );
         } catch (\Exception $e) {
@@ -3178,8 +3220,8 @@ class Fee_management extends MY_Controller
                 'paid_at'            => date('c'),
                 'gateway_payment_id' => $gwPaymentId,
                 'signature'          => $signature,
-                'receipt_key'        => $result['receipt_key'],
-                'receipt_no'         => $result['receipt_no'],
+                'receipt_key'        => $receiptKey,
+                'receipt_no'         => $receiptNo,
             ]);
             $this->firebase->firestoreSet('feeOnlineOrders', $orderDocId, $patched);
         } catch (\Exception $e) {
@@ -3189,10 +3231,10 @@ class Fee_management extends MY_Controller
         echo json_encode([
             'success'          => true,
             'message'          => 'Payment verified and fees recorded.',
-            'receipt_no'       => $result['receipt_no'],
-            'receipt_key'      => $result['receipt_key'],
+            'receipt_no'       => $receiptNo,
+            'receipt_key'      => $receiptKey,
             'amount_paid'      => $paidAmount,
-            'allocated_months' => $result['allocated_months'],
+            'allocated_months' => $allocMonths,
         ]);
     }
 
