@@ -154,6 +154,36 @@ class Fee_refund_service
                 );
             }
 
+            // ── R.3: wallet-deficit fail-closed check ───────────────────
+            // _reverseAllocations returns a ['failed' => true, ...] dict
+            // when the refund would need to debit more than the student's
+            // advance balance holds. No writes have landed yet (audit +
+            // batch come AFTER Step 2), so rolling back here is clean:
+            // reset the refund doc to 'approved' and clear both the
+            // refund-doc processLock and the idempotency marker so the
+            // admin can retry with a smaller amount after fixing the
+            // underlying wallet shortfall.
+            if (is_array($demandResult) && !empty($demandResult['failed'])) {
+                $this->fsTxn->writeRefund($refId, [
+                    'status'      => 'approved',
+                    'processLock' => '',
+                ]);
+                $this->fsTxn->deleteIdempotency($idempHash);
+                log_message('warning',
+                    "Fee_refund_service::process({$refId}) rejected — {$demandResult['failure_code']}: " .
+                    $demandResult['failure_message']);
+                return [
+                    'ok'       => false,
+                    'error'    => $demandResult['failure_message'],
+                    'code'     => $demandResult['failure_code'],
+                    'details'  => [
+                        'overflow'       => $demandResult['overflow']       ?? null,
+                        'wallet_balance' => $demandResult['wallet_balance'] ?? null,
+                        'shortfall'      => $demandResult['shortfall']      ?? null,
+                    ],
+                ];
+            }
+
             // ── 3. Update legacy month-fee flag on the student doc ──────
             // Skipped when _reverseAllocations already wrote the student
             // doc in its batch (R.2) — recomputing + writing again would
@@ -293,10 +323,36 @@ class Fee_refund_service
             }
 
             // ── Step 2: compute wallet debit (if overflow) IN MEMORY ──
+            // R.3: fail-closed when wallet cannot cover the overflow.
+            // Prior behaviour silently clamped to zero via max(0, ...) —
+            // that let the bookkeeping finish "successfully" while the
+            // refunded amount was greater than (allocations + wallet),
+            // producing a negative-equivalent state (demands reduced +
+            // voucher issued but no corresponding advance-balance debit).
+            // Now we reject the refund outright and let process() roll
+            // back the 'processing' marker so the admin can either
+            // lower the refund amount or top-up the wallet first.
             $walletAfter = null;
             if ($remaining > 0.005) {
                 $curAdv = $this->fsTxn->getAdvanceBalance($studentId);
-                $walletAfter = round(max(0, $curAdv - $remaining), 2);
+                if ($curAdv + 0.005 < $remaining) {
+                    $shortfall = round($remaining - $curAdv, 2);
+                    log_message('warning',
+                        "[REFUND WALLET DEFICIT] refund={$refId} student={$studentId} " .
+                        "overflow={$remaining} walletHas={$curAdv} shortfall={$shortfall}");
+                    return [
+                        'failed'          => true,
+                        'failure_code'    => 'WALLET_DEFICIT',
+                        'failure_message' => sprintf(
+                            'Refund exceeds allocations by ₹%.2f but student wallet only has ₹%.2f (shortfall ₹%.2f). Reduce refund amount or top-up advance balance first.',
+                            $remaining, $curAdv, $shortfall
+                        ),
+                        'overflow'        => round($remaining, 2),
+                        'wallet_balance'  => round($curAdv, 2),
+                        'shortfall'       => $shortfall,
+                    ];
+                }
+                $walletAfter = round($curAdv - $remaining, 2);
             }
 
             // ── Step 3: compute monthFee flags from post-reversal snapshot ──
