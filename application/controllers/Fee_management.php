@@ -2411,8 +2411,10 @@ class Fee_management extends MY_Controller
 
     /**
      * Resolve the active session for a school (used by parent-app API
-     * endpoints that don't have a CI session). Reads the active-session
-     * config from Firestore, then falls back to RTDB config.
+     * endpoints + the webhook, which have no CI session). Reads
+     * schoolConfig/{schoolName}_activeSession from Firestore. Returns
+     * '' if the doc is missing or malformed — callers treat '' as a
+     * hard failure and reject the request.
      */
     private function _resolve_active_session(string $schoolName): string
     {
@@ -2420,12 +2422,9 @@ class Fee_management extends MY_Controller
         try {
             $cfg = $this->firebase->firestoreGet('schoolConfig', "{$schoolName}_activeSession");
             if (is_array($cfg) && !empty($cfg['session'])) return (string) $cfg['session'];
-        } catch (\Exception $e) { /* fall through */ }
-        try {
-            $legacy = $this->firebase->get("Schools/{$schoolName}/Config/ActiveSession");
-            if (is_array($legacy) && !empty($legacy['session'])) return (string) $legacy['session'];
-            if (is_string($legacy) && $legacy !== '') return $legacy;
-        } catch (\Exception $e) { /* fall through */ }
+        } catch (\Exception $e) {
+            log_message('error', "_resolve_active_session: Firestore read failed for {$schoolName}: " . $e->getMessage());
+        }
         return '';
     }
 
