@@ -3184,10 +3184,32 @@ class Fee_management extends MY_Controller
         }
 
         // ── 2. HMAC signature verification ──
+        //
+        // Policy:
+        //   • live mode  — webhook_secret MUST be configured AND the incoming
+        //                  request MUST carry a signature that matches. Anything
+        //                  else rejects. This is the hardening pass.
+        //   • test/mock  — HMAC is enforced when the secret is configured, but
+        //                  a missing secret or missing signature is allowed so
+        //                  developer environments without a real Razorpay
+        //                  webhook secret can still simulate webhooks.
         $webhookSecret = is_array($gwConfig) ? ($gwConfig['webhook_secret'] ?? '') : '';
         $webhookSig = $_SERVER['HTTP_X_RAZORPAY_SIGNATURE']
             ?? $_SERVER['HTTP_X_WEBHOOK_SIGNATURE']
             ?? ($payload['webhook_signature'] ?? '');
+
+        if ($gwMode === 'live' && $webhookSecret === '') {
+            log_message('error', "payment_webhook: LIVE mode but webhook_secret is not configured (school={$this->school_name}, session={$this->session_year}). Reconfigure gateway settings with the Razorpay webhook secret.");
+            http_response_code(500);
+            echo json_encode(['status' => 'error', 'message' => 'Webhook secret not configured for this school.']);
+            return;
+        }
+        if ($gwMode === 'live' && $webhookSig === '') {
+            log_message('error', "payment_webhook: LIVE mode but incoming request has no signature ip={$ip}");
+            http_response_code(401);
+            echo json_encode(['status' => 'error', 'message' => 'Missing webhook signature.']);
+            return;
+        }
 
         if ($webhookSecret !== '' && $webhookSig !== '') {
             $expectedSig = hash_hmac('sha256', $rawBody, $webhookSecret);
@@ -3197,6 +3219,10 @@ class Fee_management extends MY_Controller
                 echo json_encode(['status' => 'error', 'message' => 'Invalid webhook signature.']);
                 return;
             }
+        } elseif ($webhookSecret === '') {
+            // Logged once per request so misconfiguration in test mode is
+            // visible without rejecting the request outright.
+            log_message('warning', "payment_webhook: webhook_secret empty — HMAC check skipped (mode={$gwMode}, school={$this->school_name})");
         }
 
         // ── 3. Event-ID dedup (replayed webhook protection) ──
