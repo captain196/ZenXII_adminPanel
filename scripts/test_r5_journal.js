@@ -42,13 +42,13 @@ const DEFAULT_SCHOOL = 'SCH_D94FE8F7AD';
 const DEFAULT_CODE   = '4010';
 
 async function setAccountStatus(schoolId, accountCode, status) {
-  // accountingCoa doc IDs follow {schoolCode}_{code} per
-  // Accounting_firestore_sync::getAccount.
+  // chartOfAccounts doc IDs follow {schoolCode}_{code} per
+  // Accounting_firestore_sync::getAccount (COL_COA = 'chartOfAccounts').
   const docId = `${schoolId}_${accountCode}`;
-  const ref = db.collection('accountingCoa').doc(docId);
+  const ref = db.collection('chartOfAccounts').doc(docId);
   const snap = await ref.get();
   if (!snap.exists) {
-    console.error(`\n✗ accountingCoa/${docId} not found.`);
+    console.error(`\n✗ chartOfAccounts/${docId} not found.`);
     console.error(`  Check the schoolId — try:  node scripts/test_r5_journal.js list\n`);
     process.exit(1);
   }
