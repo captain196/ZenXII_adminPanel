@@ -442,42 +442,49 @@ class FeeCollectionService
 
             // 2. Receipt (full replace; final allocated_amount / advance_credit
             //    baked in — no post-patch needed).
+            // $data['extra_receipt_fields'] lets a caller splice extra flat
+            // fields into the doc (e.g. Razorpay webhook passes orderId +
+            // paymentId so the receipt carries the gateway identifiers).
+            $batchReceiptData = [
+                'receiptNo'        => $receiptNo,
+                'receiptKey'       => $receiptKey,
+                'schoolId'         => $schoolFs,
+                'session'          => $session,
+                'studentId'        => $userId,
+                'studentName'      => $studentName,
+                'className'        => $class,
+                'section'          => $section,
+                'fatherName'       => (string) ($student['fatherName'] ?? ''),
+                'amount'           => $schoolFees,
+                'input_amount'     => $schoolFees,
+                'inputAmount'      => $schoolFees,
+                'allocated_amount' => $allocatedAmountSumBatch,
+                'allocatedAmount'  => $allocatedAmountSumBatch,
+                'advance_credit'   => $advanceCreditBatch,
+                'advanceCredit'    => $advanceCreditBatch,
+                'discount'         => $discountFees,
+                'fine'             => $fineAmount,
+                'netAmount'        => $netTotal,
+                'paymentMode'      => $paymentMode,
+                'remarks'          => $reference,
+                'feeMonths'        => $effectiveMonths,
+                'allocatedMonths'  => $allocatedMonthsBatch,
+                'feeBreakdown'     => $breakdown,
+                'date'             => $date,
+                'txnId'            => $txnId,
+                'collectedBy'      => $data['collected_by'] ?? $data['admin_name'] ?? 'System',
+                'createdAt'        => $now,
+                'updatedAt'        => $now,
+            ];
+            if (is_array($data['extra_receipt_fields'] ?? null)) {
+                $batchReceiptData = array_merge($batchReceiptData, $data['extra_receipt_fields']);
+            }
             $batchOps[] = [
                 'op'         => 'set',
                 'collection' => 'feeReceipts',
                 'docId'      => "{$schoolFs}_{$receiptKey}",
                 'merge'      => false,
-                'data'       => [
-                    'receiptNo'        => $receiptNo,
-                    'receiptKey'       => $receiptKey,
-                    'schoolId'         => $schoolFs,
-                    'session'          => $session,
-                    'studentId'        => $userId,
-                    'studentName'      => $studentName,
-                    'className'        => $class,
-                    'section'          => $section,
-                    'fatherName'       => (string) ($student['fatherName'] ?? ''),
-                    'amount'           => $schoolFees,
-                    'input_amount'     => $schoolFees,
-                    'inputAmount'      => $schoolFees,
-                    'allocated_amount' => $allocatedAmountSumBatch,
-                    'allocatedAmount'  => $allocatedAmountSumBatch,
-                    'advance_credit'   => $advanceCreditBatch,
-                    'advanceCredit'    => $advanceCreditBatch,
-                    'discount'         => $discountFees,
-                    'fine'             => $fineAmount,
-                    'netAmount'        => $netTotal,
-                    'paymentMode'      => $paymentMode,
-                    'remarks'          => $reference,
-                    'feeMonths'        => $effectiveMonths,
-                    'allocatedMonths'  => $allocatedMonthsBatch,
-                    'feeBreakdown'     => $breakdown,
-                    'date'             => $date,
-                    'txnId'            => $txnId,
-                    'collectedBy'      => $data['collected_by'] ?? $data['admin_name'] ?? 'System',
-                    'createdAt'        => $now,
-                    'updatedAt'        => $now,
-                ],
+                'data'       => $batchReceiptData,
             ];
 
             // 3. Receipt index (merge, clears reservation flag).
@@ -647,6 +654,11 @@ class FeeCollectionService
             'collectedBy'      => $data['collected_by'] ?? $data['admin_name'] ?? 'System',
             'createdAt'        => date('c'),
         ];
+        // Splice caller-supplied extras (e.g. Razorpay webhook's orderId +
+        // paymentId). Counter and parent-wallet pass nothing → no change.
+        if (is_array($data['extra_receipt_fields'] ?? null)) {
+            $receiptDoc = array_merge($receiptDoc, $data['extra_receipt_fields']);
+        }
         if (!$controller->fsTxn->writeFeeReceipt($receiptKey, $receiptDoc)) {
             return $_abort('Failed to record fee receipt. No data written.', 500);
         }

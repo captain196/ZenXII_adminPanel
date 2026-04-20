@@ -3810,18 +3810,69 @@ class Fee_management extends MY_Controller
             'webhook_received_at' => ($source === 'webhook') ? $now : null,
         ], true);
 
-        // ── E. Process fee collection ──
+        // ── E. Process fee collection via FeeCollectionService (P3.C) ──
+        // Same receipt/allocation/monthFee/wallet pipeline as
+        // parent_verify_payment (P3.B), just with the webhook's auth
+        // chain upstream. Razorpay-specific post-processing
+        // (markPaymentProcessed, order status, feeOnlinePayments) stays
+        // here — the service never has to know about gateway state.
+        require_once APPPATH . 'services/FeeCollectionService.php';
+        $service   = new FeeCollectionService();
+        $feeMonths = is_array($order['fee_months'] ?? null) ? $order['fee_months'] : [];
+        $studentId = (string) ($order['student_id'] ?? '');
+
         $feeSuccess = false;
         $receiptKey = '';
+        $receiptNo  = '';
         $feeError   = '';
 
         try {
-            $feeResult  = $this->_process_online_fee_collection($order, $gwPaymentId, $gwOrderId);
-            $feeSuccess = true;
-            $receiptKey = $feeResult['receipt_key'];
+            $serviceResult = $service->submit($this, [
+                'source'                     => 'parent-razorpay-' . $source,  // 'parent-razorpay-frontend' or 'parent-razorpay-webhook'
+                'admin_id'                   => 'parent_app',
+                'admin_name'                 => 'parent_app',
+                'school_name'                => $this->school_name,
+                'session_year'               => $this->session_year,
+                'safe_user_id'               => $studentId,
+                'amount'                     => (float) ($order['amount'] ?? 0),
+                'discount'                   => 0.0,
+                'fine'                       => 0.0,
+                'submit_amount'              => 0.0,
+                'selected_months'            => $feeMonths,
+                'payment_mode'               => 'Online - Razorpay',
+                'remarks'                    => "Razorpay {$gwPaymentId}",
+                'collected_by'               => 'parent_app',
+                'created_by'                 => 'parent_app',
+                // Preserve Razorpay's 6-hex txn_id format byte-exact with P3.B.
+                'txn_id'                     => 'RZP_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(3)), 0, 6),
+                'batch_mode'                 => true,
+                'wallet_mode'                => 'credit_overflow',
+                'skip_duplicate_month_guard' => true,
+                // Keep PAY-OLDER-FIRST active (was enforced by
+                // _record_parent_payment_receipt pre-P3.B; service re-runs it).
+                'defer_defaulter'            => true,
+                'defer_accounting'           => true,  // Q4(i): accounting now runs via service's deferred handler (was inline in _process_online_fee_collection).
+                'write_response_to_output'   => false,
+                // Preserve the webhook-era receipt fields the parent app
+                // relies on (Q3-A); these flat fields only appear on
+                // Razorpay-recorded receipts.
+                'extra_receipt_fields'       => [
+                    'orderId'   => $gwOrderId,
+                    'paymentId' => $gwPaymentId,
+                ],
+            ]);
+
+            if (is_array($serviceResult) && ($serviceResult['ok'] ?? false)) {
+                $feeSuccess = true;
+                $receiptKey = (string) ($serviceResult['data']['receipt_key'] ?? '');
+                $receiptNo  = (string) ($serviceResult['data']['receipt_no']  ?? '');
+            } else {
+                $feeError = is_array($serviceResult) ? (string) ($serviceResult['message'] ?? 'Service returned failure.') : 'Null service result.';
+                log_message('error', "verify_and_process({$source}): service FAILED order={$gwOrderId}: {$feeError}");
+            }
         } catch (\Exception $e) {
             $feeError = $e->getMessage();
-            log_message('error', "verify_and_process({$source}): fees FAILED order={$gwOrderId}: {$feeError}");
+            log_message('error', "verify_and_process({$source}): fees threw order={$gwOrderId}: {$feeError}");
         }
 
         if ($feeSuccess) {
@@ -3830,8 +3881,24 @@ class Fee_management extends MY_Controller
                 'status'         => 'paid',
                 'paid_at'        => date('c'),
                 'receipt_key'    => $receiptKey,
+                'receipt_no'     => $receiptNo,
                 'payment_status' => 'captured',
             ], true);
+
+            // Q5(a): the feeProcessedPayments marker is now written for
+            // BOTH frontend and webhook paths. Any future verify retry
+            // short-circuits at parent_verify_payment L3051 regardless
+            // of which path originally processed the payment.
+            try {
+                $this->fsTxn->markPaymentProcessed(
+                    $gwPaymentId,
+                    $receiptNo,
+                    $receiptKey,
+                    $studentId
+                );
+            } catch (\Exception $e) {
+                log_message('error', "verify_and_process({$source}): markPaymentProcessed failed [{$gwPaymentId}]: " . $e->getMessage());
+            }
 
             $payRecId = 'PAY_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(3)), 0, 6);
             $this->firebase->firestoreSet('feeOnlinePayments', "{$this->school_name}_{$payRecId}", [
@@ -3839,7 +3906,7 @@ class Fee_management extends MY_Controller
                 'order_id'           => $recordId,
                 'gateway_order_id'   => $gwOrderId,
                 'gateway_payment_id' => $gwPaymentId,
-                'student_id'         => $order['student_id'] ?? '',
+                'student_id'         => $studentId,
                 'student_name'       => $order['student_name'] ?? '',
                 'amount'             => (float) ($order['amount'] ?? 0),
                 'receipt_key'        => $receiptKey,
@@ -3908,17 +3975,77 @@ class Fee_management extends MY_Controller
 
         $gwPaymentId = $order['gateway_payment_id'] ?? '';
         $gwOrderId   = $order['gateway_order_id'] ?? '';
+        $studentId   = (string) ($order['student_id'] ?? '');
+        $feeMonths   = is_array($order['fee_months'] ?? null) ? $order['fee_months'] : [];
+
+        // Ensure fs/fsTxn loaded (needed for markPaymentProcessed post-success).
+        if (!isset($this->fs)) {
+            $this->load->library('Firestore_service', null, 'fs');
+            $this->fs->init($this->school_name, $this->session_year);
+        }
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->school_name, $this->session_year);
+
+        // P3.C Q6(c): retry uses the same service-based pipeline as
+        // _verify_and_process instead of the legacy
+        // _process_online_fee_collection. Same flag set for consistency;
+        // the only difference vs webhook is the txn_id prefix, which we
+        // keep as 'RZP_' because the underlying payment WAS Razorpay.
+        require_once APPPATH . 'services/FeeCollectionService.php';
+        $service = new FeeCollectionService();
 
         try {
-            $feeResult = $this->_process_online_fee_collection($order, $gwPaymentId, $gwOrderId);
+            $serviceResult = $service->submit($this, [
+                'source'                     => 'parent-razorpay-retry',
+                'admin_id'                   => $this->admin_id ?? 'admin',
+                'admin_name'                 => $this->admin_name ?? 'admin',
+                'school_name'                => $this->school_name,
+                'session_year'               => $this->session_year,
+                'safe_user_id'               => $studentId,
+                'amount'                     => (float) ($order['amount'] ?? 0),
+                'discount'                   => 0.0,
+                'fine'                       => 0.0,
+                'submit_amount'              => 0.0,
+                'selected_months'            => $feeMonths,
+                'payment_mode'               => 'Online - Razorpay',
+                'remarks'                    => "Razorpay {$gwPaymentId} (retry)",
+                'collected_by'               => 'parent_app',
+                'created_by'                 => $this->admin_id ?? 'admin',
+                'txn_id'                     => 'RZP_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(3)), 0, 6),
+                'batch_mode'                 => true,
+                'wallet_mode'                => 'credit_overflow',
+                'skip_duplicate_month_guard' => true,
+                'defer_defaulter'            => true,
+                'defer_accounting'           => true,
+                'write_response_to_output'   => false,
+                'extra_receipt_fields'       => [
+                    'orderId'   => $gwOrderId,
+                    'paymentId' => $gwPaymentId,
+                ],
+            ]);
 
-            $receiptKey = $feeResult['receipt_key'];
+            if (!is_array($serviceResult) || !($serviceResult['ok'] ?? false)) {
+                $msg = is_array($serviceResult) ? (string) ($serviceResult['message'] ?? 'Service returned failure.') : 'Null service result.';
+                throw new \RuntimeException($msg);
+            }
+
+            $receiptKey = (string) ($serviceResult['data']['receipt_key'] ?? '');
+            $receiptNo  = (string) ($serviceResult['data']['receipt_no']  ?? '');
 
             $this->firebase->firestoreSet('feeOnlineOrders', $orderDocId, [
                 'status'      => 'paid',
                 'paid_at'     => date('c'),
                 'receipt_key' => $receiptKey,
+                'receipt_no'  => $receiptNo,
             ], true);
+
+            // Q5(a): mark payment-id so future frontend verify retries
+            // short-circuit via parent_verify_payment L3051.
+            try {
+                $this->fsTxn->markPaymentProcessed($gwPaymentId, $receiptNo, $receiptKey, $studentId);
+            } catch (\Exception $e) {
+                log_message('error', "retry_payment_processing: markPaymentProcessed failed [{$gwPaymentId}]: " . $e->getMessage());
+            }
 
             // Write payment record
             $payRecId = 'PAY_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(3)), 0, 6);
@@ -3927,7 +4054,7 @@ class Fee_management extends MY_Controller
                 'order_id'           => $recordId,
                 'gateway_order_id'   => $gwOrderId,
                 'gateway_payment_id' => $gwPaymentId,
-                'student_id'         => $order['student_id'] ?? '',
+                'student_id'         => $studentId,
                 'amount'             => (float) ($order['amount'] ?? 0),
                 'receipt_key'        => $receiptKey,
                 'gateway'            => $order['gateway'] ?? 'mock',
