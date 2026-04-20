@@ -1827,6 +1827,14 @@ class Fee_management extends MY_Controller
         $this->_require_role(self::ADMIN_ROLES, 'process_refund');
         $this->_bootFsTxn();
 
+        // A single refund touches ~15 Firestore REST ops (reverse allocations,
+        // voucher, ledger, defaulter, idempotency). With the default 120s
+        // PHP timeout a slow Firestore network can leave the flow half-done —
+        // demand reversed but journal never posted, e.g. Give the flow 10
+        // minutes so it can always complete cleanly; the per-student lock +
+        // idempotency guard prevent any concurrent dupe from sneaking in.
+        @set_time_limit(600);
+
         $refId      = trim((string) $this->_post('refund_id'));
         $refundMode = trim((string) $this->_post('refund_mode'));
         if ($refId === '') $this->json_error('Refund ID is required.');
@@ -1929,6 +1937,10 @@ class Fee_management extends MY_Controller
         $this->_require_role(self::ADMIN_ROLES, 'unstick_refund');
         $this->_bootFsTxn();
 
+        // Unstick writes 3-4 Firestore docs. Same rationale as process_refund
+        // — don't let a slow Firestore transport kill the flow at 120s.
+        @set_time_limit(600);
+
         $refId = trim((string) $this->_post('refund_id'));
         if ($refId === '') $this->json_error('Refund ID is required.');
         $refId = $this->safe_path_segment($refId, 'refund_id');
@@ -2025,6 +2037,10 @@ class Fee_management extends MY_Controller
     {
         $this->_require_role(self::ADMIN_ROLES, 'retry_refund_journal');
         $this->_bootFsTxn();
+
+        // Ledger write + index writes + closing-balance updates. Slow
+        // Firestore can easily exceed 120s. Raise the ceiling.
+        @set_time_limit(600);
 
         $refId = trim((string) $this->_post('refund_id'));
         if ($refId === '') $this->json_error('Refund ID is required.');
