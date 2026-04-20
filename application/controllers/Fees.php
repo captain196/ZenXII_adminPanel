@@ -504,7 +504,10 @@ class Fees extends MY_Controller
             $sid  = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
             $net  = floatval($d['net_amount'] ?? 0);
             $paid = floatval($d['paid_amount'] ?? 0);
-            $cls  = $d['class'] ?? 'Unknown';
+            // Same drift fix as the dashboard endpoint — fall back to
+            // className for legacy yearly demands.
+            $cls = (string) ($d['class'] ?? $d['className'] ?? '');
+            if ($cls === '') $cls = 'Unknown';
             $pk   = $d['period_key'] ?? '';
             $st   = $d['status'] ?? 'unpaid';
 
@@ -615,8 +618,13 @@ class Fees extends MY_Controller
                      'October','November','December','January','February','March'];
 
         // ── 1. Receipts → totals, monthly, recent, payment modes ──────
+        // CRITICAL: filter by session, otherwise the "Total Collected"
+        // tile aggregates EVERY receipt the school has ever issued
+        // (including prior academic years) while "Total Due" below uses
+        // only this session — collection_rate becomes nonsense math.
         $rcptRows = $this->firebase->firestoreQuery('feeReceipts', [
             ['schoolId', '==', $schoolFs],
+            ['session',  '==', $sy],
         ]);
         $totalCollected    = 0;
         $monthlyCollection = array_fill_keys($months, 0);
@@ -629,10 +637,23 @@ class Fees extends MY_Controller
         foreach ((array) $rcptRows as $r) {
             $d = $r['data'] ?? $r;
             if (!is_array($d)) continue;
-            $amt = (float) ($d['amount'] ?? $d['netAmount'] ?? 0);
-            if ($amt <= 0) continue;
+            // Phase 16: distinguish revenue vs cash flow.
+            //   $allocated = what landed on demands → use for revenue/total/by-month/by-mode
+            //   $input     = what the user paid (incl. wallet overflow) → use for cash flow
+            // Legacy receipts (pre-Phase-11) only have `amount`; fall back.
+            $allocated = (float) ($d['allocated_amount']
+                                 ?? $d['allocatedAmount']
+                                 ?? $d['amount']
+                                 ?? $d['netAmount']
+                                 ?? 0);
+            $input     = (float) ($d['input_amount']
+                                 ?? $d['inputAmount']
+                                 ?? $d['amount']
+                                 ?? $d['netAmount']
+                                 ?? 0);
+            if ($allocated <= 0 && $input <= 0) continue;
 
-            $totalCollected += $amt;
+            $totalCollected += $allocated;
 
             $dateStr = (string) ($d['paymentDate'] ?? $d['date'] ?? $d['createdAt'] ?? '');
             $dObj = null;
@@ -641,23 +662,38 @@ class Fees extends MY_Controller
                 if ($dObj !== false) break;
             }
             $mName = $dObj ? $dObj->format('F') : '';
-            if (isset($monthlyCollection[$mName])) $monthlyCollection[$mName] += $amt;
+            if (isset($monthlyCollection[$mName])) $monthlyCollection[$mName] += $allocated;
 
             $mode = (string) ($d['paymentMode'] ?? 'Cash');
-            $paymentModes[$mode] = ($paymentModes[$mode] ?? 0) + $amt;
+            $paymentModes[$mode] = ($paymentModes[$mode] ?? 0) + $allocated;
 
             $receiptDate = $dObj ? $dObj->format('Y-m-d') : '';
             if ($receiptDate === $todayStr) {
-                $todayCollection += $amt;
-                $todayTxns++;
+                // Today's "cash flow" = what came IN today excluding
+                // wallet-spend (wallet pay isn't fresh cash). Also
+                // exclude wallet from the txn count so the tile reads
+                // consistently (was: "₹0 (3 txns)" on a wallet-only day).
+                if ($mode !== 'Wallet') {
+                    $todayCollection += $input;
+                    $todayTxns++;
+                }
             }
 
+            // Recent-txn list shows the receipt issuer's name (not raw
+            // studentId). Fall back through the dual-emit aliases and
+            // finally the id so something always renders.
+            $stuLabel = (string) ($d['studentName']
+                                ?? $d['student_name']
+                                ?? $d['studentId']
+                                ?? '—');
+
             $recentTxns[] = [
-                'receipt' => $d['receiptKey'] ?? '',
-                'date'    => $receiptDate,
-                'student' => $d['studentId'] ?? '—',
-                'amount'  => $amt,
-                'mode'    => $mode,
+                'receipt'   => $d['receiptKey'] ?? '',
+                'date'      => $receiptDate,
+                'student'   => $stuLabel,
+                'studentId' => (string) ($d['studentId'] ?? ''),
+                'amount'    => $input,
+                'mode'      => $mode,
             ];
         }
 
@@ -672,11 +708,24 @@ class Fees extends MY_Controller
         $byClass    = []; // class => {collected, due, students=>{sid=>hasPaid}}
         $studentSet = [];
 
+        // Active-student filter — exclude TC/Inactive/withdrawn so they
+        // don't inflate defaulters / total_due. Empty active-set falls
+        // through (treats every demand as belonging to an active
+        // student) so a misconfigured school still gets numbers.
+        $activeIds = $this->_activeStudentIds();
+        $hasActiveFilter = !empty($activeIds);
         foreach ((array) $demandRows as $r) {
             $d = $r['data'] ?? $r;
             if (!is_array($d)) continue;
-            $cls  = (string) ($d['class'] ?? 'Unknown');
+            // Yearly demands written before the writer fix had only
+            // `className`. Fall back so they bucket into the right class
+            // instead of "Unknown". Empty-string also normalises to
+            // "Unknown" so the UI shows something sensible.
+            $cls = (string) ($d['class'] ?? $d['className'] ?? '');
+            if ($cls === '') $cls = 'Unknown';
             $sid  = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
+            // Skip demands whose student is no longer Active.
+            if ($hasActiveFilter && $sid !== '' && !isset($activeIds[$sid])) continue;
             $net  = (float) ($d['net_amount'] ?? 0);
             $paid = (float) ($d['paid_amount'] ?? 0);
             $bal  = (float) ($d['balance'] ?? max(0, $net - $paid));
@@ -700,12 +749,22 @@ class Fees extends MY_Controller
             $stuPaid  = count(array_filter($data['students']));
             $paidStudents += $stuPaid;
             $totalDue     += $data['due'];
+            $totalThisCls = $data['collected'] + $data['due']; // demanded
             $classCollection[] = [
-                'class'     => $cls,
-                'students'  => $stuCount,
-                'collected' => round($data['collected'], 2),
-                'due'       => round($data['due'], 2),
-                'paid_pct'  => $stuCount > 0 ? round(($stuPaid / $stuCount) * 100) : 0,
+                'class'        => $cls,
+                'students'     => $stuCount,
+                'collected'    => round($data['collected'], 2),
+                'due'          => round($data['due'], 2),
+                // Amount-based collection % (what the column header says).
+                // Old paid_pct counted "students who paid anything" — a
+                // student paying ₹1 of ₹50,000 ticked the box. Rename
+                // the legacy field for back-compat readers but make
+                // `paid_pct` the amount-based ratio that matches the
+                // visible "Paid %" header.
+                'paid_pct'        => $totalThisCls > 0
+                    ? round(($data['collected'] / $totalThisCls) * 100)
+                    : 0,
+                'students_paid_pct' => $stuCount > 0 ? round(($stuPaid / $stuCount) * 100) : 0,
             ];
         }
         usort($classCollection, fn($a, $b) => strnatcmp($a['class'], $b['class']));
@@ -1084,6 +1143,114 @@ class Fees extends MY_Controller
     }
 
     /** Map a month name to its YYYY-MM key inside the current session. */
+    /**
+     * POST — Recalculate discount + scholarship on a student's UNPAID
+     * demands. Used after a new scholarship award (or discount change)
+     * needs to retroactively reduce future dues without losing payment
+     * history on partial/paid demands.
+     *
+     * Strategy: delete UNPAID demands only, then re-run the standard
+     * generator which reads the latest scholarshipAwards + studentDiscount.
+     * Partial/paid demands are untouched (their balance reflects what was
+     * actually owed at the time of payment).
+     *
+     * Body: student_id (required)
+     */
+    public function recalc_unpaid_discounts()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'recalc_discounts');
+        $studentId = trim($this->input->post('student_id') ?? '');
+        if ($studentId === '') return $this->json_error('Student ID is required.');
+        $studentId = $this->safe_path_segment($studentId, 'student_id');
+
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+
+        // Profile sanity-check.
+        $profile = $this->fsTxn->getStudent($studentId);
+        if (!is_array($profile)) return $this->json_error('Student not found.');
+        $class   = (string) ($profile['className'] ?? '');
+        $section = (string) ($profile['section']   ?? '');
+        if ($class === '' || $section === '') return $this->json_error('Cannot resolve class/section.');
+
+        // 1. Delete UNPAID demands. Touched (partial/paid) are preserved
+        //    so receipts + balances stay correct.
+        $existing  = $this->fsTxn->demandsForStudent($studentId);
+        $deleted   = 0;
+        $preserved = 0;
+        foreach ($existing as $did => $d) {
+            $status = (string) ($d['status'] ?? 'unpaid');
+            $paid   = (float)  ($d['paid_amount'] ?? 0);
+            if ($status === 'unpaid' && $paid <= 0.005) {
+                try {
+                    $this->firebase->firestoreDelete('feeDemands', $did);
+                    $deleted++;
+                } catch (\Exception $e) {
+                    log_message('error', "recalc_unpaid_discounts: delete {$did} failed: " . $e->getMessage());
+                }
+            } else {
+                $preserved++;
+            }
+        }
+
+        // 2. Re-run the generator (creates a fresh set of unpaid demands
+        //    using the latest scholarship + discount snapshot).
+        $studentName = (string) ($profile['name'] ?? $profile['Name'] ?? $studentId);
+        $feeChart = $this->_getClassFeeChart($class, $section);
+        if (empty($feeChart)) return $this->json_error("No fee chart for {$class}/{$section}.");
+        $discountMap = $this->_getStudentDiscounts($studentId, $class, $section);
+        $dueDay      = $this->_getDueDay();
+
+        $totals = ['created' => 0, 'skipped' => 0, 'errors' => 0];
+        foreach (self::ACADEMIC_MONTHS as $month) {
+            $r = $this->_generateDemandsForMonth(
+                $studentId, $studentName, $class, $section,
+                $month, $feeChart, $discountMap, $dueDay
+            );
+            $totals['created'] += $r['created'];
+            $totals['skipped'] += $r['skipped'];
+            $totals['errors']  += $r['errors'];
+        }
+
+        $this->json_success([
+            'message'   => "Recalculated. {$deleted} unpaid demand(s) refreshed, {$preserved} paid/partial preserved.",
+            'student'   => $studentName,
+            'deleted'   => $deleted,
+            'preserved' => $preserved,
+            'created'   => $totals['created'],
+            'skipped'   => $totals['skipped'],
+            'errors'    => $totals['errors'],
+        ]);
+    }
+
+    /**
+     * Set of active student IDs in the school. Used by the dashboards to
+     * exclude TC/Inactive/withdrawn students from defaulter totals — a
+     * student who left the school carrying unpaid demands shouldn't
+     * inflate this year's "defaulters" count or pending receivable.
+     *
+     * Returns ['STU0001' => true, ...] for O(1) lookup. Cached per
+     * request via static so back-to-back dashboard endpoints don't
+     * re-query Firestore.
+     */
+    private function _activeStudentIds(): array
+    {
+        static $cache = null;
+        if ($cache !== null) return $cache;
+        $cache = [];
+        try {
+            $rows = $this->fs->schoolWhere('students', [['status', '==', 'Active']]);
+            foreach ((array) $rows as $r) {
+                $d   = $r['data'] ?? $r;
+                $sid = (string) ($d['studentId'] ?? $d['userId'] ?? '');
+                if ($sid !== '') $cache[$sid] = true;
+            }
+        } catch (\Exception $e) {
+            log_message('error', '_activeStudentIds query failed: ' . $e->getMessage());
+        }
+        return $cache;
+    }
+
     private function _period_key_for_month(string $month): string
     {
         $months = ['April'=>4,'May'=>5,'June'=>6,'July'=>7,'August'=>8,'September'=>9,
@@ -1107,6 +1274,95 @@ class Fees extends MY_Controller
     // ══════════════════════════════════════════════════════════════════
     //  DISCOUNT
     // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * POST — SET (not increment) the on-demand discount for a single
+     * student. Inline-grant entry point used by Fees Counter.
+     *
+     * Body:
+     *   user_id      (required)  — Student ID
+     *   amount       (required)  — flat ₹ (≥ 0). 0 clears any existing discount.
+     *   valid_until  (optional)  — YYYY-MM-DD. Empty = no expiry.
+     *   reason       (optional)  — free-form note (e.g. "Sibling waiver")
+     *
+     * Differs from submit_discount() (legacy) which ADDS to the running
+     * total. This endpoint OVERWRITES — what you SET is what's stored.
+     * Safer for inline grant + correction flows.
+     */
+    public function set_student_discount()
+    {
+        $this->_require_post();
+        $this->_require_role(self::MANAGE_ROLES, 'set_discount');
+        $this->output->set_content_type('application/json');
+
+        $userId     = trim($this->input->post('user_id') ?? '');
+        $amountRaw  = $this->input->post('amount');
+        $validUntil = trim($this->input->post('valid_until') ?? '');
+        $reason     = trim($this->input->post('reason') ?? '');
+
+        if ($userId === '' || $amountRaw === false || $amountRaw === '') {
+            return $this->_json_out(['success' => false, 'message' => 'user_id and amount are required.']);
+        }
+        if (!is_numeric($amountRaw) || (float) $amountRaw < 0) {
+            return $this->_json_out(['success' => false, 'message' => 'amount must be ≥ 0.']);
+        }
+        if ($validUntil !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $validUntil)) {
+            return $this->_json_out(['success' => false, 'message' => 'valid_until must be YYYY-MM-DD or empty.']);
+        }
+        $userId  = $this->safe_path_segment($userId, 'user_id');
+        $amount  = round((float) $amountRaw, 2);
+
+        try {
+            $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+            $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+
+            $stu = $this->fsTxn->getStudent($userId);
+            if (!is_array($stu)) {
+                return $this->_json_out(['success' => false, 'message' => 'Student not found.']);
+            }
+            $class   = (string) ($stu['className'] ?? '');
+            $section = (string) ($stu['section']   ?? '');
+            $existing  = $this->firebase->firestoreGet('studentDiscounts', "{$this->fs->schoolId()}_{$userId}");
+            $scholAmt  = is_array($existing) ? (float) ($existing['scholarshipDiscount'] ?? 0) : 0;
+            $now       = date('c');
+
+            // SET the discount (no increment); preserve scholarship tally.
+            $this->fsTxn->updateDiscount($userId, [
+                'onDemandDiscount'    => $amount,
+                'scholarshipDiscount' => $scholAmt,
+                'totalDiscount'       => $amount + $scholAmt,
+                'validUntil'          => $validUntil,
+                'valid_until'         => $validUntil,    // dual-emit
+                'reason'              => $reason,
+                'appliedAt'           => $now,
+                'appliedBy'           => $this->admin_name ?? 'admin',
+                'source'              => 'fees_counter_inline',
+            ], ['className' => $class, 'section' => $section]);
+
+            // Refresh defaulter snapshot so dashboards reflect the new
+            // outstanding balance immediately.
+            try {
+                $studentName = (string) ($stu['name'] ?? $stu['Name'] ?? '');
+                $defaulter   = $this->feeDefaulter->updateDefaulterStatus($userId);
+                $this->fsSync->syncDefaulterStatus($userId, $defaulter, $studentName, $class, $section);
+            } catch (\Exception $e) {
+                log_message('error', "set_student_discount: defaulter sync failed for {$userId}: " . $e->getMessage());
+            }
+
+            return $this->_json_out([
+                'success'         => true,
+                'amount'          => $amount,
+                'validUntil'      => $validUntil,
+                'totalDiscount'   => $amount + $scholAmt,
+                'message'         => $amount > 0
+                    ? "Discount of ₹" . number_format($amount, 2) . " set for {$userId}."
+                    : "Discount cleared for {$userId}.",
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'set_student_discount: ' . $e->getMessage());
+            return $this->_json_out(['success' => false, 'message' => 'Internal server error.']);
+        }
+    }
 
     public function submit_discount()
     {
@@ -1256,19 +1512,46 @@ class Fees extends MY_Controller
                 $months = array_values(array_filter(array_map('strval', $d['feeMonths'])));
             }
 
+            // Standardized totals (Phase 11). Legacy receipts written
+            // before that phase don't have these fields — fall back so
+            // the modal still shows something sensible.
+            $inputAmt    = (float) ($d['input_amount']     ?? $d['inputAmount']
+                          ?? $d['amount']                  ?? 0);
+            $allocatedAmt = (float) ($d['allocated_amount'] ?? $d['allocatedAmount']
+                          ?? ($allocByReceiptKey[$rcptKey]['netReceived'] ?? 0));
+            $advanceAmt  = (float) ($d['advance_credit']    ?? $d['advanceCredit']
+                          ?? ($allocByReceiptKey[$rcptKey]['advanceCredit'] ?? max(0, $inputAmt - $allocatedAmt)));
+
+            // Sum of remaining balance across the demands this receipt
+            // touched — i.e. how much is STILL owed on those months
+            // after this payment cleared. Drives the "Remaining" col so
+            // the cashier can see at a glance which historical
+            // payments left dues outstanding.
+            $remainingAfter = 0.0;
+            if ($rcptKey !== '' && isset($allocByReceiptKey[$rcptKey])) {
+                foreach (($allocByReceiptKey[$rcptKey]['allocations'] ?? []) as $a) {
+                    $remainingAfter += (float) ($a['balance'] ?? 0);
+                }
+            }
+            $remainingAfter = round($remainingAfter, 2);
+
             $response[] = [
-                'receiptNo' => (string) ($d['receiptNo'] ?? ''),
-                'date'      => (string) ($d['date']      ?? ''),
-                'student'   => trim($name . ($father !== '' ? " / {$father}" : '')),
-                'class'     => trim("{$class} {$sec}"),
-                'amount'    => is_numeric($d['amount'] ?? null) ? number_format((float) $d['amount'], 2) : (string) ($d['amount'] ?? '0.00'),
-                'fine'      => is_numeric($d['fine']   ?? null) ? number_format((float) $d['fine'],   2) : (string) ($d['fine']   ?? '0.00'),
-                'discount'  => is_numeric($d['discount'] ?? null) ? number_format((float) $d['discount'], 2) : (string) ($d['discount'] ?? '0.00'),
-                'account'   => (string) ($d['paymentMode'] ?? 'N/A'),
-                'reference' => (string) ($d['remarks']     ?? ''),
-                'coverage'  => $coverage,
-                'months'    => $months,
-                'Id'        => $userId,
+                'receiptNo'  => (string) ($d['receiptNo'] ?? ''),
+                'date'       => (string) ($d['date']      ?? ''),
+                'student'    => trim($name . ($father !== '' ? " / {$father}" : '')),
+                'class'      => trim("{$class} {$sec}"),
+                'amount'     => number_format($inputAmt, 2),     // back-compat
+                'inputAmount'     => number_format($inputAmt, 2),
+                'allocatedAmount' => number_format($allocatedAmt, 2),
+                'advanceCredit'   => number_format($advanceAmt, 2),
+                'remainingAfter'  => number_format($remainingAfter, 2),
+                'fine'       => is_numeric($d['fine']   ?? null) ? number_format((float) $d['fine'],   2) : (string) ($d['fine']   ?? '0.00'),
+                'discount'   => is_numeric($d['discount'] ?? null) ? number_format((float) $d['discount'], 2) : (string) ($d['discount'] ?? '0.00'),
+                'account'    => (string) ($d['paymentMode'] ?? 'N/A'),
+                'reference'  => (string) ($d['remarks']     ?? ''),
+                'coverage'   => $coverage,
+                'months'     => $months,
+                'Id'         => $userId,
             ];
         }
 
@@ -1443,6 +1726,45 @@ class Fees extends MY_Controller
                 'remaining' => $remaining,
             ];
         }
+
+        // Phase 21: also bundle the student's discount + wallet so the
+        // Fees Counter can populate the stat strip + summary panel + the
+        // discount banner immediately on student-load — without forcing
+        // the cashier to pick months and click "Fetch Fee Details" first.
+        // Old format (months as keys) kept as `months`; aggregate goes
+        // under `_summary` so legacy callers that just iterate values
+        // ignore it. Older JS (pre-Phase-21) still works because they
+        // don't know about `_summary` and just see months.
+        $schoolFs = $this->fs->schoolId();
+        $discDoc  = $this->fs->get('studentDiscounts', "{$schoolFs}_{$userId}");
+        $discAmt  = is_array($discDoc) ? (float) ($discDoc['onDemandDiscount'] ?? 0) : 0;
+        $vu       = is_array($discDoc) ? trim((string) ($discDoc['validUntil'] ?? $discDoc['valid_until'] ?? '')) : '';
+        $discExpired = false;
+        if ($vu !== '' && $vu < date('Y-m-d')) { $discAmt = 0; $discExpired = true; }
+
+        $advDoc   = $this->fs->get('studentAdvanceBalances', "{$schoolFs}_{$userId}");
+        $walletAmt = is_array($advDoc) ? (float) ($advDoc['amount'] ?? 0) : 0;
+
+        $totalGross = 0; $totalPaidAll = 0; $totalRemaining = 0;
+        foreach ($result as $row) {
+            $totalGross     += (float) $row['totalDue'];
+            $totalPaidAll   += (float) $row['totalPaid'];
+            $totalRemaining += (float) $row['remaining'];
+        }
+        // Don't double-subtract: $totalRemaining already excludes paid.
+        // Net due = remaining − discount − wallet (clamped at 0).
+        $netDue = max(0, round($totalRemaining - $discAmt - $walletAmt, 2));
+
+        $result['_summary'] = [
+            'totalGross'       => round($totalGross, 2),
+            'alreadyPaid'      => round($totalPaidAll, 2),
+            'discount'         => round($discAmt, 2),
+            'discountValidUntil' => $vu,
+            'discountExpired'  => $discExpired,
+            'wallet'           => round($walletAmt, 2),
+            'remaining'        => round($totalRemaining, 2),
+            'netDue'           => $netDue,
+        ];
         $this->_json_out($result);
     }
 
@@ -1576,6 +1898,18 @@ class Fees extends MY_Controller
         // Session A: pure Firestore — discount + advance credit.
         $discountDoc    = $this->fs->get('studentDiscounts',       "{$schoolFs}_{$userId}");
         $discountAmount = is_array($discountDoc) ? (float) ($discountDoc['onDemandDiscount'] ?? 0) : 0;
+        $discountExpired = false;
+        // Phase 17: enforce expiry. validUntil is an ISO date "YYYY-MM-DD".
+        // Empty string = no expiry (legacy behaviour). Once today > expiry,
+        // the discount silently becomes 0 and we surface a flag so the UI
+        // can show a "Discount expired" hint instead of just hiding it.
+        if (is_array($discountDoc)) {
+            $validUntil = trim((string) ($discountDoc['validUntil'] ?? $discountDoc['valid_until'] ?? ''));
+            if ($validUntil !== '' && $validUntil < date('Y-m-d')) {
+                $discountAmount = 0;
+                $discountExpired = true;
+            }
+        }
 
         $advanceDoc    = $this->fs->get('studentAdvanceBalances', "{$schoolFs}_{$userId}");
         $oversubmitted = is_array($advanceDoc) ? (float) ($advanceDoc['amount'] ?? 0) : 0;
@@ -1665,6 +1999,10 @@ class Fees extends MY_Controller
             'grandTotal'        => $grandRemaining,
             'grandGross'        => $grandTotal,
             'discountAmount'    => $discountAmount,
+            'discountExpired'   => $discountExpired,
+            'discountValidUntil'=> is_array($discountDoc)
+                ? trim((string) ($discountDoc['validUntil'] ?? $discountDoc['valid_until'] ?? ''))
+                : '',
             'overpaidFees'      => $oversubmitted,
             'message'           => "Fee Details for: $label",
             'feesRecord'        => $feesRecordArr,
@@ -1729,9 +2067,10 @@ class Fees extends MY_Controller
         $this->_require_post();
         $this->_require_role(self::VIEW_ROLES, 'search_student');
         $this->output->set_content_type('application/json');
-        $results = $this->input->post('search_name')
-            ? $this->_searchByName($this->input->post('search_name'))
-            : [];
+        // Empty term → return ALL students (capped at 200) so the
+        // Browse modal can show a roster on open, not a blank table.
+        $term = trim((string) $this->input->post('search_name'));
+        $results = $this->_searchByName($term);
         $this->_json_out(is_array($results) ? $results : ['data' => $results]);
     }
 
@@ -1742,23 +2081,35 @@ class Fees extends MY_Controller
         $rows = $this->firebase->firestoreQuery('students', [
             ['schoolId', '==', $schoolFs],
         ]);
+        $entry   = trim((string) $entry);
+        $term    = $entry === '' ? '' : preg_replace('/\s+/', ' ', $entry);
         $results = [];
         foreach ((array) $rows as $r) {
             $s = $r['data'] ?? $r;
             if (!is_array($s)) continue;
+            // Inactive / TC students are excluded so the roster only
+            // shows students currently enrolled.
+            $status = (string) ($s['status'] ?? 'Active');
+            if (!in_array(strtolower($status), ['active', ''], true)) continue;
+
             $name    = (string) ($s['name']       ?? $s['Name']       ?? '');
             $sid     = (string) ($s['studentId']  ?? $s['userId']     ?? '');
             $father  = (string) ($s['fatherName'] ?? $s['Father Name'] ?? '');
             $class   = (string) ($s['className']  ?? '');
             $section = (string) ($s['section']    ?? '');
 
-            if (
-                stripos($name,    $entry) !== false ||
-                stripos($sid,     $entry) !== false ||
-                stripos($father,  $entry) !== false ||
-                stripos($class,   $entry) !== false ||
-                stripos($section, $entry) !== false
-            ) {
+            $haystack = $name . ' ' . $sid . ' ' . $father . ' ' . $class . ' ' . $section;
+            $match = ($term === '');   // empty term ⇒ everyone matches
+            if (!$match) {
+                // Match if ANY whitespace-separated token of the search
+                // term appears in the haystack — much more forgiving
+                // than a single substring match. "8 B" finds Class 8th
+                // Section B; "rahul ji" matches either word.
+                foreach (explode(' ', $term) as $tok) {
+                    if ($tok !== '' && stripos($haystack, $tok) !== false) { $match = true; break; }
+                }
+            }
+            if ($match) {
                 $results[] = [
                     'user_id'     => $sid,
                     'name'        => $name,
@@ -1767,7 +2118,10 @@ class Fees extends MY_Controller
                     'section'     => $section,
                 ];
             }
+            if (count($results) >= 200) break;   // safety cap
         }
+        // Stable sort by name so the roster reads naturally.
+        usort($results, fn($a, $b) => strcasecmp($a['name'], $b['name']));
         return $results;
     }
 
@@ -1790,469 +2144,23 @@ class Fees extends MY_Controller
         $this->_require_role(self::COUNTER_ROLES, 'submit_fees');
         $this->output->set_content_type('application/json');
 
-        // Load the Firestore txn helper
-        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
-        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        $userIdRaw  = trim((string) $this->input->post('userId'));
+        $safeUserId = $userIdRaw !== '' ? $this->safe_path_segment($userIdRaw, 'userId') : '';
 
-        $schoolFs = $this->fs->schoolId();
-        $session  = $this->session_year;
-
-        // ── Parse inputs ───────────────────────────────────────────────
-        $receiptNoInput = trim((string) $this->input->post('receiptNo'));
-        $paymentMode    = trim((string) ($this->input->post('paymentMode') ?: 'Cash in Hand'));
-        $userId         = trim((string) $this->input->post('userId'));
-        if ($userId !== '') $userId = $this->safe_path_segment($userId, 'userId');
-
-        $schoolFees     = floatval(str_replace(',', '', $this->input->post('schoolFees')     ?? '0'));
-        $discountFees   = floatval(str_replace(',', '', $this->input->post('discountAmount') ?? '0'));
-        $fineAmount     = floatval(str_replace(',', '', $this->input->post('fineAmount')     ?? '0'));
-        $submitAmount   = floatval(str_replace(',', '', $this->input->post('submitAmount')   ?? '0'));
-        $reference      = $this->input->post('reference') ?: 'Fees Submitted';
-
-        $selectedMonths = $this->input->post('selectedMonths') ?? [];
-        if (!is_array($selectedMonths)) $selectedMonths = explode(',', (string) $selectedMonths);
-        $selectedMonths = array_values(array_filter(array_map('trim', $selectedMonths)));
-
-        $MonthTotal = $this->input->post('monthTotals') ?? [];
-        $monthTotalsArray = [];
-        foreach ((array) $MonthTotal as $md) {
-            if (isset($md['month'], $md['total'])) {
-                $monthTotalsArray[trim((string) $md['month'])] = floatval(str_replace(',', '', (string) $md['total']));
-            }
-        }
-
-        if ($userId === '')          { $this->json_error('Missing student ID');        return; }
-        if (empty($selectedMonths))  { $this->json_error('No months selected');        return; }
-        if ($schoolFees <= 0)        { $this->json_error('Fee amount must be > 0');    return; }
-
-        // ── Load student from Firestore ────────────────────────────────
-        $student = $this->fsTxn->getStudent($userId);
-        if (!$student) { $this->json_error("Student '{$userId}' not found"); return; }
-
-        $class   = trim((string) ($student['className'] ?? ''));
-        $section = trim((string) ($student['section']   ?? ''));
-        if ($class === '' || $section === '') {
-            $this->json_error("Cannot resolve class/section for '{$userId}'");
-            return;
-        }
-        $studentName = (string) ($student['name'] ?? $userId);
-
-        // ── Generate / validate receipt number (Firestore counter) ─────
-        //  When the UI submits a user-supplied receipt number we still use
-        //  it as-is, but we also push the counter forward so subsequent
-        //  page peeks don't keep suggesting an already-used value.
-        $receiptNo = '';
-        if ($receiptNoInput !== '' && preg_match('/^\d+$/', $receiptNoInput)
-            && !$this->fsTxn->receiptExists($receiptNoInput)) {
-            $receiptNo = $receiptNoInput;
-            $this->fsTxn->advanceCounterTo('receipt_seq', (int) $receiptNo);
-        }
-        if ($receiptNo === '') {
-            $seq = $this->fsTxn->nextCounter('receipt_seq');
-            if ($seq <= 0) { $this->json_error('Failed to generate receipt number. Please retry.'); return; }
-            $receiptNo = (string) $seq;
-        }
-        $receiptKey = 'F' . $receiptNo;
-        $txnId      = 'TXN_' . date('YmdHis') . '_' . bin2hex(random_bytes(4));
-
-        // ── Idempotency check (Firestore) ──────────────────────────────
-        $idempHash = $this->fsTxn->idempKey($userId, $receiptNo, $selectedMonths, $schoolFees);
-        $idemp     = $this->fsTxn->getIdempotency($idempHash);
-        if (is_array($idemp)) {
-            $st = (string) ($idemp['status'] ?? '');
-            if ($st === 'success') {
-                $this->output->set_output(json_encode([
-                    'status' => 'success', 'idempotent' => true,
-                    'message' => 'Fees already submitted (duplicate request).',
-                    'receipt_no' => $idemp['receiptNo'] ?? $receiptNo,
-                ]));
-                return;
-            }
-            if ($st === 'processing') {
-                $age = time() - strtotime((string) ($idemp['startedAt'] ?? '2000-01-01'));
-                if ($age < 120) {
-                    $this->output->set_output(json_encode([
-                        'status' => 'error',
-                        'message' => 'This payment is currently being processed. Please wait.',
-                    ]));
-                    return;
-                }
-            }
-        }
-        $this->fsTxn->setIdempotencyProcessing($idempHash, [
-            'userId' => $userId, 'receiptNo' => $receiptNo, 'months' => $selectedMonths, 'amount' => $schoolFees,
+        require_once APPPATH . 'services/FeeCollectionService.php';
+        $service = new FeeCollectionService();
+        $err = $service->submit($this, [
+            'admin_id'     => $this->admin_id,
+            'admin_name'   => $this->admin_name,
+            'school_name'  => $this->school_name,
+            'session_year' => $this->session_year,
+            'safe_user_id' => $safeUserId,
         ]);
-
-        // ── Lock acquisition (Firestore) ───────────────────────────────
-        $lockToken = $this->fsTxn->acquireLock($userId, 120);
-        if ($lockToken === '') {
-            $this->fsTxn->deleteIdempotency($idempHash);
-            $this->output->set_output(json_encode([
-                'status' => 'error',
-                'message' => 'Another payment for this student is in progress. Please wait and retry.',
-            ]));
-            return;
+        if (is_array($err) && isset($err['json_error'])) {
+            $this->json_error($err['json_error']);
         }
-
-        // Abort helper: release lock + clear idempotency + reply error.
-        $_abort = function (string $msg) use ($userId, $lockToken, $idempHash, $receiptNo) {
-            $this->fsTxn->releaseLock($userId, $lockToken);
-            $this->fsTxn->deleteIdempotency($idempHash);
-            $this->fsTxn->deleteReceiptIndex($receiptNo);
-            $this->output->set_output(json_encode(['status' => 'error', 'message' => $msg]));
-        };
-
-        // ── Reserve receipt number (Firestore receiptIndex) ────────────
-        if (!$this->fsTxn->reserveReceipt($receiptNo, $userId)) {
-            $_abort("Receipt #{$receiptNo} is currently reserved or used. Refresh and retry.");
-            return;
-        }
-
-        // ── Duplicate month guard (read Firestore demands + monthFee map) ─
-        $demands = $this->fsTxn->demandsForStudent($userId); // [docId => data]
-        $monthFeeMap = is_array($student['monthFee'] ?? null) ? $student['monthFee'] : [];
-
-        // Helper to extract the canonical month label from a demand
-        // period (strips the trailing year/session token but PRESERVES
-        // multi-word labels like "Yearly Fees").
-        $periodToLabel = static function (string $period): string {
-            return trim((string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', $period));
-        };
-
-        foreach ($selectedMonths as $m) {
-            if (((int) ($monthFeeMap[$m] ?? 0)) === 1) {
-                $_abort("Month {$m} is already marked paid. Refresh and retry.");
-                return;
-            }
-            foreach ($demands as $d) {
-                $label = $periodToLabel((string) ($d['period'] ?? ''));
-                if ($label === $m && ($d['status'] ?? '') === 'paid'
-                    && (float) ($d['balance'] ?? 0) <= 0.005) {
-                    $_abort("Month {$m} demands are already fully paid. Refresh and retry.");
-                    return;
-                }
-            }
-        }
-
-        // ── PAY-OLDER-FIRST guard ───────────────────────────────────────
-        // Reject the payment if any earlier month is still unpaid /
-        // partial. Mirrors the parent flow's guard
-        // (Fee_management::_record_parent_payment_receipt) so the two
-        // entry points enforce the SAME ordering rule. Yearly fees use
-        // period_key "2026-04" (start of session) so they're treated as
-        // part of April for ordering purposes — exactly the user's
-        // intended behaviour.
-        $selectedKeys = [];
-        foreach ($demands as $d) {
-            $pk = (string) ($d['period_key'] ?? '');
-            $label = $periodToLabel((string) ($d['period'] ?? ''));
-            if ($pk !== '' && in_array($label, $selectedMonths, true)) {
-                $selectedKeys[] = $pk;
-            }
-        }
-        if (!empty($selectedKeys)) {
-            sort($selectedKeys);
-            $earliestSelected = $selectedKeys[0];
-            foreach ($demands as $d) {
-                $pk     = (string) ($d['period_key'] ?? '');
-                $status = (string) ($d['status']     ?? 'unpaid');
-                $bal    = (float)  ($d['balance']    ?? 0);
-                if ($pk !== '' && $pk < $earliestSelected && $status !== 'paid' && $bal > 0.005) {
-                    $olderPeriod = (string) ($d['period'] ?? $pk);
-                    $_abort("Please clear the earlier pending fees for {$olderPeriod} (Rs. " . number_format($bal, 2) . ") before paying this month.");
-                    return;
-                }
-            }
-        }
-
-        // ── Mark pending-write (Firestore safety marker) ───────────────
-        $this->fsTxn->markPending($receiptKey, [
-            'userId' => $userId, 'amount' => $schoolFees, 'months' => $selectedMonths, 'txnId' => $txnId,
-        ]);
-
-        // ── Compute per-head breakdown from fee structure ──────────────
-        $breakdown = [];
-        try {
-            $struct  = $this->fs->get('feeStructures', "{$schoolFs}_{$session}_{$class}_{$section}");
-            $heads   = is_array($struct['feeHeads'] ?? null) ? $struct['feeHeads'] : [];
-            foreach ($heads as $h) {
-                $nm  = (string) ($h['name']   ?? '');
-                $amt = (float)  ($h['amount'] ?? 0);
-                $frq = (string) ($h['frequency'] ?? 'monthly');
-                if ($nm === '' || $amt <= 0) continue;
-                // Monthly heads apply per selected month (excluding Yearly Fees tag);
-                // yearly heads apply once if Yearly Fees is in selection.
-                if ($frq === 'annual') {
-                    if (in_array('Yearly Fees', $selectedMonths, true)) {
-                        $breakdown[] = ['head' => $nm, 'amount' => number_format($amt, 2, '.', ''), 'frequency' => 'annual'];
-                    }
-                } else {
-                    $monthCount = count(array_filter($selectedMonths, fn($x) => $x !== 'Yearly Fees'));
-                    if ($monthCount > 0) {
-                        $breakdown[] = ['head' => $nm, 'amount' => number_format($amt * $monthCount, 2, '.', ''), 'frequency' => 'monthly'];
-                    }
-                }
-            }
-        } catch (\Exception $e) {
-            log_message('error', "submit_fees: breakdown build failed: " . $e->getMessage());
-        }
-
-        $date     = date('d-m-Y');
-        $netTotal = round($schoolFees - $discountFees + $fineAmount, 2);
-
-        // ── 1. Write the canonical fee receipt ─────────────────────────
-        $receiptDoc = [
-            'receiptNo'     => $receiptNo,
-            'studentId'     => $userId,
-            'studentName'   => $studentName,
-            'className'     => $class,
-            'section'       => $section,
-            'fatherName'    => (string) ($student['fatherName'] ?? ''),
-            'amount'        => $schoolFees,
-            'discount'      => $discountFees,
-            'fine'          => $fineAmount,
-            'netAmount'     => $netTotal,
-            'paymentMode'   => $paymentMode,
-            'remarks'       => $reference,
-            'feeMonths'     => $selectedMonths,
-            'feeBreakdown'  => $breakdown,
-            'monthTotals'   => $monthTotalsArray,
-            'date'          => $date,
-            'txnId'         => $txnId,
-            'collectedBy'   => $this->admin_name ?? 'System',
-            'createdAt'     => date('c'),
-        ];
-        if (!$this->fsTxn->writeFeeReceipt($receiptKey, $receiptDoc)) {
-            $_abort('Failed to record fee receipt. No data written.');
-            return;
-        }
-
-        // ── 2. Finalise receipt index ──────────────────────────────────
-        $this->fsTxn->finalizeReceiptIndex($receiptNo, [
-            'date'      => $date,
-            'userId'    => $userId,
-            'className' => $class,
-            'section'   => $section,
-            'amount'    => $netTotal,
-            'txnId'     => $txnId,
-        ]);
-
-        // ── 3. Allocate to demands (oldest unpaid first) ───────────────
-        //
-        // CRITICAL: only allocate within demands whose month appears in
-        // $selectedMonths. The previous version filtered by status only
-        // ("any unpaid demand"), which silently auto-paid Yearly fees +
-        // older months when admin selected a single later month — money
-        // landed on demands the admin never picked. Parent flow already
-        // enforces this filter; admin must match for the two paths to
-        // produce the same allocation result.
-        $allocations   = [];
-        $remaining     = $schoolFees + $submitAmount;
-        $selectedSet   = array_flip($selectedMonths);
-        log_message('debug', '[ALLOC START] user=' . $userId . ' selected=' . json_encode($selectedMonths) . ' amount=' . $remaining);
-        $unpaid = [];
-        foreach ($demands as $did => $d) {
-            $st = (string) ($d['status'] ?? 'unpaid');
-            if ($st === 'paid') continue;
-            $label = $periodToLabel((string) ($d['period'] ?? ''));
-            if ($label === '' || !isset($selectedSet[$label])) continue;
-            $unpaid[$did] = $d;
-        }
-        uasort($unpaid, fn($a, $b) => strcmp((string)($a['period_key'] ?? ''), (string)($b['period_key'] ?? '')));
-        log_message('debug', '[ALLOC POOL] count=' . count($unpaid) . ' demand_ids=' . implode(',', array_keys($unpaid)));
-
-        foreach ($unpaid as $did => $d) {
-            if ($remaining <= 0.005) break;
-            $bal   = (float) ($d['balance'] ?? 0);
-            if ($bal <= 0) continue;
-            $alloc = round(min($remaining, $bal), 2);
-            $newPaid    = round((float) ($d['paid_amount'] ?? 0) + $alloc, 2);
-            $newBalance = round($bal - $alloc, 2);
-            $newStatus  = ($newBalance <= 0.005) ? 'paid' : 'partial';
-            $this->fsTxn->updateDemand($did, [
-                'paid_amount'  => $newPaid,
-                'balance'      => $newBalance,
-                'status'       => $newStatus,
-                'last_receipt' => $receiptKey,
-            ]);
-            $allocations[] = [
-                'demand_id' => $did,
-                'fee_head'  => $d['fee_head'] ?? '',
-                'period'    => $d['period']   ?? '',
-                'allocated' => $alloc,
-                'balance'   => $newBalance,
-                'status'    => $newStatus,
-            ];
-            $remaining = round($remaining - $alloc, 2);
-        }
-        $advanceCredit = round(max(0, $remaining), 2);
-
-        $this->fsTxn->writeReceiptAllocation($receiptKey, [
-            'receiptNo'     => $receiptNo,
-            'studentId'     => $userId,
-            'studentName'   => $studentName,
-            'className'     => $class,
-            'section'       => $section,
-            'totalAmount'   => round($schoolFees, 2),
-            'discount'      => round($discountFees, 2),
-            'fine'          => round($fineAmount, 2),
-            'netReceived'   => $netTotal,
-            'allocations'   => $allocations,
-            'advanceCredit' => $advanceCredit,
-            'paymentMode'   => $paymentMode,
-            'date'          => $date,
-            'createdBy'     => $this->admin_id ?? '',
-            'txnId'         => $txnId,
-        ]);
-
-        // ── 3b. Consistency: update receipt feeMonths to reflect actual allocations ──
-        //  The user may have selected "June" but the system allocated to April
-        //  (oldest-first). The receipt must reflect truth, not selection.
-        if (!empty($allocations)) {
-            $allocatedMonths = [];
-            foreach ($allocations as $a) {
-                $period = (string) ($a['period'] ?? '');
-                $m = explode(' ', $period)[0] ?? '';
-                if ($m !== '' && !in_array($m, $allocatedMonths, true)) {
-                    $allocatedMonths[] = $m;
-                }
-            }
-            if (!empty($allocatedMonths)) {
-                // PATCH only feeMonths + allocatedMonths — using the
-                // full-replace writeFeeReceipt() here previously nuked
-                // studentId/amount/paymentMode/etc on the doc, leaving
-                // an orphan receipt invisible to admin's "WHERE
-                // studentId == X" payment-history query. Use the
-                // merge-aware updateFeeReceipt() instead.
-                $this->fsTxn->updateFeeReceipt($receiptKey, [
-                    'feeMonths'       => $allocatedMonths,
-                    'allocatedMonths' => $allocatedMonths,
-                ]);
-            }
-        }
-
-        // ── 4. Month-fee flags on the student doc ──────────────────────
-        $paidMonthsFlags = [];
-        // Recompute from the just-updated demands view.
-        $demandsAfter = $this->fsTxn->demandsForStudent($userId);
-        $byMonth = [];
-        foreach ($demandsAfter as $d) {
-            // Strip trailing year/session token but PRESERVE multi-word
-            // labels like "Yearly Fees" — explode(' ',$p)[0] used to
-            // truncate "Yearly Fees 2026-27" to "Yearly", which then
-            // never matched the admin's fetch_months reader looking
-            // for "Yearly Fees" key. Same fix already shipped in the
-            // parent flow (Fee_management::_periodToMonthFeeKey).
-            $rawPeriod = (string) ($d['period'] ?? '');
-            $p = trim((string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', $rawPeriod));
-            if ($p === '') continue;
-            $byMonth[$p][] = (string) ($d['status'] ?? 'unpaid');
-        }
-        foreach ($byMonth as $m => $statuses) {
-            $allPaid = true;
-            foreach ($statuses as $s) { if ($s !== 'paid') { $allPaid = false; break; } }
-            $paidMonthsFlags[$m] = $allPaid ? 1 : 0;
-        }
-        // Fallback for schools without demands: mark each fully-paid selected month.
-        if (empty($demandsAfter)) {
-            $budget = $schoolFees + $submitAmount;
-            foreach ($selectedMonths as $m) {
-                $need = (float) ($monthTotalsArray[$m] ?? 0);
-                if ($need > 0 && $budget >= $need) {
-                    $paidMonthsFlags[$m] = 1;
-                    $budget -= $need;
-                }
-            }
-        }
-        if (!empty($paidMonthsFlags)) {
-            $existingMap = is_array($student['monthFee'] ?? null) ? $student['monthFee'] : [];
-            $newMap = array_replace($existingMap, $paidMonthsFlags);
-            $this->fsTxn->updateStudent($userId, ['monthFee' => $newMap]);
-        }
-
-        // ── 5. Advance balance update ──────────────────────────────────
-        // The wallet after a receipt = leftover of (existing wallet + new pay)
-        // after demand allocation. $remaining (= $advanceCredit) IS that
-        // leftover — it already includes the existing wallet because the
-        // allocation loop started with `$remaining = $schoolFees + $submitAmount`.
-        // So we SET the wallet to $advanceCredit, not add to the old value.
-        //
-        // Touch the doc if either the wallet was applied this receipt
-        // ($submitAmount > 0) or if new advance was created ($advanceCredit > 0).
-        if ($advanceCredit > 0.005 || $submitAmount > 0.005) {
-            $this->fsTxn->setAdvanceBalance($userId, $advanceCredit, [
-                'lastReceipt' => $receiptKey,
-                'studentName' => $studentName,
-                'className'   => $class,
-                'section'     => $section,
-            ]);
-        }
-
-        // ── 6. Discount update (if any) ────────────────────────────────
-        if ($discountFees > 0.005) {
-            $this->fsTxn->updateDiscount($userId, [
-                'totalDiscount' => $discountFees,
-                'applied'       => [
-                    'type'       => 'receipt',
-                    'amount'     => $discountFees,
-                    'applied_at' => date('c'),
-                    'applied_by' => $this->admin_name ?? 'System',
-                    'receipt'    => $receiptKey,
-                ],
-            ], [
-                'studentName' => $studentName,
-                'className'   => $class,
-                'section'     => $section,
-            ]);
-        }
-
-        // ── 7. Defaulter recompute ─────────────────────────────────────
-        try {
-            $defaulterStatus = $this->feeDefaulter->updateDefaulterStatus($userId);
-            $this->load->library('Fee_firestore_sync', null, 'fsSync');
-            $this->fsSync->init($this->firebase, $schoolFs, $session);
-            $this->fsSync->syncDefaulterStatus($userId, $defaulterStatus, $studentName, $class, $section);
-        } catch (\Exception $e) {
-            log_message('error', "submit_fees: defaulter recompute failed for {$userId}: " . $e->getMessage());
-        }
-
-        // ── 8. Accounting journal (Firestore-first via ops_acct hook) ──
-        try {
-            $this->load->library('Operations_accounting', null, 'ops_acct');
-            $this->ops_acct->init($this->firebase, $this->school_name, $session, $this->admin_id ?? 'system', $this);
-            $this->ops_acct->create_fee_journal([
-                'school_name'  => $this->school_name,
-                'session_year' => $session,
-                'date'         => date('Y-m-d'),
-                'amount'       => $netTotal,
-                'payment_mode' => strtolower($paymentMode),
-                'receipt_no'   => $receiptKey,
-                'student_name' => $studentName,
-                'student_id'   => $userId,
-                'class'        => "{$class} {$section}",
-                'admin_id'     => $this->admin_id ?? 'system',
-            ]);
-        } catch (\Exception $e) {
-            log_message('error', "submit_fees: accounting journal failed for {$receiptKey}: " . $e->getMessage());
-        }
-
-        // ── 9. Finalise idempotency + release lock + clear pending ─────
-        $this->fsTxn->setIdempotencySuccess($idempHash, $receiptNo);
-        $this->fsTxn->clearPending($receiptKey);
-        $this->fsTxn->releaseLock($userId, $lockToken);
-
-        $this->output->set_output(json_encode([
-            'status'           => 'success',
-            'message'          => 'Fees submitted successfully.',
-            'receipt_no'       => $receiptNo,
-            'txn_id'           => $txnId,
-            'user_id'          => $userId,
-            'amount'           => $netTotal,
-            'advance_credit'   => $advanceCredit,
-            'allocations'      => $allocations,
-            'months_marked'    => array_keys(array_filter($paidMonthsFlags, fn($v) => $v === 1)),
-        ]));
     }
+
 
     // ══════════════════════════════════════════════════════════════════
     //  VOID TEST RECEIPT — dev/QA utility
@@ -3485,6 +3393,30 @@ class Fees extends MY_Controller
         $receiptDate = (string) ($receipt['date']        ?? '');
         $breakdown   = is_array($receipt['feeBreakdown'] ?? null) ? $receipt['feeBreakdown'] : [];
         $months      = is_array($receipt['feeMonths']    ?? null) ? $receipt['feeMonths']    : [];
+        $allocatedMonths = is_array($receipt['allocatedMonths'] ?? null) ? $receipt['allocatedMonths'] : $months;
+
+        // Phase 11 standardized money fields with fallbacks for legacy
+        // receipts written before that phase landed.
+        $inputAmount     = (float) ($receipt['input_amount']     ?? $receipt['inputAmount']     ?? $amount);
+        $allocatedAmount = (float) ($receipt['allocated_amount'] ?? $receipt['allocatedAmount'] ?? $amount);
+        $advanceCredit   = (float) ($receipt['advance_credit']   ?? $receipt['advanceCredit']   ?? 0);
+
+        // Per-allocation breakdown (month × head × amount × cleared/partial)
+        // lives in feeReceiptAllocations.allocations. Drives the new
+        // detailed breakdown table + the FULL/PARTIAL pill.
+        $allocations = [];
+        $hasPartial  = false;
+        try {
+            $allocDoc = $this->fs->get('feeReceiptAllocations', "{$schoolFs}_{$session_year}_{$receiptKey}");
+            if (is_array($allocDoc) && is_array($allocDoc['allocations'] ?? null)) {
+                $allocations = $allocDoc['allocations'];
+                foreach ($allocations as $a) {
+                    if ((string) ($a['status'] ?? '') === 'partial') { $hasPartial = true; break; }
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', "print_receipt: alloc lookup failed for {$receiptKey}: " . $e->getMessage());
+        }
 
         // fatherName not saved on some older receipts — fall back to student doc.
         if ($fatherName === '' && $userId !== '') {
@@ -3500,28 +3432,35 @@ class Fees extends MY_Controller
         $sectionDisplay = preg_replace('/^Section\s+/i', '', $section);
 
         $data = [
-            'receipt_no'      => $receiptNo,
-            'receipt_key'     => $receiptKey,
-            'receipt_date'    => $receiptDate,
-            'student'         => ['Name' => $studentName, 'Father Name' => $fatherName],
-            'student_name'    => $studentName,
-            'father_name'     => $fatherName,
-            'user_id'         => $userId,
-            'class_display'   => $classDisplay,
-            'section_display' => $sectionDisplay,
-            'amount'          => $amount,
-            'discount'        => $discount,
-            'fine'            => $fine,
-            'net_total'       => $netTotal,
-            'payment_mode'    => $paymentMode,
-            'reference'       => $reference,
-            'months'          => $months,
-            'breakdown'       => $breakdown,
-            'school_name'     => (string) ($schoolDoc['name']    ?? $this->school_display_name ?? $this->school_name),
-            'school_address'  => (string) ($schoolDoc['address'] ?? ''),
-            'school_phone'    => (string) ($schoolDoc['phone']   ?? ''),
-            'school_logo'     => (string) ($schoolDoc['logoUrl'] ?? ''),
-            'session_year'    => $session_year,
+            'receipt_no'        => $receiptNo,
+            'receipt_key'       => $receiptKey,
+            'receipt_date'      => $receiptDate,
+            'student'           => ['Name' => $studentName, 'Father Name' => $fatherName],
+            'student_name'      => $studentName,
+            'father_name'       => $fatherName,
+            'user_id'           => $userId,
+            'class_display'     => $classDisplay,
+            'section_display'   => $sectionDisplay,
+            // Money fields — see Phase 11 standardization
+            'amount'            => $amount,           // back-compat alias of input_amount
+            'input_amount'      => $inputAmount,
+            'allocated_amount'  => $allocatedAmount,
+            'advance_credit'    => $advanceCredit,
+            'discount'          => $discount,
+            'fine'              => $fine,
+            'net_total'         => $netTotal,
+            'payment_mode'      => $paymentMode,
+            'reference'         => $reference,
+            'months'            => $months,
+            'allocated_months'  => $allocatedMonths,
+            'breakdown'         => $breakdown,        // legacy per-head structure
+            'allocations'       => $allocations,      // per-month per-head
+            'is_partial'        => $hasPartial,
+            'school_name'       => (string) ($schoolDoc['name']    ?? $this->school_display_name ?? $this->school_name),
+            'school_address'    => (string) ($schoolDoc['address'] ?? ''),
+            'school_phone'      => (string) ($schoolDoc['phone']   ?? ''),
+            'school_logo'       => (string) ($schoolDoc['logoUrl'] ?? ''),
+            'session_year'      => $session_year,
         ];
 
         $this->load->view('fees/receipt', $data);
@@ -3723,7 +3662,13 @@ class Fees extends MY_Controller
             foreach ((array) $rcptRows as $r) {
                 $d = $r['data'] ?? $r;
                 if (!is_array($d)) continue;
-                $received = (float) ($d['amount'] ?? $d['netAmount'] ?? 0);
+                // Phase 16: revenue matrix uses allocated_amount — `amount`
+                // would overcount when overpayment lands in wallet.
+                $received = (float) ($d['allocated_amount']
+                                    ?? $d['allocatedAmount']
+                                    ?? $d['amount']
+                                    ?? $d['netAmount']
+                                    ?? 0);
                 if ($received <= 0) continue;
                 $sid = (string) ($d['studentId'] ?? $d['userId'] ?? '');
                 if ($sid === '') continue;
@@ -5669,14 +5614,23 @@ class Fees extends MY_Controller
         $schoolFs = $this->fs->schoolId();
         try {
             // Compute from Firestore feeReceipts + feeDemands.
+            // Both queries MUST filter by session — otherwise
+            // collection_rate = collected(all-years) / pending(this-year)
+            // produces meaningless ratios.
             $rcptRows = $this->firebase->firestoreQuery('feeReceipts', [
                 ['schoolId', '==', $schoolFs],
+                ['session',  '==', $sy],
             ]);
             $totalCollected = 0;
             $receiptCount   = 0;
             foreach ((array) $rcptRows as $r) {
                 $d = $r['data'] ?? $r;
-                $totalCollected += (float) ($d['amount'] ?? 0);
+                // Phase 16: collection_rate uses allocated_amount so wallet
+                // overflow doesn't inflate the rate above 100%.
+                $totalCollected += (float) ($d['allocated_amount']
+                                          ?? $d['allocatedAmount']
+                                          ?? $d['amount']
+                                          ?? 0);
                 $receiptCount++;
             }
 
@@ -5686,10 +5640,21 @@ class Fees extends MY_Controller
             $totalPending   = 0;
             $defaulterCount = 0;
             $stuBalances    = [];
+            $activeIds      = $this->_activeStudentIds();
+            $hasActive      = !empty($activeIds);
             foreach ((array) $demandRows as $r) {
                 $d   = $r['data'] ?? $r;
                 $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
-                $bal = (float) ($d['balance'] ?? 0);
+                // Skip ex-students; they shouldn't drag the rate down.
+                if ($hasActive && $sid !== '' && !isset($activeIds[$sid])) continue;
+                // Older demands may not have written `balance` directly —
+                // derive from net - paid so they don't get silently
+                // counted as fully paid (which inflates collection_rate
+                // and undercounts defaulters).
+                $net  = (float) ($d['net_amount']  ?? $d['netAmount']  ?? 0);
+                $paid = (float) ($d['paid_amount'] ?? $d['paidAmount'] ?? 0);
+                $bal  = isset($d['balance']) ? (float) $d['balance']
+                                             : max(0.0, $net - $paid);
                 if ($bal > 0 && $sid !== '') {
                     $totalPending += $bal;
                     $stuBalances[$sid] = ($stuBalances[$sid] ?? 0) + $bal;
@@ -5734,14 +5699,18 @@ class Fees extends MY_Controller
             $byClass = [];
             $total   = 0;
             $seen    = [];
+            $activeIds = $this->_activeStudentIds();
+            $hasActive = !empty($activeIds);
 
             foreach ((array) $demandRows as $r) {
                 $d   = $r['data'] ?? $r;
                 $bal = (float) ($d['balance'] ?? 0);
                 if ($bal <= 0) continue;
                 $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
-                $cls = (string) ($d['class'] ?? 'Unknown');
+                $cls = (string) ($d['class'] ?? $d['className'] ?? '');
+                if ($cls === '') $cls = 'Unknown';
                 if ($sid === '' || isset($seen[$sid])) continue;
+                if ($hasActive && !isset($activeIds[$sid])) continue;
                 $seen[$sid] = true;
                 $total++;
                 $byClass[$cls] = ($byClass[$cls] ?? 0) + 1;
