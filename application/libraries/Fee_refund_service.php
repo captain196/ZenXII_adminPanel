@@ -329,9 +329,17 @@ class Fee_refund_service
             // Recompute only the months that actually have demands. The
             // remaining map stays intact (we don't want to wipe April=1 just
             // because a later month is empty).
+            // Strip trailing year/session token ("June 2026" → "June";
+            // "Yearly Fees 2026-27" → "Yearly Fees") while PRESERVING
+            // multi-word labels. The old explode(' ',$p)[0] truncated
+            // "Yearly Fees 2026-27" to "Yearly", writing a bogus
+            // monthFee["Yearly"] key instead of flipping the real
+            // monthFee["Yearly Fees"] key. Same regex FeeCollectionService
+            // uses when it recomputes monthFee post-payment.
             $flags = [];
             foreach ($demands as $d) {
-                $p = explode(' ', (string) ($d['period'] ?? ''))[0] ?? '';
+                $rawPeriod = (string) ($d['period'] ?? '');
+                $p = trim((string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', $rawPeriod));
                 if ($p === '') continue;
                 if (!isset($flags[$p])) $flags[$p] = 1;
                 if (($d['status'] ?? 'unpaid') !== 'paid') $flags[$p] = 0;
