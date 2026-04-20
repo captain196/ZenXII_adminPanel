@@ -358,6 +358,22 @@ class Operations_accounting
     }
 
     /**
+     * Public wrapper around Accounting_firestore_sync::findJournalBySourceRef.
+     * Exists so Fee_refund_service::retryJournal can distinguish "already
+     * posted" from "just posted" — the internal idempotency guard inside
+     * create_refund_journal(_granular) hides that signal by returning the
+     * same entryId shape in both cases, which made the retry toast say
+     * "Journal posted successfully" even when no new entry was written.
+     */
+    public function findExistingRefundJournal(string $refundId): ?array
+    {
+        if ($refundId === '') return null;
+        $sync = $this->_acctFsSync();
+        if (!$sync) return null;
+        return $sync->findJournalBySourceRef('fee_refund', $refundId);
+    }
+
+    /**
      * Lazy-load and return the Firestore sync library, or null if unavailable.
      * Keeps Operations_accounting non-fatal when sync isn't yet configured.
      */

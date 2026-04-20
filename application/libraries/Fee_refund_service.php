@@ -758,6 +758,28 @@ class Fee_refund_service
                     'already' => true];
         }
 
+        // Secondary idempotency check at the LEDGER level: the refund doc
+        // might have been unposted (e.g. test-helper or an admin clearing
+        // the flag) while the ledger entry still exists. Don't double-post.
+        // Reattach the entryId to the refund doc so the UI flag clears and
+        // the "already posted" signal flows to the response.
+        if ($this->opsAcct !== null && method_exists($this->opsAcct, 'findExistingRefundJournal')) {
+            $existing = $this->opsAcct->findExistingRefundJournal($refId);
+            if (is_array($existing) && !empty($existing['entryId'])) {
+                $this->fsTxn->writeRefund($refId, [
+                    'journalPosted'        => true,
+                    'journalEntryId'       => (string) $existing['entryId'],
+                    'journalPostedAt'      => date('c'),
+                    'journalLastAttemptAt' => date('c'),
+                    'journalLastError'     => '',
+                    'journalRetryCount'    => (int) ($refund['journalRetryCount'] ?? 0) + 1,
+                ]);
+                return ['ok' => true, 'error' => null,
+                        'entryId' => (string) $existing['entryId'],
+                        'already' => true];
+            }
+        }
+
         $amount         = (float)  ($refund['amount']    ?? 0);
         $mode           = (string) ($refund['refundMode'] ?? $refund['refund_mode'] ?? 'cash');
         $origReceiptNo  = (string) ($refund['receiptNo']  ?? $refund['receipt_no']  ?? '');
