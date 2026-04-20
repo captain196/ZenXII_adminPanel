@@ -155,10 +155,14 @@ class Fee_refund_service
             }
 
             // ── 3. Update legacy month-fee flag on the student doc ──────
-            // Always runs when we have a studentId — even if no demands were
-            // reversed — so the student doc gets an `updatedAt` touch and
-            // downstream audits can see "last refund affected this student".
-            if ($studentId !== '') {
+            // Skipped when _reverseAllocations already wrote the student
+            // doc in its batch (R.2) — recomputing + writing again would
+            // be a redundant round-trip with the same end state. Still
+            // runs for refunds where origReceiptKey was empty (no
+            // allocations to reverse) so the student doc at minimum
+            // gets its `lastRefundAt` timestamp refreshed.
+            $studentAlreadyUpdated = is_array($demandResult) && ($demandResult['student_doc_updated'] ?? false);
+            if ($studentId !== '' && !$studentAlreadyUpdated) {
                 $this->_recomputeMonthFeeFlags($studentId);
             }
 
@@ -240,7 +244,7 @@ class Fee_refund_service
         $allocLines  = (is_array($alloc) && is_array($alloc['allocations'] ?? null)) ? $alloc['allocations'] : [];
         $alreadyDone = is_array($alloc) && (($alloc['status'] ?? '') === 'reversed');
         if ($alreadyDone) {
-            return ['reversed' => 0, 'already_reversed' => true];
+            return ['reversed' => 0, 'already_reversed' => true, 'student_doc_updated' => false];
         }
 
         try {
@@ -249,7 +253,9 @@ class Fee_refund_service
             $reversed   = 0;
             $log        = [];
             $remaining  = $amount;
+            $demandUpdates = []; // demandId → patch dict; collected for batch + fallback
 
+            // ── Step 1: compute reversal IN MEMORY (no writes) ──
             foreach (array_reverse($allocationsOut) as $a) {
                 if ($remaining <= 0.005) break;
                 $did      = (string) ($a['demand_id'] ?? '');
@@ -267,13 +273,13 @@ class Fee_refund_service
                 $newStatus  = ($newPaid <= 0.005) ? 'unpaid'
                             : (($newBal <= 0.005) ? 'paid' : 'partial');
 
-                $this->fsTxn->updateDemand($did, [
+                $demandUpdates[$did] = [
                     'paid_amount'         => $newPaid,
                     'balance'             => $newBal,
                     'status'              => $newStatus,
                     'last_refund_receipt' => $refundReceiptKey,
                     'last_refund_date'    => date('c'),
-                ]);
+                ];
 
                 $log[] = [
                     'demand_id'    => $did,
@@ -286,16 +292,41 @@ class Fee_refund_service
                 $reversed++;
             }
 
-            // Any leftover amount reduces the advance balance.
+            // ── Step 2: compute wallet debit (if overflow) IN MEMORY ──
+            $walletAfter = null;
             if ($remaining > 0.005) {
                 $curAdv = $this->fsTxn->getAdvanceBalance($studentId);
-                $newAdv = round(max(0, $curAdv - $remaining), 2);
-                $this->fsTxn->setAdvanceBalance($studentId, $newAdv, [
-                    'lastRefund' => $refundReceiptKey,
-                ]);
+                $walletAfter = round(max(0, $curAdv - $remaining), 2);
             }
 
-            // Audit trail + mark allocation reversed.
+            // ── Step 3: compute monthFee flags from post-reversal snapshot ──
+            // Same regex FeeCollectionService uses — strips trailing
+            // "2026" / "2026-27" tokens while preserving multi-word
+            // labels like "Yearly Fees".
+            $demandStateAfter = $demands;
+            foreach ($demandUpdates as $did => $patch) {
+                if (isset($demandStateAfter[$did])) {
+                    $demandStateAfter[$did]['status']      = $patch['status'];
+                    $demandStateAfter[$did]['balance']     = $patch['balance'];
+                    $demandStateAfter[$did]['paid_amount'] = $patch['paid_amount'];
+                }
+            }
+            $flags = [];
+            foreach ($demandStateAfter as $d) {
+                $p = trim((string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', (string) ($d['period'] ?? '')));
+                if ($p === '') continue;
+                if (!isset($flags[$p])) $flags[$p] = 1;
+                if (($d['status'] ?? 'unpaid') !== 'paid') $flags[$p] = 0;
+            }
+            $student   = $this->fsTxn->getStudent($studentId);
+            $existing  = is_array($student['monthFee'] ?? null) ? $student['monthFee'] : [];
+            $mergedMF  = empty($flags) ? $existing : array_replace($existing, $flags);
+
+            // ── Step 4: write audit doc (sequential, OUTSIDE batch) ──
+            // Audit needs to land before the batch so markAllocationReversed
+            // inside the batch can reference the auditId. If the batch
+            // then fails and the fallback also fails, the audit doc is a
+            // lone orphan that helps debugging — acceptable tradeoff.
             $auditId = 'RFND_' . date('YmdHis') . '_' . bin2hex(random_bytes(3));
             $this->fsTxn->writeRefundAudit($auditId, [
                 'receiptKey'     => $origReceiptKey,
@@ -308,9 +339,121 @@ class Fee_refund_service
                 'createdAt'      => date('c'),
                 'createdBy'      => $this->adminId,
             ]);
-            $this->fsTxn->markAllocationReversed($origReceiptKey, $auditId);
 
-            return ['reversed' => $reversed, 'audit_id' => $auditId];
+            // ── Step 5: build + commit the atomic batch (R.2) ──
+            // Same op shape FeeCollectionService uses (op/collection/
+            // docId/merge/data). Four write categories:
+            //   (a) N feeDemands updates  (demandUpdates entries)
+            //   (b) studentAdvanceBalances (only when overflow >0)
+            //   (c) feeReceiptAllocations  (status → reversed)
+            //   (d) students.monthFee      (recomputed flags)
+            $schoolId = $this->fsTxn->getSchoolId();
+            $session  = $this->fsTxn->getSession();
+            $now      = date('c');
+            $batchOps = [];
+
+            // (a) Per-demand updates. Dual-emit the camelCase mirrors
+            // updateDemand() adds internally (paidAmount) so Android
+            // readers see identical state whether we took the batch
+            // path or the sequential fallback.
+            foreach ($demandUpdates as $did => $patch) {
+                $batchOps[] = [
+                    'op'         => 'set',
+                    'collection' => 'feeDemands',
+                    'docId'      => $did,
+                    'merge'      => true,
+                    'data'       => [
+                        'paid_amount'         => $patch['paid_amount'],
+                        'paidAmount'          => (float) $patch['paid_amount'],
+                        'balance'             => $patch['balance'],
+                        'status'              => $patch['status'],
+                        'last_refund_receipt' => $patch['last_refund_receipt'],
+                        'last_refund_date'    => $patch['last_refund_date'],
+                        'updatedAt'           => $now,
+                    ],
+                ];
+            }
+
+            // (b) Wallet debit — only when reversal overflowed into
+            // advance balance. Shape matches setAdvanceBalance's payload.
+            if ($walletAfter !== null) {
+                $batchOps[] = [
+                    'op'         => 'set',
+                    'collection' => 'studentAdvanceBalances',
+                    'docId'      => "{$schoolId}_{$studentId}",
+                    'merge'      => true,
+                    'data'       => [
+                        'schoolId'   => $schoolId,
+                        'session'    => $session,
+                        'studentId'  => $studentId,
+                        'amount'     => round(max(0, $walletAfter), 2),
+                        'lastRefund' => $refundReceiptKey,
+                        'updatedAt'  => $now,
+                    ],
+                ];
+            }
+
+            // (c) Flag the original allocation doc as reversed. Shape
+            // matches markAllocationReversed's payload.
+            $batchOps[] = [
+                'op'         => 'set',
+                'collection' => 'feeReceiptAllocations',
+                'docId'      => "{$schoolId}_{$session}_{$origReceiptKey}",
+                'merge'      => true,
+                'data'       => [
+                    'status'        => 'reversed',
+                    'reversedAt'    => $now,
+                    'refundAuditId' => $auditId,
+                    'updatedAt'     => $now,
+                ],
+            ];
+
+            // (d) Student doc — monthFee flags recomputed post-reversal
+            // + lastRefundAt stamp. Subsumes _recomputeMonthFeeFlags's
+            // write; process() will skip that method when we succeed.
+            $batchOps[] = [
+                'op'         => 'set',
+                'collection' => 'students',
+                'docId'      => "{$schoolId}_{$studentId}",
+                'merge'      => true,
+                'data'       => [
+                    'monthFee'     => $mergedMF,
+                    'lastRefundAt' => $now,
+                    'updatedAt'    => $now,
+                ],
+            ];
+
+            log_message('debug', "[REFUND BATCH COMMIT] ops=" . count($batchOps) . " refund={$refId}");
+            $batchOk = $this->fsTxn->commitBatch($batchOps);
+            log_message('debug', "[REFUND BATCH COMMIT] ok=" . ($batchOk ? 'true' : 'false'));
+
+            if (!$batchOk) {
+                // ── Fallback: sequential writes, matching the pre-R.2
+                //    behaviour verbatim. Same end state, slower. Mirrors
+                //    FeeCollectionService's batch-fallback strategy.
+                log_message('warning', "[REFUND BATCH FALLBACK] batch commit failed for refund={$refId}; falling back to sequential writes");
+
+                foreach ($demandUpdates as $did => $patch) {
+                    $this->fsTxn->updateDemand($did, $patch);
+                }
+                if ($walletAfter !== null) {
+                    $this->fsTxn->setAdvanceBalance($studentId, $walletAfter, [
+                        'lastRefund' => $refundReceiptKey,
+                    ]);
+                }
+                $this->fsTxn->markAllocationReversed($origReceiptKey, $auditId);
+                $this->fsTxn->updateStudent($studentId, [
+                    'monthFee'     => $mergedMF,
+                    'lastRefundAt' => $now,
+                ]);
+            }
+
+            return [
+                'reversed'            => $reversed,
+                'audit_id'            => $auditId,
+                'batch_committed'     => $batchOk,
+                'student_doc_updated' => true,
+            ];
         } catch (\Exception $e) {
             log_message('error', 'Fee_refund_service::_reverseAllocations failed: ' . $e->getMessage());
             return null;
