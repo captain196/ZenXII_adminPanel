@@ -50,8 +50,7 @@ class Fee_management extends MY_Controller
         // School context is resolved from the token claims.
         $isParentApi = (
             strpos($uri, 'fee_management/parent_create_order')   !== false ||
-            strpos($uri, 'fee_management/parent_verify_payment') !== false ||
-            strpos($uri, 'fee_management/parent_pay_from_wallet') !== false
+            strpos($uri, 'fee_management/parent_verify_payment') !== false
         );
 
         if ($isWebhook) {
@@ -1862,13 +1861,11 @@ class Fee_management extends MY_Controller
             $this->ops_acct
         );
 
-        // R.6: admin may pass acknowledge_stale=1 to force-refund a receipt
-        // whose demands are now owned by a newer receipt. Without this flag
-        // the service returns STALE_ALLOCATION; with it, the amount is
-        // routed entirely to the student's wallet so the newer receipt's
-        // state stays intact.
-        $ackStale = (bool) $this->_post('acknowledge_stale')
-                 || ($this->_post('acknowledge_stale') === '1');
+        // R.6 (Phase 9 update): wallet subsystem removed. A stale-allocation
+        // refund (demands owned by a newer receipt) is now always rejected —
+        // there is no wallet to route the amount into. The acknowledge_stale
+        // override flag is no longer honoured.
+        $ackStale = false;
 
         $result = $this->refund_svc->process($refId, $refundMode, [
             'acknowledge_stale' => $ackStale,
@@ -1876,8 +1873,8 @@ class Fee_management extends MY_Controller
 
         if (!$result['ok']) {
             log_message('error', "process_refund failed for {$refId}: " . ($result['error'] ?? ''));
-            // R.6: surface structured detail for STALE_ALLOCATION so the
-            // UI can show a "Process anyway (to wallet)" override prompt.
+            // STALE_ALLOCATION: UI still surfaces the conflicts so admin
+            // can investigate, but there's no override path.
             if (($result['code'] ?? '') === 'STALE_ALLOCATION') {
                 $this->output->set_content_type('application/json');
                 $this->output->set_output(json_encode([
@@ -2795,6 +2792,29 @@ class Fee_management extends MY_Controller
             }
         }
 
+        // ── Overpayment guard (Phase 9 — wallet removed) ────────────────
+        // Reject at order-creation so the parent doesn't go through
+        // Razorpay only to be rejected at verify. Service re-checks.
+        $totalUnpaidSelected = 0.0;
+        foreach ($allDemands as $d) {
+            $status = (string) ($d['status'] ?? 'unpaid');
+            $period = Fee_firestore_txn::periodToMonth((string) ($d['period'] ?? ''));
+            if ($period === '' || $status === 'paid') continue;
+            if (!in_array($period, $feeMonths, true)) continue;
+            $bal = (float) ($d['balance'] ?? 0);
+            if ($bal > 0) $totalUnpaidSelected += $bal;
+        }
+        $totalUnpaidSelected = round($totalUnpaidSelected, 2);
+        if (round($amount, 2) > $totalUnpaidSelected + 0.005) {
+            http_response_code(409);
+            echo json_encode([
+                'success' => false,
+                'error'   => 'Amount Rs. ' . number_format($amount, 2) . ' exceeds total due Rs. ' . number_format($totalUnpaidSelected, 2) . ' for the selected months.',
+                'total_due' => $totalUnpaidSelected,
+            ]);
+            return;
+        }
+
         $this->_init_payment_service();
 
         try {
@@ -2978,15 +2998,11 @@ class Fee_management extends MY_Controller
             // Preserve Razorpay's 6-hex txn_id format byte-for-byte.
             'txn_id'                     => 'RZP_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(3)), 0, 6),
             'batch_mode'                 => true,
-            'wallet_mode'                => 'credit_overflow',
             // Razorpay's parent_create_order enforces PAY-OLDER-FIRST
-            // upstream, and the service re-runs it (belt-and-braces,
-            // matching _record_parent_payment_receipt L2417-2442). So
-            // leave skip_pay_older_first_guard at its default (false).
-            // Pre-P3, _record_parent_payment_receipt did NOT run a
-            // duplicate-month guard — the allocation loop would just
-            // skip paid demands and push the overflow to wallet. Keep
-            // that behaviour.
+            // upstream, and the service re-runs it (belt-and-braces).
+            // skip_pay_older_first_guard stays at its default (false).
+            // Pre-P9, overpayment pushed overflow to the wallet; that
+            // subsystem is gone and the service now rejects overpayment.
             'skip_duplicate_month_guard' => true,
             'defer_defaulter'            => true,
             'defer_accounting'           => false,
@@ -3082,166 +3098,9 @@ class Fee_management extends MY_Controller
         ]);
     }
 
-    /**
-     * POST — Parent-facing: pay fees from the student's advance wallet
-     * balance (no gateway). Requires wallet >= total_due for the
-     * selected months. Mirrors the allocation logic of submit_fees()
-     * but drives the whole receipt from wallet, not new cash.
-     *
-     * Body: fee_months[] (JSON)
-     * Returns: {success, receipt_no, wallet_before, wallet_after, allocated_months[]}
-     */
-    public function parent_pay_from_wallet()
-    {
-        header('Content-Type: application/json; charset=utf-8');
-
-        $claims    = $this->_parent_claims ?: [];
-        $studentId = (string) ($claims['uid'] ?? '');
-        if ($studentId === '') {
-            http_response_code(401);
-            echo json_encode(['success' => false, 'error' => 'Invalid auth token.']);
-            return;
-        }
-
-        $raw = file_get_contents('php://input');
-        $body = [];
-        if ($raw !== '') {
-            $decoded = json_decode($raw, true);
-            if (is_array($decoded)) $body = $decoded;
-        }
-        if (empty($body)) $body = $this->input->post() ?: [];
-
-        $feeMonths = $body['fee_months'] ?? [];
-        if (!is_array($feeMonths)) $feeMonths = [];
-        $feeMonths = array_values(array_filter(array_map('trim', $feeMonths)));
-        if (empty($feeMonths)) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'error' => 'At least one fee month must be selected.']);
-            return;
-        }
-
-        // ── Initialise Firestore_service + Fee_firestore_txn helper ───
-        // MY_Controller normally wires $this->fs; parent endpoints
-        // bypass MY_Controller so we load Firestore_service manually.
-        if (!isset($this->fs)) {
-            $this->load->library('Firestore_service', null, 'fs');
-            $this->fs->init($this->school_name, $this->session_year);
-        }
-        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
-        $this->fsTxn->init($this->firebase, $this->fs, $this->school_name, $this->session_year);
-
-        // ── Pre-service: load student, compute totalDue, validate wallet ─
-        // These checks stay in the controller because they determine
-        // whether the wallet path should even reach the service. The
-        // service will re-load demands itself (cost is ~1 extra read
-        // per request; acceptable vs the complexity of passing demands
-        // in via $data).
-        $student = $this->fsTxn->getStudent($studentId);
-        if (!$student) {
-            http_response_code(404);
-            echo json_encode(['success' => false, 'error' => 'Student not found.']);
-            return;
-        }
-
-        $demands     = $this->fsTxn->demandsForStudent($studentId);
-        $selectedSet = array_flip($feeMonths);
-        $totalDue    = 0.0;
-        foreach ($demands as $d) {
-            $status = (string) ($d['status'] ?? 'unpaid');
-            $period = Fee_firestore_txn::periodToMonth((string) ($d['period'] ?? ''));
-            if ($period === '') continue;
-            if ($status === 'paid') continue;
-            if (!isset($selectedSet[$period])) continue;
-            $totalDue += (float) ($d['balance'] ?? 0);
-        }
-        $totalDue = round($totalDue, 2);
-        if ($totalDue <= 0.005) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'error' => 'Nothing is due for the selected months.']);
-            return;
-        }
-
-        $walletBefore = (float) $this->fsTxn->getAdvanceBalance($studentId);
-        if ($walletBefore + 0.005 < $totalDue) {
-            http_response_code(402);
-            echo json_encode([
-                'success'        => false,
-                'error'          => 'Insufficient wallet balance.',
-                'wallet_balance' => $walletBefore,
-                'total_due'      => $totalDue,
-                'short_by'       => round($totalDue - $walletBefore, 2),
-            ]);
-            return;
-        }
-
-        // ── Delegate to FeeCollectionService ───────────────────────────
-        require_once APPPATH . 'services/FeeCollectionService.php';
-        $service = new FeeCollectionService();
-        $result  = $service->submit($this, [
-            'source'                     => 'parent-wallet',
-            'admin_id'                   => 'parent_app',
-            'admin_name'                 => 'parent_app',
-            'school_name'                => $this->school_name,
-            'session_year'               => $this->session_year,
-            'safe_user_id'               => $studentId,
-            'amount'                     => $totalDue,
-            'discount'                   => 0.0,
-            'fine'                       => 0.0,
-            'submit_amount'              => 0.0,
-            'selected_months'            => $feeMonths,
-            'payment_mode'               => 'Wallet',
-            'remarks'                    => 'Paid from advance balance (parent app)',
-            'collected_by'               => 'parent_app',
-            'created_by'                 => 'parent_app',
-            'txn_prefix'                 => 'WAL_',
-            'wallet_mode'                => 'debit_total',
-            'wallet_before'              => $walletBefore,
-            // Wallet now enforces PAY-OLDER-FIRST like the counter and
-            // Razorpay paths — a parent can no longer pay June from the
-            // wallet while April still has an unpaid balance. The service
-            // will return HTTP 409 with a message naming the oldest
-            // outstanding period so the app can surface it cleanly.
-            'skip_pay_older_first_guard' => false,
-            'defer_defaulter'            => false,
-            'defer_accounting'           => false,
-            'write_response_to_output'   => false,
-        ]);
-
-        // ── Translate service result into wallet response shape ───────
-        if (!is_array($result)) {
-            http_response_code(500);
-            echo json_encode(['success' => false, 'error' => 'Internal error (null result from service).']);
-            return;
-        }
-        if (!($result['ok'] ?? false)) {
-            http_response_code((int) ($result['http_code'] ?? 500));
-            echo json_encode(['success' => false, 'error' => (string) ($result['message'] ?? 'Payment failed.')]);
-            return;
-        }
-
-        $d = $result['data'] ?? [];
-
-        // ── Synchronous defaulter sync (preserves wallet's original timing) ─
-        // Recompute defaulter status from Firestore demands and sync to
-        // feeDefaulters so the parent app's "Outstanding ₹X" banner clears
-        // as soon as the wallet payment lands.
-        try {
-            $this->feeDefaulter->updateDefaulterStatus($studentId);
-        } catch (\Exception $e) {
-            log_message('error', "parent_pay_from_wallet: defaulter sync failed [{$studentId}]: " . $e->getMessage());
-        }
-
-        echo json_encode([
-            'success'          => true,
-            'message'          => 'Fees paid from wallet.',
-            'receipt_no'       => (string) ($d['receipt_no']  ?? ''),
-            'receipt_key'      => (string) ($d['receipt_key'] ?? ''),
-            'wallet_before'    => round($walletBefore, 2),
-            'wallet_after'     => isset($d['wallet_after']) ? (float) $d['wallet_after'] : null,
-            'amount_paid'      => isset($d['amount_paid']) ? (float) $d['amount_paid'] : $totalDue,
-            'allocated_months' => $d['allocated_months'] ?? [],
-        ]);
-    }
+    // parent_pay_from_wallet() removed in Phase 9 (wallet subsystem
+    // deprecated). Razorpay (parent_create_order / parent_verify_payment)
+    // is the sole parent-side payment entry point now.
 
     // ══════════════════════════════════════════════════════════════════
     //  DUES-BASED BLOCKING POLICY (result / TC / hall-ticket / library)
@@ -3724,7 +3583,6 @@ class Fee_management extends MY_Controller
                 // Preserve Razorpay's 6-hex txn_id format byte-exact with P3.B.
                 'txn_id'                     => 'RZP_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(3)), 0, 6),
                 'batch_mode'                 => true,
-                'wallet_mode'                => 'credit_overflow',
                 'skip_duplicate_month_guard' => true,
                 // Keep PAY-OLDER-FIRST active (was enforced by
                 // _record_parent_payment_receipt pre-P3.B; service re-runs it).
@@ -3891,7 +3749,6 @@ class Fee_management extends MY_Controller
                 'created_by'                 => $this->admin_id ?? 'admin',
                 'txn_id'                     => 'RZP_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(3)), 0, 6),
                 'batch_mode'                 => true,
-                'wallet_mode'                => 'credit_overflow',
                 'skip_duplicate_month_guard' => true,
                 'defer_defaulter'            => true,
                 'defer_accounting'           => true,
@@ -3996,9 +3853,10 @@ class Fee_management extends MY_Controller
         ]);
         foreach ((array) $receipts as $row) {
             $d = $row['data'] ?? $row;
-            // Phase 16: net_receivable math uses allocated_amount because
-            // wallet-overflow shouldn't be counted as money collected against
-            // demands (it's still owed back to the parent as wallet credit).
+            // Phase 16: net_receivable math uses allocated_amount (sum of
+            // demand allocations). Post-Phase-9, this equals input_amount
+            // because overpayment is rejected, but keep the field for
+            // compatibility with pre-P9 receipts that carry both.
             $amt = floatval($d['allocated_amount']
                           ?? $d['allocatedAmount']
                           ?? $d['amount']
@@ -4493,7 +4351,6 @@ class Fee_management extends MY_Controller
                 'defaulters'          => $this->fsSync->syncAllDefaulters(),
                 'scholarship_awards'  => $this->fsSync->syncAllScholarshipAwards(),
                 'refunds'             => $this->fsSync->syncAllRefunds(),
-                'advance_balances'    => $this->fsSync->syncAllAdvanceBalances(),
                 'carry_forward'       => $this->fsSync->syncAllCarryForward(),
                 'receipt_index'       => $this->fsSync->syncAllReceiptIndex(),
                 'receipt_counter'     => $this->fsSync->syncReceiptCounterFromRTDB() ? 1 : 0,

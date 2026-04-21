@@ -293,11 +293,8 @@ function loadStale(){
           s+='<button class="ta-action-btn clear" onclick="confirmResolve(\''+defaultAction+'\',\''+esc(key)+'\',\'Stale receipt reservation\')" title="Release reserved receipt number"><i class="fa fa-times"></i> Release</button>';
         } else if(type==='lock'){
           s+='<button class="ta-action-btn clear" onclick="confirmResolve(\''+defaultAction+'\',\''+esc(key)+'\',\'Student lock\')" title="Release student lock"><i class="fa fa-unlock"></i> Unlock</button>';
-        } else if(type==='sync'){
-          s+='<button class="ta-action-btn diagnose" onclick="recalcAdvance(\''+esc(it._student_id||key)+'\')" title="Auto-recalculate from receipts &amp; allocations"><i class="fa fa-calculator"></i> Auto Recalculate</button>';
-          s+='<button class="ta-action-btn view" onclick="viewInAudit(\''+esc(it.receipt_key||it._student_id||'')+'\')" title="View transaction details"><i class="fa fa-eye"></i> View</button>';
-          s+='<button class="ta-action-btn clear" onclick="confirmResolve(\''+defaultAction+'\',\''+esc(key)+'\',\'Advance sync flag (mark as reconciled)\')" title="Mark as manually reconciled"><i class="fa fa-check"></i> Mark Reconciled</button>';
         }
+        // 'sync' case removed in Phase 9 — wallet sync failures no longer exist.
 
         s+='</div></div>';
       });
@@ -309,7 +306,7 @@ function loadStale(){
     h+=issueList(r.stale_pending,'Pending Fee Markers','fa-clock-o','clear_pending','pending');
     h+=issueList(r.stale_reservations,'Stale Receipt Reservations','fa-ticket','clear_reservation','reservation');
     h+=issueList(r.active_locks,'Active Student Locks','fa-lock','clear_lock','lock');
-    h+=issueList(r.sync_pending||[],'Advance Balance Sync Failures','fa-refresh','clear_sync_pending','sync');
+    // 'Advance Balance Sync Failures' list removed in Phase 9.
 
     el.innerHTML=h;
   });
@@ -387,8 +384,7 @@ function confirmResolve(action,key,label){
     clear_pending:'This will remove the pending fee marker. The fee payment may or may not have completed.',
     clear_reservation:'This will release the reserved receipt number so it can be reused.',
     clear_processing:'This will mark the idempotency record as manually cleared. A retry with the same data will be treated as a new request.',
-    mark_success:'This will mark the transaction as successfully completed. Only use this if you have verified all financial records exist.',
-    clear_sync_pending:'This marks the advance balance sync as manually reconciled. Verify the student advance balance is correct before clearing.'
+    mark_success:'This will mark the transaction as successfully completed. Only use this if you have verified all financial records exist.'
   };
 
   var desc=actionDescriptions[action]||'This action will modify financial records.';
@@ -433,96 +429,7 @@ function confirmResolve(action,key,label){
   }).catch(function(){alert('Request failed.');});
 }
 
-// Auto-recalculate advance balance
-function recalcAdvance(studentId){
-  if(!confirm(
-    'Auto-Recalculate Advance Balance\n\n'
-    +'This will:\n'
-    +'1. Read ALL receipts for this student\n'
-    +'2. Read ALL demand allocations\n'
-    +'3. Compute: Total Received - Total Allocated = Correct Advance\n'
-    +'4. Update the balance and clear the sync flag\n\n'
-    +'Student: '+studentId+'\n\n'
-    +'Proceed?'
-  )) return;
-
-  // Show inline progress
-  var issueEl=document.getElementById('issue_'+studentId);
-  var resultDiv=document.createElement('div');
-  resultDiv.id='recalc_'+studentId;
-  resultDiv.style.cssText='margin:8px 0 0;padding:12px;background:var(--bg);border-radius:8px;border:1px solid var(--border);font-size:12px';
-  resultDiv.innerHTML='<i class="fa fa-spinner fa-spin" style="color:var(--gold)"></i> Recalculating from source data...';
-  if(issueEl) issueEl.after(resultDiv);
-
-  post('fees/recalculate_advance',{student_id:studentId}).then(function(r){
-    if(r.status!=='success'){
-      resultDiv.innerHTML='<span style="color:#dc2626"><i class="fa fa-times-circle"></i> '+esc(r.message)+'</span>';
-      return;
-    }
-
-    var changed=Math.abs(r.old_balance-r.new_balance)>0.01;
-    var h='<div style="font:700 12px/1.3 var(--font-b);color:#0f766e;margin-bottom:8px"><i class="fa fa-check-circle"></i> Recalculation Complete</div>';
-    h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">';
-    h+='<div style="padding:8px 12px;border-radius:6px;background:var(--bg2);border:1px solid var(--border);text-align:center">';
-    h+='<div style="font-size:10px;color:var(--t3);font-weight:600;margin-bottom:2px">OLD BALANCE</div>';
-    h+='<div style="font-size:16px;font-weight:700;color:'+(changed?'#dc2626':'var(--t1)')+'">Rs '+fmt(r.old_balance)+'</div></div>';
-    h+='<div style="padding:8px 12px;border-radius:6px;background:rgba(15,118,110,.06);border:1px solid rgba(15,118,110,.2);text-align:center">';
-    h+='<div style="font-size:10px;color:var(--t3);font-weight:600;margin-bottom:2px">NEW BALANCE</div>';
-    h+='<div style="font-size:16px;font-weight:700;color:#0f766e">Rs '+fmt(r.new_balance)+'</div></div>';
-    h+='</div>';
-
-    h+='<div style="font-size:11px;color:var(--t2);line-height:1.6">';
-    h+='<strong>'+esc(r.student_name)+'</strong> ('+esc(r.student_id)+')<br>';
-    h+='Receipts: '+r.receipt_count+' | Gross Received: Rs '+fmt(r.total_received);
-    if(r.total_refunded>0) h+=' | <span style="color:#dc2626">Refunded: Rs '+fmt(r.total_refunded)+'</span>';
-    h+='<br>Net Received: <strong>Rs '+fmt(r.net_received)+'</strong>';
-    h+=' | Allocated: Rs '+fmt(r.total_allocated)+' | Discount: Rs '+fmt(r.total_discount);
-    if(r.reversed_receipts>0) h+=' | <span style="color:#d97706">Reversed: '+r.reversed_receipts+'</span>';
-    if(r.refund_count>0) h+=' | <span style="color:#dc2626">Refunds: '+r.refund_count+'</span>';
-    var cfn=parseFloat(r.carry_forward_net||0);
-    if(cfn!==0) h+='<br>Carry Forward: <strong style="color:'+(cfn>0?'#0f766e':'#dc2626')+'">Rs '+fmt(cfn)+'</strong>'+(cfn>0?' (credit from previous session)':' (debt from previous session)');
-    h+='</div>';
-
-    // Formula display
-    h+='<div style="margin-top:6px;padding:6px 10px;border-radius:4px;background:var(--bg);font-size:11px;color:var(--t3);font-family:var(--font-m)">';
-    h+='advance = max(0, net_received'+(cfn!==0?(cfn>0?' + ':' - ')+fmt(Math.abs(cfn)):'')+' - allocated)';
-    h+=' = max(0, '+fmt(r.net_received+(cfn||0))+' - '+fmt(r.total_allocated)+')';
-    h+=' = <strong style="color:var(--gold)">'+fmt(r.new_balance)+'</strong>';
-    h+='</div>';
-
-    if(changed){
-      h+='<div style="margin-top:6px;padding:6px 10px;border-radius:4px;background:rgba(217,119,6,.08);color:#92400e;font-size:11px">';
-      h+='<i class="fa fa-info-circle"></i> Balance corrected by Rs '+fmt(Math.abs(r.new_balance-r.old_balance));
-      h+='</div>';
-    } else {
-      h+='<div style="margin-top:6px;padding:6px 10px;border-radius:4px;background:rgba(15,118,110,.06);color:#0f766e;font-size:11px">';
-      h+='<i class="fa fa-check"></i> Balance was already correct. Sync flag cleared.';
-      h+='</div>';
-    }
-
-    resultDiv.innerHTML=h;
-
-    // Fade out the issue card after showing result
-    if(issueEl){
-      setTimeout(function(){
-        issueEl.style.transition='opacity .4s';
-        issueEl.style.opacity='.4';
-      },2000);
-    }
-
-    // Refresh recovery stats
-    setTimeout(loadStale,1500);
-
-    // Toast
-    var toast=document.createElement('div');
-    toast.style.cssText='position:fixed;bottom:20px;right:20px;padding:12px 20px;background:#0f766e;color:#fff;border-radius:8px;font-size:13px;font-weight:600;z-index:10000;box-shadow:0 4px 12px rgba(0,0,0,.2)';
-    toast.innerHTML='<i class="fa fa-check-circle" style="margin-right:6px"></i>Balance recalculated: Rs '+fmt(r.old_balance)+' → Rs '+fmt(r.new_balance);
-    document.body.appendChild(toast);
-    setTimeout(function(){toast.remove();},5000);
-  }).catch(function(){
-    resultDiv.innerHTML='<span style="color:#dc2626"><i class="fa fa-times-circle"></i> Request failed. Try again.</span>';
-  });
-}
+// recalcAdvance removed in Phase 9 — wallet subsystem gone.
 
 // Enter key search
 document.getElementById('auditQuery').addEventListener('keypress',function(e){if(e.key==='Enter')doAuditSearch();});

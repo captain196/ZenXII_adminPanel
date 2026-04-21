@@ -208,11 +208,10 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // ── Student advance (wallet) balances ────────────────────────
-    match /studentAdvanceBalances/{docId} {
-      allow read: if isStaffOrOwnStudent();
-      allow write: if isAdmin();
-    }
+    // Student advance (wallet) balances — removed in Phase 9.
+    // Tombstone docs (amount=0, migrationReason set) remain in Firestore
+    // for audit but no app reads or writes them anymore. Rule omitted so
+    // default-deny blocks any accidental reads from old builds.
 
     // ── Student discounts ────────────────────────────────────────
     match /studentDiscounts/{docId} {

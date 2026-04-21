@@ -9,10 +9,10 @@ defined('BASEPATH') or exit('No direct script access allowed');
  * external RTDB touchpoint left is the accounting journal reversal via
  * Operations_accounting — that's explicitly deferred to Session C.
  *
- * Flow:
+ * Flow (post-Phase-9 — wallet subsystem removed):
  *   1. Validate + lock         (feeRefunds doc status transition)
  *   2. Reverse demands         (feeDemands rows) + build audit trail
- *   3. Reduce advance balance  (studentAdvanceBalances doc)
+ *   3. (removed) Advance-balance write — overflow is now rejected
  *   4. Write refund voucher    (feeRefundVouchers doc — Firestore replacement
  *                                for legacy RTDB Accounts/Vouchers/{date}/REFUND_*)
  *   5. Post reversal journal   (ops_acct — Session C bridge, still RTDB-backed)
@@ -45,18 +45,15 @@ class Fee_refund_service
      * @param string $refId        Refund doc ID (ref_xxx)
      * @param string $refundMode   cash | bank_transfer | cheque | online
      * @param array  $options
-     *     acknowledge_stale (bool): R.6 — if true, proceed with a refund
-     *     whose allocated demands have been re-paid by a newer receipt.
-     *     The amount bypasses demand reduction (which would corrupt the
-     *     newer receipt's state) and goes entirely to the student's
-     *     advance balance instead. Default false → refuse with
-     *     STALE_ALLOCATION.
+     *     acknowledge_stale (bool): Phase 9 — no longer honoured. Stale
+     *     allocations are always rejected with STALE_ALLOCATION because
+     *     the wallet-routing override has been removed.
      *
      * @return array ['ok' => bool, 'data' => [...], 'error' => '...']
      */
     public function process(string $refId, string $refundMode, array $options = []): array
     {
-        $ackStale = !empty($options['acknowledge_stale']);
+        $ackStale = false; // acknowledge_stale ignored post-Phase-9
         // ── 1. Validate (existing doc-status + processLock checks) ───
         // These remain an independent first line of defense. The NEW
         // request-hash + per-student lock below are additive layers.
@@ -166,15 +163,13 @@ class Fee_refund_service
                 );
             }
 
-            // ── R.3: wallet-deficit fail-closed check ───────────────────
-            // _reverseAllocations returns a ['failed' => true, ...] dict
-            // when the refund would need to debit more than the student's
-            // advance balance holds. No writes have landed yet (audit +
-            // batch come AFTER Step 2), so rolling back here is clean:
-            // reset the refund doc to 'approved' and clear both the
-            // refund-doc processLock and the idempotency marker so the
-            // admin can retry with a smaller amount after fixing the
-            // underlying wallet shortfall.
+            // ── Fail-closed check (Phase 9) ─────────────────────────────
+            // _reverseAllocations returns ['failed' => true, ...] when:
+            //   - STALE_ALLOCATION: demands are owned by a newer receipt
+            //   - REFUND_OVERFLOW: reversal couldn't absorb the full refund
+            // No writes have landed yet, so rolling back is clean: reset
+            // the refund doc to 'approved' and clear processLock +
+            // idempotency so the admin can retry with a smaller amount.
             if (is_array($demandResult) && !empty($demandResult['failed'])) {
                 $this->fsTxn->writeRefund($refId, [
                     'status'      => 'approved',
@@ -188,12 +183,10 @@ class Fee_refund_service
                     'ok'       => false,
                     'error'    => $demandResult['failure_message'],
                     'code'     => $demandResult['failure_code'],
-                    'conflicts'=> $demandResult['conflicts']     ?? null,   // R.6
-                    'superseded_by' => $demandResult['superseded_by'] ?? null, // R.6
+                    'conflicts'=> $demandResult['conflicts']     ?? null,
+                    'superseded_by' => $demandResult['superseded_by'] ?? null,
                     'details'  => [
-                        'overflow'       => $demandResult['overflow']       ?? null,
-                        'wallet_balance' => $demandResult['wallet_balance'] ?? null,
-                        'shortfall'      => $demandResult['shortfall']      ?? null,
+                        'overflow' => $demandResult['overflow'] ?? null,
                     ],
                 ];
             }
@@ -406,8 +399,7 @@ class Fee_refund_service
                     'failure_code'    => 'STALE_ALLOCATION',
                     'failure_message' => 'This receipt\'s demands have been re-paid by newer receipt(s) #' .
                         implode(', #', $rcptList) . '. Refunding now would corrupt the newer receipt\'s state. ' .
-                        'Reverse or refund the newer receipt first, OR retry with "Acknowledge stale" to route ' .
-                        'the refund amount to the student\'s wallet instead of reducing demand balances.',
+                        'Reverse or refund the newer receipt first before refunding this one.',
                     'conflicts'       => $conflicts,
                     'superseded_by'   => array_values($rcptList),
                 ];
@@ -421,27 +413,9 @@ class Fee_refund_service
                 if ($did === '' || $allocAmt <= 0) continue;
                 if (!isset($demands[$did])) continue;
 
-                // R.6 override path: for any demand claimed by a newer
-                // receipt, DON'T reduce the demand — pass the amount
-                // through to wallet overflow so Step 2 books it as
-                // advance balance. The allocation doc still gets marked
-                // 'reversed' below so the refund audit trail is clean.
-                if ($ackStale && isset($staleDemandIds[$did])) {
-                    $log[] = [
-                        'demand_id'    => $did,
-                        'fee_head'     => $a['fee_head'] ?? '',
-                        'period'       => $a['period']   ?? '',
-                        'reversed_amt' => 0,
-                        'new_status'   => ($demands[$did]['status'] ?? 'unpaid'),
-                        'stale_override' => true,
-                        'superseded_by' => array_values(array_unique(
-                            array_column($staleDemandIds[$did], 'receipt_no')
-                        )),
-                    ];
-                    // DON'T decrement $remaining — full amount flows to
-                    // wallet via Step 2's overflow handling.
-                    continue;
-                }
+                // R.6 override path removed in Phase 9 — ackStale is
+                // always false here, so this branch is dead and stale
+                // allocations are rejected upstream.
 
                 $reverseAmt = min($remaining, $allocAmt);
                 $d          = $demands[$did];
@@ -472,55 +446,24 @@ class Fee_refund_service
                 $reversed++;
             }
 
-            // ── Step 2: compute wallet change (if overflow) IN MEMORY ──
-            // Two distinct scenarios reach this point with $remaining > 0:
-            //
-            // (a) Normal overflow — R.3 path. Part of the refund couldn't
-            //     be netted against demand allocations because allocations
-            //     summed to less than the refund amount. In that case the
-            //     overflow must be DEBITED from the student's advance
-            //     balance (they had funds there, we're paying them back).
-            //     Fail closed with WALLET_DEFICIT when the balance can't
-            //     cover it — otherwise we'd silently lose money.
-            //
-            // (b) R.6 stale-override — admin chose to refund despite a
-            //     newer receipt owning the demand. We skipped demand
-            //     reduction for those demands (DON'T touch F4's state),
-            //     so the refund amount flows here. This is a CREDIT to
-            //     the advance balance (converting the refund into a
-            //     future-use wallet balance the student can draw against
-            //     — no cash leaves the school). No deficit check needed
-            //     since we're adding, not subtracting.
-            $walletAfter = null;
+            // ── Step 2: overflow check (Phase 9 — wallet removed) ──
+            // If reversal couldn't absorb the full refund amount, there
+            // is no longer a wallet to debit or credit. Reject the
+            // refund and ask the admin to reduce the amount or resolve
+            // the stale allocation upstream.
             if ($remaining > 0.005) {
-                $curAdv    = $this->fsTxn->getAdvanceBalance($studentId);
-                $isOverride = $ackStale && !empty($staleDemandIds);
-
-                if ($isOverride) {
-                    $walletAfter = round($curAdv + $remaining, 2);
-                    log_message('debug',
-                        "[REFUND WALLET CREDIT] refund={$refId} student={$studentId} " .
-                        "creditAmount={$remaining} walletBefore={$curAdv} walletAfter={$walletAfter} (R.6 override)");
-                } else {
-                    if ($curAdv + 0.005 < $remaining) {
-                        $shortfall = round($remaining - $curAdv, 2);
-                        log_message('error',
-                            "[REFUND WALLET DEFICIT] refund={$refId} student={$studentId} " .
-                            "overflow={$remaining} walletHas={$curAdv} shortfall={$shortfall}");
-                        return [
-                            'failed'          => true,
-                            'failure_code'    => 'WALLET_DEFICIT',
-                            'failure_message' => sprintf(
-                                'Refund exceeds allocations by ₹%.2f but student wallet only has ₹%.2f (shortfall ₹%.2f). Reduce refund amount or top-up advance balance first.',
-                                $remaining, $curAdv, $shortfall
-                            ),
-                            'overflow'        => round($remaining, 2),
-                            'wallet_balance'  => round($curAdv, 2),
-                            'shortfall'       => $shortfall,
-                        ];
-                    }
-                    $walletAfter = round($curAdv - $remaining, 2);
-                }
+                log_message('error',
+                    "[REFUND OVERFLOW] refund={$refId} student={$studentId} " .
+                    "overflow={$remaining} (wallet removed — refund rejected)");
+                return [
+                    'failed'          => true,
+                    'failure_code'    => 'REFUND_OVERFLOW',
+                    'failure_message' => sprintf(
+                        'Refund amount exceeds demand allocations by ₹%.2f. Wallet subsystem is removed, so the overflow has nowhere to go — reduce the refund amount to match the total of reversible allocations.',
+                        $remaining
+                    ),
+                    'overflow'        => round($remaining, 2),
+                ];
             }
 
             // ── Step 3: compute monthFee flags from post-reversal snapshot ──
@@ -566,9 +509,10 @@ class Fee_refund_service
 
             // ── Step 5: build + commit the atomic batch (R.2) ──
             // Same op shape FeeCollectionService uses (op/collection/
-            // docId/merge/data). Four write categories:
+            // docId/merge/data). Three write categories post-Phase-9
+            // (wallet debit/credit removed; overflow is now rejected
+            // upstream):
             //   (a) N feeDemands updates  (demandUpdates entries)
-            //   (b) studentAdvanceBalances (only when overflow >0)
             //   (c) feeReceiptAllocations  (status → reversed)
             //   (d) students.monthFee      (recomputed flags)
             $schoolId = $this->fsTxn->getSchoolId();
@@ -598,24 +542,8 @@ class Fee_refund_service
                 ];
             }
 
-            // (b) Wallet debit — only when reversal overflowed into
-            // advance balance. Shape matches setAdvanceBalance's payload.
-            if ($walletAfter !== null) {
-                $batchOps[] = [
-                    'op'         => 'set',
-                    'collection' => 'studentAdvanceBalances',
-                    'docId'      => "{$schoolId}_{$studentId}",
-                    'merge'      => true,
-                    'data'       => [
-                        'schoolId'   => $schoolId,
-                        'session'    => $session,
-                        'studentId'  => $studentId,
-                        'amount'     => round(max(0, $walletAfter), 2),
-                        'lastRefund' => $refundReceiptKey,
-                        'updatedAt'  => $now,
-                    ],
-                ];
-            }
+            // (b) Wallet debit op removed in Phase 9 — overflow rejected
+            //     at Step 2, so there is no wallet doc to mutate here.
 
             // (c) Flag the original allocation doc as reversed. Shape
             // matches markAllocationReversed's payload.
@@ -660,11 +588,7 @@ class Fee_refund_service
                 foreach ($demandUpdates as $did => $patch) {
                     $this->fsTxn->updateDemand($did, $patch);
                 }
-                if ($walletAfter !== null) {
-                    $this->fsTxn->setAdvanceBalance($studentId, $walletAfter, [
-                        'lastRefund' => $refundReceiptKey,
-                    ]);
-                }
+                // Post-Phase-9: no wallet write on fallback either.
                 $this->fsTxn->markAllocationReversed($origReceiptKey, $auditId);
                 $this->fsTxn->updateStudent($studentId, [
                     'monthFee'     => $mergedMF,

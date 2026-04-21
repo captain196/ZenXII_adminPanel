@@ -262,14 +262,10 @@ class FeeCollectionService
 
         // ── PAY-OLDER-FIRST guard ───────────────────────────────────────
         // Reject the payment if any earlier month is still unpaid /
-        // partial. Mirrors the parent flow's guard
-        // (Fee_management::_record_parent_payment_receipt) so the two
-        // entry points enforce the SAME ordering rule. Yearly fees use
+        // partial. Mirrors the parent flow's guard so the two entry
+        // points enforce the SAME ordering rule. Yearly fees use
         // period_key "2026-04" (start of session) so they're treated as
-        // part of April for ordering purposes — exactly the user's
-        // intended behaviour.
-        // The wallet flow historically skipped this guard; preserved via
-        // skip_pay_older_first_guard until that is addressed separately.
+        // part of April for ordering purposes.
         if (!($data['skip_pay_older_first_guard'] ?? false)) {
             $selectedKeys = [];
             foreach ($demands as $d) {
@@ -294,15 +290,40 @@ class FeeCollectionService
             }
         }
 
-        // Shared scaffolding for BOTH write paths (batch + sequential). Each
-        // path MUST populate $allocations / $allocatedMonths / $advanceCredit /
-        // $paidMonthsFlags — the wallet / discount / finalize / response code
+        // ── OVERPAYMENT guard (Phase 9 — wallet removed) ────────────────
+        // With the wallet subsystem gone, any surplus has nowhere to go.
+        // Compute total outstanding for the selected months and reject
+        // if the caller is trying to pay more than that.
+        $selectedSetForGuard = array_flip($selectedMonths);
+        $yearlyExplicitGuard = isset($selectedSetForGuard['Yearly Fees']);
+        $totalUnpaidSelected = 0.0;
+        foreach ($demands as $d) {
+            if ((string) ($d['status'] ?? 'unpaid') === 'paid') continue;
+            $label = $periodToLabel((string) ($d['period'] ?? ''));
+            if ($label === '' || !isset($selectedSetForGuard[$label])) continue;
+            $isYearlyDemand = (string) ($d['period_type'] ?? $d['periodType'] ?? '') === 'yearly';
+            if ($isYearlyDemand && !$yearlyExplicitGuard) continue;
+            $bal = (float) ($d['balance'] ?? 0);
+            if ($bal > 0) $totalUnpaidSelected += $bal;
+        }
+        $totalUnpaidSelected = round($totalUnpaidSelected, 2);
+        $totalInput = round(((float) $schoolFees) + ((float) $submitAmount), 2);
+        if ($totalInput > $totalUnpaidSelected + 0.005) {
+            return $_abort(sprintf(
+                'Amount Rs. %s exceeds total due Rs. %s for the selected months. Overpayment is not allowed.',
+                number_format($totalInput, 2),
+                number_format($totalUnpaidSelected, 2)
+            ), 409);
+        }
+
+        // Shared scaffolding for BOTH write paths (batch + sequential).
+        // Each path MUST populate $allocations / $allocatedMonths /
+        // $paidMonthsFlags — the discount / finalize / response code
         // below reads these unconditionally.
         $batchMode       = $data['batch_mode'] ?? false;
         $batchCompleted  = false;
         $allocations     = [];
         $allocatedMonths = [];
-        $advanceCredit   = 0.0;
         $paidMonthsFlags = [];
 
         if ($batchMode) {
@@ -377,7 +398,7 @@ class FeeCollectionService
                 ];
                 $remaining = round($remaining - $alloc, 2);
             }
-            $advanceCreditBatch = round(max(0.0, $remaining), 2);
+            // Post-Phase-9: overpayment guard above ensures $remaining ≈ 0.
 
             // Allocated months (from periodToMonth — preserves "Yearly Fees").
             $allocatedMonthsBatch = [];
@@ -417,7 +438,7 @@ class FeeCollectionService
                 ? array_replace(is_array($student['monthFee'] ?? null) ? $student['monthFee'] : [], $paidMonthsFlagsBatch)
                 : null;
 
-            $allocatedAmountSumBatch = round((float) $schoolFees - (float) $advanceCreditBatch, 2);
+            $allocatedAmountSumBatch = round((float) $schoolFees, 2);
 
             // Build batch payload.
             $batchOps = [];
@@ -440,8 +461,8 @@ class FeeCollectionService
                 ];
             }
 
-            // 2. Receipt (full replace; final allocated_amount / advance_credit
-            //    baked in — no post-patch needed).
+            // 2. Receipt (full replace; final allocated_amount baked in —
+            //    no post-patch needed). Post-Phase-9: no advance_credit.
             // $data['extra_receipt_fields'] lets a caller splice extra flat
             // fields into the doc (e.g. Razorpay webhook passes orderId +
             // paymentId so the receipt carries the gateway identifiers).
@@ -460,8 +481,6 @@ class FeeCollectionService
                 'inputAmount'      => $schoolFees,
                 'allocated_amount' => $allocatedAmountSumBatch,
                 'allocatedAmount'  => $allocatedAmountSumBatch,
-                'advance_credit'   => $advanceCreditBatch,
-                'advanceCredit'    => $advanceCreditBatch,
                 'discount'         => $discountFees,
                 'fine'             => $fineAmount,
                 'netAmount'        => $netTotal,
@@ -533,7 +552,6 @@ class FeeCollectionService
                     'fine'          => round($fineAmount, 2),
                     'netReceived'   => $netTotal,
                     'allocations'   => $allocationsForDoc,
-                    'advanceCredit' => $advanceCreditBatch,
                     'paymentMode'   => $paymentMode,
                     'date'          => $date,
                     'createdBy'     => $data['created_by'] ?? $data['admin_id'] ?? '',
@@ -561,18 +579,16 @@ class FeeCollectionService
             log_message('debug', "[FCS BATCH COMMIT] ok=" . ($batchCompleted ? 'true' : 'false'));
 
             if ($batchCompleted) {
-                // Expose the same variable shape the sequential path produces
-                // so downstream wallet / response code works identically.
+                // Expose the same variable shape the sequential path
+                // produces so downstream response code works identically.
                 $allocations     = $allocationsForDoc;
                 $allocatedMonths = $allocatedMonthsBatch;
-                $advanceCredit   = $advanceCreditBatch;
                 $paidMonthsFlags = $paidMonthsFlagsBatch;
             } else {
                 log_message('warning', "[FCS BATCH FALLBACK] receipt={$receiptKey} — commit failed, falling through to sequential writes");
                 // Reset shared vars; sequential path will repopulate.
                 $allocations     = [];
                 $allocatedMonths = [];
-                $advanceCredit   = 0.0;
                 $paidMonthsFlags = [];
             }
         }
@@ -623,10 +639,8 @@ class FeeCollectionService
         //   amount           — back-compat alias of input_amount
         //   input_amount     — what the cashier entered (excl. fine)
         //   allocated_amount — sum of demand allocations (patched after step 3)
-        //   advance_credit   — leftover that went to the wallet (patched after step 3)
-        // Reports must use allocated_amount for "revenue actually collected
-        // against demands" — input_amount can include overpayment that
-        // landed in the wallet, not the dues ledger.
+        // Post-Phase-9: overpayment is rejected at the guard above, so
+        // allocated_amount always equals input_amount. No advance_credit.
         $receiptDoc = [
             'receiptNo'        => $receiptNo,
             'studentId'        => $userId,
@@ -639,8 +653,6 @@ class FeeCollectionService
             'inputAmount'      => $schoolFees,    // dual-emit for Android
             'allocated_amount' => 0.0,            // patched in step 3
             'allocatedAmount'  => 0.0,
-            'advance_credit'   => 0.0,            // patched in step 3
-            'advanceCredit'    => 0.0,
             'discount'         => $discountFees,
             'fine'             => $fineAmount,
             'netAmount'        => $netTotal,
@@ -730,7 +742,7 @@ class FeeCollectionService
             ];
             $remaining = round($remaining - $alloc, 2);
         }
-        $advanceCredit = round(max(0, $remaining), 2);
+        // Post-Phase-9: overpayment guard ensures $remaining ≈ 0.
 
         $controller->fsTxn->writeReceiptAllocation($receiptKey, [
             'receiptNo'     => $receiptNo,
@@ -743,7 +755,6 @@ class FeeCollectionService
             'fine'          => round($fineAmount, 2),
             'netReceived'   => $netTotal,
             'allocations'   => $allocations,
-            'advanceCredit' => $advanceCredit,
             'paymentMode'   => $paymentMode,
             'date'          => $date,
             'createdBy'     => $data['created_by'] ?? $data['admin_id'] ?? '',
@@ -754,9 +765,8 @@ class FeeCollectionService
         //  The user may have selected "June" but the system allocated to April
         //  (oldest-first). The receipt must reflect truth, not selection.
         //
-        //  We also patch the standardized totals here:
-        //    allocated_amount = sum of allocations actually applied to demands
-        //    advance_credit   = leftover that flowed to the wallet
+        //  Patch allocated_amount = sum of allocations actually applied to
+        //  demands. Post-Phase-9 this equals input_amount.
         $allocatedAmountSum = 0.0;
         foreach ($allocations as $a) {
             $allocatedAmountSum += (float) ($a['allocated'] ?? 0);
@@ -779,8 +789,6 @@ class FeeCollectionService
         $patch = [
             'allocated_amount' => $allocatedAmountSum,
             'allocatedAmount'  => $allocatedAmountSum,
-            'advance_credit'   => $advanceCredit,
-            'advanceCredit'    => $advanceCredit,
         ];
         if (!empty($allocatedMonths)) {
             $patch['feeMonths']       = $allocatedMonths;
@@ -828,59 +836,10 @@ class FeeCollectionService
         }
         } // end if (!$batchCompleted) — sequential path
 
-        // ── 5. Advance balance update ──────────────────────────────────
-        // Two modes:
-        //   'set_leftover' (counter default)  — wallet ← leftover of
-        //     ($schoolFees + $submitAmount) after allocation. $advanceCredit
-        //     IS that leftover; it already includes the existing wallet
-        //     because the allocation loop started with
-        //     `$remaining = $schoolFees + $submitAmount`. Only touch the doc
-        //     if the wallet was applied ($submitAmount > 0) OR a new advance
-        //     was created ($advanceCredit > 0).
-        //   'debit_total' (parent-wallet)     — wallet ← $wallet_before
-        //     minus $schoolFees. Caller has already validated the balance.
-        $walletMode  = $data['wallet_mode'] ?? 'set_leftover';
-        $walletAfter = null; // populated only when the wallet doc is touched
-        if ($walletMode === 'debit_total') {
-            $walletBefore = (float) ($data['wallet_before'] ?? 0);
-            $walletAfter  = round($walletBefore - $schoolFees, 2);
-            $controller->fsTxn->setAdvanceBalance($userId, $walletAfter, [
-                'lastReceipt' => $receiptKey,
-                'studentName' => $studentName,
-                'className'   => $class,
-                'section'     => $section,
-            ]);
-        } elseif ($walletMode === 'credit_overflow') {
-            // Razorpay path: ADD the allocation leftover to the student's
-            // existing wallet balance (never SET). Mirrors
-            // _record_parent_payment_receipt L2786–2802 byte-for-byte.
-            if ($advanceCredit > 0.005) {
-                try {
-                    $walletBefore = (float) $controller->fsTxn->getAdvanceBalance($userId);
-                    $walletAfter  = round($walletBefore + $advanceCredit, 2);
-                    $controller->fsTxn->setAdvanceBalance($userId, $walletAfter, [
-                        'studentName' => $studentName,
-                        'className'   => $class,
-                        'section'     => $section,
-                        'lastReceipt' => $receiptKey,
-                        'lastCredit'  => $advanceCredit,
-                        'lastCreditAt'=> date('c'),
-                    ]);
-                } catch (\Exception $e) {
-                    log_message('error', "FeeCollectionService: wallet credit_overflow failed [{$userId}] +{$advanceCredit}: " . $e->getMessage());
-                }
-            }
-        } else {
-            if ($advanceCredit > 0.005 || $submitAmount > 0.005) {
-                $controller->fsTxn->setAdvanceBalance($userId, $advanceCredit, [
-                    'lastReceipt' => $receiptKey,
-                    'studentName' => $studentName,
-                    'className'   => $class,
-                    'section'     => $section,
-                ]);
-                $walletAfter = $advanceCredit;
-            }
-        }
+        // ── 5. (Removed in Phase 9) Advance-balance / wallet updates ──
+        // The wallet subsystem has been removed. Overpayment is rejected
+        // at the guard above, so there is no leftover to credit and no
+        // caller-supplied wallet debit to honour.
 
         // ── 6. Discount update (if any) ────────────────────────────────
         if ($discountFees > 0.005) {
@@ -933,8 +892,6 @@ class FeeCollectionService
                     'user_id'          => $userId,
                     'amount'           => $netTotal,
                     'amount_paid'      => $schoolFees,
-                    'advance_credit'   => $advanceCredit,
-                    'wallet_after'     => $walletAfter,
                     'allocations'      => $allocations,
                     'allocated_months' => $allocatedMonths,
                     'months_marked'    => $monthsMarked,
@@ -948,7 +905,6 @@ class FeeCollectionService
                 'txn_id'           => $txnId,
                 'user_id'          => $userId,
                 'amount'           => $netTotal,
-                'advance_credit'   => $advanceCredit,
                 'allocations'      => $allocations,
                 'months_marked'    => $monthsMarked,
             ]));

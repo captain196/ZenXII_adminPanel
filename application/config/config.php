@@ -35,10 +35,15 @@ if (getenv('APP_HOST')) $_allowed_hosts[] = getenv('APP_HOST');
 $_host = (isset($_SERVER['HTTP_HOST']) && in_array($_SERVER['HTTP_HOST'], $_allowed_hosts, true))
     ? $_SERVER['HTTP_HOST']
     : 'localhost';
+// Detect subdirectory from SCRIPT_NAME (e.g., /Grader/school/index.php → /Grader/school/)
+$_subdir = '';
+if (isset($_SERVER['SCRIPT_NAME'])) {
+    $_subdir = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\') . '/';
+}
 $config['base_url'] =
     ($_is_https ? 'https' : 'http')
     . '://' . $_host
-    . '/';
+    . $_subdir;
 
 $config['index_page'] = '';
 $config['uri_protocol'] = 'REQUEST_URI';
@@ -66,7 +71,7 @@ $config['allow_get_array']      = TRUE;
 //  ERROR LOGGING
 //  FIX: Set to 1 (errors only) on production — level 4 fills disk fast
 // ─────────────────────────────────────────────────────────────────────────────
-$config['log_threshold']        = 1;   // PRODUCTION: errors only
+$config['log_threshold']        = 2;   // TESTING: errors + info (revert to 1 for production)
 $config['log_path']             = '';
 $config['log_file_extension']   = '';
 $config['log_file_permissions'] = 0644;
@@ -158,9 +163,12 @@ $config['csrf_exclude_uris'] = [
     'superadmin/debug(.*)',
     'superadmin/migration(.*)',
     'superadmin/admins(.*)',
+    'superadmin/bootstrap(.*)',
     'superadmin/login(.*)',
     'superadmin/csrf_token',
     'fee_management/payment_webhook',
+    'fee_management/parent_create_order',
+    'fee_management/parent_verify_payment',
 ];
 
 $config['compress_output'] = FALSE;
@@ -176,3 +184,10 @@ $config['proxy_ips'] = '';
 //          Month Fee is still READ for backward compat (dashboard, reports).
 // Phase 2: Remove all Month Fee reads (future).
 $config['use_legacy_month_fee'] = false;
+
+// ── Firestore Failure Simulation ───────────────────────────────────────
+// Set to TRUE to simulate Firestore write failures.
+// RTDB writes continue normally. Firestore writes return false with logged error.
+// Used for testing retry queue, fallback behavior, and system resilience.
+// NEVER enable in production.
+$config['simulate_firestore_failure'] = false;

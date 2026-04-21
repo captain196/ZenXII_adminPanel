@@ -66,7 +66,6 @@ $route['fees/search_transaction']          = 'Fees/search_transaction';
 $route['fees/get_stale_transactions']      = 'Fees/get_stale_transactions';
 $route['fees/resolve_stale']               = 'Fees/resolve_stale';
 $route['fees/diagnose_transaction']        = 'Fees/diagnose_transaction';
-$route['fees/recalculate_advance']         = 'Fees/recalculate_advance';
 
 // Fee Demand Engine
 $route['fees/generate_demands_for_student'] = 'Fees/generate_demands_for_student';
@@ -97,14 +96,22 @@ $route['fees/student_fees']                = 'Fees/student_fees';
 $route['fees/class_fees']                  = 'Fees/class_fees';
 // Data endpoints (POST)
 $route['fees/submit_fees']                 = 'Fees/submit_fees';
-$route['fees/void_test_receipt']           = 'Fees/void_test_receipt';
-$route['fees/verify_test_cleanup']         = 'Fees/verify_test_cleanup';
+// Super-admin-only recovery tools (kept but gated by role check in controller).
+// Dev/migration endpoints removed from routing table 2026-04-17 per feature
+// audit — test data + one-off verification helpers are no longer needed:
+//   void_test_receipt, verify_test_cleanup, test_reset_student,
+//   verify_session_b, verify_session_c, debug_carry_forward,
+//   backfill_demand_shape.
+$route['fees/repair_carry_forward']        = 'Fees/repair_carry_forward';
+$route['fees/repair_receipt_counter']      = 'Fees/repair_receipt_counter';
 $route['fees/fetch_months']                = 'Fees/fetch_months';
 $route['fees/fetch_fee_receipts']          = 'Fees/fetch_fee_receipts';
 $route['fees/search_student']              = 'Fees/search_student';
 $route['fees/due_fees_table']              = 'Fees/due_fees_table';
 $route['fees/save_updated_fees']           = 'Fees/save_updated_fees';
 $route['fees/submit_discount']             = 'Fees/submit_discount';
+$route['fees/set_student_discount']        = 'Fees/set_student_discount';
+$route['fees/recalc_unpaid_discounts']     = 'Fees/recalc_unpaid_discounts';
 $route['fees/delete_fees_structure/(:any)'] = 'Fees/delete_fees_structure/$1';
 
 // ─── Super Admin SaaS Control Panel ──────────────────────────────────────────
@@ -774,6 +781,11 @@ $route['fee_management/create_payment_order']            = 'Fee_management/creat
 $route['fee_management/simulate_payment']                = 'Fee_management/simulate_payment';
 $route['fee_management/verify_payment']                  = 'Fee_management/verify_payment';
 $route['fee_management/payment_webhook']                 = 'Fee_management/payment_webhook';
+// Parent-app (Firebase Bearer-token) endpoints
+$route['fee_management/get_blocking_policy']             = 'Fee_management/get_blocking_policy';
+$route['fee_management/save_blocking_policy']            = 'Fee_management/save_blocking_policy';
+$route['fee_management/parent_create_order']             = 'Fee_management/parent_create_order';
+$route['fee_management/parent_verify_payment']           = 'Fee_management/parent_verify_payment';
 $route['fee_management/retry_payment_processing']        = 'Fee_management/retry_payment_processing';
 $route['fee_management/payment_reconciliation']          = 'Fee_management/payment_reconciliation';
 $route['fee_management/get_reconciliation_data']         = 'Fee_management/get_reconciliation_data';
@@ -1095,6 +1107,7 @@ $route['stories/get_teachers']                       = 'Stories/get_teachers';
 $route['stories/moderate_story']                     = 'Stories/moderate_story';
 $route['stories/delete_story']                       = 'Stories/delete_story';
 $route['stories/bulk_moderate']                      = 'Stories/bulk_moderate';
+$route['stories/upload_story']                        = 'Stories/upload_story';
 
 // ─── Red Flags Dashboard ─────────────────────────────────────────────────────
 $route['red_flags']                                  = 'Red_flags/index';

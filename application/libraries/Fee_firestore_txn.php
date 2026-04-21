@@ -854,30 +854,9 @@ class Fee_firestore_txn
     }
 
     // ─── Advance balance + discount (thin wrappers) ────────────────────
-
-    public function getAdvanceBalance(string $userId): float
-    {
-        if (!$this->ready) return 0.0;
-        try {
-            $d = $this->firebase->firestoreGet(self::COL_ADVANCE, "{$this->schoolId}_{$userId}");
-            return is_array($d) ? (float) ($d['amount'] ?? 0) : 0.0;
-        } catch (\Exception $_) { return 0.0; }
-    }
-
-    public function setAdvanceBalance(string $userId, float $amount, array $meta = []): bool
-    {
-        if (!$this->ready || $userId === '') return false;
-        try {
-            return (bool) $this->firebase->firestoreSet(self::COL_ADVANCE, "{$this->schoolId}_{$userId}",
-                array_merge([
-                    'schoolId'  => $this->schoolId,
-                    'session'   => $this->session,
-                    'studentId' => $userId,
-                    'amount'    => round(max(0, $amount), 2),
-                    'updatedAt' => date('c'),
-                ], $meta), /* merge */ true);
-        } catch (\Exception $_) { return false; }
-    }
+    // getAdvanceBalance / setAdvanceBalance removed in Phase 9 (wallet
+    // subsystem gone). COL_ADVANCE retained as a const only because
+    // tombstone docs remain in Firestore for audit; no code writes them.
 
     // ─── Public accessors + batch delegate (used by Fee_refund_service's
     //     R.2 batch path, which builds batchOps inline — same pattern
