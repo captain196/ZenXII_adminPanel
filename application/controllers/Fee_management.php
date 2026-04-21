@@ -2337,13 +2337,27 @@ class Fee_management extends MY_Controller
             $due     = isset($student['total_due']) ? (float) $student['total_due']
                        : (float) ($def['totalBalance'] ?? $def['balance'] ?? 0);
 
+            // Per-student month override: if the caller didn't pass an
+            // explicit month, use this student's OLDEST unpaid month from
+            // the defaulter doc instead of date('F'). Previously we stamped
+            // the current calendar month on every reminder, which showed
+            // "April" on a notification even though April was fully paid
+            // and the actual dues were in December–March.
+            $studentMonth = $month;
+            if (($studentMonth === '' || $studentMonth === date('F'))
+                && !empty($def['unpaidMonths']) && is_array($def['unpaidMonths'])) {
+                $oldest = (string) ($def['unpaidMonths'][0] ?? '');
+                if ($oldest !== '') $studentMonth = $oldest;
+            }
+            if ($studentMonth === '') $studentMonth = date('F');
+
             $logId = uniqid('rem_');
             $batchData[$logId] = [
                 'student_id'   => $sid,
                 'student_name' => $name,
                 'class'        => $class,
                 'section'      => $section,
-                'month'        => $month,
+                'month'        => $studentMonth,
                 'amount_due'   => $due,
                 'sent_date'    => $now,
                 'channel'      => $channel,                 // 'whatsapp' | 'sms' | 'email' | 'log'
