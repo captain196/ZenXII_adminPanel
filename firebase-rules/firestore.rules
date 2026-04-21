@@ -47,6 +47,31 @@ service cloud.firestore {
       return isAuth() && request.auth.token.role in ['Super Admin', 'super_admin'];
     }
 
+    // Per-student fee collections need to differentiate "this parent
+    // accessing their own child's data" from "this parent accessing
+    // some other student's data". Parent-app auth uses the student's
+    // userId as the Firebase auth UID, so we check `studentId` field
+    // against `request.auth.uid`.
+    //
+    // For non-existent docs (resource == null), we can't compare —
+    // allow if same school + auth so a missing doc doesn't 404 with a
+    // permission error (it just returns null cleanly).
+    function isOwnStudent() {
+      return isAuth() && (
+        resource == null ||
+        resource.data.studentId == request.auth.uid
+      );
+    }
+
+    // Convenience: read is allowed when caller is staff (sees all
+    // school records) OR the same school AND the doc belongs to
+    // their own student. The `resource == null` arm covers parents
+    // calling `get()` on a doc that doesn't exist — Firestore evaluates
+    // the rule against `null`, and we shouldn't punish a missing read.
+    function isStaffOrOwnStudent() {
+      return isStaff() || (isSameSchool() && isOwnStudent());
+    }
+
     // ── Schools (read-only for apps) ─────────────────────────────
     match /schools/{docId} {
       allow read: if isAuth() && (
@@ -147,13 +172,107 @@ service cloud.firestore {
     }
 
     // ── Fee Demands ──────────────────────────────────────────────
+    // Per-student doc with `studentId` field — parents see only their
+    // own child, staff see everyone in the school.
     match /feeDemands/{docId} {
-      allow read: if isSameSchool();
+      allow read: if isStaffOrOwnStudent();
       allow write: if isAdmin();
     }
 
     // ── Fee Receipts ─────────────────────────────────────────────
     match /feeReceipts/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow write: if isAdmin();
+    }
+
+    // ── Fee Receipt Allocations (per-demand breakdown of each receipt) ─
+    match /feeReceiptAllocations/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow write: if isAdmin();
+    }
+
+    // ── Fee Defaulters (per-student dues snapshot) ───────────────
+    // Teachers see all students in their school; parents see only
+    // their own child's snapshot (drives the dashboard dues banner).
+    match /feeDefaulters/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow write: if isAdmin();
+    }
+
+    // ── Fee Reminder Log (Phase 8) ───────────────────────────────
+    // Records every fee reminder (push/whatsapp/sms/email/log) the
+    // admin dispatches. Teacher app reads to show "✓ Reminded" pill
+    // on Defaulter rows; parent app reads its own child's history.
+    match /feeReminderLog/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow write: if isAdmin();
+    }
+
+    // ── Student advance (wallet) balances ────────────────────────
+    match /studentAdvanceBalances/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow write: if isAdmin();
+    }
+
+    // ── Student discounts ────────────────────────────────────────
+    match /studentDiscounts/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow write: if isAdmin();
+    }
+
+    // ── Scholarship awards ───────────────────────────────────────
+    match /scholarshipAwards/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow write: if isAdmin();
+    }
+
+    // ── Fee online orders (Razorpay/mock order lifecycle) ────────
+    // Order docs use `student_id` (snake_case, set by Payment_service)
+    // — keep the same scoping but check against the snake_case field.
+    match /feeOnlineOrders/{docId} {
+      allow read: if isStaff() || (
+        isSameSchool() && (
+          resource == null ||
+          resource.data.student_id == request.auth.uid
+        )
+      );
+      allow write: if isAdmin();
+    }
+
+    // ── Fee settings (gateway, blocking policy, reminders) ───────
+    // Parent reads gateway provider/api_key for the Razorpay SDK.
+    match /feeSettings/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Fee audit logs (admin-only) ──────────────────────────────
+    match /feeAuditLogs/{docId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // ── Server-only fee infrastructure ───────────────────────────
+    // These collections are written and read exclusively by the PHP
+    // backend (which uses the service account and bypasses these
+    // rules). Any direct client access is a bug — deny it explicitly.
+    match /feeIdempotency/{docId}    { allow read, write: if false; }
+    match /feeLocks/{docId}          { allow read, write: if false; }
+    match /feeCounters/{docId}       { allow read, write: if false; }
+    match /feeReceiptIndex/{docId}   { allow read, write: if false; }
+    match /feeDemandLocks/{docId}    { allow read, write: if false; }
+    match /feePendingWrites/{docId}  { allow read, write: if false; }
+
+    // ── Fee refunds (admin-only) ─────────────────────────────────
+    match /feeRefunds/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+    match /feeRefundAudit/{docId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+    match /feeRefundVouchers/{docId} {
       allow read: if isSameSchool();
       allow write: if isAdmin();
     }
