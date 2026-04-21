@@ -752,9 +752,11 @@ document.addEventListener('DOMContentLoaded', function() {
           'Cannot refund this receipt normally — some of its demands have been re-paid ' +
           'by newer receipt(s): #' + supers.join(', #') + '.\n\n' +
           'Conflicting demands:\n' + detail + '\n\n' +
-          'You can force-refund by routing the amount to the student\'s wallet instead of ' +
-          'reducing demand balances. The newer receipt(s) stay intact.\n\n' +
-          'Proceed with wallet-route refund?';
+          'If you proceed, the refund amount will be CREDITED to the student\'s advance ' +
+          'balance (wallet) instead of reducing the demand balance. The newer receipt(s) ' +
+          'stay intact, and the student can draw this credit against future fees. No cash ' +
+          'leaves the school.\n\n' +
+          'Proceed with wallet-credit refund?';
         if (confirm(msg)) {
           $btn.data('pending', true).prop('disabled', true)
               .html('<i class="fa fa-spinner fa-spin"></i> Processing...');
@@ -776,7 +778,7 @@ document.addEventListener('DOMContentLoaded', function() {
         showToast(res.message || 'Refund processed — journal post failed.', 'error');
       } else {
         showToast(ackStale
-          ? 'Refund processed (routed to wallet due to stale allocations).'
+          ? 'Refund processed — amount credited to student wallet (stale allocations detected).'
           : 'Refund processed successfully', 'success');
       }
       $('#processModal').modal('hide');

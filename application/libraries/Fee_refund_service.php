@@ -472,37 +472,55 @@ class Fee_refund_service
                 $reversed++;
             }
 
-            // ── Step 2: compute wallet debit (if overflow) IN MEMORY ──
-            // R.3: fail-closed when wallet cannot cover the overflow.
-            // Prior behaviour silently clamped to zero via max(0, ...) —
-            // that let the bookkeeping finish "successfully" while the
-            // refunded amount was greater than (allocations + wallet),
-            // producing a negative-equivalent state (demands reduced +
-            // voucher issued but no corresponding advance-balance debit).
-            // Now we reject the refund outright and let process() roll
-            // back the 'processing' marker so the admin can either
-            // lower the refund amount or top-up the wallet first.
+            // ── Step 2: compute wallet change (if overflow) IN MEMORY ──
+            // Two distinct scenarios reach this point with $remaining > 0:
+            //
+            // (a) Normal overflow — R.3 path. Part of the refund couldn't
+            //     be netted against demand allocations because allocations
+            //     summed to less than the refund amount. In that case the
+            //     overflow must be DEBITED from the student's advance
+            //     balance (they had funds there, we're paying them back).
+            //     Fail closed with WALLET_DEFICIT when the balance can't
+            //     cover it — otherwise we'd silently lose money.
+            //
+            // (b) R.6 stale-override — admin chose to refund despite a
+            //     newer receipt owning the demand. We skipped demand
+            //     reduction for those demands (DON'T touch F4's state),
+            //     so the refund amount flows here. This is a CREDIT to
+            //     the advance balance (converting the refund into a
+            //     future-use wallet balance the student can draw against
+            //     — no cash leaves the school). No deficit check needed
+            //     since we're adding, not subtracting.
             $walletAfter = null;
             if ($remaining > 0.005) {
-                $curAdv = $this->fsTxn->getAdvanceBalance($studentId);
-                if ($curAdv + 0.005 < $remaining) {
-                    $shortfall = round($remaining - $curAdv, 2);
-                    log_message('error',
-                        "[REFUND WALLET DEFICIT] refund={$refId} student={$studentId} " .
-                        "overflow={$remaining} walletHas={$curAdv} shortfall={$shortfall}");
-                    return [
-                        'failed'          => true,
-                        'failure_code'    => 'WALLET_DEFICIT',
-                        'failure_message' => sprintf(
-                            'Refund exceeds allocations by ₹%.2f but student wallet only has ₹%.2f (shortfall ₹%.2f). Reduce refund amount or top-up advance balance first.',
-                            $remaining, $curAdv, $shortfall
-                        ),
-                        'overflow'        => round($remaining, 2),
-                        'wallet_balance'  => round($curAdv, 2),
-                        'shortfall'       => $shortfall,
-                    ];
+                $curAdv    = $this->fsTxn->getAdvanceBalance($studentId);
+                $isOverride = $ackStale && !empty($staleDemandIds);
+
+                if ($isOverride) {
+                    $walletAfter = round($curAdv + $remaining, 2);
+                    log_message('debug',
+                        "[REFUND WALLET CREDIT] refund={$refId} student={$studentId} " .
+                        "creditAmount={$remaining} walletBefore={$curAdv} walletAfter={$walletAfter} (R.6 override)");
+                } else {
+                    if ($curAdv + 0.005 < $remaining) {
+                        $shortfall = round($remaining - $curAdv, 2);
+                        log_message('error',
+                            "[REFUND WALLET DEFICIT] refund={$refId} student={$studentId} " .
+                            "overflow={$remaining} walletHas={$curAdv} shortfall={$shortfall}");
+                        return [
+                            'failed'          => true,
+                            'failure_code'    => 'WALLET_DEFICIT',
+                            'failure_message' => sprintf(
+                                'Refund exceeds allocations by ₹%.2f but student wallet only has ₹%.2f (shortfall ₹%.2f). Reduce refund amount or top-up advance balance first.',
+                                $remaining, $curAdv, $shortfall
+                            ),
+                            'overflow'        => round($remaining, 2),
+                            'wallet_balance'  => round($curAdv, 2),
+                            'shortfall'       => $shortfall,
+                        ];
+                    }
+                    $walletAfter = round($curAdv - $remaining, 2);
                 }
-                $walletAfter = round($curAdv - $remaining, 2);
             }
 
             // ── Step 3: compute monthFee flags from post-reversal snapshot ──
