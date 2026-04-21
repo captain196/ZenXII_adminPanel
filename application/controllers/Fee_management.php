@@ -2306,7 +2306,11 @@ class Fee_management extends MY_Controller
             }
         } catch (\Exception $_) { /* non-fatal */ }
 
-        $now    = date('Y-m-d H:i:s');
+        // ISO-8601 with timezone offset so mobile clients can parse
+        // unambiguously. A naive "Y-m-d H:i:s" string was interpreted as
+        // phone-local on the teacher app, off-by-several-hours on any
+        // device whose TZ differs from the server's.
+        $now    = date('c');
         $logged = 0;
         $batchData = [];
 
