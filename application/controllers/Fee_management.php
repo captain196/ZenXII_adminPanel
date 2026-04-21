@@ -2354,6 +2354,52 @@ class Fee_management extends MY_Controller
             $logged++;
         }
 
+        // Phase 8: 'push' channel dispatches via FCM immediately
+        // (parent app's FCMService already routes type=fee_reminder to a
+        // notification card that opens the Fees screen on tap). Other
+        // channels still queue for the external messaging worker.
+        $pushStats = ['attempted' => 0, 'delivered' => 0, 'no_token' => 0];
+        if ($channel === 'push' && !empty($batchData)) {
+            $this->load->library('Push_service', null, 'push_svc');
+            foreach ($batchData as $logId => &$entry) {
+                $sid = (string) $entry['student_id'];
+                $due = (float) $entry['amount_due'];
+                $name = (string) $entry['student_name'];
+                $payload = [
+                    'title' => $template !== '' ? $template : 'Fee reminder',
+                    'body'  => sprintf(
+                        '%s — Rs. %s pending for %s. Tap to pay.',
+                        $name !== '' ? $name : 'Student',
+                        number_format($due, 2),
+                        $entry['month']
+                    ),
+                    'data'  => [
+                        'type'       => 'fee_reminder',
+                        'studentId'  => $sid,
+                        'schoolId'   => $this->school_name,
+                        'amount_due' => (string) $due,
+                        'month'      => (string) $entry['month'],
+                        'logId'      => $logId,
+                    ],
+                ];
+                $pushStats['attempted']++;
+                // userDevices is keyed by studentId for parents (parent app
+                // registers using the linked student's ID as its userId).
+                $delivered = $this->push_svc->sendToUser($sid, $payload);
+                if ($delivered > 0) {
+                    $pushStats['delivered']++;
+                    $entry['status']        = 'delivered';
+                    $entry['deliveredCount']= $delivered;
+                    $entry['deliveredAt']   = date('c');
+                } else {
+                    $pushStats['no_token']++;
+                    $entry['status']      = 'no_device';
+                    $entry['lastError']   = 'No active FCM token for parent';
+                }
+            }
+            unset($entry);
+        }
+
         if (!empty($batchData)) {
             foreach ($batchData as $logId => $entry) {
                 $entry['schoolId'] = $this->school_name;
@@ -2362,18 +2408,27 @@ class Fee_management extends MY_Controller
             }
         }
 
-        // TODO: Actual WhatsApp / SMS delivery is handled by a separate
-        // dispatcher (Gupshup / MSG91 / Twilio). This endpoint only
-        // records the intent and leaves the delivery worker to pick it
-        // up from feeReminderLog where status='queued'.
-        $msg = $channel === 'log'
-            ? "Reminder logged for {$logged} student(s)."
-            : ucfirst($channel) . " reminder queued for {$logged} student(s). Delivery by the messaging worker.";
+        // TODO: WhatsApp / SMS / email delivery still goes through an
+        // external dispatcher worker (Gupshup / MSG91 / Twilio). This
+        // endpoint queues the intent to feeReminderLog where status=
+        // 'queued'. Push notifications are dispatched inline here via
+        // Push_service → FCM.
+        if ($channel === 'push') {
+            $msg = sprintf(
+                'Push notifications: %d delivered, %d no-token, %d attempted.',
+                $pushStats['delivered'], $pushStats['no_token'], $pushStats['attempted']
+            );
+        } else {
+            $msg = $channel === 'log'
+                ? "Reminder logged for {$logged} student(s)."
+                : ucfirst($channel) . " reminder queued for {$logged} student(s). Delivery by the messaging worker.";
+        }
 
         $this->json_success([
-            'message' => $msg,
-            'logged'  => $logged,
-            'channel' => $channel,
+            'message'    => $msg,
+            'logged'     => $logged,
+            'channel'    => $channel,
+            'push_stats' => $channel === 'push' ? $pushStats : null,
         ]);
     }
 
