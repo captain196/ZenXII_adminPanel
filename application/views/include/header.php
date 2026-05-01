@@ -43,34 +43,34 @@
             --border:rgba(15,118,110,.15);--brd2:rgba(15,118,110,.28);
             --t1:#0c1e38;--t2:#1a5c56;--t3:#5a9e98;--t4:#94c9c3;--sh:0 2px 16px rgba(0,0,0,.08);
         }
-        /* ── Day mode: rich brand-teal sidebar — white text, high contrast ── */
+        /* ── Day mode: rich golden sidebar — white text, high contrast ── */
         [data-theme="day"] .main-sidebar {
             --t1: #ffffff;
-            --t2: rgba(230,244,241,.88);
-            --t3: rgba(148,201,195,.72);
-            --t4: rgba(148,201,195,.45);
-            --bg2: #0d5c56;
-            --bg3: rgba(255,255,255,.07);
-            --bg4: rgba(255,255,255,.12);
-            --border: rgba(255,255,255,.09);
-            --brd2: rgba(255,255,255,.14);
-            /* Hover uses white so it pops on dark-teal bg */
+            --t2: rgba(255,248,225,.92);
+            --t3: rgba(255,236,178,.78);
+            --t4: rgba(255,224,138,.50);
+            --bg2: #a87f1f;
+            --bg3: rgba(255,255,255,.08);
+            --bg4: rgba(255,255,255,.14);
+            --border: rgba(255,255,255,.10);
+            --brd2: rgba(255,255,255,.16);
+            /* Hover uses white so it pops on the gold bg */
             --gold: #ffffff;
             --gold2: rgba(255,255,255,.85);
             --gold3: rgba(255,255,255,.65);
-            --gold-dim: rgba(255,255,255,.10);
-            --gold-ring: rgba(255,255,255,.22);
-            --gold-glow: rgba(255,255,255,.10);
-            background: #0d5c56 !important;
+            --gold-dim: rgba(255,255,255,.12);
+            --gold-ring: rgba(255,255,255,.26);
+            --gold-glow: rgba(255,255,255,.12);
+            background: linear-gradient(180deg, #b8932a 0%, #a87f1f 100%) !important;
             border-right: none !important;
-            box-shadow: 4px 0 24px rgba(13,92,86,.22) !important;
+            box-shadow: 4px 0 24px rgba(168,127,31,.28) !important;
         }
         [data-theme="day"] .main-sidebar .g-sb-foot {
             background: rgba(0,0,0,.14) !important;
             border-top-color: rgba(255,255,255,.08) !important;
         }
         [data-theme="day"] .main-sidebar::after {
-            background: linear-gradient(90deg,rgba(255,255,255,.18),rgba(255,255,255,.04),transparent);
+            background: linear-gradient(90deg,rgba(255,255,255,.22),rgba(255,255,255,.06),transparent);
         }
         /* ── Day mode: navbar search bar polish ── */
         [data-theme="day"] .g-search {
