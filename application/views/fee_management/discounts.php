@@ -3,15 +3,29 @@
   <!-- Top Bar -->
   <div class="fm-topbar">
     <div class="fm-topbar-left">
-      <h1 class="fm-page-title">Discount Management</h1>
+      <h1 class="fm-page-title">Discounts &amp; Scholarships</h1>
       <nav class="fm-breadcrumb">
         <a href="<?= base_url('dashboard') ?>">Dashboard</a>
         <span class="fm-bc-sep">/</span>
         <a href="<?= base_url('fee_management') ?>">Fee Management</a>
         <span class="fm-bc-sep">/</span>
-        <span>Discounts</span>
+        <span>Discounts &amp; Scholarships</span>
       </nav>
     </div>
+  </div>
+
+  <!-- Sub-tabs: Discounts / Scholarships — consolidated under one sidebar entry -->
+  <div class="fm-subtabs" style="display:flex;gap:4px;margin:4px 0 16px;border-bottom:1px solid var(--border,#e5e7eb);">
+    <a href="<?= base_url('fee_management/discounts') ?>"
+       class="fm-subtab fm-subtab--active"
+       style="padding:10px 18px;border-bottom:2px solid var(--gold,#0f766e);color:var(--gold,#0f766e);font-weight:600;text-decoration:none;">
+      <i class="fa fa-tags"></i> Discounts
+    </a>
+    <a href="<?= base_url('fee_management/scholarships') ?>"
+       class="fm-subtab"
+       style="padding:10px 18px;color:var(--t2,#64748b);text-decoration:none;font-weight:500;">
+      <i class="fa fa-graduation-cap"></i> Scholarships
+    </a>
   </div>
 
   <!-- Stats Row -->
@@ -54,7 +68,7 @@
         <i class="fa fa-times"></i> Cancel Edit
       </button>
     </div>
-    <form id="discountForm" autocomplete="off" novalidate>
+    <form id="discountForm" autocomplete="off" novalidate method="post" action="#">
       <input type="hidden" id="editId" name="id" value="">
       <div class="fm-form-grid">
         <!-- Row 1 -->
@@ -238,6 +252,20 @@
         <div id="noStudents" class="fm-empty" style="display:none">
           <i class="fa fa-users"></i>
           <p>No eligible students found for this policy.</p>
+        </div>
+
+        <!-- Phase 17: optional expiry. Empty = no expiry. -->
+        <div class="fm-form-row" style="margin-top:14px;border-top:1px dashed #e2e8f0;padding-top:12px;">
+          <div class="fm-form-group" style="max-width:240px;">
+            <label class="fm-label" for="applyValidUntil">
+              Valid Until <span style="color:#94a3b8;font-weight:500;">(optional)</span>
+            </label>
+            <input type="date" class="fm-input" id="applyValidUntil"
+                   min="<?= date('Y-m-d') ?>" placeholder="No expiry">
+            <small style="color:#64748b;font-size:11px;display:block;margin-top:4px;">
+              Leave blank for no expiry. Once past this date, the discount becomes ₹0 automatically.
+            </small>
+          </div>
         </div>
       </div>
       <div class="fm-modal-footer">
@@ -472,8 +500,11 @@ document.addEventListener('DOMContentLoaded', function() {
     if (data && data[csrfName]) csrfHash = data[csrfName];
   }
 
-  // Init
-  loadDiscounts();
+  // Init runs at the END of this IIFE (see bottom of script). The
+  // window.X = function() { ... } definitions further down are function
+  // EXPRESSIONS — they don't hoist — so calling loadDiscounts() up here
+  // would error (ReferenceError) before the assignment at L539.
+  // bindEvents() is a function DECLARATION (it hoists) so safe to use.
   bindEvents();
 
   function bindEvents() {
@@ -543,21 +574,27 @@ document.addEventListener('DOMContentLoaded', function() {
   };
 
   function renderRow(num, d) {
-    var typeBadge = d.discount_type === 'percentage'
+    // Schema-tolerant: prefer new names, fall back to legacy.
+    var dName   = d.policy_name           || d.name           || '(unnamed)';
+    var dType   = d.discount_type         || d.type           || '';
+    var dActive = (d.is_active !== undefined) ? d.is_active : d.active;
+    var dMaxCap = (d.max_cap !== undefined) ? d.max_cap : d.max_discount;
+
+    var typeBadge = dType === 'percentage'
       ? '<span class="fm-badge fm-badge--pct">Percentage</span>'
       : '<span class="fm-badge fm-badge--fixed">Fixed</span>';
-    var valueStr = d.discount_type === 'percentage' ? d.value + '%' : '\u20B9' + parseFloat(d.value).toLocaleString('en-IN');
+    var valueStr = dType === 'percentage' ? d.value + '%' : '\u20B9' + parseFloat(d.value).toLocaleString('en-IN');
     var critBadge = '<span class="fm-badge fm-badge--' + d.criteria + '">' + formatCriteria(d.criteria) + '</span>';
-    var statusBadge = d.is_active
+    var statusBadge = dActive
       ? '<span class="fm-badge fm-badge--active">Active</span>'
       : '<span class="fm-badge fm-badge--inactive">Inactive</span>';
-    var capStr = d.max_cap ? '\u20B9' + parseFloat(d.max_cap).toLocaleString('en-IN') : '<span style="color:var(--fm-t3)">—</span>';
+    var capStr = dMaxCap ? '\u20B9' + parseFloat(dMaxCap).toLocaleString('en-IN') : '<span style="color:var(--fm-t3)">—</span>';
 
     var applicable = buildApplicableTags(d);
 
     return '<tr>' +
       '<td>' + num + '</td>' +
-      '<td class="fm-name-cell">' + escHtml(d.policy_name) + '</td>' +
+      '<td class="fm-name-cell">' + escHtml(dName) + '</td>' +
       '<td>' + typeBadge + '</td>' +
       '<td>' + valueStr + '</td>' +
       '<td>' + critBadge + '</td>' +
@@ -574,18 +611,20 @@ document.addEventListener('DOMContentLoaded', function() {
 
   function buildApplicableTags(d) {
     var items = [];
-    if (d.categories && d.categories.length) {
-      for (var i = 0; i < d.categories.length && i < 3; i++) {
-        items.push('<span class="fm-applicable-tag">' + escHtml(d.categories[i]) + '</span>');
+    var dCats   = d.categories || d.applicable_categories || [];
+    var dTitles = d.fee_titles || d.applicable_titles      || [];
+    if (dCats && dCats.length) {
+      for (var i = 0; i < dCats.length && i < 3; i++) {
+        items.push('<span class="fm-applicable-tag">' + escHtml(dCats[i]) + '</span>');
       }
-      if (d.categories.length > 3) items.push('<span class="fm-applicable-more">+' + (d.categories.length - 3) + '</span>');
+      if (dCats.length > 3) items.push('<span class="fm-applicable-more">+' + (dCats.length - 3) + '</span>');
     }
-    if (d.fee_titles && d.fee_titles.length) {
-      for (var j = 0; j < d.fee_titles.length && j < 2; j++) {
-        var label = d.fee_titles[j].split('/').pop();
+    if (dTitles && dTitles.length) {
+      for (var j = 0; j < dTitles.length && j < 2; j++) {
+        var label = dTitles[j].split('/').pop();
         items.push('<span class="fm-applicable-tag">' + escHtml(label) + '</span>');
       }
-      if (d.fee_titles.length > 2) items.push('<span class="fm-applicable-more">+' + (d.fee_titles.length - 2) + '</span>');
+      if (dTitles.length > 2) items.push('<span class="fm-applicable-more">+' + (dTitles.length - 2) + '</span>');
     }
     if (!items.length) return '<span style="color:var(--fm-t3)">All</span>';
     return '<div class="fm-applicable">' + items.join('') + '</div>';
@@ -594,8 +633,11 @@ document.addEventListener('DOMContentLoaded', function() {
   function updateStats(list) {
     var total = list.length, active = 0, pct = 0, fixed = 0;
     for (var i = 0; i < list.length; i++) {
-      if (list[i].is_active) active++;
-      if (list[i].discount_type === 'percentage') pct++;
+      var d = list[i];
+      var dActive = (d.is_active !== undefined) ? d.is_active : d.active;
+      var dType   = d.discount_type || d.type;
+      if (dActive) active++;
+      if (dType === 'percentage') pct++;
       else fixed++;
     }
     document.getElementById('statTotal').textContent = total;
@@ -698,26 +740,35 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         if (!d) return showToast('Policy not found.', 'error');
 
+        // Schema-tolerant: prefer new field names, fall back to legacy
+        // (in case the doc was written before the dual-emit fix).
+        var dName     = d.policy_name           || d.name           || '';
+        var dType     = d.discount_type         || d.type           || '';
+        var dMaxCap   = (d.max_cap !== undefined ? d.max_cap : d.max_discount) || '';
+        var dActive   = (d.is_active !== undefined) ? d.is_active : d.active;
+        var dCats     = d.categories || d.applicable_categories || [];
+        var dTitles   = d.fee_titles || d.applicable_titles      || [];
+
         document.getElementById('editId').value = d.id;
-        document.getElementById('policyName').value = d.policy_name;
-        document.getElementById('discountType').value = d.discount_type;
+        document.getElementById('policyName').value = dName;
+        document.getElementById('discountType').value = dType;
         toggleValueDisplay();
         document.getElementById('discountValue').value = d.value;
         document.getElementById('criteria').value = d.criteria;
-        document.getElementById('maxCap').value = d.max_cap || '';
-        document.getElementById('isActive').checked = !!d.is_active;
-        document.getElementById('toggleLabel').textContent = d.is_active ? 'Active' : 'Inactive';
+        document.getElementById('maxCap').value = dMaxCap;
+        document.getElementById('isActive').checked = !!dActive;
+        document.getElementById('toggleLabel').textContent = dActive ? 'Active' : 'Inactive';
 
         // Check categories
         var catChecks = document.querySelectorAll('input[name="categories[]"]');
         for (var c = 0; c < catChecks.length; c++) {
-          catChecks[c].checked = d.categories && d.categories.indexOf(catChecks[c].value) !== -1;
+          catChecks[c].checked = dCats && dCats.indexOf(catChecks[c].value) !== -1;
         }
 
         // Check fee titles
         var ftChecks = document.querySelectorAll('input[name="fee_titles[]"]');
         for (var f = 0; f < ftChecks.length; f++) {
-          ftChecks[f].checked = d.fee_titles && d.fee_titles.indexOf(ftChecks[f].value) !== -1;
+          ftChecks[f].checked = dTitles && dTitles.indexOf(ftChecks[f].value) !== -1;
         }
 
         document.getElementById('formTitle').innerHTML = '<i class="fa fa-pencil"></i> Edit Discount Policy';
@@ -836,6 +887,9 @@ document.addEventListener('DOMContentLoaded', function() {
     var payload = csrf();
     payload.discount_id = currentApplyId;
     payload.student_ids = studentIds;
+    // Phase 17: optional expiry. Empty = no expiry.
+    var vuEl = document.getElementById('applyValidUntil');
+    if (vuEl && vuEl.value) payload.valid_until = vuEl.value;
 
     $.ajax({
       url: BASE + 'fee_management/apply_discount',
@@ -899,6 +953,10 @@ document.addEventListener('DOMContentLoaded', function() {
   function escAttr(s) {
     return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
+
+  // ── Deferred init ── all window.X = function() expressions above this
+  // point have now been evaluated, so it's safe to invoke them.
+  loadDiscounts();
 });
 </script>
 

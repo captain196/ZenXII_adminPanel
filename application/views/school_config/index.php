@@ -162,6 +162,21 @@
     background:var(--bg3); font-size:13px; font-weight:600;
     color:var(--t2); transition:all var(--ease);
 }
+.sc-sess-pill.archived-sess { opacity:0.55; border-style:dashed; }
+.sc-sess-pill.archived-sess .sc-sess-badge { background:#6b7280; }
+.sc-sess-pill .sc-sess-action {
+    font-size:10.5px;
+    padding:2px 8px;
+    border-radius:10px;
+    cursor:pointer;
+    background:transparent;
+    border:1px solid var(--border);
+    color:var(--t2);
+    margin-left:4px;
+}
+.sc-sess-pill .sc-sess-action:hover { background:var(--bg3); }
+.sc-sess-pill .sc-sess-action.danger { color:#dc2626; border-color:rgba(220,38,38,.35); }
+.sc-sess-pill .sc-sess-action.danger:hover { background:rgba(220,38,38,.08); }
 .sc-sess-pill.active-sess {
     border-color:var(--gold); background:var(--gold-dim); color:var(--gold);
 }
@@ -374,7 +389,7 @@
                 </div>
                 <div class="sc-field">
                     <label>Phone</label>
-                    <input type="tel" id="pf_phone" maxlength="20" placeholder="+91 00000 00000">
+                    <div class="phone-ig"><span class="phone-pfx">+91</span><input type="tel" id="pf_phone" maxlength="10" placeholder="00000 00000"></div>
                 </div>
                 <div class="sc-field">
                     <label>Email</label>
@@ -437,11 +452,17 @@
         <div class="sc-card">
             <div class="sc-card-title" style="justify-content:space-between;">
                 <span><i class="fa fa-calendar-check-o"></i> Academic Sessions</span>
-                <button class="sc-btn sc-btn-ghost sc-btn-sm" id="syncSessBtn" onclick="syncSessions()" title="Fetch latest list directly from Firebase">
-                    <i class="fa fa-refresh"></i> Sync from Firebase
-                </button>
+                <div style="display:flex;gap:6px;">
+                    <button class="sc-btn sc-btn-ghost sc-btn-sm" id="checkSessBtn" onclick="checkSessions()" title="Verify sessions list matches data in Firestore">
+                        <i class="fa fa-stethoscope"></i> Consistency Check
+                    </button>
+                    <button class="sc-btn sc-btn-ghost sc-btn-sm" id="syncSessBtn" onclick="syncSessions()" title="Fetch latest list directly from Firebase">
+                        <i class="fa fa-refresh"></i> Sync from Firebase
+                    </button>
+                </div>
             </div>
             <div id="sessList" class="sc-sess-list"></div>
+            <div id="sessCheckResult" style="display:none;margin:8px 0 4px;padding:10px 12px;border-radius:8px;font-size:12px;"></div>
             <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
                 <div class="sc-field" style="width:180px;">
                     <label>New Session Year</label>
@@ -450,10 +471,55 @@
                 <button class="sc-btn sc-btn-primary" onclick="addSession()" style="margin-bottom:1px;">
                     <i class="fa fa-plus"></i> Add Session
                 </button>
+                <button class="sc-btn sc-btn-ghost" id="suggestNextBtn" onclick="suggestNextSession()" style="margin-bottom:1px;" title="Auto-fill next academic year based on the latest session">
+                    <i class="fa fa-magic"></i> Suggest Next
+                </button>
+                <button class="sc-btn sc-btn-warning" id="rolloverBtn" onclick="openRolloverModal()" style="margin-bottom:1px;" title="Copy class/section structure from current session to a new one">
+                    <i class="fa fa-share-square-o"></i> Rollover to Next Session
+                </button>
+            </div>
+
+            <!-- Rollover modal -->
+            <div id="rolloverModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;align-items:center;justify-content:center;">
+                <div style="background:var(--bg2);color:var(--t1);border:1px solid var(--border);border-radius:12px;max-width:680px;width:92%;max-height:88vh;overflow:auto;padding:20px;box-shadow:0 20px 50px rgba(0,0,0,.3);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+                        <h3 style="margin:0;"><i class="fa fa-share-square-o"></i> Session Rollover</h3>
+                        <button class="sc-btn sc-btn-ghost sc-btn-sm" onclick="closeRolloverModal()"><i class="fa fa-times"></i></button>
+                    </div>
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+                        <div class="sc-field" style="flex:1;min-width:160px;">
+                            <label>From session</label>
+                            <select id="rollFrom"></select>
+                        </div>
+                        <div class="sc-field" style="flex:1;min-width:160px;">
+                            <label>To session</label>
+                            <input type="text" id="rollTo" placeholder="e.g. 2027-28" maxlength="7">
+                        </div>
+                        <div style="align-self:flex-end;margin-bottom:1px;">
+                            <button class="sc-btn sc-btn-ghost sc-btn-sm" onclick="rollPreview()"><i class="fa fa-eye"></i> Preview</button>
+                        </div>
+                    </div>
+
+                    <div id="rollPreviewBox" style="display:none;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px;font-size:12.5px;"></div>
+
+                    <div style="display:flex;flex-direction:column;gap:8px;padding:10px;background:var(--bg3);border-radius:8px;margin-bottom:12px;">
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="rollCopySections" checked> Copy class &amp; section structure</label>
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="rollPromote"> Promote students (Class N &rarr; N+1, Class 12 &rarr; Alumni)</label>
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="rollSetActive"> Set target session as ACTIVE after rollover</label>
+                    </div>
+                    <div id="rollPromoteWarn" style="display:none;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.45);border-radius:8px;padding:10px;font-size:12px;color:#92400e;margin-bottom:12px;">
+                        <b>Heads up:</b> Student promotion updates each student's <code>session</code> and <code>className</code> in place. After rollover the source session will show NO active students (historical marks/attendance/fees remain intact with their original session stamp). Class 12 students become <code>status=Alumni</code>.
+                    </div>
+                    <div style="display:flex;justify-content:flex-end;gap:8px;">
+                        <button class="sc-btn sc-btn-ghost" onclick="closeRolloverModal()">Cancel</button>
+                        <button class="sc-btn sc-btn-primary" id="rollExecBtn" onclick="rollExecute()"><i class="fa fa-play"></i> Execute Rollover</button>
+                    </div>
+                </div>
             </div>
             <div style="font-size:11px;color:var(--t3);margin-top:8px;">
                 Format: <code>YYYY-YY</code> &nbsp;·&nbsp;
                 Click <b>Set Active</b> to make a session the default across all modules &nbsp;·&nbsp;
+                Use <b>Consistency Check</b> to detect orphaned or empty sessions &nbsp;·&nbsp;
                 Use <b>Sync from Firebase</b> if you edited sessions directly in Firebase Console.
             </div>
         </div>
@@ -741,6 +807,11 @@
                 Enable or disable streams to control which options appear in marks entry.
             </div>
             <div id="streamsList" style="margin-bottom:16px;"></div>
+            <div id="streamsSaveBar" style="display:none;margin-bottom:14px;">
+                <button class="sc-btn sc-btn-primary" onclick="saveAllStreams()">
+                    <i class="fa fa-save"></i> Save All Streams
+                </button>
+            </div>
 
             <!-- Add Stream Form -->
             <div style="padding-top:14px;border-top:1px solid var(--border);">
@@ -762,7 +833,7 @@
                         <input type="checkbox" id="newStreamEnabled" checked>
                         Enabled
                     </label>
-                    <button class="sc-btn sc-btn-primary sc-btn-sm" onclick="saveStream()">
+                    <button type="button" class="sc-btn sc-btn-primary" onclick="saveStream()">
                         <i class="fa fa-save"></i> Save Stream
                     </button>
                 </div>
@@ -948,14 +1019,17 @@ function loadConfig() {
     post('school_config/get_config', {}, function(d) {
         if (d.status !== 'success') { toast('Failed to load config.', false); return; }
         CFG = d;
+        CFG.archived_sessions = d.archived_sessions || [];
         CSRFT = d.csrf_token || CSRFT;
         renderProfile(d.profile || {});
         renderSessions(d.sessions || [], d.active_session || '');
         renderBoard(d.board || {});
         renderClasses(d.classes || []);
         renderClassSelects(d.classes || [], d.sessions || [], d.active_session || '');
-        renderStreams(d.streams || {});
-        populateStreamDropdown(d.streams || {});
+        var streams = (d.streams && typeof d.streams === 'object' && !Array.isArray(d.streams)) ? d.streams : {};
+        CFG.streams = streams;
+        renderStreams(streams);
+        populateStreamDropdown(streams);
         renderReportCardTemplate(d.report_card_template || 'classic');
     });
 }
@@ -1065,19 +1139,287 @@ document.getElementById('docAcademic').addEventListener('change', function() {
 });
 
 /* ══════════ SESSIONS ══════════ */
+var _sessStats = {}; // session -> {students, sections, classes, staff}
+
+function _buildSessPill(s, active, archivedList) {
+    var isActive   = s === active;
+    var isArchived = (archivedList || []).indexOf(s) !== -1;
+    var st = _sessStats[s] || {};
+    var statsLine = st.students !== undefined
+        ? ('<span style="font-size:10.5px;color:var(--t3);margin-left:6px;">'
+            + '<i class="fa fa-users" style="margin-right:3px;"></i>' + (st.students || 0)
+            + ' &nbsp;<i class="fa fa-th-large" style="margin-right:3px;"></i>' + (st.classes || 0) + 'c/' + (st.sections || 0) + 's'
+            + ' &nbsp;<i class="fa fa-user-circle" style="margin-right:3px;"></i>' + (st.staff || 0)
+            + '</span>')
+        : '';
+    var cls = 'sc-sess-pill';
+    if (isActive)   cls += ' active-sess';
+    if (isArchived) cls += ' archived-sess';
+
+    var badge = '';
+    if (isActive)       badge = '<span class="sc-sess-badge">ACTIVE</span>';
+    else if (isArchived) badge = '<span class="sc-sess-badge">ARCHIVED</span>';
+
+    var actions = '';
+    if (!isActive) {
+        actions += '<span class="sc-sess-set" onclick="setActive(\'' + esc(s) + '\')">Set Active</span>';
+    }
+    if (isActive) {
+        actions += '<span class="sc-sess-action" style="opacity:.45;cursor:not-allowed;" title="Cannot archive the active session. Set a different session as active first.">'
+                 + '<i class="fa fa-archive"></i> Archive</span>';
+        actions += '<span class="sc-sess-action danger" style="opacity:.45;cursor:not-allowed;" title="Cannot delete the active session. Set a different session as active first.">'
+                 + '<i class="fa fa-trash"></i> Delete</span>';
+    } else if (isArchived) {
+        actions += '<span class="sc-sess-action" title="Unarchive" onclick="archiveSession(\'' + esc(s) + '\', 0)"><i class="fa fa-archive"></i> Unarchive</span>';
+        actions += '<span class="sc-sess-action danger" title="Delete (only if empty)" onclick="deleteSession(\'' + esc(s) + '\')"><i class="fa fa-trash"></i> Delete</span>';
+    } else {
+        actions += '<span class="sc-sess-action" title="Archive (hide from dropdowns, keep data)" onclick="archiveSession(\'' + esc(s) + '\', 1)"><i class="fa fa-archive"></i> Archive</span>';
+        actions += '<span class="sc-sess-action danger" title="Delete (only if empty)" onclick="deleteSession(\'' + esc(s) + '\')"><i class="fa fa-trash"></i> Delete</span>';
+    }
+
+    return '<div class="' + cls + '">'
+        + '<i class="fa fa-calendar-o" style="font-size:12px;"></i>'
+        + '<span>' + esc(s) + '</span>'
+        + statsLine
+        + badge
+        + actions
+        + '</div>';
+}
+
 function renderSessions(sessions, active) {
     var el = document.getElementById('sessList');
     if (!sessions.length) { el.innerHTML = '<div class="sc-empty"><i class="fa fa-calendar-o"></i>No sessions yet.</div>'; return; }
-    el.innerHTML = sessions.map(function(s) {
-        var isActive = s === active;
-        return '<div class="sc-sess-pill' + (isActive ? ' active-sess' : '') + '">'
-            + '<i class="fa fa-calendar-o" style="font-size:12px;"></i>'
-            + '<span>' + esc(s) + '</span>'
-            + (isActive ? '<span class="sc-sess-badge">ACTIVE</span>' : '')
-            + (!isActive ? '<span class="sc-sess-set" onclick="setActive(\'' + esc(s) + '\')">Set Active</span>' : '')
-            + '</div>';
-    }).join('');
+    var archived = CFG.archived_sessions || [];
+    el.innerHTML = sessions.map(function(s) { return _buildSessPill(s, active, archived); }).join('');
+    loadSessionStats(sessions);
 }
+
+function loadSessionStats(sessions) {
+    if (!sessions || !sessions.length) return;
+    // Only fetch once per tab visit; cheap endpoint but avoid spamming.
+    if (loadSessionStats._inflight) return;
+    loadSessionStats._inflight = true;
+    post('school_config/session_stats', {}, function(d) {
+        loadSessionStats._inflight = false;
+        if (d.status !== 'success' || !Array.isArray(d.stats)) return;
+        _sessStats = {};
+        d.stats.forEach(function(r) { _sessStats[r.session] = r; });
+        // Re-render with stats now populated.
+        renderSessionsOnly(CFG.sessions || sessions, CFG.active_session || '');
+    });
+}
+
+// Re-render without re-triggering stats fetch (avoids loop).
+function renderSessionsOnly(sessions, active) {
+    var el = document.getElementById('sessList');
+    if (!el || !sessions.length) return;
+    var archived = CFG.archived_sessions || [];
+    el.innerHTML = sessions.map(function(s) { return _buildSessPill(s, active, archived); }).join('');
+}
+
+window.openRolloverModal = function() {
+    var fromSel = document.getElementById('rollFrom');
+    var sessions = (CFG.sessions || []).slice().sort();
+    fromSel.innerHTML = sessions.map(function(s) {
+        return '<option value="' + esc(s) + '"' + (s === CFG.active_session ? ' selected' : '') + '>' + esc(s) + '</option>';
+    }).join('');
+    // Suggest next-session in the "to" field
+    var base = (CFG.active_session || sessions[sessions.length - 1] || '');
+    var m = base && base.match(/^(\d{4})-(\d{2})$/);
+    var next = '';
+    if (m) {
+        var startY = parseInt(m[1], 10) + 1;
+        next = startY + '-' + String((startY + 1) % 100).padStart(2, '0');
+    }
+    document.getElementById('rollTo').value = next;
+    document.getElementById('rollPreviewBox').style.display = 'none';
+    document.getElementById('rollPromote').checked = false;
+    var copyBox = document.getElementById('rollCopySections');
+    copyBox.checked = true;
+    copyBox.disabled = false;
+    copyBox.title = '';
+    document.getElementById('rollSetActive').checked = false;
+    document.getElementById('rollPromoteWarn').style.display = 'none';
+    document.getElementById('rolloverModal').style.display = 'flex';
+};
+
+window.closeRolloverModal = function() {
+    document.getElementById('rolloverModal').style.display = 'none';
+};
+
+document.addEventListener('change', function(e) {
+    if (e.target && e.target.id === 'rollPromote') {
+        document.getElementById('rollPromoteWarn').style.display = e.target.checked ? 'block' : 'none';
+        // Coupling: promotion requires target sections to exist — force copy_sections ON and lock it.
+        var copyBox = document.getElementById('rollCopySections');
+        if (e.target.checked) {
+            copyBox.checked = true;
+            copyBox.disabled = true;
+            copyBox.title = 'Required when promoting students (target sections must exist).';
+        } else {
+            copyBox.disabled = false;
+            copyBox.title = '';
+        }
+    }
+    // Block unticking copy when promote is on.
+    if (e.target && e.target.id === 'rollCopySections') {
+        var promoteBox = document.getElementById('rollPromote');
+        if (promoteBox.checked && !e.target.checked) {
+            e.target.checked = true;
+            toast('Copy sections is required while Promote students is enabled.', false);
+        }
+    }
+});
+
+window.rollPreview = function() {
+    var from = document.getElementById('rollFrom').value;
+    var to   = document.getElementById('rollTo').value.trim();
+    if (!from || !to) { toast('Select both from and to sessions.', false); return; }
+    if (!/^\d{4}-\d{2}$/.test(to)) { toast('Target session must be YYYY-YY format.', false); return; }
+    post('school_config/preview_rollover', { from_session: from, to_session: to }, function(d) {
+        if (d.status !== 'success') { toast(d.message || 'Preview failed.', false); return; }
+        var box = document.getElementById('rollPreviewBox');
+        var html = '<div style="margin-bottom:6px;"><b>Preview: ' + esc(from) + ' &rarr; ' + esc(to) + '</b>'
+                 + (d.target_in_list ? '' : ' <span style="color:#d97706;">(target will be added to sessions list)</span>') + '</div>'
+                 + '<ul style="margin:0 0 6px 18px;padding:0;">'
+                 + '<li>' + d.sections_to_copy + ' section(s) in source</li>'
+                 + '<li>' + d.active_students + ' active student(s) in source</li>'
+                 + '<li>' + (d.graduating || 0) + ' student(s) in Class 12 (would graduate if promoted)</li>'
+                 + '<li>Target already has: ' + d.existing_sections + ' section(s), ' + d.existing_students + ' student(s)</li>'
+                 + '</ul>';
+        if (d.warnings && d.warnings.length) {
+            html += '<div style="color:#d97706;margin-top:4px;"><b>Warnings:</b><ul style="margin:4px 0 0 18px;padding:0;">'
+                  + d.warnings.map(function(w) { return '<li>' + esc(w) + '</li>'; }).join('')
+                  + '</ul></div>';
+        }
+        box.innerHTML = html;
+        box.style.display = 'block';
+    });
+};
+
+window.rollExecute = function() {
+    var from = document.getElementById('rollFrom').value;
+    var to   = document.getElementById('rollTo').value.trim();
+    if (!from || !to) { toast('Select both from and to sessions.', false); return; }
+    if (!/^\d{4}-\d{2}$/.test(to)) { toast('Target session must be YYYY-YY format.', false); return; }
+    var copy = document.getElementById('rollCopySections').checked ? 1 : 0;
+    var prom = document.getElementById('rollPromote').checked ? 1 : 0;
+    var act  = document.getElementById('rollSetActive').checked ? 1 : 0;
+    if (!copy && !prom) { toast('Select at least one action (copy sections or promote students).', false); return; }
+
+    var warn = 'Execute rollover ' + from + ' \u2192 ' + to + '?\n\n';
+    if (copy) warn += '  \u2022 Copy class/section structure\n';
+    if (prom) warn += '  \u2022 PROMOTE students (Class N \u2192 N+1, Class 12 \u2192 Alumni)\n';
+    if (act)  warn += '  \u2022 Set ' + to + ' as the ACTIVE session\n';
+    warn += '\nThis cannot be automatically reversed. Proceed?';
+    if (!confirm(warn)) return;
+
+    var btn = document.getElementById('rollExecBtn');
+    btn.disabled = true; btn.innerHTML = '<i class="fa fa-refresh sc-spin"></i> Rolling over...';
+
+    post('school_config/rollover_session', {
+        from_session: from, to_session: to,
+        copy_sections: copy, promote_students: prom, set_active: act,
+    }, function(d) {
+        btn.disabled = false; btn.innerHTML = '<i class="fa fa-play"></i> Execute Rollover';
+        toast(d.message, d.status === 'success');
+        if (d.status === 'success') {
+            CFG.sessions = d.sessions || CFG.sessions;
+            if (act && d.active_session) {
+                CFG.active_session = d.active_session;
+                currentSession = d.active_session;
+                var headerLabel = document.getElementById('gSessLabel');
+                if (headerLabel) headerLabel.textContent = d.active_session;
+            }
+            renderSessions(CFG.sessions, CFG.active_session || '');
+            renderClassSelects(CFG.classes || [], CFG.sessions, CFG.active_session || '');
+            closeRolloverModal();
+            if (d.summary && d.summary.errors && d.summary.errors.length) {
+                alert('Rollover finished with ' + d.summary.errors.length + ' error(s):\n\n' + d.summary.errors.slice(0, 5).join('\n'));
+            }
+        }
+    });
+};
+
+window.archiveSession = function(sess, doArchive) {
+    var verb = doArchive ? 'archive' : 'unarchive';
+    if (doArchive && !confirm('Archive "' + sess + '"?\n\nIt will be hidden from default dropdowns but all data (students, marks, fees, attendance) is preserved. You can unarchive later.')) return;
+    post('school_config/archive_session', { session: sess, archive: doArchive ? 1 : 0 }, function(d) {
+        toast(d.message, d.status === 'success');
+        if (d.status === 'success') {
+            CFG.archived_sessions = d.archived_sessions || [];
+            renderSessionsOnly(CFG.sessions || [], CFG.active_session || '');
+        }
+    });
+};
+
+window.deleteSession = function(sess) {
+    var st = _sessStats[sess] || {};
+    if (st.students || st.sections || st.staff) {
+        alert('Cannot delete "' + sess + '".\n\nIt still has:\n'
+            + '  • ' + (st.students || 0) + ' students\n'
+            + '  • ' + (st.classes  || 0) + ' classes / ' + (st.sections || 0) + ' sections\n'
+            + '  • ' + (st.staff    || 0) + ' staff\n\n'
+            + 'Delete or move that data first, or use Archive to keep it but hide the session.');
+        return;
+    }
+    if (!confirm('Delete session "' + sess + '" permanently?\n\nThis only removes it from the sessions list. The server will also refuse if any data is still linked to this session.')) return;
+    post('school_config/delete_session', { session: sess }, function(d) {
+        toast(d.message, d.status === 'success');
+        if (d.status === 'success') {
+            CFG.sessions = d.sessions || [];
+            renderSessions(CFG.sessions, CFG.active_session || '');
+            renderClassSelects(CFG.classes || [], CFG.sessions, CFG.active_session || '');
+        }
+    });
+};
+
+window.suggestNextSession = function() {
+    var list = (CFG.sessions || []).slice().sort();
+    var base = list.length ? list[list.length - 1] : (CFG.active_session || '');
+    var m = base && base.match(/^(\d{4})-(\d{2})$/);
+    if (!m) {
+        var y = new Date().getFullYear();
+        // Indian academic year flips in April; if before April, use prev year as start.
+        if ((new Date().getMonth() + 1) < 4) y -= 1;
+        base = y + '-' + String((y + 1) % 100).padStart(2, '0');
+        document.getElementById('newSessInput').value = base;
+        toast('Suggested: ' + base);
+        return;
+    }
+    var startY = parseInt(m[1], 10) + 1;
+    var endYY  = String((startY + 1) % 100).padStart(2, '0');
+    var next   = startY + '-' + endYY;
+    document.getElementById('newSessInput').value = next;
+    toast('Suggested: ' + next + '. Click "Add Session" to save.');
+};
+
+window.checkSessions = function() {
+    var btn = document.getElementById('checkSessBtn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-refresh sc-spin"></i> Checking...'; }
+    var box = document.getElementById('sessCheckResult');
+    post('school_config/check_sessions', {}, function(d) {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-stethoscope"></i> Consistency Check'; }
+        if (d.status !== 'success') { toast(d.message || 'Check failed.', false); return; }
+        var healthy = d.healthy;
+        var bg   = healthy ? 'rgba(16,185,129,.10)' : 'rgba(217,119,6,.10)';
+        var brd  = healthy ? '1px solid rgba(16,185,129,.35)' : '1px solid rgba(217,119,6,.45)';
+        var icon = healthy ? 'fa-check-circle' : 'fa-exclamation-triangle';
+        var col  = healthy ? '#059669' : '#d97706';
+        var body = '<div style="display:flex;align-items:center;gap:8px;color:' + col + ';font-weight:600;margin-bottom:' + ((d.issues && d.issues.length) ? '6px' : '0') + ';">'
+                 + '<i class="fa ' + icon + '"></i> ' + esc(d.message || '') + '</div>';
+        if (d.issues && d.issues.length) {
+            body += '<ul style="margin:4px 0 0 18px;padding:0;color:var(--t2);">'
+                  + d.issues.map(function(i) { return '<li>' + esc(i) + '</li>'; }).join('')
+                  + '</ul>';
+        }
+        if (d.orphans && d.orphans.length) {
+            body += '<div style="margin-top:6px;"><b>Tip:</b> Click "Sync from Firebase" to pull the orphaned sessions into the list.</div>';
+        }
+        box.style.cssText = 'display:block;margin:8px 0 4px;padding:10px 12px;border-radius:8px;font-size:12px;background:' + bg + ';border:' + brd + ';';
+        box.innerHTML = body;
+    });
+};
 
 window.syncSessions = function() {
     var btn = document.getElementById('syncSessBtn');
@@ -1088,8 +1430,11 @@ window.syncSessions = function() {
 
         if (d.status === 'success') {
             CFG.sessions = d.sessions || [];
-            renderSessions(d.sessions || [], CFG.active_session || '');
-            renderClassSelects(CFG.classes || [], d.sessions || [], CFG.active_session || '');
+            if (d.active_session) CFG.active_session = d.active_session;
+            if (d.archived_sessions) CFG.archived_sessions = d.archived_sessions;
+            var act = CFG.active_session || d.active_session || '';
+            renderSessions(d.sessions || [], act);
+            renderClassSelects(CFG.classes || [], d.sessions || [], act);
             toast(d.message || 'Sessions refreshed from Firebase.');
         } else {
             toast(d.message || 'Sync failed.', false);
@@ -1131,7 +1476,24 @@ window.addSession = function() {
 };
 
 window.setActive = function(sess) {
-    if (!confirm('Set "' + sess + '" as the active session? This will switch the entire application to this session.')) return;
+    var st = _sessStats[sess] || {};
+    var warn = 'Set "' + sess + '" as the ACTIVE session?\n\n'
+             + 'This will immediately change the default session for:\n'
+             + '  • All dashboards and reports\n'
+             + '  • Student / staff / attendance lists\n'
+             + '  • Fee vouchers and receipts\n'
+             + '  • Exams, results, and report cards\n\n';
+    if (st.students !== undefined) {
+        warn += 'This session currently has:\n'
+              + '  • ' + (st.students || 0) + ' students\n'
+              + '  • ' + (st.classes  || 0) + ' classes / ' + (st.sections || 0) + ' sections\n'
+              + '  • ' + (st.staff    || 0) + ' staff\n\n';
+        if ((st.students || 0) === 0 && (st.sections || 0) === 0) {
+            warn += 'WARNING: This session appears EMPTY. Activating it will show blank lists across the app until you add classes/students.\n\n';
+        }
+    }
+    warn += 'Proceed?';
+    if (!confirm(warn)) return;
     post('school_config/set_active_session', { session: sess }, function(d) {
         toast(d.message, d.status === 'success');
         if (d.status === 'success') {
@@ -1393,19 +1755,21 @@ window.saveClasses = function() {
     });
 };
 
-/* Issue 7: Soft delete via server endpoint */
+/* Issue 7: Soft delete — UI-first, server if already saved */
 window.softDeleteClass = function(key) {
-    if (!confirm('Soft-delete this class? It will be hidden but can be restored later. Existing student data is NOT affected.')) return;
+    if (!confirm('Remove this class from the list?')) return;
+
+    // Remove from local CFG immediately
+    CFG.classes = (CFG.classes || []).filter(function(c) { return c.key !== key; });
+    renderClasses(CFG.classes);
+    renderClassSelects(CFG.classes, CFG.sessions || [], CFG.active_session || '');
+
+    // Also delete from server (best-effort — may not exist if not yet saved)
     post('school_config/soft_delete_class', { class_key: key }, function(d) {
-        toast(d.message, d.status === 'success');
         if (d.status === 'success') {
-            // Update local state
-            (CFG.classes || []).forEach(function(c) {
-                if (c.key === key) { c.deleted = true; c.deleted_at = new Date().toISOString(); }
-            });
-            renderClasses(CFG.classes || []);
-            renderClassSelects(CFG.classes || [], CFG.sessions || [], CFG.active_session || '');
+            toast('Class removed.');
         }
+        // Don't show error if server says "not found" — class may have been UI-only
     });
 };
 
@@ -2156,8 +2520,14 @@ window.saveStream = function() {
         if (d.status === 'success') {
             document.getElementById('newStreamKey').value = '';
             document.getElementById('newStreamLabel').value = '';
-            CFG.streams = CFG.streams || {};
-            CFG.streams[key] = { key: key, label: label, enabled: en === '1' };
+            document.getElementById('newStreamEnabled').checked = true;
+            // Use server-returned streams if available, else update local cache
+            if (d.streams && typeof d.streams === 'object' && !Array.isArray(d.streams)) {
+                CFG.streams = d.streams;
+            } else {
+                if (!CFG.streams || Array.isArray(CFG.streams)) CFG.streams = {};
+                CFG.streams[key] = { key: key, label: label, enabled: en === '1' };
+            }
             renderStreams(CFG.streams);
             populateStreamDropdown(CFG.streams);
         }
@@ -2166,27 +2536,78 @@ window.saveStream = function() {
 
 window.deleteStream = function(key) {
     if (!confirm('Delete stream "' + key + '"?')) return;
+
+    // Remove from local UI immediately
+    if (!CFG.streams || Array.isArray(CFG.streams)) CFG.streams = {};
+    delete CFG.streams[key];
+    renderStreams(CFG.streams);
+    populateStreamDropdown(CFG.streams);
+
+    // Also delete from server (best-effort — may not exist if not yet saved)
     post('school_config/delete_stream', { stream_key: key }, function(d) {
-        toast(d.message, d.status === 'success');
         if (d.status === 'success') {
-            if (CFG.streams) delete CFG.streams[key];
-            renderStreams(CFG.streams || {});
-            populateStreamDropdown(CFG.streams || {});
+            toast('Stream deleted.');
         }
+        // Don't show error if server says "not found" — stream may have been UI-only
     });
 };
 
 /* Issue 6: Seed standard streams */
 window.seedStandardStreams = function() {
-    if (!confirm('Seed standard streams (Science, Commerce, Arts, General)?\nExisting streams will NOT be overwritten.')) return;
-    post('school_config/seed_streams', {}, function(d) {
-        toast(d.message, d.status === 'success');
-        if (d.status === 'success' && d.streams) {
-            CFG.streams = d.streams;
-            renderStreams(d.streams);
-            populateStreamDropdown(d.streams);
-        }
+    if (!confirm('This will load standard streams (Science, Commerce, Arts, General) into the list.\nClick "Save Stream" for each to persist.')) return;
+
+    var defaults = {
+        Science:  { key: 'Science',  label: 'Science',  enabled: true },
+        Commerce: { key: 'Commerce', label: 'Commerce', enabled: true },
+        Arts:     { key: 'Arts',     label: 'Arts',     enabled: true },
+        General:  { key: 'General',  label: 'General',  enabled: true },
+    };
+
+    // Merge with existing (don't overwrite)
+    if (!CFG.streams || Array.isArray(CFG.streams)) CFG.streams = {};
+    var added = 0, skipped = 0;
+    Object.keys(defaults).forEach(function(k) {
+        if (CFG.streams[k]) { skipped++; return; }
+        CFG.streams[k] = defaults[k];
+        added++;
     });
+
+    renderStreams(CFG.streams);
+    populateStreamDropdown(CFG.streams);
+    // Show save bar
+    document.getElementById('streamsSaveBar').style.display = added > 0 ? 'block' : 'none';
+    toast(added + ' stream(s) loaded. Click "Save All Streams" to persist.');
+};
+
+window.saveAllStreams = function() {
+    var streams = CFG.streams || {};
+    var keys = Object.keys(streams);
+    if (!keys.length) { toast('No streams to save.', false); return; }
+
+    var saved = 0, total = keys.length;
+    var btn = document.querySelector('#streamsSaveBar button');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Saving...'; }
+
+    // Save each stream via the existing save_stream endpoint
+    function saveNext(i) {
+        if (i >= keys.length) {
+            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-save"></i> Save All Streams'; }
+            document.getElementById('streamsSaveBar').style.display = 'none';
+            toast(saved + ' of ' + total + ' streams saved.');
+            return;
+        }
+        var k = keys[i];
+        var s = streams[k];
+        post('school_config/save_stream', {
+            stream_key: s.key || k,
+            label: s.label || k,
+            enabled: s.enabled ? '1' : '0'
+        }, function(d) {
+            if (d.status === 'success') saved++;
+            saveNext(i + 1);
+        });
+    }
+    saveNext(0);
 };
 
 /* ── Escape HTML ─────────────────────────────────────────────── */
@@ -2229,6 +2650,14 @@ window.saveProfile = saveProfile;
 window.syncSessions = syncSessions;
 window.addSession = addSession;
 window.setActive = setActive;
+window.suggestNextSession = suggestNextSession;
+window.checkSessions = checkSessions;
+window.archiveSession = archiveSession;
+window.deleteSession = deleteSession;
+window.openRolloverModal = openRolloverModal;
+window.closeRolloverModal = closeRolloverModal;
+window.rollPreview = rollPreview;
+window.rollExecute = rollExecute;
 window.saveBoard = saveBoard;
 window.addGradeRow = addGradeRow;
 window.addClassRow = addClassRow;

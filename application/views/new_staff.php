@@ -22,6 +22,7 @@
         <aside class="nsa-sidebar">
             <div class="nsa-sidebar-title">Form Sections</div>
             <a class="nsa-nav-item active" href="#sec-basic"><i class="fa fa-user"></i> <span>Basic Info</span></a>
+            <a class="nsa-nav-item" href="#sec-job"><i class="fa fa-briefcase"></i> <span>Job Details</span></a>
             <a class="nsa-nav-item" href="#sec-guardian"><i class="fa fa-users"></i> <span>Guardian</span></a>
             <a class="nsa-nav-item" href="#sec-address"><i class="fa fa-map-marker"></i> <span>Address</span></a>
             <a class="nsa-nav-item" href="#sec-qualification"><i class="fa fa-graduation-cap"></i> <span>Qualification</span></a>
@@ -94,40 +95,47 @@
                                 </select>
                             </div>
 
+                        </div>
+                    </div>
+                </div>
 
-                            <input type="hidden" name="staff_roles" id="staffRolesHidden" value="">
+                <!-- ══ JOB DETAILS — single place for role, designation, department, joining ══ -->
+                <div class="nsa-section" id="sec-job">
+                    <div class="nsa-section-head">
+                        <i class="fa fa-briefcase"></i>
+                        <h3>Job Details</h3>
+                        <span style="font-size:12px;color:var(--nsa-muted);margin-left:auto;">Role &amp; designation</span>
+                    </div>
+                    <div class="nsa-section-body">
+                        <div class="nsa-grid nsa-grid-2">
+
+                            <input type="hidden" name="staff_roles" id="staffRolesHidden" value="" required>
                             <input type="hidden" name="primary_role" id="primaryRoleHidden" value="">
 
-                            <div class="nsa-field">
-                                <label>Staff Roles</label>
+                            <div class="nsa-field nsa-col-2">
+                                <label>Staff Role <span class="req">*</span></label>
                                 <select id="staffRoleSelect" class="nsa-select">
-                                    <option value="">+ Add role...</option>
+                                    <option value="">+ Add role (Teacher, Accountant, Librarian, etc.)...</option>
                                 </select>
                                 <div id="selectedRolesChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;"></div>
+                                <small style="color:var(--nsa-muted);font-size:11px;">
+                                    <i class="fa fa-info-circle"></i>
+                                    Pick one or more roles. The first role becomes the primary designation. Multi-role example: a teacher who also runs the library.
+                                </small>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Designation / Title <span class="req">*</span></label>
-                                <select id="staff_position" name="staff_position" class="nsa-input" required>
-                                    <option value="">-- Select Designation --</option>
-                                    <option value="Teacher">Teacher</option>
-                                    <option value="Senior Teacher">Senior Teacher</option>
-                                    <option value="Head of Department">Head of Department</option>
-                                    <option value="Vice Principal">Vice Principal</option>
-                                    <option value="Principal">Principal</option>
-                                    <option value="Accountant">Accountant</option>
-                                    <option value="Librarian">Librarian</option>
-                                    <option value="Lab Assistant">Lab Assistant</option>
-                                    <option value="Clerk">Clerk</option>
-                                    <option value="Receptionist">Receptionist</option>
-                                    <option value="IT Administrator">IT Administrator</option>
-                                    <option value="Sports Coach">Sports Coach</option>
-                                    <option value="Counselor">Counselor</option>
-                                    <option value="Driver">Driver</option>
-                                    <option value="Security Guard">Security Guard</option>
-                                    <option value="Peon / Attendant">Peon / Attendant</option>
-                                    <option value="Other">Other</option>
+                                <label>Department <span class="req">*</span></label>
+                                <select id="teacher_department" name="department" class="nsa-input" required>
+                                    <option value="">-- Select Department --</option>
                                 </select>
+                                <small style="color:var(--nsa-muted);font-size:11px;">Configure in HR → Departments first.</small>
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>Employment Type <span class="req">*</span></label>
+                                <input type="text" id="employment_type" name="employment_type"
+                                       class="nsa-input" placeholder="e.g. Full-time" required>
                             </div>
 
                             <div class="nsa-field">
@@ -135,6 +143,28 @@
                                 <input type="date" id="date_of_joining" name="date_of_joining"
                                        value="<?= date('Y-m-d') ?>"
                                        class="nsa-input" readonly required>
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>Work Experience (Years)</label>
+                                <input type="text" id="teacher_experience" name="teacher_experience"
+                                       class="nsa-input" placeholder="e.g. 5">
+                            </div>
+
+                            <!-- Teacher capability — shown only when Position=Teacher or ROLE_TEACHER -->
+                            <div id="teacherExtraFields" class="nsa-col-2" style="display:none;">
+                                <div class="nsa-field">
+                                    <label>Subjects this teacher can teach <span class="req">*</span></label>
+                                    <input type="hidden" name="teaching_subjects" id="teachingSubjectsHidden" value="">
+                                    <select id="subjectPicker" class="nsa-input">
+                                        <option value="">+ Add subject...</option>
+                                    </select>
+                                    <div id="subjectChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;"></div>
+                                    <small style="color:var(--nsa-muted);font-size:11px;">
+                                        <i class="fa fa-info-circle"></i>
+                                        Capability list only. Actual class &amp; section assignments are done in <strong>Academic Planner → Subject Assignments</strong>.
+                                    </small>
+                                </div>
                             </div>
 
                         </div>
@@ -158,9 +188,27 @@
 
                             <div class="nsa-field">
                                 <label>Phone Number <span class="req">*</span></label>
-                                <input type="tel" id="phone_number" name="phone_number"
+                                <div class="phone-ig"><span class="phone-pfx">+91</span><input type="tel" id="phone_number" name="phone_number"
                                        class="nsa-input" placeholder="10-digit number"
-                                       pattern="[0-9]{10}" maxlength="10" required>
+                                       pattern="[0-9]{10}" maxlength="10" required></div>
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>Alternate Phone</label>
+                                <div class="phone-ig"><span class="phone-pfx">+91</span><input type="tel" id="alt_phone" name="alt_phone"
+                                       class="nsa-input" placeholder="10-digit number"
+                                       pattern="[0-9]{10}" maxlength="10"></div>
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>Marital Status</label>
+                                <select id="marital_status" name="marital_status" class="nsa-select">
+                                    <option value="">Select</option>
+                                    <option value="Single">Single</option>
+                                    <option value="Married">Married</option>
+                                    <option value="Widowed">Widowed</option>
+                                    <option value="Divorced">Divorced</option>
+                                </select>
                             </div>
 
                             <div class="nsa-field">
@@ -171,9 +219,68 @@
 
                             <div class="nsa-field">
                                 <label>Emergency Contact Number</label>
-                                <input type="tel" id="emergency_contact_phone" name="emergency_contact_phone"
+                                <div class="phone-ig"><span class="phone-pfx">+91</span><input type="tel" id="emergency_contact_phone" name="emergency_contact_phone"
                                        class="nsa-input" placeholder="10-digit number"
-                                       pattern="[0-9]{10}" maxlength="10">
+                                       pattern="[0-9]{10}" maxlength="10"></div>
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>Emergency Contact Relation</label>
+                                <select id="emergency_contact_relation" name="emergency_contact_relation" class="nsa-select">
+                                    <option value="">Select</option>
+                                    <option value="Father">Father</option>
+                                    <option value="Mother">Mother</option>
+                                    <option value="Spouse">Spouse</option>
+                                    <option value="Sibling">Sibling</option>
+                                    <option value="Friend">Friend</option>
+                                    <option value="Other">Other</option>
+                                </select>
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>Designation</label>
+                                <input type="text" id="designation" name="designation"
+                                       class="nsa-input" placeholder="e.g. Senior Teacher, HOD">
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ══ STATUTORY IDs ══ -->
+                <div class="nsa-section" id="sec-statutory">
+                    <div class="nsa-section-head">
+                        <i class="fa fa-id-card-o"></i>
+                        <h3>Statutory Identification</h3>
+                    </div>
+                    <div class="nsa-section-body">
+                        <div class="nsa-grid nsa-grid-2">
+
+                            <div class="nsa-field">
+                                <label>PAN Number</label>
+                                <input type="text" id="pan_number" name="pan_number"
+                                       class="nsa-input" placeholder="ABCDE1234F"
+                                       pattern="[A-Z]{5}[0-9]{4}[A-Z]" maxlength="10"
+                                       style="text-transform:uppercase">
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>Aadhar Number</label>
+                                <input type="text" id="aadhar_number" name="aadhar_number"
+                                       class="nsa-input" placeholder="12-digit number"
+                                       pattern="[0-9]{12}" maxlength="12">
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>PF Number (UAN)</label>
+                                <input type="text" id="pf_number" name="pf_number"
+                                       class="nsa-input" placeholder="UAN or PF Account No.">
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>ESI Number</label>
+                                <input type="text" id="esi_number" name="esi_number"
+                                       class="nsa-input" placeholder="ESI IP Number">
                             </div>
 
                         </div>
@@ -214,6 +321,42 @@
                             </div>
 
                         </div>
+
+                        <!-- Permanent Address -->
+                        <div style="margin-top:16px">
+                            <label class="nsa-checkbox-label" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--t2)">
+                                <input type="checkbox" id="same_as_current" name="same_as_current" value="1"
+                                       style="width:16px;height:16px;accent-color:var(--gold)">
+                                Permanent address same as current address
+                            </label>
+                        </div>
+
+                        <div id="permanent_address_block" style="margin-top:12px">
+                            <h4 style="font-size:13px;color:var(--t2);margin-bottom:8px;font-weight:600">Permanent Address</h4>
+                            <div class="nsa-grid nsa-grid-2">
+                                <div class="nsa-field nsa-col-2">
+                                    <label>Street</label>
+                                    <input type="text" id="perm_street" name="perm_street"
+                                           class="nsa-input" placeholder="House no., Street name">
+                                </div>
+                                <div class="nsa-field">
+                                    <label>City</label>
+                                    <input type="text" id="perm_city" name="perm_city"
+                                           class="nsa-input" placeholder="City / District">
+                                </div>
+                                <div class="nsa-field">
+                                    <label>State</label>
+                                    <input type="text" id="perm_state" name="perm_state"
+                                           class="nsa-input" placeholder="State">
+                                </div>
+                                <div class="nsa-field">
+                                    <label>Postal Code</label>
+                                    <input type="text" id="perm_postal_code" name="perm_postal_code"
+                                           class="nsa-input" placeholder="6-digit PIN">
+                                </div>
+                            </div>
+                        </div>
+
                     </div>
                 </div>
 
@@ -221,16 +364,10 @@
                 <div class="nsa-section" id="sec-qualification">
                     <div class="nsa-section-head">
                         <i class="fa fa-graduation-cap"></i>
-                        <h3>Qualification Details</h3>
+                        <h3>Qualification &amp; Education</h3>
                     </div>
                     <div class="nsa-section-body">
                         <div class="nsa-grid nsa-grid-3">
-
-                            <div class="nsa-field">
-                                <label>Employment Type <span class="req">*</span></label>
-                                <input type="text" id="employment_type" name="employment_type"
-                                       class="nsa-input" placeholder="e.g. Full-time" required>
-                            </div>
 
                             <div class="nsa-field">
                                 <label>Highest Qualification</label>
@@ -248,19 +385,6 @@
                                 <label>Year of Passing</label>
                                 <input type="text" id="year_of_passing" name="year_of_passing"
                                        class="nsa-input" placeholder="e.g. 2018">
-                            </div>
-
-                            <div class="nsa-field">
-                                <label>Work Experience (Years)</label>
-                                <input type="text" id="teacher_experience" name="teacher_experience"
-                                       class="nsa-input" placeholder="e.g. 5">
-                            </div>
-
-                            <div class="nsa-field">
-                                <label>Department <span class="req">*</span></label>
-                                <select id="teacher_department" name="department" class="nsa-input" required>
-                                    <option value="">-- Select Department --</option>
-                                </select>
                             </div>
 
                         </div>
@@ -463,8 +587,23 @@
             <div class="nsa-prev-grid">
                 <div class="nsa-prev-field"><div class="lbl">Father Name</div><div class="val" id="previewFatherName"></div></div>
                 <div class="nsa-prev-field"><div class="lbl">Phone</div><div class="val" id="previewPhone"></div></div>
+                <div class="nsa-prev-field"><div class="lbl">Alt. Phone</div><div class="val" id="previewAltPhone"></div></div>
+                <div class="nsa-prev-field"><div class="lbl">Marital Status</div><div class="val" id="previewMaritalStatus"></div></div>
                 <div class="nsa-prev-field"><div class="lbl">Emergency Name</div><div class="val" id="previewEmergencyName"></div></div>
-                <div class="nsa-prev-field"><div class="lbl">Emergency Contact</div><div class="val" id="previewEmergencyPhone"></div></div>
+                <div class="nsa-prev-field"><div class="lbl">Emergency Phone</div><div class="val" id="previewEmergencyPhone"></div></div>
+                <div class="nsa-prev-field"><div class="lbl">Emergency Relation</div><div class="val" id="previewEmergencyRelation"></div></div>
+                <div class="nsa-prev-field"><div class="lbl">Designation</div><div class="val" id="previewDesignation"></div></div>
+            </div>
+        </div>
+
+        <!-- Statutory IDs -->
+        <div class="nsa-prev-section">
+            <div class="nsa-prev-section-title"><i class="fa fa-id-card-o"></i> Statutory Identification</div>
+            <div class="nsa-prev-grid">
+                <div class="nsa-prev-field"><div class="lbl">PAN</div><div class="val" id="previewPan"></div></div>
+                <div class="nsa-prev-field"><div class="lbl">Aadhar</div><div class="val" id="previewAadharNum"></div></div>
+                <div class="nsa-prev-field"><div class="lbl">PF (UAN)</div><div class="val" id="previewPf"></div></div>
+                <div class="nsa-prev-field"><div class="lbl">ESI</div><div class="val" id="previewEsi"></div></div>
             </div>
         </div>
 
@@ -473,12 +612,16 @@
             <div class="nsa-prev-section-title"><i class="fa fa-map-marker"></i> Address</div>
             <div class="nsa-prev-grid">
                 <div class="nsa-prev-field" style="grid-column:span 3;">
-                    <div class="lbl">Full Address</div>
+                    <div class="lbl">Current Address</div>
                     <div class="val">
                         <span id="previewStreet"></span>,
                         <span id="previewCity"></span>,
                         <span id="previewState"></span> – <span id="previewPostalCode"></span>
                     </div>
+                </div>
+                <div class="nsa-prev-field" style="grid-column:span 3;">
+                    <div class="lbl">Permanent Address</div>
+                    <div class="val" id="previewPermAddress"></div>
                 </div>
             </div>
         </div>
@@ -567,12 +710,40 @@ function nsaFileChosen(input, wrapId) {
     var nameEl = wrap ? wrap.querySelector('.nsa-file-name') : null;
     if (!nameEl) return;
     if (input.files && input.files.length > 0) {
-        nameEl.textContent = '✓ ' + input.files[0].name;
+        nameEl.innerHTML = '';
+        var ok = document.createElement('span');
+        ok.textContent = '✓ ' + input.files[0].name;
+        nameEl.appendChild(ok);
+        var rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'nsa-file-remove';
+        rm.title = 'Remove file';
+        rm.innerHTML = '&times; Remove';
+        rm.style.cssText = 'margin-left:10px;background:none;border:none;color:var(--nsa-red,#dc2626);cursor:pointer;font-size:12px;font-weight:600;padding:0;';
+        rm.addEventListener('click', function(ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            nsaClearFile(input.id, wrapId);
+        });
+        nameEl.appendChild(rm);
         nameEl.style.display = 'block';
         if (wrap) wrap.style.borderColor = 'var(--nsa-green)';
     } else {
+        nameEl.innerHTML = '';
         nameEl.style.display = 'none';
         if (wrap) wrap.style.borderColor = '';
+    }
+}
+
+/* ── Clear a chosen file (used by per-input remove buttons) ── */
+function nsaClearFile(inputId, wrapId) {
+    var input = document.getElementById(inputId);
+    if (!input) return;
+    input.value = '';                      // reset the file input
+    nsaFileChosen(input, wrapId);          // re-render (now empty)
+    if (inputId === 'photo') {
+        var preview = document.getElementById('staffPhotoPreview');
+        if (preview) preview.src = '<?= base_url('tools/dist/img/kids.jpg') ?>';
     }
 }
 
@@ -703,7 +874,7 @@ function fillStaffPreviewData() {
     /* Hero */
     setText('previewStaffName',   getValue('name'));
     setText('previewStaffId',     getValue('user_id'));
-    setText('previewPosition',    getValue('staff_position') || getValue('staffRolesHidden').split(',').join(', '));
+    setText('previewPosition',    getValue('staffRolesHidden').split(',').join(', '));
     setText('previewDepartment',  getValue('teacher_department'));
     setText('previewJoiningDate', getValue('date_of_joining'));
 
@@ -714,16 +885,35 @@ function fillStaffPreviewData() {
     setText('previewEmail',      getValue('email_user'));
 
     /* Guardian / Contact */
-    setText('previewFatherName',     getValue('father_name'));
-    setText('previewPhone',          getValue('phone_number'));
-    setText('previewEmergencyName',  getValue('emergency_contact_name'));
-    setText('previewEmergencyPhone', getValue('emergency_contact_phone'));
+    setText('previewFatherName',        getValue('father_name'));
+    setText('previewPhone',             getValue('phone_number'));
+    setText('previewAltPhone',          getValue('alt_phone'));
+    setText('previewMaritalStatus',     getValue('marital_status'));
+    setText('previewEmergencyName',     getValue('emergency_contact_name'));
+    setText('previewEmergencyPhone',    getValue('emergency_contact_phone'));
+    setText('previewEmergencyRelation', getValue('emergency_contact_relation'));
+    setText('previewDesignation',       getValue('designation'));
+
+    /* Statutory IDs */
+    setText('previewPan',       getValue('pan_number'));
+    setText('previewAadharNum', getValue('aadhar_number'));
+    setText('previewPf',        getValue('pf_number'));
+    setText('previewEsi',       getValue('esi_number'));
 
     /* Address */
     setText('previewStreet',     getValue('street'));
     setText('previewCity',       getValue('city'));
     setText('previewState',      getValue('state'));
     setText('previewPostalCode', getValue('postal_code'));
+
+    /* Permanent Address */
+    var sameAddr = document.getElementById('same_as_current');
+    if (sameAddr && sameAddr.checked) {
+        setText('previewPermAddress', 'Same as current address');
+    } else {
+        var pa = [getValue('perm_street'), getValue('perm_city'), getValue('perm_state'), getValue('perm_postal_code')].filter(function(v){return v;}).join(', ');
+        setText('previewPermAddress', pa || '—');
+    }
 
     /* Qualification */
     setText('previewEmploymentType', getValue('employment_type'));
@@ -798,6 +988,11 @@ function submitStaffFinalForm() {
             if (res.status === 'success') {
                 closeStaffPreviewModal();
 
+                // Surface any backend warning (e.g. Firebase Auth account creation failure)
+                if (res.warning) {
+                    nsaShowAlert('warning', res.warning);
+                }
+
                 // ATS integration: finalize hire if this was a convert-to-staff flow
                 var atsAppId = document.getElementById('ats_application_id');
                 if (atsAppId && atsAppId.value && res.staff_id) {
@@ -828,8 +1023,7 @@ function submitStaffFinalForm() {
                     return;
                 }
 
-                nsaShowAlert('success', 'Staff saved successfully!');
-                setTimeout(function() { location.reload(); }, 1600);
+                showStaffConfirmation(res);
             } else {
                 nsaShowAlert('error', res.message || 'Submission failed. Please try again.');
                 if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-check"></i> Final Submit'; }
@@ -846,6 +1040,23 @@ function submitStaffFinalForm() {
    DOMContentLoaded Init
 ═══════════════════════════ */
 document.addEventListener('DOMContentLoaded', function() {
+
+    /* ── Permanent address "same as current" toggle ── */
+    var sameChk = document.getElementById('same_as_current');
+    var permBlock = document.getElementById('permanent_address_block');
+    if (sameChk && permBlock) {
+        sameChk.addEventListener('change', function() {
+            if (this.checked) {
+                permBlock.style.display = 'none';
+                document.getElementById('perm_street').value = document.getElementById('street').value;
+                document.getElementById('perm_city').value = document.getElementById('city').value;
+                document.getElementById('perm_state').value = document.getElementById('state').value;
+                document.getElementById('perm_postal_code').value = document.getElementById('postal_code').value;
+            } else {
+                permBlock.style.display = '';
+            }
+        });
+    }
 
     /* ── Load departments from HR module into dropdown ── */
     var _deptLoaded = false;
@@ -892,7 +1103,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     'Name': 'name',
                     'email': 'email_user',
                     'phone_number': 'phone_number',
-                    'staff_position': 'staff_position',
                     'qualification': 'qualification',
                     'experience': 'teacher_experience'
                 };
@@ -1011,7 +1221,109 @@ document.addEventListener('DOMContentLoaded', function() {
         // Sync hidden fields
         document.getElementById('staffRolesHidden').value = _selectedRoles.join(',');
         document.getElementById('primaryRoleHidden').value = _primaryRole;
+        // Notify teaching section toggle (Phase 1)
+        if (typeof recheckTeachingVisibility === 'function') recheckTeachingVisibility();
     }
+
+    /* ── Teacher-specific fields: show/hide based on Position ── */
+    var _selectedSubjects = [];
+
+    // ─── Teaching section toggle ─────────────────────────────────────
+    // Show teaching fields if ROLE_TEACHER is in staff_roles
+    function isTeacherSelected() {
+        var rolesHidden = document.getElementById('staffRolesHidden');
+        if (rolesHidden && rolesHidden.value) {
+            var roles = rolesHidden.value.split(',').map(function(r){ return r.trim(); });
+            if (roles.indexOf('ROLE_TEACHER') !== -1) return true;
+        }
+        return false;
+    }
+
+    function recheckTeachingVisibility() {
+        var section = document.getElementById('teacherExtraFields');
+        if (!section) return;
+        var show = isTeacherSelected();
+        section.style.display = show ? 'block' : 'none';
+        if (show) {
+            loadSubjectOptions();
+        }
+    }
+
+    // Run once on page load (handles edit case where data is pre-filled)
+    recheckTeachingVisibility();
+
+    var _subjectsLoading = false;
+    var _subjectsLoaded  = false;
+    function loadSubjectOptions() {
+        var sel = document.getElementById('subjectPicker');
+        if (_subjectsLoaded || _subjectsLoading) return; // already loaded or in flight
+        _subjectsLoading = true;
+        fetch('<?= base_url("school_config/get_all_subjects") ?>', {
+            method: 'POST',
+            headers: {'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
+            body: '<?= $this->security->get_csrf_token_name() ?>=<?= $this->security->get_csrf_hash() ?>'
+        })
+        .then(function(r){ return r.json(); })
+        .then(function(r){
+            if (r.status === 'success' && r.subjects) {
+                var seen = {};
+                // Drop any options other than the placeholder before appending
+                while (sel.options.length > 1) sel.remove(1);
+                r.subjects.forEach(function(s){
+                    var nm = (s.name || s.code || '').trim();
+                    if (!nm) return;
+                    var key = nm.toLowerCase();
+                    if (seen[key]) return;
+                    seen[key] = true;
+                    var opt = document.createElement('option');
+                    opt.value = nm;
+                    opt.textContent = nm + (s.category ? ' (' + s.category + ')' : '');
+                    sel.appendChild(opt);
+                });
+            }
+            _subjectsLoaded  = true;
+            _subjectsLoading = false;
+        })
+        .catch(function(){
+            // Fallback: add common subjects
+            while (sel.options.length > 1) sel.remove(1);
+            ['English','Hindi','Mathematics','Science','Social Science','Computer Science',
+             'Physics','Chemistry','Biology','Accountancy','Business Studies','Economics',
+             'History','Geography','Political Science','Sanskrit','Physical Education','Art'].forEach(function(s){
+                var opt = document.createElement('option');
+                opt.value = s; opt.textContent = s;
+                sel.appendChild(opt);
+            });
+            _subjectsLoaded  = true;
+            _subjectsLoading = false;
+        });
+    }
+
+    // Subject chip picker (capability list — actual class assignment in Academic Planner)
+    document.getElementById('subjectPicker').addEventListener('change', function(){
+        var val = this.value;
+        if (!val || _selectedSubjects.indexOf(val) !== -1) { this.value=''; return; }
+        _selectedSubjects.push(val);
+        renderSubjectChips();
+        this.value = '';
+    });
+
+    function renderSubjectChips() {
+        var container = document.getElementById('subjectChips');
+        container.innerHTML = '';
+        _selectedSubjects.forEach(function(s){
+            var chip = document.createElement('span');
+            chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:var(--gold-dim,rgba(15,118,110,.1));color:var(--gold,#0f766e);border-radius:14px;font-size:12px;font-weight:500;';
+            chip.innerHTML = s + ' <button type="button" style="background:none;border:none;color:inherit;cursor:pointer;font-weight:700;padding:0 2px;" onclick="removeSubject(\'' + s.replace(/'/g,"\\'") + '\')">&times;</button>';
+            container.appendChild(chip);
+        });
+        document.getElementById('teachingSubjectsHidden').value = _selectedSubjects.join(',');
+    }
+
+    window.removeSubject = function(s) {
+        _selectedSubjects = _selectedSubjects.filter(function(x){ return x !== s; });
+        renderSubjectChips();
+    };
 
     /* Sidebar active highlight on scroll */
     var sections = document.querySelectorAll('.nsa-section');
@@ -1052,12 +1364,14 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 /* ── Page shell ── */
+html, body, .content-wrapper { background: var(--nsa-bg) !important; }
 .nsa-wrap {
     font-family: 'Instrument Sans', sans-serif;
     background: var(--nsa-bg);
     color: var(--nsa-text);
     padding: 26px 22px 60px;
     min-height: 100vh;
+    width: 100%;
 }
 
 /* ── Top bar ── */
@@ -1459,4 +1773,101 @@ document.addEventListener('DOMContentLoaded', function() {
     cursor: pointer; padding: 0 2px; line-height: 1; opacity: .7;
 }
 .nsa-role-remove:hover { opacity: 1; }
+
+/* Staff Confirmation Dialog */
+.staff-confirm-overlay {
+    position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);
+    z-index:10000;display:flex;align-items:center;justify-content:center;animation:sfFadeIn .2s;
+}
+.staff-confirm-box {
+    background:var(--bg2,#fff);border-radius:16px;padding:32px 36px;
+    max-width:440px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.25);text-align:center;animation:sfScaleIn .25s;
+}
+.staff-confirm-box .sf-icon {
+    width:64px;height:64px;border-radius:50%;background:#dcfce7;
+    display:flex;align-items:center;justify-content:center;margin:0 auto 16px;
+}
+.staff-confirm-box .sf-icon i { font-size:28px;color:#16a34a; }
+.staff-confirm-box h2 { margin:0 0 6px;font-size:1.2rem;color:var(--t1,#111); }
+.staff-confirm-box .sf-sub { color:var(--t3,#888);font-size:.9rem;margin-bottom:20px; }
+.sf-cred-card {
+    background:var(--bg3,#f5f5f5);border:1.5px solid var(--gold,#0f766e);
+    border-radius:12px;padding:18px 20px;text-align:left;margin-bottom:20px;
+}
+.sf-cred-row { display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border,#e5e7eb);font-size:.92rem; }
+.sf-cred-row:last-child { border-bottom:none; }
+.sf-cred-row .sf-label { color:var(--t3,#888);font-size:.82rem; }
+.sf-cred-row .sf-value { color:var(--t1,#111);font-weight:600;font-family:var(--font-m,monospace);font-size:.95rem; }
+.sf-cred-row .sf-pwd { color:#dc2626;letter-spacing:.5px; }
+.staff-confirm-box .sf-note { font-size:.8rem;color:var(--t3,#888);background:var(--bg3,#f5f5f5);padding:10px 14px;border-radius:8px;margin-bottom:18px;text-align:left; }
+.staff-confirm-box .sf-actions { display:flex;gap:10px;justify-content:center; }
+.staff-confirm-box .sf-btn { padding:10px 24px;border-radius:8px;border:none;cursor:pointer;font-size:.9rem;font-weight:600;transition:all .15s; }
+.sf-btn-print { background:var(--gold,#0f766e);color:#fff; }
+.sf-btn-print:hover { opacity:.85; }
+.sf-btn-done { background:var(--bg3,#f5f5f5);color:var(--t1,#111);border:1px solid var(--border,#ddd); }
+.sf-btn-done:hover { background:var(--bg2,#eee); }
+@keyframes sfFadeIn { from{opacity:0} to{opacity:1} }
+@keyframes sfScaleIn { from{transform:scale(.9);opacity:0} to{transform:scale(1);opacity:1} }
 </style>
+
+<script>
+function showStaffConfirmation(res) {
+    var overlay = document.createElement('div');
+    overlay.className = 'staff-confirm-overlay';
+    overlay.innerHTML =
+        '<div class="staff-confirm-box">' +
+            '<div class="sf-icon"><i class="fa fa-check"></i></div>' +
+            '<h2>Staff Added Successfully!</h2>' +
+            '<p class="sf-sub">Share these credentials with the staff member for app login.</p>' +
+            '<div class="sf-cred-card">' +
+                '<div class="sf-cred-row"><span class="sf-label">Name</span><span class="sf-value">' + nsaEsc(res.name || '') + '</span></div>' +
+                '<div class="sf-cred-row"><span class="sf-label">Staff ID</span><span class="sf-value">' + nsaEsc(res.staff_id || '') + '</span></div>' +
+                '<div class="sf-cred-row"><span class="sf-label">Password</span><span class="sf-value sf-pwd">' + nsaEsc(res.default_password || '') + '</span></div>' +
+                '<div class="sf-cred-row"><span class="sf-label">Position</span><span class="sf-value">' + nsaEsc(res.position || '') + '</span></div>' +
+            '</div>' +
+            '<div class="sf-note">' +
+                '<i class="fa fa-info-circle" style="margin-right:5px;color:var(--gold,#0f766e);"></i>' +
+                'Staff can login using <strong>Staff ID</strong> and <strong>Password</strong> in the SchoolSync Teacher App.' +
+            '</div>' +
+            '<div class="sf-actions">' +
+                '<button class="sf-btn sf-btn-print" onclick="printStaffSlip()"><i class="fa fa-print"></i> Print Slip</button>' +
+                '<button class="sf-btn sf-btn-done" onclick="closeStaffConfirm()"><i class="fa fa-check"></i> Done</button>' +
+            '</div>' +
+        '</div>';
+    document.body.appendChild(overlay);
+    window._staffSlipData = res;
+}
+function closeStaffConfirm() {
+    var el = document.querySelector('.staff-confirm-overlay');
+    if (el) el.remove();
+    location.reload();
+}
+function printStaffSlip() {
+    var d = window._staffSlipData || {};
+    var w = window.open('', '_blank', 'width=400,height=450');
+    w.document.write(
+        '<!DOCTYPE html><html><head><title>Staff Credential Slip</title>' +
+        '<style>body{font-family:sans-serif;padding:30px;max-width:360px;margin:auto;}' +
+        'h2{text-align:center;margin-bottom:5px;}' +
+        '.sub{text-align:center;color:#888;font-size:13px;margin-bottom:20px;}' +
+        'table{width:100%;border-collapse:collapse;margin-bottom:20px;}' +
+        'td{padding:8px 10px;border-bottom:1px solid #eee;font-size:14px;}' +
+        'td:first-child{color:#888;width:40%;}td:last-child{font-weight:600;}' +
+        '.pwd{color:#dc2626;letter-spacing:.5px;font-family:monospace;}' +
+        '.note{font-size:12px;color:#888;background:#f9f9f9;padding:10px;border-radius:6px;}' +
+        '</style></head><body>' +
+        '<h2>Staff Credential Slip</h2><p class="sub">Teacher App Login</p>' +
+        '<table>' +
+        '<tr><td>Name</td><td>' + nsaEsc(d.name||'') + '</td></tr>' +
+        '<tr><td>Staff ID</td><td>' + nsaEsc(d.staff_id||'') + '</td></tr>' +
+        '<tr><td>Password</td><td class="pwd">' + nsaEsc(d.default_password||'') + '</td></tr>' +
+        '<tr><td>Position</td><td>' + nsaEsc(d.position||'') + '</td></tr>' +
+        '</table>' +
+        '<div class="note"><strong>Note:</strong> Use Staff ID and Password to login in the SchoolSync Teacher App.</div>' +
+        '</body></html>'
+    );
+    w.document.close();
+    setTimeout(function(){ w.print(); }, 300);
+}
+function nsaEsc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+</script>

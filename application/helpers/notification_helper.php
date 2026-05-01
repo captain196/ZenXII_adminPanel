@@ -87,15 +87,25 @@ if (!function_exists('notify_sms')) {
 if (!function_exists('notify_admission_received')) {
     /**
      * Notify parent that their admission application was received.
+     *
+     * `$receiptUrl` is optional — when provided, the SMS body links the
+     * parent to a printable PDF receipt of the submitted application.
+     * Kept optional so any other caller of this helper that doesn't yet
+     * pass the URL (legacy / batch retry) keeps working.
      */
-    function notify_admission_received(string $phone, string $schoolName, string $appId): bool
+    function notify_admission_received(string $phone, string $schoolName, string $appId, string $receiptUrl = ''): bool
     {
         $msg = "Thank you for applying to {$schoolName}. "
-             . "Your application ID is {$appId}. Our team will contact you shortly.";
+             . "Your application ID is {$appId}.";
+        if ($receiptUrl !== '') {
+            $msg .= " Receipt: {$receiptUrl}";
+        }
+        $msg .= " Our team will contact you shortly.";
         return notify_sms($phone, $msg, [
-            'type'   => 'admission_received',
-            'school' => $schoolName,
-            'app_id' => $appId,
+            'type'        => 'admission_received',
+            'school'      => $schoolName,
+            'app_id'      => $appId,
+            'receipt_url' => $receiptUrl,
         ]);
     }
 }
@@ -110,6 +120,30 @@ if (!function_exists('notify_admission_confirmed')) {
              . "Student ID: {$studentId}. Welcome to our school family!";
         return notify_sms($phone, $msg, [
             'type'       => 'admission_confirmed',
+            'school'     => $schoolName,
+            'student_id' => $studentId,
+        ]);
+    }
+}
+
+if (!function_exists('notify_enrollment_credentials')) {
+    /**
+     * Send the parent app login credentials to the parent's phone.
+     *
+     * Sent immediately after `enroll_student` creates the Firebase Auth
+     * user. Without this SMS the parent has no way to discover the
+     * auto-generated password and can't log in. Phase A Part 1.
+     *
+     * The message includes a hint that password change is required on
+     * first login (Phase A Part 2 enforces it in the parent app).
+     */
+    function notify_enrollment_credentials(string $phone, string $schoolName, string $studentName, string $studentId, string $password): bool
+    {
+        $msg = "Welcome to {$schoolName}! {$studentName}'s admission is confirmed. "
+             . "Parent app login — User ID: {$studentId}, Password: {$password}. "
+             . "You will be asked to set a new password on first login.";
+        return notify_sms($phone, $msg, [
+            'type'       => 'enrollment_credentials',
             'school'     => $schoolName,
             'student_id' => $studentId,
         ]);

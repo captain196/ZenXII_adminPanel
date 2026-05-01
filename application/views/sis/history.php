@@ -80,7 +80,41 @@ html { font-size: 16px !important; }
                 <div class="tl-desc"><?= htmlspecialchars($h['description'] ?? '') ?></div>
                 <div class="tl-by">by <?= htmlspecialchars($h['changed_by'] ?? 'System') ?></div>
 
-                <?php if (!empty($h['metadata']) && is_array($h['metadata'])): ?>
+                <?php
+                // Audit diff rendering — when metadata.changes is present
+                // (set by Sis::update_profile post Tier-A) we render a
+                // clean old → new table inline. Otherwise fall back to
+                // the legacy collapsed-JSON view so historical entries
+                // (which have only a flat `$updates` map) still render.
+                $changes = is_array($h['metadata']['changes'] ?? null) ? $h['metadata']['changes'] : [];
+                if (!empty($changes)):
+                    $stringify = function ($v) {
+                        if ($v === null || $v === '')   return '—';
+                        if (is_scalar($v))              return (string) $v;
+                        return json_encode($v, JSON_UNESCAPED_UNICODE);
+                    };
+                ?>
+                <table style="width:100%;margin-top:10px;border-collapse:collapse;font-size:.85rem;">
+                    <thead>
+                        <tr style="background:var(--bg3);">
+                            <th style="text-align:left;padding:6px 8px;border:1px solid var(--border);width:30%;">Field</th>
+                            <th style="text-align:left;padding:6px 8px;border:1px solid var(--border);">Before</th>
+                            <th style="text-align:left;padding:6px 8px;border:1px solid var(--border);">After</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($changes as $field => $pair):
+                        if (!is_array($pair)) continue;
+                    ?>
+                        <tr>
+                            <td style="padding:6px 8px;border:1px solid var(--border);font-weight:600;color:var(--t2);"><?= htmlspecialchars((string) $field) ?></td>
+                            <td style="padding:6px 8px;border:1px solid var(--border);color:#b91c1c;text-decoration:line-through;text-decoration-color:#fca5a5;"><?= htmlspecialchars($stringify($pair['old'] ?? null)) ?></td>
+                            <td style="padding:6px 8px;border:1px solid var(--border);color:#15803d;font-weight:500;"><?= htmlspecialchars($stringify($pair['new'] ?? null)) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+                <?php elseif (!empty($h['metadata']) && is_array($h['metadata'])): ?>
                 <details style="margin-top:8px;">
                     <summary style="font-size:.84rem;color:var(--t3);cursor:pointer;">Details</summary>
                     <?php // FIXED: array_map('strval') crashes on nested arrays (e.g. Address) — encode directly ?>

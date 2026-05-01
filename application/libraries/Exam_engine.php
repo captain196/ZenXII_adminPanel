@@ -275,34 +275,82 @@ class Exam_engine
     // =========================================================================
 
     /**
-     * Get student names from the class roster.
+     * Get student names from the class roster — Firestore-only (R2 migration).
      *
-     * Handles both formats:
-     *   {userId: "Student Name"}              — simple string
-     *   {userId: {Name: "Student Name"}}      — object with Name key
+     * Replaces the legacy `Schools/{school}/{year}/{class}/{section}/Students/List`
+     * RTDB read with a Firestore `students` query via Roster_helper.
+     *
+     * The output contract is unchanged: `[userId => name]` flat string-keyed
+     * map. Every caller (Result.php × 2, Examination.php × 4) uses it as a
+     * lookup (`$roster[$uid] ?? $uid`) and overrides ordering with its own
+     * `sort($userIds)` or driver iteration, so the helper's RollNo-then-name
+     * sort doesn't change observable behaviour at any consumer.
+     *
+     * Resolution path:
+     *   1. Prefer the controller's `$CI->roster` (set by MY_Controller for
+     *      every per-school request).
+     *   2. Fall back to a direct `firestoreQuery` mirroring Roster_helper's
+     *      shape, for CLI / cron / non-MY_Controller call paths.
      *
      * @param string $classKey   e.g. "Class 9th"
      * @param string $sectionKey e.g. "Section A"
-     * @return array [userId => name]
+     * @return array<string, string> [userId => name]
      */
     public function get_student_names(string $classKey, string $sectionKey): array
     {
-        $roster = $this->firebase->get(
-            "Schools/{$this->school}/{$this->year}/{$classKey}/{$sectionKey}/Students/List"
-        ) ?? [];
-
-        if (!is_array($roster)) return [];
-
-        $names = [];
-        foreach ($roster as $uid => $val) {
-            if (is_string($val)) {
-                $names[$uid] = $val;
-            } elseif (is_array($val)) {
-                $names[$uid] = $val['Name'] ?? $val['name'] ?? (string) $uid;
+        try {
+            // No `=&` — get_instance() returns an object (handle), and
+            // PHP 8 emits "Only variables should be assigned by reference"
+            // for the `=& fn()` form even though CI documents it.
+            $CI = get_instance();
+            if ($CI !== null && isset($CI->roster) && method_exists($CI->roster, 'for_class')) {
+                $roster = $CI->roster->for_class($classKey, $sectionKey);
+                $names = [];
+                foreach ($roster as $uid => $fields) {
+                    $names[$uid] = is_array($fields)
+                        ? (string) ($fields['Name'] ?? $uid)
+                        : (string) $uid;
+                }
+                return $names;
             }
+        } catch (\Exception $e) {
+            log_message('error', 'Exam_engine::get_student_names — CI roster path failed: ' . $e->getMessage());
         }
 
-        return $names;
+        // Fallback — direct Firestore query (same shape as Roster_helper).
+        try {
+            $ck = ($classKey !== '' && stripos($classKey, 'Class ') !== 0)   ? "Class {$classKey}"   : $classKey;
+            $sk = ($sectionKey !== '' && stripos($sectionKey, 'Section ') !== 0) ? "Section {$sectionKey}" : $sectionKey;
+            if ($ck === '' || $sk === '') return [];
+
+            $rows = $this->firebase->firestoreQuery('students', [
+                ['schoolId',  '==', $this->school],
+                ['className', '==', $ck],
+                ['section',   '==', $sk],
+                ['status',    '==', 'Active'],
+            ]);
+            if (!is_array($rows)) return [];
+
+            $names = [];
+            foreach ($rows as $entry) {
+                $data = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                if (!is_array($data)) continue;
+                $uid  = (string) ($data['userId'] ?? $data['studentId'] ?? '');
+                if ($uid === '' && is_array($entry) && isset($entry['id'])) {
+                    // Doc id is `{schoolId}_{userId}` — strip the exact prefix.
+                    $prefix = $this->school . '_';
+                    $uid = (strncmp($entry['id'], $prefix, strlen($prefix)) === 0)
+                        ? substr($entry['id'], strlen($prefix))
+                        : $entry['id'];
+                }
+                if ($uid === '') continue;
+                $names[$uid] = (string) ($data['name'] ?? $data['Name'] ?? $uid);
+            }
+            return $names;
+        } catch (\Exception $e) {
+            log_message('error', 'Exam_engine::get_student_names — Firestore fallback failed: ' . $e->getMessage());
+            return [];
+        }
     }
 
     // =========================================================================

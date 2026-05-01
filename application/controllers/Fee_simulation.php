@@ -42,6 +42,27 @@ class Fee_simulation extends MY_Controller
     {
         parent::__construct();
         require_permission('Configuration');
+
+        // Phase 5 — DEV-ONLY gate. This controller writes test data to
+        // the Realtime Database namespace SIM_NAMESPACE. It is intentionally
+        // NOT on the RTDB-elimination path because it's a load-test
+        // fixture, not production code. Live environments MUST NOT be
+        // allowed to fire these writes — the gate below terminates the
+        // request before any RTDB call executes.
+        $env = strtolower((string) (getenv('APP_ENV') ?: ($_SERVER['APP_ENV'] ?? '')));
+        if (!in_array($env, ['development', 'dev', 'local', 'test'], true)) {
+            if ($this->input->is_ajax_request()) {
+                $this->json_error(
+                    'Fee_simulation is disabled in non-development environments.',
+                    403
+                );
+            }
+            show_error(
+                'Fee_simulation is a dev-only load-test harness and has been disabled '
+              . 'in this environment. Set APP_ENV=development to re-enable.',
+                403
+            );
+        }
     }
 
     // ====================================================================

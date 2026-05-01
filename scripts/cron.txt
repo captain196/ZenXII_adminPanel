@@ -1,0 +1,44 @@
+# SchoolSync — scheduled maintenance (crontab entries).
+#
+# Install on the host that has PHP + access to the Firestore service
+# account JSON. Each entry routes through run_scheduled.php so every
+# run lands in `scheduled_job_runs/{runId}` and any failure raises a
+# fee_alerts record (which fires Slack/email if configured).
+#
+# Replace SCH_D94FE8F7AD with your live schoolId and YYYY-YY with the
+# active session. One line per school; loop in a wrapper if you run a
+# multi-tenant host.
+#
+# Columns:  m h dom mon dow  command
+
+# ── DAILY 02:15 — reconcile demands vs defaulters ──────────────────
+15 2 * * * /usr/bin/php /var/www/Grader/school/scripts/run_scheduled.php --job=reconcile --schoolId=SCH_D94FE8F7AD --session=2026-27 >> /var/log/schoolsync/reconcile.log 2>&1
+
+# ── WEEKLY Sunday 03:00 — cross-system integrity audit ─────────────
+0 3 * * 0 /usr/bin/php /var/www/Grader/school/scripts/run_scheduled.php --job=integrity --schoolId=SCH_D94FE8F7AD --session=2026-27 >> /var/log/schoolsync/integrity.log 2>&1
+
+# ── HOURLY — reap stuck fee-generation workers (per active job) ────
+# Replace JOB_… with the current running job id, or wrap this in a
+# script that scans `fee_generation_jobs where status==running`.
+# 5 * * * * /usr/bin/php /var/www/Grader/school/scripts/run_scheduled.php --job=reap --jobId=JOB_LATEST --thresholdSec=60 >> /var/log/schoolsync/reap.log 2>&1
+
+# ─────────────────────────────────────────────────────────────────────
+# Windows Task Scheduler equivalents (XAMPP dev box):
+#
+#   schtasks /Create /SC DAILY  /ST 02:15 /TN "SS-Reconcile" /TR ^
+#     "C:\xampp\php\php.exe C:\xampp\htdocs\Grader\school\scripts\run_scheduled.php --job=reconcile --schoolId=SCH_D94FE8F7AD --session=2026-27"
+#
+#   schtasks /Create /SC WEEKLY /D SUN /ST 03:00 /TN "SS-Integrity" /TR ^
+#     "C:\xampp\php\php.exe C:\xampp\htdocs\Grader\school\scripts\run_scheduled.php --job=integrity --schoolId=SCH_D94FE8F7AD --session=2026-27"
+#
+# ─────────────────────────────────────────────────────────────────────
+# Observability:
+#   — Every run writes scheduled_job_runs/{runId} with status + outputTail
+#   — Non-zero exits auto-create fee_alerts of severity=error
+#   — Configure Slack / email dispatch via feeSettings/{schoolId}_alerts:
+#     {
+#       "enabled": true,
+#       "slackWebhookUrl": "https://hooks.slack.com/services/...",
+#       "emailRecipients": ["ops@yourschool.in"],
+#       "minSeverity": "error"
+#     }

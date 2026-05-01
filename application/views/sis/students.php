@@ -2,36 +2,64 @@
 
 <style>
 html { font-size: 16px !important; }
-.sis-students-wrap { max-width:1200px; margin:0 auto; padding:24px 20px; }
-.page-hdr { display:flex; align-items:center; justify-content:space-between; margin-bottom:20px; flex-wrap:wrap; gap:10px; }
-.page-hdr h1 { margin:0; font-size:1.35rem; color:var(--t1); font-family:var(--font-b); }
+/* Full-width layout — pre-polish the wrapper was capped at 1200px which
+   left a lot of empty side margin on a 14-column table and made the
+   Actions column the first thing to overflow. Now the wrapper hugs
+   the viewport with a comfortable side padding. */
+.sis-students-wrap { width:100%; max-width:none; margin:0; padding:24px 28px; box-sizing:border-box; }
 
+.page-hdr { display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:20px; flex-wrap:wrap; gap:10px; padding-bottom:14px;
+    border-bottom:1px solid var(--border); }
+.page-hdr h1 { margin:0; font-size:1.4rem; color:var(--t1); font-family:var(--font-b); letter-spacing:-0.01em; }
+.page-hdr .page-sub { font-size:.84rem; color:var(--t3); margin-top:2px; }
+
+/* Filter bar — slight elevation + tighter group sizing */
 .filter-bar { background:var(--bg2); border:1px solid var(--border); border-radius:10px;
-    padding:16px; margin-bottom:20px; display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; }
+    padding:14px 16px; margin-bottom:18px; display:flex; gap:12px; flex-wrap:wrap;
+    align-items:flex-end; box-shadow:0 1px 2px rgba(15,23,42,0.04); }
 .filter-bar .fg { display:flex; flex-direction:column; gap:4px; }
-.filter-bar label { font-size:.84rem; color:var(--t3); font-family:var(--font-m); }
-.filter-bar select, .filter-bar input { padding:7px 10px; border:1px solid var(--border);
-    border-radius:6px; background:var(--bg3); color:var(--t1); font-size:.88rem; min-width:140px; }
-.btn-search { padding:8px 18px; background:var(--gold); color:#fff; border:none;
-    border-radius:6px; cursor:pointer; font-size:.88rem; font-family:var(--font-m); }
+.filter-bar label { font-size:.78rem; color:var(--t3); font-family:var(--font-m);
+    text-transform:uppercase; letter-spacing:.04em; }
+.filter-bar select, .filter-bar input { padding:8px 11px; border:1px solid var(--border);
+    border-radius:6px; background:var(--bg3); color:var(--t1); font-size:.88rem; min-width:150px;
+    transition:border-color .15s; }
+.filter-bar select:focus, .filter-bar input:focus { outline:none; border-color:var(--gold); }
+.btn-search { padding:9px 20px; background:var(--gold); color:#fff; border:none;
+    border-radius:6px; cursor:pointer; font-size:.88rem; font-family:var(--font-m);
+    transition:background .15s, transform .05s; }
 .btn-search:hover { background:var(--gold2); }
+.btn-search:active { transform:translateY(1px); }
 
-.students-table-wrap { background:var(--bg2); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
-.students-table { width:100%; border-collapse:collapse; font-size:.9rem; }
+/* Table wrapper — horizontal scroll on overflow + subtle elevation. */
+.students-table-wrap { background:var(--bg2); border:1px solid var(--border); border-radius:10px;
+    overflow-x:auto; overflow-y:hidden; box-shadow:0 1px 2px rgba(15,23,42,0.04); }
+.students-table { width:100%; border-collapse:collapse; font-size:.88rem; min-width:1280px; }
 .students-table th { background:var(--bg3); color:var(--t2); font-family:var(--font-m);
-    padding:10px 14px; text-align:left; border-bottom:1px solid var(--border); }
-.students-table td { padding:10px 14px; border-bottom:1px solid var(--border); color:var(--t1); }
+    padding:11px 14px; text-align:left; border-bottom:1px solid var(--border);
+    white-space:nowrap; position:sticky; top:0; z-index:1; font-size:.78rem;
+    text-transform:uppercase; letter-spacing:.04em; }
+.students-table td { padding:10px 14px; border-bottom:1px solid var(--border); color:var(--t1); vertical-align:middle; }
 .students-table tr:last-child td { border-bottom:none; }
 .students-table tr:hover td { background:var(--gold-dim); }
 
-.badge-active   { background:#dcfce7; color:#166534; padding:3px 10px; border-radius:20px; font-size:.82rem; }
-.badge-tc       { background:#fee2e2; color:#991b1b; padding:3px 10px; border-radius:20px; font-size:.82rem; }
-.badge-inactive { background:var(--bg3); color:var(--t3); padding:3px 10px; border-radius:20px; font-size:.82rem; }
+.badge-active   { background:#dcfce7; color:#166534; padding:3px 10px; border-radius:20px; font-size:.78rem; font-weight:600; }
+.badge-tc       { background:#fee2e2; color:#991b1b; padding:3px 10px; border-radius:20px; font-size:.78rem; font-weight:600; }
+.badge-inactive { background:var(--bg3); color:var(--t3); padding:3px 10px; border-radius:20px; font-size:.78rem; font-weight:600; }
 
-.act-btn { padding:7px 14px; border-radius:6px; border:1px solid var(--border);
-    background:var(--bg3); color:var(--t2); cursor:pointer; font-size:.85rem; text-decoration:none; }
+/* Compact icon-only action buttons — pre-polish the wide pill buttons
+   spilled out of the Actions column. */
+.act-btn { display:inline-flex; align-items:center; justify-content:center;
+    width:30px; height:30px; padding:0; border-radius:6px; border:1px solid var(--border);
+    background:var(--bg3); color:var(--t2); cursor:pointer; font-size:.85rem;
+    text-decoration:none; margin-right:4px; transition:background .12s, color .12s,
+    border-color .12s, transform .05s; }
+.act-btn:last-child { margin-right:0; }
 .act-btn:hover { background:var(--gold-dim); color:var(--gold); border-color:var(--gold-ring); }
+.act-btn:active { transform:translateY(1px); }
 .act-btn.red:hover { background:#fee2e2; color:#991b1b; border-color:#fecaca; }
+/* Spinner state on click — prevents double-fire and signals "working". */
+.act-btn.is-loading { pointer-events:none; opacity:.7; cursor:not-allowed; background:var(--bg3); }
 
 .pagination { display:flex; gap:8px; align-items:center; justify-content:center; padding:16px; }
 .page-btn { padding:5px 12px; border:1px solid var(--border); border-radius:5px;
@@ -75,6 +103,15 @@ html { font-size: 16px !important; }
                 <option value="">All</option>
                 <option value="Male">Male</option>
                 <option value="Female">Female</option>
+            </select>
+        </div>
+        <div class="fg">
+            <label>Status</label>
+            <select id="statusFilter">
+                <option value="Active" selected>Active</option>
+                <option value="Inactive">Inactive</option>
+                <option value="TC">TC</option>
+                <option value="">All (excl. Deleted)</option>
             </select>
         </div>
         <button class="btn-search" onclick="loadStudents(1)"><i class="fa fa-search"></i> Search</button>
@@ -149,6 +186,7 @@ function loadStudents(page) {
         class:   document.getElementById('classFilter').value,
         section: document.getElementById('secFilter').value,
         gender:  document.getElementById('genderFilter').value,
+        status:  document.getElementById('statusFilter').value,
         page:    page,
     });
     params.append(csrfName, csrfToken);
@@ -195,7 +233,9 @@ function loadStudents(page) {
                     <a href="<?= base_url('sis/profile/') ?>${encodeURIComponent(s.user_id)}" class="act-btn" title="View Profile"><i class="fa fa-eye"></i></a>
                     <a href="<?= base_url('sis/edit_student/') ?>${encodeURIComponent(s.user_id)}" class="act-btn" title="Edit Student" style="background:var(--gold-dim);color:var(--gold);"><i class="fa fa-pencil"></i></a>
                     <a href="<?= base_url('sis/documents/') ?>${encodeURIComponent(s.user_id)}" class="act-btn" title="Documents"><i class="fa fa-folder-open-o"></i></a>
-                    ${s.status !== 'Inactive' ? `<button class="act-btn red" title="Withdraw" onclick="withdrawStudent('${esc(s.user_id)}','${esc(s.name)}')"><i class="fa fa-sign-out"></i></button>` : ''}
+                    ${s.status === 'Active' ? `<button class="act-btn" style="background:#fef3c7;color:#92400e;" title="Mark Inactive" onclick="changeStatus(event, '${esc(s.user_id)}','${esc(s.name)}','Inactive')"><i class="fa fa-pause"></i></button>` : ''}
+                    ${s.status === 'Inactive' ? `<button class="act-btn" style="background:#dcfce7;color:#166534;" title="Reactivate" onclick="changeStatus(event, '${esc(s.user_id)}','${esc(s.name)}','Active')"><i class="fa fa-play"></i></button>` : ''}
+                    ${s.status !== 'Inactive' ? `<button class="act-btn red" title="Withdraw" onclick="withdrawStudent(event, '${esc(s.user_id)}','${esc(s.name)}')"><i class="fa fa-sign-out"></i></button>` : ''}
                 </td>
             </tr>`;
         }).join('');
@@ -219,7 +259,63 @@ function loadStudents(page) {
 
 function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-function withdrawStudent(userId, name, forceOverride) {
+// Toggle a button into a "loading" state — swap the icon with a
+// spinner, mark the button disabled-by-class so the user can't
+// double-click. Returns a `restore()` function the caller invokes
+// in finally{} to put the button back to its original look.
+// Returns a no-op when no button is provided (e.g. forceOverride
+// recursion from withdrawStudent).
+function setActionLoading(btn) {
+    if (!btn || !btn.classList) return function () {};
+    var originalHtml = btn.innerHTML;
+    btn.classList.add('is-loading');
+    btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i>';
+    return function restore() {
+        btn.classList.remove('is-loading');
+        btn.innerHTML = originalHtml;
+    };
+}
+
+// Lightweight Active <-> Inactive toggle. Distinct from `withdrawStudent`
+// (which collects a reason and runs the full withdrawal pipeline incl.
+// fee freeze + dues check). Use this for routine reactivations or quick
+// toggles where the heavier withdrawal flow isn't appropriate.
+function changeStatus(evt, userId, name, newStatus) {
+    var verb = newStatus === 'Active' ? 'reactivate' : 'mark as Inactive';
+    if (!confirm('Are you sure you want to ' + verb + ' "' + name + '"?')) return;
+
+    var btn = evt && evt.currentTarget ? evt.currentTarget : null;
+    var restore = setActionLoading(btn);
+
+    var body = new URLSearchParams({ user_id: userId, status: newStatus });
+    body.append(csrfName, csrfToken);
+
+    fetch('<?= base_url('sis/change_status') ?>', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+        body: body.toString(),
+    })
+    .then(r => r.json())
+    .then(data => {
+        // CSRF rotation — every server response refreshes the token.
+        if (data.csrf_token) csrfToken = data.csrf_token;
+        if (data.status === 'success') {
+            // No need to restore — the row is about to be re-rendered
+            // by loadStudents() below, replacing the whole button.
+            alert(data.message || ('Status updated to ' + newStatus + '.'));
+            loadStudents(currentPage);
+        } else {
+            restore();
+            alert(data.message || 'Could not update status.');
+        }
+    })
+    .catch(() => {
+        restore();
+        alert('Request failed.');
+    });
+}
+
+function withdrawStudent(evt, userId, name, forceOverride) {
     if (!forceOverride) {
         var reason = prompt('Withdraw "' + name + '"?\nEnter reason (or leave blank for "Withdrawn"):');
         if (reason === null) return;
@@ -227,6 +323,11 @@ function withdrawStudent(userId, name, forceOverride) {
         window._withdrawUserId = userId;
         window._withdrawName = name;
     }
+    // On the recursive force-override call evt is null; setActionLoading
+    // tolerates that and returns a no-op restore.
+    var btn = evt && evt.currentTarget ? evt.currentTarget : null;
+    var restore = setActionLoading(btn);
+
     var body = new URLSearchParams({ user_id: window._withdrawUserId || userId, reason: window._withdrawReason || 'Withdrawn' });
     if (forceOverride) body.append('force_override', 'true');
     body.append(csrfName, csrfToken);
@@ -238,21 +339,30 @@ function withdrawStudent(userId, name, forceOverride) {
     .then(r => r.json())
     .then(data => {
         if (data.status === 'success') {
+            // Row will be re-rendered — no restore needed.
             alert(data.message);
             loadStudents(currentPage);
         } else if (data.can_override && data.dues) {
+            restore();
             if (confirm(data.message + '\n\nDo you want to withdraw anyway? (Admin override)')) {
-                withdrawStudent(userId, name, true);
+                withdrawStudent(null, userId, name, true);
             }
         } else {
+            restore();
             alert(data.message);
         }
     })
-    .catch(() => alert('Request failed.'));
+    .catch(() => {
+        restore();
+        alert('Request failed.');
+    });
 }
 
 // Gender filter
 document.getElementById('genderFilter').addEventListener('change', () => loadStudents(1));
+// Status filter — reloads on change so admin can quickly flip between
+// Active / Inactive / TC / All.
+document.getElementById('statusFilter').addEventListener('change', () => loadStudents(1));
 
 // Bulk selection
 document.getElementById('selectAllCb').addEventListener('change', function() {

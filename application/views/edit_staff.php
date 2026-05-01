@@ -200,6 +200,26 @@
                             </div>
 
                             <div class="nsa-field">
+                                <label>Alternate Phone</label>
+                                <input type="tel" id="alt_phone" name="alt_phone"
+                                       value="<?= htmlspecialchars($staff_data['altPhone'] ?? '') ?>"
+                                       class="nsa-input" placeholder="10-digit number"
+                                       pattern="[0-9]{10}" maxlength="10">
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>Marital Status</label>
+                                <?php $ms = $staff_data['maritalStatus'] ?? ''; ?>
+                                <select id="marital_status" name="marital_status" class="nsa-select">
+                                    <option value="">Select</option>
+                                    <option value="Single"   <?= $ms === 'Single'   ? 'selected' : '' ?>>Single</option>
+                                    <option value="Married"  <?= $ms === 'Married'  ? 'selected' : '' ?>>Married</option>
+                                    <option value="Widowed"  <?= $ms === 'Widowed'  ? 'selected' : '' ?>>Widowed</option>
+                                    <option value="Divorced" <?= $ms === 'Divorced' ? 'selected' : '' ?>>Divorced</option>
+                                </select>
+                            </div>
+
+                            <div class="nsa-field">
                                 <label>Emergency Contact Name <span class="req">*</span></label>
                                 <input type="text" id="emergency_contact_name" name="emergency_contact_name"
                                        value="<?= htmlspecialchars($staff_data['emergencyContact']['name'] ?? '') ?>"
@@ -212,6 +232,71 @@
                                        value="<?= htmlspecialchars($staff_data['emergencyContact']['phoneNumber'] ?? '') ?>"
                                        class="nsa-input" placeholder="10-digit number"
                                        pattern="[0-9]{10}" maxlength="10" required>
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>Emergency Contact Relation</label>
+                                <?php $ecr = $staff_data['emergencyContact']['relation'] ?? ''; ?>
+                                <select id="emergency_contact_relation" name="emergency_contact_relation" class="nsa-select">
+                                    <option value="">Select</option>
+                                    <option value="Father"  <?= $ecr === 'Father'  ? 'selected' : '' ?>>Father</option>
+                                    <option value="Mother"  <?= $ecr === 'Mother'  ? 'selected' : '' ?>>Mother</option>
+                                    <option value="Spouse"  <?= $ecr === 'Spouse'  ? 'selected' : '' ?>>Spouse</option>
+                                    <option value="Sibling" <?= $ecr === 'Sibling' ? 'selected' : '' ?>>Sibling</option>
+                                    <option value="Friend"  <?= $ecr === 'Friend'  ? 'selected' : '' ?>>Friend</option>
+                                    <option value="Other"   <?= $ecr === 'Other'   ? 'selected' : '' ?>>Other</option>
+                                </select>
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>Designation</label>
+                                <input type="text" id="designation" name="designation"
+                                       value="<?= htmlspecialchars($staff_data['designation'] ?? '') ?>"
+                                       class="nsa-input" placeholder="e.g. Senior Teacher, HOD">
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ══ STATUTORY IDs ══ -->
+                <div class="nsa-section" id="sec-statutory">
+                    <div class="nsa-section-head">
+                        <i class="fa fa-id-card-o"></i>
+                        <h3>Statutory Identification</h3>
+                    </div>
+                    <div class="nsa-section-body">
+                        <div class="nsa-grid nsa-grid-2">
+
+                            <div class="nsa-field">
+                                <label>PAN Number</label>
+                                <input type="text" id="pan_number" name="pan_number"
+                                       value="<?= htmlspecialchars($staff_data['panNumber'] ?? '') ?>"
+                                       class="nsa-input" placeholder="ABCDE1234F"
+                                       pattern="[A-Z]{5}[0-9]{4}[A-Z]" maxlength="10"
+                                       style="text-transform:uppercase">
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>Aadhar Number</label>
+                                <input type="text" id="aadhar_number" name="aadhar_number"
+                                       value="<?= htmlspecialchars($staff_data['aadharNumber'] ?? '') ?>"
+                                       class="nsa-input" placeholder="12-digit number"
+                                       pattern="[0-9]{12}" maxlength="12">
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>PF Number (UAN)</label>
+                                <input type="text" id="pf_number" name="pf_number"
+                                       value="<?= htmlspecialchars($staff_data['pfNumber'] ?? '') ?>"
+                                       class="nsa-input" placeholder="UAN or PF Account No.">
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>ESI Number</label>
+                                <input type="text" id="esi_number" name="esi_number"
+                                       value="<?= htmlspecialchars($staff_data['esiNumber'] ?? '') ?>"
+                                       class="nsa-input" placeholder="ESI IP Number">
                             </div>
 
                         </div>
@@ -250,12 +335,53 @@
 
                             <div class="nsa-field">
                                 <label>Postal Code <span class="req">*</span></label>
-                                <input type="text" id="postal_code" name="postalcode"
+                                <input type="text" id="postal_code" name="postal_code"
                                        value="<?= htmlspecialchars($staff_data['Address']['PostalCode'] ?? '') ?>"
                                        class="nsa-input" required>
                             </div>
 
                         </div>
+
+                        <!-- Permanent Address -->
+                        <div style="margin-top:16px">
+                            <label class="nsa-checkbox-label" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--t2)">
+                                <input type="checkbox" id="same_as_current" name="same_as_current" value="1"
+                                       <?= !empty($staff_data['sameAsCurrentAddress']) ? 'checked' : '' ?>
+                                       style="width:16px;height:16px;accent-color:var(--gold)">
+                                Permanent address same as current address
+                            </label>
+                        </div>
+
+                        <div id="permanent_address_block" style="margin-top:12px">
+                            <h4 style="font-size:13px;color:var(--t2);margin-bottom:8px;font-weight:600">Permanent Address</h4>
+                            <div class="nsa-grid nsa-grid-2">
+                                <div class="nsa-field nsa-col-2">
+                                    <label>Street</label>
+                                    <input type="text" id="perm_street" name="perm_street"
+                                           value="<?= htmlspecialchars($staff_data['permanentAddress']['street'] ?? '') ?>"
+                                           class="nsa-input" placeholder="House no., Street name">
+                                </div>
+                                <div class="nsa-field">
+                                    <label>City</label>
+                                    <input type="text" id="perm_city" name="perm_city"
+                                           value="<?= htmlspecialchars($staff_data['permanentAddress']['city'] ?? '') ?>"
+                                           class="nsa-input" placeholder="City / District">
+                                </div>
+                                <div class="nsa-field">
+                                    <label>State</label>
+                                    <input type="text" id="perm_state" name="perm_state"
+                                           value="<?= htmlspecialchars($staff_data['permanentAddress']['state'] ?? '') ?>"
+                                           class="nsa-input" placeholder="State">
+                                </div>
+                                <div class="nsa-field">
+                                    <label>Postal Code</label>
+                                    <input type="text" id="perm_postal_code" name="perm_postal_code"
+                                           value="<?= htmlspecialchars($staff_data['permanentAddress']['postalCode'] ?? '') ?>"
+                                           class="nsa-input" placeholder="6-digit PIN">
+                                </div>
+                            </div>
+                        </div>
+
                     </div>
                 </div>
 
@@ -679,6 +805,27 @@ function validateEditForm() {
 
 /* ── DOMContentLoaded ── */
 document.addEventListener('DOMContentLoaded', function() {
+
+    /* ── Permanent address "same as current" toggle ── */
+    (function(){
+        var sameChk = document.getElementById('same_as_current');
+        var permBlock = document.getElementById('permanent_address_block');
+        if (!sameChk || !permBlock) return;
+        // Hide block on initial render if box was checked from server
+        if (sameChk.checked) permBlock.style.display = 'none';
+        sameChk.addEventListener('change', function() {
+            if (this.checked) {
+                permBlock.style.display = 'none';
+                ['street','city','state','postal_code'].forEach(function(k){
+                    var src = document.getElementById(k);
+                    var dst = document.getElementById('perm_' + k);
+                    if (src && dst) dst.value = src.value;
+                });
+            } else {
+                permBlock.style.display = '';
+            }
+        });
+    })();
 
     /* ── Load departments from HR module ── */
     (function(){

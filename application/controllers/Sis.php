@@ -100,14 +100,15 @@ class Sis extends MY_Controller
         $studentList = $this->fs->schoolList('students');
         $index = [];
         foreach ($studentList as $s) {
-            $uid = $s['studentId'] ?? $s['User Id'] ?? $s['userId'] ?? '';
+            $d = $s['data'] ?? $s;
+            $uid = $d['studentId'] ?? $d['User Id'] ?? $d['userId'] ?? '';
             if ($uid === '') continue;
             $index[$uid] = [
-                'name'    => $s['name'] ?? $s['Name'] ?? '',
-                'class'   => $s['className'] ?? $s['Class'] ?? '',
-                'section' => $s['section'] ?? $s['Section'] ?? '',
-                'status'  => $s['status'] ?? $s['Status'] ?? 'Active',
-                'gender'  => $s['gender'] ?? $s['Gender'] ?? '',
+                'name'    => $d['name'] ?? $d['Name'] ?? '',
+                'class'   => $d['className'] ?? $d['Class'] ?? '',
+                'section' => $d['section'] ?? $d['Section'] ?? '',
+                'status'  => $d['status'] ?? $d['Status'] ?? 'Active',
+                'gender'  => $d['gender'] ?? $d['Gender'] ?? '',
             ];
         }
 
@@ -395,6 +396,10 @@ class Sis extends MY_Controller
         $this->entity_sync->syncStudent($userId, $studentData);
         $this->entity_sync->syncParent($userId, $studentData);
 
+        // G2 — Refresh sections.currentStrength after a new admit so the
+        // admission section-picker's strength bars stay accurate.
+        $this->_recompute_section_strength($classKey, $sectionKey);
+
         // Phone index
         if (!empty($phone)) {
             $this->fs->set('indexPhones', $this->fs->docId($phone), [
@@ -422,8 +427,9 @@ class Sis extends MY_Controller
             $subjectDocs = $this->fs->schoolWhere('subjects', [['classKey', '==', (string)$classNumber]]);
             $coreSubjects = [];
             foreach ($subjectDocs as $doc) {
+                $d = $doc['data'] ?? $doc;
                 $item = $doc['data'];
-                $code = $item['subjectCode'] ?? $item['code'] ?? $doc['id'];
+                $code = $item['subjectCode'] ?? $item['code'] ?? $d['id'];
                 $subName = trim($item['name'] ?? $item['subject_name'] ?? '');
                 if ($subName === '') continue;
                 $type = strtolower(trim($item['category'] ?? ''));
@@ -595,16 +601,47 @@ class Sis extends MY_Controller
             return $this->json_error('Invalid phone number format.');
         }
 
-        // Address is a nested object — posted as Address[Street], Address[City], etc.
+        // Pre-update snapshot — fetched lazily and reused by both the
+        // Address-merge branch (Step 4) AND the audit-log diff capture
+        // below. Captured BEFORE the Firestore write so the before-state
+        // is available for the timeline UI's old → new rendering.
+        $beforeStudent = null;
+
+        // Address is a nested object — posted as Address[Street],
+        // Address[City], etc. Partial updates are common (parent only
+        // wants to change the City), so we MUST merge on top of the
+        // current doc rather than overwrite — otherwise unposted
+        // sub-fields go blank.
+        //
+        // Tier-A Step 4: previously, when `_getStudent` returned null
+        // (transient Firestore read failure / permission flake), the
+        // code defaulted `$existing = []` and the merge produced a
+        // patch containing only the posted sub-fields — silently
+        // wiping every unposted sub-field on the doc. We now refuse
+        // to write a partial address whenever the existing address
+        // can't be confirmed, returning an explicit error so the
+        // caller can retry instead of losing data.
         $addrPost = $this->input->post('Address');
         if (is_array($addrPost)) {
-            $fsStudent = $this->_getStudent($userId);
-            $existing = ($fsStudent !== null) ? ($fsStudent['Address'] ?? $fsStudent['address'] ?? []) : [];
+            $beforeStudent = $this->_getStudent($userId);
+            if ($beforeStudent === null) {
+                return $this->json_error(
+                    'Could not load current address — please refresh and try again. ' .
+                    'No fields were changed.'
+                );
+            }
+            $existing = $beforeStudent['Address'] ?? $beforeStudent['address'] ?? [];
             $existing = is_array($existing) ? $existing : [];
-            $merged   = $existing;
+
+            // Per-sub-field merge: only overwrite a sub-field when the
+            // POST explicitly carried it. Empty-string values DO clear
+            // the field (intentional — the form's "clear" UX is to
+            // submit an empty input). Sub-fields absent from the POST
+            // keep their current value, period.
+            $merged = $existing;
             foreach (['Street', 'City', 'State', 'PostalCode'] as $sub) {
-                if (isset($addrPost[$sub])) {
-                    $merged[$sub] = trim($addrPost[$sub]);
+                if (array_key_exists($sub, $addrPost)) {
+                    $merged[$sub] = trim((string) $addrPost[$sub]);
                 }
             }
             $updates['Address'] = $merged;
@@ -618,17 +655,57 @@ class Sis extends MY_Controller
         $updates['updatedAt'] = date('c');
 
         // ── Firestore with camelCase mapping ──────────
+        // The doc gets both PascalCase (legacy admin readers) and
+        // camelCase (mobile apps' StudentDoc). Mirroring Step-3's
+        // edit_student coverage so a profile edit lands every field
+        // the parent / teacher app reads, not just Name + Phone +
+        // Email + parents. Address (nested map) is mirrored to
+        // canonical `address` so the mobile profile screen sees
+        // changes immediately, not only after the trailing
+        // syncStudent call merges canonical keys in.
         $fsUpdates = $updates;
-        if (isset($fsUpdates['Name']))         $fsUpdates['name']  = $fsUpdates['Name'];
+        if (isset($fsUpdates['Name']))              $fsUpdates['name']             = $fsUpdates['Name'];
         if (isset($fsUpdates['Phone Number'])) {
             // Mirror Entity_firestore_sync::syncStudent, which writes BOTH
             // `phone` (Android canonical) and `phoneNumber` (backward compat).
             $fsUpdates['phone']       = $fsUpdates['Phone Number'];
             $fsUpdates['phoneNumber'] = $fsUpdates['Phone Number'];
         }
-        if (isset($fsUpdates['Email']))        $fsUpdates['email'] = $fsUpdates['Email'];
-        if (isset($fsUpdates['Father Name']))  $fsUpdates['fatherName'] = $fsUpdates['Father Name'];
-        if (isset($fsUpdates['Mother Name']))  $fsUpdates['motherName'] = $fsUpdates['Mother Name'];
+        if (isset($fsUpdates['Email']))             $fsUpdates['email']            = $fsUpdates['Email'];
+        if (isset($fsUpdates['DOB']))               $fsUpdates['dob']              = $fsUpdates['DOB'];
+        if (isset($fsUpdates['Gender']))            $fsUpdates['gender']           = $fsUpdates['Gender'];
+        if (isset($fsUpdates['Category']))          $fsUpdates['category']         = $fsUpdates['Category'];
+        if (isset($fsUpdates['Blood Group']))       $fsUpdates['bloodGroup']       = $fsUpdates['Blood Group'];
+        if (isset($fsUpdates['Religion']))          $fsUpdates['religion']         = $fsUpdates['Religion'];
+        if (isset($fsUpdates['Nationality']))       $fsUpdates['nationality']      = $fsUpdates['Nationality'];
+        if (isset($fsUpdates['Roll No']))           $fsUpdates['rollNo']           = $fsUpdates['Roll No'];
+        if (isset($fsUpdates['Father Name']))       $fsUpdates['fatherName']       = $fsUpdates['Father Name'];
+        if (isset($fsUpdates['Father Occupation'])) $fsUpdates['fatherOccupation'] = $fsUpdates['Father Occupation'];
+        if (isset($fsUpdates['Mother Name']))       $fsUpdates['motherName']       = $fsUpdates['Mother Name'];
+        if (isset($fsUpdates['Mother Occupation'])) $fsUpdates['motherOccupation'] = $fsUpdates['Mother Occupation'];
+        if (isset($fsUpdates['Guard Contact']))     $fsUpdates['guardContact']     = $fsUpdates['Guard Contact'];
+        if (isset($fsUpdates['Guard Relation']))    $fsUpdates['guardRelation']    = $fsUpdates['Guard Relation'];
+        if (isset($fsUpdates['Pre Class']))         $fsUpdates['preClass']         = $fsUpdates['Pre Class'];
+        if (isset($fsUpdates['Pre School']))        $fsUpdates['preSchool']        = $fsUpdates['Pre School'];
+        if (isset($fsUpdates['Pre Marks']))         $fsUpdates['preMarks']         = $fsUpdates['Pre Marks'];
+        if (isset($fsUpdates['Address']))           $fsUpdates['address']          = $fsUpdates['Address'];
+
+        // Audit diff — captured BEFORE the write so the timeline UI can
+        // show the parent / admin exactly what changed. Lazy fetch:
+        // skipped if the Address branch already loaded the doc.
+        if ($beforeStudent === null) {
+            $beforeStudent = $this->_getStudent($userId);
+        }
+        $auditDiff = [];
+        if (is_array($beforeStudent)) {
+            foreach ($updates as $auditKey => $newVal) {
+                if ($auditKey === 'updatedAt') continue;
+                $oldVal = $beforeStudent[$auditKey] ?? null;
+                if ($oldVal === $newVal) continue;
+                $auditDiff[$auditKey] = ['old' => $oldVal, 'new' => $newVal];
+            }
+        }
+
         $this->fs->updateEntity('students', $userId, $fsUpdates);
 
         // ── FIX 4c: Update Firebase Auth displayName if name changed ──
@@ -641,8 +718,13 @@ class Sis extends MY_Controller
         }
 
         $changed = implode(', ', array_keys($updates));
+        // Pass the diff into metadata so the timeline UI can render
+        // a clean old → new table per changed field. `fields` is
+        // retained for back-compat with the existing collapsible
+        // JSON view in history.php.
         $this->_log_history($school_id, $userId, 'PROFILE_UPDATE',
-            "Profile updated: {$changed}", $updates
+            "Profile updated: {$changed}",
+            ['fields' => array_keys($updates), 'changes' => $auditDiff]
         );
 
         // Entity sync for Android apps
@@ -823,6 +905,22 @@ class Sis extends MY_Controller
             $skipped[] = ['user_id' => $userId, 'reason' => 'RTDB atomic write failed'];
         }
 
+        // G2 — Refresh section strength on every (old, new) section
+        // touched by the batch. Old sections drop students; the new
+        // section gains them. Dedup via assoc-key set so we don't
+        // recompute the same section twice when many students share
+        // an oldSection.
+        $touchedSections = [];
+        $touchedSections["{$newClassKey}|{$newSectionKey}"] = [$newClassKey, $newSectionKey];
+        foreach ($batchMap as $bmInfo) {
+            $oldSec = $bmInfo['oldSection'] ?? '';
+            if ($oldSec === '') continue;
+            $touchedSections["{$oldClassKey}|{$oldSec}"] = [$oldClassKey, $oldSec];
+        }
+        foreach ($touchedSections as $pair) {
+            $this->_recompute_section_strength($pair[0], $pair[1]);
+        }
+
         // Save promotion batch record
         $schoolDoc = $this->fs->get('schools', $this->school_id);
         $promotions = $schoolDoc['promotions'] ?? [];
@@ -895,9 +993,10 @@ class Sis extends MY_Controller
             }
 
             foreach ($tcStudents as $doc) {
+                $d = $doc['data'] ?? $doc;
                 $student = $this->_normalizeStudentDoc($doc['data']);
                 if (!is_array($student)) continue;
-                $uid = $student['User Id'] ?? $student['studentId'] ?? $doc['id'];
+                $uid = $student['User Id'] ?? $student['studentId'] ?? $d['id'];
                 $tcs = $student['TC'] ?? [];
                 if (!is_array($tcs)) continue;
                 foreach ($tcs as $tcKey => $tc) {
@@ -1051,6 +1150,13 @@ class Sis extends MY_Controller
             log_message('error', "entity_sync syncStudent TC failed for {$userId}: " . $e->getMessage());
         }
 
+        // G1 — Blank current-month attendance from today onwards so the
+        // student's % doesn't drift after TC issue.
+        $this->_blank_summary_from_today($userId);
+
+        // G2 — Section strength drops by one (student leaves the roster).
+        $this->_recompute_section_strength($stuClass, $stuSection);
+
         $this->_log_history($school_id, $userId, 'TC_ISSUED',
             "Transfer Certificate issued (TC#{$tcNo}) — Reason: {$reason}",
             ['tc_no' => $tcNo, 'destination' => $destination]
@@ -1198,6 +1304,15 @@ class Sis extends MY_Controller
             log_message('error', "entity_sync cancel_tc failed for {$userId}: " . $e->getMessage());
         }
 
+        // G1 — Blank current-month attendance from today onwards. The
+        // student is reactivating; days during the TC window stay as
+        // whatever they were (likely V), and from today onwards they
+        // get a clean slate that future marks can fill in.
+        $this->_blank_summary_from_today($userId);
+
+        // G2 — Section strength rises by one (student returns to roster).
+        $this->_recompute_section_strength($stuClass, $stuSection);
+
         $this->_log_history($school_id, $userId, 'TC_CANCELLED',
             'Transfer Certificate cancelled — student re-activated.'
         );
@@ -1284,6 +1399,14 @@ class Sis extends MY_Controller
             log_message('error', "Fee_lifecycle::freezeFeesOnSoftDelete failed for {$userId}: " . $e->getMessage());
         }
 
+        // G1 — Blank current-month attendance from today onwards so the
+        // withdrawn student's % stops drifting upward as the rest of
+        // the month gets recorded for everyone else.
+        $this->_blank_summary_from_today($userId);
+
+        // G2 — Section strength drops by one.
+        $this->_recompute_section_strength($stuClass, $stuSection);
+
         $this->_log_history($school_id, $userId, 'WITHDRAWAL',
             "Student withdrawn: {$reason}",
             ['reason' => $reason, 'session' => $session, 'class' => $stuClass, 'section' => $stuSection]
@@ -1329,6 +1452,21 @@ class Sis extends MY_Controller
         // Firestore sync for Android apps (entity_sync loaded in constructor)
         $this->entity_sync->syncStudent($userId, ['Status' => $newStatus]);
         $this->entity_sync->syncParent($userId, ['Status' => $newStatus]);
+
+        // G1 — Blank current-month attendance from today onwards on
+        // every status flip. For Active→Inactive this stops the % drift
+        // for the rest of the month; for Inactive→Active it gives a
+        // clean slate from today.
+        $this->_blank_summary_from_today($userId);
+
+        // G2 — Section strength changes by ±1 either direction. Pull
+        // the student's class/section from the (already-fetched) doc
+        // so we recompute the right section.
+        $stuClass   = $student['Class']   ?? $student['className'] ?? '';
+        $stuSection = $student['Section'] ?? $student['section']   ?? '';
+        if ($stuClass !== '' && $stuSection !== '') {
+            $this->_recompute_section_strength($stuClass, $stuSection);
+        }
 
         return $this->json_success(['message' => "Status updated to {$newStatus}."]);
     }
@@ -1509,9 +1647,10 @@ class Sis extends MY_Controller
         }
         $allStudents = [];
         foreach ($allStudentDocs as $doc) {
+            $d = $doc['data'] ?? $doc;
             $s = $this->_normalizeStudentDoc($doc['data']);
             if (!$s) continue;
-            $uid = $s['User Id'] ?? $s['studentId'] ?? $doc['id'];
+            $uid = $s['User Id'] ?? $s['studentId'] ?? $d['id'];
             $s['User Id'] = $uid;
             $allStudents[$uid] = $s;
         }
@@ -1552,6 +1691,61 @@ class Sis extends MY_Controller
 
 
     /**
+     * Same-origin QR endpoint — local SVG generation (no external API).
+     *
+     * Post Tier-A QR upgrade: backed by `chillerlan/php-qrcode`. No
+     * external network dependency, works offline, scales perfectly
+     * for print. Returned as `image/svg+xml` so any consumer (HTML
+     * `<img>`, CSS `background-image: url(…)`, Dompdf) can embed
+     * the result without further processing. The legacy `?size=`
+     * parameter is accepted but no longer meaningful — SVG is vector
+     * and scales to any container size.
+     *
+     * No auth gate — the QR is just a visual encoding of identifiers
+     * that are already printed in plaintext on the same ID card,
+     * AND the token now carries an HMAC signature so a printed QR
+     * doesn't reveal the secret either.
+     *
+     * Most call sites should prefer `qr_svg_data_uri()` directly to
+     * skip the HTTP round-trip entirely; this endpoint stays for
+     * back-compat and any consumer that needs a real URL.
+     */
+    public function qr_image($token = '')
+    {
+        $token = trim((string) $token);
+        if ($token === '' || strlen($token) > 256) {
+            show_404();
+        }
+        if (!preg_match('/^[A-Za-z0-9_\-]+={0,2}$/', $token)) {
+            show_404();
+        }
+
+        $this->load->helper('qr_token');
+        try {
+            $options = new \chillerlan\QRCode\QROptions([
+                'outputType'   => \chillerlan\QRCode\Output\QROutputInterface::MARKUP_SVG,
+                'outputBase64' => false,        // raw SVG bytes for `image/svg+xml`
+                'eccLevel'     => \chillerlan\QRCode\Common\EccLevel::L,
+                'scale'        => 5,
+                'addQuietzone' => true,
+            ]);
+            $svg = (new \chillerlan\QRCode\QRCode($options))->render($token);
+        } catch (\Throwable $e) {
+            log_message('error', 'Sis::qr_image render failed: ' . $e->getMessage());
+            // Tiny inline placeholder so the layout doesn't shift.
+            header('Content-Type: image/svg+xml');
+            header('Cache-Control: no-store');
+            echo '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>';
+            return;
+        }
+
+        header('Content-Type: image/svg+xml; charset=utf-8');
+        header('Cache-Control: public, max-age=86400, immutable');
+        header('Content-Length: ' . strlen($svg));
+        echo $svg;
+    }
+
+    /**
      * One-time utility: rebuild the Students_Index from the full Users/Parents tree.
      * Call via GET: sis/rebuild_index — idempotent, safe to re-run.
      */
@@ -1585,32 +1779,60 @@ class Sis extends MY_Controller
         $classFilter = trim($this->input->post('class') ?? '');
         $secFilter   = trim($this->input->post('section') ?? '');
         $filterGender  = trim($this->input->post('gender')  ?? '');
+        // Status filter — Active / Inactive / TC / '' (means All except
+        // Deleted). Default to Active to match pre-toggle behaviour;
+        // admins surface Inactive students by switching the dropdown.
+        $statusFilter  = trim($this->input->post('status') ?? 'Active');
         $page        = max(1, (int)($this->input->post('page') ?? 1));
         $perPage     = 30;
 
-        // Read from Firestore students collection
+        // PERF — `search_student` was making ~32 Firestore round-trips
+        // per page on a 500-student school: 1 full schoolList read for
+        // the index, 1 separate `_get_enrolled_ids()` collection read,
+        // then a `_getStudent()` call per row in the current page.
+        //
+        // We now do ONE collection read and keep the full doc data in
+        // memory so the per-row `_getStudent()` calls are gone, and
+        // the enrolled-set is derived from the same in-memory map
+        // instead of re-querying. Net: ~32 reads → 1 read.
         $studentList = $this->fs->schoolList('students');
-        $index = [];
+
+        $currentSession = $this->session_year;
+        $index   = [];   // [uid => filter-fields]
+        $rawDocs = [];   // [uid => full Firestore doc]   ← used for the page's row data
         foreach ($studentList as $s) {
-            $uid = $s['studentId'] ?? $s['User Id'] ?? $s['userId'] ?? '';
+            $d = $s['data'] ?? $s;
+            $uid = $d['studentId'] ?? $d['User Id'] ?? $d['userId'] ?? '';
             if ($uid === '') continue;
+
+            // Session enrollment check (mirrors _get_enrolled_ids).
+            $sessions = $d['sessions'] ?? null;
+            $session  = $d['session']  ?? null;
+            if (is_array($sessions) && !in_array($currentSession, $sessions, true)) continue;
+            if (!is_array($sessions) && is_string($session) && $session !== '' && $session !== $currentSession) continue;
+
+            $rowStatus = (string) ($d['status'] ?? $d['Status'] ?? 'Active');
+            // Always exclude hard-deleted rows from the listing.
+            if (strcasecmp($rowStatus, 'Deleted') === 0) continue;
+
+            $rawDocs[$uid] = $d;
             $index[$uid] = [
-                'name'    => $s['name'] ?? $s['Name'] ?? '',
-                'class'   => $s['className'] ?? $s['Class'] ?? '',
-                'section' => $s['section'] ?? $s['Section'] ?? '',
-                'status'  => $s['status'] ?? $s['Status'] ?? 'Active',
-                'gender'  => $s['gender'] ?? $s['Gender'] ?? '',
+                'name'    => $d['name']     ?? $d['Name']    ?? '',
+                'class'   => $d['className']?? $d['Class']   ?? '',
+                'section' => $d['section']  ?? $d['Section'] ?? '',
+                'status'  => $rowStatus,
+                'gender'  => $d['gender']   ?? $d['Gender']  ?? '',
             ];
         }
-
-        $enrolledIds = $this->_get_enrolled_ids();
 
         // Filter using index fields (name, class, section, status) + userId
         // Dropdown sends stripped values ("8th", "A") but index has prefixed ("Class 8th", "Section A")
         $filtered = [];
         foreach ($index as $uid => $entry) {
             if (!is_array($entry)) continue;
-            if (!isset($enrolledIds[$uid])) continue;
+            // Status filter: blank means "any non-Deleted" (already
+            // enforced above); a specific value matches case-insensitively.
+            if ($statusFilter !== '' && strcasecmp($entry['status'] ?? '', $statusFilter) !== 0) continue;
             $entryClass = str_replace('Class ', '', $entry['class'] ?? '');
             $entrySec   = str_replace('Section ', '', $entry['section'] ?? '');
             if ($classFilter && $entryClass !== $classFilter) continue;
@@ -1633,13 +1855,13 @@ class Sis extends MY_Controller
         $offset    = ($page - 1) * $perPage;
         $pagedKeys = array_slice(array_keys($filtered), $offset, $perPage);
 
-        // Fetch full profiles only for the current page (max 30)
+        // Build the page's response rows from the in-memory `$rawDocs`
+        // map — no Firestore round-trips here. Every field that used
+        // to come from `_getStudent()` is already on the bulk doc.
         $results = [];
         foreach ($pagedKeys as $uid) {
-            $entry   = $filtered[$uid];
-            $profile = $this->_getStudent($uid);
-
-            $p = is_array($profile) ? $profile : [];
+            $entry = $filtered[$uid];
+            $p     = $rawDocs[$uid] ?? [];
 
             // Photo: check all possible field names
             $photo = $p['Profile Pic'] ?? $p['profilePic'] ?? $p['profile_pic'] ?? '';
@@ -1725,14 +1947,15 @@ class Sis extends MY_Controller
         $studentList = $this->fs->schoolList('students');
         $index = [];
         foreach ($studentList as $s) {
-            $uid = $s['studentId'] ?? $s['User Id'] ?? $s['userId'] ?? '';
+            $d = $s['data'] ?? $s;
+            $uid = $d['studentId'] ?? $d['User Id'] ?? $d['userId'] ?? '';
             if ($uid === '') continue;
             $index[$uid] = [
-                'name'    => $s['name'] ?? $s['Name'] ?? '',
-                'class'   => $s['className'] ?? $s['Class'] ?? '',
-                'section' => $s['section'] ?? $s['Section'] ?? '',
-                'status'  => $s['status'] ?? $s['Status'] ?? 'Active',
-                'gender'  => $s['gender'] ?? $s['Gender'] ?? '',
+                'name'    => $d['name'] ?? $d['Name'] ?? '',
+                'class'   => $d['className'] ?? $d['Class'] ?? '',
+                'section' => $d['section'] ?? $d['Section'] ?? '',
+                'status'  => $d['status'] ?? $d['Status'] ?? 'Active',
+                'gender'  => $d['gender'] ?? $d['Gender'] ?? '',
             ];
         }
         return $index;
@@ -1959,6 +2182,115 @@ class Sis extends MY_Controller
     }
 
     /**
+     * G1 — Blank the current month's `attendanceSummary.dayWise` from
+     * today through end-of-month, so a student's withdrawal / TC /
+     * status flip mid-month doesn't leave inflated percentages or stale
+     * `V` (vacant) days that the next teacher mark would overwrite.
+     *
+     * The chosen replacement char is `'V'` — same as the "no mark yet"
+     * character used elsewhere — so the parent / teacher / admin
+     * dashboards naturally read these days as "no working day for this
+     * student" and the working-day count drops accordingly. After
+     * blanking we recompute counters + percentage and merge-set the
+     * doc; older days (1..today-1) and other fields are preserved.
+     *
+     * Best-effort: any failure is logged but never blocks the parent
+     * lifecycle op (status flip succeeded → audit trail intact, the
+     * summary catch-up can be done later via a maintenance script).
+     */
+    private function _blank_summary_from_today(string $studentId): void
+    {
+        try {
+            $today    = (int) date('j');
+            $year     = (int) date('Y');
+            $monthNum = (int) date('n');
+            $monthKey = sprintf('%04d-%02d', $year, $monthNum);
+            $daysInMonth = (int) cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
+
+            $docId = $this->fs->docId2($studentId, $monthKey);
+            $doc   = $this->fs->get('attendanceSummary', $docId);
+            if (!is_array($doc)) return;     // no summary yet → nothing to blank
+
+            $dayWise = (string) ($doc['dayWise'] ?? '');
+            $dayWise = str_pad($dayWise, $daysInMonth, 'V');
+            if (strlen($dayWise) > $daysInMonth) {
+                $dayWise = substr($dayWise, 0, $daysInMonth);
+            }
+            for ($d = $today - 1; $d < $daysInMonth; $d++) {
+                $dayWise[$d] = 'V';
+            }
+
+            $present = $absent = $leave = $holiday = $tardy = $working = 0;
+            for ($i = 0, $n = strlen($dayWise); $i < $n; $i++) {
+                $ch = $dayWise[$i];
+                if      ($ch === 'P') { $present++; $working++; }
+                elseif  ($ch === 'A') { $absent++;  $working++; }
+                elseif  ($ch === 'L') { $leave++;   $working++; }
+                elseif  ($ch === 'H') { $holiday++;             }
+                elseif  ($ch === 'T') { $tardy++;   $working++; }
+            }
+            $pct = $working > 0 ? round(($present + $tardy) / $working * 100, 1) : 0;
+
+            $this->fs->set('attendanceSummary', $docId, [
+                'dayWise'    => $dayWise,
+                'present'    => $present,
+                'absent'     => $absent,
+                'leave'      => $leave,
+                'holiday'    => $holiday,
+                'tardy'      => $tardy,
+                'percentage' => $pct,
+                'updatedAt'  => date('c'),
+                'updatedBy'  => $this->admin_id ?? 'system',
+            ], true);
+        } catch (\Exception $e) {
+            log_message('error',
+                "_blank_summary_from_today({$studentId}) failed: " . $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * G2 — Recompute `sections.currentStrength` from the live count of
+     * Active students in the (className, section) tuple, and merge-write
+     * it onto the canonical sections doc.
+     *
+     * Cheap: one indexed `students` query per call (covered by the
+     * deployed schoolId+className+section+status compound index) and
+     * one merge-set on `sections/{schoolId}_{session}_{class}_{section}`.
+     * Synchronous, no background job, no schema change.
+     *
+     * Best-effort: failures are logged and never block the parent
+     * lifecycle op. The strength field is informational (drives the
+     * admission section-picker bars) — staleness for one request is
+     * acceptable; we'll be back in sync on the next lifecycle write.
+     */
+    private function _recompute_section_strength(string $classKey, string $sectionKey): void
+    {
+        try {
+            $ck = Firestore_service::classKey($classKey);
+            $sk = Firestore_service::sectionKey($sectionKey);
+            if ($ck === '' || $sk === '') return;
+
+            $rows = $this->fs->schoolWhere('students', [
+                ['className', '==', $ck],
+                ['section',   '==', $sk],
+                ['status',    '==', 'Active'],
+            ]);
+            $count = is_array($rows) ? count($rows) : 0;
+
+            $sectionDocId = $this->fs->sectionDocId($ck, $sk);
+            $this->fs->set('sections', $sectionDocId, [
+                'currentStrength' => $count,
+                'updatedAt'       => date('c'),
+            ], true);
+        } catch (\Exception $e) {
+            log_message('error',
+                "G2 _recompute_section_strength({$classKey}/{$sectionKey}) failed: " . $e->getMessage()
+            );
+        }
+    }
+
+    /**
      * Preview the next student ID (read-only, does NOT increment).
      * Calls Auth API to peek at the next STU counter value.
      * Globally unique across all schools.
@@ -2133,25 +2465,41 @@ class Sis extends MY_Controller
      *
      * OPT 3: Single bulk read of the session root instead of 1 + C + S per-section reads.
      */
-    private function _get_enrolled_ids(): array
+    private function _get_enrolled_ids(bool $includeNonActive = false): array
     {
-        // Get all active students for this school.
-        // Supports both field naming conventions:
+        // Get students for this school. By default `status='Active'` only,
+        // matching the legacy contract. When `$includeNonActive` is true
+        // we accept any non-`Deleted` status so the students-list page
+        // can surface Inactive / TC rows for review + reactivation —
+        // pre-fix an Inactive student was invisible the moment admin
+        // flipped the status, leaving no UI path back.
+        //
+        // Field-name compat:
         //   - 'status' (camelCase, new docs)
         //   - 'Status' (Title Case, legacy docs)
         //   - 'session' (single string) or 'sessions' (array)
-        $studentDocs = $this->fs->schoolWhere('students', [['status', '==', 'Active']]);
-
-        // Fallback: if no results with camelCase, try Title Case
-        if (empty($studentDocs)) {
-            $studentDocs = $this->fs->schoolWhere('students', [['Status', '==', 'Active']]);
+        if ($includeNonActive) {
+            $studentDocs = $this->fs->schoolWhere('students');
+        } else {
+            $studentDocs = $this->fs->schoolWhere('students', [['status', '==', 'Active']]);
+            // Fallback: if no results with camelCase, try Title Case
+            if (empty($studentDocs)) {
+                $studentDocs = $this->fs->schoolWhere('students', [['Status', '==', 'Active']]);
+            }
         }
 
         $enrolledIds = [];
         $currentSession = $this->session_year;
         foreach ($studentDocs as $doc) {
             $d   = $doc['data'];
-            $uid = $d['studentId'] ?? $d['User Id'] ?? $d['userId'] ?? $doc['id'];
+            $uid = $d['studentId'] ?? $d['User Id'] ?? $d['userId'] ?? $d['id'];
+
+            // When pulling all statuses, drop hard-deleted rows — they
+            // shouldn't surface in any list. Active / Inactive / TC pass.
+            if ($includeNonActive) {
+                $rowStatus = (string) ($d['status'] ?? $d['Status'] ?? '');
+                if (strcasecmp($rowStatus, 'Deleted') === 0) continue;
+            }
 
             // Check session enrollment: support both string and array format
             $sessions = $d['sessions'] ?? null;
@@ -2192,8 +2540,9 @@ class Sis extends MY_Controller
 
         $students = [];
         foreach ($studentDocs as $doc) {
+            $d = $doc['data'] ?? $doc;
             $s = $doc['data'];
-            $uid = $s['studentId'] ?? $s['User Id'] ?? $doc['id'];
+            $uid = $s['studentId'] ?? $s['User Id'] ?? $d['id'];
             $students[$uid] = [
                 'user_id' => $uid,
                 'name'    => $s['name'] ?? $s['Name'] ?? $uid,
@@ -2680,13 +3029,55 @@ class Sis extends MY_Controller
             }
         }
 
-        // Update student in Firestore
+        // Update student in Firestore.
+        //
+        // Title→camelCase aliasing (Tier-A Step 3) — every PascalCase
+        // key the admin form posts gets a camelCase mirror so the
+        // mobile apps' StudentDoc (which reads camelCase only) sees
+        // the change immediately on this `fs->updateEntity` write,
+        // without waiting for the trailing `syncStudent` call to
+        // canonicalise the doc. Pre-fix, only Name/Phone/Email/Class/
+        // Section were aliased — DOB, Religion, Category, parents,
+        // Guard*, Pre*, Address all landed on the doc in PascalCase
+        // and silently disappeared from the parent / teacher screens
+        // until the next syncStudent merge ran (or never, on partial
+        // edits that didn't touch every field).
         $updateData['updatedAt'] = date('c');
-        if (isset($updateData['Name'])) $updateData['name'] = $updateData['Name'];
-        if (isset($updateData['Phone Number'])) $updateData['phone'] = $updateData['Phone Number'];
-        if (isset($updateData['Email'])) $updateData['email'] = $updateData['Email'];
-        if (isset($updateData['Class'])) $updateData['className'] = $updateData['Class'];
-        if (isset($updateData['Section'])) $updateData['section'] = $updateData['Section'];
+
+        if (isset($updateData['Name']))              $updateData['name']             = $updateData['Name'];
+        if (isset($updateData['Phone Number']))      {
+            // Mirror Entity_firestore_sync::syncStudent — both `phone`
+            // (Android canonical) and `phoneNumber` (back-compat).
+            $updateData['phone']       = $updateData['Phone Number'];
+            $updateData['phoneNumber'] = $updateData['Phone Number'];
+        }
+        if (isset($updateData['Email']))             $updateData['email']            = $updateData['Email'];
+        if (isset($updateData['Class']))             $updateData['className']        = $updateData['Class'];
+        if (isset($updateData['Section']))           $updateData['section']          = $updateData['Section'];
+        if (isset($updateData['DOB']))               $updateData['dob']              = $updateData['DOB'];
+        if (isset($updateData['Gender']))            $updateData['gender']           = $updateData['Gender'];
+        if (isset($updateData['Category']))          $updateData['category']         = $updateData['Category'];
+        if (isset($updateData['Blood Group']))       $updateData['bloodGroup']       = $updateData['Blood Group'];
+        if (isset($updateData['Religion']))          $updateData['religion']         = $updateData['Religion'];
+        if (isset($updateData['Nationality']))       $updateData['nationality']      = $updateData['Nationality'];
+        if (isset($updateData['Admission Date']))    $updateData['admissionDate']    = $updateData['Admission Date'];
+        if (isset($updateData['Father Name']))       $updateData['fatherName']       = $updateData['Father Name'];
+        if (isset($updateData['Father Occupation'])) $updateData['fatherOccupation'] = $updateData['Father Occupation'];
+        if (isset($updateData['Mother Name']))       $updateData['motherName']       = $updateData['Mother Name'];
+        if (isset($updateData['Mother Occupation'])) $updateData['motherOccupation'] = $updateData['Mother Occupation'];
+        if (isset($updateData['Guard Contact']))     $updateData['guardContact']     = $updateData['Guard Contact'];
+        if (isset($updateData['Guard Relation']))    $updateData['guardRelation']    = $updateData['Guard Relation'];
+        if (isset($updateData['Pre Class']))         $updateData['preClass']         = $updateData['Pre Class'];
+        if (isset($updateData['Pre School']))        $updateData['preSchool']        = $updateData['Pre School'];
+        if (isset($updateData['Pre Marks']))         $updateData['preMarks']         = $updateData['Pre Marks'];
+        if (isset($updateData['Address']))           $updateData['address']          = $updateData['Address'];
+        if (isset($updateData['Profile Pic']))       $updateData['profilePic']       = $updateData['Profile Pic'];
+        if (isset($updateData['Roll No']))           $updateData['rollNo']           = $updateData['Roll No'];
+        // The `Doc` nested map (Photo, BirthCert, AadharCard, …) is
+        // mirrored to the canonical `documents` key the parent app
+        // reads. Both shapes are kept on the doc so any legacy reader
+        // that still expects `Doc` continues to work.
+        if (isset($updateData['Doc']))               $updateData['documents']        = $updateData['Doc'];
 
         // Additional subjects
         $additionalSubjects = [];
@@ -2769,6 +3160,35 @@ class Sis extends MY_Controller
             log_message('error', "Fee_lifecycle::freezeFeesOnSoftDelete failed for {$id}: " . $e->getMessage());
         }
 
+        // Cascade — clear the back-link on any CRM application that
+        // enrolled this student. Without this, the application doc
+        // keeps a stale `student_id` field pointing at a deleted record.
+        // We don't change `status` (keep it as "enrolled" for history)
+        // but blank the link and append an audit-style history entry.
+        try {
+            $appId = (string) ($student['application_id'] ?? '');
+            if ($appId !== '') {
+                $existingApp = $this->_crm_get('crmApplications', $appId);
+                if (is_array($existingApp)) {
+                    $now = date('Y-m-d H:i:s');
+                    $hist = is_array($existingApp['history'] ?? null) ? $existingApp['history'] : [];
+                    $hist[] = [
+                        'action'    => "Linked student {$id} was deleted from SIS",
+                        'by'        => $this->admin_name,
+                        'timestamp' => $now,
+                    ];
+                    $this->_crm_update('crmApplications', $appId, [
+                        'student_id'      => '',
+                        'student_deleted' => true,
+                        'updated_at'      => $now,
+                        'history'         => $hist,
+                    ]);
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', "delete_student: crmApplications back-link cleanup failed for {$id}: " . $e->getMessage());
+        }
+
         // Determine if this is a hard delete or soft delete
         $hardDelete = $this->input->post('hard_delete') === 'true';
 
@@ -2787,6 +3207,32 @@ class Sis extends MY_Controller
                 $this->fs->remove('indexPhones', $this->fs->docId($phoneNumber));
             }
 
+            // G3 — Cascade delete orphan rows in collections keyed by
+            // studentId. Pre-fix, hard-deleting a student left behind
+            // months of attendanceSummary rows, every daily attendance
+            // doc, every marks entry, and every fee record — surfacing
+            // as ghost data on parent/teacher dashboards. Each
+            // collection is queried+deleted in isolation; a failure on
+            // one (e.g. a missing collection on a fresh school)
+            // doesn't block the others.
+            foreach (['attendanceSummary', 'attendance', 'marks', 'feeReceipts', 'feeDemands'] as $cascadeCol) {
+                try {
+                    $rows = $this->fs->schoolWhere($cascadeCol, [
+                        ['studentId', '==', $id],
+                    ]);
+                    foreach ($rows as $row) {
+                        $docId = is_array($row) ? ($row['id'] ?? '') : '';
+                        if ($docId === '') continue;
+                        try { $this->fs->remove($cascadeCol, $docId); }
+                        catch (\Exception $inner) {
+                            log_message('error', "G3 cascade {$cascadeCol}/{$docId} delete failed: " . $inner->getMessage());
+                        }
+                    }
+                } catch (\Exception $e) {
+                    log_message('error', "G3 cascade {$cascadeCol} query failed for {$id}: " . $e->getMessage());
+                }
+            }
+
             // Delete Firebase Auth account
             try { $this->firebase->deleteFirebaseUser($id); } catch (Exception $e) {}
 
@@ -2803,6 +3249,11 @@ class Sis extends MY_Controller
 
             log_audit('SIS', 'soft_delete_student', $id, "Soft-deleted student '{$student['Name']}' from {$class} {$section}");
         }
+
+        // G2 — Section strength drops by one regardless of hard / soft
+        // delete: both flip the row out of the `status='Active'` filter
+        // (hard removes the doc entirely, soft sets `status='Deleted'`).
+        $this->_recompute_section_strength($class, $section);
 
         // FIXED: return JSON for AJAX, redirect for direct form POST
         if ($isAjax) {
@@ -2974,8 +3425,9 @@ class Sis extends MY_Controller
         $sundays     = $this->_getSundays($year, $monthNumber);
         $studentsData = [];
         foreach ($studentDocs as $doc) {
+            $d = $doc['data'] ?? $doc;
             $s = $doc['data'];
-            $studentId = $s['User Id'] ?? $s['studentId'] ?? $doc['id'];
+            $studentId = $s['User Id'] ?? $s['studentId'] ?? $d['id'];
             $studentName = $s['Name'] ?? $s['name'] ?? $studentId;
             // Attendance from Firestore attendance collection
             $attDocId = $this->fs->docId2($studentId, date('Y-m', mktime(0, 0, 0, $monthNumber, 1, $year)));
@@ -3008,6 +3460,7 @@ class Sis extends MY_Controller
         $result = [];
         $prefix = $this->school_id . '_';
         foreach ($docs as $d) {
+            $d = $d['data'] ?? $d;
             $r = is_array($d['data'] ?? null) ? $d['data'] : $d;
             $rawId = (string) ($d['id'] ?? '');
             $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
@@ -3405,6 +3858,7 @@ class Sis extends MY_Controller
             'phone'=>$inquiry['phone']??'', 'email'=>$inquiry['email']??'', 'class'=>$inquiry['class']??'',
             'session'=>$inquiry['session']??$this->session_year, 'status'=>'pending', 'stage'=>'document_collection',
             'created_at'=>$now, 'updated_at'=>$now, 'created_by'=>$this->admin_name,
+            'source'=>'admin', 'possible_duplicate'=>false,
             'source_inquiry'=>$inquiry_id, 'dob'=>'', 'gender'=>'', 'address'=>'',
             'father_name'=>$inquiry['parent_name']??'', 'mother_name'=>'', 'documents'=>[], 'notes'=>$inquiry['notes']??'',
             'history'=>[['action'=>'Application created from inquiry '.$inquiry_id, 'by'=>$this->admin_name, 'timestamp'=>$now]],
@@ -3475,7 +3929,11 @@ class Sis extends MY_Controller
             return $this->json_success(['id' => $id]);
         } else {
             $app_id = $this->_crm_next_id('Application', 'APP', 5);
+            // `source: admin` distinguishes admin-created applications
+            // from public-form ones in the CRM grid; admin-created apps
+            // never get the soft-duplicate flag.
             $data = array_merge($data, ['application_id'=>$app_id,'session'=>$this->session_year,'status'=>'pending','stage'=>'document_collection',
+                'source'=>'admin','possible_duplicate'=>false,
                 'created_at'=>$now,'updated_at'=>$now,'created_by'=>$this->admin_name,'documents'=>[],
                 'history'=>[['action'=>'Application created directly','by'=>$this->admin_name,'timestamp'=>$now]]]);
             $this->_crm_set("crmApplications", $app_id, $data);
@@ -3624,12 +4082,58 @@ class Sis extends MY_Controller
             return $this->json_error('Failed to generate unique student ID. Please try again.');
         }
         $className = Firestore_service::classKey(trim($app['class'] ?? ''));
-        $section = Firestore_service::sectionKey(trim($app['section'] ?? 'A'));
         if ($className === '') return $this->json_error('Class not specified in application');
+
+        // Section resolution. Public-form applications never carry a
+        // section (parents pick a class, the school assigns the section
+        // at enroll time). Order:
+        //   1. Admin override via POST `section`
+        //   2. The application doc's own `section` field (internal flow)
+        //   3. First alphabetical section that exists in the `sections`
+        //      collection for this class + active session
+        //   4. Hard fallback 'A'
+        // The previous code went straight to step 4 — every public-form
+        // enrollment landed in Section A even when other sections existed.
+        $sectionRaw = trim((string) $this->input->post('section'));
+        if ($sectionRaw === '') $sectionRaw = trim((string) ($app['section'] ?? ''));
+        if ($sectionRaw === '') {
+            try {
+                $sectionDocs = $this->fs->schoolList('sections', [
+                    ['session',   '==', $session],
+                    ['className', '==', $className],
+                ]);
+                $sectionLetters = [];
+                foreach ($sectionDocs as $sd) {
+                    $sl = trim((string) ($sd['section'] ?? ''));
+                    if ($sl !== '') $sectionLetters[$sl] = true;
+                }
+                if (!empty($sectionLetters)) {
+                    $keys = array_keys($sectionLetters);
+                    sort($keys);
+                    $sectionRaw = (string) $keys[0];
+                }
+            } catch (\Exception $e) {
+                log_message('error', "enroll_student: sections lookup failed for {$className}: " . $e->getMessage());
+            }
+        }
+        if ($sectionRaw === '') $sectionRaw = 'A';
+        $section = Firestore_service::sectionKey($sectionRaw);
 
         $combinedPath = "{$className}/{$section}";
         $formattedDOB = !empty($app['dob']) ? date('d-m-Y', strtotime($app['dob'])) : '';
         $now = date('Y-m-d H:i:s');
+
+        // Generate the student's initial password up-front so we can
+        // validate it. The previous inline call inside the array literal
+        // gave us no chance to fail loudly when DOB was missing or the
+        // generator returned a blank string — the enroll then "succeeded"
+        // but the parent could never log in. Now it's a single named
+        // value with a guard.
+        $generatedPassword = $this->_generatePassword($app['student_name'] ?? '', $formattedDOB);
+        if (strlen(trim($generatedPassword)) < 4) {
+            log_message('error', "enroll_student: password generation produced too-short result for {$studentId} (name='" . ($app['student_name'] ?? '') . "', dob='{$formattedDOB}'). Aborting enrollment.");
+            return $this->json_error('Could not generate a valid password (student name or date of birth is missing). Please edit the application first.');
+        }
 
         $studentData = [
             "Name"=>$app['student_name']??'', "User Id"=>$studentId, "DOB"=>$formattedDOB,
@@ -3641,12 +4145,19 @@ class Sis extends MY_Controller
             "Mother Name"=>$app['mother_name']??'', "Mother Occupation"=>$app['mother_occupation']??'',
             "Guard Contact"=>$app['guardian_phone']??'', "Guard Relation"=>$app['guardian_relation']??'',
             "Phone Number"=>$app['phone']??'', "Email"=>$app['email']??'',
-            "Password"=>$this->_generatePassword($app['student_name']??'',$formattedDOB),
+            "Password"=>$generatedPassword,
             "Address"=>["Street"=>$app['address']??'',"City"=>$app['city']??'',"State"=>$app['state']??'',"PostalCode"=>$app['pincode']??''],
             "Pre School"=>$app['previous_school']??'', "Pre Class"=>$app['previous_class']??'', "Pre Marks"=>$app['previous_marks']??'',
             "Profile Pic"=>"",
             "Doc"=>["Aadhar Card"=>["thumbnail"=>"","url"=>""],"Birth Certificate"=>["thumbnail"=>"","url"=>""],"Photo"=>["thumbnail"=>"","url"=>""],"Transfer Certificate"=>["thumbnail"=>"","url"=>""]],
             "Status"=>"Active",
+            // Phase A — first-login force-change. Cleared once the parent
+            // successfully changes the password from the parent app.
+            "mustChangePassword" => true,
+            // Back-link to the originating CRM application so audit /
+            // reporting can trace any enrolled student to their admission
+            // record without scanning crmApplications by student_id.
+            "application_id" => $id,
         ];
 
         // Firestore-only per no-RTDB policy.
@@ -3679,9 +4190,22 @@ class Sis extends MY_Controller
         // Firestore dual-write: CRM application status
         try { $this->fs->setEntity('crmApplications', $id, ['status'=>'enrolled','stage'=>'enrolled','student_id'=>$studentId,'enrolled_at'=>$now,'enrolled_by'=>$this->admin_name,'updated_at'=>$now]); } catch (\Exception $e) { log_message('error', "Firestore dual-write crmApplications failed for {$id}: " . $e->getMessage()); }
 
-        // ── Create Firebase Auth user (best-effort) ──────────
+        // ── Create Firebase Auth user — REQUIRED, not best-effort ─────
+        // Previously this was wrapped in try/catch with only a log_message.
+        // Result: Firestore student doc was created, but if Auth creation
+        // failed silently (network blip, duplicate, missing creds) the
+        // parent could never log in and admin had no signal. Now we
+        // surface the failure as a clear error response so admin can
+        // retry. Enrollment side effects (Firestore docs, fees) stay in
+        // place — admin can re-run a "create auth account" repair flow
+        // if needed (Phase A2 will add that).
+        $authCreated = false;
+        $authError   = '';
         try {
             $password = $studentData['Password'] ?? '';
+            if ($password === '') {
+                throw new \RuntimeException('Generated password is empty.');
+            }
             $authEmail = Firebase::authEmail($studentId);
             $this->firebase->createFirebaseUser($authEmail, $password, [
                 'uid'         => $studentId,
@@ -3693,8 +4217,41 @@ class Sis extends MY_Controller
                 'school_code'   => $this->school_code,
                 'parent_db_key' => $this->parent_db_key,
             ]);
+            $authCreated = true;
+            log_message('info', "SIS enroll: Firebase Auth user created for {$studentId} (email={$authEmail}).");
         } catch (Exception $e) {
-            log_message('error', "SIS enroll Firebase Auth create failed for {$studentId}: " . $e->getMessage());
+            $authError = $e->getMessage();
+            log_message('error', "SIS enroll Firebase Auth create failed for {$studentId}: {$authError}");
+        }
+
+        // Phase A Part 1 — fire SMS with login credentials immediately
+        // after a successful Firebase Auth creation. Skipped if Auth
+        // creation failed (no point sending credentials that don't work).
+        // Fire-and-forget; never blocks the enrollment response.
+        $smsSent = false;
+        if ($authCreated) {
+            try {
+                $this->load->helper('notification');
+                $smsPhone = trim((string) ($app['phone'] ?? ''));
+                $studentNameForSms = (string) ($app['student_name'] ?? $studentId);
+                $schoolDisplayName = (string) (
+                    $this->school_display_name
+                    ?? $this->school_name
+                    ?? 'your school'
+                );
+                if ($smsPhone !== '') {
+                    $smsSent = notify_enrollment_credentials(
+                        $smsPhone,
+                        $schoolDisplayName,
+                        $studentNameForSms,
+                        $studentId,
+                        $generatedPassword
+                    );
+                    log_message('info', "SIS enroll: credentials SMS dispatch=" . ($smsSent ? 'sent' : 'failed') . " for {$studentId} → {$smsPhone}");
+                }
+            } catch (\Exception $e) {
+                log_message('error', "SIS enroll credentials-SMS failed for {$studentId}: " . $e->getMessage());
+            }
         }
 
         // Auto-assign class fees for enrolled student
@@ -3710,7 +4267,108 @@ class Sis extends MY_Controller
         $this->entity_sync->syncStudent($studentId, $studentData);
         $this->entity_sync->syncParent($studentId, $studentData);
 
-        return $this->json_success(['student_id'=>$studentId,'class'=>$className,'section'=>$section]);
+        // Response carries the credentials separately from the user-
+        // facing message so the JS can show a clean toast AND a
+        // copyable credentials panel. Password deliberately NOT in
+        // `message` — toasts auto-dismiss and showing secrets in a
+        // toast is bad UX + bad security.
+        return $this->json_success([
+            'student_id'   => $studentId,
+            'class'        => $className,
+            'section'      => $section,
+            'password'     => $generatedPassword,           // plain — for the credentials panel
+            'auth_created' => $authCreated,
+            'auth_error'   => $authCreated ? '' : $authError,
+            'sms_sent'     => $smsSent,
+            'message'      => $authCreated
+                ? "Enrolled as {$studentId} in {$className} / {$section}." . ($smsSent ? ' Login credentials sent via SMS.' : '')
+                : "Enrolled as {$studentId} but parent login is NOT ready — Firebase Auth account creation failed. Error: {$authError}",
+        ]);
+    }
+
+    /**
+     * GET — list section letters that exist for a given class in the
+     * current session. Used by the enrollment JS to let admin pick which
+     * section to enroll a CRM application into instead of silently
+     * defaulting to "A".
+     */
+    public function get_class_sections()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'crm_view');
+        $cls = trim((string) $this->input->get('class'));
+        if ($cls === '') return $this->json_success(['sections' => [], 'detail' => [], 'suggested' => '']);
+        $className = Firestore_service::classKey($cls);
+
+        $detail = [];
+        try {
+            $docs = $this->fs->schoolList('sections', [
+                ['session',   '==', $this->session_year],
+                ['className', '==', $className],
+            ]);
+            foreach ($docs as $d) {
+                $s = trim((string) ($d['section'] ?? ''));
+                if ($s === '') continue;
+                // Strip the "Section " prefix so the picker shows just "A", "B", etc.
+                $sNorm = preg_replace('/^Section\s+/i', '', $s);
+                if ($sNorm === '') continue;
+
+                // Capacity (admin-set on section creation; default 40 if missing).
+                $capacity = (int) ($d['maxStrength'] ?? $d['max_strength'] ?? 40);
+                if ($capacity <= 0) $capacity = 40;
+
+                // Live count from `students` collection — more reliable than
+                // the cached `studentCount` field on the section doc, which
+                // can drift if other flows forget to bump it.
+                $sectionStored = $d['section'] ?? $sNorm; // exact stored value (might be "A" or "Section A")
+                $current = 0;
+                try {
+                    $current = $this->fs->count('students', [
+                        ['schoolId',  '==', $this->school_id],
+                        ['className', '==', $className],
+                        ['section',   '==', $sectionStored],
+                        ['Status',    '==', 'Active'],
+                    ]);
+                } catch (\Exception $e) {
+                    // Fallback to stored studentCount on count() failure.
+                    $current = (int) ($d['studentCount'] ?? 0);
+                }
+
+                $available = max(0, $capacity - $current);
+                $detail[$sNorm] = [
+                    'section'   => $sNorm,
+                    'current'   => $current,
+                    'capacity'  => $capacity,
+                    'available' => $available,
+                    'full'      => $available <= 0,
+                ];
+            }
+        } catch (\Exception $e) {
+            log_message('error', "get_class_sections failed for {$className}: " . $e->getMessage());
+        }
+
+        ksort($detail);
+        $sections = array_keys($detail);
+
+        // Suggestion: the non-full section with the most headroom. Falls
+        // back to the first non-full alphabetically if all have the same
+        // headroom. Empty when every section is full (admin must create
+        // a new one or manually override).
+        $suggested = '';
+        $bestHead = -1;
+        foreach ($detail as $s => $info) {
+            if ($info['full']) continue;
+            if ($info['available'] > $bestHead) {
+                $bestHead = $info['available'];
+                $suggested = $s;
+            }
+        }
+
+        return $this->json_success([
+            'class'     => $className,
+            'sections'  => $sections,
+            'detail'    => array_values($detail),
+            'suggested' => $suggested,
+        ]);
     }
 
     public function waitlist()
@@ -4053,15 +4711,32 @@ class Sis extends MY_Controller
 
     private function _get_crm_classes()
     {
+        // Deduplicate by className. The CRM application form decides
+        // section at enrollment time (via the section picker), not at
+        // submission, so the dropdown should list each class exactly
+        // once. Earlier this returned one entry per (class, section)
+        // pair which made the Edit modal show "Class 8th / Section A"
+        // for an unenrolled application.
         $sectionDocs = $this->fs->schoolWhere('sections', []);
-        $classes = [];
+        $seen = [];
         foreach ($sectionDocs as $doc) {
             $sd = $doc['data'];
             $className = $sd['className'] ?? '';
-            $sec = str_replace('Section ', '', $sd['section'] ?? '');
-            if ($className && $sec) {
-                $classes[] = ['class_name' => $className, 'section' => $sec, 'label' => $className . ' / Section ' . $sec];
+            if ($className && !isset($seen[$className])) {
+                $seen[$className] = true;
             }
+        }
+        $names = array_keys($seen);
+        // Natural sort: "Class 1st", "Class 2nd", ... "Class 10th".
+        usort($names, 'strnatcmp');
+
+        $classes = [];
+        foreach ($names as $cn) {
+            $classes[] = [
+                'class_name' => $cn,
+                'section'    => '',     // resolved later, at enroll time
+                'label'      => $cn,    // dropdown text — just the class
+            ];
         }
         return $classes;
     }

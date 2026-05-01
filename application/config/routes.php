@@ -112,6 +112,8 @@ $route['fees/save_updated_fees']           = 'Fees/save_updated_fees';
 $route['fees/submit_discount']             = 'Fees/submit_discount';
 $route['fees/set_student_discount']        = 'Fees/set_student_discount';
 $route['fees/recalc_unpaid_discounts']     = 'Fees/recalc_unpaid_discounts';
+$route['fees/set_student_discount']        = 'Fees/set_student_discount';
+$route['fees/recalc_unpaid_discounts']     = 'Fees/recalc_unpaid_discounts';
 $route['fees/delete_fees_structure/(:any)'] = 'Fees/delete_fees_structure/$1';
 
 // ─── Super Admin SaaS Control Panel ──────────────────────────────────────────
@@ -393,6 +395,10 @@ $route['sis/admission']                         = 'Sis/admission';
 $route['sis/save_admission']                    = 'Sis/save_admission';
 $route['sis/profile/(:any)']                    = 'Sis/profile/$1';
 $route['sis/update_profile']                    = 'Sis/update_profile';
+// Same-origin QR proxy — used by the ID card view's <img> tags so the
+// browser doesn't have to reach qrserver.com directly (broken in many
+// firewalled / ad-blocker environments).
+$route['sis/qr_image/(:any)']                   = 'Sis/qr_image/$1';
 $route['sis/promote']                           = 'Sis/promote';
 $route['sis/promote_preview']                   = 'Sis/promote_preview';
 $route['sis/execute_promotion']                 = 'Sis/execute_promotion';
@@ -446,6 +452,7 @@ $route['sis/update_stage']                      = 'Sis/update_stage';
 $route['sis/approve_application']               = 'Sis/approve_application';
 $route['sis/reject_application']                = 'Sis/reject_application';
 $route['sis/enroll_student']                    = 'Sis/enroll_student';
+$route['sis/get_class_sections']                = 'Sis/get_class_sections';
 $route['sis/waitlist']                          = 'Sis/waitlist';
 $route['sis/fetch_waitlist']                    = 'Sis/fetch_waitlist';
 $route['sis/add_to_waitlist']                   = 'Sis/add_to_waitlist';
@@ -516,6 +523,8 @@ $route['admission/submit/(:any)']               = 'Admission_public/submit/$1';
 $route['admission/pay/(:any)']                  = 'Admission_public/initiate_payment/$1';
 $route['admission/payment_callback/(:any)']     = 'Admission_public/payment_callback/$1';
 $route['admission/payment_status/(:any)']       = 'Admission_public/payment_status/$1';
+// Receipt — `admission/receipt/{schoolId}/{appId}/{token}` (Tier-A QW #1).
+$route['admission/receipt/(:any)/(:any)/(:any)'] = 'Admission_public/receipt/$1/$2/$3';
 
 // ─── Attendance Management ───
 $route['attendance']                         = 'Attendance/index';
@@ -556,6 +565,10 @@ $route['attendance/api_get_classes']         = 'Attendance/api_get_classes';
 $route['attendance/api_get_students']        = 'Attendance/api_get_students';
 $route['attendance/api_get_attendance']      = 'Attendance/api_get_attendance';
 $route['attendance/api_mark_attendance']     = 'Attendance/api_mark_attendance';
+// QR-scan attendance — Tier-A QR system. `scan` is the GET UI page,
+// `scan_qr` is the POST endpoint that takes `qr_token` and marks Present.
+$route['attendance/scan']                    = 'Attendance/scan';
+$route['attendance/scan_qr']                 = 'Attendance/scan_qr';
 $route['attendance/teacher_notify']          = 'Attendance/teacher_notify';
 $route['attendance/process_push_requests']   = 'Attendance/process_push_requests';
 $route['attendance/health_check']            = 'Attendance/health_check';
@@ -786,6 +799,12 @@ $route['fee_management/get_blocking_policy']             = 'Fee_management/get_b
 $route['fee_management/save_blocking_policy']            = 'Fee_management/save_blocking_policy';
 $route['fee_management/parent_create_order']             = 'Fee_management/parent_create_order';
 $route['fee_management/parent_verify_payment']           = 'Fee_management/parent_verify_payment';
+$route['fee_management/parent_pay_from_wallet']          = 'Fee_management/parent_pay_from_wallet';
+// Parent-app (Firebase Bearer-token) endpoints
+$route['fee_management/get_blocking_policy']             = 'Fee_management/get_blocking_policy';
+$route['fee_management/save_blocking_policy']            = 'Fee_management/save_blocking_policy';
+$route['fee_management/parent_create_order']             = 'Fee_management/parent_create_order';
+$route['fee_management/parent_verify_payment']           = 'Fee_management/parent_verify_payment';
 $route['fee_management/retry_payment_processing']        = 'Fee_management/retry_payment_processing';
 $route['fee_management/payment_reconciliation']          = 'Fee_management/payment_reconciliation';
 $route['fee_management/get_reconciliation_data']         = 'Fee_management/get_reconciliation_data';
@@ -948,6 +967,7 @@ $route['communication/save_circular']                = 'Communication/save_circu
 $route['communication/delete_circular']              = 'Communication/delete_circular';
 $route['communication/acknowledge_circular']         = 'Communication/acknowledge_circular';
 $route['communication/get_circular_acks']            = 'Communication/get_circular_acks';
+$route['communication/get_circular_acks']            = 'Communication/get_circular_acks';
 
 // (communication/firestore_backfill_circulars removed — one-shot backfill
 //  already completed; RTDB source paths no longer written.)
@@ -1107,6 +1127,7 @@ $route['stories/get_teachers']                       = 'Stories/get_teachers';
 $route['stories/moderate_story']                     = 'Stories/moderate_story';
 $route['stories/delete_story']                       = 'Stories/delete_story';
 $route['stories/bulk_moderate']                      = 'Stories/bulk_moderate';
+$route['stories/upload_story']                        = 'Stories/upload_story';
 $route['stories/upload_story']                        = 'Stories/upload_story';
 
 // ─── Red Flags Dashboard ─────────────────────────────────────────────────────

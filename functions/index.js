@@ -21,7 +21,21 @@ if (!admin.apps.length) admin.initializeApp();
 const db = admin.firestore();
 const messaging = admin.messaging();
 
-const MARKS_HANDLED = new Set(['NOTICE_CREATED', 'CIRCULAR_CREATED', 'MESSAGE_RECEIVED']);
+// Marks recognised by this dispatcher. Each mark drives a different
+// recipient-resolution path (see the branches inside the trigger below).
+//
+//   NOTICE_CREATED, CIRCULAR_CREATED — broadcast by role (target_group).
+//   MESSAGE_RECEIVED                 — per-userId push (recipientIds).
+//   PTM_CLASS_TEACHER                — per-staffId push for the specific
+//                                      class teachers of a PTM's sections.
+//                                      Replaces the previous "All Teachers"
+//                                      overshoot for class-specific PTMs.
+const MARKS_HANDLED = new Set([
+  'NOTICE_CREATED',
+  'CIRCULAR_CREATED',
+  'MESSAGE_RECEIVED',
+  'PTM_CLASS_TEACHER',
+]);
 
 /**
  * Resolve target_group → list of appRole(s) to query.
@@ -174,6 +188,28 @@ exports.dispatchNoticeAndCircularPushes = onDocumentCreated(
         schoolId,
       };
       logger.info(`[${mark}] conv=${convId} recipients=${recipientIds.length} tokens=${tokens.length}`);
+    } else if (mark === 'PTM_CLASS_TEACHER') {
+      // Per-staffId targeting for the section's class teachers. Replaces
+      // the legacy "All Teachers" overshoot — only the specific teachers
+      // who own a section in the PTM get the push.
+      const recipientStaffIds = Array.isArray(doc.recipientStaffIds) ? doc.recipientStaffIds : [];
+      if (!recipientStaffIds.length) {
+        logger.warn(`[${mark}] missing recipientStaffIds`, { id: snap.id });
+        await snap.ref.set({ status: 'error', error: 'missing recipientStaffIds', processedAt: new Date().toISOString() }, { merge: true });
+        return;
+      }
+      tokens = await tokensForUsers(schoolId, recipientStaffIds);
+      const title = String(doc.title || 'Parent-Teacher Meeting').slice(0, 120);
+      const body  = String(doc.body  || '').slice(0, 240);
+      notification = { title, body };
+      dataPayload = {
+        type:       'ptm_class_teacher',
+        ptmEventId: String(doc.ptmEventId || ''),
+        noticeId:   String(doc.noticeId   || ''),
+        category:   'meeting',
+        schoolId,
+      };
+      logger.info(`[${mark}] school=${schoolId} staffIds=${recipientStaffIds.length} tokens=${tokens.length}`);
     } else {
       const isNotice = mark === 'NOTICE_CREATED';
       const typeKey  = isNotice ? 'notice_created' : 'circular_created';
@@ -216,3 +252,121 @@ exports.dispatchNoticeAndCircularPushes = onDocumentCreated(
     }
   }
 );
+
+// ─── Stories cleanup (Hardening #3) ────────────────────────────────
+// onStoryDeleted + sweepExpiredStories — see ./storiesCleanup.js
+const stories = require("./storiesCleanup");
+exports.onStoryDeleted       = stories.onStoryDeleted;
+exports.sweepExpiredStories  = stories.sweepExpiredStories;
+
+// ─── PTM creation → async push fan-out (Phase D perf) ──────────────
+//
+// Watches `ptmEvents/{ptmDocId}` document creates. When a new scheduled
+// PTM lands, this CF emits the pushRequests rows the existing
+// `dispatchNoticeAndCircularPushes` will fan out to FCM. Doing this in a
+// CF (instead of synchronously inside `Ptm::save()`) shaves ~1–2 s off
+// the admin save and stops admin clients from blocking on FCM SDK calls.
+exports.onPtmCreated = onDocumentCreated(
+  {
+    document: 'ptmEvents/{ptmDocId}',
+    region: 'us-central1',
+  },
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return;
+    const doc = snap.data() || {};
+
+    // Only fire for newly-scheduled PTMs. Cancelled / completed docs
+    // skip — admin set_status() handles those separately for now.
+    const status = String(doc.status || '').toLowerCase();
+    if (status !== 'scheduled') {
+      logger.info(`[onPtmCreated] skipping doc=${snap.id} status=${status}`);
+      return;
+    }
+
+    const schoolId = String(doc.schoolId || '');
+    if (!schoolId) {
+      logger.warn(`[onPtmCreated] missing schoolId on doc=${snap.id}`);
+      return;
+    }
+
+    const ptmEventId = String(doc.ptmEventId || snap.id);
+    const titleRaw   = String(doc.title || 'Parent-Teacher Meeting').slice(0, 120);
+    const title      = `[PTM] ${titleRaw}`;
+
+    // Build a compact body for the push notification.
+    const bodyParts = [];
+    if (doc.description) bodyParts.push(String(doc.description));
+    if (doc.date)        bodyParts.push(`Date: ${doc.date}`);
+    if (doc.startTime && doc.endTime) bodyParts.push(`Time: ${doc.startTime}–${doc.endTime}`);
+    if (doc.location)    bodyParts.push(`Venue: ${doc.location}`);
+    const body = bodyParts.join('\n').replace(/<[^>]+>/g, '').slice(0, 240);
+
+    const sectionKey   = String(doc.sectionKey || 'ALL');
+    const isAllSchool  = (sectionKey === 'ALL' || sectionKey === '');
+    const parentTarget = isAllSchool ? 'All Parents' : sectionKey.replace('/', '|');
+
+    const writes = [];
+
+    // Parent push — broadcast by role/section through the existing
+    // NOTICE_CREATED handler in dispatchNoticeAndCircularPushes.
+    writes.push(db.collection('pushRequests').doc(`ptm_created_${ptmEventId}_parents`).set({
+      schoolId,
+      mark:         'NOTICE_CREATED',
+      source:       'ptm_created',
+      status:       'pending',
+      ptmEventId,
+      noticeId:     '',
+      title,
+      body,
+      category:     'meeting',
+      priority:     'Normal',
+      target_group: parentTarget,
+      markedBy:     'cf:onPtmCreated',
+      createdAt:    new Date().toISOString(),
+    }));
+
+    // Per-class-teacher push — only the section's class teachers.
+    const staffIds = Array.isArray(doc.sections)
+      ? [...new Set(
+            doc.sections
+              .map(s => (s && typeof s.classTeacherId === 'string') ? s.classTeacherId.trim() : '')
+              .filter(s => s.length > 0)
+          )]
+      : [];
+    if (staffIds.length > 0) {
+      writes.push(db.collection('pushRequests').doc(`ptm_classteacher_${ptmEventId}`).set({
+        schoolId,
+        mark:               'PTM_CLASS_TEACHER',
+        source:             'ptm_class_teacher',
+        status:             'pending',
+        ptmEventId,
+        noticeId:           '',
+        title,
+        body,
+        category:           'meeting',
+        priority:           'Normal',
+        recipientStaffIds:  staffIds,
+        markedBy:           'cf:onPtmCreated',
+        createdAt:          new Date().toISOString(),
+      }));
+    } else {
+      logger.warn(`[onPtmCreated] ${ptmEventId}: no class teachers in sections[] — skipping teacher push`);
+    }
+
+    try {
+      await Promise.all(writes);
+      logger.info(`[onPtmCreated] ${ptmEventId} school=${schoolId} parentTarget="${parentTarget}" staffIds=${staffIds.length} pushRequests=${writes.length}`);
+    } catch (err) {
+      logger.error(`[onPtmCreated] failed for ${ptmEventId}:`, err);
+    }
+  }
+);
+
+// ─── Fee Demand Generation Worker (Phase 10) ───────────────────────
+// processFeeGenerationJob — triggered on new fee_generation_jobs/{jobId}
+// document. Handles bulk demand creation with batched writes +
+// bounded concurrency. See ./fee_generation_worker.js.
+const feeWorker = require("./fee_generation_worker");
+exports.processFeeGenerationJob = feeWorker.processFeeGenerationJob;
+

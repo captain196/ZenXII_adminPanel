@@ -110,10 +110,17 @@ $sym_map = ['INR'=>'&#8377;','USD'=>'$','GBP'=>'&pound;','EUR'=>'&euro;'];
                     </div>
                 </div>
 
-                <div class="ap-form-actions">
+                <div class="ap-form-actions" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
                     <button type="button" class="ap-btn ap-btn-primary" id="saveBtn" onclick="saveConfig()">
                         <i class="fa fa-save"></i> Save Configuration
                     </button>
+                    <a id="openFormBtn" class="ap-btn ap-btn-ghost" href="<?= $esc($public_form_url) ?>" target="_blank" rel="noopener" style="text-decoration:none;">
+                        <i class="fa fa-external-link"></i> Open Public Form
+                    </a>
+                    <span id="savedIndicator" style="font-size:12px;color:var(--t3,#6b7280);display:none;align-items:center;gap:6px;">
+                        <i class="fa fa-check-circle" style="color:#16a34a;"></i>
+                        <span id="savedIndicatorText">Saved just now</span>
+                    </span>
                 </div>
             </form>
         </div>
@@ -233,6 +240,61 @@ amtInput.addEventListener('input', updatePreview);
 curSelect.addEventListener('change', updatePreview);
 lblInput.addEventListener('input', updatePreview);
 
+/* Dirty-state tracking — Save button greys out when nothing has changed
+   since the last successful save, so admins don't re-save no-op state. */
+function snapshotState() {
+    return JSON.stringify({
+        e: toggle.checked,
+        a: parseFloat(amtInput.value) || 0,
+        c: curSelect.value,
+        l: lblInput.value,
+    });
+}
+var savedState = snapshotState();
+var lastSavedAt = null;
+var savedTickerTimer = null;
+
+function setDirty(isDirty) {
+    var btn = document.getElementById('saveBtn');
+    btn.disabled = !isDirty;
+    btn.style.opacity = isDirty ? '1' : '0.55';
+    btn.style.cursor  = isDirty ? 'pointer' : 'not-allowed';
+}
+function refreshDirty() { setDirty(snapshotState() !== savedState); }
+[toggle, amtInput, curSelect, lblInput].forEach(function(el) {
+    el.addEventListener('input',  refreshDirty);
+    el.addEventListener('change', refreshDirty);
+});
+setDirty(false); // initial render — no changes yet
+
+/* "Saved just now / 30 seconds ago / 5 minutes ago" rolling label. */
+function updateSavedTicker() {
+    if (!lastSavedAt) return;
+    var diff = Math.max(0, Math.floor((Date.now() - lastSavedAt) / 1000));
+    var txt;
+    if (diff < 5)         txt = 'Saved just now';
+    else if (diff < 60)   txt = 'Saved ' + diff + ' seconds ago';
+    else if (diff < 3600) txt = 'Saved ' + Math.floor(diff / 60) + ' minute' + (Math.floor(diff/60)===1?'':'s') + ' ago';
+    else                  txt = 'Saved ' + Math.floor(diff / 3600) + ' hour' + (Math.floor(diff/3600)===1?'':'s') + ' ago';
+    var el = document.getElementById('savedIndicatorText');
+    if (el) el.textContent = txt;
+}
+
+/* Stat strip pulse — brief green outline animation on save success so
+   the visual "yes it landed" cue exists beyond just the toast. */
+function pulseStatStrip() {
+    var stats = document.querySelectorAll('.ap-stat');
+    stats.forEach(function(s) {
+        s.style.transition = 'box-shadow 200ms ease, transform 200ms ease';
+        s.style.boxShadow  = '0 0 0 3px rgba(22,163,74,0.45)';
+        s.style.transform  = 'translateY(-2px)';
+        setTimeout(function() {
+            s.style.boxShadow = '';
+            s.style.transform = '';
+        }, 700);
+    });
+}
+
 /* Save */
 window.saveConfig = function() {
     var btn = document.getElementById('saveBtn');
@@ -250,7 +312,6 @@ window.saveConfig = function() {
     xhr.open('POST', BASE + 'school_config/save_admission_payment_config');
     xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
     xhr.onload = function() {
-        btn.disabled = false;
         btn.innerHTML = '<i class="fa fa-save"></i> Save Configuration';
         try {
             var res = JSON.parse(xhr.responseText);
@@ -258,17 +319,31 @@ window.saveConfig = function() {
             if (res.csrf_token) csrfHash = res.csrf_token;
             if (res.status === 'success') {
                 toast(res.message || 'Configuration saved successfully');
+                // Reset dirty tracking against the just-saved state.
+                savedState = snapshotState();
+                setDirty(false);
+                // Surface "Saved just now" with a rolling timer.
+                lastSavedAt = Date.now();
+                var ind = document.getElementById('savedIndicator');
+                if (ind) ind.style.display = 'inline-flex';
+                updateSavedTicker();
+                if (savedTickerTimer) clearInterval(savedTickerTimer);
+                savedTickerTimer = setInterval(updateSavedTicker, 5000);
+                // Visual confirmation on the stat strip.
+                pulseStatStrip();
             } else {
                 toast(res.message || 'Failed to save', 1);
+                refreshDirty();
             }
         } catch(e) {
             toast('Invalid server response', 1);
+            refreshDirty();
         }
     };
     xhr.onerror = function() {
-        btn.disabled = false;
         btn.innerHTML = '<i class="fa fa-save"></i> Save Configuration';
         toast('Network error. Please try again.', 1);
+        refreshDirty();
     };
     xhr.send(fd);
 };

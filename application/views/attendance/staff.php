@@ -530,7 +530,7 @@
 
         /* Header */
         var dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-        var hHtml = '<tr><th class="att-th-idx">#</th><th class="att-th-name">Staff Name</th><th class="att-th-id">Staff ID</th>';
+        var hHtml = '<tr><th class="att-th-idx">#</th><th class="att-th-name">Staff Name</th><th class="att-th-id">Dept</th>';
         for (var d = 1; d <= state.daysInMonth; d++) {
             var cls = 'att-th-day';
             var isSun = sundaySet[d];
@@ -552,8 +552,9 @@
             var att = state.attendance[s.id];
             bHtml += '<tr data-sid="' + esc(s.id) + '">';
             bHtml += '<td class="att-td-idx">' + (idx + 1) + '</td>';
-            bHtml += '<td class="att-td-name" title="' + esc(s.name) + '">' + esc(s.name) + '</td>';
-            bHtml += '<td class="att-td-id">' + esc(s.id) + '</td>';
+            var nameTitle = s.designation ? s.name + ' — ' + s.designation : s.name;
+            bHtml += '<td class="att-td-name" title="' + esc(nameTitle) + '">' + esc(s.name) + '</td>';
+            bHtml += '<td class="att-td-id" style="font-size:10px;color:var(--att-text3)">' + esc(s.department || '-') + '</td>';
             for (var d = 0; d < state.daysInMonth; d++) {
                 var day = d + 1;
                 var v = att[d];

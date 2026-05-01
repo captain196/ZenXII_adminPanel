@@ -1,0 +1,38 @@
+# Environment & secrets
+.env
+.env.local
+.env.production
+
+# Firebase credentials (service account keys)
+application/config/*-firebase-adminsdk-*.json
+application/config/*-adminsdk-*.json
+
+# Session files
+application/sessions/*
+!application/sessions/.gitkeep
+
+# Cache files
+application/cache/token_*.json
+application/cache/firebase_circuit.json
+application/cache/ops_students_*
+
+# Log files
+application/logs/*.php
+application/logs/.debug_enabled
+
+# Vendor (if using composer install on deploy)
+# vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude Code session metadata
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -205,11 +205,17 @@ class Result extends MY_Controller
             redirect("result/template_designer/{$examId}");
         }
 
-        // Load student list
-        $studentList = $this->firebase->get(
-            "Schools/{$school}/{$year}/{$classKey}/{$sectionKey}/Students/List"
-        ) ?? [];
-        if (!is_array($studentList)) $studentList = [];
+        // Load student list — Firestore-only via Roster_helper (R4).
+        // Flatten to `[uid => string name]` so the marks_sheet view's
+        // `is_string($name) ? $name : $uid` rendering keeps working
+        // unchanged.
+        $rosterFull  = $this->roster->for_class($classKey, $sectionKey);
+        $studentList = [];
+        foreach ($rosterFull as $uid => $fields) {
+            $studentList[$uid] = is_array($fields)
+                ? (string) ($fields['Name'] ?? $uid)
+                : (string) $uid;
+        }
 
         // Load existing marks
         $existingMarks = $this->firebase->get(
@@ -765,11 +771,11 @@ class Result extends MY_Controller
         }
         $templateTotalMax = (int) ($template['TotalMaxMarks'] ?? 0);
 
-        // ── Fix M1: Load student roster for enrollment validation ───────
-        $roster = $this->firebase->get(
-            "Schools/{$school}/{$year}/{$classKey}/{$sectionKey}/Students/List"
-        ) ?? [];
-        if (!is_array($roster)) $roster = [];
+        // ── Fix M1 / R4: Load student roster for enrollment validation ──
+        // Firestore-only via Roster_helper. Returned as
+        // `[uid => fields[]]` — `isset($roster[$userId])` still works
+        // (the only thing the validator below actually checks).
+        $roster = $this->roster->for_class($classKey, $sectionKey);
 
         $savedAt  = (int) round(microtime(true) * 1000);
         $savedBy  = $this->admin_id ?? '';
@@ -782,10 +788,23 @@ class Result extends MY_Controller
             if (!$userId) continue;
             $userId = $this->safe_path_segment($userId, 'userId');
 
-            // Fix M1: Validate student belongs to this class/section roster
+            // R4: Log-and-keep enrollment policy.
+            //
+            // Pre-R4 this branch did `continue`, which silently dropped
+            // legitimate marks whenever the roster snapshot was stale —
+            // most commonly right after a promotion or section change
+            // where the Firestore students doc hadn't propagated yet.
+            // We now save the mark unconditionally and surface a warning
+            // so admins can investigate the off-roster student post-hoc
+            // (the alternative — losing entered marks — is worse than
+            // a misfiled record we can correct later).
             if (!empty($roster) && !isset($roster[$userId])) {
-                $warnings[] = "Student {$userId} not in class roster — skipped.";
-                continue;
+                $warnings[] = "Student {$userId} not in {$classKey}/{$sectionKey} roster — saved anyway (log-and-keep).";
+                log_message(
+                    'warning',
+                    "Result::save_marks — {$userId} not in roster for {$classKey}/{$sectionKey} but mark was saved (R4 log-and-keep)"
+                );
+                // No `continue` — fall through to the save below.
             }
 
             $absent   = !empty($stu['absent']);
@@ -1265,10 +1284,18 @@ class Result extends MY_Controller
             return;
         }
 
-        $studentList = $this->firebase->get(
-            "Schools/{$school}/{$year}/{$classKey}/{$sectionKey}/Students/List"
-        ) ?? [];
-        if (!is_array($studentList)) $studentList = [];
+        // Roster — Firestore-only via Roster_helper (R4).
+        // Flatten to `[uid => name string]` so the JSON shape is
+        // identical to pre-R4 callers (the legacy reader handled both
+        // string-and-object roster shapes and rendered the string;
+        // we now provide the string directly).
+        $rosterFull  = $this->roster->for_class($classKey, $sectionKey);
+        $studentList = [];
+        foreach ($rosterFull as $uid => $fields) {
+            $studentList[$uid] = is_array($fields)
+                ? (string) ($fields['Name'] ?? $uid)
+                : (string) $uid;
+        }
 
         $subjects = [];
         foreach ($cumulative as $uid => $res) {
@@ -1283,14 +1310,22 @@ class Result extends MY_Controller
         $rows = [];
         foreach ($cumulative as $uid => $res) {
             if (!is_array($res)) continue;
+            // R4 log-and-keep: a missing roster entry is logged but the
+            // result row is still emitted. Hides nothing from the UI.
+            if (!isset($studentList[$uid])) {
+                log_message(
+                    'warning',
+                    "Result::cumulative — {$uid} not in roster for {$classKey}/{$sectionKey} but result row was kept"
+                );
+            }
             $rows[] = [
-                'uid'          => $uid,
-                'name'         => is_string($studentList[$uid] ?? null) ? $studentList[$uid] : $uid,
-                'rank'         => $res['Rank']          ?? '—',
-                'weightedTotal' => $res['WeightedTotal'] ?? 0,
-                'grade'        => $res['Grade']         ?? '',
-                'passFail'     => $res['PassFail']      ?? '',
-                'subjects'     => $res['Subjects']      ?? [],
+                'uid'           => $uid,
+                'name'          => $studentList[$uid] ?? $uid,
+                'rank'          => $res['Rank']           ?? '—',
+                'weightedTotal' => $res['WeightedTotal']  ?? 0,
+                'grade'         => $res['Grade']          ?? '',
+                'passFail'      => $res['PassFail']       ?? '',
+                'subjects'      => $res['Subjects']       ?? [],
             ];
         }
         usort($rows, fn($a, $b) => ($a['rank'] ?? 999) <=> ($b['rank'] ?? 999));
@@ -1339,10 +1374,17 @@ class Result extends MY_Controller
             }
         }
 
-        $studentList = $this->firebase->get(
-            "Schools/{$school}/{$year}/{$classKey}/{$sectionKey}/Students/List"
-        ) ?? [];
-        if (!is_array($studentList)) $studentList = [];
+        // Roster — Firestore-only via Roster_helper (R4).
+        // Flatten to `[uid => name string]` so the row's `name` field
+        // matches the legacy JSON shape and the `is_string($x) ? $x : $uid`
+        // pattern at the row site stays semantically correct.
+        $rosterFull  = $this->roster->for_class($classKey, $sectionKey);
+        $studentList = [];
+        foreach ($rosterFull as $uid => $fields) {
+            $studentList[$uid] = is_array($fields)
+                ? (string) ($fields['Name'] ?? $uid)
+                : (string) $uid;
+        }
 
         // Collect subject names
         $subjects = [];
@@ -1377,9 +1419,16 @@ class Result extends MY_Controller
         $rows = [];
         foreach ($computed as $uid => $res) {
             if (!is_array($res)) continue;
+            // R4 log-and-keep: roster gap is logged but the row stays.
+            if (!isset($studentList[$uid])) {
+                log_message(
+                    'warning',
+                    "Result::class_result — {$uid} not in roster for {$classKey}/{$sectionKey} but row was kept"
+                );
+            }
             $row = [
                 'uid'      => $uid,
-                'name'     => is_string($studentList[$uid] ?? null) ? $studentList[$uid] : $uid,
+                'name'     => $studentList[$uid] ?? $uid,
                 'rank'     => $res['Rank']      ?? '—',
                 'total'    => $res['TotalMarks'] ?? 0,
                 'maxMarks' => $res['MaxMarks']   ?? 0,

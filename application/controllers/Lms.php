@@ -464,7 +464,7 @@ class Lms extends MY_Controller
             // Fire communication event
             try {
                 $this->load->library('Communication_helper');
-                $this->communication_helper->init($this->firebase, $this->school_name, $this->session_year, $this->parent_db_key);
+                $this->communication_helper->init($this->firebase, $this->school_name, $this->session_year, $this->parent_db_key, $this->fs, $this->school_id);
                 $this->communication_helper->fire_event('assignment_created', [
                     'title'      => $title,
                     'subject'    => $subject,
@@ -604,7 +604,7 @@ class Lms extends MY_Controller
         // Fire assignment_graded communication event
         try {
             $this->load->library('Communication_helper');
-            $this->communication_helper->init($this->firebase, $this->school_name, $this->session_year, $this->parent_db_key);
+            $this->communication_helper->init($this->firebase, $this->school_name, $this->session_year, $this->parent_db_key, $this->fs, $this->school_id);
             $this->communication_helper->fire_event('assignment_graded', [
                 'student_id'    => $studentId,
                 'assignment_id' => $assignmentId,
@@ -1143,7 +1143,7 @@ class Lms extends MY_Controller
         // Fire quiz_result communication event
         try {
             $this->load->library('Communication_helper');
-            $this->communication_helper->init($this->firebase, $this->school_name, $this->session_year, $this->parent_db_key);
+            $this->communication_helper->init($this->firebase, $this->school_name, $this->session_year, $this->parent_db_key, $this->fs, $this->school_id);
             $this->communication_helper->fire_event('quiz_result', [
                 'student_id'  => $studentId,
                 'student_name'=> $studentName,

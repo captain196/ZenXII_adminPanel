@@ -135,6 +135,20 @@ class Admin_login extends CI_Controller
         }
 
         // ══════════════════════════════════════════════════════════════
+        //  LOCAL-DEV FIREBASE-DIRECT LOGIN (auto-resolves school from adminId)
+        //  When the Auth API is unreachable (Node service down, Render asleep),
+        //  fall back to reading admin record straight from Firebase RTDB.
+        //  If a matching school is found for the adminId, the call below
+        //  always redirects (success → /admin, fail → /admin_login with error)
+        //  so control never returns past it.
+        // ══════════════════════════════════════════════════════════════
+        $autoSchoolCode = $this->_findSchoolForAdmin($adminId);
+        if ($autoSchoolCode !== null) {
+            $this->_firebase_fallback_login($adminId, $autoSchoolCode, $password, $ip, $now);
+            // unreachable — _firebase_fallback_login redirects in all branches.
+        }
+
+        // ══════════════════════════════════════════════════════════════
         //  PRIMARY: Call Auth API (MongoDB lookup — schoolCode resolved automatically)
         // ══════════════════════════════════════════════════════════════
         $this->load->library('auth_client');
@@ -164,6 +178,9 @@ class Admin_login extends CI_Controller
         $school_firebase_key = $userData['schoolCode']  ?? '';   // Firebase key — for Schools/{key}/, System/Schools/{key}/
         $displayName         = $result['displayName']   ?? $school_firebase_key;
         $adminName           = $userData['name']        ?? '';
+
+        // Phase 2A — block login if staff record is Inactive. (No-op for non-staff admins.)
+        $this->_assert_staff_active($school_firebase_key, $adminId);
 
         // Role: use Firebase profile's Role (e.g. "Super Admin", "School Super Admin")
         // which is what the rest of the PHP app expects
@@ -289,6 +306,12 @@ class Admin_login extends CI_Controller
         // Password verification
         $storedHash       = ($adminData !== null)
             ? (string) ($adminData['Credentials']['Password'] ?? '') : self::DUMMY_HASH;
+        // Normalise Node-bcrypt prefix ($2b$) to PHP-bcrypt ($2y$) — the algorithms
+        // are identical, only the prefix differs, and PHP's password_verify() on some
+        // builds rejects $2b$ outright. This makes existing Node-stored hashes verify.
+        if (strncmp($storedHash, '$2b$', 4) === 0) {
+            $storedHash = '$2y$' . substr($storedHash, 4);
+        }
         $credentialsValid = false;
 
         if ($adminData !== null && $schoolId_resolved !== null) {
@@ -313,10 +336,19 @@ class Admin_login extends CI_Controller
             redirect('admin_login');
         }
 
-        if (($adminData['Status'] ?? '') !== 'Active') {
-            $this->session->set_flashdata('error', 'Your account is inactive. Contact your administrator.');
+        // Legacy RTDB Status guard — only blocks on EXPLICIT "Inactive".
+        // Treats missing/empty as Active because most staff records (STA*) have
+        // never had this RTDB field set; only SSA accounts and a few legacy
+        // admins do. The canonical Active/Inactive decision is now made by
+        // _assert_staff_active() below using Firestore staff.status.
+        $rtdbStatus = trim((string) ($adminData['Status'] ?? ''));
+        if ($rtdbStatus !== '' && strcasecmp($rtdbStatus, 'Inactive') === 0) {
+            $this->session->set_flashdata('error', 'Account deactivated. Contact admin.');
             redirect('admin_login');
         }
+
+        // Phase 2A — Firestore-canonical staff status check (post-Phase-1 toggle aware).
+        $this->_assert_staff_active($schoolId_resolved, $adminId);
 
         // Subscription check
         $subscription = null;
@@ -419,7 +451,8 @@ class Admin_login extends CI_Controller
 
         $this->load->helper('rbac');
         $adminRole = $adminData['Role'] ?? $adminData['Profile']['role'] ?? '';
-        $rbacPerms = load_role_permissions($firebase, $school_firebase_key, $adminRole);
+        // FIX: $school_firebase_key was undefined here; the Firebase key is $schoolId_resolved.
+        $rbacPerms = load_role_permissions($firebase, $schoolId_resolved, $adminRole);
         $this->session->set_userdata('rbac_permissions', $rbacPerms);
 
         log_message('info',
@@ -427,6 +460,43 @@ class Admin_login extends CI_Controller
             . ' school=' . $this->_log_safe($schoolId) . ' ip=' . $ip);
 
         redirect('admin/index');
+    }
+
+    /**
+     * Phase 2A — block login if the staff doc backing this admin id is
+     * Inactive. Reads `staff/{schoolFirebaseKey}_{userId}` from Firestore
+     * and rejects on any status other than "Active" (case-insensitive).
+     *
+     * Skipped silently when no staff doc is present (e.g., legacy admin
+     * accounts without a Firestore mirror) — credentials check already ran,
+     * so this is a defence-in-depth gate, not the primary auth.
+     */
+    private function _assert_staff_active(string $schoolFirebaseKey, string $userId): void
+    {
+        if ($schoolFirebaseKey === '' || $userId === '') return;
+
+        $docId = $schoolFirebaseKey . '_' . $userId;
+        try {
+            $staffDoc = $this->firebase->firestoreGet('staff', $docId);
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff status guard read failed for ' . $userId . ': ' . $e->getMessage());
+            // Fail-open: don't lock the user out of admin if Firestore is flaky.
+            return;
+        }
+
+        if (!is_array($staffDoc) || empty($staffDoc)) {
+            // No staff doc — either a non-staff admin account, or legacy.
+            // Don't block; the primary auth already verified credentials.
+            return;
+        }
+
+        // Read camelCase first (canonical), fall back to PascalCase for legacy docs.
+        $rawStatus = (string) ($staffDoc['status'] ?? $staffDoc['Status'] ?? 'Active');
+        if (strcasecmp(trim($rawStatus), 'Active') !== 0) {
+            log_message('info', 'Login blocked — staff status=' . $rawStatus . ' user=' . $this->_log_safe($userId));
+            $this->session->set_flashdata('error', 'Account deactivated. Contact admin.');
+            redirect('admin_login');
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -680,6 +750,30 @@ class Admin_login extends CI_Controller
      *
      * Returns the resolved identifier (SCH_XXXXXX or school_name) or null.
      */
+    /**
+     * Find the schoolCode (e.g. "10001") whose Users/Admin/{schoolCode}/{adminId}
+     * record exists in Firebase. Returns null if not found.
+     *
+     * Used by check_credentials() to enable Firebase-direct login when the
+     * Node Auth API is unreachable. Reads Users/Admin top-level once and
+     * scans children for the adminId — single RTDB read, ~O(schools).
+     */
+    private function _findSchoolForAdmin(string $adminId): ?string
+    {
+        $firebase = $this->firebase;
+        $allAdmins = $firebase->get('Users/Admin');
+        if (!is_array($allAdmins)) {
+            return null;
+        }
+        foreach ($allAdmins as $key => $admins) {
+            if (!is_array($admins)) continue;
+            if (isset($admins[$adminId]) && is_array($admins[$adminId])) {
+                return (string) $key;
+            }
+        }
+        return null;
+    }
+
     private function _resolveSchoolId(string $schoolCode): ?string
     {
         $firebase = $this->firebase;

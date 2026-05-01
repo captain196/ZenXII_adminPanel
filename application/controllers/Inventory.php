@@ -6,21 +6,30 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *
  * Sub-modules: Items, Categories, Vendors, Purchases, Stock Issues
  *
- * Firebase paths:
- *   Schools/{school}/Operations/Inventory/Items/{ITM0001}
- *   Schools/{school}/Operations/Inventory/Categories/{ICAT0001}
- *   Schools/{school}/Operations/Inventory/Vendors/{VND0001}
- *   Schools/{school}/Operations/Inventory/Purchases/{PO0001}
- *   Schools/{school}/Operations/Inventory/Issues/{ISI0001}
- *   Schools/{school}/Operations/Inventory/Counters/{type}
+ * Phase 5 — fully migrated to Firestore. Collections:
+ *   inventory/{schoolId}_{ITM0001}           (items — already read by apps)
+ *   inventoryCategories/{schoolId}_{ICAT0001}
+ *   vendors/{schoolId}_{VND0001}             (already read by apps)
+ *   purchaseOrders/{schoolId}_{PO0001}       (already read by apps)
+ *   inventoryIssues/{schoolId}_{ISI0001}
  *
- * Accounting integration:
- *   Purchase → journal (Dr 1060 Inventory, Cr 1010/1020 Cash/Bank)
+ * The Parent + Teacher apps' InventoryFirestoreRepository already
+ * subscribes to inventory / purchaseOrders / vendors, so cutting the
+ * admin writes over makes three surfaces consistent in real time.
+ *
+ * Accounting integration unchanged: purchases still emit a journal
+ * (Dr 1060 Inventory, Cr 1010/1020 Cash/Bank) via Operations_accounting.
  */
 class Inventory extends MY_Controller
 {
     private const MANAGE_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Operations Manager', 'Store Manager'];
     private const VIEW_ROLES   = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Operations Manager', 'Store Manager', 'Accountant', 'Teacher'];
+
+    private const COL_ITEMS      = 'inventory';
+    private const COL_CATEGORIES = 'inventoryCategories';
+    private const COL_VENDORS    = 'vendors';
+    private const COL_PURCHASES  = 'purchaseOrders';
+    private const COL_ISSUES     = 'inventoryIssues';
 
     public function __construct()
     {
@@ -32,41 +41,15 @@ class Inventory extends MY_Controller
         );
     }
 
-    // ── Path Helpers ────────────────────────────────────────────────────
-    private function _inv(string $sub = ''): string
-    {
-        $b = "Schools/{$this->school_name}/Operations/Inventory";
-        return $sub !== '' ? "{$b}/{$sub}" : $b;
-    }
-    private function _items(string $id = ''): string
-    {
-        return $id !== '' ? $this->_inv("Items/{$id}") : $this->_inv('Items');
-    }
-    private function _cats(string $id = ''): string
-    {
-        return $id !== '' ? $this->_inv("Categories/{$id}") : $this->_inv('Categories');
-    }
-    private function _vendors(string $id = ''): string
-    {
-        return $id !== '' ? $this->_inv("Vendors/{$id}") : $this->_inv('Vendors');
-    }
-    private function _purchases(string $id = ''): string
-    {
-        return $id !== '' ? $this->_inv("Purchases/{$id}") : $this->_inv('Purchases');
-    }
-    private function _issues(string $id = ''): string
-    {
-        return $id !== '' ? $this->_inv("Issues/{$id}") : $this->_inv('Issues');
-    }
+    // ── Counter path (for Operations_accounting::next_id — still scoped per school) ──
     private function _counters(string $type): string
     {
-        return $this->_inv("Counters/{$type}");
+        return "Schools/{$this->school_name}/Operations/Inventory/Counters/{$type}";
     }
 
     // ====================================================================
     //  PAGE LOAD
     // ====================================================================
-
     public function index()
     {
         $this->_require_role(self::VIEW_ROLES);
@@ -80,14 +63,16 @@ class Inventory extends MY_Controller
     // ====================================================================
     //  CATEGORIES
     // ====================================================================
-
     public function get_categories()
     {
         $this->_require_role(self::VIEW_ROLES);
-        $cats = $this->firebase->get($this->_cats());
+        $rows = $this->firebase->firestoreQuery(self::COL_CATEGORIES,
+            [['schoolId', '==', $this->school_name]], 'name', 'ASC');
         $list = [];
-        if (is_array($cats)) {
-            foreach ($cats as $id => $c) { $c['id'] = $id; $list[] = $c; }
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $d['id'] = $d['categoryId'] ?? ($r['id'] ?? '');
+            $list[] = $d;
         }
         $this->json_success(['categories' => $list]);
     }
@@ -102,12 +87,18 @@ class Inventory extends MY_Controller
 
         $isNew = ($id === '');
         if ($isNew) { $id = $this->operations_accounting->next_id($this->_counters('Category'), 'ICAT'); }
-        else { $id = $this->safe_path_segment($id, 'category_id'); }
+        else        { $id = $this->safe_path_segment($id, 'category_id'); }
 
-        $data = ['name' => $name, 'description' => $desc, 'status' => 'Active', 'updated_at' => date('c')];
-        if ($isNew) $data['created_at'] = date('c');
+        $data = [
+            'categoryId'  => $id,
+            'name'        => $name,
+            'description' => $desc,
+            'status'      => 'Active',
+            'updatedAt'   => date('c'),
+        ];
+        if ($isNew) $data['createdAt'] = date('c');
 
-        $this->firebase->set($this->_cats($id), $data);
+        $this->fs->setEntity(self::COL_CATEGORIES, $id, $data, /* merge */ true);
         $this->json_success(['id' => $id, 'message' => 'Category saved.']);
     }
 
@@ -115,30 +106,29 @@ class Inventory extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES);
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'category_id');
-        $items = $this->firebase->get($this->_items());
-        if (is_array($items)) {
-            foreach ($items as $it) {
-                if (($it['category_id'] ?? '') === $id) {
-                    $this->json_error('Cannot delete: items use this category.');
-                }
-            }
-        }
-        $this->firebase->delete($this->_cats(), $id);
+        // Block if any item uses this category.
+        $using = $this->firebase->firestoreQuery(self::COL_ITEMS, [
+            ['schoolId',    '==', $this->school_name],
+            ['category_id', '==', $id],
+        ], null, 'ASC', 1);
+        if (!empty($using)) $this->json_error('Cannot delete: items use this category.');
+        $this->fs->remove(self::COL_CATEGORIES, $this->fs->docId($id));
         $this->json_success(['message' => 'Category deleted.']);
     }
 
     // ====================================================================
     //  ITEMS
     // ====================================================================
-
-    /** GET — List items. Supports ?page=N&limit=N for pagination. */
     public function get_items()
     {
         $this->_require_role(self::VIEW_ROLES);
-        $items = $this->firebase->get($this->_items());
+        $rows = $this->firebase->firestoreQuery(self::COL_ITEMS,
+            [['schoolId', '==', $this->school_name]], 'name', 'ASC');
         $list = [];
-        if (is_array($items)) {
-            foreach ($items as $id => $it) { $it['id'] = $id; $list[] = $it; }
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $d['id'] = $d['itemId'] ?? ($r['id'] ?? '');
+            $list[] = $d;
         }
         $this->json_success($this->operations_accounting->paginate(
             $list, 'items', $this->input->get('page'), (int) ($this->input->get('limit') ?? 50)
@@ -148,14 +138,13 @@ class Inventory extends MY_Controller
     public function save_item()
     {
         $this->_require_role(self::MANAGE_ROLES);
-        $id           = trim($this->input->post('id') ?? '');
-        $name         = trim($this->input->post('name') ?? '');
-        $categoryId   = trim($this->input->post('category_id') ?? '');
-        $unit         = trim($this->input->post('unit') ?? 'Pcs');
-        $minStock     = max(0, (int) ($this->input->post('min_stock') ?? 0));
-        $location     = trim($this->input->post('location') ?? '');
-        $description  = trim($this->input->post('description') ?? '');
-
+        $id          = trim($this->input->post('id') ?? '');
+        $name        = trim($this->input->post('name') ?? '');
+        $categoryId  = trim($this->input->post('category_id') ?? '');
+        $unit        = trim($this->input->post('unit') ?? 'Pcs');
+        $minStock    = max(0, (int) ($this->input->post('min_stock') ?? 0));
+        $location    = trim($this->input->post('location') ?? '');
+        $description = trim($this->input->post('description') ?? '');
         if ($name === '') $this->json_error('Item name is required.');
 
         $isNew = ($id === '');
@@ -164,11 +153,12 @@ class Inventory extends MY_Controller
             $currentStock = 0;
         } else {
             $id = $this->safe_path_segment($id, 'item_id');
-            $existing = $this->firebase->get($this->_items($id));
+            $existing = $this->fs->getEntity(self::COL_ITEMS, $id);
             $currentStock = is_array($existing) ? (int) ($existing['current_stock'] ?? 0) : 0;
         }
 
         $data = [
+            'itemId'        => $id,
             'name'          => $name,
             'category_id'   => $categoryId,
             'unit'          => $unit,
@@ -177,37 +167,39 @@ class Inventory extends MY_Controller
             'location'      => $location,
             'description'   => $description,
             'status'        => 'Active',
-            'updated_at'    => date('c'),
+            'updatedAt'     => date('c'),
         ];
-        if ($isNew) $data['created_at'] = date('c');
+        if ($isNew) $data['createdAt'] = date('c');
 
-        $this->firebase->set($this->_items($id), $data);
+        $this->fs->setEntity(self::COL_ITEMS, $id, $data, /* merge */ true);
         $this->json_success(['id' => $id, 'message' => 'Item saved.']);
     }
 
     public function delete_item()
     {
         $this->_require_role(self::MANAGE_ROLES);
-        $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'item_id');
-        $item = $this->firebase->get($this->_items($id));
+        $id   = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'item_id');
+        $item = $this->fs->getEntity(self::COL_ITEMS, $id);
         if (is_array($item) && (int) ($item['current_stock'] ?? 0) > 0) {
             $this->json_error('Cannot delete: item has stock. Clear stock first.');
         }
-        $this->firebase->delete($this->_items(), $id);
+        $this->fs->remove(self::COL_ITEMS, $this->fs->docId($id));
         $this->json_success(['message' => 'Item deleted.']);
     }
 
     // ====================================================================
     //  VENDORS
     // ====================================================================
-
     public function get_vendors()
     {
         $this->_require_role(self::VIEW_ROLES);
-        $vendors = $this->firebase->get($this->_vendors());
+        $rows = $this->firebase->firestoreQuery(self::COL_VENDORS,
+            [['schoolId', '==', $this->school_name]], 'name', 'ASC');
         $list = [];
-        if (is_array($vendors)) {
-            foreach ($vendors as $id => $v) { $v['id'] = $id; $list[] = $v; }
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $d['id'] = $d['vendorId'] ?? ($r['id'] ?? '');
+            $list[] = $d;
         }
         $this->json_success(['vendors' => $list]);
     }
@@ -225,16 +217,21 @@ class Inventory extends MY_Controller
 
         $isNew = ($id === '');
         if ($isNew) { $id = $this->operations_accounting->next_id($this->_counters('Vendor'), 'VND'); }
-        else { $id = $this->safe_path_segment($id, 'vendor_id'); }
+        else        { $id = $this->safe_path_segment($id, 'vendor_id'); }
 
         $data = [
-            'name' => $name, 'contact' => $contact, 'email' => $email,
-            'address' => $address, 'gst' => $gst,
-            'status' => 'Active', 'updated_at' => date('c'),
+            'vendorId'  => $id,
+            'name'      => $name,
+            'contact'   => $contact,
+            'email'     => $email,
+            'address'   => $address,
+            'gst'       => $gst,
+            'status'    => 'Active',
+            'updatedAt' => date('c'),
         ];
-        if ($isNew) $data['created_at'] = date('c');
+        if ($isNew) $data['createdAt'] = date('c');
 
-        $this->firebase->set($this->_vendors($id), $data);
+        $this->fs->setEntity(self::COL_VENDORS, $id, $data, /* merge */ true);
         $this->json_success(['id' => $id, 'message' => 'Vendor saved.']);
     }
 
@@ -242,37 +239,30 @@ class Inventory extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES);
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'vendor_id');
-
-        // OPS-4 FIX: Check for purchases linked to this vendor
-        $purchases = $this->firebase->get($this->_purchases());
-        if (is_array($purchases)) {
-            foreach ($purchases as $po) {
-                if (($po['vendor_id'] ?? '') === $id) {
-                    return $this->json_error('Cannot delete: vendor has purchase records. Remove or reassign purchases first.');
-                }
-            }
-        }
-
-        $this->firebase->delete($this->_vendors(), $id);
+        // Block if any purchase references this vendor.
+        $using = $this->firebase->firestoreQuery(self::COL_PURCHASES, [
+            ['schoolId',  '==', $this->school_name],
+            ['vendor_id', '==', $id],
+        ], null, 'ASC', 1);
+        if (!empty($using)) return $this->json_error('Cannot delete: vendor has purchase records. Remove or reassign purchases first.');
+        $this->fs->remove(self::COL_VENDORS, $this->fs->docId($id));
         $this->json_success(['message' => 'Vendor deleted.']);
     }
 
     // ====================================================================
     //  PURCHASES
     // ====================================================================
-
-    /** GET — List purchases. ?page=1&limit=50 for pagination */
     public function get_purchases()
     {
         $this->_require_role(self::VIEW_ROLES);
-        $purchases = $this->firebase->get($this->_purchases());
+        $rows = $this->firebase->firestoreQuery(self::COL_PURCHASES,
+            [['schoolId', '==', $this->school_name]], 'date', 'DESC');
         $list = [];
-        if (is_array($purchases)) {
-            foreach ($purchases as $id => $p) { $p['id'] = $id; $list[] = $p; }
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $d['id'] = $d['purchaseId'] ?? ($r['id'] ?? '');
+            $list[] = $d;
         }
-        usort($list, function ($a, $b) {
-            return strcmp($b['date'] ?? '', $a['date'] ?? '');
-        });
         $this->json_success($this->operations_accounting->paginate(
             $list, 'purchases',
             $this->input->get('page'),
@@ -280,7 +270,6 @@ class Inventory extends MY_Controller
         ));
     }
 
-    /** POST — Record a purchase. Updates stock and creates accounting journal. */
     public function save_purchase()
     {
         $this->_require_role(self::MANAGE_ROLES);
@@ -296,33 +285,31 @@ class Inventory extends MY_Controller
 
         if ($unitPrice <= 0) $this->json_error('Unit price must be greater than 0.');
 
-        // Verify item
-        $item = $this->firebase->get($this->_items($itemId));
+        $item = $this->fs->getEntity(self::COL_ITEMS, $itemId);
         if (!is_array($item)) $this->json_error('Item not found.');
 
         $total = round($qty * $unitPrice, 2);
-        $poId = $this->operations_accounting->next_id($this->_counters('Purchase'), 'PO');
+        $poId  = $this->operations_accounting->next_id($this->_counters('Purchase'), 'PO');
 
-        // Validate accounting accounts before journal
+        // Validate accounting accounts before journal.
         $cashAcct = ($paymentMode === 'Bank') ? '1020' : '1010';
         $this->operations_accounting->validate_accounts(['1060', $cashAcct]);
 
-        // M-02 FIX: Wrap multi-write operation in try/catch with defined order:
-        // 1. Purchase record (least impact if orphaned)
-        // 2. Journal entry (financial — only after purchase exists)
-        // 3. Stock update (last — only if journal succeeds)
+        // Multi-write sequence preserved:
+        //  1. Purchase record (Pending status)
+        //  2. Journal entry
+        //  3. Stock update + status Completed
         try {
-            // Get vendor name
             $vendorName = '';
             if ($vendorId !== '') {
-                $vendor = $this->firebase->get($this->_vendors($vendorId));
-                $vendorName = is_array($vendor) ? ($vendor['name'] ?? '') : '';
+                $vendor     = $this->fs->getEntity(self::COL_VENDORS, $vendorId);
+                $vendorName = is_array($vendor) ? (string) ($vendor['name'] ?? '') : '';
             }
 
-            // Step 1: Write purchase record FIRST (references journal_id later)
             $purchaseData = [
+                'purchaseId'   => $poId,
                 'item_id'      => $itemId,
-                'item_name'    => $item['name'] ?? '',
+                'item_name'    => (string) ($item['name'] ?? ''),
                 'vendor_id'    => $vendorId,
                 'vendor_name'  => $vendorName,
                 'qty'          => $qty,
@@ -331,44 +318,53 @@ class Inventory extends MY_Controller
                 'date'         => $date,
                 'invoice_no'   => $invoiceNo,
                 'payment_mode' => $paymentMode,
-                'journal_id'   => '',   // placeholder — updated after journal
+                'journal_id'   => '',
                 'notes'        => $notes,
-                'status'       => 'Pending',  // not Completed until stock is updated
+                'status'       => 'Pending',
                 'created_by'   => $this->admin_name,
-                'created_at'   => date('c'),
+                'createdAt'    => date('c'),
             ];
-            $this->firebase->set($this->_purchases($poId), $purchaseData);
+            $this->fs->setEntity(self::COL_PURCHASES, $poId, $purchaseData, /* merge */ true);
 
-            // Step 2: Create journal entry
             $narration = "Inventory purchase: {$item['name']} x{$qty} - Invoice: {$invoiceNo}";
             $journalId = $this->operations_accounting->create_journal($narration, [
                 ['account_code' => '1060',    'dr' => $total, 'cr' => 0],
                 ['account_code' => $cashAcct, 'dr' => 0,      'cr' => $total],
             ], 'Inventory', $poId);
 
-            // Link journal to purchase record
-            $this->firebase->update($this->_purchases($poId), ['journal_id' => $journalId]);
+            $this->fs->setEntity(self::COL_PURCHASES, $poId, [
+                'journal_id' => $journalId,
+                'updatedAt'  => date('c'),
+            ], /* merge */ true);
 
-            // Step 3: Update stock and mark purchase complete
-            // OPS-3 FIX: Re-read current stock just before update to minimize race window
-            $freshStock = (int) ($this->firebase->get($this->_items($itemId) . '/current_stock') ?? 0);
-            $newStock = $freshStock + $qty;
-            $this->firebase->set($this->_items($itemId) . '/current_stock', $newStock);
+            // Stock update with race-window retry, mirroring legacy semantics.
+            $freshItem   = $this->fs->getEntity(self::COL_ITEMS, $itemId);
+            $freshStock  = is_array($freshItem) ? (int) ($freshItem['current_stock'] ?? 0) : 0;
+            $newStock    = $freshStock + $qty;
+            $this->fs->setEntity(self::COL_ITEMS, $itemId, [
+                'current_stock' => $newStock,
+                'updatedAt'     => date('c'),
+            ], /* merge */ true);
 
-            // Verify the write
-            $verified = (int) ($this->firebase->get($this->_items($itemId) . '/current_stock') ?? 0);
+            // Verify (re-read). If an intervening writer pushed current_stock
+            // elsewhere we re-apply our +qty on top of the fresh value.
+            $verifyItem = $this->fs->getEntity(self::COL_ITEMS, $itemId);
+            $verified   = is_array($verifyItem) ? (int) ($verifyItem['current_stock'] ?? 0) : 0;
             if ($verified !== $newStock) {
-                // Another writer conflicted — check if our write already applied
-                $retryStock = (int) ($this->firebase->get($this->_items($itemId) . '/current_stock') ?? 0);
+                $retryStock = $verified;
                 if ($retryStock < $freshStock + $qty) {
-                    // Our addition was lost or partially applied — re-apply on fresh value
                     $newStock = $retryStock + $qty;
-                    $this->firebase->set($this->_items($itemId) . '/current_stock', $newStock);
+                    $this->fs->setEntity(self::COL_ITEMS, $itemId, [
+                        'current_stock' => $newStock,
+                        'updatedAt'     => date('c'),
+                    ], /* merge */ true);
                 }
-                // else: fresh stock already includes our addition — no action needed
             }
 
-            $this->firebase->update($this->_purchases($poId), ['status' => 'Completed']);
+            $this->fs->setEntity(self::COL_PURCHASES, $poId, [
+                'status'    => 'Completed',
+                'updatedAt' => date('c'),
+            ], /* merge */ true);
 
             $this->json_success([
                 'id'         => $poId,
@@ -384,19 +380,17 @@ class Inventory extends MY_Controller
     // ====================================================================
     //  STOCK ISSUES
     // ====================================================================
-
-    /** GET — List stock issues. ?page=1&limit=50 for pagination */
     public function get_issues()
     {
         $this->_require_role(self::VIEW_ROLES);
-        $issues = $this->firebase->get($this->_issues());
+        $rows = $this->firebase->firestoreQuery(self::COL_ISSUES,
+            [['schoolId', '==', $this->school_name]], 'date', 'DESC');
         $list = [];
-        if (is_array($issues)) {
-            foreach ($issues as $id => $iss) { $iss['id'] = $id; $list[] = $iss; }
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $d['id'] = $d['issueId'] ?? ($r['id'] ?? '');
+            $list[] = $d;
         }
-        usort($list, function ($a, $b) {
-            return strcmp($b['date'] ?? '', $a['date'] ?? '');
-        });
         $this->json_success($this->operations_accounting->paginate(
             $list, 'issues',
             $this->input->get('page'),
@@ -404,7 +398,6 @@ class Inventory extends MY_Controller
         ));
     }
 
-    /** POST — Issue stock to staff/department. */
     public function save_issue()
     {
         $this->_require_role(self::MANAGE_ROLES);
@@ -415,7 +408,7 @@ class Inventory extends MY_Controller
 
         if ($issuedTo === '') $this->json_error('Issued-to (person/department) is required.');
 
-        $item = $this->firebase->get($this->_items($itemId));
+        $item = $this->fs->getEntity(self::COL_ITEMS, $itemId);
         if (!is_array($item)) $this->json_error('Item not found.');
         if ((int) ($item['current_stock'] ?? 0) < $qty) {
             $this->json_error("Insufficient stock. Available: {$item['current_stock']}.");
@@ -424,8 +417,9 @@ class Inventory extends MY_Controller
         $issId = $this->operations_accounting->next_id($this->_counters('StockIssue'), 'ISI');
 
         $issueData = [
+            'issueId'     => $issId,
             'item_id'     => $itemId,
-            'item_name'   => $item['name'] ?? '',
+            'item_name'   => (string) ($item['name'] ?? ''),
             'issued_to'   => $issuedTo,
             'issued_by'   => $this->admin_name,
             'qty'         => $qty,
@@ -434,35 +428,37 @@ class Inventory extends MY_Controller
             'return_date' => '',
             'return_qty'  => 0,
             'status'      => 'Issued',
-            'created_at'  => date('c'),
+            'createdAt'   => date('c'),
         ];
 
-        // M-02 FIX: Wrap issue + stock decrement in try/catch
         try {
-            $this->firebase->set($this->_issues($issId), $issueData);
+            $this->fs->setEntity(self::COL_ISSUES, $issId, $issueData, /* merge */ true);
 
-            // OPS-3 FIX: Re-read current stock to minimize race window
-            $freshStock = (int) ($this->firebase->get($this->_items($itemId) . '/current_stock') ?? 0);
-            if ($freshStock < $qty) {
-                $this->json_error("Insufficient stock. Available: {$freshStock}.");
-            }
+            // Stock decrement + retry on concurrent writer (same semantics
+            // as the legacy RTDB path).
+            $freshItem = $this->fs->getEntity(self::COL_ITEMS, $itemId);
+            $freshStock = is_array($freshItem) ? (int) ($freshItem['current_stock'] ?? 0) : 0;
+            if ($freshStock < $qty) $this->json_error("Insufficient stock. Available: {$freshStock}.");
             $newStock = $freshStock - $qty;
-            $this->firebase->set($this->_items($itemId) . '/current_stock', $newStock);
+            $this->fs->setEntity(self::COL_ITEMS, $itemId, [
+                'current_stock' => $newStock,
+                'updatedAt'     => date('c'),
+            ], /* merge */ true);
 
-            // Verify the write
-            $verified = (int) ($this->firebase->get($this->_items($itemId) . '/current_stock') ?? 0);
+            $verifyItem = $this->fs->getEntity(self::COL_ITEMS, $itemId);
+            $verified   = is_array($verifyItem) ? (int) ($verifyItem['current_stock'] ?? 0) : 0;
             if ($verified !== $newStock) {
-                // Another writer conflicted — check if our write already applied
-                $retryStock = (int) ($this->firebase->get($this->_items($itemId) . '/current_stock') ?? 0);
+                $retryStock = $verified;
                 if ($retryStock > $freshStock - $qty) {
-                    // Our subtraction was lost or partially applied — re-apply on fresh value
                     if ($retryStock < $qty) {
                         $this->json_error("Insufficient stock after conflict. Available: {$retryStock}.");
                     }
                     $newStock = $retryStock - $qty;
-                    $this->firebase->set($this->_items($itemId) . '/current_stock', $newStock);
+                    $this->fs->setEntity(self::COL_ITEMS, $itemId, [
+                        'current_stock' => $newStock,
+                        'updatedAt'     => date('c'),
+                    ], /* merge */ true);
                 }
-                // else: fresh stock already reflects our subtraction — no action needed
             }
 
             $this->json_success(['id' => $issId, 'message' => "Issued {$qty} {$item['unit']} of {$item['name']}."]);
@@ -472,41 +468,41 @@ class Inventory extends MY_Controller
         }
     }
 
-    /** POST — Return issued stock. */
     public function return_issue()
     {
         $this->_require_role(self::MANAGE_ROLES);
-        $issueId  = $this->safe_path_segment(trim($this->input->post('issue_id') ?? ''), 'issue_id');
+        $issueId   = $this->safe_path_segment(trim($this->input->post('issue_id') ?? ''), 'issue_id');
         $returnQty = max(1, (int) ($this->input->post('return_qty') ?? 0));
 
-        $issue = $this->firebase->get($this->_issues($issueId));
-        if (!is_array($issue)) $this->json_error('Issue record not found.');
-        if (($issue['status'] ?? '') !== 'Issued') $this->json_error('Stock is not currently issued.');
+        $issue = $this->fs->getEntity(self::COL_ISSUES, $issueId);
+        if (!is_array($issue))                      $this->json_error('Issue record not found.');
+        if (($issue['status'] ?? '') !== 'Issued')  $this->json_error('Stock is not currently issued.');
 
-        $issuedQty    = (int) ($issue['qty'] ?? 0);
+        $issuedQty      = (int) ($issue['qty'] ?? 0);
         $alreadyReturned = (int) ($issue['return_qty'] ?? 0);
         if ($returnQty > ($issuedQty - $alreadyReturned)) {
             $this->json_error('Return quantity exceeds issued amount.');
         }
 
         $totalReturned = $alreadyReturned + $returnQty;
-        $newStatus = ($totalReturned >= $issuedQty) ? 'Returned' : 'Issued';
+        $newStatus     = ($totalReturned >= $issuedQty) ? 'Returned' : 'Issued';
 
-        // M-02 FIX: Wrap return + stock increment in try/catch
         try {
-            $this->firebase->update($this->_issues($issueId), [
+            $this->fs->setEntity(self::COL_ISSUES, $issueId, [
                 'return_qty'  => $totalReturned,
                 'return_date' => date('Y-m-d'),
                 'status'      => $newStatus,
-                'updated_at'  => date('c'),
-            ]);
+                'updatedAt'   => date('c'),
+            ], /* merge */ true);
 
-            // Increment stock
-            $itemId = $issue['item_id'] ?? '';
+            $itemId = (string) ($issue['item_id'] ?? '');
             if ($itemId !== '') {
-                $item = $this->firebase->get($this->_items($itemId));
+                $item = $this->fs->getEntity(self::COL_ITEMS, $itemId);
                 if (is_array($item)) {
-                    $this->firebase->set($this->_items($itemId) . '/current_stock', (int) ($item['current_stock'] ?? 0) + $returnQty);
+                    $this->fs->setEntity(self::COL_ITEMS, $itemId, [
+                        'current_stock' => (int) ($item['current_stock'] ?? 0) + $returnQty,
+                        'updatedAt'     => date('c'),
+                    ], /* merge */ true);
                 }
             }
 
@@ -517,29 +513,30 @@ class Inventory extends MY_Controller
         }
     }
 
-    /** GET — Stock report: items with stock levels, low-stock alerts. */
+    // ====================================================================
+    //  STOCK REPORT
+    // ====================================================================
     public function get_stock_report()
     {
         $this->_require_role(self::VIEW_ROLES);
-        $items = $this->firebase->get($this->_items()) ?? [];
-        if (!is_array($items)) $items = [];
-
+        $rows = $this->firebase->firestoreQuery(self::COL_ITEMS,
+            [['schoolId', '==', $this->school_name]]);
         $report = [];
-        foreach ($items as $id => $it) {
+        foreach ((array) $rows as $r) {
+            $it = $r['data'] ?? $r; if (!is_array($it)) continue;
             $stock = (int) ($it['current_stock'] ?? 0);
-            $min   = (int) ($it['min_stock'] ?? 0);
+            $min   = (int) ($it['min_stock']     ?? 0);
             $report[] = [
-                'id'       => $id,
-                'name'     => $it['name'] ?? '',
-                'category' => $it['category_id'] ?? '',
-                'unit'     => $it['unit'] ?? '',
+                'id'       => (string) ($it['itemId'] ?? ($r['id'] ?? '')),
+                'name'     => (string) ($it['name']        ?? ''),
+                'category' => (string) ($it['category_id'] ?? ''),
+                'unit'     => (string) ($it['unit']        ?? ''),
                 'stock'    => $stock,
                 'min'      => $min,
                 'low'      => $stock <= $min,
-                'status'   => $it['status'] ?? '',
+                'status'   => (string) ($it['status'] ?? ''),
             ];
         }
-
         $this->json_success(['stock_report' => $report]);
     }
 }

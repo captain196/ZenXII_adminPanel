@@ -5,7 +5,7 @@
 <!-- ── Top Bar ── -->
 <section class="fm-topbar">
     <div class="fm-topbar-inner">
-        <h1 class="fm-page-title"><i class="fa fa-graduation-cap"></i> Scholarship Management</h1>
+        <h1 class="fm-page-title"><i class="fa fa-graduation-cap"></i> Discounts &amp; Scholarships</h1>
         <ol class="fm-breadcrumb">
             <li><a href="<?= base_url('dashboard') ?>">Dashboard</a></li>
             <li><a href="<?= base_url('fee_management') ?>">Fee Management</a></li>
@@ -13,6 +13,20 @@
         </ol>
     </div>
 </section>
+
+<!-- Sub-tabs: Discounts / Scholarships — consolidated under one sidebar entry -->
+<div class="fm-subtabs" style="display:flex;gap:4px;margin:4px 0 16px;border-bottom:1px solid var(--border,#e5e7eb);">
+    <a href="<?= base_url('fee_management/discounts') ?>"
+       class="fm-subtab"
+       style="padding:10px 18px;color:var(--t2,#64748b);text-decoration:none;font-weight:500;">
+        <i class="fa fa-tags"></i> Discounts
+    </a>
+    <a href="<?= base_url('fee_management/scholarships') ?>"
+       class="fm-subtab fm-subtab--active"
+       style="padding:10px 18px;border-bottom:2px solid var(--gold,#0f766e);color:var(--gold,#0f766e);font-weight:600;text-decoration:none;">
+        <i class="fa fa-graduation-cap"></i> Scholarships
+    </a>
+</div>
 
 <!-- ── Stats Row ── -->
 <section class="fm-stats-row" id="fmStatsRow">
@@ -440,8 +454,15 @@ document.addEventListener('DOMContentLoaded', function() {
                     var statusBadge = a.status === 'active'
                         ? '<span class="fm-badge fm-badge--green">Active</span>'
                         : '<span class="fm-badge fm-badge--red">Revoked</span>';
+                    // Refresh button — refreshes UNPAID demands so the
+                    // award savings retroactively apply.
+                    var refreshBtn = '<button class="fm-act-btn fm-act-btn--refresh" '
+                        + 'title="Recalculate unpaid demands for this student" '
+                        + 'onclick="recalcUnpaidDemands(\'' + (a.student_id || '') + '\', \'' + (a.student_name || '').replace(/'/g, "\\'") + '\')">'
+                        + '<i class="fa fa-refresh"></i></button>';
                     var actions = a.status === 'active'
-                        ? '<button class="fm-act-btn fm-act-btn--del" title="Revoke" onclick="revokeAward(\'' + a.id + '\')"><i class="fa fa-ban"></i></button>'
+                        ? refreshBtn
+                          + '<button class="fm-act-btn fm-act-btn--del" title="Revoke" onclick="revokeAward(\'' + a.id + '\')"><i class="fa fa-ban"></i></button>'
                         : '<span class="fm-muted">--</span>';
                     html += '<tr>'
                         + '<td>' + (i + 1) + '</td>'
@@ -581,11 +602,50 @@ document.addEventListener('DOMContentLoaded', function() {
                     closeAwardModal();
                     loadAwards();
                     loadScholarships();
+
+                    // Phase 19 — auto-recalc this student's UNPAID demands
+                    // so the new scholarship reduces future dues. Existing
+                    // partial/paid demands are preserved by the endpoint.
+                    if (confirm(
+                      'Award saved.\n\n' +
+                      'Refresh ' + (studentName || 'this student') + '\'s unpaid demands now ' +
+                      'so the new scholarship reduces future fees?\n\n' +
+                      '(Paid + partial demands are preserved unchanged.)'
+                    )) {
+                        recalcUnpaidDemands(studentId, studentName);
+                    }
                 } else {
                     showToast(res.message || 'Award failed', 'error');
                 }
             },
             error: function() { showToast('Server error', 'error'); }
+        });
+    };
+
+    /* ── Recalc unpaid demands (after award/revoke or manual button) ── */
+    window.recalcUnpaidDemands = function(studentId, studentName) {
+        if (!studentId) return;
+        var payload = csrfData();
+        payload.student_id = studentId;
+        $.ajax({
+            url: BASE + 'fees/recalc_unpaid_discounts',
+            type: 'POST',
+            data: payload,
+            dataType: 'json',
+            success: function(res) {
+                refreshCsrf(res);
+                if (res.status === 'success' || res.success) {
+                    showToast(
+                        'Refreshed ' + (studentName || studentId) + ': ' +
+                        (res.deleted || 0) + ' refreshed, ' +
+                        (res.preserved || 0) + ' preserved.',
+                        'success'
+                    );
+                } else {
+                    showToast(res.message || 'Recalc failed.', 'error');
+                }
+            },
+            error: function() { showToast('Server error during recalc.', 'error'); }
         });
     };
 
@@ -1122,6 +1182,14 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 .fm-act-btn--del:hover {
     background: rgba(224,92,111,.22);
+}
+.fm-act-btn--refresh {
+    background: rgba(37,99,235,.1);
+    color: #2563eb;
+    margin-right: 4px;
+}
+.fm-act-btn--refresh:hover {
+    background: rgba(37,99,235,.22);
 }
 
 /* ── Badges ── */

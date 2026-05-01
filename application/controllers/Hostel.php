@@ -2,86 +2,75 @@
 defined('BASEPATH') or exit('No direct script access allowed');
 
 /**
- * Hostel Management Controller
+ * Hostel Controller — buildings, rooms, allocations, attendance.
  *
- * Sub-modules: Buildings, Rooms, Allocations, Attendance
+ * Phase 5 — fully migrated off the Realtime Database onto Firestore.
+ * Firestore collections used (all auto-scoped by schoolId via
+ * Firestore_service::docId()):
  *
- * Firebase paths:
- *   Schools/{school}/Operations/Hostel/Buildings/{BLD0001}
- *   Schools/{school}/Operations/Hostel/Rooms/{RM0001}
- *   Schools/{school}/Operations/Hostel/Allocations/{student_id}
- *   Schools/{school}/Operations/Hostel/Counters/{type}
- *   Schools/{school}/{session}/Operations/Hostel/Attendance/{date}/{student_id}
+ *   hostelBuildings/{schoolId}_{buildingId}
+ *   hostelRooms/{schoolId}_{roomId}
+ *   hostelAllocations/{schoolId}_{studentId}
+ *   hostelAttendance/{schoolId}_{date}_{studentId}
  *
- * Integration: Student module (allocations), Staff (warden), Fees (hostel fee)
+ * The Parent + Teacher apps already subscribe to hostelRooms /
+ * hostelAllocations / hostelComplaints via CampusLifeFirestoreRepository,
+ * so moving the admin writes here makes the three surfaces consistent
+ * in real time. Fee integration still flows through Fee_lifecycle
+ * (itself Firestore-only post-Phase-5), which writes a demand doc with
+ * category=Hostel.
  */
 class Hostel extends MY_Controller
 {
-    /** Roles for hostel management */
-    private const MANAGE_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Operations Manager', 'Hostel Warden', 'Warden'];
+    private const HST_VIEW_ROLES   = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Hostel Warden', 'Accountant', 'Operations Manager'];
+    private const HST_MANAGE_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Hostel Warden', 'Operations Manager'];
 
-    /** Roles that may view hostel data */
-    private const VIEW_ROLES   = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Operations Manager', 'Hostel Warden', 'Warden', 'Academic Coordinator', 'Accountant', 'Class Teacher', 'Teacher'];
-
-    const OPS_ADMIN_ROLES  = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal'];
-    const HST_MANAGE_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Operations Manager', 'Hostel Warden', 'Warden'];
-    const HST_VIEW_ROLES   = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Operations Manager', 'Hostel Warden', 'Warden', 'Accountant', 'Teacher'];
+    private const COL_BUILDINGS  = 'hostelBuildings';
+    private const COL_ROOMS      = 'hostelRooms';
+    private const COL_ALLOCS     = 'hostelAllocations';
+    private const COL_ATTENDANCE = 'hostelAttendance';
 
     public function __construct()
     {
         parent::__construct();
-        require_permission('Operations');
-        $this->load->library('operations_accounting');
+        $this->load->library('Operations_accounting', null, 'operations_accounting');
         $this->operations_accounting->init(
-            $this->firebase, $this->school_name, $this->session_year, $this->admin_id, $this, $this->parent_db_key
+            $this->firebase, $this->school_name, $this->session_year,
+            $this->admin_id ?? 'system', $this
         );
         $this->load->library('Fee_lifecycle', null, 'feeLifecycle');
         $this->feeLifecycle->init($this->firebase, $this->school_name, $this->session_year, $this->admin_id ?? 'system');
     }
 
-    private function _require_manage()
+    // ── RBAC helpers ───────────────────────────────────────────────────
+    private function _require_manage(): void
     {
-        if (!in_array($this->admin_role, self::HST_MANAGE_ROLES, true))
-            $this->json_error('Access denied.', 403);
+        if (!in_array($this->admin_role, self::HST_MANAGE_ROLES, true)) $this->json_error('Access denied.', 403);
     }
-    private function _require_view()
+    private function _require_view(): void
     {
-        if (!in_array($this->admin_role, self::HST_VIEW_ROLES, true))
-            $this->json_error('Access denied.', 403);
+        if (!in_array($this->admin_role, self::HST_VIEW_ROLES, true)) $this->json_error('Access denied.', 403);
     }
 
-    // ── Path Helpers ────────────────────────────────────────────────────
-    private function _hst(string $sub = ''): string
+    // ── Doc ID helpers (Firestore) ────────────────────────────────────
+    private function _buildingDocId(string $id): string    { return $this->fs->docId($id); }
+    private function _roomDocId(string $id): string        { return $this->fs->docId($id); }
+    private function _allocDocId(string $studentId): string{ return $this->fs->docId($studentId); }
+    private function _attendDocId(string $date, string $studentId): string
     {
-        $b = "Schools/{$this->school_name}/Operations/Hostel";
-        return $sub !== '' ? "{$b}/{$sub}" : $b;
-    }
-    private function _buildings(string $id = ''): string
-    {
-        return $id !== '' ? $this->_hst("Buildings/{$id}") : $this->_hst('Buildings');
-    }
-    private function _rooms(string $id = ''): string
-    {
-        return $id !== '' ? $this->_hst("Rooms/{$id}") : $this->_hst('Rooms');
-    }
-    private function _allocations(string $id = ''): string
-    {
-        return $id !== '' ? $this->_hst("Allocations/{$id}") : $this->_hst('Allocations');
-    }
-    private function _attendance(string $date = ''): string
-    {
-        $b = "Schools/{$this->school_name}/{$this->session_year}/Operations/Hostel/Attendance";
-        return $date !== '' ? "{$b}/{$date}" : $b;
+        return $this->fs->docId2($date, $studentId);
     }
     private function _counters(string $type): string
     {
-        return $this->_hst("Counters/{$type}");
+        // Keep counter path identical to the legacy RTDB path so the
+        // existing Operations_accounting::next_id() issues the same
+        // BLD/RM sequence. next_id() itself already runs on Firestore.
+        return "Schools/{$this->school_name}/Operations/Hostel/Counters/{$type}";
     }
 
     // ====================================================================
     //  PAGE LOAD
     // ====================================================================
-
     public function index()
     {
         $this->_require_role(self::VIEW_ROLES, 'hostel_view');
@@ -95,15 +84,17 @@ class Hostel extends MY_Controller
     // ====================================================================
     //  BUILDINGS
     // ====================================================================
-
     public function get_buildings()
     {
         $this->_require_role(self::VIEW_ROLES, 'hostel_view');
         $this->_require_view();
-        $buildings = $this->firebase->get($this->_buildings());
+        $rows = $this->firebase->firestoreQuery(self::COL_BUILDINGS,
+            [['schoolId', '==', $this->school_name]], 'name', 'ASC');
         $list = [];
-        if (is_array($buildings)) {
-            foreach ($buildings as $id => $b) { $b['id'] = $id; $list[] = $b; }
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $d['id'] = $d['buildingId'] ?? ($r['id'] ?? '');
+            $list[] = $d;
         }
         $this->json_success(['buildings' => $list]);
     }
@@ -112,13 +103,13 @@ class Hostel extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES, 'save_building');
         $this->_require_manage();
-        $id       = trim($this->input->post('id') ?? '');
-        $name     = trim($this->input->post('name') ?? '');
-        $type     = trim($this->input->post('type') ?? 'mixed');
-        $wardenId = trim($this->input->post('warden_id') ?? '');
+        $id         = trim($this->input->post('id') ?? '');
+        $name       = trim($this->input->post('name') ?? '');
+        $type       = trim($this->input->post('type') ?? 'mixed');
+        $wardenId   = trim($this->input->post('warden_id') ?? '');
         $wardenName = trim($this->input->post('warden_name') ?? '');
-        $floors   = max(1, (int) ($this->input->post('floors') ?? 1));
-        $address  = trim($this->input->post('address') ?? '');
+        $floors     = max(1, (int) ($this->input->post('floors') ?? 1));
+        $address    = trim($this->input->post('address') ?? '');
 
         if ($name === '') $this->json_error('Building name is required.');
         if (!in_array($type, ['boys', 'girls', 'mixed'], true)) $type = 'mixed';
@@ -128,26 +119,28 @@ class Hostel extends MY_Controller
             $id = $this->operations_accounting->next_id($this->_counters('Building'), 'BLD');
         } else {
             $id = $this->safe_path_segment($id, 'building_id');
-            // Preserve warden_id from Firebase (not in form — future staff integration)
             if ($wardenId === '') {
-                $existing = $this->firebase->get($this->_buildings($id));
-                $wardenId = is_array($existing) ? ($existing['warden_id'] ?? '') : '';
+                $existing = $this->fs->getEntity(self::COL_BUILDINGS, $id);
+                $wardenId = is_array($existing) ? ($existing['warden_id'] ?? $existing['wardenId'] ?? '') : '';
             }
         }
 
         $data = [
+            'buildingId'  => $id,
             'name'        => $name,
             'type'        => $type,
-            'warden_id'   => $wardenId,
+            'warden_id'   => $wardenId,    // legacy snake_case kept for backward read
+            'wardenId'    => $wardenId,    // canonical camelCase
             'warden_name' => $wardenName,
+            'wardenName'  => $wardenName,
             'floors'      => $floors,
             'address'     => $address,
             'status'      => 'Active',
-            'updated_at'  => date('c'),
+            'updatedAt'   => date('c'),
         ];
-        if ($isNew) $data['created_at'] = date('c');
+        if ($isNew) $data['createdAt'] = date('c');
 
-        $this->firebase->set($this->_buildings($id), $data);
+        $this->fs->setEntity(self::COL_BUILDINGS, $id, $data, /* merge */ true);
         $this->json_success(['id' => $id, 'message' => 'Building saved.']);
     }
 
@@ -157,38 +150,35 @@ class Hostel extends MY_Controller
         $this->_require_manage();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'building_id');
 
-        // Check if rooms exist in this building
-        $rooms = $this->firebase->get($this->_rooms());
-        if (is_array($rooms)) {
-            foreach ($rooms as $r) {
-                if (($r['building_id'] ?? '') === $id) {
-                    $this->json_error('Cannot delete: building has rooms. Remove rooms first.');
-                }
-            }
-        }
-        $this->firebase->delete($this->_buildings(), $id);
+        // Block delete if rooms exist in this building.
+        $rooms = $this->firebase->firestoreQuery(self::COL_ROOMS, [
+            ['schoolId',    '==', $this->school_name],
+            ['building_id', '==', $id],
+        ], null, 'ASC', 1);
+        if (!empty($rooms)) $this->json_error('Cannot delete: building has rooms. Remove rooms first.');
+
+        $this->fs->remove(self::COL_BUILDINGS, $this->_buildingDocId($id));
         $this->json_success(['message' => 'Building deleted.']);
     }
 
     // ====================================================================
     //  ROOMS
     // ====================================================================
-
-    /** GET — List rooms. ?building_id=BLD0001 for filter */
     public function get_rooms()
     {
         $this->_require_role(self::VIEW_ROLES, 'hostel_view');
         $this->_require_view();
         $buildingId = trim($this->input->get('building_id') ?? '');
 
-        $rooms = $this->firebase->get($this->_rooms());
+        $filters = [['schoolId', '==', $this->school_name]];
+        if ($buildingId !== '') $filters[] = ['building_id', '==', $buildingId];
+        $rows = $this->firebase->firestoreQuery(self::COL_ROOMS, $filters);
+
         $list = [];
-        if (is_array($rooms)) {
-            foreach ($rooms as $id => $r) {
-                if ($buildingId !== '' && ($r['building_id'] ?? '') !== $buildingId) continue;
-                $r['id'] = $id;
-                $list[] = $r;
-            }
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $d['id'] = $d['roomId'] ?? ($r['id'] ?? '');
+            $list[] = $d;
         }
         usort($list, function ($a, $b) {
             $cmp = strcmp($a['building_id'] ?? '', $b['building_id'] ?? '');
@@ -219,12 +209,13 @@ class Hostel extends MY_Controller
             $occupied = 0;
         } else {
             $id = $this->safe_path_segment($id, 'room_id');
-            $existing = $this->firebase->get($this->_rooms($id));
+            $existing = $this->fs->getEntity(self::COL_ROOMS, $id);
             $occupied = is_array($existing) ? (int) ($existing['occupied'] ?? 0) : 0;
             if ($beds < $occupied) $this->json_error("Cannot reduce beds below current occupancy ({$occupied}).");
         }
 
         $data = [
+            'roomId'      => $id,
             'building_id' => $buildingId,
             'floor'       => $floor,
             'room_no'     => $roomNo,
@@ -234,11 +225,11 @@ class Hostel extends MY_Controller
             'monthly_fee' => $monthlyFee,
             'facilities'  => $facilities,
             'status'      => 'Active',
-            'updated_at'  => date('c'),
+            'updatedAt'   => date('c'),
         ];
-        if ($isNew) $data['created_at'] = date('c');
+        if ($isNew) $data['createdAt'] = date('c');
 
-        $this->firebase->set($this->_rooms($id), $data);
+        $this->fs->setEntity(self::COL_ROOMS, $id, $data, /* merge */ true);
         $this->json_success(['id' => $id, 'message' => 'Room saved.']);
     }
 
@@ -246,28 +237,29 @@ class Hostel extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES, 'delete_room');
         $this->_require_manage();
-        $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'room_id');
-
-        $room = $this->firebase->get($this->_rooms($id));
+        $id   = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'room_id');
+        $room = $this->fs->getEntity(self::COL_ROOMS, $id);
         if (is_array($room) && (int) ($room['occupied'] ?? 0) > 0) {
             $this->json_error('Cannot delete: room has occupants.');
         }
-        $this->firebase->delete($this->_rooms(), $id);
+        $this->fs->remove(self::COL_ROOMS, $this->_roomDocId($id));
         $this->json_success(['message' => 'Room deleted.']);
     }
 
     // ====================================================================
     //  ALLOCATIONS
     // ====================================================================
-
     public function get_allocations()
     {
         $this->_require_role(self::VIEW_ROLES, 'hostel_view');
         $this->_require_view();
-        $allocations = $this->firebase->get($this->_allocations());
+        $rows = $this->firebase->firestoreQuery(self::COL_ALLOCS,
+            [['schoolId', '==', $this->school_name]]);
         $list = [];
-        if (is_array($allocations)) {
-            foreach ($allocations as $sid => $a) { $a['student_id'] = $sid; $list[] = $a; }
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $d['student_id'] = $d['studentId'] ?? $d['student_id'] ?? ($r['id'] ?? '');
+            $list[] = $d;
         }
         $this->json_success(['allocations' => $list]);
     }
@@ -280,16 +272,15 @@ class Hostel extends MY_Controller
         $roomId    = $this->safe_path_segment(trim($this->input->post('room_id') ?? ''), 'room_id');
         $bedNo     = max(1, (int) ($this->input->post('bed_no') ?? 1));
 
-        // Verify student (use parent_db_key — legacy schools key by school_code, not school_id)
-        $student = $this->firebase->get("Users/Parents/{$this->parent_db_key}/{$studentId}");
+        // Verify student from the Firestore `students` collection (the
+        // legacy RTDB Users/Parents/… lookup is no longer consulted).
+        $student = $this->firebase->firestoreGet('students', "{$this->school_name}_{$studentId}");
         if (!is_array($student)) $this->json_error('Student not found.');
 
-        // Verify room and check capacity
-        $room = $this->firebase->get($this->_rooms($roomId));
+        $room = $this->fs->getEntity(self::COL_ROOMS, $roomId);
         if (!is_array($room)) $this->json_error('Room not found.');
 
-        // Check if student already allocated
-        $existing = $this->firebase->get($this->_allocations($studentId));
+        $existing       = $this->fs->getEntity(self::COL_ALLOCS, $studentId);
         $isReallocation = is_array($existing) && ($existing['status'] ?? '') === 'Active';
 
         if (!$isReallocation && (int) ($room['occupied'] ?? 0) >= (int) ($room['beds'] ?? 0)) {
@@ -299,111 +290,76 @@ class Hostel extends MY_Controller
             $this->json_error("Bed number exceeds room capacity ({$room['beds']}).");
         }
 
-        // If reallocating, decrement old room's occupied count
+        // Reallocation: decrement the previous room's occupied counter.
         if ($isReallocation) {
             $oldRoomId = $existing['room_id'] ?? '';
             if ($oldRoomId !== '' && $oldRoomId !== $roomId) {
-                $oldRoom = $this->firebase->get($this->_rooms($oldRoomId));
+                $oldRoom = $this->fs->getEntity(self::COL_ROOMS, $oldRoomId);
                 if (is_array($oldRoom)) {
-                    $this->firebase->set(
-                        $this->_rooms($oldRoomId) . '/occupied',
-                        max(0, (int) ($oldRoom['occupied'] ?? 0) - 1)
-                    );
+                    $this->fs->setEntity(self::COL_ROOMS, $oldRoomId, [
+                        'occupied'  => max(0, (int) ($oldRoom['occupied'] ?? 0) - 1),
+                        'updatedAt' => date('c'),
+                    ], /* merge */ true);
                 }
             }
         }
 
-        // Get building info for display
-        $building = $this->firebase->get($this->_buildings($room['building_id'] ?? ''));
+        $building     = $this->fs->getEntity(self::COL_BUILDINGS, (string) ($room['building_id'] ?? ''));
         $buildingName = is_array($building) ? ($building['name'] ?? '') : '';
 
         $data = [
+            'studentId'     => $studentId,
             'room_id'       => $roomId,
             'room_no'       => $room['room_no'] ?? '',
             'building_id'   => $room['building_id'] ?? '',
             'building_name' => $buildingName,
             'bed_no'        => $bedNo,
-            'student_name'  => $student['Name'] ?? $studentId,
-            'student_class' => ($student['Class'] ?? '') . ' ' . ($student['Section'] ?? ''),
+            'student_name'  => $student['name'] ?? $student['studentName'] ?? $studentId,
+            'student_class' => ($student['className'] ?? '') . ' ' . ($student['section'] ?? ''),
             'monthly_fee'   => (float) ($room['monthly_fee'] ?? 0),
             'check_in'      => date('Y-m-d'),
             'check_out'     => '',
             'status'        => 'Active',
-            'updated_at'    => date('c'),
+            'updatedAt'     => date('c'),
         ];
+        $this->fs->setEntity(self::COL_ALLOCS, $studentId, $data, /* merge */ true);
 
-        $this->firebase->set($this->_allocations($studentId), $data);
-
-        // M-01 FIX: Post-write occupancy verification to prevent race condition.
-        // Re-read room after allocation write, count actual active allocations,
-        // and reconcile the occupied counter to prevent over-booking.
+        // Post-write occupancy verification (OPS M-01 race guard).
         $needsIncrement = !$isReallocation || ($existing['room_id'] ?? '') !== $roomId;
         if ($needsIncrement) {
-            $this->firebase->set(
-                $this->_rooms($roomId) . '/occupied',
-                (int) ($room['occupied'] ?? 0) + 1
-            );
-
-            // Post-write verification: re-read room and check for over-allocation
-            $roomAfter = $this->firebase->get($this->_rooms($roomId));
-            $occupiedAfter = (int) ($roomAfter['occupied'] ?? 0);
-            $bedsTotal     = (int) ($roomAfter['beds'] ?? 0);
-
+            $this->fs->setEntity(self::COL_ROOMS, $roomId, [
+                'occupied'  => (int) ($room['occupied'] ?? 0) + 1,
+                'updatedAt' => date('c'),
+            ], /* merge */ true);
+            $roomAfter     = $this->fs->getEntity(self::COL_ROOMS, $roomId);
+            $occupiedAfter = (int) (($roomAfter['occupied'] ?? 0));
+            $bedsTotal     = (int) (($roomAfter['beds']     ?? 0));
             if ($occupiedAfter > $bedsTotal) {
-                // Race detected — rollback this allocation
-                $this->firebase->delete($this->_allocations(), $studentId);
-                $this->firebase->set(
-                    $this->_rooms($roomId) . '/occupied',
-                    max(0, $occupiedAfter - 1)
-                );
+                // Race detected — rollback.
+                $this->fs->remove(self::COL_ALLOCS, $this->_allocDocId($studentId));
+                $this->fs->setEntity(self::COL_ROOMS, $roomId, [
+                    'occupied'  => max(0, $occupiedAfter - 1),
+                    'updatedAt' => date('c'),
+                ], /* merge */ true);
                 $this->json_error('Room became full while processing. Please try again or choose another room.');
             }
         }
 
-        // ── Fee Integration: create/update hostel fee component (session-scoped) ──
-        $feePath = "Schools/{$this->school_name}/{$this->session_year}/Fees/Student_Fee_Items/{$studentId}/Hostel";
-        $this->firebase->set($feePath, [
-            'building_id'    => $room['building_id'] ?? '',
-            'building_name'  => $buildingName,
-            'room_id'        => $roomId,
-            'room_no'        => $room['room_no'] ?? '',
-            'monthly_fee'    => (float) ($room['monthly_fee'] ?? 0),
-            'effective_from' => date('Y-m-d'),
-            'status'         => 'active',
-            'updated_at'     => date('c'),
-        ]);
-
-        // Auto-create hostel fee demand via Fee_lifecycle
+        // Fee integration — Fee_lifecycle writes the hostel fee demand
+        // to Firestore feeDemands (category=Hostel) in the canonical shape.
         try {
-            if ($isReallocation) {
-                // Room change — create new demand with differential fee info
-                $oldFee = (float) ($existing['monthly_fee'] ?? 0);
-                $this->feeLifecycle->createModuleFee($studentId, 'Hostel', [
-                    'building'     => $buildingName,
-                    'room'         => $roomId,
-                    'room_type'    => $room['type'] ?? '',
-                    'amount'       => (float) ($room['monthly_fee'] ?? 0),
-                    'mess_charges' => 0,
-                    'period'       => 'Monthly',
-                    'start_date'   => date('Y-m-d'),
-                    'previous_fee' => $oldFee,
-                ]);
-                log_message('info', "Fee_lifecycle: hostel fee updated (room change) for student {$studentId} room {$roomId}");
-            } else {
-                // New allocation — create demand
-                $this->feeLifecycle->createModuleFee($studentId, 'Hostel', [
-                    'building'     => $buildingName,
-                    'room'         => $roomId,
-                    'room_type'    => $room['type'] ?? '',
-                    'amount'       => (float) ($room['monthly_fee'] ?? 0),
-                    'mess_charges' => 0,
-                    'period'       => 'Monthly',
-                    'start_date'   => date('Y-m-d'),
-                ]);
-                log_message('info', "Fee_lifecycle: hostel fee created for student {$studentId}");
-            }
-        } catch (Exception $e) {
-            log_message('error', "Fee_lifecycle::createModuleFee(Hostel) failed: " . $e->getMessage());
+            $this->feeLifecycle->createModuleFee($studentId, 'Hostel', [
+                'building'     => $buildingName,
+                'room'         => $roomId,
+                'room_type'    => $room['type'] ?? '',
+                'amount'       => (float) ($room['monthly_fee'] ?? 0),
+                'mess_charges' => 0,
+                'period'       => 'Monthly',
+                'start_date'   => date('Y-m-d'),
+                'previous_fee' => $isReallocation ? (float) ($existing['monthly_fee'] ?? 0) : 0,
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', "Fee_lifecycle::createModuleFee(Hostel) failed for {$studentId}: " . $e->getMessage());
         }
 
         $this->json_success(['message' => "Student allocated to Room {$room['room_no']}, Bed {$bedNo}."]);
@@ -415,49 +371,36 @@ class Hostel extends MY_Controller
         $this->_require_manage();
         $studentId = $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id');
 
-        $alloc = $this->firebase->get($this->_allocations($studentId));
+        $alloc = $this->fs->getEntity(self::COL_ALLOCS, $studentId);
         if (!is_array($alloc)) $this->json_error('Allocation not found.');
 
-        // Decrement room occupancy
+        // Decrement room occupancy.
         $roomId = $alloc['room_id'] ?? '';
         if ($roomId !== '') {
-            $room = $this->firebase->get($this->_rooms($roomId));
+            $room = $this->fs->getEntity(self::COL_ROOMS, $roomId);
             if (is_array($room)) {
-                $this->firebase->set(
-                    $this->_rooms($roomId) . '/occupied',
-                    max(0, (int) ($room['occupied'] ?? 0) - 1)
-                );
+                $this->fs->setEntity(self::COL_ROOMS, $roomId, [
+                    'occupied'  => max(0, (int) ($room['occupied'] ?? 0) - 1),
+                    'updatedAt' => date('c'),
+                ], /* merge */ true);
             }
         }
 
-        // ── Fee Integration: deactivate hostel fee component (session-scoped) ──
-        $feePath = "Schools/{$this->school_name}/{$this->session_year}/Fees/Student_Fee_Items/{$studentId}/Hostel";
-        $existingFee = $this->firebase->get($feePath);
-        if (is_array($existingFee)) {
-            $this->firebase->update($feePath, [
-                'monthly_fee' => 0,
-                'status'      => 'inactive',
-                'removed_at'  => date('c'),
-                'updated_at'  => date('c'),
-            ]);
-        }
-
-        // Flag hostel fee as checked out via Fee_lifecycle
+        // Mark demand as frozen via Fee_lifecycle (which writes to Firestore feeDemands).
         try {
-            $this->firebase->update(
-                "Schools/{$this->school_name}/{$this->session_year}/Fees/Student_Fee_Items/{$studentId}/Hostel",
-                ['status' => 'checked_out', 'checkout_date' => date('c'), 'checked_out_by' => $this->admin_id ?? 'system']
-            );
-        } catch (Exception $e) {
-            log_message('error', "Hostel fee checkout failed for {$studentId}: " . $e->getMessage());
+            // A targeted "stop collecting this student's hostel fee" is
+            // a lifecycle-level concern; freeze handles it cleanly.
+            $this->feeLifecycle->freezeFeesOnSoftDelete($studentId);
+        } catch (\Exception $e) {
+            log_message('error', "Fee_lifecycle::freeze(hostel-checkout) failed for {$studentId}: " . $e->getMessage());
         }
 
-        // Mark as checked out rather than deleting (audit trail)
-        $this->firebase->update($this->_allocations($studentId), [
-            'check_out'  => date('Y-m-d'),
-            'status'     => 'CheckedOut',
-            'updated_at' => date('c'),
-        ]);
+        // Preserve audit trail — flip status instead of deleting.
+        $this->fs->setEntity(self::COL_ALLOCS, $studentId, [
+            'check_out' => date('Y-m-d'),
+            'status'    => 'CheckedOut',
+            'updatedAt' => date('c'),
+        ], /* merge */ true);
 
         $this->json_success(['message' => 'Student checked out.']);
     }
@@ -465,8 +408,6 @@ class Hostel extends MY_Controller
     // ====================================================================
     //  HOSTEL ATTENDANCE
     // ====================================================================
-
-    /** GET — Attendance for a date. ?date=YYYY-MM-DD */
     public function get_attendance()
     {
         $this->_require_role(self::VIEW_ROLES, 'hostel_view');
@@ -474,32 +415,37 @@ class Hostel extends MY_Controller
         $date = trim($this->input->get('date') ?? date('Y-m-d'));
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) $date = date('Y-m-d');
 
-        $att = $this->firebase->get($this->_attendance($date));
+        // Attendance records for the date (one doc per student).
+        $attRows = $this->firebase->firestoreQuery(self::COL_ATTENDANCE, [
+            ['schoolId', '==', $this->school_name],
+            ['date',     '==', $date],
+        ]);
         $list = [];
-        if (is_array($att)) {
-            foreach ($att as $sid => $a) { $a['student_id'] = $sid; $list[] = $a; }
+        foreach ((array) $attRows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $d['student_id'] = $d['studentId'] ?? ($r['id'] ?? '');
+            $list[] = $d;
         }
 
-        // Get all active allocations for the full roster
-        $allocations = $this->firebase->get($this->_allocations());
+        // Full active-allocation roster for the UI.
+        $allocRows = $this->firebase->firestoreQuery(self::COL_ALLOCS, [
+            ['schoolId', '==', $this->school_name],
+            ['status',   '==', 'Active'],
+        ]);
         $roster = [];
-        if (is_array($allocations)) {
-            foreach ($allocations as $sid => $al) {
-                if (($al['status'] ?? '') === 'Active') {
-                    $roster[] = [
-                        'student_id'   => $sid,
-                        'student_name' => $al['student_name'] ?? $sid,
-                        'room_no'      => $al['room_no'] ?? '',
-                        'building_name' => $al['building_name'] ?? '',
-                    ];
-                }
-            }
+        foreach ((array) $allocRows as $r) {
+            $al = $r['data'] ?? $r; if (!is_array($al)) continue;
+            $roster[] = [
+                'student_id'    => $al['studentId'] ?? ($r['id'] ?? ''),
+                'student_name'  => $al['student_name']  ?? '',
+                'room_no'       => $al['room_no']       ?? '',
+                'building_name' => $al['building_name'] ?? '',
+            ];
         }
 
         $this->json_success(['attendance' => $list, 'roster' => $roster, 'date' => $date]);
     }
 
-    /** POST — Save hostel attendance. Params: date, attendance (JSON array) */
     public function save_attendance()
     {
         $this->_require_role(self::MANAGE_ROLES, 'save_attendance');
@@ -510,51 +456,64 @@ class Hostel extends MY_Controller
         $records = json_decode($this->input->post('attendance') ?? '[]', true);
         if (!is_array($records) || empty($records)) $this->json_error('No attendance data.');
 
-        $batch = [];
+        $written = 0;
         foreach ($records as $rec) {
             $sid    = $rec['student_id'] ?? '';
-            $status = $rec['status'] ?? 'P';
+            $status = $rec['status']     ?? 'P';
             if ($sid === '' || !in_array($status, ['P', 'A', 'L'], true)) continue;
-            $batch[$sid] = [
-                'status'    => $status,
-                'marked_by' => $this->admin_name,
-                'marked_at' => date('c'),
-            ];
+            $docId = $this->_attendDocId($date, $sid);
+            $this->firebase->firestoreSet(self::COL_ATTENDANCE, $docId, [
+                'schoolId'   => $this->school_name,
+                'session'    => $this->session_year,
+                'date'       => $date,
+                'studentId'  => $sid,
+                'status'     => $status,
+                'marked_by'  => $this->admin_name,
+                'marked_at'  => date('c'),
+                'updatedAt'  => date('c'),
+            ], /* merge */ true);
+            $written++;
         }
 
-        if (empty($batch)) $this->json_error('No valid attendance records.');
-
-        // OPS-2 FIX: Use update() to merge with existing attendance (prevents overwrite when two wardens mark different buildings simultaneously)
-        $this->firebase->update($this->_attendance($date), $batch);
-
-        $this->json_success(['message' => 'Attendance saved for ' . count($batch) . ' students.']);
+        if ($written === 0) $this->json_error('No valid attendance records.');
+        $this->json_success(['message' => "Attendance saved for {$written} students."]);
     }
 
-    /** GET — Occupancy stats. */
+    // ====================================================================
+    //  STATS
+    // ====================================================================
     public function get_stats()
     {
         $this->_require_role(self::VIEW_ROLES, 'hostel_view');
         $this->_require_view();
 
-        $buildings = $this->firebase->get($this->_buildings()) ?? [];
-        $rooms     = $this->firebase->get($this->_rooms()) ?? [];
-        if (!is_array($buildings)) $buildings = [];
-        if (!is_array($rooms))     $rooms     = [];
+        $bRows = $this->firebase->firestoreQuery(self::COL_BUILDINGS,
+            [['schoolId', '==', $this->school_name]]);
+        $rRows = $this->firebase->firestoreQuery(self::COL_ROOMS,
+            [['schoolId', '==', $this->school_name]]);
 
-        $totalBeds = 0; $totalOccupied = 0;
-        $byBuilding = [];
+        $buildings = [];
+        foreach ((array) $bRows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $bid = $d['buildingId'] ?? ($r['id'] ?? '');
+            $buildings[$bid] = $d;
+        }
+        $rooms = [];
+        foreach ((array) $rRows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $rooms[] = $d;
+        }
 
-        foreach ($rooms as $rid => $r) {
-            $bid   = $r['building_id'] ?? 'unknown';
-            $beds  = (int) ($r['beds'] ?? 0);
-            $occ   = (int) ($r['occupied'] ?? 0);
-            $totalBeds     += $beds;
-            $totalOccupied += $occ;
+        $totalBeds = 0; $totalOccupied = 0; $byBuilding = [];
+        foreach ($rooms as $r) {
+            $bid  = $r['building_id'] ?? 'unknown';
+            $beds = (int) ($r['beds'] ?? 0);
+            $occ  = (int) ($r['occupied'] ?? 0);
+            $totalBeds += $beds; $totalOccupied += $occ;
 
             if (!isset($byBuilding[$bid])) {
-                $bldg = $buildings[$bid] ?? null;
                 $byBuilding[$bid] = [
-                    'name'     => is_array($bldg) ? ($bldg['name'] ?? $bid) : $bid,
+                    'name'     => $buildings[$bid]['name'] ?? $bid,
                     'rooms'    => 0,
                     'beds'     => 0,
                     'occupied' => 0,
@@ -577,15 +536,11 @@ class Hostel extends MY_Controller
         ]);
     }
 
-    /** GET — Search students. ?q=name */
     public function search_students()
     {
         $this->_require_role(self::VIEW_ROLES, 'hostel_view');
         $this->_require_view();
-        $results = $this->operations_accounting->search_students(
-            $this->input->get('q') ?? ''
-        );
-        // Merge class+section for Hostel's expected format
+        $results = $this->operations_accounting->search_students($this->input->get('q') ?? '');
         foreach ($results as &$r) {
             $r['class'] = trim(($r['class'] ?? '') . ' ' . ($r['section'] ?? ''));
             unset($r['section'], $r['user_id']);

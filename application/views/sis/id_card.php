@@ -1,6 +1,12 @@
 <?php
 defined('BASEPATH') or exit('No direct script access allowed');
 
+// QR identity helper — produces the URL-safe `base64("{schoolId}|{studentId}")`
+// token used by the attendance scan endpoint. Loaded here (not auto-loaded)
+// so the helper stays opt-in for views that actually need it.
+$CI =& get_instance();
+$CI->load->helper('qr_token');
+
 $students       = $students       ?? [];
 $session_year   = $session_year   ?? '';
 $school_profile = $school_profile ?? [];
@@ -10,6 +16,12 @@ $schoolAddr = $school_profile['address']     ?? '';
 $schoolLogo = $school_profile['logo']        ?? base_url('tools/image/default-school.jpeg');
 $schoolPhone= $school_profile['phone']       ?? '';
 $fallback   = base_url('tools/image/default-school.jpeg');
+
+// schoolId for QR encoding — `$school_name` in this codebase IS the SCH_xxx
+// schoolId per the project's non-obvious-conventions memory. Falls back to
+// an empty string if the controller didn't pass it; the per-card render
+// then skips the QR (no token, no img).
+$qrSchoolId = (string) ($school_name ?? '');
 
 function idc_photo($s) {
     if (!empty($s['Profile Pic']) && is_string($s['Profile Pic'])) return $s['Profile Pic'];
@@ -29,11 +41,30 @@ function idc_dob($raw) {
     return $raw;
 }
 
+/**
+ * Idempotent prefix normaliser. Adds the prefix only when missing —
+ * post Phase-1 canonical migration most rows arrive as "Class 8th" /
+ * "Section A" already, but legacy / partial rows may carry just
+ * "8th" / "A". Either shape now produces the canonical "Class 8th" /
+ * "Section A" once and only once. Pre-fix the display template did
+ * `Class <?= $cls ?>` which double-prefixed canonical rows into
+ * "Class Class 8th".
+ */
+function idc_with_prefix($val, $prefix) {
+    $v = trim((string) $val);
+    if ($v === '') return '';
+    return (stripos($v, $prefix . ' ') === 0) ? $v : ($prefix . ' ' . $v);
+}
+
 $filterClasses  = [];
 $filterSections = [];
 foreach ($students as $s) {
-    $c   = trim($s['Class']   ?? '');
-    $sec = trim($s['Section'] ?? '');
+    // Normalise once so dropdown options + per-card data-attrs use the
+    // same canonical "Class 8th" / "Section A" strings (filter equality
+    // depends on this match — if dropdown carries "8th" but data-class
+    // carries "Class 8th", filtering silently breaks).
+    $c   = idc_with_prefix($s['Class']   ?? '', 'Class');
+    $sec = idc_with_prefix($s['Section'] ?? '', 'Section');
     if ($c)   $filterClasses[$c]    = true;
     if ($sec) $filterSections[$sec] = true;
 }
@@ -120,9 +151,12 @@ ksort($filterSections);
     line-height:1.3; margin-bottom:1px; word-break:break-word; }
 .idc-class { font-size:.72rem; color:var(--t2); margin-bottom:6px; font-weight:500; }
 
-/* Barcode */
-.idc-barcode-wrap { display:flex; justify-content:center; margin:2px 0 6px; }
-.idc-barcode-wrap svg { max-width:150px; }
+/* QR — local SVG render via chillerlan/php-qrcode embedded as a data
+   URI. Vector means no pixelation at any zoom level — print-friendly
+   by default. Slightly smaller (76px) than the previous 92px because
+   the user wanted a tighter card layout; SVG stays sharp regardless. */
+.idc-qr-wrap { display:flex; justify-content:center; margin:4px 0 6px; }
+.idc-qr-wrap img { width:76px; height:76px; }
 
 /* ── Info rows ── */
 .idc-info { padding:0 14px 8px; }
@@ -195,8 +229,11 @@ ksort($filterSections);
         <?php foreach ($students as $s):
             $uid     = $s['User Id'] ?? '';
             $name    = $s['Name'] ?? '';
-            $cls     = trim($s['Class'] ?? '');
-            $sec     = trim($s['Section'] ?? '');
+            // Same normalisation as the filter loop above — keeps
+            // data-attrs in sync with dropdown values + the per-card
+            // display label.
+            $cls     = idc_with_prefix($s['Class']   ?? '', 'Class');
+            $sec     = idc_with_prefix($s['Section'] ?? '', 'Section');
             $photo   = idc_photo($s);
             $initial = mb_strtoupper(mb_substr($name, 0, 1));
             $safeUid = preg_replace('/[^a-z0-9]/i', '_', $uid);
@@ -238,17 +275,35 @@ ksort($filterSections);
                     <?php endif; ?>
                 </div>
 
-                <!-- Name + Barcode -->
+                <!-- Name + QR (replaces CODE128 barcode, 2026 redesign) -->
                 <div class="idc-body">
                     <div class="idc-name"><?= htmlspecialchars($name) ?></div>
 
-                    <?php if ($uid): ?>
-                    <div class="idc-barcode-wrap">
-                        <svg class="idc-barcode" data-barcode="<?= htmlspecialchars($uid) ?>"></svg>
+                    <?php
+                    // QR is shown only when we have BOTH a studentId and the
+                    // controller passed the schoolId. Without the schoolId
+                    // the token is meaningless to the attendance scanner,
+                    // so we'd rather print no QR than print a broken one.
+                    //
+                    // Inline SVG via `qr_svg_data_uri()` — entire QR is
+                    // embedded as `data:image/svg+xml;base64,…` so:
+                    //   - zero network calls (no ad-blocker / firewall risk)
+                    //   - vector → sharp at any print size
+                    //   - works offline / air-gapped
+                    if ($uid && $qrSchoolId !== ''):
+                        $qrToken   = qr_token_encode($qrSchoolId, $uid);
+                        $qrDataUri = qr_svg_data_uri($qrToken);
+                    ?>
+                    <div class="idc-qr-wrap">
+                        <?php if ($qrDataUri !== ''): ?>
+                        <img src="<?= htmlspecialchars($qrDataUri) ?>"
+                             alt="QR <?= htmlspecialchars($uid) ?>"
+                             title="Scan for attendance">
+                        <?php endif; ?>
                     </div>
                     <?php endif; ?>
 
-                    <div class="idc-class">Class <?= htmlspecialchars($cls) ?> &middot; Section <?= htmlspecialchars($sec) ?></div>
+                    <div class="idc-class"><?= htmlspecialchars($cls) ?> &middot; <?= htmlspecialchars($sec) ?></div>
                 </div>
 
                 <!-- Info rows -->
@@ -322,7 +377,6 @@ ksort($filterSections);
 </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 <script>
 (function(){
     'use strict';
@@ -351,24 +405,9 @@ ksort($filterSections);
     if (fClass) fClass.addEventListener('change', applyFilters);
     if (fSec)   fSec.addEventListener('change', applyFilters);
 
-    /* ── Barcodes ── */
-    function initBarcodes(root) {
-        var svgs = (root || document).querySelectorAll('.idc-barcode[data-barcode]');
-        if (typeof JsBarcode === 'undefined') return;
-        svgs.forEach(function(svg) {
-            try {
-                JsBarcode(svg, svg.getAttribute('data-barcode'), {
-                    format: 'CODE128', width: 1, height: 24,
-                    displayValue: false, margin: 0, background: 'transparent'
-                });
-            } catch(e) {}
-        });
-    }
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function(){ initBarcodes(); });
-    } else {
-        initBarcodes();
-    }
+    /* ── QR codes ── No client-side init needed; QR PNGs are rendered
+       server-side via qrserver.com and embedded as <img>. The legacy
+       JsBarcode CDN was removed in the 2026 QR redesign. */
 
     /* ── Card CSS for print ── */
     function cardCSS() {
@@ -391,8 +430,8 @@ ksort($filterSections);
             '.idc-sid{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;background:var(--idc-lt);border:1.5px solid var(--idc);border-radius:18px;margin-bottom:8px}',
             '.idc-sid-label{font-size:.58rem;color:var(--idc);font-weight:600;text-transform:uppercase;letter-spacing:.5px}',
             '.idc-sid-value{font-size:.78rem;color:var(--idc);font-weight:800;letter-spacing:.3px}',
-            '.idc-barcode-wrap{display:flex;justify-content:center;margin:2px 0 6px}',
-            '.idc-barcode-wrap svg{max-width:150px}',
+            '.idc-qr-wrap{display:flex;justify-content:center;margin:4px 0 6px}',
+            '.idc-qr-wrap img{width:76px;height:76px}',
             '.idc-info{padding:0 14px 8px}',
             '.idc-info-row{display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #e5e7eb;font-size:.73rem}',
             '.idc-info-row:last-child{border-bottom:none}',

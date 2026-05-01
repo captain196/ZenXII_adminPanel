@@ -228,7 +228,10 @@ html { font-size:16px !important; }
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div class="ac-fg"><label>Section</label><input type="text" id="appSection" readonly style="opacity:.7;"></div>
+                <div class="ac-fg">
+                    <label>Section <span style="font-weight:400;color:var(--t3);font-size:11px;">(decided at enrollment)</span></label>
+                    <input type="text" id="appSection" placeholder="Leave blank — picked when enrolling">
+                </div>
                 <div class="ac-fg"><label>Date of Birth</label><input type="date" id="appDOB"></div>
                 <div class="ac-fg">
                     <label>Gender</label>
@@ -280,12 +283,55 @@ html { font-size:16px !important; }
         </div>
     </div>
 
+    <!-- Section picker modal — used during enrollment so the admin sees
+         each section's strength + capacity at a glance and can pick the
+         right one (suggested = least-full non-full section). -->
+    <div class="ac-overlay" id="sectionPickerModal">
+        <div class="ac-modal" style="max-width:540px;">
+            <div class="ac-modal-head" style="display:flex;justify-content:space-between;align-items:center;">
+                <h3 id="secPickTitle">Pick a Section</h3>
+                <button class="ac-btn ac-btn-ghost ac-btn-sm" onclick="closeSectionPicker()"><i class="fa fa-times"></i></button>
+            </div>
+            <div class="ac-modal-body">
+                <p id="secPickStudent" style="font-size:13px;color:var(--t2);margin-bottom:14px;"></p>
+                <div id="secPickList" style="display:flex;flex-direction:column;gap:10px;"></div>
+                <p id="secPickEmpty" style="display:none;font-size:13px;color:#dc2626;margin-top:12px;">No sections exist yet for this class. Create one in Classes → Sections first.</p>
+            </div>
+            <div class="ac-modal-foot" style="display:flex;justify-content:flex-end;gap:8px;">
+                <button class="ac-btn ac-btn-ghost" onclick="closeSectionPicker()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
 </div>
 </div>
 
 <script>
 var BASE = '<?= base_url() ?>';
 var allApps = [];
+
+// Global busy overlay — displayed during any admin action that talks
+// to the server (approve / reject / enroll / fetch sections). Single
+// definition so callers don't each ship their own UI.
+function setBusy(on, label) {
+    var el = document.getElementById('acBusyOverlay');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'acBusyOverlay';
+        el.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.55);display:none;align-items:center;justify-content:center;z-index:9999;';
+        el.innerHTML = '<div style="background:#fff;border-radius:12px;padding:20px 28px;display:flex;align-items:center;gap:14px;box-shadow:0 12px 32px rgba(0,0,0,0.25);min-width:200px;">'
+                     + '<i class="fa fa-spinner fa-spin" style="font-size:22px;color:var(--gold,#d97706);"></i>'
+                     + '<span id="acBusyLabel" style="font-size:14px;color:#1f2937;font-weight:500;">Processing…</span>'
+                     + '</div>';
+        document.body.appendChild(el);
+    }
+    if (on) {
+        document.getElementById('acBusyLabel').textContent = label || 'Processing…';
+        el.style.display = 'flex';
+    } else {
+        el.style.display = 'none';
+    }
+}
 
 document.addEventListener('DOMContentLoaded', function() {
     loadApplications();
@@ -303,7 +349,7 @@ function loadApplications() {
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (data.status === 'success') { allApps = data.data.applications || []; renderTable(allApps); }
+        if (data.status === 'success') { allApps = data.applications || []; renderTable(allApps); }
     })
     .catch(function() { document.getElementById('tableWrap').innerHTML = '<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> Failed to load</div>'; });
 }
@@ -316,17 +362,35 @@ function renderTable(items) {
     if (filtered.length === 0) { document.getElementById('tableWrap').innerHTML = '<div class="ac-empty"><i class="fa fa-inbox"></i> No applications found</div>'; return; }
 
     var bm = { pending:'ac-badge-pending', approved:'ac-badge-approved', rejected:'ac-badge-rejected', enrolled:'ac-badge-enrolled', waitlisted:'ac-badge-waitlisted' };
-    var html = '<div class="ac-table-wrap"><table class="ac-table"><thead><tr><th>ID</th><th>Student</th><th>Class</th><th>Phone</th><th>Stage</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead><tbody>';
+    // Payment-status pill colors. `paid` is the only "actionable green";
+    // `initiated` (parent started checkout but didn't finish) is amber so
+    // the admin can spot stuck flows; `failed` is red.
+    function paymentBadge(ps) {
+        var s = (ps || '').toLowerCase();
+        if (s === 'paid')      return '<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;"><i class="fa fa-check" style="font-size:9px;margin-right:3px;"></i>Paid</span>';
+        if (s === 'initiated') return '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;">Started</span>';
+        if (s === 'failed')    return '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;">Failed</span>';
+        if (s === 'pending')   return '<span style="color:var(--t3);font-size:11px;">—</span>';
+        return s ? '<span style="font-size:11px;color:var(--t3);">' + esc(s) + '</span>' : '<span style="color:var(--t3);font-size:11px;">—</span>';
+    }
+    var html = '<div class="ac-table-wrap"><table class="ac-table"><thead><tr><th>ID</th><th>Student</th><th>Class</th><th>Phone</th><th>Stage</th><th>Status</th><th>Payment</th><th>Date</th><th>Actions</th></tr></thead><tbody>';
 
     filtered.forEach(function(a) {
         var bc = bm[a.status] || 'ac-badge-pending';
         html += '<tr data-name="' + (a.student_name || '').toLowerCase() + '" data-id="' + (a.application_id || '').toLowerCase() + '">';
         html += '<td style="font-family:var(--font-m);font-size:11px;">' + esc(a.application_id || a.id) + '</td>';
-        html += '<td style="font-weight:600;">' + esc(a.student_name) + '</td>';
+        // Possible-duplicate badge — non-blocking. Set when another
+        // application from the same phone+class exists. Twins legitimately
+        // trigger this; admin reviews and dismisses.
+        var dupBadge = (a.possible_duplicate === true)
+            ? ' <span title="Another application from the same phone applied for the same class. Review for possible duplicate." style="display:inline-block;background:#fef3c7;color:#92400e;padding:1px 7px;border-radius:8px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;margin-left:6px;vertical-align:middle;"><i class="fa fa-exclamation-triangle" style="font-size:8px;margin-right:3px;"></i>Possible Dup</span>'
+            : '';
+        html += '<td style="font-weight:600;">' + esc(a.student_name) + dupBadge + '</td>';
         html += '<td>' + esc(a.class || '-') + '</td>';
         html += '<td>' + esc(a.phone) + '</td>';
         html += '<td style="font-size:12px;color:var(--t3);">' + esc((a.stage || '').replace(/_/g, ' ')) + '</td>';
         html += '<td><span class="ac-badge ' + bc + '">' + esc(a.status) + '</span></td>';
+        html += '<td>' + paymentBadge(a.payment_status) + '</td>';
         html += '<td style="font-size:12px;">' + esc((a.created_at || '').substring(0, 10)) + '</td>';
         html += '<td style="white-space:nowrap;">';
         html += '<button class="ac-act" onclick="viewApp(\'' + a.id + '\')" title="View"><i class="fa fa-eye"></i></button> ';
@@ -356,7 +420,7 @@ function viewApp(id) {
     .then(function(r) { return r.json(); })
     .then(function(data) {
         if (data.status !== 'success') return;
-        var a = data.data.application, p = document.getElementById('detailPanel');
+        var a = data.application, p = document.getElementById('detailPanel');
         var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">';
         html += '<h3><i class="fa fa-user" style="color:var(--gold);margin-right:8px;"></i>' + esc(a.student_name) + ' — ' + esc(a.application_id || a.id) + '</h3>';
         html += '<button class="ac-btn ac-btn-ghost ac-btn-sm" onclick="document.getElementById(\'detailPanel\').style.display=\'none\'"><i class="fa fa-times"></i> Close</button></div>';
@@ -413,14 +477,203 @@ function submitAction() {
     var id=document.getElementById('actionAppId').value, type=document.getElementById('actionType').value, remarks=document.getElementById('actionRemarks').value;
     var ep = type==='approve'?'approve_application':'reject_application', bk = type==='approve'?'remarks':'reason';
     var body = new URLSearchParams({id:id}); body.append(bk,remarks);
+    var btn = document.getElementById('actionBtn');
+    var origText = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> ' + (type==='approve'?'Approving…':'Rejecting…'); }
+    setBusy(true, type==='approve' ? 'Approving application…' : 'Rejecting application…');
     fetch(BASE+'admission_crm/'+ep,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},body:body.toString()})
-    .then(function(r){return r.json();}).then(function(d){closeActionModal();showAlert(d.message,d.status==='success'?'success':'error');if(d.status==='success')loadApplications();});
+    .then(function(r){return r.json();})
+    .then(function(d){
+        setBusy(false);
+        if (btn) { btn.disabled = false; btn.textContent = origText; }
+        closeActionModal();
+        showAlert(d.message,d.status==='success'?'success':'error');
+        if(d.status==='success') loadApplications();
+    })
+    .catch(function(){
+        setBusy(false);
+        if (btn) { btn.disabled = false; btn.textContent = origText; }
+        showAlert('Request failed','error');
+    });
 }
 
+// Enrollment session state — captured when the picker opens so the
+// confirm callback knows which application + class to enroll.
+var _enrollCtx = { id: '', cls: '', student: '' };
+
 function enrollStudent(id) {
-    if (!confirm('Enroll this student? This will create a student profile and add them to the class roster.')) return;
-    fetch(BASE+'admission_crm/enroll_student',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},body:new URLSearchParams({id:id}).toString()})
-    .then(function(r){return r.json();}).then(function(d){showAlert(d.message,d.status==='success'?'success':'error');if(d.status==='success')loadApplications();});
+    setBusy(true, 'Loading application…');
+    fetch(BASE + 'admission_crm/get_application?id=' + encodeURIComponent(id), { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        if (d.status !== 'success') {
+            setBusy(false);
+            showAlert(d.message || 'Failed to read application', 'error');
+            return;
+        }
+        var app = d.application || {};
+        var cls = app.class || '';
+        _enrollCtx = { id: id, cls: cls, student: app.student_name || '' };
+        setBusy(true, 'Loading sections…');
+        return fetch(BASE + 'sis/get_class_sections?class=' + encodeURIComponent(cls), { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(function(r) { return r.json(); })
+            .then(function(s) {
+                setBusy(false);
+                if (!s || s.status !== 'success') { showAlert('Failed to load sections.', 'error'); return; }
+                openSectionPicker(s.detail || [], s.suggested || '');
+            });
+    })
+    .catch(function() {
+        setBusy(false);
+        showAlert('Request failed.', 'error');
+    });
+}
+
+function openSectionPicker(detail, suggested) {
+    var listEl = document.getElementById('secPickList');
+    var emptyEl = document.getElementById('secPickEmpty');
+    document.getElementById('secPickStudent').textContent = 'Enrolling ' + _enrollCtx.student + ' into ' + _enrollCtx.cls;
+
+    if (!detail || detail.length === 0) {
+        listEl.innerHTML = '';
+        emptyEl.style.display = 'block';
+    } else {
+        emptyEl.style.display = 'none';
+        listEl.innerHTML = detail.map(function(d) {
+            var pct = d.capacity > 0 ? Math.min(100, Math.round((d.current / d.capacity) * 100)) : 0;
+            // Color thresholds — green (≤70%), amber (≤95%), red (full)
+            var bar = pct >= 100 ? '#dc2626' : (pct >= 95 ? '#f59e0b' : (pct >= 70 ? '#eab308' : '#16a34a'));
+            var isSugg = (d.section === suggested);
+            var border = isSugg ? '2px solid var(--gold,#d97706)' : '1px solid var(--border,#e5e7eb)';
+            var disabled = d.full ? 'opacity:0.55;cursor:not-allowed;' : 'cursor:pointer;';
+            var click = d.full ? '' : 'onclick="confirmSectionPick(\'' + d.section + '\')"';
+            var badge = isSugg
+                ? '<span style="background:var(--gold,#d97706);color:#fff;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;">Suggested</span>'
+                : (d.full ? '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;">Full</span>' : '');
+            return ''
+              + '<div ' + click + ' style="border:' + border + ';border-radius:10px;padding:12px 14px;background:#fff;' + disabled + '">'
+              +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">'
+              +     '<strong style="font-size:15px;">Section ' + d.section + '</strong>'
+              +     badge
+              +   '</div>'
+              +   '<div style="font-size:12px;color:var(--t2,#6b7280);margin-bottom:6px;display:flex;justify-content:space-between;">'
+              +     '<span>' + d.current + ' / ' + d.capacity + ' students</span>'
+              +     '<span>' + d.available + ' seats available</span>'
+              +   '</div>'
+              +   '<div style="height:6px;border-radius:3px;background:#f3f4f6;overflow:hidden;">'
+              +     '<div style="height:100%;width:' + pct + '%;background:' + bar + ';transition:width 200ms ease;"></div>'
+              +   '</div>'
+              + '</div>';
+        }).join('');
+    }
+
+    document.getElementById('sectionPickerModal').classList.add('active');
+}
+
+function closeSectionPicker() {
+    document.getElementById('sectionPickerModal').classList.remove('active');
+}
+
+function confirmSectionPick(section) {
+    closeSectionPicker();
+    setBusy(true, 'Enrolling ' + _enrollCtx.student + ' into ' + _enrollCtx.cls + ' / ' + section + '…');
+    fetch(BASE + 'admission_crm/enroll_student', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+        body: new URLSearchParams({ id: _enrollCtx.id, section: section }).toString()
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(res) {
+        setBusy(false);
+        showAlert(res.message, res.status === 'success' ? 'success' : 'error');
+        if (res.status === 'success') {
+            // Show credentials panel immediately so admin can copy/share
+            // before Phase A SMS delivery is built. Auto-dismisses if
+            // admin closes it; never auto-hides.
+            if (res.student_id && res.password) {
+                showEnrollmentCredentials({
+                    studentId:   res.student_id,
+                    studentName: _enrollCtx.student,
+                    password:    res.password,
+                    cls:         _enrollCtx.cls,
+                    section:     section,
+                    authCreated: res.auth_created,
+                    authError:   res.auth_error || ''
+                });
+            }
+            loadApplications();
+        }
+    })
+    .catch(function() {
+        setBusy(false);
+        showAlert('Enrollment failed.', 'error');
+    });
+}
+
+function showEnrollmentCredentials(c) {
+    // Inline modal — minimal markup so we don't need to ship a separate
+    // template. Admin can copy each credential or print the whole card.
+    var bgColor   = c.authCreated ? '#dcfce7' : '#fef3c7';
+    var borderCol = c.authCreated ? '#16a34a' : '#d97706';
+    var icon      = c.authCreated ? 'fa-check-circle' : 'fa-exclamation-triangle';
+    var iconCol   = c.authCreated ? '#16a34a' : '#d97706';
+    var statusTxt = c.authCreated
+        ? 'Parent login is ready. Share these credentials with the parent.'
+        : '⚠ Firebase Auth account FAILED to create — parent cannot log in yet. Contact tech support. (' + esc(c.authError) + ')';
+
+    var html = ''
+      + '<div id="credModal" style="position:fixed;inset:0;background:rgba(15,23,42,0.55);display:flex;align-items:center;justify-content:center;z-index:10000;">'
+      +   '<div style="background:#fff;border-radius:12px;padding:24px;max-width:480px;width:90%;box-shadow:0 12px 40px rgba(0,0,0,0.3);">'
+      +     '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">'
+      +       '<i class="fa ' + icon + '" style="color:' + iconCol + ';font-size:24px;"></i>'
+      +       '<h3 style="margin:0;font-size:18px;color:#1f2937;">Enrollment Complete</h3>'
+      +     '</div>'
+      +     '<p style="margin:0 0 16px;font-size:13px;color:#374151;">'
+      +       esc(c.studentName) + ' has been enrolled into <strong>' + esc(c.cls) + ' / ' + esc(c.section) + '</strong>.'
+      +     '</p>'
+      +     '<div style="background:' + bgColor + ';border:1px solid ' + borderCol + ';border-radius:8px;padding:14px;margin-bottom:14px;">'
+      +       '<p style="margin:0 0 10px;font-size:12px;color:' + borderCol + ';font-weight:600;text-transform:uppercase;letter-spacing:0.4px;">Login Credentials</p>'
+      +       '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;">'
+      +         '<span style="font-size:12px;color:#6b7280;">User ID</span>'
+      +         '<code style="font-family:var(--font-m, monospace);font-size:14px;color:#1f2937;flex:1;text-align:right;font-weight:600;" id="credUid">' + esc(c.studentId) + '</code>'
+      +         '<button class="ac-btn ac-btn-ghost ac-btn-sm" onclick="copyCred(\'credUid\')" title="Copy User ID"><i class="fa fa-clipboard"></i></button>'
+      +       '</div>'
+      +       '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">'
+      +         '<span style="font-size:12px;color:#6b7280;">Password</span>'
+      +         '<code style="font-family:var(--font-m, monospace);font-size:14px;color:#1f2937;flex:1;text-align:right;font-weight:600;" id="credPwd">' + esc(c.password) + '</code>'
+      +         '<button class="ac-btn ac-btn-ghost ac-btn-sm" onclick="copyCred(\'credPwd\')" title="Copy Password"><i class="fa fa-clipboard"></i></button>'
+      +       '</div>'
+      +     '</div>'
+      +     '<p style="margin:0 0 12px;font-size:12px;color:#6b7280;line-height:1.5;">'
+      +       statusTxt
+      +     '</p>'
+      +     '<p style="margin:0 0 16px;font-size:11px;color:#9ca3af;line-height:1.5;">'
+      +       'The parent will be required to set a new password on first login. SMS delivery of these credentials will be added in the next phase.'
+      +     '</p>'
+      +     '<div style="display:flex;justify-content:flex-end;gap:8px;">'
+      +       '<button class="ac-btn ac-btn-ghost" onclick="copyCred(\'credBoth\')">Copy Both</button>'
+      +       '<button class="ac-btn ac-btn-primary" onclick="document.getElementById(\'credModal\').remove()">Done</button>'
+      +     '</div>'
+      +     '<span id="credBoth" style="display:none;">User ID: ' + esc(c.studentId) + '\nPassword: ' + esc(c.password) + '</span>'
+      +   '</div>'
+      + '</div>';
+
+    var holder = document.createElement('div');
+    holder.innerHTML = html;
+    document.body.appendChild(holder.firstElementChild);
+}
+
+function copyCred(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var txt = el.textContent || el.innerText || '';
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(function() { showAlert('Copied to clipboard', 'success'); });
+    } else {
+        var ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); showAlert('Copied to clipboard', 'success'); } catch(e) {}
+        document.body.removeChild(ta);
+    }
 }
 
 function addWaitlist(id) {

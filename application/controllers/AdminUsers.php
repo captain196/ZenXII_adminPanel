@@ -176,8 +176,9 @@ class AdminUsers extends MY_Controller
 
             $synced = 0;
             foreach ($pendingDocs as $doc) {
+                $d = $doc['data'] ?? $doc;
                 $data    = $doc['data'];
-                $adminId = $doc['id'];
+                $adminId = $d['id'];
                 if (($data['schoolCode'] ?? '') !== $this->school_name) continue;
 
                 $authEmail = Firebase::authEmail($adminId);
@@ -259,8 +260,9 @@ class AdminUsers extends MY_Controller
             $recent = [];
 
             foreach ($adminDocs as $doc) {
+                $d = $doc['data'] ?? $doc;
                 $a   = $doc['data'];
-                $aid = $a['adminId'] ?? $doc['id'];
+                $aid = $a['adminId'] ?? $d['id'];
                 $total++;
                 $status = $a['Status'] ?? 'Active';
                 if ($status === 'Active') $active++;
@@ -305,8 +307,9 @@ class AdminUsers extends MY_Controller
             $adminDocs = $this->fs->schoolWhere('admins', [], 'Name', 'ASC');
             $rows = [];
             foreach ($adminDocs as $doc) {
+                $d = $doc['data'] ?? $doc;
                 $a   = $doc['data'];
-                $aid = $a['adminId'] ?? $doc['id'];
+                $aid = $a['adminId'] ?? $d['id'];
                 $rows[] = $this->_normalize_admin($aid, $a);
             }
             $this->json_success(['admins' => $rows]);
@@ -508,8 +511,9 @@ class AdminUsers extends MY_Controller
             // Duplicate email check (exclude self)
             $allAdmins = $this->fs->schoolWhere('admins', []);
             foreach ($allAdmins as $doc) {
+                $d = $doc['data'] ?? $doc;
                 $a   = $doc['data'];
-                $aid = $a['adminId'] ?? $doc['id'];
+                $aid = $a['adminId'] ?? $d['id'];
                 if ($aid === $admin_id) continue;
                 if (strtolower($a['Profile']['email'] ?? '') === $email) {
                     $this->json_error('Another admin already uses this email.');
@@ -907,8 +911,9 @@ class AdminUsers extends MY_Controller
             $rows = [];
 
             foreach ($adminDocs as $doc) {
+                $d = $doc['data'] ?? $doc;
                 $a   = $doc['data'];
-                $aid = $a['adminId'] ?? $doc['id'];
+                $aid = $a['adminId'] ?? $d['id'];
                 $access    = $a['AccessHistory'] ?? [];
                 $lastLogin = $access['LastLogin'] ?? '';
                 if (empty($lastLogin)) continue;

@@ -213,7 +213,7 @@ document.getElementById('admissionForm').addEventListener('submit', function(e) 
         if (data.status === 'success') {
             document.getElementById('formCard').style.display = 'none';
             document.getElementById('successPanel').style.display = 'block';
-            document.getElementById('appIdDisplay').textContent = data.data.application_id || '';
+            document.getElementById('appIdDisplay').textContent = data.application_id || '';
         } else {
             var al = document.getElementById('formAlert');
             al.className = 'of-alert of-alert-error';

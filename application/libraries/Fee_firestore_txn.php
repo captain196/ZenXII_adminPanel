@@ -20,7 +20,6 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *   feeLocks                 — {schoolId}_{userId}                (payment lock w/ TTL)
  *   feeIdempotency           — {schoolId}_{hash}                  (dedup by request hash)
  *   feePendingWrites         — {schoolId}_{receiptKey}            (safety: receipt in-flight)
- *   studentAdvanceBalances   — {schoolId}_{studentId}
  *   studentDiscounts         — {schoolId}_{studentId}
  *   students                 — {schoolId}_{studentId}             (monthFee map lives here)
  *
@@ -46,7 +45,6 @@ class Fee_firestore_txn
     private const COL_LOCKS       = 'feeLocks';
     private const COL_IDEMP       = 'feeIdempotency';
     private const COL_PENDING     = 'feePendingWrites';
-    private const COL_ADVANCE     = 'studentAdvanceBalances';
     private const COL_DISCOUNTS   = 'studentDiscounts';
     private const COL_STUDENTS    = 'students';
     // Session B — refund flow collections
@@ -107,7 +105,68 @@ class Fee_firestore_txn
      * Up to 6 retries cover bursts of up to 5 concurrent writers; beyond
      * that returns 0 so the caller can surface a real error.
      */
+    /**
+     * Route to sharded counter when enabled, with automatic fallback to
+     * the legacy single-pointer path on ANY sharded-side failure. This
+     * lets us roll out Phase 4 safely: flip the flag per-school, monitor,
+     * roll back by flipping the flag off if anything surprises us.
+     */
     public function nextCounter(string $kind): int
+    {
+        if (!$this->ready) return 0;
+
+        // Phase 4 — opt-in sharded counter. Gated by feeSettings doc
+        // `{schoolId}_{session}_counters.shardedEnabled` (bool). We cache
+        // the flag per-request to avoid extra Firestore reads.
+        if ($kind === 'receipt_seq' && $this->_shardedCounterEnabled()) {
+            try {
+                $CI =& get_instance();
+                if (!isset($CI->feeShardedCounter)) {
+                    $CI->load->library('Fee_sharded_counter', null, 'feeShardedCounter');
+                    $CI->feeShardedCounter->init($this->firebase, $this->schoolId, $this->session);
+                }
+                $v = $CI->feeShardedCounter->nextCounter($kind);
+                if ($v > 0) return $v;
+                log_message('warning', "Fee_firestore_txn::nextCounter({$kind}) sharded returned 0; falling back to legacy");
+            } catch (\Throwable $e) {
+                log_message('error', "Fee_firestore_txn::nextCounter({$kind}) sharded threw; falling back to legacy: " . $e->getMessage());
+            }
+            // fall through to legacy path
+        }
+
+        return $this->nextCounterLegacy($kind);
+    }
+
+    /**
+     * Per-request cached read of the sharded-counter flag. The flag is
+     * intentionally session-scoped (feeSettings/{schoolId}_{session}_counters)
+     * so a mid-session rollback cleanly reverts without touching any
+     * school-wide config. Defaults to false on any read error — safer to
+     * run legacy than to accidentally enable sharding on a miscfg doc.
+     */
+    private ?bool $_shardedCounterEnabledCache = null;
+    private function _shardedCounterEnabled(): bool
+    {
+        if ($this->_shardedCounterEnabledCache !== null) {
+            return $this->_shardedCounterEnabledCache;
+        }
+        $enabled = false;
+        try {
+            $cfg = $this->firebase->firestoreGet('feeSettings', "{$this->schoolId}_{$this->session}_counters");
+            if (is_array($cfg) && !empty($cfg['shardedEnabled'])) {
+                $enabled = true;
+            }
+        } catch (\Throwable $_) { /* default false on error */ }
+        $this->_shardedCounterEnabledCache = $enabled;
+        return $enabled;
+    }
+
+    /**
+     * Legacy single-pointer claim path. Renamed from the original
+     * nextCounter() — preserved byte-for-byte as the fallback and as the
+     * code path for any counter kind other than receipt_seq.
+     */
+    private function nextCounterLegacy(string $kind): int
     {
         if (!$this->ready) return 0;
         $counterDoc = "{$this->schoolId}_{$kind}";
@@ -162,6 +221,41 @@ class Fee_firestore_txn
             $cur = $this->firebase->firestoreGet(self::COL_COUNTERS, "{$this->schoolId}_{$kind}");
             return is_array($cur) ? (int) ($cur['value'] ?? 0) : 0;
         } catch (\Exception $_) { return 0; }
+    }
+
+    /**
+     * Release a previously-claimed counter value on abort (e.g. payment
+     * failed at the overpayment guard AFTER nextCounter returned a number).
+     * Without this, every failed attempt burned a receipt number — the
+     * user saw F#3 for what should have been F#1 when their first two
+     * retries failed. Deletes the claim doc and rewinds the fast-skip
+     * pointer iff it's currently pointing at this exact value, so a
+     * single-cashier retry gets the same number back. In the multi-
+     * cashier case a concurrent claim already advanced the pointer past
+     * us — leave it alone, and let nextCounter find the next free slot.
+     */
+    public function releaseCounterClaim(string $kind, int $value): bool
+    {
+        if (!$this->ready || $kind === '' || $value < 1) return false;
+        $counterDoc = "{$this->schoolId}_{$kind}";
+        $claimId    = "{$this->schoolId}_{$kind}_claim_{$value}";
+        try {
+            $this->firebase->firestoreDelete(self::COL_COUNTERS, $claimId);
+        } catch (\Exception $_) { /* non-fatal */ }
+        try {
+            $cur = $this->firebase->firestoreGet(self::COL_COUNTERS, $counterDoc);
+            $curVal = is_array($cur) ? (int) ($cur['value'] ?? 0) : 0;
+            if ($curVal === $value) {
+                $this->firebase->firestoreSet(self::COL_COUNTERS, $counterDoc, [
+                    'schoolId'  => $this->schoolId,
+                    'session'   => $this->session,
+                    'kind'      => $kind,
+                    'value'     => max(0, $value - 1),
+                    'updatedAt' => date('c'),
+                ]);
+            }
+        } catch (\Exception $_) { /* non-fatal */ }
+        return true;
     }
 
     /**
@@ -379,18 +473,21 @@ class Fee_firestore_txn
         } catch (\Exception $_) { return false; }
     }
 
-    // ─── Payment-ID idempotency ─────────────────────────────────────────
+    // ─── Payment-ID idempotency (Phase 2.5 Step 4) ─────────────────────
     //
-    // The legacy idempKey() folds the receipt number into its hash, but
-    // receipt numbers are allocated fresh on every call — so two verify
-    // attempts for the SAME Razorpay payment_id never collide on it.
-    // This dedicated key uses the gateway's own payment_id, which the
-    // gateway guarantees is stable across retries.
+    // Canonical store: processedPayments/{paymentId}. The gateway's own
+    // payment_id is the natural idempotency key — globally unique,
+    // stable across retries. Previously we stored this under the
+    // feeIdempotency collection with a composite "{schoolId}_pay_{id}"
+    // doc ID; that contract is now retired but a read-through fallback
+    // is kept for the duration of one migration cycle so webhook
+    // retries against already-processed payments still short-circuit.
+    //
+    // processedPayments doc schema:
+    //   { paymentId, schoolId, session, studentId, receiptNo, receiptKey,
+    //     status:'success', completedAt, updatedAt }
 
-    private function _paymentIdDocId(string $paymentId): string
-    {
-        return "{$this->schoolId}_pay_{$paymentId}";
-    }
+    private const COL_PROCESSED_PAYMENTS = 'processedPayments';
 
     /**
      * Has this gateway payment_id already been fully processed?
@@ -400,10 +497,17 @@ class Fee_firestore_txn
     {
         if (!$this->ready || $paymentId === '') return null;
         try {
-            $doc = $this->firebase->firestoreGet(self::COL_IDEMP, $this->_paymentIdDocId($paymentId));
-            if (!is_array($doc)) return null;
-            return ($doc['status'] ?? '') === 'success' ? $doc : null;
-        } catch (\Exception $_) { return null; }
+            $doc = $this->firebase->firestoreGet(self::COL_PROCESSED_PAYMENTS, $paymentId);
+            if (is_array($doc) && ($doc['status'] ?? '') === 'success') return $doc;
+        } catch (\Exception $_) {}
+        // Legacy fallback — entries written pre-migration live in
+        // feeIdempotency under "{schoolId}_pay_{paymentId}". Delete-safe:
+        // after the backfill script runs, nothing remains here.
+        try {
+            $legacy = $this->firebase->firestoreGet(self::COL_IDEMP, "{$this->schoolId}_pay_{$paymentId}");
+            if (is_array($legacy) && ($legacy['status'] ?? '') === 'success') return $legacy;
+        } catch (\Exception $_) {}
+        return null;
     }
 
     /**
@@ -420,12 +524,12 @@ class Fee_firestore_txn
         if (!$this->ready || $paymentId === '') return false;
         try {
             return (bool) $this->firebase->firestoreSet(
-                self::COL_IDEMP,
-                $this->_paymentIdDocId($paymentId),
+                self::COL_PROCESSED_PAYMENTS,
+                $paymentId,
                 [
+                    'paymentId'   => $paymentId,
                     'schoolId'    => $this->schoolId,
                     'session'     => $this->session,
-                    'paymentId'   => $paymentId,
                     'studentId'   => $studentId,
                     'receiptNo'   => $receiptNo,
                     'receiptKey'  => $receiptKey,
@@ -532,6 +636,59 @@ class Fee_firestore_txn
 
     // ─── Demands (list + update for the student) ───────────────────────
 
+    /**
+     * Read-boundary normaliser for a single demand doc.
+     *
+     * Phase 2.5 contract: Firestore stores ONLY camelCase. Legacy PHP
+     * call-sites still reach for snake_case keys (fee_head, paid_amount,
+     * period_key, ...). This helper populates the legacy aliases on
+     * in-memory copies of the doc so those readers keep returning the
+     * same numbers — without round-tripping them back to Firestore.
+     *
+     * Any reader that writes the demand back MUST go through
+     * updateDemand() / writeDemand(), which strip snake_case before
+     * committing. This keeps the storage single-source even while the
+     * PHP read-sites are progressively migrated to camelCase.
+     */
+    public static function normalizeDemandDoc(array $d): array
+    {
+        // camel → snake aliases for legacy readers
+        static $aliases = [
+            'studentId'      => 'student_id',
+            'studentName'    => 'student_name',
+            'demandId'       => 'demand_id',
+            'feeHead'        => 'fee_head',
+            'periodKey'      => 'period_key',
+            'periodType'     => 'period_type',
+            'grossAmount'    => 'original_amount',
+            'discountAmount' => 'discount_amount',
+            'fineAmount'     => 'fine_amount',
+            'netAmount'      => 'net_amount',
+            'paidAmount'     => 'paid_amount',
+            'dueDate'        => 'due_date',
+            'createdAt'      => 'created_at',
+            'createdBy'      => 'created_by',
+        ];
+        // Canonical camelCase ALWAYS wins when both shapes are present.
+        // Pre-fix: the old bidirectional code only filled a missing key,
+        // so when a legacy demand had paid_amount=0 from the generator
+        // AND updateDemand later wrote paidAmount=1, BOTH keys stuck
+        // around with divergent values. Every admin-side reader still on
+        // snake_case (fetch_months, defaulter calc, collection report…)
+        // then saw the stale 0 and rendered "Unpaid" for a partially-paid
+        // demand — while the parent app (reads camelCase) showed the
+        // correct partial state. Resolving in favor of camelCase here
+        // unblocks every legacy reader with one surgical change.
+        foreach ($aliases as $camel => $snake) {
+            if (isset($d[$camel])) {
+                $d[$snake] = $d[$camel];
+            } elseif (isset($d[$snake])) {
+                $d[$camel] = $d[$snake];
+            }
+        }
+        return $d;
+    }
+
     /** All demands for a student in the current session, keyed by docId. */
     public function demandsForStudent(string $userId): array
     {
@@ -544,92 +701,131 @@ class Fee_firestore_txn
             $out = [];
             foreach ((array) $rows as $r) {
                 $d  = $r['data'] ?? [];
-                $id = $r['id']   ?? '';
-                if ($id !== '' && is_array($d)) $out[$id] = $d;
+                $id = $d['id']   ?? '';
+                if ($id !== '' && is_array($d)) $out[$id] = self::normalizeDemandDoc($d);
             }
             return $out;
         } catch (\Exception $_) { return []; }
     }
 
+    /**
+     * Partial-update a demand (merge). Callers still pass snake_case keys
+     * from legacy call-sites; this canonicalises every field to camelCase
+     * before the Firestore write, so the stored doc is single-source.
+     */
     public function updateDemand(string $demandId, array $data): bool
     {
         if (!$this->ready || $demandId === '') return false;
         try {
-            // Dual-emit: keep snake_case for PHP admin reads, add camelCase
-            // for Android app deserialization.
-            $extra = ['updatedAt' => date('c')];
-            if (isset($data['paid_amount']))     $extra['paidAmount']     = (float) $data['paid_amount'];
-            if (isset($data['balance']))         $extra['balance']        = (float) $data['balance'];
-            if (isset($data['net_amount']))      $extra['netAmount']      = (float) $data['net_amount'];
-            if (isset($data['discount_amount'])) $extra['discountAmount'] = (float) $data['discount_amount'];
-            if (isset($data['fine_amount']))      $extra['fineAmount']    = (float) $data['fine_amount'];
-            if (isset($data['original_amount'])) $extra['grossAmount']   = (float) $data['original_amount'];
+            $patch = ['updatedAt' => date('c')];
+
+            // Canonical camelCase-only patch. Accept both shapes from the
+            // caller (snake_case wins for back-compat while the callers
+            // still use older names) and only ever emit camelCase.
+            static $map = [
+                'paidAmount'     => ['paid_amount', 'paidAmount'],
+                'balance'        => ['balance'],
+                'netAmount'      => ['net_amount', 'netAmount'],
+                'discountAmount' => ['discount_amount', 'discountAmount'],
+                'fineAmount'     => ['fine_amount', 'fineAmount'],
+                'grossAmount'    => ['original_amount', 'grossAmount'],
+                'status'         => ['status'],
+                'lastReceipt'    => ['last_receipt', 'lastReceipt'],
+                'dueDate'        => ['due_date', 'dueDate'],
+                'periodKey'      => ['period_key', 'periodKey'],
+                'periodType'     => ['period_type', 'periodType'],
+                'isYearly'       => ['isYearly'],
+                'feeHead'        => ['fee_head', 'feeHead'],
+                'studentId'      => ['student_id', 'studentId'],
+                'studentName'    => ['student_name', 'studentName'],
+                'className'      => ['class', 'className'],
+            ];
+            foreach ($map as $camel => $sources) {
+                foreach ($sources as $k) {
+                    if (array_key_exists($k, $data)) {
+                        $val = $data[$k];
+                        if (in_array($camel, ['paidAmount','balance','netAmount','discountAmount','fineAmount','grossAmount'], true)) {
+                            $val = (float) $val;
+                        }
+                        $patch[$camel] = $val;
+                        break;
+                    }
+                }
+            }
 
             return (bool) $this->firebase->firestoreSet(self::COL_DEMANDS, $demandId,
-                array_merge($data, $extra), /* merge */ true);
+                $patch, /* merge */ true);
         } catch (\Exception $_) { return false; }
     }
 
     /**
-     * Create a demand document (Session D1). Adds schoolId + session markers
-     * so downstream queries (demandsForStudent, defaulters, reports) filter
-     * correctly.
+     * Create / idempotently upsert a demand document.
+     *
+     * Phase 2.5: camelCase is the ONLY shape written to Firestore. The
+     * caller may still pass snake_case fields (legacy generator code);
+     * this function canonicalises every input before emitting the doc.
+     * merge=true + deterministic demand IDs keep re-runs idempotent:
+     * paidAmount / balance / status on an already-paid demand are
+     * preserved because we never overwrite them during generation — only
+     * the structural fields (amounts, dates, metadata) get refreshed.
      */
     public function writeDemand(string $demandId, array $data): bool
     {
         if (!$this->ready || $demandId === '') return false;
         try {
-            // Emit BOTH snake_case (admin PHP reads) and camelCase (app reads)
-            // so both systems can deserialize the same document.
-            $section = (string) ($data['section'] ?? '');
-            $sectionKey = preg_replace('/^Section\s+/i', '', $section);
-            $period = (string) ($data['period'] ?? '');
-            // Use canonical helper — preserves "Yearly Fees" (the previous
-            // explode(' ',$period)[0] chopped it to "Yearly", which then
-            // failed to match downstream selectionSet/feeMonths checks).
-            $monthName = self::periodToMonth($period);
-            // period_type drives the defensive guard in the allocators
-            // (Phase 10) so a future month-label drift can't accidentally
-            // sweep yearly demands into a payment that didn't select them.
-            // Source of truth: $data['frequency'] from the fee structure
-            // ('annual' or 'monthly'), with a fallback to the period label.
-            $freq          = strtolower((string) ($data['frequency'] ?? ''));
-            $isYearly      = ($freq === 'annual') || ($monthName === 'Yearly Fees');
-            $periodType    = $isYearly ? 'yearly' : 'monthly';
-            $origAmt = (float) ($data['original_amount'] ?? 0);
-            $discAmt = (float) ($data['discount_amount'] ?? 0);
-            $fineAmt = (float) ($data['fine_amount'] ?? 0);
-            $netAmt  = (float) ($data['net_amount'] ?? 0);
-            $paidAmt = (float) ($data['paid_amount'] ?? 0);
+            $pick = function (array $d, array $keys, $default = '') {
+                foreach ($keys as $k) {
+                    if (array_key_exists($k, $d) && $d[$k] !== null && $d[$k] !== '') return $d[$k];
+                }
+                return $default;
+            };
 
-            // Class — always dual-emit `class` (snake) AND `className`
-            // (camel) so dashboard / reports / Android can pick whichever
-            // they prefer. Previously only `className` was emitted; the
-            // dashboard reads `class` and silently bucketed yearly
-            // demands into "Unknown" because of this drift.
-            $classNorm = (string) ($data['class'] ?? $data['className'] ?? '');
-            $doc = array_merge($data, [
+            $section    = (string) $pick($data, ['section']);
+            $sectionKey = (string) preg_replace('/^Section\s+/i', '', $section);
+            $period     = (string) $pick($data, ['period']);
+            $monthName  = self::periodToMonth($period);
+
+            $freq     = strtolower((string) $pick($data, ['frequency']));
+            $isYearly = in_array($freq, ['annual', 'yearly', 'one-time', 'onetime'], true)
+                        || ($monthName === 'Yearly Fees');
+            $periodType = $isYearly ? 'yearly' : 'monthly';
+
+            $classNorm = (string) $pick($data, ['className', 'class']);
+
+            // Single-source camelCase payload. Legacy snake-case inputs
+            // are consumed and never re-emitted — Firestore stays clean.
+            $doc = [
                 'schoolId'       => $this->schoolId,
                 'session'        => $this->session,
                 'demandId'       => $demandId,
-                'studentId'      => (string) ($data['student_id'] ?? $data['studentId'] ?? ''),
-                'studentName'    => (string) ($data['student_name'] ?? $data['studentName'] ?? ''),
-                'class'          => $classNorm,
+                'studentId'      => (string) $pick($data, ['studentId', 'student_id']),
+                'studentName'    => (string) $pick($data, ['studentName', 'student_name']),
                 'className'      => $classNorm,
-                'feeHead'        => (string) ($data['fee_head'] ?? $data['feeHead'] ?? ''),
+                'section'        => $section,
                 'sectionKey'     => $sectionKey,
+                'feeHead'        => (string) $pick($data, ['feeHead', 'fee_head']),
+                'feeHeadId'      => (string) $pick($data, ['feeHeadId']),
+                'category'       => (string) $pick($data, ['category']),
+                'frequency'      => $freq,
+                'period'         => $period,
                 'month'          => $monthName,
-                'period_type'    => $periodType,           // 'monthly' | 'yearly'
-                'periodType'     => $periodType,           // dual-emit (Android camelCase)
-                'isYearly'       => $isYearly,             // convenience flag for UI
-                'grossAmount'    => $origAmt,
-                'discountAmount' => $discAmt,
-                'fineAmount'     => $fineAmt,
-                'netAmount'      => $netAmt,
-                'paidAmount'     => $paidAmt,
+                'periodKey'      => (string) $pick($data, ['periodKey', 'period_key']),
+                'periodType'     => $periodType,
+                'isYearly'       => $isYearly,
+                'grossAmount'    => (float) $pick($data, ['grossAmount', 'original_amount'], 0),
+                'discountAmount' => (float) $pick($data, ['discountAmount', 'discount_amount'], 0),
+                'fineAmount'     => (float) $pick($data, ['fineAmount', 'fine_amount'], 0),
+                'netAmount'      => (float) $pick($data, ['netAmount', 'net_amount'], 0),
+                'paidAmount'     => (float) $pick($data, ['paidAmount', 'paid_amount'], 0),
+                'balance'        => (float) $pick($data, ['balance', 'net_amount', 'netAmount'], 0),
+                'status'         => (string) $pick($data, ['status'], 'unpaid'),
+                'dueDate'        => (string) $pick($data, ['dueDate', 'due_date']),
+                'createdAt'      => (string) $pick($data, ['createdAt', 'created_at'], date('c')),
+                'createdBy'      => (string) $pick($data, ['createdBy', 'created_by']),
                 'updatedAt'      => date('c'),
-            ]);
-            return (bool) $this->firebase->firestoreSet(self::COL_DEMANDS, $demandId, $doc);
+            ];
+
+            return (bool) $this->firebase->firestoreSet(self::COL_DEMANDS, $demandId, $doc, /* merge */ true);
         } catch (\Exception $_) { return false; }
     }
 
@@ -674,6 +870,33 @@ class Fee_firestore_txn
     }
 
     /**
+     * Phase 2.5 Step 2 — companion to readFeeStructure().
+     *
+     * Returns a `name → feeHeadId` map for the given class/section so the
+     * demand generator can stamp each demand with its stable opaque ID
+     * without re-reading the structure. Heads without an ID yet (should
+     * only happen mid-migration) are skipped silently — the caller will
+     * fall back to the legacy name-slug path in _buildDemandId.
+     */
+    public function readFeeHeadIds(string $className, string $section): array
+    {
+        if (!$this->ready) return [];
+        try {
+            $docId = "{$this->schoolId}_{$this->session}_{$className}_{$section}";
+            $doc = $this->firebase->firestoreGet(self::COL_FEE_STRUCT, $docId);
+            if (!is_array($doc) || empty($doc['feeHeads'])) return [];
+            $out = [];
+            foreach ((array) $doc['feeHeads'] as $h) {
+                if (!is_array($h)) continue;
+                $nm  = trim((string) ($h['name'] ?? ''));
+                $fid = trim((string) ($h['feeHeadId'] ?? ''));
+                if ($nm !== '' && $fid !== '') $out[$nm] = $fid;
+            }
+            return $out;
+        } catch (\Exception $_) { return []; }
+    }
+
+    /**
      * List every {className, section} pair that has a fee structure in this
      * session. Used by generate_monthly_demands to drive the loop.
      */
@@ -713,7 +936,7 @@ class Fee_firestore_txn
             foreach ((array) $rows as $r) {
                 $d = $r['data'] ?? $r;
                 if (!is_array($d)) continue;
-                $sid = (string) ($d['studentId'] ?? $d['userId'] ?? $r['id'] ?? '');
+                $sid = (string) ($d['studentId'] ?? $d['userId'] ?? $d['id'] ?? '');
                 if ($sid !== '') $out[$sid] = $d;
             }
             return $out;
@@ -843,6 +1066,53 @@ class Fee_firestore_txn
         } catch (\Exception $_) { return null; }
     }
 
+    /**
+     * Phase 7A — concurrent preload of the three single-doc reads every
+     * submit_fees() invocation needs before the first write:
+     *    student / feeIdempotency / feeStructures
+     *
+     * Runs all three in ONE network round-trip (curl_multi). Demands
+     * come from a query (multi-doc) so they stay separate — this helper
+     * covers only the doc-GET set. feeStructures is optional: pass null
+     * for $class / $section on paths where the structure isn't needed.
+     *
+     * Returns:
+     *   [
+     *     'student'       => ?array,
+     *     'idempotency'   => ?array,
+     *     'feeStructure'  => ?array,   // null when class/section not supplied
+     *   ]
+     */
+    public function preloadSubmitContext(
+        string $userId,
+        string $idempHash,
+        ?string $class = null,
+        ?string $section = null
+    ): array {
+        $out = ['student' => null, 'idempotency' => null, 'feeStructure' => null];
+        if (!$this->ready || $userId === '') return $out;
+
+        $reqs = [
+            'student'     => ['collection' => self::COL_STUDENTS, 'docId' => "{$this->schoolId}_{$userId}"],
+            'idempotency' => ['collection' => self::COL_IDEMP,    'docId' => "{$this->schoolId}_{$idempHash}"],
+        ];
+        if ($class !== null && $section !== null && $class !== '' && $section !== '') {
+            $reqs['feeStructure'] = [
+                'collection' => 'feeStructures',
+                'docId'      => "{$this->schoolId}_{$this->session}_{$class}_{$section}",
+            ];
+        }
+        try {
+            $docs = $this->firebase->firestoreGetParallel($reqs);
+            $out['student']      = is_array($docs['student']      ?? null) ? $docs['student']      : null;
+            $out['idempotency']  = is_array($docs['idempotency']  ?? null) ? $docs['idempotency']  : null;
+            $out['feeStructure'] = is_array($docs['feeStructure'] ?? null) ? $docs['feeStructure'] : null;
+        } catch (\Throwable $e) {
+            if (function_exists('log_message')) log_message('error', 'Fee_firestore_txn::preloadSubmitContext: ' . $e->getMessage());
+        }
+        return $out;
+    }
+
     /** Merge-update the student doc (used for monthFee, status, etc.). */
     public function updateStudent(string $userId, array $data): bool
     {
@@ -852,11 +1122,6 @@ class Fee_firestore_txn
                 array_merge($data, ['updatedAt' => date('c')]), /* merge */ true);
         } catch (\Exception $_) { return false; }
     }
-
-    // ─── Advance balance + discount (thin wrappers) ────────────────────
-    // getAdvanceBalance / setAdvanceBalance removed in Phase 9 (wallet
-    // subsystem gone). COL_ADVANCE retained as a const only because
-    // tombstone docs remain in Firestore for audit; no code writes them.
 
     // ─── Public accessors + batch delegate (used by Fee_refund_service's
     //     R.2 batch path, which builds batchOps inline — same pattern
@@ -982,7 +1247,7 @@ class Fee_firestore_txn
                 $d = $r['data'] ?? [];
                 if (!is_array($d)) continue;
                 if (($d['status'] ?? '') === 'reversed') continue;
-                $id = $r['id'] ?? '';
+                $id = $d['id'] ?? '';
                 if ($id === '') continue;
                 $d['_docId'] = $id;
                 $out[] = $d;

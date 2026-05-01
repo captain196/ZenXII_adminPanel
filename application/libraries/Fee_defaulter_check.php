@@ -92,53 +92,58 @@ class Fee_defaulter_check
         ];
 
         try {
-            $path        = "{$this->_schoolBase()}/Accounts/Pending_fees/{$studentId}";
-            $pendingFees = $this->firebase->get($path);
+            // Firestore-only computation. The earlier RTDB Pending_fees node
+            // is no longer maintained by parent-app payment flows; reading
+            // it would return empty after a parent payment and incorrectly
+            // report total_dues=0 / is_defaulter=false. Sourcing from
+            // feeDemands keeps Admin / Parent / Teacher all in sync.
+            $rows = $this->firebase->firestoreQuery('feeDemands', [
+                ['schoolId',  '==', $this->schoolName],
+                ['session',   '==', $this->sessionYear],
+                ['studentId', '==', $studentId],
+            ]);
 
-            if (!is_array($pendingFees) || empty($pendingFees)) {
+            if (!is_array($rows) || empty($rows)) {
                 return $result;
             }
+
+            // Compute "overdue" cutoff once: any unpaid demand whose period/month
+            // is before the current calendar month is treated as overdue.
+            // Tied directly to wall-clock; no settings doc lookup needed for
+            // the basic flag (admin uses the dueDay setting in the report UI).
+            $todayYM = (int) date('Ym');
 
             $totalDues       = 0.0;
             $unpaidMonths    = [];
             $overdueMonths   = [];
             $lastPaymentDate = '';
 
-            foreach ($pendingFees as $month => $entry) {
-                if (!is_array($entry)) {
+            foreach ($rows as $row) {
+                $d = is_array($row['data'] ?? null) ? $row['data'] : $row;
+                if (!is_array($d)) continue;
+
+                $balance = $this->_toFloat($d['balance'] ?? 0);
+                if ($balance <= 0.0) {
+                    if (!empty($d['updatedAt']) && (string)$d['updatedAt'] > $lastPaymentDate) {
+                        $lastPaymentDate = (string) $d['updatedAt'];
+                    }
                     continue;
                 }
 
-                $status = strtolower(trim($entry['status'] ?? 'pending'));
-                $amount = $this->_toFloat($entry['amount'] ?? 0);
+                $monthLabel = (string) ($d['period'] ?? $d['month'] ?? '');
+                $totalDues += $balance;
 
-                if ($status === 'pending' || $status === 'overdue') {
-                    $totalDues += $amount;
+                $monthInfo = [
+                    'month'  => $monthLabel,
+                    'amount' => $balance,
+                    'status' => (string) ($d['status'] ?? 'unpaid'),
+                    'fee_heads' => is_array($d['feeItems'] ?? null) ? $d['feeItems'] : [],
+                ];
+                $unpaidMonths[] = $monthInfo;
 
-                    $monthInfo = [
-                        'month'    => $month,
-                        'amount'   => $amount,
-                        'status'   => $entry['status'] ?? '',
-                        'due_date' => $entry['due_date'] ?? '',
-                    ];
-
-                    // Include fee heads if available
-                    if (isset($entry['fee_heads']) && is_array($entry['fee_heads'])) {
-                        $monthInfo['fee_heads'] = $entry['fee_heads'];
-                    }
-
-                    $unpaidMonths[] = $monthInfo;
-
-                    if ($status === 'overdue') {
-                        $overdueMonths[] = $monthInfo;
-                    }
-                }
-
-                // Track the most recent payment date across all entries
-                if (!empty($entry['last_payment_date'])) {
-                    if ($lastPaymentDate === '' || $entry['last_payment_date'] > $lastPaymentDate) {
-                        $lastPaymentDate = $entry['last_payment_date'];
-                    }
+                $demandYM = $this->_periodToYearMonth($monthLabel);
+                if ($demandYM > 0 && $demandYM < $todayYM) {
+                    $overdueMonths[] = $monthInfo;
                 }
             }
 
@@ -146,13 +151,36 @@ class Fee_defaulter_check
             $result['unpaid_months']     = $unpaidMonths;
             $result['overdue_months']    = $overdueMonths;
             $result['last_payment_date'] = $lastPaymentDate;
-            $result['is_defaulter']      = ($totalDues > 0 && count($overdueMonths) > 0);
+            // Tag as defaulter if any unpaid balance exists. The previous
+            // rule additionally required at least one overdue month, but
+            // that hides freshly-due demands (current month) from the
+            // banner — apps want to know about ALL pending dues.
+            $result['is_defaulter']      = $totalDues > 0;
 
         } catch (\Exception $e) {
             log_message('error', "Fee_defaulter_check::isDefaulter failed for student [{$studentId}]: " . $e->getMessage());
         }
 
         return $result;
+    }
+
+    /**
+     * Convert a demand period label ("April 2026", "April-2026", "2026-04",
+     * "Apr 2026") into a YYYYMM integer for cheap month comparison.
+     * Returns 0 when the label can't be parsed.
+     */
+    private function _periodToYearMonth(string $label): int
+    {
+        $label = trim($label);
+        if ($label === '') return 0;
+        if (preg_match('/^(\d{4})-(\d{1,2})$/', $label, $m)) {
+            return (int) ($m[1] . str_pad($m[2], 2, '0', STR_PAD_LEFT));
+        }
+        $ts = strtotime("01 {$label}");
+        if ($ts === false) {
+            $ts = strtotime($label);
+        }
+        return $ts ? (int) date('Ym', $ts) : 0;
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -205,29 +233,36 @@ class Fee_defaulter_check
                 $status['updated_at'] = date('c');
             }
 
-            // ── Persist to Firebase ─────────────────────────────────
-            $path = "{$this->_schoolBase()}/Fees/Defaulters/{$studentId}";
-            $this->firebase->set($path, $status);
+            // Phase 5 — Firestore is the SOLE source of truth for
+            // defaulter status. The legacy RTDB Defaulters/{studentId}
+            // write is removed; every reader (admin panel, parent app,
+            // teacher app) already consumes feeDefaulters/{…}.
 
             // ── Sync to Firestore for mobile apps ──
             if ($this->fsSync !== null) {
                 try {
-                    // Resolve student name/class/section from demands (best-effort)
-                    $sName = $status['student_name'] ?? '';
-                    $sClass = $status['class'] ?? '';
-                    $sSection = $status['section'] ?? '';
+                    $sName    = (string) ($additionalFlags['student_name'] ?? '');
+                    $sClass   = (string) ($additionalFlags['class'] ?? '');
+                    $sSection = (string) ($additionalFlags['section'] ?? '');
+
                     if ($sName === '' || $sClass === '') {
-                        $demandsPath = "{$this->_schoolBase()}/Fees/Demands/{$studentId}";
-                        $demands = $this->firebase->get($demandsPath);
-                        if (is_array($demands)) {
-                            $firstDemand = reset($demands);
-                            if (is_array($firstDemand)) {
-                                if ($sName === '') $sName = $firstDemand['student_name'] ?? '';
-                                if ($sClass === '') $sClass = $firstDemand['class'] ?? '';
-                                if ($sSection === '') $sSection = $firstDemand['section'] ?? '';
+                        // Resolve from Firestore `students` collection (RTDB
+                        // demands node is no longer maintained for parent-app
+                        // payments — would return null and leave the
+                        // defaulter doc with empty student metadata).
+                        try {
+                            $stuDoc = $this->firebase->firestoreGet(
+                                'students',
+                                "{$this->schoolName}_{$studentId}"
+                            );
+                            if (is_array($stuDoc)) {
+                                if ($sName === '')    $sName    = (string) ($stuDoc['name']      ?? $stuDoc['studentName'] ?? '');
+                                if ($sClass === '')   $sClass   = (string) ($stuDoc['className'] ?? '');
+                                if ($sSection === '') $sSection = (string) ($stuDoc['section']   ?? '');
                             }
-                        }
+                        } catch (\Exception $_) { /* metadata is best-effort */ }
                     }
+
                     $this->fsSync->syncDefaulterStatus(
                         $studentId, $status, $sName, $sClass, $sSection
                     );
@@ -287,10 +322,16 @@ class Fee_defaulter_check
         }
 
         try {
-            $policyPath = "{$this->_schoolBase()}/Accounts/Fees/Defaulter_Policy/result_withhold_threshold";
-            $threshold  = $this->firebase->get($policyPath);
-            $threshold  = $this->_toFloat($threshold);
-            // Default threshold = 0 means ANY dues triggers withholding
+            // Phase 5 — Firestore feeSettings/{schoolId}_defaulter_policy
+            // replaces RTDB .../Defaulter_Policy. A missing doc keeps
+            // the same default (threshold 0 = withhold on any dues).
+            $policy = $this->firebase->firestoreGet(
+                'feeSettings',
+                "{$this->schoolName}_defaulter_policy"
+            );
+            $threshold = is_array($policy)
+                ? $this->_toFloat($policy['result_withhold_threshold'] ?? 0)
+                : 0.0;
         } catch (\Exception $e) {
             log_message('error', "Fee_defaulter_check: could not read withhold threshold: " . $e->getMessage());
             $threshold = 0.0;
@@ -471,9 +512,23 @@ class Fee_defaulter_check
                 && $clearance['transport_clear']
             );
 
-            // ── Persist to Firebase ─────────────────────────────────
-            $path = "{$this->_schoolBase()}/Fees/Clearance/{$studentId}";
-            $this->firebase->set($path, $clearance);
+            // Phase 5 — clearance status persisted to Firestore
+            // studentClearance/{schoolId}_{studentId} so parent + teacher
+            // apps read the same doc the admin just wrote.
+            try {
+                $this->firebase->firestoreSet(
+                    'studentClearance',
+                    "{$this->schoolName}_{$studentId}",
+                    array_merge($clearance, [
+                        'schoolId'  => $this->schoolName,
+                        'session'   => $this->sessionYear,
+                        'studentId' => $studentId,
+                        'updatedAt' => date('c'),
+                    ])
+                );
+            } catch (\Exception $fsE) {
+                log_message('error', "Fee_defaulter_check: Firestore clearance write failed [{$studentId}]: " . $fsE->getMessage());
+            }
 
         } catch (\Exception $e) {
             log_message('error', "Fee_defaulter_check::calculateClearanceStatus failed for student [{$studentId}]: " . $e->getMessage());
@@ -488,27 +543,16 @@ class Fee_defaulter_check
     private function _checkFeesClearance(string $studentId, array &$clearance): void
     {
         try {
-            $path        = "{$this->_schoolBase()}/Accounts/Pending_fees/{$studentId}";
-            $pendingFees = $this->firebase->get($path);
-
-            if (!is_array($pendingFees) || empty($pendingFees)) {
-                return; // No pending fees → clear
-            }
-
-            $totalDues = 0.0;
-            foreach ($pendingFees as $entry) {
-                if (!is_array($entry)) {
-                    continue;
-                }
-                $status = strtolower(trim($entry['status'] ?? 'pending'));
-                if ($status === 'pending' || $status === 'overdue') {
-                    $totalDues += $this->_toFloat($entry['amount'] ?? 0);
-                }
-            }
-
+            // Phase 5 — read from Firestore feeDefaulters which IS the
+            // canonical "how much does this student owe" source; the old
+            // RTDB Accounts/Pending_fees tree is frozen.
+            $doc = $this->firebase->firestoreGet(
+                'feeDefaulters',
+                "{$this->schoolName}_{$this->sessionYear}_{$studentId}"
+            );
+            $totalDues = is_array($doc) ? $this->_toFloat($doc['totalDues'] ?? 0) : 0.0;
             $clearance['fees_dues']  = round($totalDues, 2);
             $clearance['fees_clear'] = ($totalDues <= 0);
-
         } catch (\Exception $e) {
             log_message('error', "Fee_defaulter_check::_checkFeesClearance failed for student [{$studentId}]: " . $e->getMessage());
             // On error, conservatively mark as NOT clear
@@ -522,40 +566,31 @@ class Fee_defaulter_check
     private function _checkLibraryClearance(string $studentId, array &$clearance): void
     {
         try {
-            // Unreturned books
-            $issuesPath = "{$this->_schoolBase()}/Operations/Library/Issues/{$studentId}";
-            $issues     = $this->firebase->get($issuesPath);
-
+            // Phase 5 — unreturned books from Firestore libraryIssues.
+            $issues = $this->firebase->firestoreQuery('libraryIssues', [
+                ['schoolId',  '==', $this->schoolName],
+                ['studentId', '==', $studentId],
+            ]);
             $unreturnedCount = 0;
-            if (is_array($issues) && !empty($issues)) {
-                foreach ($issues as $issue) {
-                    if (!is_array($issue)) {
-                        continue;
-                    }
-                    $returned = $issue['returned'] ?? false;
-                    $status   = strtolower(trim($issue['status'] ?? ''));
-                    // Count as unreturned if not explicitly marked returned
-                    if ($returned === false && $status !== 'returned') {
-                        $unreturnedCount++;
-                    }
-                }
+            foreach ((array) $issues as $row) {
+                $d = $row['data'] ?? $row;
+                if (!is_array($d)) continue;
+                $returned = $d['returned'] ?? false;
+                $status   = strtolower(trim((string) ($d['status'] ?? '')));
+                if ($returned === false && $status !== 'returned') $unreturnedCount++;
             }
 
-            // Library fines
-            $finesPath = "{$this->_schoolBase()}/Operations/Library/Fines/{$studentId}";
-            $fines     = $this->firebase->get($finesPath);
-
+            // Phase 5 — library fines from Firestore libraryFines.
+            $fines = $this->firebase->firestoreQuery('libraryFines', [
+                ['schoolId',  '==', $this->schoolName],
+                ['studentId', '==', $studentId],
+            ]);
             $libraryDues = 0.0;
-            if (is_array($fines) && !empty($fines)) {
-                foreach ($fines as $fine) {
-                    if (!is_array($fine)) {
-                        continue;
-                    }
-                    $paid = strtolower(trim($fine['status'] ?? ''));
-                    if ($paid !== 'paid') {
-                        $libraryDues += $this->_toFloat($fine['amount'] ?? 0);
-                    }
-                }
+            foreach ((array) $fines as $row) {
+                $d = $row['data'] ?? $row;
+                if (!is_array($d)) continue;
+                $paid = strtolower(trim((string) ($d['status'] ?? '')));
+                if ($paid !== 'paid') $libraryDues += $this->_toFloat($d['amount'] ?? 0);
             }
 
             $clearance['library_unreturned_books'] = $unreturnedCount;
@@ -577,31 +612,23 @@ class Fee_defaulter_check
     private function _checkHostelClearance(string $studentId, array &$clearance): void
     {
         try {
-            $path   = "{$this->_schoolBase()}/Fees/Student_Fee_Items/{$studentId}/Hostel";
-            $hostel = $this->firebase->get($path);
-
-            if (!is_array($hostel) || empty($hostel)) {
-                return; // No hostel data → clear
-            }
-
+            // Phase 5 — hostel-fee items live in Firestore feeDemands
+            // (category=Hostel) via the Student_Fee_Items migration.
+            // Reading all demands and filtering by category is a small
+            // N, so we do it in-memory.
+            $records = $this->firebase->firestoreQuery('feeDemands', [
+                ['schoolId',  '==', $this->schoolName],
+                ['studentId', '==', $studentId],
+                ['category',  '==', 'Hostel'],
+            ]);
             $hostelDues = 0.0;
-
-            // Handle both single-record and multi-record structures
-            $records = isset($hostel['status']) ? [$hostel] : $hostel;
-
-            foreach ($records as $record) {
-                if (!is_array($record)) {
-                    continue;
-                }
-                $status = strtolower(trim($record['status'] ?? ''));
-                if ($status === 'active' || $status === 'pending') {
-                    $total = $this->_toFloat($record['total'] ?? $record['amount'] ?? 0);
-                    $paid  = $this->_toFloat($record['paid'] ?? 0);
-                    $balance = $total - $paid;
-                    if ($balance > 0) {
-                        $hostelDues += $balance;
-                    }
-                }
+            foreach ((array) $records as $row) {
+                $d = $row['data'] ?? $row;
+                if (!is_array($d)) continue;
+                $status  = strtolower(trim((string) ($d['status'] ?? '')));
+                if ($status === 'paid') continue;
+                $balance = $this->_toFloat($d['balance'] ?? 0);
+                if ($balance > 0) $hostelDues += $balance;
             }
 
             $clearance['hostel_dues']  = round($hostelDues, 2);
@@ -621,31 +648,21 @@ class Fee_defaulter_check
     private function _checkTransportClearance(string $studentId, array &$clearance): void
     {
         try {
-            $path      = "{$this->_schoolBase()}/Fees/Student_Fee_Items/{$studentId}/Transport";
-            $transport = $this->firebase->get($path);
-
-            if (!is_array($transport) || empty($transport)) {
-                return; // No transport data → clear
-            }
-
+            // Phase 5 — transport-fee items live in Firestore feeDemands
+            // with category=Transport (same shape as hostel).
+            $records = $this->firebase->firestoreQuery('feeDemands', [
+                ['schoolId',  '==', $this->schoolName],
+                ['studentId', '==', $studentId],
+                ['category',  '==', 'Transport'],
+            ]);
             $transportDues = 0.0;
-
-            // Handle both single-record and multi-record structures
-            $records = isset($transport['status']) ? [$transport] : $transport;
-
-            foreach ($records as $record) {
-                if (!is_array($record)) {
-                    continue;
-                }
-                $status = strtolower(trim($record['status'] ?? ''));
-                if ($status === 'active' || $status === 'pending') {
-                    $total = $this->_toFloat($record['total'] ?? $record['amount'] ?? 0);
-                    $paid  = $this->_toFloat($record['paid'] ?? 0);
-                    $balance = $total - $paid;
-                    if ($balance > 0) {
-                        $transportDues += $balance;
-                    }
-                }
+            foreach ((array) $records as $row) {
+                $d = $row['data'] ?? $row;
+                if (!is_array($d)) continue;
+                $status  = strtolower(trim((string) ($d['status'] ?? '')));
+                if ($status === 'paid') continue;
+                $balance = $this->_toFloat($d['balance'] ?? 0);
+                if ($balance > 0) $transportDues += $balance;
             }
 
             $clearance['transport_dues']  = round($transportDues, 2);
@@ -688,47 +705,52 @@ class Fee_defaulter_check
         }
 
         try {
-            $defaulterPath = "{$this->_schoolBase()}/Fees/Defaulters/{$studentId}";
-
             // Build the update payload based on override type
             $updates = [];
             switch ($overrideType) {
                 case 'exam_block':
-                    $updates['exam_blocked'] = false;
+                    $updates['examBlocked'] = false;
                     break;
                 case 'result_withhold':
-                    $updates['result_withheld'] = false;
+                    $updates['resultWithheld'] = false;
                     break;
                 case 'all':
-                    $updates['exam_blocked']    = false;
-                    $updates['result_withheld'] = false;
+                    $updates['examBlocked']    = false;
+                    $updates['resultWithheld'] = false;
                     break;
             }
+            $updates['lastOverrideAt'] = date('c');
+            $updates['lastOverrideBy'] = $adminId;
 
-            $updates['last_override_at'] = date('c');
-            $updates['last_override_by'] = $adminId;
-
-            // Apply the override to the Defaulters node
-            $writeResult = $this->firebase->update($defaulterPath, $updates);
+            // Phase 5 — write the override onto the Firestore
+            // feeDefaulters doc (canonical) via merge so we don't
+            // clobber totalDues / unpaidMonths.
+            $writeResult = $this->firebase->firestoreSet(
+                'feeDefaulters',
+                "{$this->schoolName}_{$this->sessionYear}_{$studentId}",
+                $updates,
+                /* merge */ true
+            );
 
             if ($writeResult === false) {
-                log_message('error', "Fee_defaulter_check::clearDefaulterOverride Firebase update failed for student [{$studentId}]");
+                log_message('error', "Fee_defaulter_check::clearDefaulterOverride Firestore update failed for student [{$studentId}]");
                 return false;
             }
 
-            // ── Audit log ───────────────────────────────────────────
-            $auditEntry = [
-                'action'        => 'defaulter_override',
-                'override_type' => $overrideType,
-                'student_id'    => $studentId,
-                'admin_id'      => $adminId,
-                'reason'        => $reason,
-                'flags_cleared' => $updates,
-                'timestamp'     => date('c'),
-            ];
-
-            $auditPath = "{$this->_schoolBase()}/Fees/Audit_Logs";
-            $this->firebase->push($auditPath, $auditEntry);
+            // Phase 5 — audit entry lands in Firestore fee_audit_logs.
+            try {
+                require_once APPPATH . 'libraries/Fee_audit_logger.php';
+                $logger = new Fee_audit_logger(
+                    $this->firebase, $this->schoolName, $this->sessionYear
+                );
+                $logger->record(
+                    'update', 'defaulter', $studentId,
+                    /* before */ [],
+                    $updates,
+                    $adminId,
+                    ['source' => 'defaulter_override', 'reason' => $reason]
+                );
+            } catch (\Throwable $_) { /* never fail override on audit */ }
 
             log_message('info', "Fee_defaulter_check: override [{$overrideType}] applied for student [{$studentId}] by admin [{$adminId}]");
 

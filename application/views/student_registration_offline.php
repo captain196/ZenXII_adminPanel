@@ -1,9 +1,13 @@
 <div class="content-wrapper">
     <div class="page_container">
         <div class="box">
-            <h3>Students (<?php echo sizeof($student_offline) ?>)
+            <h3>Students (<?php echo sizeof($students) ?>)
                 <a href="javascript:;" class="btn btn-success pull-right mr-2" style="margin-right:2%;"
                     data-toggle="modal" data-target="#myModal">Add New Student</a>
+                <a href="javascript:;" class="btn btn-primary pull-right mr-2" data-toggle="modal"
+                    data-target="#importModal" style="margin-right:2%;">
+                    <i class="fa fa-upload" aria-hidden="true"></i> Import
+                </a>
             </h3>
             <div style="padding-top:20px; padding-left: 10px; padding-right: 20px;">
                 <div class="table-responsive">
@@ -15,24 +19,24 @@
                                 <th>Name</th>
                                 <th>Father Name</th>
                                 <th>Mother Name</th>
-                                <th>Email Id</th>
+                                <th>Email</th>
                                 <th>DOB</th>
                                 <th>Phone Number</th>
                                 <th>Gender</th>
                                 <th>School Name</th>
-                                <th>Class Name</th>
+                                <th>Class</th>
                                 <th>Section</th>
                                 <th>Address</th>
-                                <th>Encrypted Password</th>
+                                <th>Password</th>
                                 <th>Action</th>
                             </tr>
                         </thead>
                         <tbody>
 
                             <?php
-                                    $i = 1;
-                                    foreach ($student_offline as $student) {
-                                    ?>
+                            $i = 1;
+                            foreach ($students as $student) {
+                            ?>
                             <tr>
                                 <td><?php echo $i;  ?></td>
                                 <td><?php echo $student['User Id']; ?></td>
@@ -56,29 +60,29 @@
                                 </td>
                             </tr>
                             <?php
-                                        $i++;
-                                    }
+                                $i++;
+                            }
                             ?>
                         </tbody>
-                        <tfoot>
+                        <!-- <tfoot>
                             <tr>
                                 <th>SNo.</th>
                                 <th>User Id</th>
                                 <th>Name</th>
                                 <th>Father Name</th>
                                 <th>Mother Name</th>
-                                <th>Email Id</th>
+                                <th>Email</th>
                                 <th>DOB</th>
                                 <th>Phone Number</th>
                                 <th>Gender</th>
                                 <th>School Name</th>
-                                <th>Class Name</th>
+                                <th>Class</th>
                                 <th>Section</th>
                                 <th>Address</th>
-                                <th>Encrypted Password</th>
+                                <th>Password</th>
                                 <th>Action</th>
                             </tr>
-                        </tfoot>
+                        </tfoot> -->
                     </table>
                 </div>
             </div>
@@ -98,17 +102,17 @@
             </div>
             <div class="modal-body">
                 <form action="<?php echo base_url() . 'index.php/student/student_registration' ?>"
-                    id="add_student_form_offline">
+                    id="add_student_form">
                     <div class="row">
                         <div class="form-group col-sm-6">
-                            <label for="user_id">Student Id</label>
-                            <input type="text" name="User Id" required="required" id="user_id" class="form-control"
-                                placeholder="Enter User Id">
+                            <label for="user_id">User Id</label>
+                            <input type="text" name="User Id" required="required" value="<?php echo $newStudentId ?>"
+                                id="user_id" class="form-control" placeholder="Enter User Id" readonly>
                         </div>
                         <div class="form-group col-sm-6">
                             <label for="school_name">School Name</label>
-                            <input type="text" name="School Name" required="required" id="school_name"
-                                class="form-control">
+                            <input type="text" name="School Name" value="<?php echo $school_name  ?>"
+                                required="required" id="school_name" class="form-control" readonly>
                         </div>
                     </div>
                     <div class="form-group">
@@ -153,6 +157,8 @@
                                 <div class="form-group col-xs-9">
                                     <input type="text" name="Phone Number" required="required" id="phone"
                                         class="form-control">
+                                    <small id="phone-error" style="color: red; display: none;">Invalid phone
+                                        number.</small>
                                 </div>
                             </div>
                         </div>
@@ -172,22 +178,21 @@
             <div class="row">
                 <div class="col-sm-6">
                     <label for="class">Select Class</label>
-                    <input name="Class" required="required" id="class" class="form-control">
-                    <!-- <option value="">Select Class</option>
-
-                        <option value="8th">8th</option> -->
-
-                    <!-- <?php foreach ($classNames as $className) : ?>
+                    <select name="Class" required="required" id="class" class="form-control">
+                        <option value="">Select Class</option>
+                        <?php foreach ($classNames as $className) : ?>
                         <option value="<?php echo htmlspecialchars($className); ?>">
                             Class <?php echo htmlspecialchars($className); ?>
-                            
+                            <!-- Added 'Class ' prefix -->
                         </option>
-                        <?php endforeach; ?> -->
-
+                        <?php endforeach; ?>
+                    </select>
                 </div>
                 <div class="col-sm-6">
-                    <label for="section">Section:</label>
-                    <input type="text" class="form-control" id="section" name="Section">
+                    <label for="section">Select Section</label>
+                    <select name="Section" required="required" id="section" class="form-control" disabled>
+                        <option value="">Select Section</option>
+                    </select>
                 </div>
             </div>
 
@@ -198,10 +203,10 @@
                 <input type="text" name="Address" required="required" id="address" class="form-control">
             </div>
 
-            <div class="form-group">
-                <label for="password">Enter Password</label>
-                <input type="text" name="Password" required="required" id="password" class="form-control">
-            </div>
+            <!-- <div class="form-group">
+                        <label for="password">Enter Password</label>
+                        <input type="text" name="Password" required="required" id="password" class="form-control">
+                    </div> -->
 
             <div class="form-group">
                 <button type="submit" class="btn btn-primary btn-lg">Add Student</button>
@@ -211,3 +216,104 @@
     </div>
 </div>
 </div>
+
+
+
+<!-- Import Modal -->
+<div class="modal fade" id="importModal" tabindex="-1" role="dialog" aria-labelledby="importModalLabel" aria-hidden="true">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="importModalLabel"><b>Import Students</b></h5>
+            </div>
+            <div class="modal-body">
+                <form action="<?php echo base_url() . 'index.php/student/import_students' ?>" method="post" enctype="multipart/form-data">
+                    <input type="hidden" name="<?= $this->security->get_csrf_token_name() ?>" 
+           value="<?= $this->security->get_csrf_hash() ?>">
+                    <div class="form-group">
+                        <label for="excelFile">Upload Excel File <span class="text-danger">*</span></label>
+                        <input type="file" class="form-control" id="excelFile" name="excelFile" accept=".xls,.xlsx" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Upload</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<script>
+document.getElementById('class').addEventListener('change', function() {
+    var classSelect = this;
+    var selectedClass = classSelect.value;
+    var sectionSelect = document.getElementById('section');
+
+    // Clear existing options
+    sectionSelect.innerHTML = '<option value="">Select Section</option>';
+
+    // Enable section dropdown
+    sectionSelect.disabled = false;
+
+    // Populate section options based on selected class
+    var sections = <?php echo json_encode($classSections); ?>;
+    if (sections[selectedClass]) {
+        var classSections = sections[selectedClass];
+        for (var section in classSections) {
+            if (classSections.hasOwnProperty(section)) {
+                var option = document.createElement('option');
+                option.value = section;
+                option.text = section;
+                sectionSelect.appendChild(option);
+            }
+        }
+    } else {
+        // If no sections found for selected class, disable section dropdown
+        sectionSelect.disabled = true;
+    }
+});
+
+
+// Function to handle input in the phone number field
+document.getElementById('phone').addEventListener('input', function(event) {
+    var phoneInput = event.target;
+    phoneInput.value = phoneInput.value.replace(/\D/g, ''); // Allow only numbers
+
+    // Check if the current input is valid
+    var phoneNumber = phoneInput.value;
+    var phoneError = document.getElementById('phone-error');
+
+    if (phoneNumber.length === 0) {
+        phoneError.style.display = 'none'; // Hide error if input is empty
+    } else if (phoneNumber.length < 10) {
+        phoneError.innerText = 'Phone number should be 10 digits long.';
+        phoneError.style.display = 'inline'; // Show error if less than 10 digits
+    } else if (!/^6789/.test(phoneNumber)) {
+        phoneError.innerText = 'Invalid Phone number.';
+        phoneError.style.display = 'inline'; // Show error if not starting with6, 7, 8, or 9
+    } else {
+        phoneError.style.display = 'none'; // Hide error if valid
+    }
+});
+
+// Function to handle blur event in the phone number field
+document.getElementById('phone').addEventListener('blur', function(event) {
+    var phoneInput = event.target;
+    var phoneNumber = phoneInput.value;
+    var phoneError = document.getElementById('phone-error');
+
+    // Check final validity on blur
+    if (phoneNumber.length < 10 || !/^6789/.test(phoneNumber)) {
+        phoneError.style.display = 'inline'; // Show error on blur if not valid
+    } else {
+        phoneError.style.display = 'none'; // Hide error if valid
+    }
+});
+</script>
+<!-- <style>
+    .offline {
+    color: red;
+    font-weight: bold;
+    font-size: x-large;
+}
+
+</style> -->

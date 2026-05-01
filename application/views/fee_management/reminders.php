@@ -51,25 +51,30 @@
                             <!-- Due Day -->
                             <div class="fm-form-col">
                                 <label class="fm-label">Due Day of Month <span class="fm-req">*</span></label>
-                                <input type="number" name="due_day" id="due_day" class="fm-input"
+                                <input type="number" name="due_day_of_month" id="due_day_of_month" class="fm-input"
                                     min="1" max="28" placeholder="e.g. 10"
-                                    value="<?= isset($settings['due_day']) ? htmlspecialchars($settings['due_day']) : '10' ?>">
+                                    value="<?= htmlspecialchars((string) ($settings['due_day_of_month'] ?? $settings['due_day'] ?? '10')) ?>">
+                                <span class="fm-hint">Max 28 — avoids Feb month-end edge case.</span>
                             </div>
 
                             <!-- Days Before Due -->
                             <div class="fm-form-col">
                                 <label class="fm-label">Days Before Due to Remind</label>
-                                <input type="text" name="remind_days" id="remind_days" class="fm-input"
+                                <?php
+                                    $daysVal = $settings['days_before_due'] ?? $settings['remind_days'] ?? '7,3,1';
+                                    if (is_array($daysVal)) $daysVal = implode(',', $daysVal);
+                                ?>
+                                <input type="text" name="days_before_due" id="days_before_due" class="fm-input"
                                     placeholder="e.g. 7,3,1"
-                                    value="<?= isset($settings['remind_days']) ? htmlspecialchars($settings['remind_days']) : '7,3,1' ?>">
+                                    value="<?= htmlspecialchars((string) $daysVal) ?>">
                                 <span class="fm-hint">Comma-separated days, e.g. 7,3,1</span>
                             </div>
 
                             <!-- Reminder Message Template -->
                             <div class="fm-form-col fm-form-col--full">
                                 <label class="fm-label">Reminder Message Template</label>
-                                <textarea name="message_template" id="message_template" class="fm-textarea" rows="4"
-                                    placeholder="Dear {student_name}, your fee of &#8377;{amount} for {month} is due on {due_date}. Please pay on time."><?= isset($settings['message_template']) ? htmlspecialchars($settings['message_template']) : 'Dear {student_name}, your fee of ₹{amount} for {month} is due on {due_date}. Please pay on time to avoid late charges.' ?></textarea>
+                                <textarea name="reminder_message" id="reminder_message" class="fm-textarea" rows="4"
+                                    placeholder="Dear {student_name}, your fee of &#8377;{amount} for {month} is due on {due_date}. Please pay on time."><?= htmlspecialchars((string) ($settings['reminder_message'] ?? $settings['message_template'] ?? 'Dear {student_name}, your fee of ₹{amount} for {month} is due on {due_date}. Please pay on time to avoid late charges.')) ?></textarea>
                                 <span class="fm-hint">Placeholders: {student_name}, {amount}, {month}, {due_date}</span>
                             </div>
                         </div>
@@ -93,9 +98,10 @@
                                 <div class="fm-form-grid fm-form-grid--2">
                                     <div class="fm-form-col">
                                         <label class="fm-label">Late Fee Type</label>
+                                        <?php $lft = strtolower((string) ($settings['late_fee_type'] ?? 'fixed')); ?>
                                         <select name="late_fee_type" id="late_fee_type" class="fm-select">
-                                            <option value="Percentage" <?= (isset($settings['late_fee_type']) && $settings['late_fee_type'] === 'Percentage') ? 'selected' : '' ?>>Percentage (%)</option>
-                                            <option value="Fixed" <?= (isset($settings['late_fee_type']) && $settings['late_fee_type'] === 'Fixed') ? 'selected' : '' ?>>Fixed Amount (&#8377;)</option>
+                                            <option value="fixed"      <?= $lft === 'fixed'      ? 'selected' : '' ?>>Fixed Amount (&#8377;)</option>
+                                            <option value="percentage" <?= $lft === 'percentage' ? 'selected' : '' ?>>Percentage (%)</option>
                                         </select>
                                     </div>
                                     <div class="fm-form-col">
@@ -153,30 +159,50 @@
                         <p>Click "Scan Due Fees" to find students with pending payments.</p>
                     </div>
 
-                    <!-- Results table -->
-                    <div class="fm-table-wrap" id="dueTableWrap" style="display:none;">
-                        <table class="fm-table" id="dueTable">
-                            <thead>
-                                <tr>
-                                    <th class="fm-th-check">
-                                        <label class="fm-check-wrap">
-                                            <input type="checkbox" id="selectAllDue" onchange="toggleSelectAll(this)">
-                                            <span class="fm-checkmark"></span>
-                                        </label>
-                                    </th>
-                                    <th>Student Name</th>
-                                    <th>Class / Section</th>
-                                    <th>Unpaid Months</th>
-                                    <th>Total Due</th>
-                                    <th>Last Reminder</th>
-                                </tr>
-                            </thead>
-                            <tbody id="dueTableBody"></tbody>
-                        </table>
+                    <!-- Results + quick filter -->
+                    <div id="dueTableWrap" style="display:none;">
+                        <!-- Quick filter bar -->
+                        <div class="fm-quickfilter" id="dueQuickFilter">
+                            <div class="fm-qf-search">
+                                <i class="fa fa-search"></i>
+                                <input type="text" id="dueSearch" placeholder="Search by student name or roll no…">
+                            </div>
+                            <select id="dueClassFilter">
+                                <option value="">All classes</option>
+                            </select>
+                            <select id="dueRecencyFilter">
+                                <option value="">All reminders</option>
+                                <option value="never">Never reminded</option>
+                                <option value="old">Reminded &gt; 7 days ago</option>
+                                <option value="recent">Reminded &lt; 7 days</option>
+                            </select>
+                            <span class="fm-qf-count" id="dueFilterCount">0 of 0</span>
+                        </div>
+
+                        <div class="fm-table-wrap">
+                            <table class="fm-table" id="dueTable">
+                                <thead>
+                                    <tr>
+                                        <th class="fm-th-check">
+                                            <label class="fm-check-wrap">
+                                                <input type="checkbox" id="selectAllDue" onchange="toggleSelectAll(this)">
+                                                <span class="fm-checkmark"></span>
+                                            </label>
+                                        </th>
+                                        <th>Student Name</th>
+                                        <th>Class / Section</th>
+                                        <th>Unpaid Months</th>
+                                        <th>Total Due</th>
+                                        <th>Last Reminder</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dueTableBody"></tbody>
+                            </table>
+                        </div>
 
                         <div class="fm-form-actions">
-                            <button type="button" class="fm-btn fm-btn--primary" id="btnSendReminders" onclick="sendReminders()">
-                                <i class="fa fa-paper-plane"></i> Send Reminder to Selected
+                            <button type="button" class="fm-btn fm-btn--primary" id="btnSendReminders" onclick="sendReminders()" disabled>
+                                <i class="fa fa-paper-plane"></i> <span id="btnSendReminderLabel">Send Reminder to Selected</span>
                             </button>
                         </div>
                     </div>
@@ -243,11 +269,14 @@
             </div>
         </div>
 
+        <!-- Toast (kept inside .fm-wrap so CSS custom properties like
+             --fm-green / --fm-red / --fm-teal resolve; moved here from
+             outside the wrapper where those vars were undefined and the
+             toast rendered invisible). -->
+        <div class="fm-toast-container" id="fmToastContainer"></div>
+
     </div><!-- /.fm-wrap -->
 </div><!-- /.content-wrapper -->
-
-<!-- Toast -->
-<div class="fm-toast-container" id="fmToastContainer"></div>
 
 <!-- ======================== JAVASCRIPT ======================== -->
 <script>
@@ -290,7 +319,7 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 if (data.csrf_hash) CSRF_HASH = data.csrf_hash;
-                showToast(data.message || 'Settings saved.', data.status ? 'success' : 'error');
+                showToast(data.message || 'Settings saved.', data.status === 'success' ? 'success' : 'error');
             })
             .catch(function() { showToast('Network error. Try again.', 'error'); })
             .finally(function() {
@@ -334,24 +363,81 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById('statDueAmount').textContent = '\u20B9' + totalAmt.toLocaleString('en-IN');
                 stats.style.display = '';
 
-                // Build rows
+                // Build recency chip + visible markup for last_reminder.
+                // Returns { html, bucket } where bucket drives the filter.
+                function buildLastReminderChip(raw) {
+                    if (!raw) {
+                        return { html: '<span class="fm-rem-chip fm-rem-chip--never"><i class="fa fa-minus"></i>Never</span>', bucket: 'never' };
+                    }
+                    var d = new Date(raw);
+                    if (isNaN(d.getTime())) {
+                        return { html: '<span class="fm-rem-chip fm-rem-chip--old">' + raw + '</span>', bucket: 'old' };
+                    }
+                    var diffMin = Math.round((Date.now() - d.getTime()) / 60000);
+                    var label;
+                    if (diffMin < 1)          label = 'Just now';
+                    else if (diffMin < 60)    label = diffMin + 'm ago';
+                    else if (diffMin < 1440)  label = Math.round(diffMin / 60) + 'h ago';
+                    else if (diffMin < 10080) label = Math.round(diffMin / 1440) + 'd ago';
+                    else                      label = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+                    var bucket, cls;
+                    if (diffMin < 1440)        { bucket = 'recent'; cls = 'fm-rem-chip--recent'; }
+                    else if (diffMin < 10080)  { bucket = 'recent'; cls = 'fm-rem-chip--week'; }
+                    else                       { bucket = 'old';    cls = 'fm-rem-chip--old'; }
+                    return { html: '<span class="fm-rem-chip ' + cls + '"><i class="fa fa-paper-plane"></i>' + label + '</span>', bucket: bucket };
+                }
+
+                // Build rows + collect unique class/section values for the filter dropdown.
                 var html = '';
+                var classOptions = new Set();
                 students.forEach(function(s) {
-                    var months = (s.unpaid_months || []).map(function(m) {
+                    // Unpaid months — first three badges visible, rest as "+N more"
+                    var monthsArr = (s.unpaid_months || []);
+                    var shown = monthsArr.slice(0, 3).map(function(m) {
                         return '<span class="fm-badge fm-badge--gold">' + m + '</span>';
                     }).join(' ');
-                    html += '<tr>' +
+                    var extra = monthsArr.length > 3
+                        ? ' <span class="fm-badge fm-badge--default">+' + (monthsArr.length - 3) + '</span>'
+                        : '';
+                    var months = shown + extra;
+
+                    // Backend (fetch_due_students) emits { name, class, section }.
+                    // Keep legacy { student_name, class_section } as fallbacks.
+                    var sName   = s.name || s.student_name || '--';
+                    var sClsSec = s.class_section
+                               || [s.class, s.section].filter(function(v){ return v; }).join(' ')
+                               || '--';
+                    if (sClsSec !== '--') classOptions.add(sClsSec);
+
+                    var rem = buildLastReminderChip(s.last_reminder);
+
+                    html += '<tr data-name="' + (sName + '').toLowerCase()
+                          + '" data-uid="' + (s.user_id || '').toLowerCase()
+                          + '" data-class="' + sClsSec
+                          + '" data-recency="' + rem.bucket + '">' +
                         '<td class="fm-th-check"><label class="fm-check-wrap"><input type="checkbox" class="due-check" value="' + (s.user_id || '') + '"><span class="fm-checkmark"></span></label></td>' +
-                        '<td>' + (s.student_name || '--') + '</td>' +
-                        '<td>' + (s.class_section || '--') + '</td>' +
+                        '<td>' + sName + '</td>' +
+                        '<td>' + sClsSec + '</td>' +
                         '<td>' + months + '</td>' +
                         '<td class="fm-text-bold">\u20B9' + (parseFloat(s.total_due) || 0).toLocaleString('en-IN') + '</td>' +
-                        '<td>' + (s.last_reminder || '<span class="fm-text-muted">Never</span>') + '</td>' +
+                        '<td>' + rem.html + '</td>' +
                         '</tr>';
                 });
                 document.getElementById('dueTableBody').innerHTML = html;
+
+                // Populate class-filter dropdown (preserve current selection if any)
+                var classSel = document.getElementById('dueClassFilter');
+                var prevClass = classSel.value;
+                classSel.innerHTML = '<option value="">All classes</option>' +
+                    Array.from(classOptions).sort().map(function(c) {
+                        return '<option value="' + c + '">' + c + '</option>';
+                    }).join('');
+                if (prevClass) classSel.value = prevClass;
+
                 wrap.style.display = '';
                 document.getElementById('selectAllDue').checked = false;
+                applyDueFilter();
+                updateSendBtnState();
             })
             .catch(function() {
                 spinner.style.display = 'none';
@@ -360,36 +446,130 @@ document.addEventListener('DOMContentLoaded', function() {
             });
     };
 
-    /* ---------- Select All ---------- */
+    /* ---------- Select All (respects active filter) ---------- */
     window.toggleSelectAll = function(el) {
-        document.querySelectorAll('.due-check').forEach(function(c) { c.checked = el.checked; });
+        document.querySelectorAll('#dueTableBody tr:not(.fm-row-hidden) .due-check')
+            .forEach(function(c) { c.checked = el.checked; });
+        updateSendBtnState();
     };
+
+    /* ---------- Due-table client-side filter ---------- */
+    function applyDueFilter() {
+        var q = (document.getElementById('dueSearch').value || '').trim().toLowerCase();
+        var cls = document.getElementById('dueClassFilter').value;
+        var rec = document.getElementById('dueRecencyFilter').value;
+        var rows = document.querySelectorAll('#dueTableBody tr');
+        var total = rows.length, visible = 0;
+        rows.forEach(function(tr) {
+            if (tr.classList.contains('fm-no-match-row')) return;
+            var hide = false;
+            if (q) {
+                var n = tr.getAttribute('data-name')  || '';
+                var u = tr.getAttribute('data-uid')   || '';
+                if (n.indexOf(q) === -1 && u.indexOf(q) === -1) hide = true;
+            }
+            if (cls && tr.getAttribute('data-class') !== cls) hide = true;
+            if (rec && tr.getAttribute('data-recency') !== rec) hide = true;
+            tr.classList.toggle('fm-row-hidden', hide);
+            if (!hide) visible++;
+        });
+        document.getElementById('dueFilterCount').textContent = visible + ' of ' + total;
+        // Uncheck hidden checkboxes so filter doesn't accidentally send
+        document.querySelectorAll('#dueTableBody tr.fm-row-hidden .due-check:checked')
+            .forEach(function(c) { c.checked = false; });
+        updateSendBtnState();
+    }
+
+    function updateSendBtnState() {
+        var n = document.querySelectorAll('.due-check:checked').length;
+        var btn = document.getElementById('btnSendReminders');
+        var lbl = document.getElementById('btnSendReminderLabel');
+        if (!btn || !lbl) return;
+        btn.disabled = (n === 0);
+        lbl.textContent = n === 0
+            ? 'Send Reminder to Selected'
+            : 'Send Reminder to ' + n + ' Selected';
+    }
+
+    // Wire up filter + selection listeners once on page load
+    ['dueSearch', 'dueClassFilter', 'dueRecencyFilter'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('input', applyDueFilter);
+        if (el) el.addEventListener('change', applyDueFilter);
+    });
+    document.getElementById('dueTableBody').addEventListener('change', function(e) {
+        if (e.target && e.target.classList.contains('due-check')) updateSendBtnState();
+    });
 
     /* ---------- Send Reminders ---------- */
     window.sendReminders = function() {
-        var ids = [];
-        document.querySelectorAll('.due-check:checked').forEach(function(c) { ids.push(c.value); });
-        if (!ids.length) { showToast('Select at least one student.', 'error'); return; }
+        // Collect the selected checkboxes AND enrich each with the row's
+        // visible data (name, class, total_due, oldest unpaid month).
+        // The backend prefers UI-supplied values over a defaulter-doc
+        // lookup so the push-notification amount matches exactly what
+        // the admin saw on screen. Plain string IDs are still accepted.
+        var selected = [];
+        document.querySelectorAll('.due-check:checked').forEach(function(c) {
+            var tr = c.closest('tr');
+            var uid = c.value;
+            if (!tr) { selected.push(uid); return; }
+            // Cells: [0] check, [1] name, [2] class/section, [3] months, [4] total due, [5] last reminder
+            var tds = tr.querySelectorAll('td');
+            var name    = (tds[1] && tds[1].textContent.trim()) || '';
+            var clsSec  = (tds[2] && tds[2].textContent.trim()) || '';
+            var dueText = (tds[4] && tds[4].textContent.trim()) || '';
+            // Parse "₹3,800" → 3800. Strip the rupee sign and commas.
+            var dueNum  = parseFloat(dueText.replace(/[^\d.]/g, '')) || 0;
+            // First month chip inside the Unpaid Months cell.
+            var firstMonth = '';
+            if (tds[3]) {
+                var firstChip = tds[3].querySelector('.fm-badge');
+                if (firstChip) firstMonth = firstChip.textContent.trim();
+            }
+            // Split "Class 10th Section A" → class / section.
+            var cls = clsSec, sec = '';
+            var m = clsSec.match(/^(.*?)\s+Section\s+(.+)$/i);
+            if (m) { cls = m[1].trim(); sec = 'Section ' + m[2].trim(); }
+            selected.push({
+                user_id:   uid,
+                name:      name,
+                class:     cls,
+                section:   sec,
+                total_due: dueNum,
+                month:     firstMonth
+            });
+        });
+        if (!selected.length) { showToast('Select at least one student.', 'error'); return; }
 
         var btn = document.getElementById('btnSendReminders');
+        var lbl = document.getElementById('btnSendReminderLabel');
         btn.disabled = true;
-        btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Sending...';
+        lbl.innerHTML = 'Sending ' + selected.length + '…';
+        btn.firstElementChild.className = 'fa fa-spinner fa-spin';
 
         var fd = new FormData();
         fd.append(CSRF_NAME, CSRF_HASH);
-        ids.forEach(function(id) { fd.append('student_ids[]', id); });
+        selected.forEach(function(s) {
+            // Backend accepts JSON-string entries and decodes them per-item.
+            fd.append('student_ids[]', typeof s === 'string' ? s : JSON.stringify(s));
+        });
+        // Default to FCM push so the parent actually gets a notification.
+        // Without this, send_reminder falls back to channel='log' which
+        // only writes an audit row and doesn't dispatch anything.
+        fd.append('channel', 'push');
 
         fetch(BASE + 'fee_management/send_reminder', { method: 'POST', body: fd })
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 if (data.csrf_hash) CSRF_HASH = data.csrf_hash;
-                showToast(data.message || 'Reminders sent.', data.status ? 'success' : 'error');
-                if (data.status) scanDueStudents();
+                var ok = data.status === 'success';
+                showToast(data.message || 'Reminders sent.', ok ? 'success' : 'error');
+                if (ok) scanDueStudents();
             })
             .catch(function() { showToast('Failed to send reminders.', 'error'); })
             .finally(function() {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fa fa-paper-plane"></i> Send Reminder to Selected';
+                btn.firstElementChild.className = 'fa fa-paper-plane';
+                updateSendBtnState();
             });
     };
 
@@ -570,10 +750,32 @@ document.addEventListener('DOMContentLoaded', function() {
 .fm-table-wrap { overflow-x: auto; }
 .fm-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
 .fm-table thead th { background: #f8fafc; padding: 9px 12px; font-size: .7rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .4px; border-bottom: 2px solid var(--fm-border); text-align: left; white-space: nowrap; }
-.fm-table tbody td { padding: 9px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
-.fm-table tbody tr:hover { background: rgba(13,115,119,.02); }
+.fm-table tbody td { padding: 10px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+.fm-table tbody tr:nth-child(even) { background: #fafbfc; }
+.fm-table tbody tr:hover { background: rgba(13,115,119,.05); }
 .fm-text-bold { font-weight: 700; }
 .fm-text-muted { color: #94a3b8; font-style: italic; }
+
+/* ---------- Last-Reminder recency chip ---------- */
+.fm-rem-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; font-size: .72rem; font-weight: 600; border-radius: 20px; line-height: 1.5; white-space: nowrap; }
+.fm-rem-chip--recent { background: rgba(39,174,96,.12);  color: #1a7a42; }  /* < 24h */
+.fm-rem-chip--week   { background: rgba(217,119,6,.12);  color: #b45309; }  /* < 7d  */
+.fm-rem-chip--old    { background: #f1f5f9;              color: #64748b; }  /* older */
+.fm-rem-chip--never  { background: transparent;          color: #cbd5e1; font-style: italic; }
+.fm-rem-chip i { font-size: .7rem; }
+
+/* ---------- Due-table quick filter bar ---------- */
+.fm-quickfilter { display: flex; gap: 10px; align-items: stretch; padding: 10px 12px; background: #f8fafc; border: 1px solid var(--fm-border); border-radius: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.fm-quickfilter .fm-qf-search { flex: 1 1 220px; position: relative; }
+.fm-quickfilter .fm-qf-search i { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #94a3b8; font-size: .85rem; }
+.fm-quickfilter .fm-qf-search input { width: 100%; padding: 8px 10px 8px 30px; border: 1px solid var(--fm-border); border-radius: 6px; font-size: .8rem; background: var(--fm-white); }
+.fm-quickfilter .fm-qf-search input:focus { outline: none; border-color: var(--fm-teal); box-shadow: 0 0 0 2px rgba(13,115,119,.15); }
+.fm-quickfilter select { padding: 8px 10px; border: 1px solid var(--fm-border); border-radius: 6px; font-size: .8rem; background: var(--fm-white); min-width: 150px; cursor: pointer; }
+.fm-quickfilter .fm-qf-count { align-self: center; font-size: .72rem; color: #64748b; padding: 0 8px; font-weight: 600; letter-spacing: .3px; text-transform: uppercase; }
+
+/* ---------- Empty-row state when filter hides everything ---------- */
+.fm-table tbody tr.fm-row-hidden { display: none; }
+.fm-no-match-row td { text-align: center; padding: 24px 12px !important; color: #94a3b8; font-style: italic; }
 
 /* ---------- Checkbox ---------- */
 .fm-th-check { width: 36px; text-align: center !important; }

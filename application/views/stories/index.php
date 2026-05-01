@@ -195,8 +195,87 @@
 </div>
 <div style="display:flex;gap:8px">
     <button class="st-btn st-btn-outline" onclick="ST.toggleBulk()" id="bulkToggleBtn"><i class="fa fa-check-square-o"></i> Bulk Select</button>
-    <button class="st-btn st-btn-primary" onclick="ST.refresh()"><i class="fa fa-refresh"></i> Refresh</button>
+    <button class="st-btn st-btn-primary" onclick="ST.openUpload()"><i class="fa fa-plus-circle"></i> Post Admin Story</button>
+    <button class="st-btn st-btn-outline" onclick="ST.refresh()"><i class="fa fa-refresh"></i> Refresh</button>
 </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Admin Upload Modal — Phase C
+     Posts stories with authorType='admin'. Priority=high pins to
+     top of every parent's Stories row with a red/gold ring.
+     ══════════════════════════════════════════════════════════════ -->
+<div id="adminStoryModal" style="display:none;position:fixed;inset:0;background:rgba(11,31,58,.55);z-index:9000;align-items:center;justify-content:center;padding:16px;">
+    <div style="background:#fff;border-radius:14px;max-width:560px;width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25);">
+        <div style="background:linear-gradient(135deg,#0f1f3a,#1a3358);color:#fff;padding:16px 20px;border-radius:14px 14px 0 0;display:flex;align-items:center;justify-content:space-between;">
+            <h4 style="font-family:'Playfair Display',serif;font-size:17px;margin:0;">
+                <i class="fa fa-bullhorn" style="color:#ffd479;"></i>&nbsp; Post Admin Story
+            </h4>
+            <button type="button" onclick="ST.closeUpload()" style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);color:#fff;width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:14px;">&times;</button>
+        </div>
+        <form id="adminStoryForm" style="padding:18px 20px;" onsubmit="return false;">
+            <div style="margin-bottom:14px;">
+                <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#475569;display:block;margin-bottom:5px;">
+                    Media <span style="color:#dc2626;">*</span>
+                </label>
+                <input type="file" id="asMedia" accept="image/*,video/*" required
+                       style="width:100%;padding:9px;border:1.5px dashed #cbd5e1;border-radius:8px;background:#f8fafc;cursor:pointer;">
+                <div style="font-size:11px;color:#64748b;margin-top:4px;">
+                    Image ≤ 10 MB · Video ≤ 50 MB
+                </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+                <div>
+                    <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#475569;display:block;margin-bottom:5px;">
+                        Type <span style="color:#dc2626;">*</span>
+                    </label>
+                    <select id="asType" required style="width:100%;padding:10px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:14px;">
+                        <option value="image">Image</option>
+                        <option value="video">Video</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#475569;display:block;margin-bottom:5px;">
+                        Priority <span style="color:#dc2626;">*</span>
+                    </label>
+                    <select id="asPriority" required style="width:100%;padding:10px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:14px;">
+                        <option value="normal">Normal</option>
+                        <option value="high">High (pin to top)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div style="margin-bottom:14px;">
+                <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#475569;display:block;margin-bottom:5px;">
+                    Caption <span style="color:#94a3b8;font-weight:500;">(optional, ≤ 500 chars)</span>
+                </label>
+                <textarea id="asCaption" maxlength="500" rows="3" placeholder="Brief message for parents…"
+                          style="width:100%;padding:10px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:14px;font-family:inherit;resize:vertical;"></textarea>
+            </div>
+
+            <!-- Progress -->
+            <div id="asProgressWrap" style="display:none;margin-bottom:14px;">
+                <div style="font-size:12px;color:#475569;margin-bottom:5px;">
+                    Uploading <span id="asProgressPct">0</span>%
+                </div>
+                <div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;">
+                    <div id="asProgressBar" style="height:100%;background:linear-gradient(90deg,#0f766e,#14b8a6);width:0%;transition:width .2s;"></div>
+                </div>
+            </div>
+
+            <div style="display:flex;gap:10px;justify-content:flex-end;padding-top:8px;border-top:1px solid #e2e8f0;">
+                <button type="button" onclick="ST.closeUpload()"
+                        style="padding:10px 20px;border:1.5px solid #cbd5e1;background:#fff;color:#475569;border-radius:8px;font-weight:700;cursor:pointer;">
+                    Cancel
+                </button>
+                <button type="submit" id="asSubmitBtn" onclick="ST.submitUpload()"
+                        style="padding:10px 22px;background:linear-gradient(135deg,#0f766e,#0d5a55);color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(15,118,110,.25);">
+                    <i class="fa fa-paper-plane"></i> Publish Story
+                </button>
+            </div>
+        </form>
+    </div>
 </div>
 
 <!-- Tabs -->
@@ -344,6 +423,11 @@
 <!-- Chart.js CDN -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 
+<!-- jQuery — footer loads it too, but the inline script below runs
+     at parse time (before the footer), so we need $ available here.
+     Loading twice is a no-op; jQuery is idempotent. -->
+<script src="<?= base_url() ?>tools/bower_components/jquery/dist/jquery.min.js"></script>
+
 <script>
 var ST = ST || {};
 ST.BASE = '<?= base_url() ?>';
@@ -357,6 +441,87 @@ ST.teachers = [];
 ST.selected = {};
 ST.bulkMode = false;
 ST.charts = {};
+
+// ══════════════════════════════════════════════════════════════════
+// Phase C — Admin Upload
+// ══════════════════════════════════════════════════════════════════
+ST.openUpload = function() {
+    document.getElementById('adminStoryForm').reset();
+    document.getElementById('asProgressWrap').style.display = 'none';
+    document.getElementById('asProgressBar').style.width = '0%';
+    document.getElementById('asProgressPct').textContent = '0';
+    document.getElementById('asSubmitBtn').disabled = false;
+    document.getElementById('adminStoryModal').style.display = 'flex';
+};
+
+ST.closeUpload = function() {
+    document.getElementById('adminStoryModal').style.display = 'none';
+};
+
+ST.submitUpload = function() {
+    var fileEl  = document.getElementById('asMedia');
+    var typeEl  = document.getElementById('asType');
+    var priEl   = document.getElementById('asPriority');
+    var capEl   = document.getElementById('asCaption');
+    var file    = fileEl.files && fileEl.files[0];
+    if (!file) { alert('Please pick a file'); return; }
+
+    // Client-side size guard (server enforces too)
+    var type = typeEl.value;
+    var maxBytes = type === 'image' ? 10 * 1024 * 1024 : 50 * 1024 * 1024;
+    if (file.size > maxBytes) {
+        var maxMb = maxBytes / (1024 * 1024);
+        alert(type + ' must be ≤ ' + maxMb + ' MB.'); return;
+    }
+
+    var fd = new FormData();
+    fd.append(ST.CSRF.name, ST.CSRF.token);
+    fd.append('media',    file);
+    fd.append('type',     type);
+    fd.append('priority', priEl.value);
+    fd.append('caption',  capEl.value.trim());
+
+    var btn  = document.getElementById('asSubmitBtn');
+    var wrap = document.getElementById('asProgressWrap');
+    var bar  = document.getElementById('asProgressBar');
+    var pct  = document.getElementById('asProgressPct');
+    btn.disabled = true;
+    wrap.style.display = 'block';
+
+    // Use XMLHttpRequest for upload progress (fetch doesn't expose it)
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', ST.BASE + 'stories/upload_story', true);
+    xhr.upload.onprogress = function(e) {
+        if (e.lengthComputable) {
+            var p = Math.round((e.loaded / e.total) * 100);
+            bar.style.width = p + '%';
+            pct.textContent = p;
+        }
+    };
+    xhr.onload = function() {
+        btn.disabled = false;
+        var resp;
+        try { resp = JSON.parse(xhr.responseText); } catch (_) {
+            alert('Unexpected server response');
+            return;
+        }
+        // Rotate CSRF (CI refreshes on every POST)
+        if (resp && resp.csrf_hash) ST.CSRF.token = resp.csrf_hash;
+        if (resp && resp[ST.CSRF.name]) ST.CSRF.token = resp[ST.CSRF.name];
+        if (xhr.status >= 200 && xhr.status < 300 && resp.status === 'success') {
+            ST.closeUpload();
+            if (typeof ST.refresh === 'function') ST.refresh();
+            alert(resp.message || 'Story published.');
+        } else {
+            alert((resp && resp.message) || 'Upload failed.');
+        }
+    };
+    xhr.onerror = function() {
+        btn.disabled = false;
+        alert('Network error during upload.');
+    };
+    xhr.send(fd);
+};
 
 // ── Helpers ─────────────────────────────────────────────────────
 

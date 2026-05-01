@@ -250,6 +250,7 @@ class Communication extends MY_Controller
                     if (is_array($docs)) {
                         $schoolPrefix = $this->school_id . '_';
                         foreach ($docs as $d) {
+                            $d = $d['data'] ?? $d;
                             $rawId = (string) ($d['id'] ?? '');
                             $trimmed = (strpos($rawId, $schoolPrefix) === 0)
                                 ? substr($rawId, strlen($schoolPrefix))
@@ -314,8 +315,9 @@ class Communication extends MY_Controller
             if (is_array($fsNotices)) {
                 $recent = [];
                 foreach ($fsNotices as $doc) {
+                    $d = $doc['data'] ?? $doc;
                     $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $rawId = (string) ($doc['id'] ?? '');
+                    $rawId = (string) ($d['id'] ?? '');
                     $prefix = $this->school_id . '_';
                     $d['id'] = (strpos($rawId, $prefix) === 0)
                         ? substr($rawId, strlen($prefix))
@@ -966,9 +968,10 @@ class Communication extends MY_Controller
             if (is_array($adminDocs)) {
                 $prefix = $this->school_id . '_';
                 foreach ($adminDocs as $doc) {
+                    $d = $doc['data'] ?? $doc;
                     if (count($results) >= $maxResults) break;
                     $a = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $rawId = (string) ($doc['id'] ?? '');
+                    $rawId = (string) ($d['id'] ?? '');
                     $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
                     if ($id === $this->admin_id) continue;
                     $name = $a['Name'] ?? $a['name'] ?? '';
@@ -986,9 +989,10 @@ class Communication extends MY_Controller
                 if (is_array($staffDocs)) {
                     $prefix = $this->school_id . '_';
                     foreach ($staffDocs as $doc) {
+                        $d = $doc['data'] ?? $doc;
                         if (count($results) >= $maxResults) break;
                         $t = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                        $rawId = (string) ($doc['id'] ?? '');
+                        $rawId = (string) ($d['id'] ?? '');
                         $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
                         if ($id === $this->admin_id) continue;
                         $name = $t['Name'] ?? $t['name'] ?? '';
@@ -1005,13 +1009,14 @@ class Communication extends MY_Controller
             try {
                 $studentDocs = $this->fs->schoolWhere('students', [['status', '==', 'Active']]);
                 foreach ($studentDocs as $doc) {
+                    $d = $doc['data'] ?? $doc;
                     if (count($results) >= $maxResults) break;
                     $s = $doc['data'];
                     // Firestore student doc IDs are stored as `{schoolId}_{studentUserId}`.
                     // Downstream code (create_conversation → fs->getEntity) re-prepends
                     // the schoolId, so we MUST strip it here or the lookup double-prefixes
                     // and 400s with "Recipient not found.".
-                    $rawId = $doc['id'];
+                    $rawId = $d['id'];
                     $prefix = $this->school_id . '_';
                     $sid = (strpos($rawId, $prefix) === 0)
                         ? substr($rawId, strlen($prefix))
@@ -1057,8 +1062,9 @@ class Communication extends MY_Controller
             if (is_array($fsDocs)) {
                 $prefix = $this->school_id . '_';
                 foreach ($fsDocs as $doc) {
+                    $d = $doc['data'] ?? $doc;
                     $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
-                    $rawId = (string) ($doc['id'] ?? '');
+                    $rawId = (string) ($d['id'] ?? '');
                     $r['id'] = (strpos($rawId, $prefix) === 0)
                         ? substr($rawId, strlen($prefix))
                         : $rawId;
@@ -1252,8 +1258,9 @@ class Communication extends MY_Controller
             if (is_array($fsDocs)) {
                 $prefix = $this->school_id . '_';
                 foreach ($fsDocs as $doc) {
+                    $d = $doc['data'] ?? $doc;
                     $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
-                    $rawId = (string) ($doc['id'] ?? '');
+                    $rawId = (string) ($d['id'] ?? '');
                     $r['id'] = (strpos($rawId, $prefix) === 0)
                         ? substr($rawId, strlen($prefix))
                         : $rawId;
@@ -2067,8 +2074,9 @@ class Communication extends MY_Controller
                 $studentDocs = $this->fs->schoolWhere('students', [['status', '==', 'Active']]);
                 $prefix = $this->school_id . '_';
                 foreach ($studentDocs as $doc) {
+                    $d = $doc['data'] ?? $doc;
                     $s = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $rawId = (string) ($doc['id'] ?? '');
+                    $rawId = (string) ($d['id'] ?? '');
                     $sid = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
                     $recipients[] = ['id' => $sid, 'name' => (string) ($s['Name'] ?? $s['name'] ?? $sid), 'type' => 'student'];
                 }
@@ -2080,8 +2088,9 @@ class Communication extends MY_Controller
                 $staffDocs = $this->fs->schoolWhere('staff', []);
                 $prefix = $this->school_id . '_';
                 foreach ($staffDocs as $doc) {
+                    $d = $doc['data'] ?? $doc;
                     $t = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $rawId = (string) ($doc['id'] ?? '');
+                    $rawId = (string) ($d['id'] ?? '');
                     $tid = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
                     $recipients[] = ['id' => $tid, 'name' => $t['Name'] ?? $t['name'] ?? $tid, 'type' => 'teacher'];
                 }
@@ -2246,8 +2255,9 @@ class Communication extends MY_Controller
             if (!is_array($rows)) return [];
             $out = [];
             foreach ($rows as $row) {
+                $d = $row['data'] ?? $row;
                 $data = $row['data'] ?? [];
-                $id   = $data['id'] ?? ($row['id'] ?? '');
+                $id   = $data['id'] ?? ($d['id'] ?? '');
                 if ($id === '') continue;
                 // Strip schoolId prefix from doc id if it leaked through
                 if (strpos($id, $this->school_id . '_') === 0) {

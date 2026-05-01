@@ -1,0 +1,53 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /Grader/school/
+
+    # ── Force HTTPS redirect ──────────────────────────────────────────
+    # Uncomment the 2 lines below once SSL certificate is installed.
+    # Handles both direct HTTP and load-balancer/proxy forwarded requests.
+    # RewriteCond %{HTTPS} !=on [OR]
+    # RewriteCond %{HTTP:X-Forwarded-Proto} =http
+    # RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+    # Redirect Trailing Slashes...
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.+)/$ /$1 [L,R=301]
+
+    # Remove index.php from URL
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ index.php/$1 [L]
+</IfModule>
+
+# ── Security headers (Apache-level) ─────────────────────────────────
+# These supplement the PHP-level headers in MY_Controller::_send_security_headers()
+<IfModule mod_headers.c>
+    # HSTS — Uncomment once HTTPS is confirmed working for at least 24 hours.
+    # Starts at 1 day (86400s). After testing, increase to 1 year (31536000).
+    # Header always set Strict-Transport-Security "max-age=86400; includeSubDomains" env=HTTPS
+
+    # Prevent MIME-type sniffing
+    Header always set X-Content-Type-Options "nosniff"
+
+    # Clickjacking protection
+    Header always set X-Frame-Options "DENY"
+
+    # Disable server signature leakage
+    Header always unset X-Powered-By
+    Header always unset Server
+</IfModule>
+
+# ── Disable directory listing ────────────────────────────────────────
+Options -Indexes
+
+# ── Block access to sensitive files ──────────────────────────────────
+<FilesMatch "\.(env|md|json|log|yml|yaml|xml|ini|bak|sql|sh)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order deny,allow
+        Deny from all
+    </IfModule>
+</FilesMatch>
+

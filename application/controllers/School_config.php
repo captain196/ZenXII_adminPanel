@@ -33,6 +33,7 @@ class School_config extends MY_Controller
     {
         parent::__construct();
         require_permission('Configuration');
+        // Firestore_service ($this->fs) already loaded and initialized by MY_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -42,7 +43,9 @@ class School_config extends MY_Controller
     {
         $this->_require_role(self::ADMIN_ROLES, 'school_config_index');
         $this->load->view('include/header');
-        $this->load->view('school_config/index');
+        $this->load->view('school_config/index', [
+            'session_year' => $this->session_year,
+        ]);
         $this->load->view('include/footer');
     }
 
@@ -56,81 +59,64 @@ class School_config extends MY_Controller
         $school    = $this->school_name;
         $school_id = $this->school_id;
 
-        $profile  = $this->firebase->get("Schools/{$school}/Config/Profile") ?? [];
-        $board    = $this->firebase->get("Schools/{$school}/Config/Board")   ?? [];
-        $classes  = $this->firebase->get("Schools/{$school}/Config/Classes") ?? [];
-        $streams  = $this->firebase->get("Schools/{$school}/Config/Streams") ?? [];
-        $sessions = $this->firebase->get("Schools/{$school}/Sessions")       ?? [];
-        $activeSess = $this->firebase->get("Schools/{$school}/Config/ActiveSession") ?? $this->session_year;
+        // ── Read school doc from Firestore (single read for all config) ──
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        if (!is_array($fsSchool)) $fsSchool = [];
 
-        // ── Fallback: populate from onboarding / canonical data ──────────
-        // Onboarding writes to System/Schools/{school_id}/profile with
-        // lowercase keys (school_name, city, street, email, phone, logo_url).
-        // save_profile dual-writes to the same path with Title Case keys
-        // (School Name, City, Address, etc.).
-        // We check BOTH key styles so data is found regardless of source.
-        if (!is_array($profile)) $profile = [];
-
-        if (empty($profile['display_name'])) {
-            $canonical = $this->firebase->get("System/Schools/{$school}/profile") ?? [];
-            if (!is_array($canonical)) $canonical = [];
-
-            // If the profile sub-node is empty, try the top-level node
-            // (legacy schools may store fields directly under System/Schools/{school})
-            if (empty($canonical)) {
-                $topLevel = $this->firebase->get("System/Schools/{$school}") ?? [];
-                if (is_array($topLevel)) $canonical = $topLevel;
-            }
-
-            if (!empty($canonical)) {
-                // Map from ALL possible source key formats to config field names.
-                // Onboarding uses lowercase: school_name, city, street, email, phone, logo_url
-                // save_profile dual-write uses Title Case: School Name, City, Address, etc.
-                // Legacy schools may use either format.
-                $fieldMap = [
-                    // Onboarding lowercase keys
-                    'school_name'        => 'display_name',
-                    'name'               => 'display_name',   // onboarding also writes 'name'
-                    'city'               => 'city',
-                    'street'             => 'address',         // onboarding stores street, config expects address
-                    'email'              => 'email',
-                    'phone'              => 'phone',
-                    'logo_url'           => 'logo_url',
-                    // Title Case keys (from save_profile dual-write or legacy)
-                    'School Name'        => 'display_name',
-                    'City'               => 'city',
-                    'Address'            => 'address',
-                    'Email'              => 'email',
-                    'Phone Number'       => 'phone',
-                    'Logo'               => 'logo_url',
-                    'State'              => 'state',
-                    'Pincode'            => 'pincode',
-                    'Website'            => 'website',
-                    'School Principal'   => 'principal_name',
-                    'Affiliated To'      => 'affiliation_board',
-                    'Affiliation Number' => 'affiliation_no',
-                    'Mobile Number'      => 'phone',
-                ];
-                foreach ($fieldMap as $srcKey => $destKey) {
-                    if (empty($profile[$destKey]) && !empty($canonical[$srcKey])) {
-                        $profile[$destKey] = $canonical[$srcKey];
-                    }
-                }
-            }
+        // Auto-sync: if Firestore school doc has no name but the session has
+        // one (from RTDB/login), backfill it so apps can read it.
+        if (empty($fsSchool['name']) && !empty($this->school_display_name)) {
+            $this->fs->saveSchool([
+                'display_name' => $this->school_display_name,
+            ]);
+            $fsSchool['name'] = $this->school_display_name;
         }
+
+        // Map Firestore fields to config field names
+        $profile = [
+            'display_name'     => $fsSchool['name'] ?? '',
+            'address'          => $fsSchool['address'] ?? '',
+            'city'             => $fsSchool['city'] ?? '',
+            'state'            => $fsSchool['state'] ?? '',
+            'phone'            => $fsSchool['phone'] ?? '',
+            'email'            => $fsSchool['email'] ?? '',
+            'logo_url'         => $fsSchool['logoUrl'] ?? '',
+            'principal_name'   => $fsSchool['principal'] ?? '',
+            'affiliation_board'=> $fsSchool['affiliationBoard'] ?? $fsSchool['board'] ?? '',
+            'affiliation_no'   => $fsSchool['affiliationNo'] ?? '',
+            'established_year' => $fsSchool['establishedYear'] ?? '',
+            'website'          => $fsSchool['website'] ?? '',
+            'pincode'          => $fsSchool['pincode'] ?? '',
+        ];
+
+        $board    = (is_array($fsSchool['board_config'] ?? null)) ? $fsSchool['board_config'] : [];
+        $classes  = (is_array($fsSchool['classes'] ?? null))      ? $fsSchool['classes']      : [];
+        $streams  = (is_array($fsSchool['streams'] ?? null))      ? $fsSchool['streams']      : [];
+        $sessions = (is_array($fsSchool['sessions'] ?? null))     ? $fsSchool['sessions']     : [];
+        $activeSess = !empty($fsSchool['currentSession'])
+                        ? $fsSchool['currentSession']
+                        : $this->session_year;
 
         // Normalise classes to plain array, filter soft-deleted for UI
         $classes = is_array($classes) ? array_values($classes) : [];
 
-        // If Config/Classes is empty, enumerate live classes from Firebase so that
-        // schools with existing data (before School_config was introduced) can still
-        // use the Sections and Subjects tabs without manually seeding the class list.
+        // If classes list is empty, enumerate from Firestore sections collection
+        // so schools with existing data can still use the Sections and Subjects tabs.
         if (empty($classes)) {
-            $sessionRoot = $this->firebase->shallow_get("Schools/{$school}/{$this->session_year}");
-            $order       = 0;
-            foreach ($sessionRoot as $nodeKey) {
-                if (strpos($nodeKey, 'Class ') !== 0) continue;
-                $raw     = trim(str_replace('Class ', '', $nodeKey)); // "9th", "LKG", "Nursery"
+            $fsSections = $this->fs->schoolWhere('sections', []);
+            $classNodes = [];
+            if (is_array($fsSections)) {
+                foreach ($fsSections as $doc) {
+                    $d = $doc['data'] ?? $doc;
+                    $cn = $d['className'] ?? '';
+                    if ($cn !== '' && strpos($cn, 'Class ') === 0) {
+                        $classNodes[$cn] = true;
+                    }
+                }
+            }
+            $order = 0;
+            foreach (array_keys($classNodes) as $nodeKey) {
+                $raw     = trim(str_replace('Class ', '', $nodeKey));
                 $lower   = strtolower($raw);
                 $isFound = in_array($lower, ['nursery', 'lkg', 'ukg', 'playgroup'], true);
                 $key     = $isFound ? strtoupper($raw) : (string) (int) preg_replace('/\D/', '', $raw);
@@ -151,23 +137,47 @@ class School_config extends MY_Controller
             ? array_values(array_filter($sessions, 'is_string'))
             : [];
 
+        // Auto-seed sessions list with active session if missing, so the
+        // Sessions tab never appears blank when currentSession is set.
+        if (empty($sessions) && !empty($activeSess) && preg_match('/^\d{4}-\d{2}$/', (string) $activeSess)) {
+            $sessions = [(string) $activeSess];
+            $this->fs->update('schools', $this->fs->schoolId(), [
+                'sessions'  => $sessions,
+                'updatedAt' => date('c'),
+            ]);
+        } elseif (!empty($activeSess) && preg_match('/^\d{4}-\d{2}$/', (string) $activeSess)
+                  && !in_array((string) $activeSess, $sessions, true)) {
+            // Active session exists but not in list — add and persist.
+            $sessions[] = (string) $activeSess;
+            sort($sessions);
+            $this->fs->update('schools', $this->fs->schoolId(), [
+                'sessions'  => $sessions,
+                'updatedAt' => date('c'),
+            ]);
+        }
+
         // ── Sync PHP session cache to match Firebase ──────────────────────
         if (!empty($sessions)) {
             $this->session->set_userdata('available_sessions', $sessions);
         }
 
-        // Report card template preference
-        $rcTemplate = $this->firebase->get("Schools/{$school}/Config/ReportCardTemplate");
+        // Report card template from Firestore school doc
+        $rcTemplate = $fsSchool['reportCardTemplate'] ?? null;
         $rcAllowed  = ['classic', 'cbse', 'minimal', 'modern', 'elegant'];
         if (!$rcTemplate || !is_string($rcTemplate) || !in_array($rcTemplate, $rcAllowed, true)) $rcTemplate = 'classic';
+
+        $archivedSess = (is_array($fsSchool['archivedSessions'] ?? null))
+                            ? array_values(array_filter($fsSchool['archivedSessions'], 'is_string'))
+                            : [];
 
         $this->json_success([
             'profile'               => is_array($profile)  ? $profile  : [],
             'board'                 => is_array($board)     ? $board    : [],
             'classes'               => $classes,
-            'streams'               => is_array($streams)   ? $streams  : [],
+            'streams'               => (object) (is_array($streams) ? $streams : []),
             'sessions'              => $sessions,
             'active_session'        => (string) $activeSess,
+            'archived_sessions'     => $archivedSess,
             'firebase_path'         => "Schools/{$school}/Sessions",
             'report_card_template'  => $rcTemplate,
         ]);
@@ -217,40 +227,8 @@ class School_config extends MY_Controller
 
         $data['updated_at'] = date('Y-m-d H:i:s');
 
-        $ok = $this->firebase->update("Schools/{$school}/Config/Profile", $data);
-        if (!$ok) {
-            return $this->json_error('Failed to save profile. Please try again.');
-        }
-
-        // ── Dual-write to System/Schools/{school}/profile (canonical profile) ──
-        // Write BOTH Title Case keys (for legacy readers like manage_school)
-        // AND lowercase keys (matching onboarding format) so all consumers
-        // find the data regardless of which key format they expect.
-        $canonicalMap = [
-            'display_name'     => ['School Name', 'school_name', 'name'],
-            'address'          => ['Address', 'street'],
-            'phone'            => ['Phone Number', 'phone'],
-            'email'            => ['Email', 'email'],
-            'website'          => ['Website'],
-            'principal_name'   => ['School Principal'],
-            'affiliation_board'=> ['Affiliated To'],
-            'affiliation_no'   => ['Affiliation Number'],
-            'city'             => ['City', 'city'],
-            'state'            => ['State'],
-            'pincode'          => ['Pincode'],
-            'logo_url'         => ['Logo', 'logo_url'],
-        ];
-        $canonicalData = [];
-        foreach ($canonicalMap as $configKey => $profileKeys) {
-            if (!empty($data[$configKey])) {
-                foreach ($profileKeys as $pk) {
-                    $canonicalData[$pk] = $data[$configKey];
-                }
-            }
-        }
-        if (!empty($canonicalData)) {
-            $this->firebase->update("System/Schools/{$school}/profile", $canonicalData);
-        }
+        // Firestore (sole write target)
+        $this->fs->saveSchool($data);
 
         log_audit('Configuration', 'save_profile', $school, 'Updated school profile');
 
@@ -301,15 +279,9 @@ class School_config extends MY_Controller
         }
 
         $url = $this->firebase->getDownloadUrl($remotePath);
-        $this->firebase->update("Schools/{$school}/Config/Profile", [
-            'logo_url'        => $url,
-            'logo_updated_at' => date('Y-m-d H:i:s'),
-        ]);
 
-        // Dual-write logo to canonical profile (System/Schools/{school}/profile)
-        $this->firebase->update("System/Schools/{$school}/profile", [
-            'logo_url' => $url,
-        ]);
+        // Firestore (sole write target)
+        $this->fs->saveSchool(['logo_url' => $url, 'logo_updated_at' => date('Y-m-d H:i:s')]);
 
         $this->json_success(['logo_url' => $url, 'message' => 'Logo uploaded successfully.']);
     }
@@ -367,17 +339,8 @@ class School_config extends MY_Controller
 
         $url = $this->firebase->getDownloadUrl($remotePath);
 
-        // Write to Config/Profile
-        $this->firebase->update("Schools/{$school}/Config/Profile", [
-            $type        => $url,
-            'updated_at' => date('Y-m-d H:i:s'),
-        ]);
-
-        // Dual-write to System/Schools canonical path
-        $canonKey = $type === 'holidays_calendar' ? 'Holidays' : 'Academic calendar';
-        $this->firebase->update("System/Schools/{$school}/profile", [
-            $canonKey => $url,
-        ]);
+        // Firestore (sole write target)
+        $this->fs->update('schools', $this->fs->schoolId(), [$type => $url, 'updatedAt' => date('c')]);
 
         $label = $type === 'holidays_calendar' ? 'Holidays Calendar' : 'Academic Calendar';
         $this->json_success(['url' => $url, 'message' => "{$label} uploaded successfully."]);
@@ -440,10 +403,8 @@ class School_config extends MY_Controller
             }
         }
 
-        $ok = $this->firebase->set("Schools/{$school}/Config/Board", $data);
-        if (!$ok) {
-            return $this->json_error('Failed to save board configuration.');
-        }
+        // Firestore (sole write target)
+        $this->fs->update('schools', $this->fs->schoolId(), ['board_config' => $data, 'updatedAt' => date('c')]);
 
         $this->json_success(['message' => 'Board configuration saved.']);
     }
@@ -498,10 +459,8 @@ class School_config extends MY_Controller
             return $this->json_error('No valid classes found in request.');
         }
 
-        $ok = $this->firebase->set("Schools/{$school}/Config/Classes", $clean);
-        if (!$ok) {
-            return $this->json_error('Failed to save class list.');
-        }
+        // Firestore (sole write target)
+        $this->fs->update('schools', $this->fs->schoolId(), ['classes' => $clean, 'updatedAt' => date('c')]);
 
         $this->json_success(['message' => 'Class list saved.', 'count' => count($clean)]);
     }
@@ -524,9 +483,22 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid session format.');
         }
 
-        $classes = $this->firebase->get("Schools/{$school}/Config/Classes") ?? [];
-        if (!is_array($classes) || empty($classes)) {
+        // Read classes from Firestore school doc
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        $classes = (is_array($fsSchool['classes'] ?? null)) ? $fsSchool['classes'] : [];
+        if (empty($classes)) {
             return $this->json_error('No classes configured. Save class list first.');
+        }
+
+        // Pre-fetch existing sections for this session to check which classes already have sections
+        $existingSections = $this->fs->schoolWhere('sections', [['session', '==', $sessionYear]]);
+        $existingClassNodes = [];
+        if (is_array($existingSections)) {
+            foreach ($existingSections as $doc) {
+                $d = $doc['data'] ?? $doc;
+                $cn = $d['className'] ?? '';
+                if ($cn !== '') $existingClassNodes[$cn] = true;
+            }
         }
 
         $created = 0;
@@ -534,26 +506,25 @@ class School_config extends MY_Controller
 
         foreach ($classes as $cls) {
             if (!is_array($cls)) continue;
-            // Skip soft-deleted classes
             if (!empty($cls['deleted'])) continue;
 
-            $key       = $cls['key'] ?? '';
+            $key = $cls['key'] ?? '';
             if ($key === '') continue;
 
             $classNode = $this->_class_node_name($key);
-            $path      = "Schools/{$school}/{$sessionYear}/{$classNode}";
 
-            // Only create if doesn't already exist (avoid overwriting student data)
-            if ($this->firebase->exists($path)) {
+            // If sections already exist for this class in this session, skip
+            if (isset($existingClassNodes[$classNode])) {
                 $skipped++;
                 continue;
             }
 
-            $ok = $this->firebase->set($path, [
+            // Create a default "Section A" in Firestore for this class
+            $this->fs->saveSection($classNode, 'A', [
                 'created_at'  => date('Y-m-d H:i:s'),
-                'created_by'  => 'School_config',
+                'created_by'  => 'School_config::activate_classes',
             ]);
-            if ($ok) $created++;
+            $created++;
         }
 
         $this->json_success([
@@ -577,8 +548,10 @@ class School_config extends MY_Controller
             return $this->json_error('class_key is required.');
         }
 
-        $classes = $this->firebase->get("Schools/{$school}/Config/Classes") ?? [];
-        if (!is_array($classes)) {
+        // Read classes from Firestore school doc
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        $classes = (is_array($fsSchool['classes'] ?? null)) ? $fsSchool['classes'] : [];
+        if (empty($classes)) {
             return $this->json_error('No classes configured.');
         }
 
@@ -597,27 +570,31 @@ class School_config extends MY_Controller
             return $this->json_error('Class not found.');
         }
 
-        // Bug #43 FIX: Check for enrolled students before soft-deleting.
-        // Scan all sections under the class node in the active session.
-        $classNode  = $this->_class_node_name($classKey);
-        $classPath  = "Schools/{$school}/{$this->session_year}/{$classNode}";
-        $sectionKeys = $this->firebase->shallow_get($classPath);
-        if (is_array($sectionKeys)) {
-            foreach ($sectionKeys as $secKey) {
-                if (strpos($secKey, 'Section ') !== 0) continue;
-                $students = $this->firebase->shallow_get("{$classPath}/{$secKey}/Students/List");
-                if (!empty($students)) {
+        // Check for enrolled students before soft-deleting (Firestore only)
+        $classNode = $this->_class_node_name($classKey);
+        $fsSections = $this->fs->schoolWhere('sections', [['className', '==', $classNode]]);
+        if (is_array($fsSections)) {
+            foreach ($fsSections as $secDoc) {
+                $d = $secDoc['data'] ?? $secDoc;
+                $secName = $d['section'] ?? '';
+                if ($secName === '') continue;
+                $sectionKey = "{$classNode}/{$secName}";
+                $stuDocs = $this->fs->schoolWhere('students', [
+                    ['sectionKey', '==', $sectionKey],
+                    ['status', '==', 'Active'],
+                ]);
+                if (!empty($stuDocs)) {
                     return $this->json_error(
-                        "Cannot delete: students are enrolled in {$classNode} / {$secKey}. Transfer or remove students first."
+                        "Cannot delete: students are enrolled in {$classNode} / {$secName}. Transfer or remove students first."
                     );
                 }
             }
         }
 
-        $ok = $this->firebase->set("Schools/{$school}/Config/Classes", array_values($classes));
-        if (!$ok) {
-            return $this->json_error('Failed to update class.');
-        }
+        $cleanClasses = array_values($classes);
+
+        // Firestore (sole write target)
+        $this->fs->update('schools', $this->fs->schoolId(), ['classes' => $cleanClasses, 'updatedAt' => date('c')]);
 
         $this->json_success(['message' => "Class '{$classKey}' soft-deleted. It can be restored later."]);
     }
@@ -636,8 +613,10 @@ class School_config extends MY_Controller
             return $this->json_error('class_key is required.');
         }
 
-        $classes = $this->firebase->get("Schools/{$school}/Config/Classes") ?? [];
-        if (!is_array($classes)) {
+        // Read classes from Firestore school doc
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        $classes = (is_array($fsSchool['classes'] ?? null)) ? $fsSchool['classes'] : [];
+        if (empty($classes)) {
             return $this->json_error('No classes configured.');
         }
 
@@ -656,10 +635,10 @@ class School_config extends MY_Controller
             return $this->json_error('Class not found.');
         }
 
-        $ok = $this->firebase->set("Schools/{$school}/Config/Classes", array_values($classes));
-        if (!$ok) {
-            return $this->json_error('Failed to update class.');
-        }
+        $cleanClasses = array_values($classes);
+
+        // Firestore (sole write target)
+        $this->fs->update('schools', $this->fs->schoolId(), ['classes' => $cleanClasses, 'updatedAt' => date('c')]);
 
         $this->json_success(['message' => "Class '{$classKey}' restored."]);
     }
@@ -681,8 +660,17 @@ class School_config extends MY_Controller
                 'General'  => ['key' => 'General',  'label' => 'General',  'enabled' => true],
             ];
 
-            $existing = $this->firebase->get("Schools/{$school}/Config/Streams") ?? [];
-            if (!is_array($existing)) $existing = [];
+            // Read existing streams from Firestore
+            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            $existing = [];
+            if (is_array($fsSchool) && isset($fsSchool['streams'])) {
+                $raw = $fsSchool['streams'];
+                if (is_array($raw)) {
+                    foreach ($raw as $k => $v) {
+                        $existing[$k] = is_array($v) ? $v : (array) $v;
+                    }
+                }
+            }
 
             $added   = 0;
             $skipped = 0;
@@ -692,14 +680,12 @@ class School_config extends MY_Controller
                     $skipped++;
                     continue;
                 }
-                $ok = $this->firebase->set("Schools/{$school}/Config/Streams/{$key}", $streamData);
-                if ($ok) {
-                    $existing[$key] = $streamData;
-                    $added++;
-                } else {
-                    log_message('error', "seed_streams: failed to write stream [{$key}] for school [{$school}]");
-                }
+                $existing[$key] = $streamData;
+                $added++;
             }
+
+            // Firestore (sole write target)
+            $this->fs->update('schools', $this->fs->schoolId(), ['streams' => $existing, 'updatedAt' => date('c')]);
 
             $this->json_success([
                 'message' => "{$added} stream(s) seeded. {$skipped} already existed.",
@@ -735,11 +721,24 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid session format.');
         }
 
-        $classNode   = $this->_class_node_name($classKey);
-        $sectionKeys = $this->firebase->shallow_get("Schools/{$school}/{$sessionYear}/{$classNode}");
-        $sections    = array_values(array_filter($sectionKeys, function($k) {
-            return strpos($k, 'Section ') === 0;
-        }));
+        $classNode = $this->_class_node_name($classKey);
+        $sections  = [];
+
+        // Read sections from Firestore
+        $fsDocs = $this->fs->schoolWhere('sections', [
+            ['className', '==', $classNode],
+            ['session', '==', $sessionYear],
+        ]);
+        if (is_array($fsDocs) && !empty($fsDocs)) {
+            foreach ($fsDocs as $doc) {
+                // Firestore REST client returns docs as ['id' => ..., 'data' => [...]],
+                // so the section field lives under $doc['data']['section'].
+                $d = $doc['data'] ?? $doc;
+                $sec = $d['section'] ?? '';
+                if ($sec !== '') $sections[] = $sec;
+            }
+            sort($sections);
+        }
 
         $this->json_success(['sections' => $sections, 'class_node' => $classNode]);
     }
@@ -775,14 +774,17 @@ class School_config extends MY_Controller
         $sectionNode = "Section {$sectionLetter}";
         $path        = "Schools/{$school}/{$sessionYear}/{$classNode}/{$sectionNode}";
 
-        if ($this->firebase->exists($path)) {
+        // Check existence in Firestore
+        $fsDocId = $this->fs->sectionDocId($classNode, $sectionLetter);
+        $fsExists = is_array($this->fs->get('sections', $fsDocId));
+        if ($fsExists) {
             return $this->json_error("{$classNode} / {$sectionNode} already exists in {$sessionYear}.");
         }
 
-        $ok = $this->firebase->set($path, ['created_at' => date('Y-m-d H:i:s')]);
-        if (!$ok) {
-            return $this->json_error('Failed to create section.');
-        }
+        $sectionData = ['created_at' => date('Y-m-d H:i:s')];
+
+        // Firestore (sole write target)
+        $this->fs->saveSection($classNode, $sectionLetter, $sectionData);
 
         $this->json_success([
             'message'      => "{$classNode} / {$sectionNode} created.",
@@ -817,21 +819,26 @@ class School_config extends MY_Controller
         $classNode   = $this->_class_node_name($classKey);
         $sectionNode = "Section {$sectionLetter}";
         $path        = "Schools/{$school}/{$sessionYear}/{$classNode}/{$sectionNode}";
+        $fsDocId     = $this->fs->sectionDocId($classNode, $sectionLetter);
 
-        if (!$this->firebase->exists($path)) {
+        // Check existence in Firestore
+        $fsSection = $this->fs->get('sections', $fsDocId);
+        if (!is_array($fsSection)) {
             return $this->json_error('Section not found.');
         }
 
-        // Safety: refuse if students are enrolled
-        $students = $this->firebase->shallow_get("{$path}/Students/List");
-        if (!empty($students)) {
+        // Safety: refuse if students are enrolled (Firestore only)
+        $sectionKey = "{$classNode}/{$sectionNode}";
+        $stuDocs = $this->fs->schoolWhere('students', [
+            ['sectionKey', '==', $sectionKey],
+            ['status', '==', 'Active'],
+        ]);
+        if (!empty($stuDocs)) {
             return $this->json_error('Cannot delete: students are enrolled in this section.');
         }
 
-        $ok = $this->firebase->delete($path);
-        if (!$ok) {
-            return $this->json_error('Failed to delete section.');
-        }
+        // Firestore (sole write target)
+        $this->fs->remove('sections', $fsDocId);
 
         $this->json_success(['message' => "{$classNode} / {$sectionNode} deleted."]);
     }
@@ -854,36 +861,44 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid session format.');
         }
 
-        $classes = $this->firebase->get("Schools/{$school}/Config/Classes") ?? [];
-        if (!is_array($classes)) $classes = [];
+        // Read classes and streams from Firestore school doc
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        if (!is_array($fsSchool)) $fsSchool = [];
+        $classes = (is_array($fsSchool['classes'] ?? null)) ? $fsSchool['classes'] : [];
         $classes = array_values(array_filter($classes, function ($c) {
             return is_array($c) && empty($c['deleted']);
         }));
 
-        // If Config/Classes empty, enumerate from session root
+        // If classes empty, enumerate from Firestore sections collection
         if (empty($classes)) {
-            $sessionRoot = $this->firebase->shallow_get("Schools/{$school}/{$sessionYear}");
-            if (is_array($sessionRoot)) {
-                $order = 0;
-                foreach ($sessionRoot as $nodeKey) {
-                    if (strpos($nodeKey, 'Class ') !== 0) continue;
-                    $raw   = trim(str_replace('Class ', '', $nodeKey));
-                    $lower = strtolower($raw);
-                    $isF   = in_array($lower, ['nursery', 'lkg', 'ukg', 'playgroup'], true);
-                    $key   = $isF ? strtoupper($raw) : (string)(int) preg_replace('/\D/', '', $raw);
-                    if ($key === '' || $key === '0') continue;
-                    $classes[] = [
-                        'key'             => $key,
-                        'label'           => $nodeKey,
-                        'order'           => $order++,
-                        'streams_enabled' => in_array($key, ['11', '12'], true),
-                    ];
+            $fsSectionsAll = $this->fs->schoolWhere('sections', [['session', '==', $sessionYear]]);
+            $classNodes = [];
+            if (is_array($fsSectionsAll)) {
+                foreach ($fsSectionsAll as $doc) {
+                    $d = $doc['data'] ?? $doc;
+                    $cn = $d['className'] ?? '';
+                    if ($cn !== '' && strpos($cn, 'Class ') === 0) {
+                        $classNodes[$cn] = true;
+                    }
                 }
+            }
+            $order = 0;
+            foreach (array_keys($classNodes) as $nodeKey) {
+                $raw   = trim(str_replace('Class ', '', $nodeKey));
+                $lower = strtolower($raw);
+                $isF   = in_array($lower, ['nursery', 'lkg', 'ukg', 'playgroup'], true);
+                $key   = $isF ? strtoupper($raw) : (string)(int) preg_replace('/\D/', '', $raw);
+                if ($key === '' || $key === '0') continue;
+                $classes[] = [
+                    'key'             => $key,
+                    'label'           => $nodeKey,
+                    'order'           => $order++,
+                    'streams_enabled' => in_array($key, ['11', '12'], true),
+                ];
             }
         }
 
-        // Load configured streams for stream-enabled classes
-        $streams = $this->firebase->get("Schools/{$school}/Config/Streams") ?? [];
+        $streams = (is_array($fsSchool['streams'] ?? null)) ? $fsSchool['streams'] : [];
         if (!is_array($streams)) $streams = [];
         $enabledStreams = [];
         foreach ($streams as $sk => $sv) {
@@ -892,44 +907,62 @@ class School_config extends MY_Controller
             }
         }
 
+        // Pre-fetch ALL sections from Firestore for this school+session
+        $fsSections = [];
+        $fsDocs = $this->fs->schoolWhere('sections', [
+            ['session', '==', $sessionYear],
+        ]);
+        if (is_array($fsDocs)) {
+            foreach ($fsDocs as $doc) {
+                $d = $doc['data'] ?? $doc;
+                $cn = $d['className'] ?? '';
+                $sn = $d['section'] ?? '';
+                if ($cn !== '' && $sn !== '') {
+                    $fsSections[$cn][] = $sn;
+                }
+            }
+        }
+
         $result = [];
         foreach ($classes as $cls) {
             $classNode       = $this->_class_node_name($cls['key']);
             $streamsEnabled  = !empty($cls['streams_enabled']);
-            $sectionKeys     = $this->firebase->shallow_get("Schools/{$school}/{$sessionYear}/{$classNode}");
+
+            // Read sections from Firestore
+            $rawSections = $fsSections[$classNode] ?? [];
+
             $sections        = [];
             $streamSections  = []; // { "Science": ["A","B"], "Commerce": ["A"] }
 
-            if (is_array($sectionKeys)) {
-                foreach ($sectionKeys as $k) {
-                    if (strpos($k, 'Section ') !== 0) continue;
+            foreach ($rawSections as $k) {
+                // Normalize: may already be "Section A" or just "A"
+                if (strpos($k, 'Section ') === 0) {
                     $sectionLabel = str_replace('Section ', '', $k);
+                } else {
+                    $sectionLabel = $k;
+                }
 
-                    if ($streamsEnabled && !empty($enabledStreams)) {
-                        // Check if section label starts with a stream name
-                        // e.g. "Science A" → stream=Science, letter=A
-                        $matched = false;
-                        foreach ($enabledStreams as $stm) {
-                            if (strpos($sectionLabel, $stm . ' ') === 0) {
-                                $letter = trim(substr($sectionLabel, strlen($stm)));
-                                if (!isset($streamSections[$stm])) $streamSections[$stm] = [];
-                                $streamSections[$stm][] = $letter;
-                                $matched = true;
-                                break;
-                            }
+                if ($streamsEnabled && !empty($enabledStreams)) {
+                    $matched = false;
+                    foreach ($enabledStreams as $stm) {
+                        if (strpos($sectionLabel, $stm . ' ') === 0) {
+                            $letter = trim(substr($sectionLabel, strlen($stm)));
+                            if (!isset($streamSections[$stm])) $streamSections[$stm] = [];
+                            $streamSections[$stm][] = $letter;
+                            $matched = true;
+                            break;
                         }
-                        // If not matched to any stream, treat as plain section
-                        if (!$matched) {
-                            $sections[] = $sectionLabel;
-                        }
-                    } else {
+                    }
+                    if (!$matched) {
                         $sections[] = $sectionLabel;
                     }
+                } else {
+                    $sections[] = $sectionLabel;
                 }
-                sort($sections);
-                foreach ($streamSections as &$letters) sort($letters);
-                unset($letters);
             }
+            sort($sections);
+            foreach ($streamSections as &$letters) sort($letters);
+            unset($letters);
 
             $entry = [
                 'key'             => $cls['key'],
@@ -988,9 +1021,11 @@ class School_config extends MY_Controller
                 $sectionLabel = trim((string) $sectionLabel);
                 // Validate: either a single letter "A" or "StreamName Letter" like "Science A"
                 if (!preg_match('/^(?:[A-Za-z]+(?: [A-Za-z]+)* )?[A-Z]$/', $sectionLabel)) continue;
-                $path = "Schools/{$school}/{$sessionYear}/{$classNode}/Section {$sectionLabel}";
-                if ($this->firebase->exists($path)) continue;
-                $this->firebase->set($path, ['created_at' => $now]);
+                // Check if section already exists in Firestore
+                $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel);
+                if (is_array($this->fs->get('sections', $fsDocId))) continue;
+                // Firestore (sole write target)
+                $this->fs->saveSection($classNode, $sectionLabel, ['created_at' => $now]);
                 $created++;
             }
 
@@ -998,15 +1033,21 @@ class School_config extends MY_Controller
             foreach (($ch['remove'] ?? []) as $sectionLabel) {
                 $sectionLabel = trim((string) $sectionLabel);
                 if (!preg_match('/^(?:[A-Za-z]+(?: [A-Za-z]+)* )?[A-Z]$/', $sectionLabel)) continue;
-                $path = "Schools/{$school}/{$sessionYear}/{$classNode}/Section {$sectionLabel}";
-                if (!$this->firebase->exists($path)) continue;
-                // Safety: refuse if students enrolled
-                $students = $this->firebase->shallow_get("{$path}/Students/List");
-                if (!empty($students)) {
+                $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel);
+                $fsDoc = $this->fs->get('sections', $fsDocId);
+                if (!is_array($fsDoc)) continue;
+                // Check for enrolled students in Firestore
+                $sectionKey = "{$classNode}/Section {$sectionLabel}";
+                $stuDocs = $this->fs->schoolWhere('students', [
+                    ['sectionKey', '==', $sectionKey],
+                    ['status', '==', 'Active'],
+                ]);
+                if (!empty($stuDocs)) {
                     $skipped[] = "{$classNode} Section {$sectionLabel} (has students)";
                     continue;
                 }
-                $this->firebase->delete($path);
+                // Firestore (sole write target)
+                $this->fs->remove('sections', $fsDocId);
                 $removed++;
             }
         }
@@ -1034,29 +1075,129 @@ class School_config extends MY_Controller
                 return $this->json_error('class_key is required.');
             }
 
-            $numKey  = $this->_numeric_class_key($classKey);
-            $rawData = $this->firebase->get("Schools/{$school}/Subject_list/{$numKey}");
-            if (!is_array($rawData)) $rawData = [];
-
+            $numKey   = $this->_numeric_class_key($classKey);
             $subjects = [];
-            foreach ($rawData as $code => $sub) {
-                if ($code === 'pattern_type') continue;
-                if (is_array($sub)) {
+
+            // Read subjects from Firestore
+            $fsRows = $this->fs->schoolWhere(
+                'subjects',
+                [['classKey', '==', (string) $numKey]]
+            );
+
+            if (!empty($fsRows)) {
+                foreach ($fsRows as $row) {
+                    $d = $row['data'] ?? [];
+                    if (!is_array($d)) continue;
                     $subjects[] = [
-                        'code'     => $code,
-                        'name'     => $sub['subject_name'] ?? $sub['name'] ?? (string) $code,
-                        'category' => $sub['category'] ?? 'Core',
-                        'stream'   => $sub['stream'] ?? 'common',
+                        'code'     => (string) ($d['subjectCode'] ?? $d['id'] ?? ''),
+                        'name'     => (string) ($d['name'] ?? $d['subject_name'] ?? ''),
+                        'category' => (string) ($d['category'] ?? 'Core'),
+                        'stream'   => (string) ($d['stream'] ?? 'common'),
                     ];
                 }
+                usort($subjects, function ($a, $b) {
+                    return strnatcmp($a['code'], $b['code']);
+                });
             }
 
             $this->json_success([
                 'subjects'     => $subjects,
-                'pattern_type' => isset($rawData['pattern_type']) ? (int) $rawData['pattern_type'] : null,
+                'pattern_type' => null,
+                'source'       => 'firestore',
             ]);
         } catch (\Exception $e) {
             log_message('error', 'get_subjects failed: ' . $e->getMessage());
+            $this->json_error('Failed to load subjects: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * GET/POST  /school_config/get_all_subjects
+     * Returns ALL unique subjects across all classes (deduped by name).
+     * Used by the staff form for the "Subjects this teacher can teach" picker.
+     */
+    public function get_all_subjects()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_get_all_subjects');
+
+        try {
+            $school = $this->school_name;
+            $unique = [];
+
+            // 1. Firestore FIRST (primary)
+            $fsRows = $this->fs->schoolWhere('subjects', []);
+            if (!empty($fsRows)) {
+                foreach ($fsRows as $row) {
+                    $d = $row['data'] ?? [];
+                    if (!is_array($d)) continue;
+                    $name = trim((string) ($d['name'] ?? $d['subject_name'] ?? ''));
+                    if ($name === '') continue;
+                    $key = strtolower($name);
+                    if (isset($unique[$key])) continue;
+                    $unique[$key] = [
+                        'code'     => (string) ($d['subjectCode'] ?? $d['id'] ?? $name),
+                        'name'     => $name,
+                        'category' => (string) ($d['category'] ?? 'Core'),
+                    ];
+                }
+            }
+
+            // 2. Also include ALL subjects from the master curriculum catalog
+            // (so staff form shows every possible subject, not just class-assigned ones)
+            $allCurriculumSubjects = [
+                ['name'=>'English','category'=>'Language'],
+                ['name'=>'Hindi','category'=>'Language'],
+                ['name'=>'Sanskrit','category'=>'Language'],
+                ['name'=>'Mathematics','category'=>'Core'],
+                ['name'=>'Science','category'=>'Core'],
+                ['name'=>'Social Science','category'=>'Core'],
+                ['name'=>'Computer Science','category'=>'Core'],
+                ['name'=>'General Knowledge','category'=>'Additional'],
+                ['name'=>'Physical Education','category'=>'Co-curricular'],
+                ['name'=>'Art Education','category'=>'Additional'],
+                ['name'=>'Art & Craft','category'=>'Additional'],
+                ['name'=>'Moral Science','category'=>'Additional'],
+                ['name'=>'Environmental Studies','category'=>'Core'],
+                ['name'=>'Physics','category'=>'Core'],
+                ['name'=>'Chemistry','category'=>'Core'],
+                ['name'=>'Biology','category'=>'Core'],
+                ['name'=>'History','category'=>'Core'],
+                ['name'=>'Geography','category'=>'Core'],
+                ['name'=>'Political Science','category'=>'Core'],
+                ['name'=>'Economics','category'=>'Core'],
+                ['name'=>'Accountancy','category'=>'Core'],
+                ['name'=>'Business Studies','category'=>'Core'],
+                ['name'=>'Computer Applications','category'=>'Elective'],
+                ['name'=>'Information Technology','category'=>'Elective'],
+                ['name'=>'Informatics Practices','category'=>'Elective'],
+                ['name'=>'Home Science','category'=>'Elective'],
+                ['name'=>'Psychology','category'=>'Elective'],
+                ['name'=>'Sociology','category'=>'Elective'],
+                ['name'=>'Fine Arts','category'=>'Elective'],
+                ['name'=>'Music','category'=>'Elective'],
+                ['name'=>'Biotechnology','category'=>'Elective'],
+                ['name'=>'Entrepreneurship','category'=>'Elective'],
+            ];
+            foreach ($allCurriculumSubjects as $s) {
+                $key = strtolower($s['name']);
+                if (!isset($unique[$key])) {
+                    $unique[$key] = [
+                        'code'     => strtoupper(substr(preg_replace('/[^A-Za-z]/', '', $s['name']), 0, 4)),
+                        'name'     => $s['name'],
+                        'category' => $s['category'],
+                    ];
+                }
+            }
+
+            $subjects = array_values($unique);
+            usort($subjects, fn($a, $b) => strcasecmp($a['name'], $b['name']));
+
+            $this->json_success([
+                'subjects' => $subjects,
+                'count'    => count($subjects),
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'get_all_subjects failed: ' . $e->getMessage());
             $this->json_error('Failed to load subjects: ' . $e->getMessage());
         }
     }
@@ -1078,9 +1219,9 @@ class School_config extends MY_Controller
                 return $this->json_error('class_key is required.');
             }
 
-            // 1. Read school's board config
-            $board = $this->firebase->get("Schools/{$school}/Config/Board");
-            if (!is_array($board)) $board = [];
+            // 1. Read school's board config from Firestore
+            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            $board = (is_array($fsSchool['board_config'] ?? null)) ? $fsSchool['board_config'] : [];
             $boardType = trim($board['type'] ?? '');
             if ($boardType === '') {
                 return $this->json_error('No board configured. Set your board in the Board tab first.');
@@ -1092,28 +1233,20 @@ class School_config extends MY_Controller
                 return $this->json_error("Cannot determine class range for '{$classKey}'.");
             }
 
-            // 3. Find latest pattern for this board
-            $boardPath   = "Subject Master_List/{$boardType}";
-            $patternKeys = $this->firebase->shallow_get($boardPath);
-
-            if (!is_array($patternKeys) || empty($patternKeys)) {
-                return $this->json_error("No subject patterns found for board: {$boardType}.");
+            // 3. Read subject master list from Firestore global collection
+            // Doc ID convention: {boardType}_{pattern}_{classRange}
+            // Try to find docs for this board type using Firestore query
+            $masterData = null;
+            $pattern = '';
+            $masterDoc = $this->firebase->firestoreGet('subjectMasterList', "{$boardType}_{$classRange}");
+            if (is_array($masterDoc) && !empty($masterDoc)) {
+                $masterData = $masterDoc;
+                $pattern = $masterDoc['pattern'] ?? 'default';
             }
 
-            $patterns = array_filter($patternKeys, function ($k) {
-                return stripos($k, 'Pattern') !== false;
-            });
-            $patterns = array_values($patterns);
-            rsort($patterns); // latest pattern first (e.g. 2026_27 > 2025_26)
-            if (empty($patterns)) {
-                return $this->json_error("No patterns available for board: {$boardType}. Keys found: " . implode(', ', $patternKeys));
-            }
-            $pattern = $patterns[0];
-
-            // 4. Read the class range data
-            $masterData = $this->firebase->get("Subject Master_List/{$boardType}/{$pattern}/{$classRange}");
             if (!is_array($masterData) || empty($masterData)) {
-                return $this->json_error("No subjects found for {$boardType} / {$pattern} / range {$classRange}.");
+                // Master list not yet migrated to Firestore — return helpful error
+                return $this->json_error("No subject master list found in Firestore for {$boardType} / range {$classRange}. Use 'Load Defaults' instead.");
             }
 
             // 5. Detect if this range has stream-specific subjects (11-12)
@@ -1256,17 +1389,24 @@ class School_config extends MY_Controller
 
         $numKey = $this->_numeric_class_key($classKey);
 
-        // Issue 8: Check for duplicate subject name in same class
-        $existing = $this->firebase->get("Schools/{$school}/Subject_list/{$numKey}") ?? [];
-        if (is_array($existing)) {
-            foreach ($existing as $existCode => $existSub) {
-                if ($existCode === 'pattern_type') continue;
-                $existName = $existSub['subject_name'] ?? $existSub['name'] ?? '';
-                if (is_array($existSub) && $existName !== '') {
-                    if (strtolower(trim($existName)) === strtolower($name) && $existCode !== $code) {
-                        return $this->json_error("Subject '{$name}' already exists in this class.");
-                    }
-                }
+        // Duplicate-subject guard (Firestore only).
+        // Reads the row's data payload (`$row['data']`), not the row wrapper —
+        // the earlier version looked at the wrapper and silently never found
+        // any duplicates. Handles both the canonical camelCase shape and the
+        // legacy snake_case one for rows written before the shape was unified.
+        $existingFs = $this->fs->schoolWhere('subjects', [['classKey', '==', (string) $numKey]]);
+        $existing = [];
+        if (is_array($existingFs)) {
+            foreach ($existingFs as $row) {
+                $d = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+                $c = (string) ($d['subjectCode'] ?? $d['subject_code'] ?? $d['code'] ?? '');
+                if ($c !== '') $existing[$c] = $d;
+            }
+        }
+        foreach ($existing as $existCode => $existSub) {
+            $existName = (string) ($existSub['name'] ?? $existSub['subject_name'] ?? '');
+            if ($existName !== '' && strtolower(trim($existName)) === strtolower($name) && $existCode !== $code) {
+                return $this->json_error("Subject '{$name}' already exists in this class.");
             }
         }
 
@@ -1288,21 +1428,15 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid subject code.');
         }
 
-        $subjectData = [
-            'subject_name' => $name,
-            'name'         => $name,
-            'category'     => $category,
-            'subject_code' => $code,
-        ];
-
-        if ($stream !== 'common') {
-            $subjectData['stream'] = $stream;
-        }
-
-        $ok = $this->firebase->set("Schools/{$school}/Subject_list/{$numKey}/{$code}", $subjectData);
-        if (!$ok) {
-            return $this->json_error('Failed to save subject.');
-        }
+        // Firestore (sole write target). Canonical camelCase shape; readers
+        // in this controller and the Subjects/Staff modules all use these field names.
+        $this->fs->setEntity('subjects', "{$numKey}_{$code}", [
+            'classKey'    => (string) $numKey,
+            'subjectCode' => $code,
+            'name'        => $name,
+            'category'    => $category,
+            'stream'      => $stream,
+        ]);
 
         $this->json_success(['message' => "Subject '{$name}' saved.", 'code' => $code]);
     }
@@ -1326,10 +1460,8 @@ class School_config extends MY_Controller
         }
 
         $numKey = $this->_numeric_class_key($classKey);
-        $ok     = $this->firebase->delete("Schools/{$school}/Subject_list/{$numKey}", $code);
-        if (!$ok) {
-            return $this->json_error('Failed to delete subject.');
-        }
+        // Firestore (sole write target)
+        $this->fs->removeEntity('subjects', "{$numKey}_{$code}");
 
         $this->json_success(['message' => 'Subject deleted.']);
     }
@@ -1575,8 +1707,17 @@ class School_config extends MY_Controller
         }
 
         try {
-            // Replace entire subject list for this class
-            $this->firebase->set("Schools/{$school}/Subject_list/{$numKey}", $subjectMap);
+            // Firestore (sole write target)
+            foreach ($subjectMap as $code => $entry) {
+                $this->fs->setEntity('subjects', "{$numKey}_{$code}", [
+                    'classKey'    => $numKey,
+                    'subjectCode' => $code,
+                    'name'        => $entry['name'] ?? $entry['subject_name'] ?? '',
+                    'category'    => $entry['category'] ?? 'Core',
+                    'stream'      => $entry['stream'] ?? 'common',
+                ]);
+            }
+
             $this->json_success([
                 'message' => count($subjectMap) . ' subjects saved for class ' . $classKey . '.',
                 'count'   => count($subjectMap),
@@ -1595,7 +1736,8 @@ class School_config extends MY_Controller
         $school    = $this->school_name;
         $streamKey = trim((string) $this->input->post('stream_key', TRUE));
         $label     = trim((string) $this->input->post('label',      TRUE));
-        $enabled   = (bool) $this->input->post('enabled');
+        $rawEnabled = $this->input->post('enabled');
+        $enabled   = ($rawEnabled === true || $rawEnabled === '1' || $rawEnabled === 'true');
 
         if ($streamKey === '' || $label === '') {
             return $this->json_error('stream_key and label are required.');
@@ -1605,17 +1747,35 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid stream key. Use letters, digits, underscores only.');
         }
 
-        $ok = $this->firebase->set("Schools/{$school}/Config/Streams/{$streamKey}", [
-            'key'     => $streamKey,
-            'label'   => $label,
-            'enabled' => $enabled,
-        ]);
+        try {
+            $streamData = [
+                'key'     => $streamKey,
+                'label'   => $label,
+                'enabled' => $enabled,
+            ];
 
-        if (!$ok) {
-            return $this->json_error('Failed to save stream.');
+            // Read current streams from Firestore
+            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            $allStreams = [];
+            if (is_array($fsSchool) && isset($fsSchool['streams'])) {
+                $raw = $fsSchool['streams'];
+                if (is_array($raw)) {
+                    foreach ($raw as $k => $v) {
+                        $allStreams[$k] = is_array($v) ? $v : (array) $v;
+                    }
+                }
+            }
+
+            $allStreams[$streamKey] = $streamData;
+
+            // Firestore (sole write target)
+            $this->fs->update('schools', $this->fs->schoolId(), ['streams' => $allStreams, 'updatedAt' => date('c')]);
+
+            $this->json_success(['message' => "Stream '{$label}' saved.", 'streams' => (object) $allStreams]);
+        } catch (\Throwable $e) {
+            log_message('error', 'save_stream error: ' . $e->getMessage());
+            $this->json_error('Failed to save stream: ' . $e->getMessage());
         }
-
-        $this->json_success(['message' => "Stream '{$label}' saved."]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1631,12 +1791,32 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid stream key.');
         }
 
-        $ok = $this->firebase->delete("Schools/{$school}/Config/Streams", $streamKey);
-        if (!$ok) {
-            return $this->json_error('Failed to delete stream.');
-        }
+        try {
+            // Read streams from Firestore, remove key, write back
+            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            $allStreams = [];
+            if (is_array($fsSchool) && isset($fsSchool['streams'])) {
+                $raw = $fsSchool['streams'];
+                if (is_array($raw)) {
+                    foreach ($raw as $k => $v) {
+                        $allStreams[$k] = is_array($v) ? $v : (array) $v;
+                    }
+                }
+            }
 
-        $this->json_success(['message' => 'Stream deleted.']);
+            unset($allStreams[$streamKey]);
+
+            // Firestore (sole write target)
+            $this->fs->update('schools', $this->fs->schoolId(), [
+                'streams'   => $allStreams,
+                'updatedAt' => date('c'),
+            ]);
+
+            $this->json_success(['message' => 'Stream deleted.']);
+        } catch (\Throwable $e) {
+            log_message('error', 'delete_stream error: ' . $e->getMessage());
+            $this->json_error('Failed to delete stream: ' . $e->getMessage());
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1647,39 +1827,39 @@ class School_config extends MY_Controller
         $this->_require_role(self::ADMIN_ROLES, 'school_config_test_sessions');
         if (!defined('GRADER_DEBUG') || !GRADER_DEBUG) { show_404(); return; }
         $school = $this->school_name;
-        $path   = "Schools/{$school}/Sessions";
 
-        $fromFirebase = $this->firebase->get($path) ?? [];
-        $fromFirebase = is_array($fromFirebase)
-            ? array_values(array_filter($fromFirebase, 'is_string'))
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        if (!is_array($fsSchool)) $fsSchool = [];
+
+        $fromFirestore = (is_array($fsSchool['sessions'] ?? null))
+            ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
             : [];
 
         $fromPhpSession = $this->session->userdata('available_sessions') ?? [];
         $fromPhpSession = is_array($fromPhpSession) ? array_values($fromPhpSession) : [];
 
-        $activeConfig    = $this->firebase->get("Schools/{$school}/Config/ActiveSession");
+        $activeConfig    = $fsSchool['currentSession'] ?? '';
         $sessionYearPhp  = (string) ($this->session->userdata('session') ?? $this->session_year);
 
-        sort($fromFirebase);
-        $fbSorted  = $fromFirebase;
+        sort($fromFirestore);
+        $fsSorted  = $fromFirestore;
         $phpSorted = $fromPhpSession;
         sort($phpSorted);
-        $inSync = ($fbSorted === $phpSorted);
+        $inSync = ($fsSorted === $phpSorted);
 
         $this->json_success([
-            'firebase_path'        => $path,
-            'firebase_sessions'    => $fromFirebase,
+            'firestore_sessions'   => $fromFirestore,
             'php_session_sessions' => $fromPhpSession,
             'in_sync'              => $inSync,
             'divergence'           => [
-                'only_in_firebase'    => array_values(array_diff($fromFirebase,    $fromPhpSession)),
-                'only_in_php_session' => array_values(array_diff($fromPhpSession, $fromFirebase)),
+                'only_in_firestore'   => array_values(array_diff($fromFirestore,   $fromPhpSession)),
+                'only_in_php_session' => array_values(array_diff($fromPhpSession, $fromFirestore)),
             ],
             'current_session_year' => $sessionYearPhp,
-            'active_config_node'   => (string) ($activeConfig ?? ''),
+            'active_session'       => (string) $activeConfig,
             'school_name'          => $school,
             'school_id'            => $this->school_id,
-            'note'                 => 'If firebase_sessions differs from php_session_sessions, call sync_sessions (POST) to reconcile.',
+            'note'                 => 'If firestore_sessions differs from php_session_sessions, call sync_sessions (POST) to reconcile.',
         ]);
     }
 
@@ -1689,31 +1869,62 @@ class School_config extends MY_Controller
     public function sync_sessions()
     {
         $this->_require_role(self::ADMIN_ROLES, 'school_config_sync_sessions');
-        $school = $this->school_name;
-        $path   = "Schools/{$school}/Sessions";
 
-        $fromFirebase = $this->firebase->get($path) ?? [];
-        $sessions = is_array($fromFirebase)
-            ? array_values(array_filter($fromFirebase, 'is_string'))
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        if (!is_array($fsSchool)) $fsSchool = [];
+
+        $sessions = (is_array($fsSchool['sessions'] ?? null))
+            ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
             : [];
+
+        $activeSess = !empty($fsSchool['currentSession'])
+                        ? (string) $fsSchool['currentSession']
+                        : (string) $this->session_year;
+
+        // Auto-seed: if sessions list is empty but we have a valid active
+        // session, seed it. Also ensure active session is always present.
+        $didSeed = false;
+        if (!empty($activeSess) && preg_match('/^\d{4}-\d{2}$/', $activeSess)) {
+            if (empty($sessions)) {
+                $sessions = [$activeSess];
+                $didSeed  = true;
+            } elseif (!in_array($activeSess, $sessions, true)) {
+                $sessions[] = $activeSess;
+                sort($sessions);
+                $didSeed = true;
+            }
+            if ($didSeed) {
+                $this->fs->update('schools', $this->fs->schoolId(), [
+                    'sessions'  => $sessions,
+                    'updatedAt' => date('c'),
+                ]);
+            }
+        }
 
         if (empty($sessions)) {
             $this->json_success([
-                'sessions' => [],
-                'synced'   => false,
-                'message'  => 'Firebase Sessions list is empty. PHP session unchanged. Verify the Firebase path.',
-                'firebase_path' => $path,
+                'sessions'       => [],
+                'active_session' => $activeSess,
+                'synced'         => false,
+                'message'        => 'No sessions configured and no active session detected. Add a session to begin.',
             ]);
             return;
         }
 
         $this->session->set_userdata('available_sessions', $sessions);
 
+        $archivedSess = (is_array($fsSchool['archivedSessions'] ?? null))
+                            ? array_values(array_filter($fsSchool['archivedSessions'], 'is_string'))
+                            : [];
+
         $this->json_success([
-            'sessions'      => $sessions,
-            'synced'        => true,
-            'message'       => 'PHP session synced from Firebase. Header dropdown will update on next render.',
-            'firebase_path' => $path,
+            'sessions'          => $sessions,
+            'active_session'    => $activeSess,
+            'archived_sessions' => $archivedSess,
+            'synced'            => true,
+            'message'           => $didSeed
+                ? "Sessions list seeded with active session {$activeSess}."
+                : 'PHP session synced from Firestore. Header dropdown will update on next render.',
         ]);
     }
 
@@ -1738,8 +1949,7 @@ class School_config extends MY_Controller
     {
         $this->_require_role(self::ADMIN_ROLES, 'school_config_test_profile');
         if (!defined('GRADER_DEBUG') || !GRADER_DEBUG) { show_404(); return; }
-        $school = $this->school_name;
-        $data   = $this->firebase->get("Schools/{$school}/Config/Profile") ?? [];
+        $data = $this->fs->get('schools', $this->fs->schoolId());
         $this->json_success(['data' => is_array($data) ? $data : []]);
     }
 
@@ -1750,9 +1960,9 @@ class School_config extends MY_Controller
     {
         $this->_require_role(self::ADMIN_ROLES, 'school_config_test_classes');
         if (!defined('GRADER_DEBUG') || !GRADER_DEBUG) { show_404(); return; }
-        $school = $this->school_name;
-        $raw    = $this->firebase->get("Schools/{$school}/Config/Classes") ?? [];
-        $data   = is_array($raw) ? array_values($raw) : [];
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        $raw = (is_array($fsSchool['classes'] ?? null)) ? $fsSchool['classes'] : [];
+        $data = array_values($raw);
         $this->json_success(['data' => $data]);
     }
 
@@ -1763,24 +1973,22 @@ class School_config extends MY_Controller
     {
         $this->_require_role(self::ADMIN_ROLES, 'school_config_test_sections');
         if (!defined('GRADER_DEBUG') || !GRADER_DEBUG) { show_404(); return; }
-        $school  = $this->school_name;
         $session = $this->session_year;
 
-        $classKeys = $this->firebase->shallow_get("Schools/{$school}/{$session}") ?? [];
+        $fsDocs = $this->fs->schoolWhere('sections', [['session', '==', $session]]);
         $data = [];
-
-        foreach ($classKeys as $classKey) {
-            if (strpos($classKey, 'Class ') !== 0) continue;
-            $sectionKeys = $this->firebase->shallow_get("Schools/{$school}/{$session}/{$classKey}") ?? [];
-            $sections = [];
-            foreach ($sectionKeys as $sectionKey) {
-                if (strpos($sectionKey, 'Section ') !== 0) continue;
-                $sections[] = $sectionKey;
-            }
-            if (!empty($sections)) {
-                $data[$classKey] = $sections;
+        if (is_array($fsDocs)) {
+            foreach ($fsDocs as $doc) {
+                $d = $doc['data'] ?? $doc;
+                $cn = $d['className'] ?? '';
+                $sn = $d['section'] ?? '';
+                if ($cn !== '' && $sn !== '') {
+                    $data[$cn][] = $sn;
+                }
             }
         }
+        foreach ($data as &$secs) sort($secs);
+        unset($secs);
 
         $this->json_success(['data' => $data, 'session' => $session]);
     }
@@ -1792,9 +2000,17 @@ class School_config extends MY_Controller
     {
         $this->_require_role(self::ADMIN_ROLES, 'school_config_test_subjects');
         if (!defined('GRADER_DEBUG') || !GRADER_DEBUG) { show_404(); return; }
-        $school = $this->school_name;
-        $raw    = $this->firebase->get("Schools/{$school}/Subject_list") ?? [];
-        $this->json_success(['data' => is_array($raw) ? $raw : []]);
+        $fsRows = $this->fs->schoolWhere('subjects', []);
+        $data = [];
+        if (is_array($fsRows)) {
+            foreach ($fsRows as $row) {
+                $d = $row['data'] ?? [];
+                $classKey = $d['classKey'] ?? 'unknown';
+                $code = $d['subjectCode'] ?? $d['id'] ?? '';
+                $data[$classKey][$code] = $d;
+            }
+        }
+        $this->json_success(['data' => $data]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1816,10 +2032,10 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid session: end year must follow start year (e.g. 2025-26).');
         }
 
-        $sessions = $this->firebase->get("Schools/{$school}/Sessions") ?? [];
-        $sessions = is_array($sessions)
-            ? array_values(array_filter($sessions, 'is_string'))
-            : [];
+        // Read sessions from Firestore
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        $sessions = (is_array($fsSchool['sessions'] ?? null)) ? $fsSchool['sessions'] : [];
+        $sessions = array_values(array_filter($sessions, 'is_string'));
 
         if (in_array($session, $sessions, true)) {
             return $this->json_error("Session {$session} already exists.");
@@ -1828,10 +2044,8 @@ class School_config extends MY_Controller
         $sessions[] = $session;
         sort($sessions);
 
-        $ok = $this->firebase->set("Schools/{$school}/Sessions", $sessions);
-        if (!$ok) {
-            return $this->json_error('Failed to save session.');
-        }
+        // Firestore (sole write target)
+        $this->fs->update('schools', $this->fs->schoolId(), ['sessions' => $sessions, 'updatedAt' => date('c')]);
 
         $this->session->set_userdata('available_sessions', $sessions);
 
@@ -1853,19 +2067,16 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid session format.');
         }
 
-        // Must exist in the sessions list
-        $sessions = $this->firebase->get("Schools/{$school}/Sessions") ?? [];
-        $sessions = is_array($sessions)
-            ? array_values(array_filter($sessions, 'is_string'))
-            : [];
+        // Must exist in the sessions list (Firestore only)
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        $sessions = (is_array($fsSchool['sessions'] ?? null)) ? $fsSchool['sessions'] : [];
+        $sessions = array_values(array_filter($sessions, 'is_string'));
         if (!in_array($session, $sessions, true)) {
             return $this->json_error('Session not found. Add it first.');
         }
 
-        $ok = $this->firebase->set("Schools/{$school}/Config/ActiveSession", $session);
-        if (!$ok) {
-            return $this->json_error('Failed to update active session.');
-        }
+        // Firestore (sole write target)
+        $this->fs->update('schools', $this->fs->schoolId(), ['currentSession' => $session, 'updatedAt' => date('c')]);
 
         // ── Issue 2 Fix: Update all 3 PHP session keys ─────────────────
         // These are the same 3 keys that Admin::switch_session() updates,
@@ -1885,6 +2096,559 @@ class School_config extends MY_Controller
         $this->json_success([
             'message'        => "Active session set to {$session}. All modules will now use this session.",
             'active_session' => $session,
+        ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/preview_rollover
+    // Dry-run: shows what rollover would do. No writes.
+    // Inputs: from_session, to_session
+    // ─────────────────────────────────────────────────────────────────────
+    public function preview_rollover()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_preview_rollover');
+
+        $from = trim((string) $this->input->post('from_session', TRUE));
+        $to   = trim((string) $this->input->post('to_session',   TRUE));
+
+        if (!preg_match('/^\d{4}-\d{2}$/', $from) || !preg_match('/^\d{4}-\d{2}$/', $to)) {
+            return $this->json_error('Both from_session and to_session must be in YYYY-YY format.');
+        }
+        if ($from === $to) {
+            return $this->json_error('Source and target sessions must differ.');
+        }
+
+        // Guard: from_session must exist on the school doc. Without this a
+        // typo silently returns a zero-count preview and the user thinks the
+        // source session is empty.
+        $fsSchoolEarly = $this->fs->get('schools', $this->fs->schoolId());
+        $listedEarly = (is_array($fsSchoolEarly['sessions'] ?? null))
+            ? array_values(array_filter($fsSchoolEarly['sessions'], 'is_string'))
+            : [];
+        if (!in_array($from, $listedEarly, true)) {
+            return $this->json_error("Source session '{$from}' is not in the sessions list. Add it first or pick a listed session.");
+        }
+
+        // Source sections
+        $srcSections = $this->fs->schoolWhere('sections', [['session', '==', $from]]);
+        $srcSections = is_array($srcSections) ? $srcSections : [];
+        $sectionList = [];
+        foreach ($srcSections as $row) {
+            $d = $row['data'] ?? [];
+            $sectionList[] = [
+                'className' => (string) ($d['className'] ?? ''),
+                'section'   => (string) ($d['section']   ?? ''),
+            ];
+        }
+
+        // Source students (for promotion preview)
+        $srcStudents = $this->fs->schoolWhere('students', [['session', '==', $from]]);
+        $srcStudents = is_array($srcStudents) ? $srcStudents : [];
+        $byClass = []; $graduating = 0; $active = 0;
+        foreach ($srcStudents as $row) {
+            $d = $row['data'] ?? [];
+            if (($d['status'] ?? 'Active') !== 'Active') continue;
+            $active++;
+            $order = $d['classOrder'] ?? null;
+            $label = $d['className'] ?? 'Unknown';
+            $byClass[$label] = ($byClass[$label] ?? 0) + 1;
+            if ($order === 12) $graduating++;
+        }
+
+        // Target session checks
+        $dstSections = $this->fs->schoolWhere('sections', [['session', '==', $to]]);
+        $dstSections = is_array($dstSections) ? $dstSections : [];
+        $dstStudents = $this->fs->schoolWhere('students', [['session', '==', $to]]);
+        $dstStudents = is_array($dstStudents) ? $dstStudents : [];
+
+        $warnings = [];
+        if (count($dstSections) > 0) $warnings[] = count($dstSections) . ' section(s) already exist in ' . $to . '. Existing sections will be skipped (not overwritten).';
+        if (count($dstStudents) > 0) $warnings[] = count($dstStudents) . ' student(s) already exist in ' . $to . '. Promotion will be skipped for students already in target.';
+
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        $listed = (is_array($fsSchool['sessions'] ?? null))
+                    ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
+                    : [];
+        $targetListed = in_array($to, $listed, true);
+
+        $this->json_success([
+            'from_session'       => $from,
+            'to_session'         => $to,
+            'target_in_list'     => $targetListed,
+            'sections_to_copy'   => count($sectionList),
+            'sections'           => $sectionList,
+            'active_students'    => $active,
+            'students_by_class'  => $byClass,
+            'graduating'         => $graduating,
+            'existing_sections'  => count($dstSections),
+            'existing_students'  => count($dstStudents),
+            'warnings'           => $warnings,
+        ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/rollover_session
+    // Creates target session (if missing), copies section structure from
+    // source, and optionally promotes students (Class N → N+1, Class 12 → Alumni).
+    //
+    // Inputs:
+    //   from_session      (required)
+    //   to_session        (required)
+    //   copy_sections     (1 default)
+    //   promote_students  (0 default)
+    //   set_active        (0 default)
+    // ─────────────────────────────────────────────────────────────────────
+    public function rollover_session()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_rollover_session');
+
+        $from = trim((string) $this->input->post('from_session', TRUE));
+        $to   = trim((string) $this->input->post('to_session',   TRUE));
+        $copySections    = (int) $this->input->post('copy_sections',    TRUE) !== 0; // default on
+        $promoteStudents = (int) $this->input->post('promote_students', TRUE) === 1;
+        $setActive       = (int) $this->input->post('set_active',       TRUE) === 1;
+
+        if (!preg_match('/^\d{4}-\d{2}$/', $from) || !preg_match('/^\d{4}-\d{2}$/', $to)) {
+            return $this->json_error('Both from_session and to_session must be in YYYY-YY format.');
+        }
+        if ($from === $to) {
+            return $this->json_error('Source and target sessions must differ.');
+        }
+
+        // Guard: promoting without copying sections would orphan students into
+        // non-existent target sections. Force-couple the two actions.
+        $coupledNotice = '';
+        if ($promoteStudents && !$copySections) {
+            $copySections = true;
+            $coupledNotice = 'Copy sections was auto-enabled because promotion requires target sections to exist. ';
+        }
+
+        $schoolId = $this->fs->schoolId();
+        $fsSchool = $this->fs->get('schools', $schoolId);
+        if (!is_array($fsSchool)) $fsSchool = [];
+
+        $sessions = (is_array($fsSchool['sessions'] ?? null))
+            ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
+            : [];
+
+        if (!in_array($from, $sessions, true)) {
+            return $this->json_error("Source session '{$from}' is not in the sessions list.");
+        }
+
+        // Ensure target session is in the list
+        if (!in_array($to, $sessions, true)) {
+            $sessions[] = $to;
+            sort($sessions);
+            $this->fs->update('schools', $schoolId, ['sessions' => $sessions, 'updatedAt' => date('c')]);
+        }
+
+        $summary = [
+            'sections_copied'   => 0,
+            'sections_skipped'  => 0,
+            'students_promoted' => 0,
+            'students_graduated'=> 0,
+            'students_skipped'  => 0,
+            'errors'            => [],
+        ];
+
+        // ── Copy sections ──────────────────────────────────────────────
+        if ($copySections) {
+            $srcSections = $this->fs->schoolWhere('sections', [['session', '==', $from]]);
+            $srcSections = is_array($srcSections) ? $srcSections : [];
+
+            // Pre-load existing target section IDs to skip
+            $dstSections = $this->fs->schoolWhere('sections', [['session', '==', $to]]);
+            $existingIds = [];
+            foreach (is_array($dstSections) ? $dstSections : [] as $row) {
+                $id = $row['id'] ?? '';
+                if ($id !== '') $existingIds[$id] = true;
+            }
+
+            foreach ($srcSections as $row) {
+                $d = $row['data'] ?? [];
+                $className = (string) ($d['className'] ?? '');
+                $section   = (string) ($d['section']   ?? '');
+                if ($className === '' || $section === '') { $summary['sections_skipped']++; continue; }
+
+                $newDocId = "{$schoolId}_{$to}_{$className}_{$section}";
+                if (isset($existingIds[$newDocId])) {
+                    $summary['sections_skipped']++;
+                    continue;
+                }
+
+                $newDoc = [
+                    'schoolId'     => $schoolId,
+                    'className'    => $className,
+                    'section'      => $section,
+                    'classOrder'   => $d['classOrder']  ?? null,
+                    'sectionCode'  => $d['sectionCode'] ?? '',
+                    'sectionKey'   => "{$className}/{$section}",
+                    'classTeacher' => '',          // reset; re-assign in new session
+                    'classTeacherId' => '',
+                    'session'      => $to,
+                    'studentCount' => 0,
+                    'updatedAt'    => date('c'),
+                ];
+                try {
+                    $this->fs->set('sections', $newDocId, $newDoc, true);
+                    $summary['sections_copied']++;
+                } catch (\Exception $e) {
+                    $summary['errors'][] = "Section {$className}/{$section}: " . $e->getMessage();
+                }
+            }
+        }
+
+        // ── Promote students ───────────────────────────────────────────
+        if ($promoteStudents) {
+            $srcStudents = $this->fs->schoolWhere('students', [['session', '==', $from]]);
+            $srcStudents = is_array($srcStudents) ? $srcStudents : [];
+
+            foreach ($srcStudents as $row) {
+                $id = $d['id'] ?? '';
+                $d  = $row['data'] ?? [];
+                if ($id === '') { $summary['students_skipped']++; continue; }
+                if (($d['status'] ?? 'Active') !== 'Active') { $summary['students_skipped']++; continue; }
+
+                $order = $d['classOrder'] ?? null;
+
+                // Class 12 → Alumni (keep session, mark graduated)
+                if ($order === 12) {
+                    try {
+                        $this->fs->update('students', $id, [
+                            'status'         => 'Alumni',
+                            'graduatedFrom'  => $from,
+                            'updatedAt'      => date('c'),
+                        ]);
+                        $summary['students_graduated']++;
+                    } catch (\Exception $e) {
+                        $summary['errors'][] = "Student {$id} graduate: " . $e->getMessage();
+                    }
+                    continue;
+                }
+
+                // Numeric classes → increment
+                if (is_numeric($order) && (int)$order >= 1 && (int)$order <= 11) {
+                    $nextNum = (int)$order + 1;
+                    $nextLabel = 'Class ' . $nextNum . (in_array($nextNum, [11,12], true) ? 'th' : $this->_ordinal($nextNum));
+                    try {
+                        $this->fs->update('students', $id, [
+                            'session'      => $to,
+                            'className'    => $nextLabel,
+                            'classOrder'   => $nextNum,
+                            'sectionKey'   => "{$nextLabel}/" . ($d['section'] ?? ''),
+                            'promotedFrom' => $from,
+                            'updatedAt'    => date('c'),
+                        ]);
+                        $summary['students_promoted']++;
+                    } catch (\Exception $e) {
+                        $summary['errors'][] = "Student {$id} promote: " . $e->getMessage();
+                    }
+                    continue;
+                }
+
+                // Foundational (Nursery, LKG, UKG) — advance through that ladder
+                $foundationalNext = [-5 => -4, -4 => -3, -3 => -2, -2 => -1, -1 => 1];
+                $foundationalLabel = [-4 => 'Class Pre-Nursery', -3 => 'Class Nursery', -2 => 'Class LKG', -1 => 'Class UKG', 1 => 'Class 1st'];
+                if (is_numeric($order) && isset($foundationalNext[(int)$order])) {
+                    $nextOrder = $foundationalNext[(int)$order];
+                    $nextLabel = $foundationalLabel[$nextOrder] ?? '';
+                    if ($nextLabel === '') { $summary['students_skipped']++; continue; }
+                    try {
+                        $this->fs->update('students', $id, [
+                            'session'      => $to,
+                            'className'    => $nextLabel,
+                            'classOrder'   => $nextOrder,
+                            'sectionKey'   => "{$nextLabel}/" . ($d['section'] ?? ''),
+                            'promotedFrom' => $from,
+                            'updatedAt'    => date('c'),
+                        ]);
+                        $summary['students_promoted']++;
+                    } catch (\Exception $e) {
+                        $summary['errors'][] = "Student {$id} promote: " . $e->getMessage();
+                    }
+                    continue;
+                }
+
+                $summary['students_skipped']++;
+            }
+        }
+
+        // ── Optionally set target as active ────────────────────────────
+        if ($setActive) {
+            $this->fs->update('schools', $schoolId, ['currentSession' => $to, 'updatedAt' => date('c')]);
+            $this->session->set_userdata([
+                'session'         => $to,
+                'current_session' => $to,
+                'session_year'    => $to,
+            ]);
+            $this->session_year = $to;
+        }
+
+        log_audit('Configuration', 'rollover_session', $to,
+            "Rolled over {$from} → {$to}: " . json_encode($summary));
+
+        $parts = [];
+        if ($summary['sections_copied'])    $parts[] = $summary['sections_copied']    . ' sections copied';
+        if ($summary['students_promoted'])  $parts[] = $summary['students_promoted']  . ' students promoted';
+        if ($summary['students_graduated']) $parts[] = $summary['students_graduated'] . ' graduated to Alumni';
+        $msg = 'Rollover ' . $from . ' → ' . $to . ' complete: ' . (empty($parts) ? 'no changes' : implode(', ', $parts)) . '.';
+        if ($setActive) $msg .= ' Active session is now ' . $to . '.';
+        if ($coupledNotice !== '') $msg = $coupledNotice . $msg;
+
+        $this->json_success([
+            'message'        => $msg,
+            'summary'        => $summary,
+            'sessions'       => $sessions,
+            'active_session' => $setActive ? $to : ($fsSchool['currentSession'] ?? ''),
+        ]);
+    }
+
+    private function _ordinal(int $n): string
+    {
+        if ($n <= 0) return '';
+        $suffix = 'th';
+        $mod100 = $n % 100;
+        if ($mod100 < 11 || $mod100 > 13) {
+            switch ($n % 10) {
+                case 1: $suffix = 'st'; break;
+                case 2: $suffix = 'nd'; break;
+                case 3: $suffix = 'rd'; break;
+            }
+        }
+        return $suffix;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/delete_session
+    // Guard-railed deletion: refuses if any students/sections/staff/attendance
+    // reference this session. Also refuses if it's the currently-active session.
+    // ─────────────────────────────────────────────────────────────────────
+    public function delete_session()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_delete_session');
+
+        $session = trim((string) $this->input->post('session', TRUE));
+        if (!preg_match('/^\d{4}-\d{2}$/', $session)) {
+            return $this->json_error('Invalid session format.');
+        }
+
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        if (!is_array($fsSchool)) $fsSchool = [];
+
+        $sessions = (is_array($fsSchool['sessions'] ?? null))
+            ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
+            : [];
+        $active = (string) ($fsSchool['currentSession'] ?? '');
+
+        if (!in_array($session, $sessions, true)) {
+            return $this->json_error("Session {$session} is not in the sessions list.");
+        }
+        if ($session === $active) {
+            return $this->json_error("Cannot delete the active session. Set a different session as active first.");
+        }
+
+        // ── Guard: refuse if data exists for this session ──────────────
+        $blockers = [];
+        foreach (['students' => 'student(s)', 'sections' => 'section(s)', 'staff' => 'staff record(s)'] as $coll => $label) {
+            try {
+                $rows = $this->fs->schoolWhere($coll, [['session', '==', $session]]);
+                $n = is_array($rows) ? count($rows) : 0;
+                if ($n > 0) $blockers[] = "{$n} {$label}";
+            } catch (\Exception $e) {
+                log_message('error', "delete_session check [{$coll}]: " . $e->getMessage());
+            }
+        }
+        if (!empty($blockers)) {
+            return $this->json_error(
+                "Cannot delete {$session}. It is referenced by: " . implode(', ', $blockers) .
+                '. Move or remove that data first, or use Archive instead.'
+            );
+        }
+
+        // ── Remove from sessions list ──────────────────────────────────
+        $sessions = array_values(array_filter($sessions, fn($s) => $s !== $session));
+        $update = [
+            'sessions'  => $sessions,
+            'updatedAt' => date('c'),
+        ];
+        // If the deleted session was archived, clean that flag too.
+        if (is_array($fsSchool['archivedSessions'] ?? null)) {
+            $arch = array_values(array_filter($fsSchool['archivedSessions'], 'is_string'));
+            $update['archivedSessions'] = array_values(array_filter($arch, fn($s) => $s !== $session));
+        }
+        $this->fs->update('schools', $this->fs->schoolId(), $update);
+        $this->session->set_userdata('available_sessions', $sessions);
+
+        log_audit('Configuration', 'delete_session', $session, "Deleted empty session {$session}");
+
+        $this->json_success([
+            'message'  => "Session {$session} deleted.",
+            'sessions' => $sessions,
+        ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/archive_session
+    // Hides a session from normal dropdowns but keeps all data intact.
+    // Toggle: pass archive=1 to archive, archive=0 to unarchive.
+    // ─────────────────────────────────────────────────────────────────────
+    public function archive_session()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_archive_session');
+
+        $session = trim((string) $this->input->post('session', TRUE));
+        $doArchive = (int) $this->input->post('archive', TRUE) === 1;
+
+        if (!preg_match('/^\d{4}-\d{2}$/', $session)) {
+            return $this->json_error('Invalid session format.');
+        }
+
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        if (!is_array($fsSchool)) $fsSchool = [];
+
+        $sessions = (is_array($fsSchool['sessions'] ?? null))
+            ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
+            : [];
+        $active = (string) ($fsSchool['currentSession'] ?? '');
+
+        if (!in_array($session, $sessions, true)) {
+            return $this->json_error("Session {$session} is not in the sessions list.");
+        }
+        if ($doArchive && $session === $active) {
+            return $this->json_error("Cannot archive the active session. Set a different session as active first.");
+        }
+
+        $archived = (is_array($fsSchool['archivedSessions'] ?? null))
+            ? array_values(array_filter($fsSchool['archivedSessions'], 'is_string'))
+            : [];
+
+        if ($doArchive) {
+            if (!in_array($session, $archived, true)) $archived[] = $session;
+            sort($archived);
+            $msg = "Session {$session} archived. It will be hidden from default dropdowns but data is preserved.";
+        } else {
+            $archived = array_values(array_filter($archived, fn($s) => $s !== $session));
+            $msg = "Session {$session} unarchived.";
+        }
+
+        $this->fs->update('schools', $this->fs->schoolId(), [
+            'archivedSessions' => $archived,
+            'updatedAt'        => date('c'),
+        ]);
+
+        log_audit('Configuration', 'archive_session', $session,
+            $doArchive ? "Archived session {$session}" : "Unarchived session {$session}");
+
+        $this->json_success([
+            'message'           => $msg,
+            'archived_sessions' => $archived,
+            'session'           => $session,
+            'archived'          => $doArchive,
+        ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/session_stats
+    // Returns per-session counts: students, sections, staff. Used by the
+    // Sessions tab to surface activity at a glance (spot empty/phantom sessions).
+    // ─────────────────────────────────────────────────────────────────────
+    public function session_stats()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_session_stats');
+
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        $sessions = (is_array($fsSchool['sessions'] ?? null))
+            ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
+            : [];
+
+        // One read per collection, then group in-memory (fewer round trips).
+        $allStudents = $this->fs->schoolWhere('students', []);
+        $allSections = $this->fs->schoolWhere('sections', []);
+        $allStaff    = $this->fs->schoolWhere('staff',    []);
+
+        $index = [];
+        foreach ($sessions as $s) {
+            $index[$s] = ['session' => $s, 'students' => 0, 'sections' => 0, 'staff' => 0, 'classes' => 0];
+        }
+        $classSet = []; // session => [className => true]
+
+        $bump = function(array $rows, string $key) use (&$index, &$classSet) {
+            foreach ($rows as $row) {
+                $d = $row['data'] ?? $row;
+                $sess = (string) ($d['session'] ?? '');
+                if ($sess === '') continue;
+                if (!isset($index[$sess])) {
+                    $index[$sess] = ['session' => $sess, 'students' => 0, 'sections' => 0, 'staff' => 0, 'classes' => 0];
+                }
+                $index[$sess][$key]++;
+                if ($key === 'sections') {
+                    $cn = (string) ($d['className'] ?? '');
+                    if ($cn !== '') $classSet[$sess][$cn] = true;
+                }
+            }
+        };
+        $bump(is_array($allStudents) ? $allStudents : [], 'students');
+        $bump(is_array($allSections) ? $allSections : [], 'sections');
+        $bump(is_array($allStaff)    ? $allStaff    : [], 'staff');
+
+        foreach ($classSet as $sess => $set) {
+            $index[$sess]['classes'] = count($set);
+        }
+
+        $this->json_success(['stats' => array_values($index)]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/check_sessions
+    // Consistency check: compares sessions[] in school doc vs actual data
+    // found in Firestore collections. Reports orphans and missing entries.
+    // ─────────────────────────────────────────────────────────────────────
+    public function check_sessions()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_check_sessions');
+
+        $fsSchool  = $this->fs->get('schools', $this->fs->schoolId());
+        $listed    = (is_array($fsSchool['sessions'] ?? null))
+                        ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
+                        : [];
+        $active    = (string) ($fsSchool['currentSession'] ?? '');
+
+        // Collect session values found across collections.
+        $found = [];
+        foreach (['students', 'sections', 'staff'] as $coll) {
+            $rows = $this->fs->schoolWhere($coll, []);
+            if (!is_array($rows)) continue;
+            foreach ($rows as $row) {
+                $d = $row['data'] ?? $row;
+                $s = (string) ($d['session'] ?? '');
+                if ($s !== '' && preg_match('/^\d{4}-\d{2}$/', $s)) $found[$s] = true;
+            }
+        }
+        $foundList = array_keys($found);
+        sort($foundList);
+
+        $orphans = array_values(array_diff($foundList, $listed));   // data exists, not in list
+        $empty   = array_values(array_diff($listed, $foundList));   // listed, no data
+        $issues  = [];
+        if ($active !== '' && !in_array($active, $listed, true)) {
+            $issues[] = "Active session '{$active}' is not in sessions list.";
+        }
+        if (!empty($orphans)) {
+            $issues[] = count($orphans) . ' session(s) have data but are missing from list: ' . implode(', ', $orphans);
+        }
+        if (!empty($empty)) {
+            $issues[] = count($empty) . ' session(s) listed but contain no data: ' . implode(', ', $empty);
+        }
+
+        $this->json_success([
+            'listed'   => $listed,
+            'found'    => $foundList,
+            'orphans'  => $orphans,
+            'empty'    => $empty,
+            'active'   => $active,
+            'issues'   => $issues,
+            'healthy'  => empty($issues),
+            'message'  => empty($issues) ? 'All sessions are consistent.' : 'Found ' . count($issues) . ' issue(s).',
         ]);
     }
 
@@ -1944,10 +2708,8 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid template selection.');
         }
 
-        $ok = $this->firebase->set("Schools/{$school}/Config/ReportCardTemplate", $template);
-        if ($ok === false) {
-            return $this->json_error('Failed to save template preference.');
-        }
+        // Firestore (sole write target)
+        $this->fs->update('schools', $this->fs->schoolId(), ['reportCardTemplate' => $template, 'updatedAt' => date('c')]);
 
         $this->json_success(['message' => 'Report card template saved.', 'template' => $template]);
     }
@@ -1963,8 +2725,9 @@ class School_config extends MY_Controller
         $this->_require_role(self::ADMIN_ROLES, 'admission_payment_config');
         $school = $this->school_name;
 
-        $config = $this->firebase->get("Schools/{$school}/Config/AdmissionFee");
-        if (!is_array($config)) $config = [];
+        // Read from Firestore
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        $config = (is_array($fsSchool['admissionFee'] ?? null)) ? $fsSchool['admissionFee'] : [];
 
         $data = [
             'config'       => $config,
@@ -2019,15 +2782,289 @@ class School_config extends MY_Controller
             'updated_by' => $this->admin_name ?? 'admin',
         ];
 
-        $ok = $this->firebase->set("Schools/{$school}/Config/AdmissionFee", $config);
-        if ($ok === false) {
-            return $this->json_error('Failed to save configuration.');
-        }
+        // Firestore (sole write target)
+        $this->fs->update('schools', $this->fs->schoolId(), ['admissionFee' => $config, 'updatedAt' => date('c')]);
 
         log_audit('School Config', 'admission_payment', $school,
             ($enabled ? "Enabled" : "Disabled") . " admission fee: {$currency} {$amount}"
         );
 
         return $this->json_success(['message' => 'Admission payment settings saved.', 'config' => $config]);
+    }
+
+    // =========================================================================
+    //  HEALTH CHECK — Academic Setup Diagnostic
+    // =========================================================================
+
+    /**
+     * GET  /school_config/health_check
+     *
+     * Reads ALL school config data from Firestore and returns a detailed
+     * report with pass/warn/fail status per check.
+     */
+    public function health_check()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_health_check');
+
+        $school    = $this->school_name;
+        $schoolId  = $this->school_id;
+        $session   = $this->session_year;
+        $checks    = [];
+        $pass = 0; $warn = 0; $fail = 0;
+
+        // Helper to add check result
+        $add = function (string $category, string $name, string $status, string $detail, $data = null) use (&$checks, &$pass, &$warn, &$fail) {
+            $checks[] = ['category' => $category, 'check' => $name, 'status' => $status, 'detail' => $detail, 'data' => $data];
+            if ($status === 'PASS') $pass++;
+            elseif ($status === 'WARN') $warn++;
+            else $fail++;
+        };
+
+        // ── 1. SCHOOL IDENTITY ────────────────────────────────────────
+        $add('Identity', 'school_name', $school ? 'PASS' : 'FAIL',
+            $school ? "school_name = {$school}" : 'school_name is empty — session data missing');
+        $add('Identity', 'school_id', $schoolId ? 'PASS' : 'FAIL',
+            $schoolId ? "school_id = {$schoolId}" : 'school_id is empty');
+        $add('Identity', 'session_year', $session ? 'PASS' : 'FAIL',
+            $session ? "session_year = {$session}" : 'session_year is empty');
+        $add('Identity', 'school_code', $this->school_code ? 'PASS' : 'WARN',
+            $this->school_code ? "school_code = {$this->school_code}" : 'school_code is empty (may break app login)');
+        $add('Identity', 'parent_db_key', $this->parent_db_key ? 'PASS' : 'WARN',
+            $this->parent_db_key ? "parent_db_key = {$this->parent_db_key}" : 'parent_db_key is empty');
+
+        // ── 2. FIRESTORE SERVICE ──────────────────────────────────────
+        $fsReady = $this->fs->isReady();
+        $add('Firestore', 'fs_init', $fsReady ? 'PASS' : 'FAIL',
+            $fsReady ? "Firestore_service initialized (schoolId={$this->fs->schoolId()}, session={$this->fs->session()})"
+                     : 'Firestore_service NOT ready — writes will silently fail');
+
+        // ── 3. FIRESTORE SCHOOL DOC ──────────────────────────────────
+        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        if (!is_array($fsSchool)) $fsSchool = [];
+        $add('Profile', 'fs_school_doc',
+            !empty($fsSchool) ? 'PASS' : 'FAIL',
+            !empty($fsSchool) ? 'Firestore schools doc exists (' . count($fsSchool) . ' fields)'
+                              : 'Firestore schools doc MISSING — apps cannot load school data');
+
+        // Profile fields check
+        $profileFieldMap = [
+            'name'    => 'display_name',
+            'phone'   => 'phone',
+            'email'   => 'email',
+            'address' => 'address',
+            'city'    => 'city',
+        ];
+        foreach ($profileFieldMap as $fsKey => $label) {
+            $has = !empty($fsSchool[$fsKey]);
+            $add('Profile', "fs_profile_{$label}",
+                $has ? 'PASS' : 'WARN',
+                $has ? "{$label} = " . substr($fsSchool[$fsKey], 0, 60) : "{$label} is empty");
+        }
+
+        if (!empty($fsSchool)) {
+            // Check Android-required fields
+            $androidFields = [
+                'schoolCode'      => 'Android SchoolDoc.schoolCode',
+                'currentSession'  => 'Android SchoolDoc.currentSession',
+                'name'            => 'Android SchoolDoc.name',
+                'status'          => 'Android SchoolDoc.status',
+            ];
+            foreach ($androidFields as $fld => $label) {
+                $val = $fsSchool[$fld] ?? '';
+                $add('Profile', "fs_{$fld}",
+                    ($val !== '' && $val !== null) ? 'PASS' : 'FAIL',
+                    ($val !== '' && $val !== null) ? "{$label} = {$val}" : "{$label} is MISSING — Android apps will fail");
+            }
+
+            // Detect legacy field names (should not exist)
+            if (!empty($fsSchool['activeSession'])) {
+                $add('Profile', 'fs_legacy_activeSession', 'WARN',
+                    "Legacy field 'activeSession' found (value={$fsSchool['activeSession']}). Apps read 'currentSession' instead.");
+            }
+            if (!empty($fsSchool['schoolLoginCode'])) {
+                $add('Profile', 'fs_legacy_schoolLoginCode', 'WARN',
+                    "Legacy field 'schoolLoginCode' found. Apps read 'schoolCode' instead.");
+            }
+        }
+
+        // ── 4. SESSIONS ──────────────────────────────────────────────
+        $sessions = (is_array($fsSchool['sessions'] ?? null))
+            ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
+            : [];
+        $add('Sessions', 'sessions_list',
+            !empty($sessions) ? 'PASS' : 'FAIL',
+            !empty($sessions) ? count($sessions) . ' sessions: ' . implode(', ', $sessions) : 'No sessions configured');
+
+        $activeSess = $fsSchool['currentSession'] ?? '';
+        $add('Sessions', 'active_session',
+            !empty($activeSess) ? 'PASS' : 'FAIL',
+            !empty($activeSess) ? "currentSession = {$activeSess}" : 'currentSession not set — apps cannot determine current session');
+
+        if (!empty($activeSess) && !empty($sessions)) {
+            $add('Sessions', 'active_in_list',
+                in_array($activeSess, $sessions, true) ? 'PASS' : 'FAIL',
+                in_array($activeSess, $sessions, true) ? 'Active session exists in sessions list'
+                    : "Active session \"{$activeSess}\" NOT in sessions list [" . implode(',', $sessions) . "]");
+        }
+
+        // PHP session sync
+        $phpSessions = $this->session->userdata('available_sessions') ?? [];
+        if (is_array($phpSessions)) {
+            $phpSorted = array_values($phpSessions);
+            sort($phpSorted);
+            $fsSorted = $sessions;
+            sort($fsSorted);
+            $add('Sessions', 'php_session_sync',
+                $phpSorted === $fsSorted ? 'PASS' : 'WARN',
+                $phpSorted === $fsSorted ? 'PHP session matches Firestore'
+                    : 'PHP session has ' . count($phpSessions) . ' sessions vs Firestore ' . count($sessions) . ' — click Sync');
+        }
+
+        // ── 5. BOARD CONFIG ──────────────────────────────────────────
+        $board = (is_array($fsSchool['board_config'] ?? null)) ? $fsSchool['board_config'] : [];
+        $add('Board', 'board_config',
+            !empty($board['type']) ? 'PASS' : 'WARN',
+            !empty($board['type']) ? "Board type={$board['type']}, pattern=" . ($board['grading_pattern'] ?? 'N/A')
+                                   : 'Board not configured — subjects suggestion won\'t work');
+        if (!empty($board['grading_pattern']) && $board['grading_pattern'] !== 'marks') {
+            $hasScale = !empty($board['grade_scale']) && is_array($board['grade_scale']);
+            $add('Board', 'grade_scale',
+                $hasScale ? 'PASS' : 'WARN',
+                $hasScale ? count($board['grade_scale']) . ' grade entries defined'
+                          : 'Grading pattern is ' . $board['grading_pattern'] . ' but no grade scale defined');
+        }
+
+        // ── 6. CLASSES ───────────────────────────────────────────────
+        $classes = (is_array($fsSchool['classes'] ?? null)) ? array_values($fsSchool['classes']) : [];
+        $activeClasses = array_filter($classes, function ($c) { return is_array($c) && empty($c['deleted']); });
+        $deletedClasses = array_filter($classes, function ($c) { return is_array($c) && !empty($c['deleted']); });
+
+        $add('Classes', 'classes_configured',
+            !empty($activeClasses) ? 'PASS' : 'WARN',
+            !empty($activeClasses) ? count($activeClasses) . ' active classes, ' . count($deletedClasses) . ' soft-deleted'
+                                    : 'No classes configured — use "Seed Standard Classes"');
+
+        // ── 7. SECTIONS ──────────────────────────────────────────────
+        // Pre-fetch all sections from Firestore for this session
+        $fsSectionDocs = $this->fs->schoolWhere('sections', [['session', '==', $session]]);
+        $sectionDetails = [];
+        $totalSections = 0;
+        if (is_array($fsSectionDocs)) {
+            foreach ($fsSectionDocs as $doc) {
+                $d = $doc['data'] ?? $doc;
+                $cn = $d['className'] ?? '';
+                $sn = $d['section'] ?? '';
+                if ($cn !== '' && $sn !== '') {
+                    $sectionDetails[$cn][] = $sn;
+                    $totalSections++;
+                }
+            }
+        }
+
+        // Check if active classes have sections
+        $classNodeIssues = [];
+        foreach ($activeClasses as $cls) {
+            if (!is_array($cls)) continue;
+            $key = $cls['key'] ?? '';
+            if ($key === '') continue;
+            $classNode = $this->_class_node_name($key);
+            if (empty($sectionDetails[$classNode])) {
+                $classNodeIssues[] = $classNode;
+            }
+        }
+        if (empty($classNodeIssues)) {
+            $add('Classes', 'class_sections_in_session',
+                !empty($activeClasses) ? 'PASS' : 'WARN',
+                !empty($activeClasses) ? 'All ' . count($activeClasses) . ' classes have sections in session ' . $session : 'No classes to check');
+        } else {
+            $add('Classes', 'class_sections_in_session', 'WARN',
+                count($classNodeIssues) . ' classes have no sections in session ' . $session . ': ' . implode(', ', $classNodeIssues)
+                . ' — click "Activate Classes in Session"');
+        }
+
+        $add('Sections', 'total_sections',
+            $totalSections > 0 ? 'PASS' : 'WARN',
+            $totalSections > 0 ? "{$totalSections} sections across " . count($sectionDetails) . " classes"
+                                : 'No sections found — configure in Sections tab');
+
+        // ── 8. SUBJECTS ─────────────────────────────────────────────
+        $fsSubjects = $this->fs->schoolWhere('subjects', []);
+        $totalSubjects = 0;
+        $classesWithSubjects = [];
+        if (is_array($fsSubjects)) {
+            foreach ($fsSubjects as $row) {
+                $d = $row['data'] ?? [];
+                if (!is_array($d)) continue;
+                $ck = $d['classKey'] ?? '';
+                if ($ck !== '') {
+                    $classesWithSubjects[$ck] = ($classesWithSubjects[$ck] ?? 0) + 1;
+                    $totalSubjects++;
+                }
+            }
+        }
+        $add('Subjects', 'subjects_configured',
+            $totalSubjects > 0 ? 'PASS' : 'WARN',
+            $totalSubjects > 0 ? "{$totalSubjects} subjects across " . count($classesWithSubjects) . " classes"
+                                : 'No subjects configured — go to Subjects tab');
+
+        // Classes with sections but no subjects
+        $missingSubjects = [];
+        foreach ($activeClasses as $cls) {
+            if (!is_array($cls)) continue;
+            $key = $cls['key'] ?? '';
+            if ($key === '') continue;
+            $numKey = $this->_numeric_class_key($key);
+            $hasSections = !empty($sectionDetails[$this->_class_node_name($key)] ?? []);
+            $hasSubjects = !empty($classesWithSubjects[$numKey]);
+            if ($hasSections && !$hasSubjects) {
+                $missingSubjects[] = $cls['label'] ?? $key;
+            }
+        }
+        if (!empty($missingSubjects)) {
+            $add('Subjects', 'classes_without_subjects', 'WARN',
+                count($missingSubjects) . ' class(es) have sections but no subjects: ' . implode(', ', $missingSubjects));
+        }
+
+        // ── 9. STREAMS ──────────────────────────────────────────────
+        $streams = (is_array($fsSchool['streams'] ?? null)) ? $fsSchool['streams'] : [];
+        $streamCount = count($streams);
+        $hasStreamClasses = !empty(array_filter($activeClasses, function ($c) { return !empty($c['streams_enabled']); }));
+
+        if ($hasStreamClasses) {
+            $add('Streams', 'streams_configured',
+                $streamCount > 0 ? 'PASS' : 'FAIL',
+                $streamCount > 0 ? "{$streamCount} streams defined"
+                                  : 'Stream-enabled classes exist but no streams configured — go to Streams tab');
+        } else {
+            $add('Streams', 'streams_configured',
+                'PASS',
+                $streamCount > 0 ? "{$streamCount} streams defined (no stream-enabled classes)" : 'No stream-enabled classes — streams not needed');
+        }
+
+        // ── 10. REPORT CARD TEMPLATE ─────────────────────────────────
+        $rcTemplate = $fsSchool['reportCardTemplate'] ?? '';
+        $add('ReportCard', 'template',
+            !empty($rcTemplate) ? 'PASS' : 'WARN',
+            !empty($rcTemplate) ? "Template = {$rcTemplate}" : 'No report card template set — defaults to "classic"');
+
+        // ── 11. LOGO / DOCUMENTS ─────────────────────────────────────
+        $logoUrl = $fsSchool['logoUrl'] ?? $fsSchool['logo_url'] ?? '';
+        $add('Assets', 'logo',
+            $logoUrl !== '' ? 'PASS' : 'WARN',
+            $logoUrl !== '' ? 'Logo configured' : 'No logo uploaded');
+
+        // ── SUMMARY ──────────────────────────────────────────────────
+        $overallStatus = $fail > 0 ? 'UNHEALTHY' : ($warn > 3 ? 'NEEDS_ATTENTION' : 'HEALTHY');
+
+        $this->json_success([
+            'status'       => $overallStatus,
+            'summary'      => ['pass' => $pass, 'warn' => $warn, 'fail' => $fail, 'total' => $pass + $warn + $fail],
+            'school'       => $school,
+            'school_id'    => $schoolId,
+            'session'      => $session,
+            'checks'       => $checks,
+            'section_map'  => $sectionDetails,
+            'timestamp'    => date('Y-m-d H:i:s'),
+        ]);
     }
 }

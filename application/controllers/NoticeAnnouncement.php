@@ -1,5 +1,25 @@
 <?php
 
+/**
+ * NoticeAnnouncement — admin panel notices + announcement fanout.
+ *
+ * Phase 5 — fully migrated to Firestore. Previously the module dual-
+ * wrote to ~8 RTDB nodes per notice (class/section badges, per-
+ * teacher / per-admin Received, Sent log, per-audience Announcements
+ * bucket) AND to the Firestore `circulars` collection that the Parent
+ * and Teacher apps already subscribe to. The RTDB leaves are retired:
+ *
+ *   notices/{schoolId}_{noticeId}            canonical notice
+ *   circulars/{noticeId}                     app-read mirror (existing)
+ *   noticeRecipients/{schoolId}_{noticeId}_{recipientKey}
+ *                                            one doc per recipient for
+ *                                            delivery/read-state. Replaces
+ *                                            the RTDB Notification /
+ *                                            Received / Sent fanout.
+ *
+ * Public JSON surface is preserved byte-for-byte so the existing
+ * admin view + ajax header bell call sites don't change.
+ */
 class NoticeAnnouncement extends MY_Controller
 {
     /** Roles for notice management */
@@ -8,173 +28,164 @@ class NoticeAnnouncement extends MY_Controller
     /** Roles that may view notices */
     private const VIEW_ROLES   = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Academic Coordinator', 'Class Teacher', 'Teacher', 'Front Office'];
 
+    private const COL_NOTICES           = 'notices';
+    private const COL_CIRCULARS         = 'circulars';           // parent/teacher apps already watch this
+    private const COL_NOTICE_RECIPIENTS = 'noticeRecipients';
+
     public function __construct()
     {
         parent::__construct();
         require_permission('Communication');
     }
 
+    // ─── Page: list view ─────────────────────────────────────────────
     public function index()
     {
         $this->_require_role(self::VIEW_ROLES, 'notice_view');
-        $school_name  = $this->school_name;
-        $session_year = $this->session_year;
-
-        $path    = 'Schools/' . $school_name . '/' . $session_year . '/All Notices';
-        $notices = $this->firebase->get($path);
-
-        $data['notices'] = is_array($notices) ? $notices : [];
+        $data['notices'] = $this->_notices_as_legacy_map();
         $this->load->view('include/header');
         $this->load->view('notice_announcement/list', $data);
         $this->load->view('include/footer');
     }
 
-    // ── Fetch recent notices (called by header bell via AJAX) ─────
+    // ─── AJAX: header-bell recent notices ────────────────────────────
     public function fetch_recent_notices()
     {
-        // No role check — any authenticated user can read recent notices.
-        // MY_Controller already enforces authentication.
+        // Any authenticated admin can read recent notices.
         header('Content-Type: application/json');
+        // Release session lock so this runs in parallel with other dashboard fetches.
+        if (function_exists('session_write_close')) @session_write_close();
         echo json_encode($this->getRecentNotices(10));
     }
 
-    // ── Private helper — merges legacy All Notices + Communication/Notices ──
-    private function getRecentNotices($limit = 10)
+    /**
+     * Returns the newest N notices across the school in the legacy
+     * shape expected by the header bell ({id,Title,Description,Time_Stamp,source}).
+     */
+    private function getRecentNotices(int $limit = 10): array
     {
-        $school_name  = $this->school_name;
-        $session_year = $this->session_year;
-        $noticeList   = [];
-        $seenTitles   = []; // de-duplicate dual-written notices
+        $rows = $this->firebase->firestoreQuery(self::COL_NOTICES, [
+            ['schoolId', '==', $this->school_name],
+        ], 'timestamp', 'DESC', $limit);
 
-        // ── Source 1: Legacy All Notices ──────────────────────────
-        $legacyPath = 'Schools/' . $school_name . '/' . $session_year . '/All Notices';
-        $legacy     = $this->firebase->get($legacyPath);
-        if (is_array($legacy)) {
-            unset($legacy['Count']);
-            foreach ($legacy as $id => $n) {
-                if (!is_array($n)) continue;
-                $ts = $n['Timestamp'] ?? $n['Time_Stamp'] ?? null;
-                if ($ts === null) continue;
-
-                $title = trim($n['Title'] ?? '');
-                $dedupKey = strtolower($title) . '|' . substr((string)$ts, 0, 16);
-                $seenTitles[$dedupKey] = true;
-
-                $noticeList[] = [
-                    'id'          => $id,
-                    'Title'       => $title,
-                    'Description' => $n['Description'] ?? $n['description'] ?? '',
-                    'Time_Stamp'  => $ts,
-                    'source'      => 'legacy',
-                ];
-            }
+        $out = [];
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r;
+            if (!is_array($d)) continue;
+            $out[] = [
+                'id'          => (string) ($d['noticeId'] ?? ($r['id'] ?? '')),
+                'Title'       => (string) ($d['title']       ?? ''),
+                'Description' => (string) ($d['description'] ?? ''),
+                'Time_Stamp'  => (string) ($d['timestamp']   ?? $d['createdAt'] ?? ''),
+                'source'      => 'firestore',
+            ];
         }
-
-        // ── Source 2: Communication/Notices ───────────────────────
-        $commPath = 'Schools/' . $school_name . '/Communication/Notices';
-        $commData = $this->firebase->get($commPath);
-        if (is_array($commData)) {
-            unset($commData['Counter']);
-            foreach ($commData as $id => $n) {
-                if (!is_array($n)) continue;
-                $ts = $n['created_at'] ?? $n['Timestamp'] ?? null;
-                if ($ts === null) continue;
-
-                $title = trim($n['title'] ?? $n['Title'] ?? '');
-                $dedupKey = strtolower($title) . '|' . substr((string)$ts, 0, 16);
-
-                // Skip if already seen from legacy (dual-written)
-                if (isset($seenTitles[$dedupKey])) continue;
-
-                $noticeList[] = [
-                    'id'          => $id,
-                    'Title'       => $title,
-                    'Description' => $n['body'] ?? $n['Description'] ?? '',
-                    'Time_Stamp'  => $ts,
-                    'source'      => 'communication',
-                ];
-            }
-        }
-
-        // Sort newest first and return top N
-        usort($noticeList, fn($a, $b) => strcmp($b['Time_Stamp'], $a['Time_Stamp']));
-        return array_slice($noticeList, 0, $limit);
+        return $out;
     }
 
-    // ── Search users ──────────────────────────────────────────────
+    /**
+     * Pull every notice for this school+session and return them in the
+     * same associative-map shape the legacy view expected
+     * (`{ NOT0001: { Title, Description, Timestamp, … }, Count: N }`).
+     */
+    private function _notices_as_legacy_map(): array
+    {
+        $rows = $this->firebase->firestoreQuery(self::COL_NOTICES, [
+            ['schoolId', '==', $this->school_name],
+            ['session',  '==', $this->session_year],
+        ], 'timestamp', 'DESC');
+
+        $out = [];
+        $count = 0;
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r;
+            if (!is_array($d)) continue;
+            $id = (string) ($d['noticeId'] ?? ($r['id'] ?? ''));
+            if ($id === '') continue;
+            $out[$id] = [
+                'Title'       => (string) ($d['title']       ?? ''),
+                'Description' => (string) ($d['description'] ?? ''),
+                'Priority'    => (string) ($d['priority']    ?? 'Normal'),
+                'Category'    => (string) ($d['category']    ?? 'General'),
+                'From Id'     => (string) ($d['fromId']      ?? ''),
+                'From Type'   => (string) ($d['fromType']    ?? 'Admin'),
+                'Timestamp'   => (string) ($d['timestamp']   ?? $d['createdAt'] ?? ''),
+                'To Id'       => is_array($d['toId'] ?? null) ? $d['toId'] : [],
+            ];
+            $count++;
+        }
+        $out['Count'] = $count;
+        return $out;
+    }
+
+    // ─── AJAX: user search (admins/teachers/students) ────────────────
     public function search_users()
     {
         $this->_require_role(self::VIEW_ROLES, 'search_users');
         header('Content-Type: application/json');
 
-        $query        = strtolower(trim($this->input->get('query') ?? ''));
-        $school_name  = $this->school_name;
-        $session_year = $this->session_year;
-        $results      = [];
+        $query   = strtolower(trim((string) ($this->input->get('query') ?? '')));
+        $results = [];
 
-        // Admins
-        $adminsData = $this->firebase->get("Schools/$school_name/$session_year/Admins");
-        if (is_array($adminsData)) {
-            foreach ($adminsData as $adminId => $admin) {
-                if (!is_array($admin)) continue;
-                $name = $admin['Name'] ?? '';
-                if (stripos($name, $query) !== false || stripos((string)$adminId, $query) !== false) {
-                    $results[] = ['label' => "$name ($adminId)", 'type' => 'Admin',   'id' => $adminId, 'name' => $name];
-                }
+        // Admins — Firestore `admins` collection, auto-scoped via docId pattern.
+        $adminRows = $this->firebase->firestoreQuery('admins', [
+            ['schoolId', '==', $this->school_name],
+        ]);
+        foreach ((array) $adminRows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $id   = (string) ($d['adminId'] ?? ($r['id'] ?? ''));
+            $name = (string) ($d['name']    ?? $d['Name'] ?? '');
+            if ($id === '') continue;
+            if ($query === '' || stripos($name, $query) !== false || stripos($id, $query) !== false) {
+                $results[] = ['label' => "$name ($id)", 'type' => 'Admin', 'id' => $id, 'name' => $name];
             }
         }
 
-        // Teachers
-        $teachersData = $this->firebase->get("Schools/$school_name/$session_year/Teachers");
-        if (is_array($teachersData)) {
-            foreach ($teachersData as $teacherId => $teacher) {
-                if (!is_array($teacher)) continue;
-                $name = $teacher['Name'] ?? '';
-                if (stripos($name, $query) !== false || stripos((string)$teacherId, $query) !== false) {
-                    $results[] = ['label' => "$name ($teacherId)", 'type' => 'Teacher', 'id' => $teacherId, 'name' => $name];
-                }
+        // Teachers / staff — Firestore `staff` collection.
+        $teacherRows = $this->firebase->firestoreQuery('staff', [
+            ['schoolId', '==', $this->school_name],
+        ]);
+        foreach ((array) $teacherRows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $id   = (string) ($d['staffId'] ?? $d['teacherId'] ?? ($r['id'] ?? ''));
+            $name = (string) ($d['name']    ?? $d['Name']      ?? '');
+            if ($id === '') continue;
+            // Only surface teaching staff in notice recipient search.
+            $role = strtolower((string) ($d['role'] ?? $d['jobFunction'] ?? ''));
+            if ($role !== '' && strpos($role, 'teach') === false && strpos($role, 'coordinator') === false) continue;
+            if ($query === '' || stripos($name, $query) !== false || stripos($id, $query) !== false) {
+                $results[] = ['label' => "$name ($id)", 'type' => 'Teacher', 'id' => $id, 'name' => $name];
             }
         }
 
-        // Students — new path: Class 8th / Section A / Students / List
-        // We iterate Classes node to find class+section combos
-        $schoolData = $this->firebase->get("Schools/$school_name/$session_year");
-        if (is_array($schoolData)) {
-            foreach ($schoolData as $classKey => $classData) {
-                if (!is_array($classData) || stripos($classKey, 'Class ') !== 0) continue;
-
-                // New structure: classData has section keys like "Section A"
-                foreach ($classData as $sectionKey => $sectionData) {
-                    if (!is_array($sectionData) || stripos($sectionKey, 'Section ') !== 0) continue;
-
-                    $studentList = $sectionData['Students']['List'] ?? null;
-                    if (!is_array($studentList)) continue;
-
-                    // Display label uses "Class 8th / Section A" format
-                    $classLabel = "$classKey / $sectionKey";
-
-                    foreach ($studentList as $studentId => $studentName) {
-                        if (stripos((string)$studentName, $query) !== false ||
-                            stripos((string)$studentId,   $query) !== false) {
-                            $results[] = [
-                                'label' => "$studentName ($studentId) [$classKey|$sectionKey]",
-                                'type'  => 'Student',
-                                'id'    => $studentId,
-                                'name'  => $studentName,
-                                'class' => $classLabel,           // display
-                                'class_key'   => $classKey,       // "Class 8th"
-                                'section_key' => $sectionKey,     // "Section A"
-                            ];
-                        }
-                    }
-                }
-            }
+        // Students — Firestore `students` collection, auto-scoped by schoolId.
+        $studentRows = $this->firebase->firestoreQuery('students', [
+            ['schoolId', '==', $this->school_name],
+        ]);
+        foreach ((array) $studentRows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $id   = (string) ($d['studentId'] ?? ($r['id'] ?? ''));
+            $name = (string) ($d['name']      ?? $d['studentName'] ?? '');
+            if ($id === '') continue;
+            if ($query !== '' && stripos($name, $query) === false && stripos($id, $query) === false) continue;
+            $classKey   = (string) ($d['className'] ?? '');
+            $sectionKey = (string) ($d['section']   ?? '');
+            $classLabel = trim("$classKey / $sectionKey");
+            $results[] = [
+                'label'       => "$name ($id) [{$classKey}|{$sectionKey}]",
+                'type'        => 'Student',
+                'id'          => $id,
+                'name'        => $name,
+                'class'       => $classLabel,
+                'class_key'   => $classKey,
+                'section_key' => $sectionKey,
+            ];
         }
 
         echo json_encode($results);
     }
 
-    // ── Create notice ─────────────────────────────────────────────
+    // ─── Create notice ───────────────────────────────────────────────
     public function create_notice()
     {
         $this->_require_role(self::MANAGE_ROLES, 'create_notice');
@@ -182,30 +193,17 @@ class NoticeAnnouncement extends MY_Controller
         $session_year = $this->session_year;
         $admin_id     = $this->admin_id;
 
-        $base_path = "Schools/{$school_name}/{$session_year}/All Notices";
+        // Class/section dropdown — sourced from Firestore `sections`
+        // collection (replaces the legacy shallow_get on RTDB session root).
+        $data['classes'] = $this->_class_section_dropdown();
 
-        // ── Build class list for dropdown ─────────────────────────
-        // Read class/section keys directly from the session root (correct path).
-        $data['classes'] = [];
-        $sessionClassKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session_year}");
-        foreach ($sessionClassKeys as $classKey) {
-            if (strpos($classKey, 'Class ') !== 0) continue;
-            $sectionKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session_year}/{$classKey}");
-            foreach ($sectionKeys as $sectionKey) {
-                if (strpos($sectionKey, 'Section ') !== 0) continue;
-                // Key uses "/" separator: "Class 8th/Section A"
-                $data['classes']["{$classKey}/{$sectionKey}"] = "{$classKey} / {$sectionKey}";
-            }
-        }
-
-        // ── POST handler ──────────────────────────────────────────
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-            $title       = trim($this->input->post('title', TRUE) ?? '');
-            $description = trim($this->input->post('description', TRUE) ?? '');
+            $title       = trim((string) $this->input->post('title', TRUE) ?? '');
+            $description = trim((string) $this->input->post('description', TRUE) ?? '');
             $to_ids      = [];
 
-            $allowedPriorities  = ['High', 'Normal', 'Low'];
-            $allowedCategories  = ['General', 'Academic', 'Administrative', 'Holiday', 'Exam', 'Event'];
+            $allowedPriorities = ['High', 'Normal', 'Low'];
+            $allowedCategories = ['General', 'Academic', 'Administrative', 'Holiday', 'Exam', 'Event'];
             $priority = in_array($this->input->post('priority'), $allowedPriorities, true)
                 ? $this->input->post('priority') : 'Normal';
             $category = in_array($this->input->post('category'), $allowedCategories, true)
@@ -214,7 +212,6 @@ class NoticeAnnouncement extends MY_Controller
             if (!empty($this->input->post('to_id_json'))) {
                 $to_ids = json_decode($this->input->post('to_id_json'), true) ?? [];
             }
-
             if (empty($to_ids)) {
                 $this->output
                     ->set_content_type('application/json')
@@ -222,230 +219,106 @@ class NoticeAnnouncement extends MY_Controller
                 return;
             }
 
-            // Create notice node
-            $current_data  = $this->firebase->get($base_path);
-            $current_count = is_array($current_data) && isset($current_data['Count'])
-                ? (int)$current_data['Count'] : 0;
-            $notice_id = 'NOT' . str_pad($current_count, 4, '0', STR_PAD_LEFT);
+            // Deterministic-ish notice ID. Sortable by time; scoped by
+            // school via the Firestore doc key so two schools can never
+            // collide even if they both hit NOT_N at the same moment.
+            $notice_id = 'NOT_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(3)), 0, 6);
+            $now_iso   = date('c');
+            $now_ms    = (int) round(microtime(true) * 1000);
 
-            $new_notice = [
-                'Title'       => $title,
-                'Description' => $description,
-                'From Id'     => $admin_id,
-                'From Type'   => 'Admin',
-                'Priority'    => $priority,
-                'Category'    => $category,
-                'Timestamp'   => [".sv" => "timestamp"],
-                'To Id'       => [],
+            // ── 1. Canonical notice doc ─────────────────────────────
+            $noticeDoc = [
+                'schoolId'    => $school_name,
+                'session'     => $session_year,
+                'noticeId'    => $notice_id,
+                'title'       => $title,
+                'description' => $description,
+                'fromId'      => $admin_id,
+                'fromType'    => 'Admin',
+                'fromName'    => $this->admin_name ?? $admin_id,
+                'priority'    => $priority,
+                'category'    => $category,
+                'toId'        => [],       // filled below after fanout
+                'timestamp'   => $now_iso,
+                'timestampMs' => $now_ms,
+                'createdAt'   => $now_iso,
             ];
-            $this->firebase->set("{$base_path}/{$notice_id}", $new_notice);
-            $this->firebase->set("{$base_path}/Count", $current_count + 1);
-
-            // Wait for Firebase server timestamp to resolve
-            usleep(500000);
-
-            $stored_notice   = $this->firebase->get("{$base_path}/{$notice_id}");
-            $actualTimestamp = (is_array($stored_notice) && isset($stored_notice['Timestamp']))
-                ? $stored_notice['Timestamp']
-                : round(microtime(true) * 1000);
-
-            $sanitized_to_ids = [];
-
-            foreach ($to_ids as $key => $label) {
-                log_message('debug', "create_notice: key=$key label=$label");
-
-                // ── Class/Section format: "Class 8th/Section A" ───
-                if (!preg_match('/^(STU|TEA|ADM|All)/', $key) && strpos($key, '/Section ') !== false) {
-                    $parts       = explode('/', $key, 2);
-                    $classNode   = trim($parts[0]);   // "Class 8th"
-                    $sectionNode = trim($parts[1]);   // "Section A"
-
-                    $classPath = "Schools/{$school_name}/{$session_year}/{$classNode}/{$sectionNode}/Notification/{$notice_id}";
-                    $this->firebase->set($classPath, $actualTimestamp);
-                    // Store in To Id with pipe separator (Firebase-safe: no slashes in keys)
-                    $sanitized_to_ids["{$classNode}|{$sectionNode}"] = "";
-                    log_message('debug', "create_notice: class path=$classPath");
-                }
-
-                // ── Student ───────────────────────────────────────
-                elseif (preg_match('/^STU[0-9]+$/', $key)) {
-                    // Label format: "Name (STU0005) [Class 8th|Section A]"
-                    if (preg_match('/\[(.*?)\|(.*?)\]/', $label, $m)) {
-                        $classNode   = trim($m[1]);  // "Class 8th"
-                        $sectionNode = trim($m[2]);  // "Section A"
-                        $studentPath = "Schools/{$school_name}/{$session_year}/{$classNode}/{$sectionNode}/Students/{$key}/Notification/{$notice_id}";
-                        $this->firebase->set($studentPath, $actualTimestamp);
-                        log_message('debug', "create_notice: student path=$studentPath");
-                    } else {
-                        log_message('error', "create_notice: cannot parse class from label: $label");
-                    }
-                    $sanitized_to_ids[$key] = "";
-                }
-
-                // ── Individual Teacher (STA prefix) ──────────────
-                elseif (preg_match('/^STA[A-Za-z0-9]+$/', $key)) {
-                    $this->firebase->set(
-                        "Schools/{$school_name}/{$session_year}/Teachers/{$key}/Received/{$notice_id}",
-                        $actualTimestamp
-                    );
-                    $sanitized_to_ids[$key] = "";
-                }
-
-                // ── Admin ─────────────────────────────────────────
-                elseif (preg_match('/^ADM[0-9]+$/', $key)) {
-                    if ($key !== $admin_id) {
-                        $this->firebase->set(
-                            "Schools/{$school_name}/{$session_year}/Admins/{$key}/Received/{$notice_id}",
-                            $actualTimestamp
-                        );
-                    }
-                    $sanitized_to_ids[$key] = "";
-                }
-
-                // ── All Students ──────────────────────────────────
-                elseif ($key === 'All Students') {
-                    // 1. Announcements node (app reads this for bulk push)
-                    $this->firebase->set(
-                        "Schools/{$school_name}/{$session_year}/Announcements/All Students/{$notice_id}",
-                        $actualTimestamp
-                    );
-                    // 2. Each class → section Notification node
-                    $sessionKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session_year}");
-                    foreach ((array)$sessionKeys as $classKey) {
-                        if (strpos($classKey, 'Class ') !== 0) continue;
-                        $sectionKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session_year}/{$classKey}");
-                        foreach ((array)$sectionKeys as $sectionKey) {
-                            if (strpos($sectionKey, 'Section ') !== 0) continue;
-                            $this->firebase->set(
-                                "Schools/{$school_name}/{$session_year}/{$classKey}/{$sectionKey}/Notification/{$notice_id}",
-                                $actualTimestamp
-                            );
-                        }
-                    }
-                    $sanitized_to_ids[$key] = "";
-                }
-
-                // ── All Teachers ──────────────────────────────────
-                elseif ($key === 'All Teachers') {
-                    // 1. Announcements node
-                    $this->firebase->set(
-                        "Schools/{$school_name}/{$session_year}/Announcements/All Teachers/{$notice_id}",
-                        $actualTimestamp
-                    );
-                    // 2. Each teacher's Received node
-                    $allTeachers = $this->firebase->get("Schools/{$school_name}/{$session_year}/Teachers");
-                    if (is_array($allTeachers)) {
-                        foreach ($allTeachers as $tid => $tData) {
-                            if (!is_array($tData)) continue;
-                            $this->firebase->set(
-                                "Schools/{$school_name}/{$session_year}/Teachers/{$tid}/Received/{$notice_id}",
-                                $actualTimestamp
-                            );
-                        }
-                    }
-                    $sanitized_to_ids[$key] = "";
-                }
-
-                // ── All Admins ────────────────────────────────────
-                elseif ($key === 'All Admins') {
-                    // 1. Announcements node
-                    $this->firebase->set(
-                        "Schools/{$school_name}/{$session_year}/Announcements/All Admins/{$notice_id}",
-                        $actualTimestamp
-                    );
-                    // 2. Each admin's Received node (skip sender)
-                    $allAdmins = $this->firebase->get("Schools/{$school_name}/{$session_year}/Admins");
-                    if (is_array($allAdmins)) {
-                        foreach ($allAdmins as $aid => $aData) {
-                            if (!is_array($aData) || $aid === $admin_id) continue;
-                            $this->firebase->set(
-                                "Schools/{$school_name}/{$session_year}/Admins/{$aid}/Received/{$notice_id}",
-                                $actualTimestamp
-                            );
-                        }
-                    }
-                    $sanitized_to_ids[$key] = "";
-                }
-
-                // ── All School ────────────────────────────────────
-                elseif ($key === 'All School') {
-                    // 1. Announcements node
-                    $this->firebase->set(
-                        "Schools/{$school_name}/{$session_year}/Announcements/All School/{$notice_id}",
-                        $actualTimestamp
-                    );
-                    // 2. All class/section Notification nodes
-                    $sessionKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session_year}");
-                    foreach ((array)$sessionKeys as $classKey) {
-                        if (strpos($classKey, 'Class ') !== 0) continue;
-                        $sectionKeys = $this->firebase->shallow_get("Schools/{$school_name}/{$session_year}/{$classKey}");
-                        foreach ((array)$sectionKeys as $sectionKey) {
-                            if (strpos($sectionKey, 'Section ') !== 0) continue;
-                            $this->firebase->set(
-                                "Schools/{$school_name}/{$session_year}/{$classKey}/{$sectionKey}/Notification/{$notice_id}",
-                                $actualTimestamp
-                            );
-                        }
-                    }
-                    // 3. All teachers' Received nodes
-                    $allTeachers = $this->firebase->get("Schools/{$school_name}/{$session_year}/Teachers");
-                    if (is_array($allTeachers)) {
-                        foreach ($allTeachers as $tid => $tData) {
-                            if (!is_array($tData)) continue;
-                            $this->firebase->set(
-                                "Schools/{$school_name}/{$session_year}/Teachers/{$tid}/Received/{$notice_id}",
-                                $actualTimestamp
-                            );
-                        }
-                    }
-                    // 4. All admins' Received nodes (skip sender)
-                    $allAdmins = $this->firebase->get("Schools/{$school_name}/{$session_year}/Admins");
-                    if (is_array($allAdmins)) {
-                        foreach ($allAdmins as $aid => $aData) {
-                            if (!is_array($aData) || $aid === $admin_id) continue;
-                            $this->firebase->set(
-                                "Schools/{$school_name}/{$session_year}/Admins/{$aid}/Received/{$notice_id}",
-                                $actualTimestamp
-                            );
-                        }
-                    }
-                    $sanitized_to_ids[$key] = "";
-                }
-
-                // ── Fallback (unknown key) ────────────────────────
-                else {
-                    log_message('error', "create_notice: unhandled recipient key=$key");
-                }
-            }
-
-            // Sender's Sent log
-            $this->firebase->set(
-                "Schools/{$school_name}/{$session_year}/Admins/{$admin_id}/Sent/{$notice_id}",
-                $actualTimestamp
+            $this->firebase->firestoreSet(
+                self::COL_NOTICES,
+                "{$school_name}_{$notice_id}",
+                $noticeDoc
             );
 
-            // Update notice with final To Id + resolved timestamp
-            $this->firebase->update("{$base_path}/{$notice_id}", [
-                'To Id'     => $sanitized_to_ids,
-                'Timestamp' => $actualTimestamp,
-            ]);
+            // ── 2. Recipient fanout (one Firestore doc per recipient
+            //        replaces the RTDB Notification/Received/Sent
+            //        per-node writes) ─────────────────────────────────
+            $sanitized_to_ids = [];
+            $recipientRows    = [];
+            foreach ($to_ids as $key => $label) {
+                $rec = $this->_resolve_recipient_key($key, (string) $label, $school_name, $session_year, $admin_id);
+                if (empty($rec)) {
+                    log_message('error', "create_notice: unhandled recipient key=$key");
+                    continue;
+                }
+                foreach ($rec['targets'] as $target) {
+                    $recipientRows[] = [
+                        'schoolId'      => $school_name,
+                        'session'       => $session_year,
+                        'noticeId'      => $notice_id,
+                        'recipientKey'  => $target['key'],
+                        'recipientType' => $target['type'],
+                        'deliveredAt'   => $now_iso,
+                        'status'        => 'delivered',
+                    ];
+                }
+                $sanitized_to_ids[$rec['sanitizedKey']] = '';
+            }
 
-            // ── Sync to Firestore 'circulars' collection for mobile apps ──
+            // Sender Sent log — single recipient row keyed on the admin.
+            $recipientRows[] = [
+                'schoolId'      => $school_name,
+                'session'       => $session_year,
+                'noticeId'      => $notice_id,
+                'recipientKey'  => $admin_id,
+                'recipientType' => 'Sender',
+                'deliveredAt'   => $now_iso,
+                'status'        => 'sent',
+            ];
+
+            foreach ($recipientRows as $row) {
+                $docId = "{$school_name}_{$notice_id}_{$row['recipientType']}_{$row['recipientKey']}";
+                $this->firebase->firestoreSet(self::COL_NOTICE_RECIPIENTS, $docId, $row);
+            }
+
+            // ── 3. Patch canonical notice with resolved toId list ────
+            $this->firebase->firestoreSet(
+                self::COL_NOTICES,
+                "{$school_name}_{$notice_id}",
+                [
+                    'toId'     => $sanitized_to_ids,
+                    'updatedAt'=> date('c'),
+                ],
+                /* merge */ true
+            );
+
+            // ── 4. Circulars collection (already watched by Parent/
+            //        Teacher apps) ─────────────────────────────────────
             try {
-                $this->firebase->firestoreSet('circulars', $notice_id, [
-                    'schoolId'      => $school_name,
-                    'title'         => $title,
-                    'body'          => $description,
-                    'author'        => $this->admin_name ?? $admin_id,
-                    'category'      => $category,
-                    'priority'      => $priority,
-                    'targetAudience' => array_values(array_map('strval', $sanitized_to_ids)),
-                    'attachmentUrl' => '',
-                    'sentAt'        => date('c'),
-                    'status'        => 'sent',
+                $this->firebase->firestoreSet(self::COL_CIRCULARS, $notice_id, [
+                    'schoolId'       => $school_name,
+                    'session'        => $session_year,
+                    'title'          => $title,
+                    'body'           => $description,
+                    'author'         => $this->admin_name ?? $admin_id,
+                    'category'       => $category,
+                    'priority'       => $priority,
+                    'targetAudience' => array_values(array_map('strval', array_keys($sanitized_to_ids))),
+                    'attachmentUrl'  => '',
+                    'sentAt'         => $now_iso,
+                    'status'         => 'sent',
                 ]);
             } catch (\Exception $e) {
-                log_message('error', "create_notice: Firestore sync failed [{$notice_id}]: " . $e->getMessage());
+                log_message('error', "create_notice: circulars write failed [{$notice_id}]: " . $e->getMessage());
             }
 
             $this->output
@@ -453,28 +326,177 @@ class NoticeAnnouncement extends MY_Controller
                 ->set_output(json_encode(['status' => 'success', 'message' => 'Notice sent successfully.']));
 
         } else {
-            // GET — show the form
-            $notices          = $this->firebase->get($base_path);
-            $data['notices']  = is_array($notices) ? $notices : [];
+            // GET — render the create form with existing notices listed.
+            $data['notices'] = $this->_notices_as_legacy_map();
             $this->load->view('include/header');
             $this->load->view('create_notice', $data);
             $this->load->view('include/footer');
         }
     }
 
-    // ── Delete notice ─────────────────────────────────────────────
+    // ─── Delete notice ───────────────────────────────────────────────
     public function delete($id)
     {
         $this->_require_role(self::MANAGE_ROLES, 'delete_notice');
-        $id = preg_replace('/[^a-zA-Z0-9_-]/', '', $id);
-        if ($id === '') {
-            redirect('NoticeAnnouncement');
-            return;
-        }
-        $school_name  = $this->school_name;
-        $session_year = $this->session_year;
-        $path = 'Schools/' . $school_name . '/' . $session_year . '/All Notices/' . $id;
-        $this->firebase->set($path, null);   // FIX: was using $this->firebase_db which doesn't exist
+        $id = preg_replace('/[^a-zA-Z0-9_\-]/', '', $id);
+        if ($id === '') { redirect('NoticeAnnouncement'); return; }
+        try {
+            $this->firebase->firestoreDelete(self::COL_NOTICES, "{$this->school_name}_{$id}");
+        } catch (\Exception $_) { /* best-effort */ }
+        try {
+            $this->firebase->firestoreDelete(self::COL_CIRCULARS, $id);
+        } catch (\Exception $_) { /* best-effort */ }
+        // noticeRecipients docs are left in place for audit — they
+        // reference a deleted noticeId but record who actually received it.
         redirect('NoticeAnnouncement');
+    }
+
+    // ─── Private helpers ─────────────────────────────────────────────
+
+    /**
+     * Class/section options for the create-notice dropdown, sourced
+     * from the Firestore `sections` collection.
+     * Format: "Class 8th/Section A" => "Class 8th / Section A"
+     */
+    private function _class_section_dropdown(): array
+    {
+        $out = [];
+        try {
+            $rows = $this->firebase->firestoreQuery('sections', [
+                ['schoolId', '==', $this->school_name],
+            ], 'className', 'ASC');
+            foreach ((array) $rows as $r) {
+                $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+                $c = (string) ($d['className'] ?? '');
+                $s = (string) ($d['section']   ?? '');
+                if ($c === '' || $s === '') continue;
+                if (stripos($c, 'Class ')   !== 0) $c = "Class {$c}";
+                if (stripos($s, 'Section ') !== 0) $s = "Section {$s}";
+                $out["{$c}/{$s}"] = "{$c} / {$s}";
+            }
+        } catch (\Exception $_) { /* empty dropdown is acceptable */ }
+        return $out;
+    }
+
+    /**
+     * Resolve a raw recipient key (from the create-notice form's
+     * to_id_json) to a list of concrete Firestore recipient targets.
+     * Returns ['sanitizedKey' => "…", 'targets' => [{key,type}, …]]
+     * or [] if the key is unrecognised.
+     */
+    private function _resolve_recipient_key(string $key, string $label, string $school_name, string $session_year, string $admin_id): array
+    {
+        // ── Class/Section — "Class 8th/Section A" ───────────────────
+        if (!preg_match('/^(STU|TEA|STA|ADM|All)/', $key) && strpos($key, '/Section ') !== false) {
+            [$classNode, $sectionNode] = array_map('trim', explode('/', $key, 2));
+            return [
+                'sanitizedKey' => "{$classNode}|{$sectionNode}",
+                'targets'      => [[
+                    'key'  => "{$classNode}__{$sectionNode}",
+                    'type' => 'Section',
+                ]],
+            ];
+        }
+
+        // ── Individual student (STU…) ───────────────────────────────
+        if (preg_match('/^STU[A-Za-z0-9_]+$/', $key)) {
+            return [
+                'sanitizedKey' => $key,
+                'targets'      => [['key' => $key, 'type' => 'Student']],
+            ];
+        }
+
+        // ── Individual teacher (STA…) ───────────────────────────────
+        if (preg_match('/^STA[A-Za-z0-9]+$/', $key)) {
+            return [
+                'sanitizedKey' => $key,
+                'targets'      => [['key' => $key, 'type' => 'Teacher']],
+            ];
+        }
+
+        // ── Individual admin (ADM…) — skip sender ───────────────────
+        if (preg_match('/^ADM[0-9]+$/', $key)) {
+            if ($key === $admin_id) {
+                return ['sanitizedKey' => $key, 'targets' => []];
+            }
+            return [
+                'sanitizedKey' => $key,
+                'targets'      => [['key' => $key, 'type' => 'Admin']],
+            ];
+        }
+
+        // ── Bulk audiences — materialise from Firestore ─────────────
+        if ($key === 'All Students') {
+            return [
+                'sanitizedKey' => $key,
+                'targets'      => $this->_all_student_targets(),
+            ];
+        }
+        if ($key === 'All Teachers') {
+            return [
+                'sanitizedKey' => $key,
+                'targets'      => $this->_all_staff_targets(),
+            ];
+        }
+        if ($key === 'All Admins') {
+            return [
+                'sanitizedKey' => $key,
+                'targets'      => $this->_all_admin_targets($admin_id),
+            ];
+        }
+        if ($key === 'All School') {
+            return [
+                'sanitizedKey' => $key,
+                'targets'      => array_merge(
+                    $this->_all_student_targets(),
+                    $this->_all_staff_targets(),
+                    $this->_all_admin_targets($admin_id)
+                ),
+            ];
+        }
+        return [];
+    }
+
+    private function _all_student_targets(): array
+    {
+        $rows = $this->firebase->firestoreQuery('students', [
+            ['schoolId', '==', $this->school_name],
+        ]);
+        $out = [];
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $sid = (string) ($d['studentId'] ?? ($r['id'] ?? ''));
+            if ($sid !== '') $out[] = ['key' => $sid, 'type' => 'Student'];
+        }
+        return $out;
+    }
+
+    private function _all_staff_targets(): array
+    {
+        $rows = $this->firebase->firestoreQuery('staff', [
+            ['schoolId', '==', $this->school_name],
+        ]);
+        $out = [];
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $sid = (string) ($d['staffId'] ?? $d['teacherId'] ?? ($r['id'] ?? ''));
+            if ($sid !== '') $out[] = ['key' => $sid, 'type' => 'Teacher'];
+        }
+        return $out;
+    }
+
+    private function _all_admin_targets(string $senderAdminId): array
+    {
+        $rows = $this->firebase->firestoreQuery('admins', [
+            ['schoolId', '==', $this->school_name],
+        ]);
+        $out = [];
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r; if (!is_array($d)) continue;
+            $aid = (string) ($d['adminId'] ?? ($r['id'] ?? ''));
+            if ($aid === '' || $aid === $senderAdminId) continue;
+            $out[] = ['key' => $aid, 'type' => 'Admin'];
+        }
+        return $out;
     }
 }

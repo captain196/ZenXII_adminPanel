@@ -59,9 +59,7 @@ class Attendance extends MY_Controller
             require_permission('Attendance');
         }
 
-        // Firestore helper for permanent attendance data
-        $this->load->library('Firestore_helper', null, 'fs');
-        $this->fs->init($this->firebase, $this->school_name, $this->session_year);
+        // Firestore_service ($this->fs) already loaded and initialized by MY_Controller
     }
 
     /** Month names → numbers */
@@ -101,6 +99,12 @@ class Attendance extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'dashboard_stats');
 
+        // Phase 8b/10: process pending teacher requests before
+        // computing stats. Best-effort — don't let a failure break
+        // the dashboard.
+        try { $this->_process_pending_push_requests(); } catch (\Exception $e) {}
+        try { $this->_process_approved_leaves(); } catch (\Exception $e) {}
+
         $school  = $this->school_name;
         $session = $this->session_year;
         $today   = (int) date('j');           // day of month (1-31)
@@ -108,50 +112,141 @@ class Attendance extends MY_Controller
         $year    = (int) date('Y');           // 2026
         $attKey  = "{$month} {$year}";
 
-        // ── Student stats ──
+        // ── Student stats — Firestore FIRST ──
         $stuP = 0; $stuA = 0; $stuT = 0; $stuL = 0; $stuTotal = 0;
-        $classList = $this->_build_class_list();
+        $todayDate = date('Y-m-d');
 
-        foreach ($classList as $cls) {
-            $secRoot = $this->_resolve_section_root($cls['class_name'], $cls['section']);
-            $allStudents = null; // RTDB fallback removed
-            if (!is_array($allStudents)) continue;
-            $list = $this->_extract_student_list($allStudents);
-
-            foreach ($list as $studentId => $name) {
-                if (!is_string($studentId) || trim($studentId) === '') continue;
+        // (a) Try per-day attendance records
+        try {
+            $todayAttDocs = $this->fs->schoolWhere('attendance', [
+                ['date', '==', $todayDate],
+                ['type', '==', 'student'],
+            ]);
+        } catch (\Exception $e) { $todayAttDocs = []; }
+        foreach ($todayAttDocs as $doc) {
+            $mark = strtoupper($doc['data']['status'] ?? 'V');
+            $stuTotal++;
+            if ($mark === 'P') $stuP++;
+            elseif ($mark === 'A') $stuA++;
+            elseif ($mark === 'T') $stuT++;
+            elseif ($mark === 'L') $stuL++;
+        }
+        // (b) Fall back to attendanceSummary dayWise strings (still Firestore)
+        if ($stuTotal === 0) {
+            try {
+                $attSummaryDocs = $this->fs->schoolWhere('attendanceSummary', [
+                    ['month', '==', date('Y-m')],
+                ]);
+            } catch (\Exception $e) { $attSummaryDocs = []; }
+            foreach ($attSummaryDocs as $doc) {
+                $d = $doc['data'];
+                if (($d['type'] ?? 'student') !== 'student') continue;
+                $dayWise = $d['dayWise'] ?? '';
+                if (strlen($dayWise) < $today) { $stuTotal++; continue; }
                 $stuTotal++;
-                $attStr = isset($allStudents[$studentId]['Attendance'][$attKey])
-                    && is_string($allStudents[$studentId]['Attendance'][$attKey])
-                    ? $allStudents[$studentId]['Attendance'][$attKey] : '';
-                if (strlen($attStr) < $today) continue;
-                $mark = strtoupper($attStr[$today - 1]);
+                $mark = strtoupper($dayWise[$today - 1]);
                 if ($mark === 'P') $stuP++;
                 elseif ($mark === 'A') $stuA++;
                 elseif ($mark === 'T') $stuT++;
                 elseif ($mark === 'L') $stuL++;
             }
         }
+        // (c) RTDB fallback — only fires when both Firestore reads returned
+        // empty (e.g. partial migration: school not yet backfilled).
+        if ($stuTotal === 0) {
+            try {
+                $classList = $this->_build_class_list();
+                foreach ($classList as $cls) {
+                    // R5 — roster from Firestore via Roster_helper. Bulk
+                    // RTDB read kept ONLY as the per-student attendance
+                    // fallback (`$allStudents[$id]['Attendance']` below);
+                    // its roster role is gone.
+                    $secRoot     = $this->_resolve_section_root($cls['class_name'], $cls['section']);
+                    $secList     = $this->_get_section_students($cls['class_name'], $cls['section']);
+                    if (empty($secList)) continue;
+                    $allStudents = $this->firebase->get("{$secRoot}/Students");
+                    if (!is_array($allStudents)) $allStudents = [];
+                    foreach ($secList as $studentId => $name) {
+                        if (!is_string($studentId) || trim($studentId) === '') continue;
+                        $attStr = isset($allStudents[$studentId]['Attendance'][$attKey])
+                            && is_string($allStudents[$studentId]['Attendance'][$attKey])
+                            ? $allStudents[$studentId]['Attendance'][$attKey] : '';
+                        $stuTotal++;
+                        if (strlen($attStr) < $today) continue;
+                        $mark = strtoupper($attStr[$today - 1]);
+                        if ($mark === 'P') $stuP++;
+                        elseif ($mark === 'A') $stuA++;
+                        elseif ($mark === 'T') $stuT++;
+                        elseif ($mark === 'L') $stuL++;
+                    }
+                }
+            } catch (\Exception $e) { /* leave totals at zero */ }
+        }
 
-        // ── Staff stats ──
+        // ── Staff stats — Firestore FIRST ──
         $staffP = 0; $staffA = 0; $staffT = 0; $staffTotal = 0;
-        $allTeachers = null; // RTDB fallback removed
-        $allStaffAtt = null; // RTDB fallback removed
-        if (!is_array($allStaffAtt)) $allStaffAtt = [];
-
-        if (is_array($allTeachers)) {
-            foreach ($allTeachers as $staffId => $profile) {
-                if (!is_string($staffId) || trim($staffId) === '') continue;
+        try {
+            $staffAttDocs = $this->fs->schoolWhere('attendance', [
+                ['date', '==', $todayDate],
+                ['type', '==', 'staff'],
+            ]);
+        } catch (\Exception $e) { $staffAttDocs = []; }
+        foreach ($staffAttDocs as $doc) {
+            $mark = strtoupper($doc['data']['status'] ?? 'V');
+            $staffTotal++;
+            if ($mark === 'P') $staffP++;
+            elseif ($mark === 'A') $staffA++;
+            elseif ($mark === 'T') $staffT++;
+        }
+        // Fall back to summary strings (still Firestore)
+        if ($staffTotal === 0) {
+            try {
+                $staffSummaryDocs = $this->fs->schoolWhere('attendanceSummary', [
+                    ['month', '==', date('Y-m')],
+                    ['type', '==', 'staff'],
+                ]);
+            } catch (\Exception $e) { $staffSummaryDocs = []; }
+            foreach ($staffSummaryDocs as $doc) {
+                $dayWise = $doc['data']['dayWise'] ?? '';
+                if (strlen($dayWise) < $today) { $staffTotal++; continue; }
                 $staffTotal++;
-                $attStr = isset($allStaffAtt[$staffId]) && is_string($allStaffAtt[$staffId])
-                    ? $allStaffAtt[$staffId] : '';
-                if (strlen($attStr) < $today) continue;
-                $mark = strtoupper($attStr[$today - 1]);
+                $mark = strtoupper($dayWise[$today - 1]);
                 if ($mark === 'P') $staffP++;
                 elseif ($mark === 'A') $staffA++;
                 elseif ($mark === 'T') $staffT++;
             }
         }
+        // RTDB fallback — only fires when both Firestore reads returned empty.
+        if ($staffTotal === 0) {
+            try {
+                $teachers = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
+                $staffAtt = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}");
+                if (!is_array($staffAtt)) $staffAtt = [];
+                if (is_array($teachers)) {
+                    foreach ($teachers as $staffId => $profile) {
+                        if (!is_string($staffId) || trim($staffId) === '') continue;
+                        $attStr = isset($staffAtt[$staffId]) && is_string($staffAtt[$staffId])
+                            ? $staffAtt[$staffId] : '';
+                        $staffTotal++;
+                        if (strlen($attStr) < $today) continue;
+                        $mark = strtoupper($attStr[$today - 1]);
+                        if ($mark === 'P') $staffP++;
+                        elseif ($mark === 'A') $staffA++;
+                        elseif ($mark === 'T') $staffT++;
+                    }
+                }
+            } catch (\Exception $e) { /* leave totals at zero */ }
+        }
+
+        // Count pending student leave applications
+        $pendingLeaves = 0;
+        try {
+            $leaveDocs = $this->fs->schoolWhere('leaveApplications', [
+                ['status',        '==', 'pending'],
+                ['applicantType', '==', 'student'],
+            ]);
+            $pendingLeaves = count($leaveDocs);
+        } catch (\Exception $e) {}
 
         return $this->json_success([
             'date'     => date('Y-m-d'),
@@ -171,6 +266,7 @@ class Attendance extends MY_Controller
                 'absent'  => $staffA,
                 'late'    => $staffT,
             ],
+            'pendingLeaves' => $pendingLeaves,
         ]);
     }
 
@@ -188,6 +284,147 @@ class Attendance extends MY_Controller
         $this->load->view('include/header', $data);
         $this->load->view('attendance/student', $data);
         $this->load->view('include/footer');
+    }
+
+    /**
+     * Phase 7x diagnostic — returns exactly what Push_service / Device_service
+     * see for a given userId. Hit this in the browser when a push fails:
+     *   GET /attendance/debug_push?user=STU0001
+     */
+    public function debug_push()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'debug_push');
+        $userId = trim((string) $this->input->get('user'));
+        if ($userId === '') return $this->json_error('user query param is required');
+
+        $this->load->library('device_service');
+        $this->load->library('push_service');
+
+        $devices = $this->device_service->listDevices($userId);
+        $tokens  = $this->device_service->getFcmTokens($userId);
+
+        // Firestore canonical store (Phase 8a)
+        $firestoreDocs = [];
+        try {
+            $firestoreDocs = $this->fs->where('userDevices', [
+                ['userId', '==', $userId],
+            ]);
+        } catch (\Exception $e) {
+            $firestoreDocs = ['error' => $e->getMessage()];
+        }
+
+        // RTDB legacy mirror
+        $rawRtdbNode = $this->firebase->get("Users/Devices/{$userId}");
+
+        $diag = [
+            'userId'                  => $userId,
+            'firestore_userDevices'   => $firestoreDocs,
+            'firestore_count'         => is_array($firestoreDocs) ? count($firestoreDocs) : 0,
+            'rtdb_users_devices_node' => $rawRtdbNode,
+            'rtdb_parsed_devices'     => $devices,
+            'rtdb_parsed_count'       => count($devices),
+            'eligible_tokens'         => array_map(function ($t) {
+                return strlen($t) > 20 ? substr($t, 0, 20) . '... (' . strlen($t) . ' chars)' : $t;
+            }, $tokens),
+            'eligible_tokens_count'   => count($tokens),
+            'next_step'               => count($tokens) > 0
+                ? 'Tokens look good. If push still not arriving, problem is on the FCM gateway side — check the PHP log for sendMulticast errors.'
+                : 'NO ELIGIBLE TOKENS. Both Firestore userDevices collection and RTDB Users/Devices node are empty or missing fcmToken. The parent/teacher app has not registered yet — open it on a real device, log in, and retry.',
+        ];
+        return $this->json_success($diag);
+    }
+
+    /**
+     * Phase 8a diagnostic — manually register an FCM token from the
+     * admin browser when the Android app can't (emulator without Play
+     * Services, build issues, etc.).
+     *
+     *   POST /attendance/register_test_token
+     *   Params: user_id, fcm_token
+     *
+     * Writes to Firestore `userDevices` + RTDB mirror so the full
+     * push pipeline can be tested end-to-end from the admin side.
+     */
+    public function register_test_token()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'register_test_token');
+        $userId   = trim((string) $this->input->post('user_id'));
+        $fcmToken = trim((string) $this->input->post('fcm_token'));
+        if ($userId === '' || $fcmToken === '') {
+            return $this->json_error('user_id and fcm_token are required.');
+        }
+        $deviceId = 'ADMIN_MANUAL_' . substr(md5($fcmToken), 0, 8);
+        $now = date('c');
+
+        $doc = [
+            'schoolId'   => $this->school_id,
+            'userId'     => $userId,
+            'deviceId'   => $deviceId,
+            'fcmToken'   => $fcmToken,
+            'platform'   => 'android',
+            'status'     => 'active',
+            'lastActive' => $now,
+            'appRole'    => 'parent',
+            'source'     => 'admin_manual',
+        ];
+
+        // Firestore canonical write
+        $fsOk = false;
+        try {
+            $fsDocId = "{$userId}_{$deviceId}";
+            $fsOk = (bool) $this->fs->set('userDevices', $fsDocId, $doc, true);
+        } catch (\Exception $e) {
+            return $this->json_error('Firestore write failed: ' . $e->getMessage());
+        }
+
+        // RTDB mirror
+        try {
+            $this->firebase->set("Users/Devices/{$userId}/{$deviceId}", [
+                'fcmToken'   => $fcmToken,
+                'status'     => 'active',
+                'platform'   => 'android',
+                'lastActive' => $now,
+            ]);
+        } catch (\Exception $e) { /* mirror best-effort */ }
+
+        return $this->json_success([
+            'message'     => "Token registered for {$userId}. Firestore: " . ($fsOk ? 'YES' : 'NO') . ". Now mark the student absent to test the push.",
+            'firestore_doc' => "{$userId}_{$deviceId}",
+            'rtdb_path'     => "Users/Devices/{$userId}/{$deviceId}",
+        ]);
+    }
+
+    /**
+     * Phase 8a diagnostic — send a test push to a raw FCM token.
+     * Bypasses the entire device registry to test the FCM gateway
+     * directly.
+     *
+     *   POST /attendance/test_push
+     *   Params: fcm_token, title (optional), body (optional)
+     */
+    public function test_push()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'test_push');
+        $fcmToken = trim((string) $this->input->post('fcm_token'));
+        if ($fcmToken === '') {
+            return $this->json_error('fcm_token is required.');
+        }
+        $title = trim((string) ($this->input->post('title') ?: 'Test Push'));
+        $body  = trim((string) ($this->input->post('body')  ?: 'This is a test notification from the admin panel.'));
+
+        $this->load->library('push_service');
+        $sent = $this->push_service->sendToTokens([$fcmToken], [
+            'title' => $title,
+            'body'  => $body,
+            'data'  => ['type' => 'test_push'],
+        ]);
+
+        return $this->json_success([
+            'sent'    => $sent,
+            'message' => $sent > 0
+                ? "Push delivered to FCM gateway ({$sent} accepted). Check the device in ~5 seconds."
+                : 'Push REJECTED by FCM gateway. Token may be invalid, expired, or from a different Firebase project.',
+        ]);
     }
 
     /**
@@ -250,16 +487,16 @@ class Attendance extends MY_Controller
 
         // 1. Firebase connectivity
         $start = microtime(true);
-        $school = null; // RTDB fallback removed
+        $schoolDoc = $this->fs->get('schools', $this->school_id);
         $fbTime = round((microtime(true) - $start) * 1000);
         $checks['firebase'] = [
-            'status'      => $school ? 'ok' : 'error',
+            'status'      => $schoolDoc ? 'ok' : 'error',
             'latency_ms'  => $fbTime,
-            'school_name' => $school ?: 'unreachable',
+            'school_name' => $schoolDoc['name'] ?? 'unreachable',
         ];
 
         // 2. Attendance config presence
-        $config = null; // RTDB fallback removed
+        $config = $schoolDoc['attendanceConfig'] ?? null;
         $checks['config'] = [
             'status'               => is_array($config) ? 'ok' : 'missing',
             'late_threshold_student' => $config['late_threshold_student'] ?? 'not set',
@@ -295,7 +532,7 @@ class Attendance extends MY_Controller
         ];
 
         // 6. Devices
-        $devices = null; // RTDB fallback removed
+        $devices = $schoolDoc['devices'] ?? null;
         $deviceCount = is_array($devices) ? count($devices) : 0;
         $activeDevices = 0;
         if (is_array($devices)) {
@@ -334,13 +571,13 @@ class Attendance extends MY_Controller
 
         // Clean expired ProcessedEvents
         $eventsPath = "Schools/{$school}/{$session}/Attendance/ProcessedEvents";
-        $events = null; // RTDB fallback removed
+        $events = $this->firebase->get($eventsPath);
         if (is_array($events)) {
             foreach ($events as $eventId => $data) {
                 if (!is_array($data)) continue;
                 $expiresAt = $data['expires_at'] ?? 0;
                 if ($expiresAt > 0 && $expiresAt <= $now) {
-                    // RTDB mirror removed per no-RTDB policy.
+                    $this->firebase->delete("{$eventsPath}/{$eventId}");
                     $deleted++;
                 }
             }
@@ -395,60 +632,62 @@ class Attendance extends MY_Controller
         $migrated = ['students' => 0, 'student_late' => 0, 'staff' => 0, 'staff_late' => 0];
 
         // ── 1. Student attendance: {sectionRoot}/Students/{id}/Attendance/{key} ──
+        // R5 — roster from Firestore. Per-student RTDB attendance reads
+        // (oldPath/newPath below) are unchanged; only the discovery list
+        // moved off RTDB.
         $classList = $this->_build_class_list();
         foreach ($classList as $cls) {
             $secRoot = $this->_resolve_section_root($cls['class_name'], $cls['section']);
-            $allStudents = null; // RTDB fallback removed
-            if (!is_array($allStudents)) continue;
-            $list = $this->_extract_student_list($allStudents);
+            $list    = $this->_get_section_students($cls['class_name'], $cls['section']);
+            if (empty($list)) continue;
 
             foreach ($list as $studentId => $name) {
                 if (!is_string($studentId) || trim($studentId) === '') continue;
                 $oldPath = "{$secRoot}/Students/{$studentId}/Attendance/{$oldKey}";
-                $data = null; // RTDB fallback removed
+                $data = $this->firebase->get($oldPath);
                 if ($data === null) continue;
 
                 // Copy to new key, delete old
                 $newPath = "{$secRoot}/Students/{$studentId}/Attendance/{$newKey}";
-                // RTDB mirror removed per no-RTDB policy.
-                // RTDB mirror removed per no-RTDB policy.
+                $this->firebase->set($newPath, $data);
+                $this->firebase->delete($oldPath);
                 $migrated['students']++;
             }
         }
 
         // ── 2. Student late metadata: Schools/{school}/{session}/Attendance/Late/{key} ──
         $oldLatePath = "Schools/{$school}/{$session}/Attendance/Late/{$oldKey}";
-        $lateData = null; // RTDB fallback removed
+        $lateData = $this->firebase->get($oldLatePath);
         if (is_array($lateData) && !empty($lateData)) {
             $newLatePath = "Schools/{$school}/{$session}/Attendance/Late/{$newKey}";
-            // RTDB mirror removed per no-RTDB policy.
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->set($newLatePath, $lateData);
+            $this->firebase->delete($oldLatePath);
             $migrated['student_late'] = count($lateData);
         }
 
         // ── 3. Staff attendance: Schools/{school}/{session}/Staff_Attendance/{key} ──
         $oldStaffPath = "Schools/{$school}/{$session}/Staff_Attendance/{$oldKey}";
-        $staffAtt = null; // RTDB fallback removed
+        $staffAtt = $this->firebase->get($oldStaffPath);
         if (is_array($staffAtt) || is_string($staffAtt)) {
             $newStaffPath = "Schools/{$school}/{$session}/Staff_Attendance/{$newKey}";
-            // RTDB mirror removed per no-RTDB policy.
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->set($newStaffPath, $staffAtt);
+            $this->firebase->delete($oldStaffPath);
             $migrated['staff'] = is_array($staffAtt) ? count($staffAtt) : 1;
         }
 
         // ── 4. Staff late metadata: Schools/{school}/{session}/Staff_Attendance/Late/{key} ──
         $oldStaffLatePath = "Schools/{$school}/{$session}/Staff_Attendance/Late/{$oldKey}";
-        $staffLate = null; // RTDB fallback removed
+        $staffLate = $this->firebase->get($oldStaffLatePath);
         if (is_array($staffLate) && !empty($staffLate)) {
             $newStaffLatePath = "Schools/{$school}/{$session}/Staff_Attendance/Late/{$newKey}";
-            // RTDB mirror removed per no-RTDB policy.
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->set($newStaffLatePath, $staffLate);
+            $this->firebase->delete($oldStaffLatePath);
             $migrated['staff_late'] = count($staffLate);
         }
 
         // ── 5. Summary cache (just delete — will be recomputed) ──
         $oldSummaryPath = "Schools/{$school}/{$session}/Attendance/Summary/Students/{$oldKey}";
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->delete($oldSummaryPath);
 
         return $this->json_success([
             'message'  => "Migrated '{$oldKey}' → '{$newKey}'",
@@ -479,7 +718,7 @@ class Attendance extends MY_Controller
 
         $schoolId = $this->school_name;
         $logPath  = "System/Logs/Attendance/{$schoolId}/{$yearMonth}";
-        $rawLogs = null; // RTDB fallback removed
+        $rawLogs  = $this->firebase->get($logPath);
 
         $logs = [];
         if (is_array($rawLogs)) {
@@ -558,23 +797,13 @@ class Attendance extends MY_Controller
         $monthNum = $this->month_map[$month];
         $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
 
-        // Resolve section root (new format "Class 8th/Section A" or legacy "Class 8th 'A'")
+        // ── ROSTER: Firestore-only (R5) ──
+        // _get_section_students now goes through Roster_helper as
+        // Strategy 0 (canonical), with the Status-relaxed and
+        // attendanceSummary-derived strategies as deeper safety nets.
+        // The RTDB roster fallback that used to live here was removed.
+        $list = $this->_get_section_students($class, $section);
         $sectionRoot = $this->_resolve_section_root($class, $section);
-        $allStudents = null; // RTDB fallback removed
-
-        if (!is_array($allStudents)) {
-            return $this->json_success([
-                'students'    => [],
-                'daysInMonth' => $daysInMonth,
-                'sundays'     => $this->_get_sundays($year, $monthNum),
-                'holidays'    => $this->_get_holidays_for_month($month, $year),
-                'month'       => $month,
-                'year'        => $year,
-            ]);
-        }
-
-        // Build student list: prefer Students/List index, fall back to student data nodes
-        $list = $this->_extract_student_list($allStudents);
 
         if (empty($list)) {
             return $this->json_success([
@@ -588,27 +817,48 @@ class Attendance extends MY_Controller
         }
 
         $attKey = "{$month} {$year}";
+        $monthKey = date('Y-m', mktime(0, 0, 0, $monthNum, 1, $year));
 
-        // Batch-read all late metadata for this month in 1 read
-        $allLate = null; // RTDB fallback removed
-        if (!is_array($allLate)) $allLate = [];
+        // Lazy-loaded RTDB caches — only populated on first fallback hit
+        // so we don't pay an RTDB read when Firestore has every student.
+        $rtdbSectionStudents = null;       // {$sectionRoot}/Students
+        $rtdbLateMap = null;               // Schools/{school}/{session}/Attendance/Late/{attKey}
 
+        // Batch-read attendance summaries for all students in this month
         $students = [];
         foreach ($list as $studentId => $studentName) {
-            if (!is_string($studentId) || trim($studentId) === '') continue;
+            // ── PER-STUDENT: Firestore FIRST ──
+            $summaryDocId = $this->fs->docId2($studentId, $monthKey);
+            $summaryDoc = $this->fs->get('attendanceSummary', $summaryDocId);
+            $attStr  = $summaryDoc['dayWise']   ?? '';
+            $lateRaw = $summaryDoc['lateTimes'] ?? [];
 
-            // Extract attendance from the batch-read data
-            $attStr = '';
-            if (isset($allStudents[$studentId]['Attendance'][$attKey])
-                && is_string($allStudents[$studentId]['Attendance'][$attKey])) {
-                $attStr = $allStudents[$studentId]['Attendance'][$attKey];
+            // ── PER-STUDENT: RTDB fallback for the dayWise string ──
+            if ($attStr === '') {
+                if ($rtdbSectionStudents === null) {
+                    $loaded = $this->firebase->get("{$sectionRoot}/Students");
+                    $rtdbSectionStudents = is_array($loaded) ? $loaded : [];
+                }
+                if (isset($rtdbSectionStudents[$studentId]['Attendance'][$attKey])
+                    && is_string($rtdbSectionStudents[$studentId]['Attendance'][$attKey])
+                ) {
+                    $attStr = $rtdbSectionStudents[$studentId]['Attendance'][$attKey];
+                }
             }
 
-            // Pad the attendance string to daysInMonth (JS expects a string, not array)
-            $attStr = str_pad($attStr, $daysInMonth, 'V');
+            // ── PER-STUDENT: RTDB fallback for arrival times ──
+            if (empty($lateRaw)) {
+                if ($rtdbLateMap === null) {
+                    $loaded = $this->firebase->get("Schools/{$school}/{$session}/Attendance/Late/{$attKey}");
+                    $rtdbLateMap = is_array($loaded) ? $loaded : [];
+                }
+                if (isset($rtdbLateMap[$studentId]) && is_array($rtdbLateMap[$studentId])) {
+                    $lateRaw = $rtdbLateMap[$studentId];
+                }
+            }
 
-            $lateRaw = isset($allLate[$studentId]) && is_array($allLate[$studentId])
-                ? $allLate[$studentId] : [];
+            if (!is_array($lateRaw)) $lateRaw = [];
+            $attStr = str_pad($attStr, $daysInMonth, 'V');
 
             $students[] = [
                 'id'         => $studentId,
@@ -618,7 +868,6 @@ class Attendance extends MY_Controller
             ];
         }
 
-        // Sort by name
         usort($students, function ($a, $b) {
             return strcasecmp($a['name'], $b['name']);
         });
@@ -697,13 +946,14 @@ class Attendance extends MY_Controller
             if (!$govResult['ok']) {
                 if (!empty($govResult['needs_approval'])) {
                     // Compute diff: store only changed days per student
-                    $sr = $this->_resolve_section_root($class, $section);
                     $diffData = [];
                     $auditBulk = [];
                     foreach ($attData as $sid => $newStr) {
                         $sid = trim((string)$sid);
                         if (!preg_match('/^[A-Za-z0-9_]+$/', $sid)) continue;
-                        $curStr = null; // RTDB fallback removed
+                        // Read current attendance from Firestore
+                        $curSummary = $this->fs->get('attendanceSummary', $this->fs->docId2($sid, $monthKey));
+                        $curStr = ($curSummary['dayWise'] ?? '');
                         $curStr = is_string($curStr) ? str_pad($curStr, $daysInMonth, 'V') : str_repeat('V', $daysInMonth);
                         $changes = [];
                         for ($d = 0; $d < $daysInMonth && $d < strlen($newStr); $d++) {
@@ -733,95 +983,111 @@ class Attendance extends MY_Controller
         }
 
         $saved = 0;
+        $monthKey = date('Y-m', mktime(0, 0, 0, $monthNum, 1, $year));
         $sectionRoot = $this->_resolve_section_root($class, $section);
+
+        // Resolve a studentId → name map once so each Firestore write
+        // can stamp `studentName`. This makes derived-roster reads
+        // (Strategy 3 in `_get_section_students`) return real names
+        // instead of falling back to the studentId.
+        $nameMap = $this->_get_section_students($class, $section);
+
+        // B1 — Cache Active-status per studentId to avoid N+1 Firestore
+        // reads inside the bulk loop. Pre-fetched once via Roster_helper
+        // (which already filters status='Active' at the source).
+        $activeRosterIds = [];
+        $rosterRows = $this->roster->for_class($class, $section);
+        foreach ($rosterRows as $rid => $_unused) { $activeRosterIds[$rid] = true; }
+
         foreach ($attData as $studentId => $attString) {
             $studentId = trim((string) $studentId);
             if (!preg_match('/^[A-Za-z0-9_]+$/', $studentId)) continue;
 
+            // B1 — Attendance status gate. Reject marks for any student
+            // whose Firestore doc is not status='Active' (Inactive / TC /
+            // Deleted). Pre-fix this loop accepted any well-formed
+            // studentId in the POST, so a stale form / scripted POST
+            // could land marks on withdrawn students.
+            if (!isset($activeRosterIds[$studentId])) {
+                log_message('warning',
+                    "save_student_attendance: skipped non-Active student {$studentId} "
+                    . "in {$class}/{$section} — status gate (B1)"
+                );
+                continue;
+            }
+
             $cleanStr = $this->_sanitize_att_string((string) $attString, $daysInMonth);
-            // Enforce holidays — overwrite whatever was sent for Sundays/holidays
             $cleanStr = enforce_holidays_on_string($cleanStr, $daysInMonth, $nonWorking);
 
-            $attPath = "{$sectionRoot}/Students/{$studentId}/Attendance/{$attKey}";
-            // RTDB mirror removed per no-RTDB policy.
-            $saved++;
+            // Count statuses
+            $present = $absent = $leave = $holiday = $tardy = 0;
+            $working = 0;
+            for ($i = 0; $i < strlen($cleanStr); $i++) {
+                $ch = $cleanStr[$i];
+                if ($ch === 'P') { $present++; $working++; }
+                elseif ($ch === 'A') { $absent++; $working++; }
+                elseif ($ch === 'L') { $leave++; $working++; }
+                elseif ($ch === 'H') { $holiday++; }
+                elseif ($ch === 'T') { $tardy++; $working++; }
+            }
+            $pct = $working > 0 ? round(($present + $tardy) / $working * 100, 1) : 0;
 
-            // Centralized summary update (reads saved string, computes, caches)
-            $studentBase = "{$sectionRoot}/Students/{$studentId}";
-            update_student_att_summary($this->firebase, $studentBase, $school, $attKey, $monthNum, $year);
-
-            // Save late metadata if present
+            // Build late metadata
+            $lateMap = [];
             if (is_array($lateData) && isset($lateData[$studentId]) && is_array($lateData[$studentId])) {
                 foreach ($lateData[$studentId] as $day => $time) {
                     $day = (int) $day;
                     if ($day < 1 || $day > $daysInMonth) continue;
                     $time = preg_replace('/[^0-9:]/', '', (string) $time);
-                    if ($time) {
-                        $latePath = "Schools/{$school}/{$session}/Attendance/Late/{$attKey}/{$studentId}/{$day}";
-                        // RTDB mirror removed per no-RTDB policy.
-                    }
+                    if ($time) $lateMap[$day] = ['time' => $time];
                 }
             }
-        }
 
-        // ── Sync to Firestore attendanceSummary collection ──
-        try {
-            $cls = Firestore_helper::classKey($class);
-            $sec = Firestore_helper::sectionKey($section);
-            $sectionKeyFs = "{$cls}/{$sec}";
+            // ── WRITE: Firestore FIRST (canonical store) ──
+            $studentName = $nameMap[$studentId] ?? $studentId;
+            $summaryDocId = $this->fs->docId2($studentId, $monthKey);
+            $fsOk = (bool) $this->fs->set('attendanceSummary', $summaryDocId, [
+                'schoolId'   => $this->school_id,
+                'studentId'  => $studentId,
+                'studentName'=> $studentName,
+                'type'       => 'student',
+                'className'  => Firestore_service::classKey($class),
+                'section'    => Firestore_service::sectionKey($section),
+                'month'      => $monthKey,
+                'monthLabel' => $attKey,
+                'session'    => $session,
+                'dayWise'    => $cleanStr,
+                'present'    => $present,
+                'absent'     => $absent,
+                'leave'      => $leave,
+                'holiday'    => $holiday,
+                'tardy'      => $tardy,
+                'percentage' => $pct,
+                // Per-day arrival times for tardy marks: {day:int → {time:str}}
+                'lateTimes'  => $lateMap,
+                'updatedAt'  => date('c'),
+                'updatedBy'  => $this->admin_id,
+            ], true);
 
-            foreach ($attData as $studentId => $attString) {
-                $studentId = trim((string) $studentId);
-                if (!preg_match('/^[A-Za-z0-9_]+$/', $studentId)) continue;
-
-                $cleanStr = $this->_sanitize_att_string((string) $attString, $daysInMonth);
-                $cleanStr = enforce_holidays_on_string($cleanStr, $daysInMonth, $nonWorking);
-
-                // Count statuses
-                $present = $absent = $leave = $holiday = $tardy = 0;
-                $working = 0;
-                for ($i = 0; $i < strlen($cleanStr); $i++) {
-                    $ch = $cleanStr[$i];
-                    if ($ch === 'P') { $present++; $working++; }
-                    elseif ($ch === 'A') { $absent++; $working++; }
-                    elseif ($ch === 'L') { $leave++; $working++; }
-                    elseif ($ch === 'H') { $holiday++; }
-                    elseif ($ch === 'T') { $tardy++; $working++; }
-                }
-                $totalDays = strlen($cleanStr);
-                $pct = $working > 0 ? round(($present + $tardy) / $working * 100, 1) : 0;
-
-                // Resolve student name (best-effort)
-                $stuName = '';
+            // ── RTDB mirror (best-effort) — skip if Firestore failed ──
+            // Stays until Phase 8 per Firestore-first migration contract.
+            if ($fsOk) {
                 try {
-                    $stuNamePath = "{$sectionRoot}/Students/List/{$studentId}";
-                    $nameVal = null; // RTDB fallback removed
-                    if (is_string($nameVal)) $stuName = $nameVal;
-                    elseif (is_array($nameVal)) $stuName = $nameVal['Name'] ?? $nameVal['name'] ?? '';
-                } catch (\Exception $e) {}
+                    // Mirror the dayWise string at the canonical RTDB path
+                    $attPath = "{$sectionRoot}/Students/{$studentId}/Attendance/{$attKey}";
+                    $this->firebase->set($attPath, $cleanStr);
 
-                $summaryDocId = "{$this->school_name}_{$studentId}_{$attKey}";
-                $this->fs->set(Firestore_helper::ATTENDANCE_SUMMARY, $summaryDocId, [
-                    'schoolId'    => $this->school_name,
-                    'session'     => $session,
-                    'studentId'   => $studentId,
-                    'studentName' => $stuName,
-                    'sectionKey'  => $sectionKeyFs,
-                    'month'       => $attKey,
-                    'dayWise'     => $cleanStr,
-                    'totalDays'   => $totalDays,
-                    'workingDays' => $working,
-                    'present'     => $present,
-                    'absent'      => $absent,
-                    'leave'       => $leave,
-                    'holiday'     => $holiday,
-                    'tardy'       => $tardy,
-                    'percentage'  => $pct,
-                    'updatedAt'   => date('c'),
-                ]);
+                    // Mirror per-day arrival times so RTDB-driven views still see them
+                    foreach ($lateMap as $day => $entry) {
+                        $latePath = "Schools/{$school}/{$session}/Attendance/Late/{$attKey}/{$studentId}/{$day}";
+                        $this->firebase->set($latePath, $entry);
+                    }
+                } catch (\Exception $e) {
+                    log_message('error', "save_student_attendance RTDB mirror failed for {$studentId}: " . $e->getMessage());
+                }
             }
-        } catch (\Exception $e) {
-            log_message('error', "save_student_attendance: Firestore sync failed: " . $e->getMessage());
+
+            $saved++;
         }
 
         $this->_log_attendance_change('BULK_SAVE_STUDENT', [
@@ -866,6 +1132,15 @@ class Attendance extends MY_Controller
             return $this->json_error('Invalid month.');
         }
 
+        // B1 — Attendance status gate. Reject any single-day mark for a
+        // non-Active student (Inactive / TC / Deleted). Pre-fix the only
+        // gate was the class/section assignment check, which would still
+        // accept marks for a withdrawn student left in the form by a
+        // stale page.
+        if (!$this->roster->is_active($studentId)) {
+            return $this->json_error('Cannot mark attendance for an inactive student.', 400);
+        }
+
         $school  = $this->school_name;
         $session = $this->session_year;
         $year    = $this->_resolve_year($month);
@@ -892,7 +1167,7 @@ class Attendance extends MY_Controller
             if (!empty($govCheck['needs_approval'])) {
                 // Fetch old mark for audit trail
                 $sr = $this->_resolve_section_root($class, $section);
-                $curStr = null; // RTDB fallback removed
+                $curStr = $this->firebase->get("{$sr}/Students/{$studentId}/Attendance/{$attKey}");
                 $oldMk = (is_string($curStr) && isset($curStr[$day - 1])) ? $curStr[$day - 1] : 'V';
                 $reqId = $this->_create_pending_request('student_day', [
                     'target_id' => $studentId, 'class' => $class, 'section' => $section,
@@ -916,23 +1191,43 @@ class Attendance extends MY_Controller
             return $this->json_error('Another attendance update is in progress. Try again.', 409);
         }
 
-        $existing = null; // RTDB fallback removed
+        $existing = $this->firebase->get($attPath);
         $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
         $attStr = str_pad($attStr, $daysInMonth, 'V');
 
-        // Replace the character at position (day - 1)
+        // Compute the new month string in memory.
         $oldMark = $attStr[$day - 1];
         $attStr[$day - 1] = $mark;
-        // RTDB mirror removed per no-RTDB policy.
+
+        // ── Firestore-first (Phase 7a fix) ─────────────────────────────
+        // Daily attendance doc is the canonical store; the RTDB month
+        // string is now a best-effort mirror. If Firestore fails we
+        // release the lock and bail BEFORE touching RTDB so the two
+        // stores can never disagree on this day.
+        // Single-student name lookup — Firestore-only (R5).
+        // Replaces `firebase->get("{$sectionRoot}/Students/List/{$studentId}")`.
+        $stuInfo = $this->roster->for_student($studentId);
+        $stuName = is_array($stuInfo) ? (string) ($stuInfo['Name'] ?? '') : '';
+        $fsOk = $this->_syncDailyToFirestore(
+            $studentId, $mark, $class, $section, $day, $attKey,
+            $stuName, $mark === 'T'
+        );
+        if (!$fsOk) {
+            $this->_release_att_lock($attPath);
+            return $this->json_error('Firestore write failed; attendance not saved. Please retry.');
+        }
+
+        // ── RTDB mirror ────────────────────────────────────────────────
+        $this->firebase->set($attPath, $attStr);
         $this->_release_att_lock($attPath);
 
         // Handle late time — set if T, clean up if changed FROM T
         $latePath = "Schools/{$school}/{$session}/Attendance/Late/{$attKey}/{$studentId}/{$day}";
         if ($mark === 'T' && $lateTime) {
             $lateTime = preg_replace('/[^0-9:]/', '', $lateTime);
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->set($latePath, ['time' => $lateTime]);
         } elseif ($mark !== 'T') {
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->delete($latePath);
         }
 
         $this->_log_attendance_change('MARK_STUDENT_DAY', [
@@ -994,22 +1289,36 @@ class Attendance extends MY_Controller
         }
 
         $sectionRoot = $this->_resolve_section_root($class, $section);
-        $allStudents = null; // RTDB fallback removed
-        $list = is_array($allStudents) ? $this->_extract_student_list($allStudents) : [];
+        // R5 — roster from Firestore. The per-student attendance writes
+        // below at `{sectionRoot}/Students/{id}/Attendance/{key}` are
+        // unchanged (RTDB attendance mirror is out of R5 scope).
+        $list = $this->_get_section_students($class, $section);
         if (empty($list)) {
             return $this->json_error('No students found.');
         }
 
+        // Phase 7e — Firestore-first bulk mark.
+        $bulkMarks = [];
+        foreach ($list as $studentId => $name) {
+            if (!is_string($studentId) || trim($studentId) === '') continue;
+            $bulkMarks[$studentId] = ['mark' => $mark, 'name' => is_string($name) ? $name : ''];
+        }
+        $fsOk = $this->_syncBulkDailyToFirestore($bulkMarks, $class, $section, $day, $attKey);
+        if ($fsOk === false) {
+            return $this->json_error('Firestore write failed; bulk attendance not saved. Please retry.');
+        }
+
+        // RTDB mirror (best-effort)
         $count = 0;
         foreach ($list as $studentId => $name) {
             if (!is_string($studentId) || trim($studentId) === '') continue;
 
             $attPath = "{$sectionRoot}/Students/{$studentId}/Attendance/{$attKey}";
-            $existing = null; // RTDB fallback removed
+            $existing = $this->firebase->get($attPath);
             $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
             $attStr = str_pad($attStr, $daysInMonth, 'V');
             $attStr[$day - 1] = $mark;
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->set($attPath, $attStr);
             $count++;
         }
 
@@ -1039,22 +1348,49 @@ class Attendance extends MY_Controller
             return $this->json_error('Invalid student ID.');
         }
 
-        $sectionRoot = $this->_resolve_section_root($class, $section);
-        $basePath = "{$sectionRoot}/Students/{$studentId}/Attendance";
-        $allAtt = null; // RTDB fallback removed
-
         $summary = [];
         $totals = ['P' => 0, 'A' => 0, 'L' => 0, 'H' => 0, 'T' => 0, 'V' => 0, 'total_days' => 0];
 
-        if (is_array($allAtt)) {
-            foreach ($allAtt as $monthKey => $attStr) {
-                if (!is_string($attStr)) continue;
+        // ── READ: Firestore FIRST (canonical) ──
+        $fsDocs = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('attendanceSummary', [
+                ['studentId', '==', $studentId],
+                ['type', '==', 'student'],
+            ]);
+        } catch (\Exception $e) {
+            $fsDocs = [];
+        }
+
+        if (!empty($fsDocs)) {
+            foreach ($fsDocs as $entry) {
+                $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                if (!is_array($d)) continue;
+                $attStr = $d['dayWise'] ?? '';
+                if (!is_string($attStr) || $attStr === '') continue;
+                $monthLabel = $d['monthLabel'] ?? ($d['month'] ?? '');
                 $stats = $this->_compute_month_stats($attStr);
-                $summary[$monthKey] = $stats;
+                $summary[$monthLabel] = $stats;
                 foreach (['P', 'A', 'L', 'H', 'T', 'V'] as $ch) {
                     $totals[$ch] += $stats[$ch];
                 }
                 $totals['total_days'] += strlen($attStr);
+            }
+        } else {
+            // ── RTDB fallback (legacy / pre-migration data) ──
+            $sectionRoot = $this->_resolve_section_root($class, $section);
+            $basePath = "{$sectionRoot}/Students/{$studentId}/Attendance";
+            $allAtt = $this->firebase->get($basePath);
+            if (is_array($allAtt)) {
+                foreach ($allAtt as $monthKey => $attStr) {
+                    if (!is_string($attStr)) continue;
+                    $stats = $this->_compute_month_stats($attStr);
+                    $summary[$monthKey] = $stats;
+                    foreach (['P', 'A', 'L', 'H', 'T', 'V'] as $ch) {
+                        $totals[$ch] += $stats[$ch];
+                    }
+                    $totals['total_days'] += strlen($attStr);
+                }
             }
         }
 
@@ -1092,13 +1428,62 @@ class Attendance extends MY_Controller
         $monthNum = $this->month_map[$month];
         $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
         $attKey = "{$month} {$year}";
+        $attKeySafe = str_replace(' ', '_', $attKey); // "April_2026" — used in staffAttendanceSummary doc id
 
-        // Batch-read: Teachers node (all profiles), staff attendance, and late data in 3 reads
-        $allTeachers = null; // RTDB fallback removed
-        $allStaffAtt = null; // RTDB fallback removed
-        $allStaffLate = null; // RTDB fallback removed
+        // Roster — Firestore-first
+        $allTeachers = null;
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
+            if (!empty($fsDocs)) {
+                $allTeachers = [];
+                foreach ($fsDocs as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? $d['userId'] ?? '';
+                    if ($sid !== '') {
+                        $allTeachers[$sid] = [
+                            'Name'       => $d['Name'] ?? $d['name'] ?? $sid,
+                            'Department' => $d['Department'] ?? $d['department'] ?? '',
+                            'Designation'=> $d['designation'] ?? $d['Position'] ?? $d['position'] ?? '',
+                        ];
+                    }
+                }
+            }
+        } catch (\Exception $e) {}
+        // RTDB fallback only on Firestore exception
+        if ($allTeachers === null) {
+            $allTeachers = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
+        }
 
-        if (!is_array($allStaffAtt)) $allStaffAtt = [];
+        // ── READ: Firestore FIRST for the per-staff dayWise strings ──
+        $allStaffAtt = [];
+        $monthKeyISO = sprintf('%04d-%02d', $year, $monthNum); // "2026-04"
+        try {
+            // Try both month formats: "2026-04" (ISO) and "April 2026" (label)
+            $fsDocs = $this->fs->schoolWhere('staffAttendanceSummary', [
+                ['month', '==', $monthKeyISO],
+            ]);
+            if (empty($fsDocs)) {
+                $fsDocs = $this->fs->schoolWhere('staffAttendanceSummary', [
+                    ['monthLabel', '==', $attKey],
+                ]);
+            }
+            foreach ($fsDocs as $entry) {
+                $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                if (!is_array($d)) continue;
+                $sid = $d['staffId'] ?? '';
+                $dw  = $d['dayWise'] ?? '';
+                if ($sid !== '' && is_string($dw)) {
+                    $allStaffAtt[$sid] = $dw;
+                }
+            }
+        } catch (\Exception $e) {
+            $allStaffAtt = [];
+        }
+
+        // No RTDB fallback for dayWise strings — empty Firestore = valid (no attendance marked yet)
+
+        // Per-day late times — still RTDB (no Firestore staff lateTimes yet)
+        $allStaffLate = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/Late/{$attKey}");
         if (!is_array($allStaffLate)) $allStaffLate = [];
         $staffList = [];
 
@@ -1117,11 +1502,15 @@ class Attendance extends MY_Controller
                 $lateRaw = isset($allStaffLate[$staffId]) && is_array($allStaffLate[$staffId])
                     ? $allStaffLate[$staffId] : [];
 
+                $dept = is_array($profile) ? ($profile['Department'] ?? '') : '';
+                $desig = is_array($profile) ? ($profile['Designation'] ?? '') : '';
                 $staffList[] = [
-                    'id'         => $staffId,
-                    'name'       => $name,
-                    'attendance' => $attStr,
-                    'late'       => $this->_normalize_late_data($lateRaw),
+                    'id'          => $staffId,
+                    'name'        => $name,
+                    'department'  => $dept,
+                    'designation' => $desig,
+                    'attendance'  => $attStr,
+                    'late'        => $this->_normalize_late_data($lateRaw),
                 ];
             }
         }
@@ -1197,7 +1586,7 @@ class Attendance extends MY_Controller
                     foreach ($attData as $sid => $newStr) {
                         $sid = trim((string)$sid);
                         if (!preg_match('/^[A-Za-z0-9_]+$/', $sid)) continue;
-                        $curStr = null; // RTDB fallback removed
+                        $curStr = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$sid}");
                         $curStr = is_string($curStr) ? str_pad($curStr, $daysInMonth, 'V') : str_repeat('V', $daysInMonth);
                         $changes = [];
                         for ($d = 0; $d < $daysInMonth && $d < strlen($newStr); $d++) {
@@ -1224,6 +1613,10 @@ class Attendance extends MY_Controller
             }
         }
 
+        // Pre-load staff names so the Firestore docs include them.
+        $allStaff = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
+        if (!is_array($allStaff)) $allStaff = [];
+
         $saved = 0;
         foreach ($attData as $staffId => $attString) {
             $staffId = trim((string) $staffId);
@@ -1232,11 +1625,21 @@ class Attendance extends MY_Controller
             $cleanStr = $this->_sanitize_att_string($attString, $daysInMonth);
             $cleanStr = enforce_holidays_on_string($cleanStr, $daysInMonth, $nonWorking);
 
+            $staffName = '';
+            if (isset($allStaff[$staffId]) && is_array($allStaff[$staffId])) {
+                $staffName = (string)($allStaff[$staffId]['Name'] ?? $allStaff[$staffId]['name'] ?? '');
+            }
+
+            // Phase 7b — Firestore primary write for the monthly summary.
+            // Best-effort here because bulk save is a hot path; failures
+            // are logged but don't block the rest of the batch.
+            $this->_syncStaffSummaryToFirestore($staffId, $attKey, $cleanStr, $staffName);
+
             $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->set($attPath, $cleanStr);
             $saved++;
 
-            // Write summary cache
+            // Write RTDB summary cache (legacy).
             update_staff_att_summary($this->firebase, $school, $session, $staffId, $attKey, $monthNum, $year);
 
             if (is_array($lateData) && isset($lateData[$staffId]) && is_array($lateData[$staffId])) {
@@ -1246,7 +1649,7 @@ class Attendance extends MY_Controller
                     $time = preg_replace('/[^0-9:]/', '', (string) $time);
                     if ($time) {
                         $latePath = "Schools/{$school}/{$session}/Staff_Attendance/Late/{$attKey}/{$staffId}/{$day}";
-                        // RTDB mirror removed per no-RTDB policy.
+                        $this->firebase->set($latePath, ['time' => $time]);
                     }
                 }
             }
@@ -1316,7 +1719,7 @@ class Attendance extends MY_Controller
         if ($govCheck !== null) {
             if (!empty($govCheck['needs_approval'])) {
                 // Fetch old mark for audit trail
-                $curStr = null; // RTDB fallback removed
+                $curStr = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}");
                 $oldMk = (is_string($curStr) && isset($curStr[$day - 1])) ? $curStr[$day - 1] : 'V';
                 $reqId = $this->_create_pending_request('staff_day', [
                     'target_id' => $staffId, 'month' => $month, 'day' => $day, 'mark' => $mark,
@@ -1336,21 +1739,40 @@ class Attendance extends MY_Controller
             return $this->json_error('Another attendance update is in progress. Try again.', 409);
         }
 
-        $existing = null; // RTDB fallback removed
+        $existing = $this->firebase->get($attPath);
         $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
         $attStr = str_pad($attStr, $daysInMonth, 'V');
         $oldMark = $attStr[$day - 1];
         $attStr[$day - 1] = $mark;
-        // RTDB mirror removed per no-RTDB policy.
+
+        // ── Firestore-first (Phase 7b) ─────────────────────────────────
+        // Daily staff doc is the canonical store. RTDB is the mirror.
+        $staffName = '';
+        $staffMeta = $this->firebase->get("Schools/{$school}/{$session}/Teachers/{$staffId}");
+        if (is_array($staffMeta)) {
+            $staffName = (string)($staffMeta['Name'] ?? $staffMeta['name'] ?? '');
+        }
+        $fsOk = $this->_syncStaffDailyToFirestore(
+            $staffId, $mark, $day, $attKey, $staffName, $mark === 'T'
+        );
+        if (!$fsOk) {
+            $this->_release_att_lock($attPath);
+            return $this->json_error('Firestore write failed; staff attendance not saved. Please retry.');
+        }
+        // Monthly summary mirror — best-effort, don't fail the request.
+        $this->_syncStaffSummaryToFirestore($staffId, $attKey, $attStr, $staffName);
+
+        // ── RTDB mirror ────────────────────────────────────────────────
+        $this->firebase->set($attPath, $attStr);
         $this->_release_att_lock($attPath);
 
         // Handle late time — set if T, clean up if changed FROM T
         $latePath = "Schools/{$school}/{$session}/Staff_Attendance/Late/{$attKey}/{$staffId}/{$day}";
         if ($mark === 'T' && $lateTime) {
             $lateTime = preg_replace('/[^0-9:]/', '', $lateTime);
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->set($latePath, ['time' => $lateTime]);
         } elseif ($mark !== 'T') {
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->delete($latePath);
         }
 
         $this->_log_attendance_change('MARK_STAFF_DAY', [
@@ -1358,7 +1780,7 @@ class Attendance extends MY_Controller
             'old' => $oldMark, 'new' => $mark,
         ]);
 
-        // Update summary cache
+        // Update RTDB summary cache (legacy — Firestore summary already written above).
         update_staff_att_summary($this->firebase, $school, $session, $staffId, $attKey, $monthNum, $year);
 
         return $this->json_success(['mark' => $mark, 'day' => $day]);
@@ -1393,14 +1815,18 @@ class Attendance extends MY_Controller
             return $this->json_error('Invalid day.');
         }
 
-        $teacherKeys = []; // RTDB fallback removed
+        $teacherKeys = $this->firebase->shallow_get("Schools/{$school}/{$session}/Teachers");
         if (!is_array($teacherKeys)) {
             return $this->json_error('No staff found.');
         }
 
         // Batch-read all staff attendance for this month in 1 read (instead of N)
-        $allStaffAtt = null; // RTDB fallback removed
+        $allStaffAtt = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}");
         if (!is_array($allStaffAtt)) $allStaffAtt = [];
+
+        // Pre-load staff names for the Firestore docs.
+        $staffMeta = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
+        if (!is_array($staffMeta)) $staffMeta = [];
 
         $count = 0;
         foreach ($teacherKeys as $staffId => $v) {
@@ -1410,8 +1836,17 @@ class Attendance extends MY_Controller
             $attStr = $existing ?: str_repeat('V', $daysInMonth);
             $attStr = str_pad($attStr, $daysInMonth, 'V');
             $attStr[$day - 1] = $mark;
+
+            $name = isset($staffMeta[$staffId]) && is_array($staffMeta[$staffId])
+                ? (string)($staffMeta[$staffId]['Name'] ?? $staffMeta[$staffId]['name'] ?? '')
+                : '';
+
+            // Phase 7b — best-effort Firestore mirror per staff.
+            $this->_syncStaffDailyToFirestore($staffId, $mark, $day, $attKey, $name, $mark === 'T');
+            $this->_syncStaffSummaryToFirestore($staffId, $attKey, $attStr, $name);
+
             $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->set($attPath, $attStr);
             $count++;
         }
 
@@ -1451,14 +1886,18 @@ class Attendance extends MY_Controller
         $attKey    = "{$monthName} {$year}";
 
         // Get all teachers in this session
-        $teacherKeys = []; // RTDB fallback removed
+        $teacherKeys = $this->firebase->shallow_get("Schools/{$school}/{$session}/Teachers");
         if (!is_array($teacherKeys) || empty($teacherKeys)) {
             return $this->json_success(['marked' => 0, 'skipped' => 0, 'message' => 'No staff found in session.']);
         }
 
         // Batch-read all staff attendance for this month
-        $allStaffAtt = null; // RTDB fallback removed
+        $allStaffAtt = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}");
         if (!is_array($allStaffAtt)) $allStaffAtt = [];
+
+        // Pre-load staff metadata for names (Firestore docs need them)
+        $staffMeta = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
+        if (!is_array($staffMeta)) $staffMeta = [];
 
         $marked  = 0;
         $skipped = 0;
@@ -1473,8 +1912,17 @@ class Attendance extends MY_Controller
             $currentMark = $attStr[$day - 1] ?? 'V';
             if ($currentMark === 'V') {
                 $attStr[$day - 1] = 'P';
+
+                $name = isset($staffMeta[$staffId]) && is_array($staffMeta[$staffId])
+                    ? (string)($staffMeta[$staffId]['Name'] ?? $staffMeta[$staffId]['name'] ?? '')
+                    : '';
+
+                // Phase 7b — best-effort Firestore mirror per staff (bulk op).
+                $this->_syncStaffDailyToFirestore($staffId, 'P', $day, $attKey, $name, false);
+                $this->_syncStaffSummaryToFirestore($staffId, $attKey, $attStr, $name);
+
                 $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
-                // RTDB mirror removed per no-RTDB policy.
+                $this->firebase->set($attPath, $attStr);
                 $marked++;
             } else {
                 $skipped++;
@@ -1504,7 +1952,7 @@ class Attendance extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES, 'get_settings');
         $path = "Schools/{$this->school_name}/Config/Attendance";
-        $config = null; // RTDB fallback removed
+        $config = $this->firebase->get($path);
 
         $defaults = [
             'late_threshold_student' => '08:30',
@@ -1555,7 +2003,7 @@ class Attendance extends MY_Controller
         }
 
         $path = "Schools/{$this->school_name}/Config/Attendance";
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->update($path, $data);
 
         return $this->json_success(['message' => 'Settings saved.']);
     }
@@ -1567,7 +2015,7 @@ class Attendance extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'get_holidays');
         $path = "Schools/{$this->school_name}/Config/Attendance/holidays";
-        $holidays = null; // RTDB fallback removed
+        $holidays = $this->firebase->get($path);
 
         return $this->json_success([
             'holidays' => is_array($holidays) ? $holidays : [],
@@ -1598,7 +2046,7 @@ class Attendance extends MY_Controller
         }
 
         $path = "Schools/{$this->school_name}/Config/Attendance/holidays";
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->set($path, $clean);
 
         return $this->json_success(['saved' => count($clean)]);
     }
@@ -1613,22 +2061,47 @@ class Attendance extends MY_Controller
     public function fetch_devices()
     {
         $this->_require_role(self::MANAGE_ROLES, 'fetch_devices');
-        $path = "Schools/{$this->school_name}/Config/Devices";
-        $devices = null; // RTDB fallback removed
 
         $list = [];
-        if (is_array($devices)) {
-            foreach ($devices as $id => $dev) {
-                if (!is_array($dev)) continue;
+
+        // Phase 7c — Firestore-first read.
+        try {
+            $docs = $this->fs->schoolList('attendanceDevices');
+        } catch (\Exception $e) {
+            $docs = [];
+        }
+
+        if (!empty($docs) && is_array($docs)) {
+            foreach ($docs as $d) {
+                $d = $d['data'] ?? $d;
+                if (!is_array($d)) continue;
                 $list[] = [
-                    'id'        => $id,
-                    'name'      => $dev['name'] ?? '',
-                    'type'      => $dev['type'] ?? 'unknown',
-                    'location'  => $dev['location'] ?? '',
-                    'status'    => $dev['status'] ?? 'inactive',
-                    'last_ping' => $dev['last_ping'] ?? '',
-                    'created_at' => $dev['created_at'] ?? '',
+                    'id'        => $d['deviceId'] ?? $d['device_id'] ?? '',
+                    'name'      => $d['name'] ?? '',
+                    'type'      => $d['type'] ?? 'unknown',
+                    'location'  => $d['location'] ?? '',
+                    'status'    => $d['status'] ?? 'inactive',
+                    'last_ping' => $d['lastPing'] ?? $d['last_ping'] ?? '',
+                    'created_at' => $d['createdAt'] ?? $d['created_at'] ?? '',
                 ];
+            }
+        } else {
+            // RTDB fallback
+            $path = "Schools/{$this->school_name}/Config/Devices";
+            $devices = $this->firebase->get($path);
+            if (is_array($devices)) {
+                foreach ($devices as $id => $dev) {
+                    if (!is_array($dev)) continue;
+                    $list[] = [
+                        'id'        => $id,
+                        'name'      => $dev['name'] ?? '',
+                        'type'      => $dev['type'] ?? 'unknown',
+                        'location'  => $dev['location'] ?? '',
+                        'status'    => $dev['status'] ?? 'inactive',
+                        'last_ping' => $dev['last_ping'] ?? '',
+                        'created_at' => $dev['created_at'] ?? '',
+                    ];
+                }
             }
         }
 
@@ -1668,16 +2141,48 @@ class Attendance extends MY_Controller
             'last_ping'   => '',
         ];
 
-        // Save device record
-        // RTDB mirror removed per no-RTDB policy.
+        // Phase 7c — Firestore-first write (must succeed before RTDB mirror).
+        $fsDoc = [
+            'schoolId'    => $this->school_id,
+            'deviceId'    => $deviceId,
+            'name'        => $name,
+            'type'        => $type,
+            'location'    => $location,
+            'status'      => 'active',
+            'apiKeyHash'  => $keyHash,
+            'createdAt'   => date('c'),
+            'lastPing'    => '',
+        ];
+        try {
+            $fsOk = (bool) $this->fs->set('attendanceDevices', $this->fs->docId($deviceId), $fsDoc, true);
+        } catch (\Exception $e) {
+            $fsOk = false;
+        }
+        if (!$fsOk) {
+            return $this->json_error('Firestore write failed; device not registered. Please retry.');
+        }
+
+        // Phase 7c — Firestore key→device index for fast device auth lookup.
+        try {
+            $this->fs->set('attendanceDeviceKeys', $keyHash, [
+                'keyHash'    => $keyHash,
+                'deviceId'   => $deviceId,
+                'schoolId'   => $this->school_id,
+                'schoolName' => $this->school_name,
+                'createdAt'  => date('c'),
+            ], true);
+        } catch (\Exception $e) { /* best-effort */ }
+
+        // RTDB mirror (best-effort)
+        $this->firebase->set("Schools/{$this->school_name}/Config/Devices/{$deviceId}", $deviceData);
 
         // Save API key lookup — dual-write to both school-scoped and System-level index
         $keyData = [
             'device_id'   => $deviceId,
             'school_name' => $this->school_name,
         ];
-        // RTDB mirror removed per no-RTDB policy.
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->set("Schools/{$this->school_name}/Config/API_Keys/{$keyHash}", $keyData);
+        $this->firebase->set("System/API_Keys/{$keyHash}", $keyData);
 
         return $this->json_success([
             'device_id' => $deviceId,
@@ -1713,8 +2218,22 @@ class Attendance extends MY_Controller
             return $this->json_error('Nothing to update.');
         }
 
+        // Phase 7c — Firestore-first update.
+        $fsUpdates = [];
+        foreach ($updates as $k => $v) { $fsUpdates[$k] = $v; }
+        $fsUpdates['schoolId'] = $this->school_id;
+        $fsUpdates['deviceId'] = $deviceId;
+        try {
+            $fsOk = (bool) $this->fs->set('attendanceDevices', $this->fs->docId($deviceId), $fsUpdates, true);
+        } catch (\Exception $e) {
+            $fsOk = false;
+        }
+        if (!$fsOk) {
+            return $this->json_error('Firestore update failed; please retry.');
+        }
+
         $path = "Schools/{$this->school_name}/Config/Devices/{$deviceId}";
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->update($path, $updates);
 
         return $this->json_success(['message' => 'Device updated.']);
     }
@@ -1731,16 +2250,30 @@ class Attendance extends MY_Controller
             return $this->json_error('Invalid device ID.');
         }
 
-        // Get key hash to delete from both API_Keys lookups
+        // Get key hash to delete from both API_Keys lookups (try Firestore first)
         $devPath = "Schools/{$this->school_name}/Config/Devices/{$deviceId}";
-        $device = null; // RTDB fallback removed
-        if (is_array($device) && !empty($device['api_key_hash'])) {
-            $hash = $device['api_key_hash'];
-            // RTDB mirror removed per no-RTDB policy.
-            // RTDB mirror removed per no-RTDB policy.
+        $hash = null;
+        try {
+            $fsDev = $this->fs->get('attendanceDevices', $this->fs->docId($deviceId));
+            if (is_array($fsDev)) {
+                $hash = $fsDev['apiKeyHash'] ?? $fsDev['api_key_hash'] ?? null;
+            }
+        } catch (\Exception $e) { $fsDev = null; }
+        if (!$hash) {
+            $device = $this->firebase->get($devPath);
+            if (is_array($device) && !empty($device['api_key_hash'])) {
+                $hash = $device['api_key_hash'];
+            }
+        }
+        if ($hash) {
+            try { $this->fs->remove('attendanceDeviceKeys', $hash); } catch (\Exception $e) {}
+            $this->firebase->delete("Schools/{$this->school_name}/Config/API_Keys/{$hash}");
+            $this->firebase->delete("System/API_Keys/{$hash}");
         }
 
-        // RTDB mirror removed per no-RTDB policy.
+        // Phase 7c — Firestore-first delete.
+        try { $this->fs->remove('attendanceDevices', $this->fs->docId($deviceId)); } catch (\Exception $e) {}
+        $this->firebase->delete($devPath);
 
         return $this->json_success(['message' => 'Device deleted.']);
     }
@@ -1757,8 +2290,21 @@ class Attendance extends MY_Controller
             return $this->json_error('Invalid device ID.');
         }
 
+        // Phase 7c — Firestore-first lookup.
+        $device = null;
+        try {
+            $fsDev = $this->fs->get('attendanceDevices', $this->fs->docId($deviceId));
+            if (is_array($fsDev)) {
+                $device = [
+                    'api_key_hash' => $fsDev['apiKeyHash'] ?? $fsDev['api_key_hash'] ?? '',
+                ];
+            }
+        } catch (\Exception $e) { /* fall back */ }
+
         $devPath = "Schools/{$this->school_name}/Config/Devices/{$deviceId}";
-        $device = null; // RTDB fallback removed
+        if (!$device) {
+            $device = $this->firebase->get($devPath);
+        }
         if (!is_array($device)) {
             return $this->json_error('Device not found.');
         }
@@ -1766,8 +2312,9 @@ class Attendance extends MY_Controller
         // Delete old key lookup from both indexes
         if (!empty($device['api_key_hash'])) {
             $oldHash = $device['api_key_hash'];
-            // RTDB mirror removed per no-RTDB policy.
-            // RTDB mirror removed per no-RTDB policy.
+            try { $this->fs->remove('attendanceDeviceKeys', $oldHash); } catch (\Exception $e) {}
+            $this->firebase->delete("Schools/{$this->school_name}/Config/API_Keys/{$oldHash}");
+            $this->firebase->delete("System/API_Keys/{$oldHash}");
         }
 
         // Generate new key
@@ -1778,9 +2325,33 @@ class Attendance extends MY_Controller
             'device_id'   => $deviceId,
             'school_name' => $this->school_name,
         ];
-        // RTDB mirror removed per no-RTDB policy.
-        // RTDB mirror removed per no-RTDB policy.
-        // RTDB mirror removed per no-RTDB policy.
+
+        // Firestore-first apiKeyHash update.
+        try {
+            $fsOk = (bool) $this->fs->set('attendanceDevices', $this->fs->docId($deviceId), [
+                'schoolId'   => $this->school_id,
+                'deviceId'   => $deviceId,
+                'apiKeyHash' => $keyHash,
+            ], true);
+        } catch (\Exception $e) { $fsOk = false; }
+        if (!$fsOk) {
+            return $this->json_error('Firestore update failed; please retry.');
+        }
+
+        // Phase 7c — refresh Firestore key→device index.
+        try {
+            $this->fs->set('attendanceDeviceKeys', $keyHash, [
+                'keyHash'    => $keyHash,
+                'deviceId'   => $deviceId,
+                'schoolId'   => $this->school_id,
+                'schoolName' => $this->school_name,
+                'createdAt'  => date('c'),
+            ], true);
+        } catch (\Exception $e) { /* best-effort */ }
+
+        $this->firebase->update($devPath, ['api_key_hash' => $keyHash]);
+        $this->firebase->set("Schools/{$this->school_name}/Config/API_Keys/{$keyHash}", $keyData);
+        $this->firebase->set("System/API_Keys/{$keyHash}", $keyData);
 
         return $this->json_success([
             'api_key' => $rawKey,
@@ -1840,7 +2411,7 @@ class Attendance extends MY_Controller
         // ── C-05 FIX: Verify person_id belongs to the authenticated school ──
         $schoolName_pre = $auth['school_name'];
         // Resolve parent_db_key for this school (legacy schools use school_code, SCH_ schools use school_id)
-        $schoolMeta = null; // RTDB fallback removed
+        $schoolMeta = $this->firebase->get("System/Schools/{$schoolName_pre}");
         $parentDbKey = $schoolName_pre; // default
         if (is_array($schoolMeta)) {
             if (!empty($schoolMeta['school_code']) && strpos($schoolName_pre, 'SCH_') !== 0) {
@@ -1848,19 +2419,19 @@ class Attendance extends MY_Controller
             }
         }
         if ($personType === 'student') {
-            $personCheck = null; // RTDB fallback removed
+            $personCheck = $this->firebase->get("Users/Parents/{$parentDbKey}/{$personId}/Name");
             if (!$personCheck) {
                 return $this->json_error('Person ID does not belong to this school.', 403);
             }
         } elseif ($personType === 'staff') {
-            $staffCheck = null; // RTDB fallback removed
+            $staffCheck = $this->firebase->get("Users/Teachers/{$schoolName_pre}/{$personId}/Name");
             if (!$staffCheck) {
                 return $this->json_error('Staff ID does not belong to this school.', 403);
             }
         }
 
         // Reject low-confidence face recognition punches
-        $deviceInfo_pre = null; // RTDB fallback removed
+        $deviceInfo_pre = $this->firebase->get("Schools/{$auth['school_name']}/Config/Devices/{$auth['device_id']}");
         $devType = is_array($deviceInfo_pre) ? ($deviceInfo_pre['type'] ?? '') : '';
         if ($devType === 'face_recognition' && $confidence < self::FACE_CONFIDENCE_THRESHOLD) {
             return $this->json_error('Confidence too low for face recognition. Score: ' . $confidence, 422);
@@ -1870,9 +2441,9 @@ class Attendance extends MY_Controller
         $deviceId   = $auth['device_id'];
 
         // Determine session year from school config
-        $activeSession = null; // RTDB fallback removed
+        $activeSession = $this->firebase->get("Schools/{$schoolName}/Config/ActiveSession");
         if (!$activeSession) {
-            $sessions = null; // RTDB fallback removed
+            $sessions = $this->firebase->get("System/Schools/{$schoolName}/Sessions");
             $activeSession = is_array($sessions) ? end($sessions) : date('Y') . '-' . (date('Y') + 1);
         }
         $session = is_string($activeSession) ? $activeSession : (string) $activeSession;
@@ -1900,7 +2471,7 @@ class Attendance extends MY_Controller
                 return $this->json_error('Invalid event_id format.', 400);
             }
             $eventPath = "Schools/{$schoolName}/{$session}/Attendance/ProcessedEvents/{$eventId}";
-            $existing = null; // RTDB fallback removed
+            $existing = $this->firebase->get($eventPath);
             if (is_array($existing)) {
                 // Check TTL — treat expired entries as non-existent
                 $expiresAt = $existing['expires_at'] ?? 0;
@@ -1915,12 +2486,12 @@ class Attendance extends MY_Controller
                     ]);
                 }
                 // Expired — delete stale entry and reprocess
-                // RTDB mirror removed per no-RTDB policy.
+                $this->firebase->delete($eventPath);
             }
         }
 
         // Dedup check — reject if same person punched within 5 minutes (fallback for devices without event_id)
-        $existingPunches = null; // RTDB fallback removed
+        $existingPunches = $this->firebase->get("Schools/{$schoolName}/{$session}/Attendance/Punch_Log/{$dateStr}");
         if (is_array($existingPunches)) {
             foreach ($existingPunches as $pId => $pData) {
                 if (!is_array($pData)) continue;
@@ -1947,13 +2518,34 @@ class Attendance extends MY_Controller
         if ($class) $punchData['class'] = $class;
         if ($section) $punchData['section'] = $section;
 
-        // RTDB mirror removed per no-RTDB policy.
+        // Phase 7d — Firestore punch log mirror (best-effort).
+        $punchId = 'PUNCH_' . dechex((int) ($ts * 1000)) . '_' . bin2hex(random_bytes(4));
+        try {
+            $this->fs->set('attendancePunches', $this->fs->docId($punchId), array_merge($punchData, [
+                'schoolId'    => $auth['school_id'] ?? $this->school_id,
+                'session'     => $session,
+                'date'        => $dateStr,
+                'punchId'     => $punchId,
+                'createdAt'   => date('c'),
+            ]), true);
+        } catch (\Exception $e) { /* best-effort */ }
 
-        // Update last_ping on device
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->push("Schools/{$schoolName}/{$session}/Attendance/Punch_Log/{$dateStr}", $punchData);
+
+        // Update last_ping on device — Firestore + RTDB
+        try {
+            $this->fs->set('attendanceDevices', $this->fs->docId($deviceId), [
+                'schoolId' => $auth['school_id'] ?? $this->school_id,
+                'deviceId' => $deviceId,
+                'lastPing' => date('c'),
+            ], true);
+        } catch (\Exception $e) { /* best-effort */ }
+        $this->firebase->update("Schools/{$schoolName}/Config/Devices/{$deviceId}", [
+            'last_ping' => date('c'),
+        ]);
 
         // Determine mark (P or T based on late threshold)
-        $config = null; // RTDB fallback removed
+        $config = $this->firebase->get("Schools/{$schoolName}/Config/Attendance");
         $threshold = '08:30';
         if (is_array($config)) {
             $threshold = $personType === 'staff'
@@ -1973,37 +2565,59 @@ class Attendance extends MY_Controller
                 $attPath = "{$secRoot}/Students/{$personId}/Attendance/{$attKey}";
 
                 if ($this->_acquire_att_lock($attPath)) {
-                    $existing = null; // RTDB fallback removed
+                    $existing = $this->firebase->get($attPath);
                     $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
                     $attStr = str_pad($attStr, $daysInMonth, 'V');
                     $oldDevMark = $attStr[$dayOfMonth - 1];
                     if ($oldDevMark === 'V') {
                         $attStr[$dayOfMonth - 1] = $mark;
-                        // RTDB mirror removed per no-RTDB policy.
+
+                        // ── Firestore FIRST (canonical) ──
+                        $this->_syncDailyToFirestore($personId, $mark, $class, $section,
+                            $dayOfMonth, $attKey, '', $mark === 'T');
+
+                        // ── RTDB mirror (best-effort, stays until Phase 8) ──
+                        $this->firebase->set($attPath, $attStr);
                         $this->_update_summary_incremental($class, $section, $attKey, $personId, $oldDevMark, $mark);
                     }
                     $this->_release_att_lock($attPath);
                 }
 
                 if ($mark === 'T') {
-                    // RTDB mirror removed per no-RTDB policy.
+                    // RTDB mirror — Firestore lateTimes map is filled by
+                    // save_student_attendance / mark_student_day; punch
+                    // path keeps the legacy Late record on RTDB only for
+                    // now (TODO: nested merge into attendanceSummary).
+                    $this->firebase->set(
+                        "Schools/{$schoolName}/{$session}/Attendance/Late/{$attKey}/{$personId}/{$dayOfMonth}",
+                        ['time' => $timeStr, 'threshold' => $threshold]
+                    );
                 }
             } elseif ($personType === 'staff') {
                 $attPath = "Schools/{$schoolName}/{$session}/Staff_Attendance/{$attKey}/{$personId}";
 
                 if ($this->_acquire_att_lock($attPath)) {
-                    $existing = null; // RTDB fallback removed
+                    $existing = $this->firebase->get($attPath);
                     $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
                     $attStr = str_pad($attStr, $daysInMonth, 'V');
                     if ($attStr[$dayOfMonth - 1] === 'V') {
                         $attStr[$dayOfMonth - 1] = $mark;
-                        // RTDB mirror removed per no-RTDB policy.
+
+                        // ── Firestore FIRST (canonical) ──
+                        $this->_syncStaffDailyToFirestore($personId, $mark, $dayOfMonth, $attKey, '', $mark === 'T');
+                        $this->_syncStaffSummaryToFirestore($personId, $attKey, $attStr, '');
+
+                        // ── RTDB mirror (best-effort, stays until Phase 8) ──
+                        $this->firebase->set($attPath, $attStr);
                     }
                     $this->_release_att_lock($attPath);
                 }
 
                 if ($mark === 'T') {
-                    // RTDB mirror removed per no-RTDB policy.
+                    $this->firebase->set(
+                        "Schools/{$schoolName}/{$session}/Staff_Attendance/Late/{$attKey}/{$personId}/{$dayOfMonth}",
+                        ['time' => $timeStr, 'threshold' => $threshold]
+                    );
                 }
             }
         }
@@ -2011,7 +2625,14 @@ class Attendance extends MY_Controller
         // Store event_id for idempotency (if provided), with TTL for auto-expiry
         if ($eventId) {
             $eventPath = "Schools/{$schoolName}/{$session}/Attendance/ProcessedEvents/{$eventId}";
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->set($eventPath, [
+                'mark'       => $mark,
+                'time'       => $timeStr,
+                'person_id'  => $personId,
+                'direction'  => $direction,
+                'processed'  => date('c'),
+                'expires_at' => time() + self::IDEMPOTENCY_TTL,
+            ]);
         }
 
         // Audit log for device punches — date-partitioned path
@@ -2032,7 +2653,7 @@ class Attendance extends MY_Controller
         ];
         $yearMonth = date('Y-m', $ts);
         $logKey    = date('d_His', $ts) . '_' . mt_rand(1000, 9999);
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->set("System/Logs/Attendance/{$schoolName}/{$yearMonth}/{$logKey}", $punchLog);
 
         $this->_log_metric('api_punch', $__metric_start, 'success', $schoolName);
 
@@ -2068,7 +2689,32 @@ class Attendance extends MY_Controller
         $school  = $this->school_name;
         $session = $this->session_year;
         $year    = $this->_resolve_year($month);
+        $monthNum = $this->month_map[$month];
+        $monthKey = sprintf('%04d-%02d', $year, $monthNum);
         $attKey  = "{$month} {$year}";
+
+        // ── READ: Firestore FIRST — pre-fetch every student summary for the month ──
+        // Builds a flat studentId → dayWise map. The per-class loop below
+        // prefers this map and only falls back to the RTDB roster's
+        // Attendance subkey when the map has no entry for a student.
+        $fsByStudent = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('attendanceSummary', [
+                ['month', '==', $monthKey],
+                ['type', '==', 'student'],
+            ]);
+            foreach ($fsDocs as $entry) {
+                $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                if (!is_array($d)) continue;
+                $sid = $d['studentId'] ?? '';
+                $dw  = $d['dayWise'] ?? '';
+                if ($sid !== '' && is_string($dw) && $dw !== '') {
+                    $fsByStudent[$sid] = $dw;
+                }
+            }
+        } catch (\Exception $e) {
+            $fsByStudent = []; // fall through to RTDB-only path
+        }
 
         $classList = $this->_build_class_list();
         $analytics = [];
@@ -2079,20 +2725,29 @@ class Attendance extends MY_Controller
 
             if ($classFilter && $cName !== $classFilter) continue;
 
-            // Batch-read entire section's Students node (1 read per section)
+            // R5 — roster from Firestore via Roster_helper. The bulk
+            // RTDB read of `{secRoot}/Students` is retained ONLY for
+            // the per-student attendance fallback below
+            // (`$allStudents[$studentId]['Attendance'][$attKey]`); it
+            // is no longer the roster source.
             $secRoot = $this->_resolve_section_root($cName, $sec);
-            $allStudents = null; // RTDB fallback removed
-            if (!is_array($allStudents)) continue;
-            $list = $this->_extract_student_list($allStudents);
+            $list    = $this->_get_section_students($cName, $sec);
             if (empty($list)) continue;
+            $allStudents = $this->firebase->get("{$secRoot}/Students");
+            if (!is_array($allStudents)) $allStudents = [];
 
             $classTotals = ['P' => 0, 'A' => 0, 'L' => 0, 'H' => 0, 'T' => 0, 'V' => 0, 'students' => 0];
 
             foreach ($list as $studentId => $name) {
                 if (!is_string($studentId) || trim($studentId) === '') continue;
-                $attStr = isset($allStudents[$studentId]['Attendance'][$attKey])
+                // Firestore-first → RTDB fallback for the dayWise string
+                $attStr = $fsByStudent[$studentId] ?? '';
+                if ($attStr === ''
+                    && isset($allStudents[$studentId]['Attendance'][$attKey])
                     && is_string($allStudents[$studentId]['Attendance'][$attKey])
-                    ? $allStudents[$studentId]['Attendance'][$attKey] : '';
+                ) {
+                    $attStr = $allStudents[$studentId]['Attendance'][$attKey];
+                }
                 if (!$attStr) continue;
 
                 $stats = $this->_compute_month_stats($attStr);
@@ -2156,10 +2811,59 @@ class Attendance extends MY_Controller
 
         // Build section keys that match the filter
         $filteredSections = [];
+        $filteredCsPairs = []; // [{className, section}, ...] — used for Firestore matching
         foreach ($classList as $cls) {
             if ($classFilter && $cls['class_name'] !== $classFilter) continue;
             if ($sectionFilter && $cls['section'] !== $sectionFilter) continue;
             $filteredSections[] = str_replace(' ', '_', $cls['class_name']) . '_' . $cls['section'];
+            $filteredCsPairs[] = [
+                'className' => Firestore_service::classKey($cls['class_name']),
+                'section'   => Firestore_service::sectionKey($cls['section']),
+            ];
+        }
+
+        // ── READ: Firestore FIRST — pre-fetch every student summary in the school ──
+        // One query → group by `month` (YYYY-MM) → keyed totals per month.
+        // The academic-month loop below prefers these totals and only
+        // falls back to the cached RTDB summary / raw compute when the
+        // Firestore set has no entry for a given month.
+        $fsTotalsByMonth = []; // monthKey ("YYYY-MM") → ['P'=>x, 'work'=>y]
+        try {
+            $fsDocs = $this->fs->schoolWhere('attendanceSummary', [
+                ['type', '==', 'student'],
+            ]);
+            foreach ($fsDocs as $entry) {
+                $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                if (!is_array($d)) continue;
+
+                // Honour the same class+section filters as the legacy path
+                if (!empty($filteredCsPairs)) {
+                    $docCls = $d['className'] ?? '';
+                    $docSec = $d['section']   ?? '';
+                    $matched = false;
+                    foreach ($filteredCsPairs as $pair) {
+                        if ($pair['className'] === $docCls && $pair['section'] === $docSec) {
+                            $matched = true;
+                            break;
+                        }
+                    }
+                    if (!$matched) continue;
+                }
+
+                $mk = $d['month'] ?? '';
+                if (!preg_match('/^\d{4}-\d{2}$/', $mk)) continue;
+                if (!isset($fsTotalsByMonth[$mk])) {
+                    $fsTotalsByMonth[$mk] = ['P' => 0, 'work' => 0];
+                }
+                $present = (int) ($d['present'] ?? 0);
+                $tardy   = (int) ($d['tardy']   ?? 0);
+                $absent  = (int) ($d['absent']  ?? 0);
+                $leave   = (int) ($d['leave']   ?? 0);
+                $fsTotalsByMonth[$mk]['P']    += $present + $tardy;
+                $fsTotalsByMonth[$mk]['work'] += $present + $tardy + $absent + $leave;
+            }
+        } catch (\Exception $e) {
+            $fsTotalsByMonth = []; // fall through to legacy paths
         }
 
         $trend = [];
@@ -2169,15 +2873,28 @@ class Attendance extends MY_Controller
             $year    = $this->_resolve_year($month);
             $attKey  = "{$month} {$year}";
             $monthNum = $this->month_map[$month];
+            $monthKey = sprintf('%04d-%02d', $year, $monthNum);
 
             $monthEnd = mktime(23, 59, 59, $monthNum, cal_days_in_month(CAL_GREGORIAN, $monthNum, $year), $year);
             if ($monthEnd > time()) {
                 continue;
             }
 
-            // Try cached summary first (1 read instead of N*sections)
+            // ── Firestore FIRST ──
+            if (isset($fsTotalsByMonth[$monthKey]) && $fsTotalsByMonth[$monthKey]['work'] > 0) {
+                $row = $fsTotalsByMonth[$monthKey];
+                $trend[] = [
+                    'month'       => $month,
+                    'year'        => $year,
+                    'present_pct' => round($row['P'] / $row['work'] * 100, 1),
+                    'cached'      => true,
+                ];
+                continue;
+            }
+
+            // ── RTDB fallback: cached summary node ──
             $summaryPath = "Schools/{$school}/{$session}/Attendance/Summary/Students/{$attKey}";
-            $summary = null; // RTDB fallback removed
+            $summary = $this->firebase->get($summaryPath);
 
             if (is_array($summary) && !empty($summary)) {
                 $totalP = 0; $totalWork = 0;
@@ -2205,20 +2922,25 @@ class Attendance extends MY_Controller
             // Fallback: compute from raw data (lazy pre-fetch section data once)
             if (!$needFullCompute) {
                 $needFullCompute = true;
-                $sectionData = [];
+                $sectionData = [];      // RTDB Students node (attendance fallback)
+                $sectionRosters = [];   // R5 — roster from Firestore
                 foreach ($classList as $cls) {
                     if ($classFilter && $cls['class_name'] !== $classFilter) continue;
                     if ($sectionFilter && $cls['section'] !== $sectionFilter) continue;
                     $key = $cls['class_name'] . '|' . $cls['section'];
                     $secRoot = $this->_resolve_section_root($cls['class_name'], $cls['section']);
-                    // RTDB mirror removed per no-RTDB policy.
+                    $sectionData[$key]    = $this->firebase->get("{$secRoot}/Students");
+                    $sectionRosters[$key] = $this->_get_section_students($cls['class_name'], $cls['section']);
                 }
             }
 
             $totalP = 0; $totalWork = 0;
             foreach ($sectionData as $secKey => $allStudents) {
-                if (!is_array($allStudents)) continue;
-                $secList = $this->_extract_student_list($allStudents);
+                if (!is_array($allStudents)) $allStudents = [];
+                // R5 — roster from Firestore; RTDB Students node is now
+                // an attendance-fallback source only.
+                $secList = $sectionRosters[$secKey] ?? [];
+                if (empty($secList)) continue;
                 foreach ($secList as $studentId => $name) {
                     if (!is_string($studentId)) continue;
                     $attStr = isset($allStudents[$studentId]['Attendance'][$attKey])
@@ -2279,14 +3001,14 @@ class Attendance extends MY_Controller
         $personClass = '';
         $personSection = '';
         if ($personType === 'student') {
-            $profile = null; // RTDB fallback removed
+            $profile = $this->firebase->get("Users/Parents/{$this->parent_db_key}/{$personId}");
             if (is_array($profile)) {
                 $personName    = $profile['Name'] ?? $profile['name'] ?? '';
                 $personClass   = $profile['Class'] ?? '';
                 $personSection = $profile['Section'] ?? '';
             }
         } else {
-            $staffData = null; // RTDB fallback removed
+            $staffData = $this->firebase->get("Users/Teachers/{$this->school_id}/{$personId}");
             if (is_array($staffData)) {
                 $personName = $staffData['Name'] ?? $staffData['Profile']['name'] ?? '';
             }
@@ -2295,19 +3017,57 @@ class Attendance extends MY_Controller
         $monthlyData = [];
         $grandTotals = ['P' => 0, 'A' => 0, 'L' => 0, 'H' => 0, 'T' => 0, 'V' => 0];
 
+        // ── READ: Firestore FIRST — pre-fetch every month for this person ──
+        // One query gets all monthly summaries; we key them by `month`
+        // ("YYYY-MM") so the loop below can do an O(1) lookup before
+        // hitting RTDB. Empty result → fall through to RTDB per-month.
+        $fsByMonth = [];
+        try {
+            if ($personType === 'student') {
+                $fsDocs = $this->fs->schoolWhere('attendanceSummary', [
+                    ['studentId', '==', $personId],
+                    ['type',      '==', 'student'],
+                ]);
+            } else {
+                $fsDocs = $this->fs->schoolWhere('staffAttendanceSummary', [
+                    ['staffId', '==', $personId],
+                ]);
+            }
+            foreach ($fsDocs as $entry) {
+                $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                if (!is_array($d)) continue;
+                $mk = $d['month']  ?? '';
+                $dw = $d['dayWise'] ?? '';
+                if (preg_match('/^\d{4}-\d{2}$/', $mk) && is_string($dw) && $dw !== '') {
+                    $fsByMonth[$mk] = $dw;
+                }
+            }
+        } catch (\Exception $e) {
+            $fsByMonth = []; // fall through to RTDB-only path
+        }
+
         foreach ($this->academic_months as $month) {
             $year   = $this->_resolve_year($month);
             $attKey = "{$month} {$year}";
+            $monthNum = $this->month_map[$month] ?? 0;
+            $monthKey = $monthNum ? sprintf('%04d-%02d', $year, $monthNum) : '';
 
-            if ($personType === 'student') {
-                $secRoot = $this->_resolve_section_root($class, $section);
-                $attPath = "{$secRoot}/Students/{$personId}/Attendance/{$attKey}";
-            } else {
-                $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$personId}";
+            // ── Firestore FIRST ──
+            $attStr = $monthKey !== '' ? ($fsByMonth[$monthKey] ?? '') : '';
+
+            // ── RTDB fallback ──
+            if ($attStr === '') {
+                if ($personType === 'student') {
+                    $secRoot = $this->_resolve_section_root($class, $section);
+                    $attPath = "{$secRoot}/Students/{$personId}/Attendance/{$attKey}";
+                } else {
+                    $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$personId}";
+                }
+                $rtdbVal = $this->firebase->get($attPath);
+                if (is_string($rtdbVal)) $attStr = $rtdbVal;
             }
 
-            $attStr = null; // RTDB fallback removed
-            if (!is_string($attStr)) {
+            if ($attStr === '') {
                 $monthlyData[] = ['month' => $month, 'year' => $year, 'stats' => null];
                 continue;
             }
@@ -2366,12 +3126,14 @@ class Attendance extends MY_Controller
             $sec   = $cls['section'];
             $csKey = str_replace(' ', '_', $cName) . '_' . $sec;
 
-            // Batch-read entire section's Students node
+            // R5 — roster from Firestore via Roster_helper.
+            // Bulk RTDB Students read kept for the per-student
+            // `$allStudents[$studentId]['Attendance']` fallback below.
             $secRoot = $this->_resolve_section_root($cName, $sec);
-            $allStudents = null; // RTDB fallback removed
-            if (!is_array($allStudents)) continue;
-            $list = $this->_extract_student_list($allStudents);
+            $list    = $this->_get_section_students($cName, $sec);
             if (empty($list)) continue;
+            $allStudents = $this->firebase->get("{$secRoot}/Students");
+            if (!is_array($allStudents)) $allStudents = [];
 
             $studentStats = [];
             $totalStudents = 0;
@@ -2393,7 +3155,11 @@ class Attendance extends MY_Controller
                 $avgPct += $pct;
             }
 
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->set("{$summaryPath}/{$csKey}", [
+                'total_students'  => $totalStudents,
+                'avg_present_pct' => $totalStudents > 0 ? round($avgPct / $totalStudents, 1) : 0,
+                'students'        => $studentStats,
+            ]);
         }
 
         return $this->json_success(['message' => 'Summary computed.']);
@@ -2419,8 +3185,39 @@ class Attendance extends MY_Controller
         $page  = max(1, (int) ($this->input->post('page') ?: 1));
         $limit = max(1, min(200, (int) ($this->input->post('limit') ?: 50)));
 
-        // Shallow get for total count and key list (transfers only keys, not data)
-        $allKeys = []; // RTDB fallback removed
+        // Phase 7d — Firestore-first read.
+        try {
+            $fsPunches = $this->fs->schoolList('attendancePunches', [
+                ['date', '==', $date],
+            ]);
+        } catch (\Exception $e) { $fsPunches = []; }
+
+        if (!empty($fsPunches) && is_array($fsPunches)) {
+            usort($fsPunches, function ($a, $b) {
+                return strcmp((string)($a['punch_time'] ?? ''), (string)($b['punch_time'] ?? ''));
+            });
+            $total = count($fsPunches);
+            $totalPages = (int) ceil($total / $limit);
+            $offset = ($page - 1) * $limit;
+            $slice = array_slice($fsPunches, $offset, $limit);
+            $punches = [];
+            foreach ($slice as $p) {
+                if (!is_array($p)) continue;
+                $p['id'] = $p['punchId'] ?? '';
+                $punches[] = $p;
+            }
+            return $this->json_success([
+                'punches'    => $punches,
+                'date'       => $date,
+                'pagination' => [
+                    'page' => $page, 'limit' => $limit,
+                    'total' => $total, 'total_pages' => $totalPages,
+                ],
+            ]);
+        }
+
+        // RTDB fallback — shallow get for total count and key list
+        $allKeys = $this->firebase->shallow_get($basePath);
         if (!is_array($allKeys)) {
             return $this->json_success([
                 'punches'    => [],
@@ -2439,7 +3236,7 @@ class Attendance extends MY_Controller
         // Fetch only the records for this page
         $punches = [];
         foreach ($pageKeys as $key) {
-            $punch = null; // RTDB fallback removed
+            $punch = $this->firebase->get("{$basePath}/{$key}");
             if (is_array($punch)) {
                 $punch['id'] = $key;
                 $punches[] = $punch;
@@ -2487,9 +3284,9 @@ class Attendance extends MY_Controller
             return $this->json_error('Class and section required.');
         }
 
-        $secRoot = $this->_resolve_section_root($class, $section);
-        $allStudents = null; // RTDB fallback removed
-        $list = is_array($allStudents) ? $this->_extract_student_list($allStudents) : [];
+        // R5 — Firestore-only roster lookup (pure listing endpoint;
+        // no attendance reads downstream).
+        $list = $this->_get_section_students($class, $section);
 
         $students = [];
         if (!empty($list)) {
@@ -2517,26 +3314,56 @@ class Attendance extends MY_Controller
             return $this->json_error('Class and section required.');
         }
 
-        $today    = date('j');
+        $today    = (int) date('j');
         $month    = date('F');
         $year     = (int) date('Y');
+        $monthNum = (int) date('n');
+        $monthKey = sprintf('%d-%02d', $year, $monthNum);
         $attKey   = "{$month} {$year}";
 
-        // Batch-read entire section's Students node (1 read instead of N)
+        // R5 — roster from Firestore via Roster_helper (canonical).
+        // Bulk RTDB Students read kept solely as the per-student
+        // attendance fallback below
+        // (`$allStudents[$id]['Attendance'][$attKey]`).
         $secRoot = $this->_resolve_section_root($class, $section);
-        $allStudents = null; // RTDB fallback removed
+        $list    = $this->_get_section_students($class, $section);
+        $allStudents = $this->firebase->get("{$secRoot}/Students");
+        if (!is_array($allStudents)) $allStudents = [];
+
+        // ── READ: Firestore FIRST — per-student dayWise this month ──
+        $fsDayWise = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('attendanceSummary', [
+                ['month', '==', $monthKey],
+                ['type', '==', 'student'],
+            ]);
+            foreach ($fsDocs as $entry) {
+                $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                if (!is_array($d)) continue;
+                $sid = $d['studentId'] ?? '';
+                $dw  = $d['dayWise'] ?? '';
+                if ($sid !== '' && is_string($dw)) $fsDayWise[$sid] = $dw;
+            }
+        } catch (\Exception $e) { /* fall back */ }
 
         $result = [];
-        $list = is_array($allStudents) ? $this->_extract_student_list($allStudents) : [];
         if (!empty($list)) {
             foreach ($list as $id => $name) {
                 if (!is_string($id) || trim($id) === '') continue;
                 $todayMark = 'V';
-                if (isset($allStudents[$id]['Attendance'][$attKey])
+
+                // Firestore canonical
+                if (isset($fsDayWise[$id]) && strlen($fsDayWise[$id]) >= $today) {
+                    $todayMark = $fsDayWise[$id][$today - 1];
+                }
+                // RTDB fallback per student
+                if ($todayMark === 'V'
+                    && isset($allStudents[$id]['Attendance'][$attKey])
                     && is_string($allStudents[$id]['Attendance'][$attKey])
                     && strlen($allStudents[$id]['Attendance'][$attKey]) >= $today) {
                     $todayMark = $allStudents[$id]['Attendance'][$attKey][$today - 1];
                 }
+
                 $result[] = [
                     'id'   => $id,
                     'name' => is_string($name) ? $name : (string) $id,
@@ -2560,6 +3387,70 @@ class Attendance extends MY_Controller
      * POST: class, section, attendance (JSON: {student_id: "P"|"A"|"L"|"T"|"H", ...}),
      *        late_times (JSON: {student_id: "08:47", ...})
      */
+    /**
+     * Phase 8b — Lightweight endpoint for the teacher app to trigger
+     * parent push notifications after marking attendance. The teacher
+     * app writes directly to Firestore (canonical), then calls this
+     * endpoint to fire the push pipeline which lives in PHP.
+     *
+     * POST params: student_id, mark (A|T), class, section, day, month
+     *
+     * Returns: {status, pushed, queued}
+     */
+    /**
+     * Phase 8b — Process push requests written by the teacher app.
+     *
+     * The teacher app writes a Firestore doc to `pushRequests` when
+     * it marks a student A/T. This endpoint reads pending requests
+     * for the current school, fires the push pipeline for each, and
+     * marks them as processed. Called by the admin dashboard on load
+     * or by a cron job.
+     *
+     * GET /attendance/process_push_requests
+     */
+    public function process_push_requests()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'process_push_requests');
+        $this->_process_pending_push_requests();
+        return $this->json_success(['message' => 'Pending push requests processed.']);
+    }
+
+    public function teacher_notify()
+    {
+        $this->_require_role(self::MARK_ROLES, 'teacher_notify');
+
+        $studentId = trim((string) $this->input->post('student_id'));
+        $mark      = strtoupper(trim((string) $this->input->post('mark')));
+        $class     = $this->safe_path_segment(trim((string) $this->input->post('class')), 'class');
+        $section   = $this->safe_path_segment(trim((string) $this->input->post('section')), 'section');
+        $day       = (int) $this->input->post('day');
+        $month     = trim((string) $this->input->post('month'));
+
+        if (!$studentId || !$mark || !$class || !$section || !$day) {
+            return $this->json_error('student_id, mark, class, section, and day are required.');
+        }
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $studentId)) {
+            return $this->json_error('Invalid student ID.');
+        }
+        if (!in_array($mark, ['A', 'T'])) {
+            return $this->json_success(['pushed' => 0, 'message' => 'Push only fires for A or T marks.']);
+        }
+
+        // Default month to current if not provided
+        if ($month === '') {
+            $month = date('F');
+        }
+        $year   = $this->_resolve_year($month);
+        $attKey = "{$month} {$year}";
+
+        // Fire the same pipeline the admin uses
+        $this->_fire_single_student_event($studentId, $class, $section, $mark, $day, $attKey);
+
+        return $this->json_success([
+            'message' => "Notification pipeline fired for {$studentId} ({$mark}).",
+        ]);
+    }
+
     public function api_mark_attendance()
     {
         $this->_require_role(self::MARK_ROLES, 'api_mark_attendance');
@@ -2589,20 +3480,33 @@ class Attendance extends MY_Controller
         $monthNum = (int) date('n');
         $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
 
-        $saved = 0;
+        // Phase 7e — Firestore-first then RTDB mirror.
+        $bulkMarks = [];
         foreach ($attData as $studentId => $mark) {
             $studentId = trim((string) $studentId);
             if (!preg_match('/^[A-Za-z0-9_]+$/', $studentId)) continue;
             $mark = strtoupper(trim((string) $mark));
             if (!in_array($mark, $this->valid_marks)) continue;
+            $bulkMarks[$studentId] = ['mark' => $mark, 'name' => ''];
+        }
+        if (!empty($bulkMarks)) {
+            $fsOk = $this->_syncBulkDailyToFirestore($bulkMarks, $class, $section, $today, $attKey);
+            if ($fsOk === false) {
+                return $this->json_error('Firestore write failed; attendance not saved. Please retry.');
+            }
+        }
+
+        $saved = 0;
+        foreach ($bulkMarks as $studentId => $info) {
+            $mark = $info['mark'];
 
             $secRoot = $this->_resolve_section_root($class, $section);
             $attPath = "{$secRoot}/Students/{$studentId}/Attendance/{$attKey}";
-            $existing = null; // RTDB fallback removed
+            $existing = $this->firebase->get($attPath);
             $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
             $attStr = str_pad($attStr, $daysInMonth, 'V');
             $attStr[$today - 1] = $mark;
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->set($attPath, $attStr);
             $saved++;
 
             // Late time
@@ -2610,7 +3514,7 @@ class Attendance extends MY_Controller
                 $lateTime = preg_replace('/[^0-9:]/', '', (string) $lateTimes[$studentId]);
                 if ($lateTime) {
                     $latePath = "Schools/{$school}/{$session}/Attendance/Late/{$attKey}/{$studentId}/{$today}";
-                    // RTDB mirror removed per no-RTDB policy.
+                    $this->firebase->set($latePath, ['time' => $lateTime]);
                 }
             }
         }
@@ -2620,6 +3524,561 @@ class Attendance extends MY_Controller
         ]);
 
         return $this->json_success(['saved' => $saved, 'date' => date('Y-m-d')]);
+    }
+
+    /**
+     * Mark attendance from a scanned student QR.
+     *
+     * POST: qr_token  (URL-safe base64 of "{schoolId}|{studentId}", per
+     *                   `qr_token_helper`; same format the ID card prints)
+     *
+     * Behaviour:
+     *   1. Decode the token; reject malformed input as `invalid`.
+     *   2. Enforce tenant isolation — refuse a token whose schoolId
+     *      doesn't match the caller's `school_name` (SCH_xxx). This is
+     *      the *only* security gate against forged QR cards (the token
+     *      itself isn't signed; we trade signature complexity for
+     *      tenant-bounded blast radius).
+     *   3. Resolve the student from Firestore. Reject if not Active.
+     *   4. Idempotency: if today's attendance doc already exists with
+     *      status='P', return `already_marked` instead of writing.
+     *   5. Otherwise write Present via the existing Firestore daily
+     *      writer (`_syncDailyToFirestore`). RTDB attendance mirror is
+     *      out of scope here — Firestore is canonical for attendance
+     *      reads in the parent / teacher apps.
+     *
+     * Response shape:
+     *   success         { status:'success',  code:'success',         student_name, student_id, class, section, date }
+     *   already_marked  { status:'success',  code:'already_marked',  student_name, student_id, date }
+     *   invalid         { status:'error',    message, http 400/403/404 }
+     */
+    public function scan_qr()
+    {
+        $this->_require_role(self::MARK_ROLES, 'attendance_scan_qr');
+
+        if ($this->input->method() !== 'post') {
+            return $this->json_error('POST required.');
+        }
+
+        $token = trim((string) $this->input->post('qr_token'));
+        if ($token === '') {
+            return $this->json_error('Missing QR token.');
+        }
+
+        $this->load->helper('qr_token');
+        $decoded = qr_token_decode($token);
+        if ($decoded === null) {
+            // Includes both "structurally garbage" and "signature
+            // tampered / forged" — we deliberately don't distinguish
+            // so we don't leak the verifier's state to an attacker.
+            return $this->json_error('Invalid QR token.');
+        }
+
+        $tokSchoolId = $decoded['schoolId'];
+        $studentId   = $decoded['studentId'];
+
+        // Migration window — legacy 2-part (unsigned) tokens are still
+        // accepted so existing printed ID cards keep working; logged so
+        // we can flip acceptance off once every active card is reissued.
+        if (!empty($decoded['legacy'])) {
+            log_message('warning',
+                "Attendance::scan_qr — legacy unsigned token used for {$tokSchoolId}/{$studentId} "
+                . "(reissue this student's ID card to mint a signed token)"
+            );
+        }
+
+        // Tenant isolation. `school_name` is SCH_xxx in this codebase
+        // per non-obvious-conventions memory.
+        if ($tokSchoolId !== $this->school_name) {
+            log_message('warning',
+                "Attendance::scan_qr — cross-school attempt: token={$tokSchoolId} caller={$this->school_name}"
+            );
+            return $this->json_error('This QR is for a different school.', 403);
+        }
+
+        // Firestore student fetch — same docId convention the rest of
+        // the SIS module uses post Tier-A ({schoolId}_{studentId}).
+        $stuDoc = $this->fs->get('students', "{$this->school_name}_{$studentId}");
+        if (empty($stuDoc) || !is_array($stuDoc)) {
+            return $this->json_error('Student not found.', 404);
+        }
+
+        $statusRaw = (string) ($stuDoc['status'] ?? $stuDoc['Status'] ?? '');
+        if (strcasecmp($statusRaw, 'Active') !== 0) {
+            return $this->json_error("Student is not Active (status: {$statusRaw}).");
+        }
+
+        $name      = (string) ($stuDoc['name']      ?? $stuDoc['Name']    ?? $studentId);
+        $className = (string) ($stuDoc['className'] ?? $stuDoc['Class']   ?? '');
+        $section   = (string) ($stuDoc['section']   ?? $stuDoc['Section'] ?? '');
+        if ($className === '' || $section === '') {
+            return $this->json_error('Student has no class/section assigned.');
+        }
+
+        // Date arithmetic for today's attendance doc.
+        $today    = (int) date('j');
+        $monthNum = (int) date('n');
+        $year     = (int) date('Y');
+        $attKey   = date('F') . " {$year}";
+        $date     = sprintf('%04d-%02d-%02d', $year, $monthNum, $today);
+        $docId    = "{$this->school_name}_{$date}_{$studentId}";
+
+        // Idempotency check — re-scanning the same card shouldn't
+        // overwrite a Late/Tardy mark with Present, and shouldn't
+        // log a noise change either.
+        //
+        // BUT: we still need to verify that BOTH stores agree.
+        // Pre-fix scans (before the attendanceSummary writer was
+        // wired up) wrote only the daily doc; their summary doc is
+        // missing or stale. If we early-return on the daily check
+        // alone, the summary never gets backfilled and the parent /
+        // teacher / admin views (which read summary, not daily) keep
+        // showing nothing. So we treat "daily=P, summary=P-for-today"
+        // as the only true already_marked state. Anything else falls
+        // through to the writer below — `_syncDailyToFirestore` is
+        // idempotent (set with merge), so re-writing P-over-P is a
+        // no-op except that it kicks the summary back in sync.
+        try {
+            $existing = $this->fs->get('attendance', $docId);
+        } catch (\Exception $e) {
+            log_message('error', "Attendance::scan_qr existing read failed: " . $e->getMessage());
+            $existing = null;
+        }
+        $monthKey      = sprintf('%04d-%02d', $year, $monthNum);
+        $daysInMonth   = (int) cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
+        $summaryDocId  = $this->fs->docId2($studentId, $monthKey);
+        $existingSum   = null;
+        try {
+            $existingSum = $this->fs->get('attendanceSummary', $summaryDocId);
+        } catch (\Exception $e) {
+            log_message('error', "Attendance::scan_qr summary read failed: " . $e->getMessage());
+        }
+        $sumDayWise = is_array($existingSum) ? (string) ($existingSum['dayWise'] ?? '') : '';
+        $sumDayWise = str_pad($sumDayWise, $daysInMonth, 'V');
+        $todayCharInSummary = (strlen($sumDayWise) >= $today) ? $sumDayWise[$today - 1] : 'V';
+
+        $dailyAlreadyP   = is_array($existing) && (string) ($existing['status'] ?? '') === 'P';
+        $summaryAlreadyP = ($todayCharInSummary === 'P');
+
+        if ($dailyAlreadyP && $summaryAlreadyP) {
+            return $this->json_success([
+                'code'         => 'already_marked',
+                'message'      => "{$name} is already marked Present for {$date}.",
+                'student_id'   => $studentId,
+                'student_name' => $name,
+                'class'        => $className,
+                'section'      => $section,
+                'date'         => $date,
+            ]);
+        }
+
+        // Write Present via the canonical Firestore daily writer.
+        // (Daily `attendance/{schoolId}_{date}_{studentId}` doc — used
+        //  by audit / dashboards.)
+        $ok = $this->_syncDailyToFirestore(
+            $studentId, 'P', $className, $section,
+            $today, $attKey, $name, false, 0
+        );
+        if (!$ok) {
+            return $this->json_error('Could not save attendance. Please retry.', 500);
+        }
+
+        // Also update `attendanceSummary` — the per-month dayWise
+        // string. THIS is the doc the parent app, teacher app and
+        // admin monthly views actually read; without this update the
+        // daily doc above lands fine but the cross-system views show
+        // nothing because they don't query the daily collection.
+        // We already read `$existingSum` above in the idempotency
+        // check; reuse it here so we don't double-fetch.
+        $dayWise = $sumDayWise;
+        if (strlen($dayWise) > $daysInMonth) {
+            $dayWise = substr($dayWise, 0, $daysInMonth);
+        }
+        $dayWise[$today - 1] = 'P';
+
+        // Recompute counters from the updated dayWise.
+        $present = $absent = $leave = $holiday = $tardy = $working = 0;
+        for ($i = 0, $n = strlen($dayWise); $i < $n; $i++) {
+            $ch = $dayWise[$i];
+            if      ($ch === 'P') { $present++; $working++; }
+            elseif  ($ch === 'A') { $absent++;  $working++; }
+            elseif  ($ch === 'L') { $leave++;   $working++; }
+            elseif  ($ch === 'H') { $holiday++;             }
+            elseif  ($ch === 'T') { $tardy++;   $working++; }
+        }
+        $pct = $working > 0 ? round(($present + $tardy) / $working * 100, 1) : 0;
+
+        try {
+            $this->fs->set('attendanceSummary', $summaryDocId, [
+                'schoolId'    => $this->school_id,
+                'studentId'   => $studentId,
+                'studentName' => $name,
+                'type'        => 'student',
+                'className'   => Firestore_service::classKey($className),
+                'section'     => Firestore_service::sectionKey($section),
+                'month'       => $monthKey,
+                'monthLabel'  => $attKey,
+                'session'     => $this->session_year,
+                'dayWise'     => $dayWise,
+                'present'     => $present,
+                'absent'      => $absent,
+                'leave'       => $leave,
+                'holiday'     => $holiday,
+                'tardy'       => $tardy,
+                'percentage'  => $pct,
+                'updatedAt'   => date('c'),
+                'updatedBy'   => $this->admin_id ?? 'kiosk',
+            ], true);
+        } catch (\Exception $e) {
+            // Daily doc already wrote — log the summary failure but
+            // still return success since at least the canonical-daily
+            // store succeeded. The next bulk reconciler / monthly view
+            // recomputation will pick the day up.
+            log_message('error', 'scan_qr: attendanceSummary write failed: ' . $e->getMessage());
+        }
+
+        return $this->json_success([
+            'code'         => 'success',
+            'message'      => "Attendance marked Present for {$name}.",
+            'student_id'   => $studentId,
+            'student_name' => $name,
+            'class'        => $className,
+            'section'      => $section,
+            'date'         => $date,
+        ]);
+    }
+
+    /**
+     * Renders the QR scan UI (manual paste for now; camera-based
+     * scanner is a follow-up). Visible to users with mark-attendance
+     * permission since they're the ones who'll actually be at the
+     * door scanning IDs.
+     */
+    public function scan()
+    {
+        $this->_require_role(self::MARK_ROLES, 'attendance_scan');
+        $this->load->view('include/header');
+        $this->load->view('attendance/scan_qr');
+        $this->load->view('include/footer');
+    }
+
+    /**
+     * Student Leave management page
+     */
+    public function student_leaves()
+    {
+        $this->_require_role(self::VIEW_ROLES);
+        $data['Classes'] = $this->_build_class_list();
+        $this->load->view('include/header', $data);
+        $this->load->view('attendance/student_leave', $data);
+        $this->load->view('include/footer');
+    }
+
+    /* ================================================================
+       GROUP I: STUDENT LEAVE MANAGEMENT
+       ================================================================ */
+
+    /**
+     * List student leave applications.
+     * POST: class (optional), section (optional), status_filter (optional: pending|approved|rejected|all)
+     *
+     * Teachers see leaves for their assigned classes only.
+     * Admins see all.
+     */
+    public function list_student_leaves()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'list_student_leaves');
+        $classFilter   = trim((string) $this->input->post('class'));
+        $sectionFilter = trim((string) $this->input->post('section'));
+        $statusFilter  = trim((string) ($this->input->post('status_filter') ?: 'pending'));
+
+        try {
+            $conditions = [];
+            if ($statusFilter !== '' && $statusFilter !== 'all') {
+                $conditions[] = ['status', '==', $statusFilter];
+            }
+            $conditions[] = ['applicantType', '==', 'student'];
+
+            $docs = $this->fs->schoolWhere('leaveApplications', $conditions);
+        } catch (\Exception $e) {
+            return $this->json_error('Failed to fetch leave applications: ' . $e->getMessage());
+        }
+
+        $leaves = [];
+        foreach ($docs as $entry) {
+            $d = $entry['data'] ?? $entry;
+            $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+            $id = is_array($entry) ? ($d['id'] ?? '') : '';
+            if (!is_array($d)) continue;
+
+            // Filter by class/section if provided
+            if ($classFilter && ($d['className'] ?? '') !== Firestore_service::classKey($classFilter)) continue;
+            if ($sectionFilter && ($d['section'] ?? '') !== Firestore_service::sectionKey($sectionFilter)) continue;
+
+            // Teachers: only show leaves for their assigned classes
+            if (!$this->_is_admin_role()) {
+                $cls = $d['className'] ?? '';
+                $sec = str_replace('Section ', '', $d['section'] ?? '');
+                if (!$this->_teacher_can_access($cls, "Section {$sec}")) continue;
+            }
+
+            $leaves[] = [
+                'id'             => $id,
+                'leaveId'        => $d['leaveId'] ?? $id,
+                'studentId'      => $d['applicantId'] ?? '',
+                'studentName'    => $d['applicantName'] ?? '',
+                'className'      => $d['className'] ?? '',
+                'section'        => $d['section'] ?? '',
+                'leaveType'      => $d['leaveType'] ?? '',
+                'startDate'      => $d['startDate'] ?? '',
+                'endDate'        => $d['endDate'] ?? '',
+                'numberOfDays'   => (int) ($d['numberOfDays'] ?? 0),
+                'reason'         => $d['reason'] ?? '',
+                'status'         => $d['status'] ?? 'pending',
+                'appliedAt'      => $d['appliedAt'] ?? '',
+                'approvedBy'     => $d['approvedBy'] ?? '',
+                'remarks'        => $d['remarks'] ?? '',
+            ];
+        }
+
+        // Sort by appliedAt descending
+        usort($leaves, function ($a, $b) {
+            return strcmp((string) ($b['appliedAt'] ?? ''), (string) ($a['appliedAt'] ?? ''));
+        });
+
+        return $this->json_success(['leaves' => $leaves]);
+    }
+
+    /**
+     * Approve a student leave application.
+     * POST: leave_id, remarks (optional)
+     *
+     * On approval:
+     *   1. Update leaveApplications doc status → "approved"
+     *   2. Update attendanceSummary dayWise: mark "L" for each leave day
+     *   3. Recompute counts + percentage
+     *   4. Fire push notification to parent
+     */
+    public function approve_student_leave()
+    {
+        $this->_require_role(self::MARK_ROLES, 'approve_student_leave');
+        $leaveId = trim((string) $this->input->post('leave_id'));
+        $remarks = trim((string) ($this->input->post('remarks') ?? ''));
+
+        if ($leaveId === '') return $this->json_error('leave_id is required.');
+
+        // Read the leave doc from Firestore
+        $leave = null;
+        try {
+            $leave = $this->fs->get('leaveApplications', $leaveId);
+        } catch (\Exception $e) {}
+        if (!is_array($leave)) return $this->json_error('Leave application not found.');
+        if (($leave['status'] ?? '') !== 'pending') return $this->json_error('Leave is not in pending status.');
+
+        $studentId = $leave['applicantId'] ?? '';
+        $startDate = $leave['startDate'] ?? '';
+        $endDate   = $leave['endDate'] ?? '';
+        $className = $leave['className'] ?? '';
+        $section   = $leave['section'] ?? '';
+
+        if ($studentId === '' || $startDate === '' || $endDate === '') {
+            return $this->json_error('Invalid leave application data.');
+        }
+
+        // Teachers can only approve for their assigned classes
+        if (!$this->_is_admin_role()) {
+            $sec = str_replace('Section ', '', $section);
+            if (!$this->_teacher_can_access($className, "Section {$sec}")) {
+                return $this->json_error('You are not assigned to this class/section.', 403);
+            }
+        }
+
+        $approverName = $this->admin_name ?? $this->session->userdata('user_id') ?? 'system';
+
+        // 1. Update leave status in Firestore
+        try {
+            $this->fs->set('leaveApplications', $leaveId, [
+                'status'            => 'approved',
+                'approvedBy'        => $approverName,
+                'approvedAt'        => date('c'),
+                'remarks'           => $remarks,
+                'attendanceStamped' => true,  // admin stamps immediately below
+            ], true);
+        } catch (\Exception $e) {
+            return $this->json_error('Failed to update leave status: ' . $e->getMessage());
+        }
+
+        // 2. Update attendance dayWise — mark "L" for each day in the range
+        $daysUpdated = $this->_stamp_leave_on_attendance($studentId, $className, $section, $startDate, $endDate);
+
+        // 3. Fire push notification to parent
+        try {
+            $this->load->library('push_service');
+            $studentName = $leave['applicantName'] ?? $studentId;
+            $this->push_service->sendToUser($studentId, [
+                'title' => 'Leave Approved',
+                'body'  => "Leave for {$studentName} ({$startDate} to {$endDate}) has been approved.",
+                'data'  => [
+                    'type'      => 'leave_approved',
+                    'leave_id'  => $leaveId,
+                    'startDate' => $startDate,
+                    'endDate'   => $endDate,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'Leave approval push failed: ' . $e->getMessage());
+        }
+
+        return $this->json_success([
+            'message'     => "Leave approved. {$daysUpdated} attendance day(s) marked as Leave.",
+            'daysUpdated' => $daysUpdated,
+        ]);
+    }
+
+    /**
+     * Reject a student leave application.
+     * POST: leave_id, remarks (required)
+     */
+    public function reject_student_leave()
+    {
+        $this->_require_role(self::MARK_ROLES, 'reject_student_leave');
+        $leaveId = trim((string) $this->input->post('leave_id'));
+        $remarks = trim((string) ($this->input->post('remarks') ?? ''));
+
+        if ($leaveId === '') return $this->json_error('leave_id is required.');
+        if ($remarks === '') return $this->json_error('Remarks are required when rejecting.');
+
+        $leave = null;
+        try {
+            $leave = $this->fs->get('leaveApplications', $leaveId);
+        } catch (\Exception $e) {}
+        if (!is_array($leave)) return $this->json_error('Leave application not found.');
+        if (($leave['status'] ?? '') !== 'pending') return $this->json_error('Leave is not in pending status.');
+
+        $studentId = $leave['applicantId'] ?? '';
+        $rejecterName = $this->admin_name ?? $this->session->userdata('user_id') ?? 'system';
+
+        // Update leave status
+        try {
+            $this->fs->set('leaveApplications', $leaveId, [
+                'status'     => 'rejected',
+                'approvedBy' => $rejecterName,
+                'approvedAt' => date('c'),
+                'remarks'    => $remarks,
+            ], true);
+        } catch (\Exception $e) {
+            return $this->json_error('Failed to update leave status: ' . $e->getMessage());
+        }
+
+        // Push notification to parent
+        try {
+            $this->load->library('push_service');
+            $studentName = $leave['applicantName'] ?? $studentId;
+            $this->push_service->sendToUser($studentId, [
+                'title' => 'Leave Rejected',
+                'body'  => "Leave for {$studentName} ({$leave['startDate']} to {$leave['endDate']}) was rejected. Reason: {$remarks}",
+                'data'  => [
+                    'type'      => 'leave_rejected',
+                    'leave_id'  => $leaveId,
+                    'remarks'   => $remarks,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'Leave rejection push failed: ' . $e->getMessage());
+        }
+
+        return $this->json_success(['message' => 'Leave rejected.']);
+    }
+
+    /**
+     * Stamp "L" on attendance dayWise for each day in a leave date range.
+     * Handles leaves that span multiple months by updating each month's
+     * attendanceSummary doc separately.
+     *
+     * @return int Number of days updated
+     */
+    private function _stamp_leave_on_attendance(
+        string $studentId, string $className, string $section,
+        string $startDate, string $endDate
+    ): int {
+        $start = new \DateTime($startDate);
+        $end   = new \DateTime($endDate);
+        if ($start > $end) return 0;
+
+        $updated = 0;
+        $current = clone $start;
+
+        // Group days by month
+        $monthDays = [];
+        while ($current <= $end) {
+            $monthKey = $current->format('Y-m');
+            $day = (int) $current->format('j');
+            if (!isset($monthDays[$monthKey])) {
+                $monthDays[$monthKey] = [
+                    'monthNum' => (int) $current->format('n'),
+                    'year'     => (int) $current->format('Y'),
+                    'days'     => [],
+                ];
+            }
+            $monthDays[$monthKey]['days'][] = $day;
+            $current->modify('+1 day');
+        }
+
+        // For each month, read → modify → write the dayWise string
+        foreach ($monthDays as $monthKey => $info) {
+            $docId = $this->fs->docId2($studentId, $monthKey);
+            $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $info['monthNum'], $info['year']);
+
+            // Read existing summary
+            $doc = null;
+            try { $doc = $this->fs->get('attendanceSummary', $docId); } catch (\Exception $e) {}
+
+            $dayWise = ($doc && isset($doc['dayWise']) && is_string($doc['dayWise']))
+                ? str_pad($doc['dayWise'], $daysInMonth, 'V')
+                : str_repeat('V', $daysInMonth);
+
+            // Stamp "L" for each leave day (skip holidays — H stays as H)
+            $changed = false;
+            foreach ($info['days'] as $day) {
+                if ($day < 1 || $day > $daysInMonth) continue;
+                $existing = $dayWise[$day - 1];
+                if ($existing === 'H') continue; // don't overwrite holidays
+                $dayWise[$day - 1] = 'L';
+                $changed = true;
+                $updated++;
+            }
+
+            if (!$changed) continue;
+
+            // Recompute counts
+            $monthName = date('F', mktime(0, 0, 0, $info['monthNum'], 1, $info['year']));
+            $attKey = "{$monthName} {$info['year']}";
+
+            // Use the helper to write (handles counts + percentage + Firestore + RTDB mirror)
+            $this->_syncStudentSummaryToFirestore(
+                $studentId, $className, $section,
+                $info['monthNum'], $info['year'], $dayWise,
+                $doc['studentName'] ?? ''
+            );
+
+            // RTDB mirror
+            try {
+                $sectionRoot = $this->_resolve_section_root($className, $section);
+                $attPath = "{$sectionRoot}/Students/{$studentId}/Attendance/{$attKey}";
+                $this->firebase->set($attPath, $dayWise);
+            } catch (\Exception $e) {}
+        }
+
+        return $updated;
+    }
+
+    /**
+     * Check if the current user has an admin-level role.
+     */
+    private function _is_admin_role(): bool
+    {
+        $role = $this->admin_role ?? $this->session->userdata('admin_role') ?? '';
+        return in_array($role, ['Admin', 'admin', 'School Super Admin', 'Principal', 'Vice Principal']);
     }
 
     /* ================================================================
@@ -2644,7 +4103,7 @@ class Attendance extends MY_Controller
 
         // Read configurable academic year start month (default April = 4)
         if ($this->_academic_start_month === null) {
-            $config = null; // RTDB fallback removed
+            $config = $this->firebase->get("Schools/{$this->school_name}/Config/AcademicYear/start_month");
             $this->_academic_start_month = ($config && (int) $config >= 1 && (int) $config <= 12)
                 ? (int) $config : 4;
         }
@@ -2693,7 +4152,7 @@ class Attendance extends MY_Controller
      */
     private function _get_holidays_for_month(string $monthName, int $year): array
     {
-        $config = null; // RTDB fallback removed
+        $config = $this->firebase->get("Schools/{$this->school_name}/Config/Attendance/holidays");
         if (!is_array($config)) return [];
 
         $monthNum = $this->month_map[$monthName] ?? 0;
@@ -2724,13 +4183,13 @@ class Attendance extends MY_Controller
         $clientIp = $this->input->ip_address();
         $ipKey    = preg_replace('/[^a-zA-Z0-9]/', '_', $clientIp);
         $ratePath = "System/RateLimits/api_key/{$ipKey}";
-        $rateData = null; // RTDB fallback removed
+        $rateData = $this->firebase->get($ratePath);
         $windowStart = time() - self::RATE_LIMIT_WINDOW;
         if (is_array($rateData)) {
             $recentCount = 0;
             foreach ($rateData as $ts => $v) {
                 if ((int) $ts >= $windowStart) $recentCount++;
-                // RTDB mirror removed per no-RTDB policy.
+                else $this->firebase->delete($ratePath, (string) $ts);
             }
             if ($recentCount >= self::MAX_FAILED_ATTEMPTS) {
                 log_message('error', "API key rate limit exceeded for IP: {$clientIp}");
@@ -2747,8 +4206,22 @@ class Attendance extends MY_Controller
             return $cached;
         }
 
-        // System-level key index first (fastest)
-        $lookup = null; // RTDB fallback removed
+        // Phase 7c — Firestore key→device index (canonical).
+        try {
+            $fsLookup = $this->fs->get('attendanceDeviceKeys', $keyHash);
+        } catch (\Exception $e) { $fsLookup = null; }
+        if (is_array($fsLookup) && !empty($fsLookup['schoolName']) && !empty($fsLookup['deviceId'])) {
+            $lookup = [
+                'device_id'   => $fsLookup['deviceId'],
+                'school_name' => $fsLookup['schoolName'],
+                'school_id'   => $fsLookup['schoolId'] ?? '',
+            ];
+            $this->_cache_set($cacheKey, $lookup, self::API_KEY_CACHE_TTL);
+            return $lookup;
+        }
+
+        // RTDB fallback — System-level key index
+        $lookup = $this->firebase->get("System/API_Keys/{$keyHash}");
         if (is_array($lookup) && !empty($lookup['school_name'])) {
             $this->_cache_set($cacheKey, $lookup, self::API_KEY_CACHE_TTL);
             return $lookup;
@@ -2757,7 +4230,7 @@ class Attendance extends MY_Controller
         // Fallback: if the school name is passed in the request header — sanitize to prevent path injection
         $schoolHint = trim($_SERVER['HTTP_X_SCHOOL'] ?? '');
         if ($schoolHint && preg_match('/^[A-Za-z0-9 _\-]+$/', $schoolHint)) {
-            $lookup = null; // RTDB fallback removed
+            $lookup = $this->firebase->get("Schools/{$schoolHint}/Config/API_Keys/{$keyHash}");
             if (is_array($lookup)) {
                 $lookup['school_name'] = $schoolHint;
                 $this->_cache_set($cacheKey, $lookup, self::API_KEY_CACHE_TTL);
@@ -2766,13 +4239,21 @@ class Attendance extends MY_Controller
         }
 
         // Log failed attempt for rate limiting
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->set("{$ratePath}/" . time() . '_' . mt_rand(1000, 9999), 1);
 
         return false;
     }
 
     /**
-     * Extract student list from a Students node.
+     * @deprecated R5 (Firestore-only roster migration) — no live callers
+     *             remain inside Attendance.php. Every roster derivation
+     *             now goes through `_get_section_students()` which is
+     *             backed by `Roster_helper::for_class()` (Strategy 0).
+     *             Kept as a one-release safety net in case any forgotten
+     *             call path surfaces; safe to delete after R5 is
+     *             verified in production.
+     *
+     * Extract student list from a Students node (legacy RTDB shape).
      * Handles two data layouts:
      *   1. Standard: Students/List/{id: name} + Students/{id}/{data}
      *   2. No-List:  Students/{id}/{Name: "...", ...} (List sub-key missing)
@@ -2810,35 +4291,400 @@ class Attendance extends MY_Controller
      */
     private $_section_root_cache = [];
 
+    /**
+     * Build a section identifier for Firestore queries.
+     * Returns a composite key used for attendance document lookups.
+     * No longer queries RTDB — uses Firestore sections collection.
+     */
+    /**
+     * Resolve the canonical RTDB section root for a class+section.
+     *
+     * Returns: `Schools/{schoolName}/{sessionYear}/Class 8th/Section A`
+     *
+     * Used by every reader/writer in this controller as the base path
+     * for `{secRoot}/Students/{studentId}/Attendance/{attKey}` style
+     * accesses. Both `$class` and `$section` are normalized through
+     * `Firestore_service::classKey()` / `sectionKey()` so callers can
+     * pass either the bare value ("8th", "A") or the prefixed value
+     * ("Class 8th", "Section A") and the result is identical.
+     */
+    /**
+     * Phase 8b — process pending push requests written by the teacher
+     * app to the `pushRequests` Firestore collection. Called
+     * automatically from dashboard_stats and process_push_requests.
+     */
+    private function _process_pending_push_requests(): void
+    {
+        // Phase 10: teacher app writes push requests to Firestore
+        // `pushRequests` collection (security rules now allow it).
+        // We read pending docs, fire the push, then delete them.
+        try {
+            $docs = $this->fs->schoolWhere('pushRequests', [
+                ['status', '==', 'pending'],
+            ]);
+        } catch (\Exception $e) { return; }
+
+        foreach ($docs as $entry) {
+            $d = $entry['data'] ?? $entry;
+            $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+            $docId = is_array($entry) ? ($d['id'] ?? '') : '';
+            if (!is_array($d)) continue;
+
+            $studentId = $d['studentId'] ?? '';
+            $mark      = strtoupper($d['mark'] ?? '');
+            $source    = $d['source'] ?? '';
+            $class     = $d['class'] ?? '';
+            $section   = $d['section'] ?? '';
+            $day       = (int) ($d['day'] ?? 0);
+            $month     = $d['month'] ?? date('F');
+
+            // Phase 10f: handle leave approve/reject push requests from teacher
+            if ($source === 'teacher_leave_approve' || $source === 'teacher_leave_reject') {
+                $this->_process_leave_push_request($d, $source);
+            } elseif ($source === 'homework_created') {
+                $this->_process_homework_created_push($d);
+            } elseif ($source === 'homework_reviewed') {
+                $this->_process_homework_reviewed_push($d);
+            } elseif ($studentId !== '' && in_array($mark, ['A', 'T']) && $day >= 1) {
+                $year   = $this->_resolve_year($month);
+                $attKey = "{$month} {$year}";
+                $this->_fire_single_student_event($studentId, $class, $section, $mark, $day, $attKey);
+            }
+
+            // Delete processed request from Firestore
+            if ($docId !== '') {
+                try { $this->fs->remove('pushRequests', $docId); } catch (\Exception $e) {}
+            }
+        }
+    }
+
+    /**
+     * Phase 10: process approved student leaves that haven't been
+     * stamped on attendance yet. The teacher app sets
+     * `attendanceStamped: false` when approving; we read those,
+     * stamp "L" on the dayWise, fire push, and mark as stamped.
+     */
+    /**
+     * Phase 10f: handle a leave approve/reject push request from the teacher app.
+     * Fires FCM push to the parent immediately.
+     */
+    private function _process_leave_push_request(array $d, string $source): void
+    {
+        $studentId = $d['studentId'] ?? '';
+        $startDate = $d['startDate'] ?? '';
+        $endDate   = $d['endDate']   ?? '';
+        $remarks   = $d['remarks']   ?? '';
+        $markedBy  = $d['markedBy']  ?? '';
+
+        if ($studentId === '') return;
+
+        try {
+            $this->load->library('push_service');
+
+            // Get student name from the leave doc or roster
+            $leaveId = $d['leaveId'] ?? '';
+            $studentName = $studentId;
+            if ($leaveId !== '') {
+                try {
+                    $leaveDoc = $this->fs->get('leaveApplications', $leaveId);
+                    $studentName = $leaveDoc['applicantName'] ?? $studentId;
+                } catch (\Exception $e) {}
+            }
+
+            if ($source === 'teacher_leave_approve') {
+                $this->push_service->sendToUser($studentId, [
+                    'title' => 'Leave Approved',
+                    'body'  => "Leave for {$studentName} ({$startDate} to {$endDate}) has been approved by {$markedBy}.",
+                    'data'  => [
+                        'type'      => 'leave_approved',
+                        'leave_id'  => $leaveId,
+                        'startDate' => $startDate,
+                        'endDate'   => $endDate,
+                    ],
+                ]);
+            } elseif ($source === 'teacher_leave_reject') {
+                $this->push_service->sendToUser($studentId, [
+                    'title' => 'Leave Rejected',
+                    'body'  => "Leave for {$studentName} ({$startDate} to {$endDate}) was rejected. Reason: {$remarks}",
+                    'data'  => [
+                        'type'      => 'leave_rejected',
+                        'leave_id'  => $leaveId,
+                        'remarks'   => $remarks,
+                    ],
+                ]);
+            }
+        } catch (\Exception $e) {
+            log_message('error', "Leave push request processing failed: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * HW-1: Push notification to ALL parents in a class when homework is created.
+     */
+    private function _process_homework_created_push(array $d): void
+    {
+        $class      = $d['class'] ?? '';
+        $section    = $d['section'] ?? '';
+        $title      = $d['title'] ?? 'New Homework';
+        $subject    = $d['subject'] ?? '';
+        $dueDate    = $d['dueDate'] ?? '';
+        $markedBy   = $d['markedBy'] ?? '';
+
+        if ($class === '' || $section === '') return;
+
+        try {
+            $this->load->library('push_service');
+            $students = $this->_get_section_students($class, $section);
+
+            foreach ($students as $studentId => $name) {
+                $this->push_service->sendToUser((string) $studentId, [
+                    'title' => "New Homework: {$subject}",
+                    'body'  => "{$title} — due {$dueDate}. Assigned by {$markedBy}.",
+                    'data'  => [
+                        'type'       => 'homework_created',
+                        'homeworkId' => $d['homeworkId'] ?? '',
+                        'subject'    => $subject,
+                    ],
+                ]);
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Homework created push failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * HW-2: Push notification to a specific parent when homework is graded.
+     */
+    private function _process_homework_reviewed_push(array $d): void
+    {
+        $studentId = $d['studentId'] ?? '';
+        $remark    = $d['remark'] ?? '';
+        $score     = $d['score'] ?? '';
+        $markedBy  = $d['markedBy'] ?? '';
+
+        if ($studentId === '') return;
+
+        try {
+            $this->load->library('push_service');
+            $scoreText = ($score !== '' && (int) $score >= 0) ? "Score: {$score}. " : '';
+            $this->push_service->sendToUser($studentId, [
+                'title' => 'Homework Graded',
+                'body'  => "{$scoreText}Reviewed by {$markedBy}." . ($remark ? " \"{$remark}\"" : ''),
+                'data'  => [
+                    'type'       => 'homework_reviewed',
+                    'homeworkId' => $d['homeworkId'] ?? '',
+                ],
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'Homework reviewed push failed: ' . $e->getMessage());
+        }
+    }
+
+    private function _process_approved_leaves(): void
+    {
+        try {
+            $docs = $this->fs->schoolWhere('leaveApplications', [
+                ['status',            '==', 'approved'],
+                ['attendanceStamped', '==', false],
+                ['applicantType',     '==', 'student'],
+            ]);
+        } catch (\Exception $e) { return; }
+
+        foreach ($docs as $entry) {
+            $d = $entry['data'] ?? $entry;
+            $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+            $docId = is_array($entry) ? ($d['id'] ?? '') : '';
+            if (!is_array($d) || $docId === '') continue;
+
+            $studentId = $d['applicantId'] ?? '';
+            $startDate = $d['startDate']   ?? '';
+            $endDate   = $d['endDate']     ?? '';
+            $className = $d['className']   ?? '';
+            $section   = $d['section']     ?? '';
+
+            if ($studentId === '' || $startDate === '' || $endDate === '') continue;
+
+            // Stamp "L" on attendance dayWise
+            $this->_stamp_leave_on_attendance($studentId, $className, $section, $startDate, $endDate);
+
+            // Fire push to parent
+            try {
+                $this->load->library('push_service');
+                $studentName = $d['applicantName'] ?? $studentId;
+                $this->push_service->sendToUser($studentId, [
+                    'title' => 'Leave Approved',
+                    'body'  => "Leave for {$studentName} ({$startDate} to {$endDate}) has been approved.",
+                    'data'  => [
+                        'type'      => 'leave_approved',
+                        'leave_id'  => $docId,
+                        'startDate' => $startDate,
+                        'endDate'   => $endDate,
+                    ],
+                ]);
+            } catch (\Exception $e) {}
+
+            // Mark as stamped so we don't process it again
+            try {
+                $this->fs->set('leaveApplications', $docId, [
+                    'attendanceStamped' => true,
+                ], true);
+            } catch (\Exception $e) {}
+        }
+    }
+
     private function _resolve_section_root(string $class, string $section): string
     {
-        $cacheKey = "{$class}|{$section}";
-        if (isset($this->_section_root_cache[$cacheKey])) {
-            return $this->_section_root_cache[$cacheKey];
+        $classKey   = Firestore_service::classKey($class);     // "Class 8th"
+        $sectionKey = Firestore_service::sectionKey($section); // "Section A"
+        return "Schools/{$this->school_name}/{$this->session_year}/{$classKey}/{$sectionKey}";
+    }
+
+    /**
+     * Get the roster for a class+section from Firestore.
+     *
+     * Tries strategies in order before giving up:
+     *
+     *   0. Roster_helper (R5 canonical) — Active students via the
+     *      compound `schoolId+className+section+status` index.
+     *   1. Canonical query: `students` where Class+Section+Status=Active
+     *      (PascalCase legacy fields — kept as a safety net for any
+     *      doc shape that didn't go through Entity_firestore_sync).
+     *   2. Status-relaxed:  `students` where Class+Section (any Status)
+     *   3. Derived roster:  `attendanceSummary` where className+section+type=student
+     *      (any student who has ever been marked in this section)
+     *
+     * Strategy 3 is the safety net: even if a school's `students`
+     * collection isn't fully populated, any student who has been
+     * marked at least once will be discoverable through their
+     * attendance summary document.
+     *
+     * Returns [studentId => name, ...]
+     */
+    private function _get_section_students(string $class, string $section): array
+    {
+        $classPrefixed   = Firestore_service::classKey($class);
+        $sectionPrefixed = Firestore_service::sectionKey($section);
+
+        // ── Strategy 0: Roster_helper (R5 canonical Firestore source) ──
+        // Uses the compound `schoolId+className+section+status` index
+        // and the same `[uid => fields]` shape every other R5-migrated
+        // call site uses. Flatten to the legacy `[uid => name]` map
+        // expected by every caller of _get_section_students.
+        try {
+            if (isset($this->roster) && method_exists($this->roster, 'for_class')) {
+                $rosterFull = $this->roster->for_class($classPrefixed, $sectionPrefixed);
+                if (!empty($rosterFull)) {
+                    $list = [];
+                    foreach ($rosterFull as $uid => $fields) {
+                        $list[$uid] = is_array($fields)
+                            ? (string) ($fields['Name'] ?? $uid)
+                            : (string) $uid;
+                    }
+                    return $list;
+                }
+            }
+        } catch (\Exception $e) { /* fall through to strategy 1 */ }
+
+        // ── Strategy 1: canonical students collection (Active only) ──
+        try {
+            $studentDocs = $this->fs->schoolWhere('students', [
+                ['Class',   '==', $classPrefixed],
+                ['Section', '==', $sectionPrefixed],
+                ['Status',  '==', 'Active'],
+            ], 'Name', 'ASC');
+            $list = $this->_extractRosterFromStudentDocs($studentDocs);
+            if (!empty($list)) return $list;
+        } catch (\Exception $e) { /* try next strategy */ }
+
+        // ── Strategy 2: students collection without Status filter ──
+        // Catches docs whose `Status` field is missing, lowercase,
+        // "active", or any value other than the canonical "Active".
+        try {
+            $studentDocs = $this->fs->schoolWhere('students', [
+                ['Class',   '==', $classPrefixed],
+                ['Section', '==', $sectionPrefixed],
+            ], 'Name', 'ASC');
+            $list = $this->_extractRosterFromStudentDocs($studentDocs);
+            if (!empty($list)) return $list;
+        } catch (\Exception $e) { /* try next strategy */ }
+
+        // ── Strategy 3: derive roster from attendanceSummary ──
+        // Any student with a summary doc in this section is, by
+        // definition, enrolled. Works even when the `students`
+        // collection has no entry for them yet.
+        //
+        // Existing summary docs may not carry `studentName`, so we
+        // backfill names from the `students` collection in a single
+        // unfiltered query — works even when the per-student docs
+        // have a Class/Section that doesn't match the canonical key
+        // (which is exactly why strategies 1 and 2 missed them).
+        try {
+            $sumDocs = $this->fs->schoolWhere('attendanceSummary', [
+                ['className', '==', $classPrefixed],
+                ['section',   '==', $sectionPrefixed],
+                ['type',      '==', 'student'],
+            ]);
+            $list = [];
+            foreach ($sumDocs as $entry) {
+                $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                if (!is_array($d)) continue;
+                $sid  = $d['studentId']   ?? '';
+                $name = $d['studentName'] ?? '';
+                if ($sid !== '') $list[$sid] = $name;
+            }
+
+            if (!empty($list)) {
+                // Backfill names from the school's `students` collection.
+                // One query with no Class/Section/Status filters so we
+                // capture every student doc regardless of field shape.
+                try {
+                    $allStudentDocs = $this->fs->schoolWhere('students', []);
+                    $nameMap = [];
+                    foreach ($allStudentDocs as $doc) {
+                        $d = $doc['data'] ?? $doc;
+                        $s = is_array($doc) ? ($doc['data'] ?? $doc) : null;
+                        if (!is_array($s)) continue;
+                        $uid = $s['User Id'] ?? $s['studentId'] ?? ($d['id'] ?? '');
+                        if ($uid === '') continue;
+                        $nm = $s['Name'] ?? $s['name'] ?? '';
+                        if ($nm !== '') $nameMap[$uid] = $nm;
+                    }
+                    foreach ($list as $sid => $existingName) {
+                        if ($existingName === '' && isset($nameMap[$sid])) {
+                            $list[$sid] = $nameMap[$sid];
+                        }
+                    }
+                } catch (\Exception $e) { /* names stay as IDs */ }
+
+                // Final fallback: any name still empty → use studentId
+                foreach ($list as $sid => $name) {
+                    if ($name === '') $list[$sid] = $sid;
+                }
+
+                return $list;
+            }
+        } catch (\Exception $e) { /* fall through */ }
+
+        return [];
+    }
+
+    /**
+     * Helper: turn a list of `students`-collection doc envelopes
+     * into a flat `[studentId => name]` map. Accepts any of the
+     * legacy field-name variants (`User Id` / `studentId`,
+     * `Name` / `name`).
+     */
+    private function _extractRosterFromStudentDocs(array $docs): array
+    {
+        $list = [];
+        foreach ($docs as $doc) {
+            $s = is_array($doc) ? ($doc['data'] ?? $doc) : null;
+            if (!is_array($s)) continue;
+            $uid = $s['User Id'] ?? $s['studentId'] ?? ($doc['id'] ?? '');
+            if ($uid === '') continue;
+            $list[$uid] = $s['Name'] ?? $s['name'] ?? $uid;
         }
-
-        $school  = $this->school_name;
-        $session = $this->session_year;
-
-        // New format: Class 8th/Section A — check List or direct student keys
-        $newRoot = "Schools/{$school}/{$session}/{$class}/Section {$section}";
-        $stuKeys = []; // RTDB fallback removed
-        if (!empty($stuKeys)) {
-            $this->_section_root_cache[$cacheKey] = $newRoot;
-            return $newRoot;
-        }
-
-        // Legacy format: Class 8th 'A'
-        $legacyRoot = "Schools/{$school}/{$session}/{$class} '{$section}'";
-        $legacyStuKeys = []; // RTDB fallback removed
-        if (!empty($legacyStuKeys)) {
-            $this->_section_root_cache[$cacheKey] = $legacyRoot;
-            return $legacyRoot;
-        }
-
-        // Default to new format if neither has students
-        $this->_section_root_cache[$cacheKey] = $newRoot;
-        return $newRoot;
+        return $list;
     }
 
     /**
@@ -2855,55 +4701,36 @@ class Attendance extends MY_Controller
             return $this->_class_list_cache;
         }
 
-        $school  = $this->school_name;
-        $session = $this->session_year;
-
         // Shared cache (Redis or file)
-        $cacheKey = "class_list_{$school}_{$session}";
+        $cacheKey = "class_list_{$this->school_name}_{$this->session_year}";
         $cached = $this->_cache_get($cacheKey);
         if (is_array($cached) && !empty($cached)) {
             $this->_class_list_cache = $cached;
             return $cached;
         }
 
+        // Read from Firestore sections collection
+        $sectionDocs = $this->fs->schoolWhere('sections', []);
         $classes = [];
         $seen    = [];
 
-        $keys = []; // RTDB fallback removed
-        if (!is_array($keys)) return $classes;
+        foreach ($sectionDocs as $doc) {
+            $sd = $doc['data'];
+            $classKey = $sd['className'] ?? '';
+            $sectionLetter = str_replace('Section ', '', $sd['section'] ?? '');
+            if (!$classKey || !$sectionLetter) continue;
 
-        foreach ($keys as $classKey) {
-            if (strpos($classKey, 'Class ') !== 0) continue;
-
-            // New format: "Class 8th" with "Section A" sub-keys
-            $sectionKeys = []; // RTDB fallback removed
-            if (is_array($sectionKeys)) {
-                foreach ($sectionKeys as $secKey) {
-                    if (strpos($secKey, 'Section ') !== 0) continue;
-                    $sectionLetter = str_replace('Section ', '', $secKey);
-                    $fp = "{$classKey}|{$sectionLetter}";
-                    if (!isset($seen[$fp])) {
-                        $seen[$fp] = true;
-                        $classes[] = [
-                            'class_name' => $classKey,
-                            'section'    => $sectionLetter,
-                        ];
-                    }
-                }
-            }
-
-            // Legacy format: "Class 8th 'A'" — combined key at session level
-            if (preg_match("/^(Class\s+\S+)\s+'([A-Z])'\s*$/", $classKey, $m)) {
-                $fp = "{$m[1]}|{$m[2]}";
-                if (!isset($seen[$fp])) {
-                    $seen[$fp] = true;
-                    $classes[] = [
-                        'class_name' => $m[1],
-                        'section'    => $m[2],
-                    ];
-                }
+            $fp = "{$classKey}|{$sectionLetter}";
+            if (!isset($seen[$fp])) {
+                $seen[$fp] = true;
+                $classes[] = [
+                    'class_name' => $classKey,
+                    'section'    => $sectionLetter,
+                ];
             }
         }
+
+        // Legacy format removed — Firestore sections collection handles all formats
 
         // Cache to shared layer and in-memory
         $this->_class_list_cache = $classes;
@@ -2951,7 +4778,7 @@ class Attendance extends MY_Controller
     private function _att_rules(): array
     {
         if ($this->_attRulesCache !== null) return $this->_attRulesCache;
-        $rules = null; // RTDB fallback removed
+        $rules = $this->firebase->get("Schools/{$this->school_name}/Config/AttendanceRules");
         $this->_attRulesCache = is_array($rules) ? $rules : [];
         return $this->_attRulesCache;
     }
@@ -2996,7 +4823,7 @@ class Attendance extends MY_Controller
     private function _find_duplicate_pending(string $type, array $payload): string
     {
         $path = "Schools/{$this->school_name}/{$this->session_year}/Attendance/PendingApproval";
-        $all = null; // RTDB fallback removed
+        $all  = $this->firebase->get($path);
         if (!is_array($all)) return '';
 
         $targetId = $payload['target_id'] ?? '';
@@ -3031,7 +4858,23 @@ class Attendance extends MY_Controller
 
         $path = "Schools/{$this->school_name}/{$this->session_year}/Attendance/PendingApproval";
         $now  = date('c');
-        // RTDB mirror removed per no-RTDB policy.
+        $requestId = $this->firebase->push($path, [
+            'type'         => $type,
+            'target_id'    => $payload['target_id'] ?? '',
+            'class'        => $payload['class'] ?? '',
+            'section'      => $payload['section'] ?? '',
+            'month'        => $payload['month'] ?? '',
+            'day'          => $payload['day'] ?? null,
+            'mark'         => $payload['mark'] ?? '',
+            'data'         => $payload['data'] ?? [],
+            'data_format'  => $payload['data_format'] ?? 'full',
+            'audit'        => $payload['audit'] ?? [],
+            'submitted_by' => $this->admin_id ?? $this->session->userdata('user_id') ?? 'unknown',
+            'submitted_by_name' => $this->admin_name ?? '',
+            'submitted_at' => $now,
+            'expires_at'   => date('c', strtotime($now . ' +7 days')),
+            'status'       => 'pending',
+        ]);
         return $requestId ?? '';
     }
 
@@ -3046,13 +4889,16 @@ class Attendance extends MY_Controller
         if ($requestId === '') return $this->json_error('Request ID is required.');
 
         $path = "Schools/{$this->school_name}/{$this->session_year}/Attendance/PendingApproval/{$requestId}";
-        $req = null; // RTDB fallback removed
+        $req = $this->firebase->get($path);
         if (!is_array($req)) return $this->json_error('Request not found.');
         if (($req['status'] ?? '') !== 'pending') return $this->json_error('Request is not pending.');
 
         // ── EXPIRY CHECK: auto-reject if past expires_at ──
         if (!empty($req['expires_at']) && strtotime($req['expires_at']) < time()) {
-            // RTDB mirror removed per no-RTDB policy.
+            $this->firebase->update($path, [
+                'status'      => 'expired',
+                'expired_at'  => date('c'),
+            ]);
             return $this->json_error('Request has expired (older than 7 days). Auto-rejected.');
         }
 
@@ -3107,7 +4953,7 @@ class Attendance extends MY_Controller
 
             $sectionRoot = $this->_resolve_section_root($class, $section);
             $attPath = "{$sectionRoot}/Students/{$targetId}/Attendance/{$attKey}";
-            $existing = null; // RTDB fallback removed
+            $existing = $this->firebase->get($attPath);
             $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
             $attStr = str_pad($attStr, $daysInMonth, 'V');
 
@@ -3121,7 +4967,17 @@ class Attendance extends MY_Controller
             $attStr[$day - 1] = $mark;
             $nonWorking = get_non_working_days($this->firebase, $school, $monthNum, $year);
             $attStr = enforce_holidays_on_string($attStr, $daysInMonth, $nonWorking);
-            // RTDB mirror removed per no-RTDB policy.
+
+            // ── WRITE: Firestore FIRST (canonical) ──
+            $fsOk = $this->_syncStudentSummaryToFirestore(
+                $targetId, $class, $section, $monthNum, $year, $attStr
+            );
+            if (!$fsOk) {
+                return $this->json_error('Firestore write failed; backdated attendance not approved. Please retry.');
+            }
+
+            // ── RTDB mirror (best-effort, stays until Phase 8) ──
+            $this->firebase->set($attPath, $attStr);
 
             $studentBase = "{$sectionRoot}/Students/{$targetId}";
             update_student_att_summary($this->firebase, $studentBase, $school, $attKey, $monthNum, $year);
@@ -3144,14 +5000,22 @@ class Attendance extends MY_Controller
             $attKey = "{$month} {$year}";
 
             $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$targetId}";
-            $existing = null; // RTDB fallback removed
+            $existing = $this->firebase->get($attPath);
             $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
             $attStr = str_pad($attStr, $daysInMonth, 'V');
             $attStr[$day - 1] = $mark;
 
             $nonWorking = get_non_working_days($this->firebase, $school, $monthNum, $year);
             $attStr = enforce_holidays_on_string($attStr, $daysInMonth, $nonWorking);
-            // RTDB mirror removed per no-RTDB policy.
+
+            // ── WRITE: Firestore FIRST (canonical) ──
+            $fsOk = $this->_syncStaffSummaryToFirestore($targetId, $attKey, $attStr, '');
+            if (!$fsOk) {
+                return $this->json_error('Firestore write failed; backdated staff attendance not approved. Please retry.');
+            }
+
+            // ── RTDB mirror (best-effort, stays until Phase 8) ──
+            $this->firebase->set($attPath, $attStr);
 
             update_staff_att_summary($this->firebase, $school, $session, $targetId, $attKey, $monthNum, $year);
 
@@ -3175,24 +5039,33 @@ class Attendance extends MY_Controller
                 if (!preg_match('/^[A-Za-z0-9_]+$/', $studentId)) continue;
                 $attPath = "{$sectionRoot}/Students/{$studentId}/Attendance/{$attKey}";
 
+                // Build the new dayWise string in memory before any write.
                 if ($isDiff && is_array($payload)) {
                     // Diff format: {day => mark, ...} — read-modify-write only changed days
-                    $existing = null; // RTDB fallback removed
+                    $existing = $this->firebase->get($attPath);
                     $attStr = is_string($existing) ? str_pad($existing, $daysInMonth, 'V') : str_repeat('V', $daysInMonth);
                     foreach ($payload as $d => $mk) {
                         $d = (int)$d;
                         if ($d >= 1 && $d <= $daysInMonth) $attStr[$d - 1] = strtoupper((string)$mk);
                     }
                     $attStr = enforce_holidays_on_string($attStr, $daysInMonth, $nonWorking);
-                    // RTDB mirror removed per no-RTDB policy.
                 } else {
                     // Legacy full-string format (backward compat)
-                    $cleanStr = $this->_sanitize_att_string((string)$payload, $daysInMonth);
-                    $cleanStr = enforce_holidays_on_string($cleanStr, $daysInMonth, $nonWorking);
-                    // RTDB mirror removed per no-RTDB policy.
+                    $attStr = $this->_sanitize_att_string((string)$payload, $daysInMonth);
+                    $attStr = enforce_holidays_on_string($attStr, $daysInMonth, $nonWorking);
                 }
-                $studentBase = "{$sectionRoot}/Students/{$studentId}";
-                update_student_att_summary($this->firebase, $studentBase, $school, $attKey, $monthNum, $year);
+
+                // ── WRITE: Firestore FIRST (canonical) ──
+                $fsOk = $this->_syncStudentSummaryToFirestore(
+                    $studentId, $class, $section, $monthNum, $year, $attStr
+                );
+
+                // ── RTDB mirror (best-effort, only on Firestore success) ──
+                if ($fsOk) {
+                    $this->firebase->set($attPath, $attStr);
+                    $studentBase = "{$sectionRoot}/Students/{$studentId}";
+                    update_student_att_summary($this->firebase, $studentBase, $school, $attKey, $monthNum, $year);
+                }
             }
         } elseif ($type === 'staff_bulk') {
             $data     = $req['data'] ?? [];
@@ -3211,28 +5084,39 @@ class Attendance extends MY_Controller
                 if (!preg_match('/^[A-Za-z0-9_]+$/', $staffId)) continue;
                 $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
 
+                // Build the new dayWise string in memory before any write.
                 if ($isDiff && is_array($payload)) {
-                    $existing = null; // RTDB fallback removed
+                    $existing = $this->firebase->get($attPath);
                     $attStr = is_string($existing) ? str_pad($existing, $daysInMonth, 'V') : str_repeat('V', $daysInMonth);
                     foreach ($payload as $d => $mk) {
                         $d = (int)$d;
                         if ($d >= 1 && $d <= $daysInMonth) $attStr[$d - 1] = strtoupper((string)$mk);
                     }
                     $attStr = enforce_holidays_on_string($attStr, $daysInMonth, $nonWorking);
-                    // RTDB mirror removed per no-RTDB policy.
                 } else {
-                    $cleanStr = $this->_sanitize_att_string((string)$payload, $daysInMonth);
-                    $cleanStr = enforce_holidays_on_string($cleanStr, $daysInMonth, $nonWorking);
-                    // RTDB mirror removed per no-RTDB policy.
+                    $attStr = $this->_sanitize_att_string((string)$payload, $daysInMonth);
+                    $attStr = enforce_holidays_on_string($attStr, $daysInMonth, $nonWorking);
                 }
-                update_staff_att_summary($this->firebase, $school, $session, $staffId, $attKey, $monthNum, $year);
+
+                // ── WRITE: Firestore FIRST (canonical) ──
+                $fsOk = $this->_syncStaffSummaryToFirestore($staffId, $attKey, $attStr, '');
+
+                // ── RTDB mirror (best-effort, only on Firestore success) ──
+                if ($fsOk) {
+                    $this->firebase->set($attPath, $attStr);
+                    update_staff_att_summary($this->firebase, $school, $session, $staffId, $attKey, $monthNum, $year);
+                }
             }
         } else {
             return $this->json_error("Unknown request type: {$type}");
         }
 
         // Mark approved
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->update($path, [
+            'status'      => 'approved',
+            'approved_by' => $this->admin_name ?? $this->admin_id ?? 'system',
+            'approved_at' => date('c'),
+        ]);
 
         $this->_log_attendance_change('APPROVE_BACKDATED', [
             'request_id' => $requestId, 'type' => $type,
@@ -3254,11 +5138,16 @@ class Attendance extends MY_Controller
         if ($requestId === '') return $this->json_error('Request ID is required.');
 
         $path = "Schools/{$this->school_name}/{$this->session_year}/Attendance/PendingApproval/{$requestId}";
-        $req = null; // RTDB fallback removed
+        $req = $this->firebase->get($path);
         if (!is_array($req)) return $this->json_error('Request not found.');
         if (($req['status'] ?? '') !== 'pending') return $this->json_error('Request is not pending.');
 
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->update($path, [
+            'status'      => 'rejected',
+            'rejected_by' => $this->admin_name ?? $this->admin_id ?? 'system',
+            'rejected_at' => date('c'),
+            'reason'      => $reason,
+        ]);
 
         return $this->json_success(['message' => 'Request rejected.']);
     }
@@ -3270,7 +5159,7 @@ class Attendance extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES, 'list_pending_att');
         $path = "Schools/{$this->school_name}/{$this->session_year}/Attendance/PendingApproval";
-        $all = null; // RTDB fallback removed
+        $all = $this->firebase->get($path);
         $pending = [];
         if (is_array($all)) {
             foreach ($all as $id => $req) {
@@ -3279,7 +5168,7 @@ class Attendance extends MY_Controller
                 // Auto-expire stale requests
                 if (!empty($req['expires_at']) && strtotime($req['expires_at']) < time()) {
                     $expPath = "Schools/{$this->school_name}/{$this->session_year}/Attendance/PendingApproval/{$id}";
-                    // RTDB mirror removed per no-RTDB policy.
+                    $this->firebase->update($expPath, ['status' => 'expired', 'expired_at' => date('c')]);
                     continue;
                 }
                 $req['id'] = $id;
@@ -3300,7 +5189,7 @@ class Attendance extends MY_Controller
     private function _check_staff_att_lock(string $attKey): ?array
     {
         $lockPath = "Schools/{$this->school_name}/{$this->session_year}/Staff_Attendance/Locks/{$attKey}";
-        $lock = null; // RTDB fallback removed
+        $lock = $this->firebase->get($lockPath);
         if (is_array($lock) && !empty($lock['locked'])) {
             return $lock;
         }
@@ -3320,7 +5209,11 @@ class Attendance extends MY_Controller
         $attKey = "{$month} {$year}";
 
         $lockPath = "Schools/{$this->school_name}/{$this->session_year}/Staff_Attendance/Locks/{$attKey}";
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->set($lockPath, [
+            'locked'    => true,
+            'locked_at' => date('c'),
+            'locked_by' => $this->admin_name ?? $this->admin_id ?? 'system',
+        ]);
         return $this->json_success(['message' => "Staff attendance locked for {$attKey}."]);
     }
 
@@ -3337,7 +5230,7 @@ class Attendance extends MY_Controller
         $attKey = "{$month} {$year}";
 
         $lockPath = "Schools/{$this->school_name}/{$this->session_year}/Staff_Attendance/Locks/{$attKey}";
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->delete($lockPath);
         return $this->json_success(['message' => "Staff attendance unlocked for {$attKey}."]);
     }
 
@@ -3367,14 +5260,33 @@ class Attendance extends MY_Controller
             $this->load->helper('attendance');
             $date = date('Y-m-d');
 
-            // ── DEDUP: skip if already fired for this student+date+mark ──
-            $dedupKey = att_event_dedup_key($studentId, $date, $mark);
-            $dedupPath = "Schools/{$this->school_name}/{$this->session_year}/Attendance/Event_Fired/{$dedupKey}";
-            $already = null; // RTDB fallback removed
-            if ($already !== null) return;
+            // ── DEDUP: Phase 8a — Firestore-first, RTDB fallback ──
+            // Canonical: collection `attendanceEventsFired`,
+            //            doc id `{schoolId}_{md5(student|date|mark)}`
+            // Legacy:    RTDB Schools/{school}/{session}/Attendance/Event_Fired/{md5key}
+            //
+            // We check BOTH stores so that a record written under
+            // either path blocks duplicate fires. New writes go to
+            // Firestore first, then mirror RTDB.
+            $dedupKey  = att_event_dedup_key($studentId, $date, $mark);
+            $fsDedupId = $this->school_id . '_' . $dedupKey;
+            $rtdbDedupPath = "Schools/{$this->school_name}/{$this->session_year}/Attendance/Event_Fired/{$dedupKey}";
+
+            // Firestore check first
+            $fsDedupDoc = null;
+            try {
+                $fsDedupDoc = $this->fs->get('attendanceEventsFired', $fsDedupId);
+            } catch (\Exception $e) {
+                log_message('error', "Attendance dedup Firestore read failed: " . $e->getMessage());
+            }
+            if (is_array($fsDedupDoc)) return;
+
+            // RTDB legacy check
+            $rtdbDedup = $this->firebase->get($rtdbDedupPath);
+            if ($rtdbDedup !== null) return;
 
             // Get student profile
-            $studentData = null; // RTDB fallback removed
+            $studentData = $this->firebase->get("Users/Parents/{$this->parent_db_key}/{$studentId}");
             $studentName = is_array($studentData) ? ($studentData['Name'] ?? $studentId) : $studentId;
             $parentName  = is_array($studentData) ? ($studentData['Father Name'] ?? '') : '';
 
@@ -3398,26 +5310,76 @@ class Attendance extends MY_Controller
             try {
                 $this->load->library('communication_helper');
                 $this->communication_helper->init(
-                    $this->firebase, $this->school_name, $this->session_year, $this->parent_db_key
+                    $this->firebase, $this->school_name, $this->session_year, $this->parent_db_key, $this->fs, $this->school_id
                 );
                 $queued = $this->communication_helper->fire_event($eventType, $eventData);
             } catch (\Exception $e) {
                 log_message('error', "Attendance trigger pipeline failed: " . $e->getMessage());
             }
 
-            // ── PATH 2: Direct parent notification (guaranteed, no trigger config needed) ──
-            // Writes to a path the parent mobile app listens to in real-time.
-            // This ensures parents get notified even if no Communication triggers are set up.
+            // ── PATH 2: In-app notification (RTDB inbox the parent app listens to) ──
             try {
                 $notifId = 'ATT_' . date('YmdHis') . '_' . substr(md5($studentId . $day), 0, 6);
                 $notifPath = "Users/Parents/{$this->parent_db_key}/{$studentId}/Notifications/{$notifId}";
-                // RTDB mirror removed per no-RTDB policy.
+                $this->firebase->set($notifPath, [
+                    'type'    => $eventType,
+                    'title'   => "Attendance: {$statusLabel}",
+                    'message' => "{$studentName} was marked {$statusLabel} on " . date('d M Y') . " ({$class}, {$section})",
+                    'date'    => $date,
+                    'day'     => $day,
+                    'read'    => false,
+                    'created_at' => date('c'),
+                ]);
             } catch (\Exception $e) {
                 log_message('error', "Attendance direct notification failed: " . $e->getMessage());
             }
 
-            // ── Mark as fired (dedup) ──
-            // RTDB mirror removed per no-RTDB policy.
+            // ── PATH 3: Real-time FCM push (Phase C — 2026-04-08) ──
+            // Fires immediately so the parent gets a notification even if
+            // no trigger is configured AND process_queue cron hasn't run yet.
+            $pushed = 0;
+            try {
+                $this->load->library('push_service');
+                $pushed = $this->push_service->sendToUser($studentId, [
+                    'title' => "Attendance: {$statusLabel}",
+                    'body'  => "{$studentName} was marked {$statusLabel} on " . date('d M Y'),
+                    'data'  => [
+                        'type'       => $eventType,
+                        'student_id' => $studentId,
+                        'class'      => $class,
+                        'section'    => $section,
+                        'date'       => $date,
+                    ],
+                ]);
+            } catch (\Exception $e) {
+                log_message('error', "Attendance FCM push failed: " . $e->getMessage());
+            }
+
+            // ── Mark as fired — Phase 8a: Firestore FIRST → RTDB mirror ──
+            $dedupRecord = [
+                'schoolId'  => $this->school_id,
+                'studentId' => $studentId,
+                'mark'      => $mark,
+                'date'      => $date,
+                'eventType' => $eventType,
+                'queued'    => $queued,
+                'direct'    => true,
+                'pushed'    => $pushed,
+                'at'        => date('c'),
+            ];
+            try {
+                $this->fs->set('attendanceEventsFired', $fsDedupId, $dedupRecord, true);
+            } catch (\Exception $e) {
+                log_message('error', "Attendance dedup Firestore write failed: " . $e->getMessage());
+            }
+            // RTDB mirror (best-effort, stays until Phase 9)
+            try {
+                $this->firebase->set($rtdbDedupPath, [
+                    'student' => $studentId, 'mark' => $mark,
+                    'queued' => $queued, 'direct' => true,
+                    'pushed' => $pushed, 'at' => date('c'),
+                ]);
+            } catch (\Exception $e) { /* mirror best-effort */ }
         } catch (\Exception $e) {
             log_message('error', 'Attendance: notification event failed: ' . $e->getMessage());
         }
@@ -3440,40 +5402,367 @@ class Attendance extends MY_Controller
                 $this->firebase, $this->school_name, $this->session_year, $this->parent_db_key
             );
 
+            // R5 — Firestore-only roster discovery via Roster_helper
+            // (Strategy 0 inside _get_section_students). The previous
+            // RTDB shallow_get fallback at this site is gone; the
+            // attendanceSummary-derived strategy inside the helper
+            // catches every student who has ever been marked, so a
+            // school with no `students` docs but real attendance still
+            // fans out push notifications.
+            $students = $this->_get_section_students($class, $section);
+            if (empty($students)) return;
+
+            // Phase 7w: dropped the section-level dedup
+            // (`md5(class_section_attKey_today)`). It blocked ALL
+            // subsequent pushes for the section once any single
+            // A/T fire happened for the day, even for different
+            // students whose marks had genuinely changed since the
+            // earlier save. The per-student dedup inside
+            // `_fire_single_student_event` (keyed on
+            // student|date|mark) is still in place and correctly
+            // prevents duplicate pushes for the same combination.
+
+            // Read current dayWise per student from Firestore first
+            // (admin-canonical), fall back to RTDB. We need the full
+            // dayWise string to look at today's character.
+            $monthNum = (int)date('n');
+            $year     = (int)date('Y');
+            $monthKey = sprintf('%04d-%02d', $year, $monthNum);
+
+            $fsDayWise = [];
+            try {
+                $fsDocs = $this->fs->schoolWhere('attendanceSummary', [
+                    ['month', '==', $monthKey],
+                    ['type',  '==', 'student'],
+                ]);
+                foreach ($fsDocs as $entry) {
+                    $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                    if (!is_array($d)) continue;
+                    $sid = $d['studentId'] ?? '';
+                    $dw  = $d['dayWise']   ?? '';
+                    if ($sid !== '' && is_string($dw)) $fsDayWise[$sid] = $dw;
+                }
+            } catch (\Exception $e) { /* fall through to per-student RTDB read */ }
+
             $sectionRoot = $this->_resolve_section_root($class, $section);
-            $students = []; // RTDB fallback removed
-            if (!is_array($students)) return;
 
-            // Dedup check: have we already fired events for this class/section/date?
-            $dedupKey = md5("{$class}_{$section}_{$attKey}_{$today}");
-            $dedupPath = "Schools/{$this->school_name}/{$this->session_year}/Attendance/Event_Fired/{$dedupKey}";
-            $already = null; // RTDB fallback removed
-            if ($already !== null) return;
-
-            $fired = 0;
             foreach ($students as $studentId => $v) {
                 $studentId = (string)$studentId;
-                $attPath = "{$sectionRoot}/Students/{$studentId}/Attendance/{$attKey}";
-                $attStr = null; // RTDB fallback removed
-                if (!is_string($attStr)) continue;
+                if ($studentId === '') continue;
 
-                $daysInMonth = (int)date('t');
-                if (strlen($attStr) < $today) continue;
+                // Firestore-first → RTDB fallback for the dayWise
+                $attStr = $fsDayWise[$studentId] ?? '';
+                if ($attStr === '') {
+                    $attPath = "{$sectionRoot}/Students/{$studentId}/Attendance/{$attKey}";
+                    $rtdb = $this->firebase->get($attPath);
+                    if (is_string($rtdb)) $attStr = $rtdb;
+                }
+                if ($attStr === '' || strlen($attStr) < $today) continue;
 
                 $todayMark = strtoupper($attStr[$today - 1]);
                 if ($todayMark === 'A' || $todayMark === 'T') {
                     $this->_fire_single_student_event($studentId, $class, $section, $todayMark, $today, $attKey);
-                    $fired++;
                 }
-            }
-
-            // Mark as fired to prevent duplicate triggers
-            if ($fired > 0) {
-                // RTDB mirror removed per no-RTDB policy.
             }
         } catch (\Exception $e) {
             log_message('error', 'Attendance: bulk event trigger failed: ' . $e->getMessage());
         }
+    }
+
+    // ====================================================================
+    //  FIRESTORE SYNC — writes daily attendance for Android apps
+    // ====================================================================
+
+    /**
+     * Write a student's daily attendance mark to Firestore (the canonical
+     * store) — Phase 7a flipped this to be the *primary* write path so
+     * mark_student_day calls it BEFORE the RTDB mirror update.
+     *
+     * Collection: attendance
+     * DocId: {schoolId}_{date}_{studentId}
+     * Fields: match Android AttendanceDoc exactly
+     *
+     * @return bool true on success, false if the Firestore write threw.
+     *              Bulk callers that don't care about the return value can
+     *              still ignore it; the strict per-day path checks it.
+     */
+    private function _syncDailyToFirestore(
+        string $studentId,
+        string $mark,
+        string $class,
+        string $section,
+        int    $day,
+        string $attKey,
+        string $studentName = '',
+        bool   $isLate = false,
+        int    $lateMinutes = 0
+    ): bool {
+        try {
+            $school  = $this->school_name;
+            $session = $this->session_year;
+
+            // Parse attKey "April 2026" → date "2026-04-02"
+            $monthNum = $this->month_map[explode(' ', $attKey)[0]] ?? 0;
+            $year     = (int)(explode(' ', $attKey)[1] ?? date('Y'));
+            if ($monthNum === 0) return false;
+            $date = sprintf('%04d-%02d-%02d', $year, $monthNum, $day);
+
+            $classKey   = Firestore_service::classKey($class);
+            $sectionKey = Firestore_service::sectionKey($section);
+            $sectionStr = "{$classKey}/{$sectionKey}";
+
+            // Phase 4 (2026-04-08): stamp classOrder/sectionCode/className/section
+            // alongside sectionKey so attendance docs match Phase 1-3 shape.
+            require_once APPPATH . 'libraries/Entity_firestore_sync.php';
+            $cs = Entity_firestore_sync::normalizeClassSection($classKey, $sectionKey);
+
+            // DocId matches Android: {schoolId}_{date}_{studentId}
+            $docId = "{$school}_{$date}_{$studentId}";
+
+            $doc = [
+                'schoolId'    => $school,
+                'session'     => $session,
+                'date'        => $date,
+                'className'   => $cs['className']  !== '' ? $cs['className']  : $classKey,
+                'section'     => $cs['section']    !== '' ? $cs['section']    : $sectionKey,
+                'classOrder'  => $cs['classOrder'],
+                'sectionCode' => $cs['sectionCode'],
+                'sectionKey'  => $sectionStr,
+                'studentId'   => $studentId,
+                'studentName' => $studentName,
+                'status'      => $mark,
+                'markedBy'    => $this->admin_id ?? $this->session->userdata('admin_id') ?? 'system',
+                'markedAt'    => date('c'),
+                'late'        => $isLate || $mark === 'T',
+                'lateMinutes' => $lateMinutes,
+                'notified'    => false,
+            ];
+
+            $ok = (bool) $this->fs->set('attendance', $docId, $doc, true);
+            log_message('debug', "Attendance Firestore sync: {$docId} → {$mark}");
+            return $ok;
+        } catch (\Exception $e) {
+            log_message('error', "Attendance Firestore sync failed for {$studentId}: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Phase 7b — Firestore-first write for a single staff member's
+     * daily attendance mark.
+     *
+     * Collection: staffAttendance
+     * DocId:      {schoolId}_{date}_{staffId}
+     *
+     * Mirrors _syncDailyToFirestore but for staff. Returns bool so the
+     * strict per-day path (mark_staff_day) can bail before touching RTDB
+     * if the Firestore write fails.
+     */
+    private function _syncStaffDailyToFirestore(
+        string $staffId,
+        string $mark,
+        int    $day,
+        string $attKey,
+        string $staffName = '',
+        bool   $isLate = false,
+        int    $lateMinutes = 0
+    ): bool {
+        try {
+            $school  = $this->school_name;
+            $session = $this->session_year;
+
+            $monthNum = $this->month_map[explode(' ', $attKey)[0]] ?? 0;
+            $year     = (int)(explode(' ', $attKey)[1] ?? date('Y'));
+            if ($monthNum === 0) return false;
+            $date = sprintf('%04d-%02d-%02d', $year, $monthNum, $day);
+
+            $docId = "{$school}_{$date}_{$staffId}";
+            $doc = [
+                'schoolId'    => $school,
+                'session'     => $session,
+                'date'        => $date,
+                'staffId'     => $staffId,
+                'staffName'   => $staffName,
+                'status'      => $mark,
+                'markedBy'    => $this->admin_id ?? $this->session->userdata('admin_id') ?? 'system',
+                'markedAt'    => date('c'),
+                'late'        => $isLate || $mark === 'T',
+                'lateMinutes' => $lateMinutes,
+                'notified'    => false,
+            ];
+
+            $ok = (bool) $this->fs->set('staffAttendance', $docId, $doc, true);
+            log_message('debug', "Staff attendance Firestore sync: {$docId} → {$mark}");
+            return $ok;
+        } catch (\Exception $e) {
+            log_message('error', "Staff attendance Firestore sync failed for {$staffId}: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Phase 7b — recompute and write a monthly staff attendance summary
+     * to Firestore. Mirrors the shape used for `attendanceSummary` so the
+     * Android apps can read either with the same parser.
+     *
+     * Collection: staffAttendanceSummary
+     * DocId:      {schoolId}_{staffId}_{monthKey}
+     */
+    private function _syncStaffSummaryToFirestore(
+        string $staffId,
+        string $attKey,
+        string $dayWise,
+        string $staffName = ''
+    ): bool {
+        try {
+            $school  = $this->school_name;
+            $session = $this->session_year;
+
+            $monthNum = $this->month_map[explode(' ', $attKey)[0]] ?? 0;
+            $year     = (int)(explode(' ', $attKey)[1] ?? date('Y'));
+            if ($monthNum === 0) return false;
+            $monthKey = sprintf('%04d-%02d', $year, $monthNum);
+
+            $present  = substr_count($dayWise, 'P');
+            $absent   = substr_count($dayWise, 'A');
+            $leave    = substr_count($dayWise, 'L');
+            $holiday  = substr_count($dayWise, 'H');
+            $tardy    = substr_count($dayWise, 'T');
+            $vacation = substr_count($dayWise, 'V');
+            $total    = strlen($dayWise);
+            $working  = $total - $holiday - $vacation;
+            // Phase 9b: include tardy — matches the student formula
+            $pct      = $working > 0 ? (($present + $tardy) / $working) * 100.0 : 0.0;
+
+            $docId = "{$school}_{$staffId}_{$monthKey}";
+            $doc = [
+                'schoolId'    => $school,
+                'session'     => $session,
+                'staffId'     => $staffId,
+                'staffName'   => $staffName,
+                'type'        => 'staff',
+                'month'       => $monthKey,
+                'monthLabel'  => $attKey,
+                'dayWise'     => $dayWise,
+                'present'     => $present,
+                'absent'      => $absent,
+                'leave'       => $leave,
+                'holiday'     => $holiday,
+                'tardy'       => $tardy,
+                'late'        => $tardy,  // legacy alias — same trick as student summary
+                'vacation'    => $vacation,
+                'totalDays'   => $total,
+                'workingDays' => $working,
+                'percentage'  => $pct,
+                'updatedAt'   => date('c'),
+                'updatedBy'   => $this->admin_id ?? 'system',
+            ];
+
+            return (bool) $this->fs->set('staffAttendanceSummary', $docId, $doc, true);
+        } catch (\Exception $e) {
+            log_message('error', "Staff attendance summary Firestore sync failed for {$staffId}: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Recompute and write a monthly student attendance summary to Firestore.
+     *
+     * Mirrors the inline write in `save_student_attendance` so the
+     * `attendanceSummary` collection stays the single source of truth
+     * regardless of whether marks land via bulk save, single-day click,
+     * teacher app sync, or backdated approval.
+     *
+     * Collection: attendanceSummary
+     * DocId:      {schoolId}_{studentId}_{YYYY-MM}
+     *
+     * Uses set(merge:true) so any existing `lateTimes` map (admin-owned
+     * arrival times) is preserved across summary recomputations.
+     */
+    private function _syncStudentSummaryToFirestore(
+        string $studentId,
+        string $class,
+        string $section,
+        int    $monthNum,
+        int    $year,
+        string $dayWise,
+        string $studentName = ''
+    ): bool {
+        try {
+            $monthName = date('F', mktime(0, 0, 0, $monthNum, 1, $year));
+            $monthKey  = sprintf('%04d-%02d', $year, $monthNum);
+            $attKey    = "{$monthName} {$year}";
+
+            $present = $absent = $leave = $holiday = $tardy = 0;
+            $working = 0;
+            for ($i = 0; $i < strlen($dayWise); $i++) {
+                $ch = $dayWise[$i];
+                if ($ch === 'P')      { $present++; $working++; }
+                elseif ($ch === 'A')  { $absent++;  $working++; }
+                elseif ($ch === 'L')  { $leave++;   $working++; }
+                elseif ($ch === 'H')  { $holiday++; }
+                elseif ($ch === 'T')  { $tardy++;   $working++; }
+            }
+            $pct = $working > 0 ? round(($present + $tardy) / $working * 100, 1) : 0;
+
+            // Build the doc. Only include `studentName` when the
+            // caller actually has it — `set(merge:true)` then leaves
+            // any existing name on the doc untouched.
+            $doc = [
+                'schoolId'   => $this->school_id,
+                'studentId'  => $studentId,
+                'type'       => 'student',
+                'className'  => Firestore_service::classKey($class),
+                'section'    => Firestore_service::sectionKey($section),
+                'month'      => $monthKey,
+                'monthLabel' => $attKey,
+                'session'    => $this->session_year,
+                'dayWise'    => $dayWise,
+                'present'    => $present,
+                'absent'     => $absent,
+                'leave'      => $leave,
+                'holiday'    => $holiday,
+                'tardy'      => $tardy,
+                'percentage' => $pct,
+                'updatedAt'  => date('c'),
+                'updatedBy'  => $this->admin_id ?? 'system',
+            ];
+            if ($studentName !== '') {
+                $doc['studentName'] = $studentName;
+            }
+
+            $docId = $this->fs->docId2($studentId, $monthKey);
+            return (bool) $this->fs->set('attendanceSummary', $docId, $doc, true);
+        } catch (\Exception $e) {
+            log_message('error', "Student attendance summary Firestore sync failed for {$studentId}: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Sync a batch of student marks to Firestore in one go.
+     * Used by bulk_mark_student and api_mark_attendance.
+     */
+    private function _syncBulkDailyToFirestore(
+        array  $studentMarks,  // [ studentId => ['mark' => 'P', 'name' => '...'] ]
+        string $class,
+        string $section,
+        int    $day,
+        string $attKey
+    ): bool {
+        $allOk = true;
+        foreach ($studentMarks as $studentId => $info) {
+            $ok = $this->_syncDailyToFirestore(
+                $studentId,
+                $info['mark'] ?? 'V',
+                $class, $section, $day, $attKey,
+                $info['name'] ?? '',
+                ($info['mark'] ?? '') === 'T',
+                0
+            );
+            if (!$ok) $allOk = false;
+        }
+        return $allOk;
     }
 
     // ====================================================================
@@ -3502,7 +5791,7 @@ class Attendance extends MY_Controller
         $yearMonth = date('Y-m');
         $logKey    = date('d_His') . '_' . mt_rand(1000, 9999);
         $schoolId  = $this->school_name;
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->set("System/Logs/Attendance/{$schoolId}/{$yearMonth}/{$logKey}", $logEntry);
     }
 
     /* ================================================================
@@ -3557,7 +5846,10 @@ class Attendance extends MY_Controller
                     . '_' . date('His', $entry['epoch'] ?? time())
                     . '_' . mt_rand(1000, 9999);
 
-                // RTDB mirror removed per no-RTDB policy.
+                $this->firebase->set(
+                    "System/Logs/Attendance/{$schoolId}/{$yearMonth}/{$logKey}",
+                    $entry
+                );
                 $flushed++;
             }
 
@@ -3589,7 +5881,7 @@ class Attendance extends MY_Controller
         $csKey   = str_replace(' ', '_', $class) . '_' . $section;
         $summaryPath = "Schools/{$school}/{$session}/Attendance/Summary/Students/{$attKey}/{$csKey}";
 
-        $summary = null; // RTDB fallback removed
+        $summary = $this->firebase->get($summaryPath);
         if (!is_array($summary) || !isset($summary['students'])) return;
 
         // Update the individual student stats
@@ -3624,7 +5916,7 @@ class Attendance extends MY_Controller
         $summary['avg_present_pct'] = $totalStudents > 0
             ? round($totalPct / $totalStudents, 1) : 0;
 
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->set($summaryPath, $summary);
     }
 
     /* ================================================================
@@ -3903,7 +6195,7 @@ class Attendance extends MY_Controller
         $summaryPath = "System/Metrics/Attendance/{$dateStr}/{$endpoint}";
 
         // Read current counters (1 read)
-        $current = null; // RTDB fallback removed
+        $current = $this->firebase->get($summaryPath);
         if (!is_array($current)) {
             $current = [
                 'total_requests' => 0,
@@ -3933,7 +6225,7 @@ class Attendance extends MY_Controller
         $current['last_updated'] = date('c');
 
         // Single write (1 update)
-        // RTDB mirror removed per no-RTDB policy.
+        $this->firebase->set($summaryPath, $current);
     }
 
     /**

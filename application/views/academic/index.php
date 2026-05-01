@@ -49,6 +49,10 @@ html{font-size:16px !important}
 .ac-btn-d{background:transparent;color:#dc2626;border:1px solid #fca5a5}
 .ac-btn-d:hover{background:#fee2e2}
 .ac-btn:disabled{opacity:.5;cursor:not-allowed}
+.ac-btn.loading{pointer-events:none;opacity:.65}
+.ac-btn.loading i.fa{display:none}
+.ac-btn.loading::before{content:'';display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:btn-spin .6s linear infinite;margin-right:6px}
+@keyframes btn-spin{to{transform:rotate(360deg)}}
 .ac-btn-sm{padding:5px 12px;font-size:11px}
 
 /* ── Tables ── */
@@ -208,34 +212,37 @@ html{font-size:16px !important}
         <div class="ac-head-icon"><i class="fa fa-university"></i></div>
         <div class="ac-head-info">
             <div class="ac-head-title">Academic Management</div>
-            <div class="ac-head-sub"><?= htmlspecialchars($school_name ?? '') ?> — Session <?= htmlspecialchars($session_year ?? '') ?></div>
+            <div class="ac-head-sub"><?= htmlspecialchars($school_display_name ?? $school_name ?? '') ?> — Session <?= htmlspecialchars($session_year ?? '') ?></div>
         </div>
     </div>
 
     <!-- Tabs -->
     <div class="ac-tabs" id="acTabs">
-        <div class="ac-tab active" data-tab="subjects"><i class="fa fa-book"></i> Subject Assignment</div>
-        <div class="ac-tab" data-tab="scheduling"><i class="fa fa-clock-o"></i> Period Scheduling</div>
-        <div class="ac-tab" data-tab="curriculum"><i class="fa fa-list-ol"></i> Curriculum</div>
-        <div class="ac-tab" data-tab="calendar"><i class="fa fa-calendar"></i> Calendar</div>
+        <div class="ac-tab active" data-tab="scheduling"><i class="fa fa-clock-o"></i> Period Scheduling</div>
+        <div class="ac-tab" data-tab="subjects"><i class="fa fa-book"></i> Subject Assignment</div>
         <div class="ac-tab" data-tab="timetable"><i class="fa fa-th"></i> Master Timetable</div>
         <div class="ac-tab" data-tab="substitutes"><i class="fa fa-exchange"></i> Substitutes</div>
+        <div class="ac-tab" data-tab="curriculum"><i class="fa fa-list-ol"></i> Curriculum</div>
+        <div class="ac-tab" data-tab="calendar"><i class="fa fa-calendar"></i> Calendar</div>
         <div class="ac-tab" data-tab="workload"><i class="fa fa-bar-chart"></i> Teacher Workload</div>
     </div>
 
     <!-- ═══════════ TAB 1: SUBJECT ASSIGNMENT ═══════════ -->
-    <div class="ac-pane active" id="pane-subjects">
+    <div class="ac-pane" id="pane-subjects">
         <div class="ac-card">
             <div class="ac-card-hd">
                 <h3><i class="fa fa-book" style="color:var(--gold);margin-right:6px"></i>Subject Assignment</h3>
                 <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                    <select id="saClassSelect" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:12px;min-width:180px">
+                    <select id="saClassSelect" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:12px;min-width:160px">
                         <option value="">Select Class...</option>
+                    </select>
+                    <select id="saSectionSelect" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:12px;min-width:160px" disabled>
+                        <option value="">All Sections (class-wide)</option>
                     </select>
                     <?php if (in_array($admin_role ?? '', ['Admin', 'Principal', 'Super Admin', 'School Super Admin'])): ?>
                     <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.sa.copyFrom()" title="Copy assignments from another class"><i class="fa fa-copy"></i> Copy From</button>
                     <?php endif; ?>
-                    <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.sa.load()"><i class="fa fa-refresh"></i> Refresh</button>
+                    <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.sa.load(this)"><i class="fa fa-refresh"></i> Refresh</button>
                 </div>
             </div>
             <div class="ac-card-body">
@@ -246,10 +253,21 @@ html{font-size:16px !important}
                 <!-- Assign Form (shown when class selected) -->
                 <div id="saAssignArea" style="display:none">
                     <!-- Summary bar -->
-                    <div id="saSummary" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding:10px 14px;background:var(--bg3);border-radius:8px;font-size:12px">
+                    <div id="saSummary" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:10px 14px;background:var(--bg3);border-radius:8px;font-size:12px">
                         <span><strong id="saClassName" style="color:var(--t1)"></strong></span>
-                        <span style="color:var(--t3)"><i class="fa fa-book"></i> <span id="saCount">0</span> subjects assigned</span>
+                        <span style="color:var(--t3)"><i class="fa fa-book"></i> <span id="saCount">0</span> subjects</span>
                         <span style="color:var(--t3)"><i class="fa fa-clock-o"></i> <span id="saTotalPeriods">0</span> periods/week</span>
+                        <span id="saPeriodLimit" style="margin-left:auto;font-weight:600"></span>
+                    </div>
+                    <!-- Period allocation bar -->
+                    <div id="saPeriodBar" style="display:none;margin-bottom:14px">
+                        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--t3);margin-bottom:3px">
+                            <span>Period Allocation</span>
+                            <span id="saPeriodBarLabel">0 / 0</span>
+                        </div>
+                        <div style="height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
+                            <div id="saPeriodBarFill" style="height:100%;border-radius:3px;transition:width .3s,background .3s;width:0%"></div>
+                        </div>
                     </div>
 
                     <!-- Assigned subjects table -->
@@ -261,7 +279,7 @@ html{font-size:16px !important}
                         <h4 style="font-size:12px;font-weight:700;color:var(--t2);margin-bottom:10px"><i class="fa fa-plus-circle" style="color:var(--gold)"></i> Add Subject from Catalog</h4>
                         <div id="saCatalog" style="display:flex;gap:6px;flex-wrap:wrap"></div>
                         <div style="margin-top:12px">
-                            <button class="ac-btn ac-btn-p" onclick="AC.sa.save()"><i class="fa fa-save"></i> Save Assignments</button>
+                            <button class="ac-btn ac-btn-p" onclick="AC.sa.save(this)"><i class="fa fa-save"></i> Save Assignments</button>
                         </div>
                     </div>
                     <?php endif; ?>
@@ -271,17 +289,17 @@ html{font-size:16px !important}
     </div>
 
     <!-- ═══════════ TAB 2: PERIOD SCHEDULING ═══════════ -->
-    <div class="ac-pane" id="pane-scheduling">
+    <div class="ac-pane active" id="pane-scheduling">
         <div class="ac-card">
             <div class="ac-card-hd">
                 <h3><i class="fa fa-clock-o" style="color:var(--gold);margin-right:6px"></i>Period Scheduling</h3>
-                <button class="ac-btn ac-btn-s ac-btn-sm" style="margin-left:auto" onclick="AC.ps.load()"><i class="fa fa-refresh"></i> Refresh</button>
+                <button class="ac-btn ac-btn-s ac-btn-sm" style="margin-left:auto" onclick="AC.ps.load(this)"><i class="fa fa-refresh"></i> Refresh</button>
             </div>
             <div class="ac-card-body">
                 <!-- Current Schedule Summary -->
-                <div id="psCurrentSummary" style="margin-bottom:20px;padding:14px 18px;background:var(--bg3);border-radius:8px;display:none">
+                <div id="psCurrentSummary" style="margin-bottom:20px;padding:14px 18px;background:var(--bg3);border:1px solid var(--border);border-radius:10px">
                     <h4 style="font-size:12px;font-weight:700;color:var(--t2);margin-bottom:8px"><i class="fa fa-info-circle" style="color:var(--gold)"></i> Current Schedule</h4>
-                    <div id="psSummaryContent" style="font-size:12px;color:var(--t1);line-height:1.8"></div>
+                    <div id="psSummaryContent" style="font-size:12px;color:var(--t1);line-height:1.8"><span style="color:var(--t3)"><i class="fa fa-spinner fa-spin"></i> Loading schedule…</span></div>
                 </div>
 
                 <?php if (in_array($admin_role ?? '', ['Admin', 'Principal', 'Super Admin', 'School Super Admin'])): ?>
@@ -328,7 +346,7 @@ html{font-size:16px !important}
                 </div>
 
                 <div style="border-top:1px solid var(--border);padding-top:14px">
-                    <button class="ac-btn ac-btn-p" onclick="AC.ps.save()"><i class="fa fa-save"></i> Save Schedule</button>
+                    <button class="ac-btn ac-btn-p" onclick="AC.ps.save(this)"><i class="fa fa-save"></i> Save Schedule</button>
                 </div>
                 <?php else: ?>
                 <div class="ac-empty"><i class="fa fa-lock"></i>Only Admin or Principal can modify the period schedule</div>
@@ -421,7 +439,7 @@ html{font-size:16px !important}
                 </div>
                 <div class="ac-fg"><label>Description</label><textarea id="calDesc" rows="2" placeholder="Optional details..."></textarea></div>
                 <div style="display:flex;gap:8px;margin-top:4px">
-                    <button class="ac-btn ac-btn-p ac-btn-sm" onclick="AC.cal.saveEvent()"><i class="fa fa-check"></i> Save</button>
+                    <button class="ac-btn ac-btn-p ac-btn-sm" onclick="AC.cal.saveEvent(this)"><i class="fa fa-check"></i> Save</button>
                     <button class="ac-btn ac-btn-d ac-btn-sm" id="calDeleteBtn" style="display:none" onclick="AC.cal.deleteEditingEvent()"><i class="fa fa-trash"></i> Delete</button>
                     <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.cal.hideForm()">Cancel</button>
                 </div>
@@ -464,9 +482,12 @@ html{font-size:16px !important}
                     <select id="ttClassFilter" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:12px;min-width:120px">
                         <option value="">All Classes</option>
                     </select>
+                    <?php if (in_array($admin_role ?? '', ['Admin', 'Principal', 'Super Admin', 'School Super Admin'])): ?>
+                    <button class="ac-btn ac-btn-p ac-btn-sm" onclick="AC.tt.autoGenerate()" title="Auto-generate full timetable from subject assignments"><i class="fa fa-magic"></i> Auto Generate</button>
+                    <?php endif; ?>
                     <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.tt.copyDay()" title="Copy this day's timetable to another day"><i class="fa fa-copy"></i> Copy Day</button>
                     <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.tt.printTT()" title="Print timetable"><i class="fa fa-print"></i> Print</button>
-                    <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.tt.load()"><i class="fa fa-refresh"></i> Refresh</button>
+                    <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.tt.load(this)"><i class="fa fa-refresh"></i> Refresh</button>
                 </div>
             </div>
             <div class="ac-card-body">
@@ -478,7 +499,7 @@ html{font-size:16px !important}
                     <div class="ac-day-tab" data-day="Thursday">Thu</div>
                     <div class="ac-day-tab" data-day="Friday">Fri</div>
                     <div class="ac-day-tab" data-day="Saturday">Sat</div>
-                    <div class="ac-day-tab" data-day="_week" style="margin-left:8px;border-color:var(--gold);color:var(--gold)"><i class="fa fa-calendar"></i> Full Week</div>
+                    <div class="ac-day-tab" data-day="_week" style="margin-left:8px;border-color:var(--gold)"><i class="fa fa-calendar"></i> Full Week</div>
                 </div>
 
                 <!-- Settings Summary + Fill Rate -->
@@ -499,7 +520,7 @@ html{font-size:16px !important}
 
                 <!-- Print Header (visible only when printing) -->
                 <div id="ttPrintHeader" style="display:none">
-                    <h2><?= htmlspecialchars($school_name ?? '') ?> — Master Timetable</h2>
+                    <h2><?= htmlspecialchars($school_display_name ?? $school_name ?? '') ?> — Master Timetable</h2>
                     <p>Session: <?= htmlspecialchars($session_year ?? '') ?> | <span id="ttPrintDay"></span></p>
                 </div>
 
@@ -519,40 +540,42 @@ html{font-size:16px !important}
                 <h3><i class="fa fa-exchange" style="color:var(--gold);margin-right:6px"></i>Substitute Teachers</h3>
                 <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                     <input type="date" id="subDateFilter" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:12px">
-                    <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.sub.load()"><i class="fa fa-refresh"></i> Load</button>
+                    <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.sub.load(this)"><i class="fa fa-refresh"></i> Load</button>
                     <button class="ac-btn ac-btn-p ac-btn-sm" onclick="AC.sub.showForm()"><i class="fa fa-plus"></i> Assign Substitute</button>
                 </div>
             </div>
 
-            <!-- Add Form -->
+            <!-- Redesigned Assign Form -->
             <div id="subForm" class="ac-inline-form">
                 <input type="hidden" id="subEditId" value="">
+
+                <!-- Step 1: Date + Absent Teacher -->
                 <div class="ac-row">
-                    <div class="ac-fg"><label>Start Date *</label><input type="date" id="subDate"></div>
-                    <div class="ac-fg"><label>End Date <span style="color:var(--t3);font-size:11px">(leave blank for single day)</span></label><input type="date" id="subDateEnd"></div>
+                    <div class="ac-fg"><label>Date *</label><input type="date" id="subDate"></div>
                     <div class="ac-fg"><label>Absent Teacher *</label>
-                        <select id="subAbsent"><option value="">Select teacher...</option></select>
+                        <select id="subAbsent"><option value="">Select date first...</option></select>
                     </div>
-                </div>
-                <div class="ac-row">
-                    <div class="ac-fg"><label>Substitute Teacher *</label>
-                        <select id="subTeacher"><option value="">Select teacher...</option></select>
-                    </div>
-                    <div class="ac-fg"><label>Class / Section *</label>
-                        <select id="subClass"><option value="">Select class...</option></select>
-                    </div>
-                    <div class="ac-fg"><label>Subject</label>
-                        <select id="subSubject"><option value="">Select class first...</option></select>
-                    </div>
-                </div>
-                <div class="ac-row">
-                    <div class="ac-fg"><label>Periods (comma-separated) *</label><input type="text" id="subPeriods" placeholder="e.g. 3,4,5"></div>
                     <div class="ac-fg"><label>Reason</label><input type="text" id="subReason" placeholder="e.g. Medical leave"></div>
                 </div>
-                <!-- Teacher availability indicator -->
-                <div id="subAvailability" style="display:none;padding:8px 12px;border-radius:6px;margin-bottom:8px;font-size:12px"></div>
-                <div style="display:flex;gap:8px;margin-top:4px">
-                    <button class="ac-btn ac-btn-p ac-btn-sm" onclick="AC.sub.save()"><i class="fa fa-check"></i> Save</button>
+
+                <!-- Step 2: Teacher's schedule for the day (auto-loaded) -->
+                <div id="subSchedulePanel" style="display:none;margin:12px 0;padding:14px;background:var(--bg3);border:1px solid var(--border);border-radius:8px">
+                    <div style="font-size:12px;font-weight:700;color:var(--t1);margin-bottom:10px">
+                        <i class="fa fa-calendar" style="color:var(--gold);margin-right:6px"></i>
+                        <span id="subScheduleTitle">Schedule</span>
+                    </div>
+                    <div id="subScheduleBody" style="display:flex;flex-direction:column;gap:6px">
+                        <!-- Periods with checkboxes + per-period substitute dropdowns -->
+                    </div>
+                </div>
+
+                <!-- No schedule message -->
+                <div id="subNoSchedule" style="display:none;padding:12px;text-align:center;color:var(--t3);font-size:12px">
+                    <i class="fa fa-info-circle"></i> <span id="subNoScheduleMsg">Select a date and teacher to see their schedule</span>
+                </div>
+
+                <div style="display:flex;gap:8px;margin-top:8px">
+                    <button class="ac-btn ac-btn-p ac-btn-sm" onclick="AC.sub.saveNew(this)" id="subSaveBtn" style="display:none"><i class="fa fa-check" style="pointer-events:none"></i> Assign Selected Periods</button>
                     <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.sub.hideForm()">Cancel</button>
                 </div>
             </div>
@@ -576,7 +599,7 @@ html{font-size:16px !important}
                         <input type="number" id="wlThreshold" min="1" max="60" value="30" style="width:60px;padding:4px 8px;font-size:12px;text-align:center" onchange="AC.wl.render()">
                     </div>
                     <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.wl.exportCSV()" title="Export to CSV"><i class="fa fa-download"></i> Export</button>
-                    <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.wl.load()"><i class="fa fa-refresh"></i> Refresh</button>
+                    <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.wl.load(this)"><i class="fa fa-refresh"></i> Refresh</button>
                 </div>
             </div>
             <div class="ac-card-body">
@@ -645,6 +668,14 @@ function toast(msg,ok){
     t.textContent=msg;t.className='ac-toast '+(ok?'ok':'err')+' show';
     setTimeout(function(){t.classList.remove('show')},2800);
 }
+/* Button loading state helper — disables btn, shows spinner, restores on promise settle */
+function withBtn(btn,promise){
+    if(!btn)return promise;
+    var origText=btn.innerHTML;
+    btn.classList.add('loading');btn.disabled=true;
+    return promise.then(function(d){btn.classList.remove('loading');btn.disabled=false;return d})
+                  .catch(function(e){btn.classList.remove('loading');btn.disabled=false;throw e});
+}
 
 /* ── RBAC ── */
 var _role='<?= htmlspecialchars($admin_role ?? "Admin", ENT_QUOTES) ?>';
@@ -691,9 +722,13 @@ AC.sa = {
     _classes:[],    // [{key, label}] — per class (not per section)
     _catalog:{},    // {classNum: [{code,name,category,stream}]}
     _assignments:{},// {fbKey: [{code,name,category,periods_week,teacher_id,teacher_name}]}
-    _currentKey:'', // Firebase key for selected class (e.g. "Class 9th")
-    _currentLabel:'',
-    _currentSubs:[], // working copy for selected class
+    _currentKey:'', // Firebase-safe key for selected class (e.g. "Class_9th")
+    _currentLabel:'', // Display label (e.g. "Class 9th")
+    _currentClassKey:'', // Original canonical key (e.g. "Class 9th") — sent to backend
+    _currentSection:'', // Phase 4: selected section ('' = class-wide)
+    _currentSubs:[], // working copy for selected class+section
+    _sectionsCache:{}, // {classKey: [sectionLetter, ...]}
+    _periodSettings:{periodsPerDay:0,numWorkingDays:6,maxPeriodsPerWeek:0}, // from TimetableSettings
 
     init:function(){
         AC.sa._loaded=true;
@@ -705,6 +740,7 @@ AC.sa = {
             AC.sa._classes=d.classes||[];
             AC.sa._catalog=d.catalog||{};
             AC.sa._assignments=d.assignments||{};
+            if(d.periodSettings) AC.sa._periodSettings=d.periodSettings;
 
             // Load teachers BEFORE enabling the class selector (fixes empty dropdown race)
             var teacherReady=(_teachers.length>0)
@@ -728,12 +764,31 @@ AC.sa = {
                     if(!sel.value){
                         document.getElementById('saContent').innerHTML='<div class="ac-empty"><i class="fa fa-book"></i>Select a class to manage subject assignments</div>';
                         document.getElementById('saAssignArea').style.display='none';
+                        document.getElementById('saSectionSelect').disabled=true;
+                        document.getElementById('saSectionSelect').innerHTML='<option value="">All Sections (class-wide)</option>';
                         return;
                     }
                     AC.sa._currentKey=sel.value;
                     AC.sa._currentLabel=opt.dataset.label||'';
+                    AC.sa._currentClassKey=opt.dataset.key||opt.dataset.label||'';
+                    AC.sa._currentSection=''; // reset to class-wide
+                    // Load sections for this class
+                    AC.sa._loadSections(opt.dataset.key||'');
                     AC.sa._loadClass(sel.value,opt.dataset.key||'');
                 };
+
+                // Section selector handler
+                var secSel=document.getElementById('saSectionSelect');
+                secSel.onchange=function(){
+                    AC.sa._currentSection=secSel.value;
+                    // Reload assignments for this class+section
+                    var cSel=document.getElementById('saClassSelect');
+                    var cOpt=cSel.options[cSel.selectedIndex];
+                    if(cOpt&&cOpt.value){
+                        AC.sa._loadClass(cSel.value,cOpt.dataset.key||'');
+                    }
+                };
+
                 document.getElementById('saContent').innerHTML='';
             });
         });
@@ -746,17 +801,83 @@ AC.sa = {
         return (key||'').replace(/[.$#\[\]\/]/g,'_');
     },
 
+    /** Load sections for the given class into the section dropdown (Phase 4) */
+    _loadSections:function(classKey){
+        var secSel=document.getElementById('saSectionSelect');
+        secSel.innerHTML='<option value="">All Sections (class-wide)</option>';
+        secSel.disabled=true;
+
+        if(!classKey) return;
+
+        // Use cache if available
+        if(AC.sa._sectionsCache[classKey]){
+            AC.sa._populateSectionDropdown(AC.sa._sectionsCache[classKey]);
+            return;
+        }
+
+        // Strip "Class " prefix for the API call (sis/get_sections_by_class expects raw class name)
+        var rawClass=classKey.replace(/^Class\s+/i,'');
+
+        post('sis/get_sections_by_class',{class_name:rawClass}).then(function(d){
+            var sections=Array.isArray(d)?d:(d&&Array.isArray(d.sections)?d.sections:[]);
+            AC.sa._sectionsCache[classKey]=sections;
+            AC.sa._populateSectionDropdown(sections);
+        }).catch(function(){
+            // Network failure — keep dropdown disabled with class-wide as only option
+        });
+    },
+
+    _populateSectionDropdown:function(sections){
+        var secSel=document.getElementById('saSectionSelect');
+        sections.forEach(function(sec){
+            var opt=document.createElement('option');
+            opt.value='Section '+sec;
+            opt.textContent='Section '+sec;
+            secSel.appendChild(opt);
+        });
+        secSel.disabled=false;
+        // Restore current section if any
+        if(AC.sa._currentSection){
+            secSel.value=AC.sa._currentSection;
+        }
+    },
+
     _loadClass:function(fbKey,classKey){
         document.getElementById('saContent').innerHTML='';
         document.getElementById('saAssignArea').style.display='block';
-        document.getElementById('saClassName').textContent=AC.sa._currentLabel;
+        var label=AC.sa._currentLabel;
+        if(AC.sa._currentSection){
+            label += ' / ' + AC.sa._currentSection;
+        }
+        document.getElementById('saClassName').textContent=label;
 
-        // Build working copy from assignments
-        var assigned=AC.sa._assignments[fbKey]||[];
-        AC.sa._currentSubs=Array.isArray(assigned)?assigned.slice():[];
-
+        // Always clear current subs first to prevent stale data from previous class
+        AC.sa._currentSubs=[];
         AC.sa._renderTable();
-        AC.sa._renderCatalog(classKey);
+
+        // Always fetch fresh from server — both for per-section and class-wide.
+        // The cached _assignments may be stale after saves or class switches.
+        var classKeyToSend=AC.sa._currentClassKey||classKey;
+        var sectionToSend=AC.sa._currentSection||'';
+
+        post('academic/get_subject_assignments_for_section',{
+            class_key:classKeyToSend,
+            section_key:sectionToSend
+        }).then(function(d){
+            if(d.status==='success'){
+                AC.sa._currentSubs=d.subjects||[];
+            } else {
+                AC.sa._currentSubs=[];
+            }
+            AC.sa._renderTable();
+            AC.sa._renderCatalog(classKey);
+        }).catch(function(){
+            // Fallback to cached data if server call fails
+            var assigned=AC.sa._assignments[fbKey]||[];
+            AC.sa._currentSubs=Array.isArray(assigned)?assigned.slice():[];
+            AC.sa._renderTable();
+            AC.sa._renderCatalog(classKey);
+        });
     },
 
     _renderTable:function(){
@@ -766,12 +887,35 @@ AC.sa = {
         subs.forEach(function(s){totalP+=(s.periods_week||0)});
         document.getElementById('saTotalPeriods').textContent=totalP;
 
+        // Period allocation bar
+        var ps=AC.sa._periodSettings;
+        var maxPW=ps.maxPeriodsPerWeek||0;
+        var barEl=document.getElementById('saPeriodBar');
+        var limitEl=document.getElementById('saPeriodLimit');
+        if(maxPW>0){
+            barEl.style.display='';
+            var pct=Math.min(100,Math.round(totalP/maxPW*100));
+            var remaining=maxPW-totalP;
+            document.getElementById('saPeriodBarLabel').textContent=totalP+' / '+maxPW+' periods';
+            var fill=document.getElementById('saPeriodBarFill');
+            fill.style.width=pct+'%';
+            fill.style.background=totalP>maxPW?'#dc2626':totalP>maxPW*0.85?'#f59e0b':'var(--gold)';
+            if(totalP>maxPW){
+                limitEl.innerHTML='<span style="color:#dc2626"><i class="fa fa-exclamation-triangle"></i> Exceeded by '+(totalP-maxPW)+' periods</span>';
+            } else {
+                limitEl.innerHTML='<span style="color:var(--t3)">'+remaining+' remaining ('+ps.periodsPerDay+'/day × '+ps.numWorkingDays+' days)</span>';
+            }
+        } else {
+            barEl.style.display='none';
+            limitEl.innerHTML='<span style="color:var(--t3);font-size:10px"><i class="fa fa-info-circle"></i> Set periods in Period Scheduling tab first</span>';
+        }
+
         if(subs.length===0){
             document.getElementById('saTable').innerHTML='<div style="padding:20px;text-align:center;color:var(--t3);font-size:12px"><i class="fa fa-info-circle"></i> No subjects assigned yet. Add from the catalog below.</div>';
             return;
         }
 
-        var html='<table class="ac-table"><thead><tr><th>Subject</th><th>Code</th><th>Category</th><th>Periods/Week</th><th>Teacher</th>';
+        var html='<table class="ac-table"><thead><tr><th>Subject</th><th>Code</th><th>Category</th><th>Periods/Week</th><th>Teacher</th><th title="Class Teacher of this section">Class Teacher</th>';
         if(_canEdit) html+='<th>Actions</th>';
         html+='</tr></thead><tbody>';
 
@@ -782,15 +926,27 @@ AC.sa = {
             html+='<td><span class="ac-badge '+(s.category==='Core'?'ac-badge-event':'ac-badge-act')+'">'+esc(s.category)+'</span></td>';
             if(_canEdit){
                 html+='<td><input type="number" min="0" max="20" value="'+(s.periods_week||0)+'" data-idx="'+i+'" class="sa-pw-input" style="width:55px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--t1);font-size:12px;text-align:center"></td>';
+
+                // Filter teachers: only those who can teach this subject
+                var eligibleTeachers=AC.sa._filterTeachersForSubject(s.code,s.name);
                 html+='<td><select data-idx="'+i+'" class="sa-teacher-sel" style="padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);color:var(--t1);font-size:11px;max-width:160px"><option value="">—</option>';
-                _teachers.forEach(function(t){
-                    html+='<option value="'+esc(t.id)+'" data-name="'+esc(t.name)+'"'+(t.id===s.teacher_id?' selected':'')+'>'+esc(t.name)+'</option>';
-                });
+                if(eligibleTeachers.length===0){
+                    html+='<option value="" disabled>No teacher has this subject</option>';
+                } else {
+                    eligibleTeachers.forEach(function(t){
+                        html+='<option value="'+esc(t.id)+'" data-name="'+esc(t.name)+'"'+(t.id===s.teacher_id?' selected':'')+'>'+esc(t.name)+'</option>';
+                    });
+                }
                 html+='</select></td>';
+
+                // Class Teacher checkbox
+                html+='<td style="text-align:center"><input type="checkbox" class="sa-ct-check" data-idx="'+i+'"'+(s.is_class_teacher?' checked':'')+' title="Mark this teacher as Class Teacher"></td>';
+
                 html+='<td><button class="ac-btn ac-btn-d ac-btn-sm" onclick="AC.sa.removeSub('+i+')" title="Remove"><i class="fa fa-times"></i></button></td>';
             } else {
                 html+='<td style="text-align:center">'+(s.periods_week||'—')+'</td>';
                 html+='<td>'+esc(s.teacher_name||'—')+'</td>';
+                html+='<td style="text-align:center">'+(s.is_class_teacher?'<i class="fa fa-check" style="color:#16a34a"></i>':'—')+'</td>';
             }
             html+='</tr>';
         });
@@ -801,9 +957,17 @@ AC.sa = {
         document.querySelectorAll('.sa-pw-input').forEach(function(inp){
             inp.addEventListener('change',function(){
                 var idx=parseInt(this.dataset.idx);
-                AC.sa._currentSubs[idx].periods_week=parseInt(this.value)||0;
-                var totalP=0;AC.sa._currentSubs.forEach(function(s){totalP+=(s.periods_week||0)});
-                document.getElementById('saTotalPeriods').textContent=totalP;
+                var val=parseInt(this.value)||0;
+                var ps=AC.sa._periodSettings;
+                // Per-subject cap: can't exceed working days (max 1 period/day/subject)
+                if(ps.numWorkingDays>0 && val>ps.numWorkingDays){
+                    toast(AC.sa._currentSubs[idx].name+' can\'t have more than '+ps.numWorkingDays+' periods/week ('+ps.numWorkingDays+' working days)',false);
+                    val=ps.numWorkingDays;
+                    this.value=val;
+                }
+                AC.sa._currentSubs[idx].periods_week=val;
+                // Re-render to update the allocation bar
+                AC.sa._renderTable();
             });
         });
         document.querySelectorAll('.sa-teacher-sel').forEach(function(sel){
@@ -813,6 +977,43 @@ AC.sa = {
                 AC.sa._currentSubs[idx].teacher_id=this.value;
                 AC.sa._currentSubs[idx].teacher_name=opt?opt.dataset.name||'':'';
             });
+        });
+        // Class Teacher checkbox: only one allowed per section
+        document.querySelectorAll('.sa-ct-check').forEach(function(cb){
+            cb.addEventListener('change',function(){
+                var idx=parseInt(this.dataset.idx);
+                if(this.checked){
+                    // Uncheck all others (single class teacher per section)
+                    document.querySelectorAll('.sa-ct-check').forEach(function(other){
+                        if(other!==cb){other.checked=false;}
+                    });
+                    AC.sa._currentSubs.forEach(function(s,i){s.is_class_teacher=(i===idx);});
+                    // Validation: can't mark CT if no teacher selected
+                    if(!AC.sa._currentSubs[idx].teacher_id){
+                        toast('Select a teacher first before marking as Class Teacher',false);
+                        cb.checked=false;
+                        AC.sa._currentSubs[idx].is_class_teacher=false;
+                    }
+                } else {
+                    AC.sa._currentSubs[idx].is_class_teacher=false;
+                }
+            });
+        });
+    },
+
+    /** Filter teachers list to only those who can teach this subject (capability check) */
+    _filterTeachersForSubject:function(subjectCode,subjectName){
+        if(!_teachers || _teachers.length===0) return [];
+        var code=(subjectCode||'').toLowerCase();
+        var name=(subjectName||'').toLowerCase();
+        return _teachers.filter(function(t){
+            var ts=t.teaching_subjects||[];
+            if(!Array.isArray(ts)||ts.length===0) return false;
+            for(var i=0;i<ts.length;i++){
+                var s=String(ts[i]||'').toLowerCase();
+                if(s===code||s===name) return true;
+            }
+            return false;
         });
     },
 
@@ -855,7 +1056,7 @@ AC.sa = {
     },
 
     addSub:function(code,name,category){
-        AC.sa._currentSubs.push({code:code,name:name,category:category||'Core',periods_week:0,teacher_id:'',teacher_name:''});
+        AC.sa._currentSubs.push({code:code,name:name,category:category||'Core',periods_week:0,teacher_id:'',teacher_name:'',is_class_teacher:false});
         AC.sa._renderTable();
         var sel=document.getElementById('saClassSelect');
         var opt=sel.options[sel.selectedIndex];
@@ -870,13 +1071,51 @@ AC.sa = {
         AC.sa._renderCatalog(opt?opt.dataset.key||'':'');
     },
 
-    save:function(){
+    save:function(btn){
         if(!AC.sa._currentKey){toast('Select a class first',false);return}
 
-        post('academic/save_subject_assignments',{
-            class_key:AC.sa._currentKey,
+        // Pre-validate: period limits
+        var ps=AC.sa._periodSettings;
+        if(ps.maxPeriodsPerWeek>0){
+            var totalP=0;
+            var perSubErr=[];
+            AC.sa._currentSubs.forEach(function(s){
+                var pw=s.periods_week||0;
+                totalP+=pw;
+                if(pw>ps.numWorkingDays){
+                    perSubErr.push(s.name+': '+pw+' periods (max '+ps.numWorkingDays+')');
+                }
+            });
+            if(perSubErr.length){
+                toast('Period limit exceeded per subject:\n'+perSubErr.join('\n'),false);
+                return;
+            }
+            if(totalP>ps.maxPeriodsPerWeek){
+                toast('Total periods ('+totalP+') exceeds maximum ('+ps.maxPeriodsPerWeek+'). Reduce periods before saving.',false);
+                return;
+            }
+        }
+
+        // Pre-validate: any subject with teacher selected but teacher can't teach it
+        var invalid=[];
+        AC.sa._currentSubs.forEach(function(s){
+            if(s.teacher_id){
+                var eligible=AC.sa._filterTeachersForSubject(s.code,s.name);
+                if(!eligible.find(function(t){return t.id===s.teacher_id;})){
+                    invalid.push(s.name+' → '+s.teacher_name);
+                }
+            }
+        });
+        if(invalid.length){
+            toast('Invalid teacher-subject pairs:\n'+invalid.join('\n'),false);
+            return;
+        }
+
+        withBtn(btn,post('academic/save_subject_assignments',{
+            class_key:AC.sa._currentClassKey||AC.sa._currentKey,
+            section_key:AC.sa._currentSection||'', // Phase 4: per-section or class-wide
             subjects:JSON.stringify(AC.sa._currentSubs)
-        }).then(function(d){
+        })).then(function(d){
             if(d.status==='success'){
                 toast('Saved '+d.count+' subject assignments',true);
                 AC.sa._assignments[AC.sa._currentKey]=AC.sa._currentSubs.slice();
@@ -886,6 +1125,9 @@ AC.sa = {
                 if(opt&&opt.value){
                     var lbl=opt.dataset.label||'';
                     opt.textContent=lbl+' ('+d.count+' subjects)';
+                }
+                if(d.warnings && d.warnings.length){
+                    toast('Warning: '+d.warnings.join('; '),false);
                 }
             } else toast(d.message,false);
         });
@@ -929,28 +1171,46 @@ AC.ps = {
         AC.ps.load();
     },
 
-    load:function(){
-        post('academic/get_timetable_settings').then(function(d){
-            if(d.status!=='success')return;
+    load:function(btn){
+        withBtn(btn,post('academic/get_timetable_settings')).then(function(d){
+            if(d.status!=='success'){
+                document.getElementById('psSummaryContent').innerHTML='<span style="color:var(--t3)">No schedule configured yet. Set your timings below and save.</span>';
+                return;
+            }
             AC.ps._settings=d;
             AC.ps._renderSummary(d);
             AC.ps._fillForm(d);
             AC.ps._renderTimeline();
+        }).catch(function(){
+            document.getElementById('psSummaryContent').innerHTML='<span style="color:#dc2626"><i class="fa fa-exclamation-triangle"></i> Failed to load schedule</span>';
         });
     },
 
     _renderSummary:function(s){
         var box=document.getElementById('psCurrentSummary');
-        var wd=(s.working_days||[]).map(function(d){return AC.ps._dayShort[d]||d}).join(', ');
+        var wd=(s.working_days||[]).map(function(d){return AC.ps._dayShort[d]||d});
         var rStr='None';
         if(s.recesses&&s.recesses.length>0){
             rStr=s.recesses.map(function(r){return 'after P'+r.after_period+' ('+r.duration+'min)'}).join(', ');
         }
-        document.getElementById('psSummaryContent').innerHTML=
-            '<div><i class="fa fa-clock-o" style="color:var(--gold);width:18px"></i> <strong>School Hours:</strong> '+esc(s.start_time||'—')+' to '+esc(s.end_time||'—')+'</div>'+
-            '<div><i class="fa fa-th" style="color:var(--gold);width:18px"></i> <strong>Periods:</strong> '+s.no_of_periods+' periods x '+s.length_of_period+' min each</div>'+
-            '<div><i class="fa fa-coffee" style="color:var(--gold);width:18px"></i> <strong>Recesses:</strong> '+esc(rStr)+'</div>'+
-            '<div><i class="fa fa-calendar-check-o" style="color:var(--gold);width:18px"></i> <strong>Working Days:</strong> '+esc(wd)+'</div>';
+        var totalMins=(s.no_of_periods||0)*(s.length_of_period||0);
+        var totalRec=0;
+        (s.recesses||[]).forEach(function(r){totalRec+=r.duration||0});
+        var html='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">';
+        html+='<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg2);border-radius:8px;border:1px solid var(--border)">';
+        html+='<div style="width:36px;height:36px;border-radius:8px;background:var(--gold-dim);display:flex;align-items:center;justify-content:center"><i class="fa fa-clock-o" style="color:var(--gold);font-size:15px"></i></div>';
+        html+='<div><div style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">School Hours</div><div style="font-size:13px;font-weight:700;color:var(--t1)">'+esc(s.start_time||'—')+' — '+esc(s.end_time||'—')+'</div></div></div>';
+        html+='<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg2);border-radius:8px;border:1px solid var(--border)">';
+        html+='<div style="width:36px;height:36px;border-radius:8px;background:var(--gold-dim);display:flex;align-items:center;justify-content:center"><i class="fa fa-th" style="color:var(--gold);font-size:15px"></i></div>';
+        html+='<div><div style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">Periods</div><div style="font-size:13px;font-weight:700;color:var(--t1)">'+s.no_of_periods+' &times; '+s.length_of_period+' min <span style="font-weight:400;color:var(--t3)">('+totalMins+' min teaching)</span></div></div></div>';
+        html+='<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg2);border-radius:8px;border:1px solid var(--border)">';
+        html+='<div style="width:36px;height:36px;border-radius:8px;background:rgba(217,119,6,.1);display:flex;align-items:center;justify-content:center"><i class="fa fa-coffee" style="color:#d97706;font-size:15px"></i></div>';
+        html+='<div><div style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">Recesses</div><div style="font-size:13px;font-weight:700;color:var(--t1)">'+esc(rStr)+'</div></div></div>';
+        html+='<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg2);border-radius:8px;border:1px solid var(--border)">';
+        html+='<div style="width:36px;height:36px;border-radius:8px;background:var(--gold-dim);display:flex;align-items:center;justify-content:center"><i class="fa fa-calendar-check-o" style="color:var(--gold);font-size:15px"></i></div>';
+        html+='<div><div style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">Working Days</div><div style="font-size:13px;font-weight:700;color:var(--t1)">'+wd.join(', ')+' <span style="font-weight:400;color:var(--t3)">('+wd.length+' days)</span></div></div></div>';
+        html+='</div>';
+        document.getElementById('psSummaryContent').innerHTML=html;
         box.style.display='block';
     },
 
@@ -1058,7 +1318,7 @@ AC.ps = {
         box.innerHTML=html;
     },
 
-    save:function(){
+    save:function(btn){
         var start=document.getElementById('psStartTime').value;
         var end=document.getElementById('psEndTime').value;
         var periods=parseInt(document.getElementById('psPeriods').value)||0;
@@ -1078,15 +1338,14 @@ AC.ps = {
         });
         if(workingDays.length===0){toast('Select at least one working day',false);return}
 
-        post('academic/save_timetable_settings',{
+        withBtn(btn,post('academic/save_timetable_settings',{
             start_time:start,end_time:end,no_of_periods:periods,
             recesses:JSON.stringify(recesses),
             working_days:JSON.stringify(workingDays)
-        }).then(function(d){
+        })).then(function(d){
             if(d.status==='success'){
                 toast('Schedule saved (period = '+d.length_of_period+' min)',true);
                 AC.ps.load(); // Refresh summary
-                // Refresh timetable if loaded
                 if(AC.tt._loaded) AC.tt.load();
             } else toast(d.message,false);
         });
@@ -1379,18 +1638,18 @@ AC.cal = {
         if(!id){toast('No event selected',false);return}
         AC.cal.deleteEvent(id);
     },
-    saveEvent:function(){
+    saveEvent:function(btn){
         var title=document.getElementById('calTitle').value.trim();
         var start=document.getElementById('calStart').value;
         if(!title||!start){toast('Title and date required',false);return}
-        post('academic/save_event',{
+        withBtn(btn,post('academic/save_event',{
             id:document.getElementById('calEditId').value,
             title:title,
             type:document.getElementById('calType').value,
             start_date:start,
             end_date:document.getElementById('calEnd').value||start,
             description:document.getElementById('calDesc').value.trim()
-        }).then(function(d){
+        })).then(function(d){
             if(d.status==='success'){
                 AC.cal.hideForm();
                 AC.cal.loadMonth();
@@ -1426,8 +1685,9 @@ AC.tt = {
 
     init:function(){},
 
-    load:function(){
+    load:function(btn){
         AC.tt._loaded=true;
+        if(btn){btn.classList.add('loading');btn.disabled=true}
         document.getElementById('ttGridWrap').innerHTML='<div class="ac-empty"><i class="fa fa-spinner fa-spin"></i> Loading timetable data...</div>';
         loadSharedData(function(){
             var teacherPromise=(_teachers.length>0)?Promise.resolve():post('academic/get_all_teachers').then(function(d){
@@ -1435,6 +1695,7 @@ AC.tt = {
             });
             var ttPromise=post('academic/get_master_timetable');
             Promise.all([teacherPromise,ttPromise]).then(function(results){
+                if(btn){btn.classList.remove('loading');btn.disabled=false}
                 var d=results[1];
                 if(d.status==='success'){
                     AC.tt.settings=d.settings;
@@ -1963,25 +2224,34 @@ AC.tt = {
         var recMap={};
         (s.recesses||[]).forEach(function(r){recMap[r.after_period]=r.duration});
 
-        // Build subject → period → [class labels] map, handling both string and object cells
-        var subjectMap={};
+        // Build teacher → period → {subject, class} map
+        var teacherMap={}; // teacherName → {id, periods: {periodIdx: [{subject, classLabel}]}}
         var labels=Object.keys(AC.tt.timetables).sort();
         labels.forEach(function(label){
             var tt=AC.tt.timetables[label]||{};
             var periods=tt[day]||[];
             for(var p=0;p<np;p++){
-                var sub=AC.tt._cellSubject(periods[p]);
-                if(!sub)continue;
-                if(!subjectMap[sub])subjectMap[sub]={};
-                if(!subjectMap[sub][p])subjectMap[sub][p]=[];
-                subjectMap[sub][p].push(label);
+                var cell=periods[p];
+                if(!cell)continue;
+                var tName='',tId='',sub='';
+                if(typeof cell==='object'){
+                    tName=cell.teacher_name||cell.teacher||'';
+                    tId=cell.teacher_id||'';
+                    sub=cell.subject||'';
+                } else if(typeof cell==='string' && cell){
+                    sub=cell;
+                }
+                if(!tName||!sub)continue;
+                if(!teacherMap[tName]) teacherMap[tName]={id:tId,periods:{}};
+                if(!teacherMap[tName].periods[p]) teacherMap[tName].periods[p]=[];
+                teacherMap[tName].periods[p].push({subject:sub,classLabel:label});
             }
         });
 
-        var subjects=Object.keys(subjectMap).sort();
+        var teacherNames=Object.keys(teacherMap).sort();
 
         // Header
-        var html='<table class="ac-tt"><thead><tr><th style="min-width:140px">Subject</th>';
+        var html='<table class="ac-tt"><thead><tr><th style="min-width:160px">Teacher</th>';
         for(var p=1;p<=np;p++){
             var timeStr=times[p-1]?('<span class="ac-th-time">'+times[p-1].start+' — '+times[p-1].end+'</span>'):'';
             html+='<th>P'+p+timeStr+'</th>';
@@ -1989,21 +2259,25 @@ AC.tt = {
         }
         html+='</tr></thead><tbody>';
 
-        if(subjects.length===0){
+        if(teacherNames.length===0){
             html+='<tr><td colspan="'+(np+1+Object.keys(recMap).length)+'" style="text-align:center;padding:30px;color:var(--t3)">No timetable data for '+esc(day)+'</td></tr>';
         }
 
-        subjects.forEach(function(sub){
-            var color=AC.tt._subColors[sub]||'var(--gold)';
-            html+='<tr><td style="font-weight:700"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+color+';margin-right:6px"></span>'+esc(sub)+'</td>';
+        teacherNames.forEach(function(tName){
+            var teacher=teacherMap[tName];
+            html+='<tr><td style="font-weight:700;font-size:12px">'+esc(tName)+'</td>';
             for(var p=0;p<np;p++){
-                var classes=subjectMap[sub][p]||[];
-                if(classes.length>0){
-                    html+='<td style="font-size:10px;line-height:1.4;text-align:left;padding-left:6px">';
-                    classes.forEach(function(c){html+='<div>'+esc(c.replace('Class ','').replace(' / Section ',' '))+'</div>'});
+                var slots=teacher.periods[p]||[];
+                if(slots.length>0){
+                    html+='<td style="font-size:10px;line-height:1.5;text-align:left;padding:4px 6px">';
+                    slots.forEach(function(sl){
+                        var color=AC.tt._subColors[sl.subject]||'var(--gold)';
+                        html+='<div style="margin-bottom:2px"><span style="display:inline-block;width:6px;height:6px;border-radius:2px;background:'+color+';margin-right:4px"></span><strong>'+esc(sl.subject)+'</strong></div>';
+                        html+='<div style="color:var(--t3);font-size:9px;margin-left:10px">'+esc(sl.classLabel)+'</div>';
+                    });
                     html+='</td>';
                 } else {
-                    html+='<td style="color:var(--t3);font-size:10px">—</td>';
+                    html+='<td style="color:var(--t3);font-size:10px;text-align:center">Free</td>';
                 }
                 if(recMap[p+1]) html+='<td class="ac-recess">Break</td>';
             }
@@ -2011,7 +2285,6 @@ AC.tt = {
         });
 
         html+='</tbody></table>';
-        html+='<div style="margin-top:10px;font-size:11px;color:var(--t3);font-style:italic"><i class="fa fa-info-circle"></i> Teacher View shows which classes have each subject per period. Assign class teachers in Classes module for full teacher-level scheduling.</div>';
         document.getElementById('ttGridWrap').innerHTML=html;
         document.getElementById('ttFillRate').style.display='none';
     },
@@ -2181,6 +2454,32 @@ AC.tt = {
         });
     },
 
+    autoGenerate:function(){
+        if(!confirm('This will auto-generate a complete weekly timetable for ALL sections based on subject assignments.\n\nExisting timetable data will be REPLACED.\n\nProceed?')) return;
+
+        toast('Generating timetable...',true);
+        post('academic/auto_generate_timetable',{preview:'1'}).then(function(d){
+            if(d.status!=='success'){toast(d.message,false);return}
+            var r=d;
+            var msg='Preview: '+r.sections_generated+' sections generated.\n';
+            msg+=r.unallocated+' free slots remaining.\n';
+            if(r.conflicts>0) msg+=r.conflicts+' conflicts detected.\n';
+            msg+='\nSave this timetable?';
+
+            if(!confirm(msg)) {toast('Generation cancelled',false);return}
+
+            // Confirm save
+            post('academic/auto_generate_timetable',{confirm:'1'}).then(function(d2){
+                if(d2.status==='success'){
+                    toast('Timetable saved! '+d2.sections_generated+' sections, '+d2.unallocated+' free slots.',true);
+                    AC.tt.load(); // Refresh the grid
+                } else {
+                    toast(d2.message||'Save failed',false);
+                }
+            });
+        });
+    },
+
     copyDay:function(){
         var fromDay=AC.tt.day;
         if(fromDay==='_week'){toast('Switch to a specific day first',false);return}
@@ -2262,184 +2561,396 @@ document.getElementById('ttClassFilter').addEventListener('change',function(){
 AC.sub = {
     _loaded:false,
     records:[],
-    _busyPeriods:[],
-    _maxPeriods:6,
+    _schedule:null, // cached schedule from get_absent_teacher_schedule
+    _allTeachers:[], // all teachers from get_absent_teachers
+
     init:function(){
         AC.sub._loaded=true;
-        loadSharedData(function(){
-            // Populate class dropdown
-            var cs=document.getElementById('subClass');
-            cs.innerHTML='<option value="">Select class...</option>';
-            _classes.forEach(function(c){
-                cs.innerHTML+='<option value="'+esc(c.class_section)+'" data-key="'+esc(c.class_key)+'">'+esc(c.label)+'</option>';
-            });
-            // Class change → populate subject dropdown
-            cs.addEventListener('change',AC.sub.onClassChange);
-            // Load teachers
-            post('academic/get_all_teachers').then(function(d){
-                if(d.status==='success'){
-                    _teachers=d.teachers||[];
-                    var abs=document.getElementById('subAbsent');
-                    var sub=document.getElementById('subTeacher');
-                    abs.innerHTML='<option value="">Select teacher...</option>';
-                    sub.innerHTML='<option value="">Select teacher...</option>';
-                    _teachers.forEach(function(t){
-                        abs.innerHTML+='<option value="'+esc(t.id)+'" data-name="'+esc(t.name)+'">'+esc(t.name)+' ('+esc(t.id)+')</option>';
-                        sub.innerHTML+='<option value="'+esc(t.id)+'" data-name="'+esc(t.name)+'">'+esc(t.name)+' ('+esc(t.id)+')</option>';
-                    });
-                }
-            });
-            // Substitute teacher change → check availability
-            document.getElementById('subTeacher').addEventListener('change',AC.sub.checkAvailability);
-            document.getElementById('subDate').addEventListener('change',AC.sub.checkAvailability);
-            AC.sub.load();
+        // Date change → load absent teachers
+        document.getElementById('subDate').addEventListener('change',function(){
+            AC.sub._loadAbsentTeachers();
         });
+        // Absent teacher change → load their schedule
+        document.getElementById('subAbsent').addEventListener('change',function(){
+            AC.sub._loadSchedule();
+        });
+        AC.sub.load();
     },
-    onClassChange:function(){
-        var cs=document.getElementById('subClass');
-        var opt=cs.options[cs.selectedIndex];
-        var classKey=opt?opt.dataset.key:'';
-        var subSel=document.getElementById('subSubject');
-        subSel.innerHTML='<option value="">Select subject...</option>';
-        if(!classKey)return;
-        var m=classKey.match(/(\d+)/);
-        var num=m?m[1]:'';
-        var subs=_subjects[num]||[];
-        subs.forEach(function(s){
-            var label=s.name+(s.code&&s.code!==s.name?' ('+s.code+')':'');
-            subSel.innerHTML+='<option value="'+esc(s.name)+'">'+esc(label)+'</option>';
-        });
-        var nameKey=classKey.replace('Class ','');
-        var subs2=_subjects[nameKey]||[];
-        subs2.forEach(function(s){
-            if(subs.some(function(x){return x.name===s.name}))return;
-            var label=s.name+(s.code&&s.code!==s.name?' ('+s.code+')':'');
-            subSel.innerHTML+='<option value="'+esc(s.name)+'">'+esc(label)+'</option>';
-        });
-    },
-    checkAvailability:function(){
-        var teacherId=document.getElementById('subTeacher').value;
+
+    /* ── Step 1: Date change → populate absent teacher dropdown ── */
+    _loadAbsentTeachers:function(){
         var date=document.getElementById('subDate').value;
-        var box=document.getElementById('subAvailability');
-        if(!teacherId||!date){box.style.display='none';AC.sub._busyPeriods=[];return}
-        post('academic/get_teacher_schedule',{teacher_id:teacherId,date:date}).then(function(d){
-            if(d.status!=='success'){box.style.display='none';return}
-            AC.sub._busyPeriods=d.busy_periods||[];
-            AC.sub._maxPeriods=d.max_periods||6;
-            if(AC.sub._busyPeriods.length>0){
-                box.style.display='block';
-                box.style.background='rgba(217,119,6,.12)';
-                box.style.color='var(--t1)';
-                box.style.border='1px solid rgba(217,119,6,.3)';
-                box.innerHTML='<i class="fa fa-exclamation-triangle" style="color:#d97706;margin-right:6px"></i><strong>Busy periods:</strong> P'+AC.sub._busyPeriods.join(', P')+' (already covering another class on '+esc(d.day||date)+')';
-            } else {
-                box.style.display='block';
-                box.style.background='rgba(15,118,110,.08)';
-                box.style.color='var(--t1)';
-                box.style.border='1px solid rgba(15,118,110,.2)';
-                box.innerHTML='<i class="fa fa-check-circle" style="color:var(--gold);margin-right:6px"></i>Teacher is available for all '+AC.sub._maxPeriods+' periods on '+esc(d.day||date);
+        var abs=document.getElementById('subAbsent');
+        var panel=document.getElementById('subSchedulePanel');
+        var noSch=document.getElementById('subNoSchedule');
+        var saveBtn=document.getElementById('subSaveBtn');
+        panel.style.display='none';
+        noSch.style.display='none';
+        saveBtn.style.display='none';
+        AC.sub._schedule=null;
+
+        if(!date){
+            abs.innerHTML='<option value="">Select date first...</option>';
+            return;
+        }
+
+        abs.innerHTML='<option value="">Loading...</option>';
+        post('academic/get_absent_teachers',{date:date}).then(function(d){
+            if(d.status!=='success'){abs.innerHTML='<option value="">Error loading</option>';return}
+            var absent=d.absent_teachers||[];
+            AC.sub._allTeachers=d.all_teachers||[];
+            abs.innerHTML='<option value="">— Select absent teacher —</option>';
+
+            if(absent.length>0){
+                abs.innerHTML+='<optgroup label="On Leave / Absent ('+absent.length+')">';
+                absent.forEach(function(t){
+                    abs.innerHTML+='<option value="'+esc(t.id)+'" data-name="'+esc(t.name)+'">'+esc(t.name)+' — '+esc(t.reason)+'</option>';
+                });
+                abs.innerHTML+='</optgroup>';
+            }
+
+            abs.innerHTML+='<optgroup label="All Teachers (manual override)">';
+            AC.sub._allTeachers.forEach(function(t){
+                if(absent.some(function(a){return a.id===t.id})) return;
+                abs.innerHTML+='<option value="'+esc(t.id)+'" data-name="'+esc(t.name)+'">'+esc(t.name)+'</option>';
+            });
+            abs.innerHTML+='</optgroup>';
+
+            // Auto-select first absent teacher
+            if(absent.length>0){
+                abs.value=absent[0].id;
+                AC.sub._loadSchedule();
             }
         });
     },
-    load:function(){
+
+    /* ── Step 2: Teacher selected → load their schedule with per-period suggestions ── */
+    _loadSchedule:function(){
+        var teacherId=document.getElementById('subAbsent').value;
+        var date=document.getElementById('subDate').value;
+        var panel=document.getElementById('subSchedulePanel');
+        var body=document.getElementById('subScheduleBody');
+        var noSch=document.getElementById('subNoSchedule');
+        var saveBtn=document.getElementById('subSaveBtn');
+        var title=document.getElementById('subScheduleTitle');
+
+        panel.style.display='none';
+        noSch.style.display='none';
+        saveBtn.style.display='none';
+        AC.sub._schedule=null;
+
+        if(!teacherId||!date) return;
+
+        var absEl=document.getElementById('subAbsent');
+        var absName=(absEl.options[absEl.selectedIndex]||{}).dataset?absEl.options[absEl.selectedIndex].dataset.name:'';
+        body.innerHTML='<div style="text-align:center;padding:12px;color:var(--t3)"><i class="fa fa-spinner fa-spin"></i> Loading schedule...</div>';
+        panel.style.display='block';
+
+        post('academic/get_absent_teacher_schedule',{teacher_id:teacherId,date:date}).then(function(d){
+            if(d.status!=='success'){
+                panel.style.display='none';
+                noSch.style.display='block';
+                document.getElementById('subNoScheduleMsg').textContent='Error: '+(d.message||'Could not load schedule');
+                return;
+            }
+
+            var periods=d.periods||[];
+            AC.sub._schedule=d;
+
+            // Format day name
+            var dayName=d.day||'';
+            var dateObj=new Date(date+'T00:00:00');
+            var dateFormatted=dateObj.toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'short',year:'numeric'});
+            title.innerHTML=(absName||'Teacher')+'\'s Schedule for '+esc(dateFormatted);
+
+            if(periods.length===0){
+                panel.style.display='none';
+                noSch.style.display='block';
+                document.getElementById('subNoScheduleMsg').textContent=(absName||'This teacher')+' has no classes on '+dayName+'. No substitutes needed.';
+                return;
+            }
+
+            // Render per-period rows with checkboxes and substitute dropdowns
+            var html='';
+            periods.forEach(function(p,idx){
+                var pn=p.periodNumber;
+                var time=(p.startTime&&p.endTime)?(p.startTime+' – '+p.endTime):'';
+                var classLabel=(p.className||'')+((p.section)?' / '+p.section:'');
+                var suggestions=p.suggestions||[];
+
+                html+='<div class="sub-period-row" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;flex-wrap:wrap">';
+
+                // Checkbox
+                html+='<label style="display:flex;align-items:center;gap:6px;cursor:pointer;min-width:50px">';
+                html+='<input type="checkbox" class="sub-period-check" data-period="'+pn+'" checked style="width:16px;height:16px;accent-color:var(--gold)">';
+                html+='<span style="font-weight:700;font-size:13px;color:var(--gold)">P'+pn+'</span>';
+                html+='</label>';
+
+                // Time
+                if(time){
+                    html+='<span style="font-size:11px;color:var(--t3);min-width:90px">'+esc(time)+'</span>';
+                }
+
+                // Subject + class
+                html+='<span style="font-size:12px;font-weight:600;color:var(--t1);min-width:80px">'+esc(p.subject||'—')+'</span>';
+                html+='<span style="font-size:11px;color:var(--t2);min-width:100px">'+esc(classLabel)+'</span>';
+
+                // Arrow
+                html+='<i class="fa fa-long-arrow-right" style="color:var(--t3)"></i>';
+
+                // Substitute dropdown
+                html+='<select class="sub-period-teacher" data-period="'+pn+'" style="flex:1;min-width:180px;padding:5px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--t1);font-size:12px">';
+                if(suggestions.length>0){
+                    // First suggestion is pre-selected — no empty option needed
+                    suggestions.forEach(function(s,si){
+                        var matchTag=s.subjectMatch?' ★ subject match':'';
+                        var selected=si===0?' selected':'';
+                        html+='<option value="'+esc(s.teacherId)+'" data-name="'+esc(s.name)+'"'+selected+'>'+esc(s.name)+matchTag+'</option>';
+                    });
+                    // Separator + all other teachers
+                    html+='<optgroup label="── All available teachers ──">';
+                    AC.sub._allTeachers.forEach(function(t){
+                        if(t.id===document.getElementById('subAbsent').value) return;
+                        if(suggestions.some(function(s){return s.teacherId===t.id})) return;
+                        html+='<option value="'+esc(t.id)+'" data-name="'+esc(t.name)+'">'+esc(t.name)+'</option>';
+                    });
+                    html+='</optgroup>';
+                } else {
+                    html+='<option value="">— No suggestions (select manually) —</option>';
+                    AC.sub._allTeachers.forEach(function(t){
+                        if(t.id===document.getElementById('subAbsent').value) return;
+                        html+='<option value="'+esc(t.id)+'" data-name="'+esc(t.name)+'">'+esc(t.name)+'</option>';
+                    });
+                }
+                html+='</select>';
+
+                // Status indicator
+                if(suggestions.length>0 && suggestions[0].subjectMatch){
+                    html+='<span style="color:#16a34a;font-size:10px;white-space:nowrap"><i class="fa fa-check"></i> match</span>';
+                } else if(suggestions.length>0){
+                    html+='<span style="color:#d97706;font-size:10px;white-space:nowrap"><i class="fa fa-check"></i> free</span>';
+                } else {
+                    html+='<span style="color:#dc2626;font-size:10px;white-space:nowrap"><i class="fa fa-exclamation-circle"></i> manual</span>';
+                }
+
+                html+='</div>';
+            });
+
+            // Select/deselect all row
+            html+='<div style="display:flex;align-items:center;gap:10px;margin-top:4px">';
+            html+='<label style="font-size:11px;color:var(--t3);cursor:pointer;display:flex;align-items:center;gap:4px">';
+            html+='<input type="checkbox" id="subSelectAll" checked onchange="document.querySelectorAll(\'.sub-period-check\').forEach(function(c){c.checked=document.getElementById(\'subSelectAll\').checked})" style="accent-color:var(--gold)"> Select/deselect all';
+            html+='</label>';
+            html+='<span style="font-size:11px;color:var(--t3)">'+periods.length+' period'+(periods.length>1?'s':'')+' to cover</span>';
+            html+='</div>';
+
+            body.innerHTML=html;
+            saveBtn.style.display='inline-flex';
+        }).catch(function(e){
+            panel.style.display='none';
+            noSch.style.display='block';
+            document.getElementById('subNoScheduleMsg').textContent='Failed to load schedule. Please try again.';
+        });
+    },
+
+    /* ── Save: collect checked periods with their per-period substitute assignments ── */
+    saveNew:function(btn){
+        try {
+        var date=document.getElementById('subDate').value;
+        var absEl=document.getElementById('subAbsent');
+        var reason=document.getElementById('subReason').value.trim();
+        if(!date||!absEl.value){toast('Select date and absent teacher',false);return}
+
+        var absOpt=absEl.options[absEl.selectedIndex];
+        var absName=absOpt?(absOpt.dataset.name||absOpt.textContent.split('—')[0].trim()):'';
+        var schedule=AC.sub._schedule;
+        if(!schedule||!schedule.periods||schedule.periods.length===0){
+            toast('No schedule loaded — select a teacher with classes on this day',false);return;
+        }
+
+        // Collect checked periods with assigned substitutes
+        var assignments=[];
+        var checks=document.querySelectorAll('.sub-period-check:checked');
+        if(checks.length===0){toast('Select at least one period to cover',false);return}
+
+        var hasError=false;
+        for(var ci=0;ci<checks.length;ci++){
+            var chk=checks[ci];
+            var pn=parseInt(chk.dataset.period);
+            var sel=document.querySelector('.sub-period-teacher[data-period="'+pn+'"]');
+            if(!sel||!sel.value){
+                toast('Select a substitute teacher for Period '+pn,false);
+                hasError=true;
+                break;
+            }
+            var selOpt=sel.options[sel.selectedIndex];
+            // Find period info from schedule
+            var pInfo=null;
+            for(var pi=0;pi<schedule.periods.length;pi++){
+                if(schedule.periods[pi].periodNumber===pn){pInfo=schedule.periods[pi];break}
+            }
+            assignments.push({
+                periodNumber:pn,
+                subject:pInfo?pInfo.subject:'',
+                className:pInfo?pInfo.className:'',
+                section:pInfo?pInfo.section:'',
+                substitute_teacher_id:sel.value,
+                substitute_teacher_name:selOpt?(selOpt.dataset.name||selOpt.textContent.trim()):''
+            });
+        }
+        if(hasError) return;
+
+        if(assignments.length===0){toast('No valid assignments collected',false);return}
+
+        withBtn(btn,post('academic/save_substitute',{
+            date:date,
+            absent_teacher_id:absEl.value,
+            absent_teacher_name:absName,
+            assignments:JSON.stringify(assignments),
+            reason:reason
+        })).then(function(d){
+            if(d.status==='success'){
+                AC.sub.hideForm();
+                AC.sub.load();
+                toast('Substitute'+(assignments.length>1?'s':'')+' assigned for '+assignments.length+' period'+(assignments.length>1?'s':''),true);
+            } else toast(d.message||'Save failed',false);
+        }).catch(function(err){
+            toast('Network error: '+(err.message||err),false);
+        });
+        } catch(e) {
+            toast('Error: '+e.message,false);
+            console.error('saveNew error:',e);
+        }
+    },
+
+    /* ── Load all substitute records ── */
+    load:function(btn){
         var date=document.getElementById('subDateFilter').value||'';
-        post('academic/get_substitutes',{date:date}).then(function(d){
+        withBtn(btn,post('academic/get_substitutes',{date:date})).then(function(d){
             AC.sub.records=(d.status==='success')?(d.substitutes||[]):[];
             AC.sub.render();
         });
     },
+
+    /* ── Render substitute table (supports both old flat and new assignments[] format) ── */
     render:function(){
         var recs=AC.sub.records;
         if(recs.length===0){
             document.getElementById('subList').innerHTML='<div class="ac-empty"><i class="fa fa-exchange"></i>No substitute records found</div>';
             return;
         }
-        var html='<table class="ac-table"><thead><tr><th>Date</th><th>Absent Teacher</th><th>Substitute</th><th>Class</th><th>Periods</th><th>Subject</th><th>Reason</th><th>Status</th><th>By</th><th>Actions</th></tr></thead><tbody>';
+
+        var today=new Date().toISOString().slice(0,10);
+        var html='<table class="ac-table"><thead><tr>'
+            +'<th>Date</th>'
+            +'<th>Absent Teacher</th>'
+            +'<th>Period</th>'
+            +'<th>Subject</th>'
+            +'<th>Class / Section</th>'
+            +'<th>Substitute</th>'
+            +'<th>Reason</th>'
+            +'<th>Status</th>'
+            +'<th>Actions</th>'
+            +'</tr></thead><tbody>';
+
         recs.forEach(function(r){
+            var assignments=r.assignments||[];
+            var isNewFormat=assignments.length>0;
+            var dateStr=esc(r.date);
+            var isPast=(r.date||'')<today;
+            var isToday=(r.date||'')===today;
+
+            // Status badge
             var badgeCls='ac-badge-asgn',lbl='Assigned';
             if(r.status==='completed'){badgeCls='ac-badge-comp';lbl='Completed'}
             if(r.status==='cancelled'){badgeCls='ac-badge-canc';lbl='Cancelled'}
-            var periods=Array.isArray(r.periods)?r.periods.join(', '):'';
-            // Date display: show range if multi-day
-            var dateStr=esc(r.date);
-            if(r.date_end && r.date_end!==r.date) dateStr+=' → '+esc(r.date_end);
-            html+='<tr>';
-            html+='<td style="white-space:nowrap">'+dateStr+'</td>';
-            html+='<td>'+esc(r.absent_teacher_name)+'</td>';
-            html+='<td>'+esc(r.substitute_teacher_name)+'</td>';
-            html+='<td>'+esc(r.class_section)+'</td>';
-            html+='<td>P'+esc(periods)+'</td>';
-            html+='<td>'+esc(r.subject||'—')+'</td>';
-            html+='<td>'+esc(r.reason||'—')+'</td>';
-            html+='<td><span class="ac-badge '+badgeCls+'">'+lbl+'</span></td>';
-            html+='<td style="font-size:11px;color:var(--t3)" title="Created: '+(r.created_at||'')+' by '+(r.created_by||'')+'">'+esc(r.updated_by||r.created_by||'')+'</td>';
-            html+='<td style="white-space:nowrap">';
-            if(r.status==='assigned'){
-                html+='<button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.sub.setStatus(\''+esc(r.id)+'\',\'completed\')" title="Mark completed"><i class="fa fa-check"></i></button> ';
-                html+='<button class="ac-btn ac-btn-d ac-btn-sm" onclick="AC.sub.setStatus(\''+esc(r.id)+'\',\'cancelled\')" title="Cancel"><i class="fa fa-times"></i></button> ';
+
+            if(isNewFormat){
+                // New format: one row per assignment (period)
+                assignments.forEach(function(a,idx){
+                    html+='<tr>';
+                    // Date + Absent Teacher: only show on first row, use rowspan
+                    if(idx===0){
+                        html+='<td style="white-space:nowrap;vertical-align:top" rowspan="'+assignments.length+'">'+dateStr+'</td>';
+                        html+='<td style="vertical-align:top" rowspan="'+assignments.length+'">'+esc(r.absent_teacher_name)+'</td>';
+                    }
+                    html+='<td><span style="font-weight:700;color:var(--gold)">P'+(a.periodNumber||'')+'</span></td>';
+                    html+='<td>'+esc(a.subject||'—')+'</td>';
+                    var cls=(a.className||'');
+                    if(a.section) cls+=' / '+a.section;
+                    html+='<td>'+esc(cls||'—')+'</td>';
+                    html+='<td>'+esc(a.substitute_teacher_name||'—')+'</td>';
+                    if(idx===0){
+                        html+='<td style="vertical-align:top" rowspan="'+assignments.length+'">'+esc(r.reason||'—')+'</td>';
+                        html+='<td style="vertical-align:top" rowspan="'+assignments.length+'"><span class="ac-badge '+badgeCls+'">'+lbl+'</span></td>';
+                        html+='<td style="vertical-align:top;white-space:nowrap" rowspan="'+assignments.length+'">';
+                        html+=AC.sub._renderActions(r,isPast,isToday);
+                        html+='</td>';
+                    }
+                    html+='</tr>';
+                });
+            } else {
+                // Legacy flat format
+                var periods=Array.isArray(r.periods)?r.periods.map(function(p){return'P'+p}).join(', '):'';
+                var classDisplay=(r.class_section||'').replace(/'/g,'').replace(/\s+(\w)$/,' / Section $1');
+                html+='<tr>';
+                html+='<td style="white-space:nowrap">'+dateStr+'</td>';
+                html+='<td>'+esc(r.absent_teacher_name)+'</td>';
+                html+='<td>'+esc(periods)+'</td>';
+                html+='<td>'+esc(r.subject||'—')+'</td>';
+                html+='<td>'+esc(classDisplay)+'</td>';
+                html+='<td>'+esc(r.substitute_teacher_name||'—')+'</td>';
+                html+='<td>'+esc(r.reason||'—')+'</td>';
+                html+='<td><span class="ac-badge '+badgeCls+'">'+lbl+'</span></td>';
+                html+='<td style="white-space:nowrap">';
+                html+=AC.sub._renderActions(r,isPast,isToday);
+                html+='</td>';
+                html+='</tr>';
             }
-            html+='<button class="ac-btn ac-btn-d ac-btn-sm" onclick="AC.sub.del(\''+esc(r.id)+'\')" title="Delete"><i class="fa fa-trash"></i></button>';
-            html+='</td></tr>';
         });
         html+='</tbody></table>';
         document.getElementById('subList').innerHTML=html;
     },
+
+    _renderActions:function(r,isPast,isToday){
+        var html='';
+        if(r.status==='assigned'){
+            if(isPast){
+                html+='<button class="ac-btn ac-btn-p ac-btn-sm" onclick="event.stopPropagation();AC.sub.setStatus(\''+esc(r.id)+'\',\'completed\')" title="Mark as Completed" style="font-size:10px"><i class="fa fa-check-circle" style="pointer-events:none"></i> Done</button> ';
+            } else if(isToday){
+                html+='<span style="color:var(--gold);font-size:11px"><i class="fa fa-clock-o"></i> In Progress</span> ';
+            } else {
+                html+='<span style="color:#2563eb;font-size:11px"><i class="fa fa-calendar"></i> Upcoming</span> ';
+            }
+            html+='<button class="ac-btn ac-btn-s ac-btn-sm" onclick="event.stopPropagation();AC.sub.setStatus(\''+esc(r.id)+'\',\'cancelled\')" title="Cancel" style="font-size:10px"><i class="fa fa-ban" style="pointer-events:none"></i> Cancel</button> ';
+        }
+        if(r.status==='completed'){
+            html+='<span style="color:#16a34a;font-size:11px"><i class="fa fa-check-circle"></i> Completed</span> ';
+        }
+        if(r.status==='cancelled'){
+            html+='<span style="color:var(--t3);font-size:11px;text-decoration:line-through"><i class="fa fa-ban"></i> Cancelled</span> ';
+        }
+        if(r.status!=='assigned'){
+            html+='<button class="ac-btn ac-btn-d ac-btn-sm" onclick="event.stopPropagation();AC.sub.del(\''+esc(r.id)+'\')" title="Delete" style="font-size:10px;margin-left:4px"><i class="fa fa-trash" style="pointer-events:none"></i></button>';
+        }
+        return html;
+    },
+
     showForm:function(){
         document.getElementById('subEditId').value='';
         document.getElementById('subDate').value=new Date().toISOString().slice(0,10);
-        document.getElementById('subDateEnd').value='';
-        document.getElementById('subAbsent').value='';
-        document.getElementById('subTeacher').value='';
-        document.getElementById('subClass').value='';
-        document.getElementById('subSubject').innerHTML='<option value="">Select class first...</option>';
-        document.getElementById('subPeriods').value='';
+        document.getElementById('subAbsent').innerHTML='<option value="">Select date first...</option>';
         document.getElementById('subReason').value='';
-        document.getElementById('subAvailability').style.display='none';
-        AC.sub._busyPeriods=[];
+        document.getElementById('subSchedulePanel').style.display='none';
+        document.getElementById('subNoSchedule').style.display='none';
+        document.getElementById('subSaveBtn').style.display='none';
+        AC.sub._schedule=null;
         document.getElementById('subForm').classList.add('show');
+        // Trigger date load
+        AC.sub._loadAbsentTeachers();
     },
     hideForm:function(){document.getElementById('subForm').classList.remove('show')},
-    save:function(){
-        var absEl=document.getElementById('subAbsent');
-        var subEl=document.getElementById('subTeacher');
-        var absOpt=absEl.options[absEl.selectedIndex];
-        var subOpt=subEl.options[subEl.selectedIndex];
-        var date=document.getElementById('subDate').value;
-        var dateEnd=document.getElementById('subDateEnd').value||'';
-        var cs=document.getElementById('subClass').value;
-        if(!date||!absEl.value||!subEl.value||!cs){toast('Fill all required fields',false);return}
-        if(absEl.value===subEl.value){toast('Absent and substitute cannot be the same teacher',false);return}
 
-        var periodsStr=document.getElementById('subPeriods').value.trim();
-        var periods=periodsStr?periodsStr.split(',').map(function(p){return parseInt(p.trim())}).filter(function(n){return!isNaN(n)&&n>=1}):[];
-        if(periods.length===0){toast('Enter at least one valid period number',false);return}
-
-        // Warn if assigning to busy periods
-        if(AC.sub._busyPeriods.length>0){
-            var overlap=periods.filter(function(p){return AC.sub._busyPeriods.indexOf(p)!==-1});
-            if(overlap.length>0 && !confirm('Warning: Substitute teacher is already busy during period(s) '+overlap.join(', ')+'. Continue anyway?')) return;
-        }
-
-        post('academic/save_substitute',{
-            id:document.getElementById('subEditId').value,
-            date:date,
-            date_end:dateEnd,
-            absent_teacher_id:absEl.value,
-            absent_teacher_name:absOpt?absOpt.dataset.name:'',
-            substitute_teacher_id:subEl.value,
-            substitute_teacher_name:subOpt?subOpt.dataset.name:'',
-            class_section:cs,
-            periods:JSON.stringify(periods),
-            subject:document.getElementById('subSubject').value,
-            reason:document.getElementById('subReason').value.trim()
-        }).then(function(d){
-            if(d.status==='success'){
-                AC.sub.hideForm();
-                AC.sub.load();
-                toast('Substitute assigned',true);
-            } else toast(d.message,false);
-        });
-    },
     setStatus:function(id,status){
         post('academic/update_substitute',{id:id,status:status}).then(function(d){
             if(d.status==='success'){AC.sub.load();toast('Status updated',true)}
@@ -2447,7 +2958,7 @@ AC.sub = {
         });
     },
     del:function(id){
-        if(!confirm('Delete this record?'))return;
+        if(!confirm('Delete this substitute record?'))return;
         post('academic/delete_substitute',{id:id}).then(function(d){
             if(d.status==='success'){AC.sub.load();toast('Deleted',true)}
             else toast(d.message,false);
@@ -2463,8 +2974,9 @@ AC.wl = {
     _loaded:false,
     _data:[], // [{id, name, weekly, maxDay, subjects:{}, classes:{}, perDay:{Mon:N,...}}]
 
-    load:function(){
+    load:function(btn){
         AC.wl._loaded=true;
+        if(btn){btn.classList.add('loading');btn.disabled=true}
         // Ensure timetable data is available
         if(!AC.tt._loaded){
             document.getElementById('wlTable').innerHTML='<div class="ac-empty"><i class="fa fa-spinner fa-spin"></i> Loading timetable data...</div>';
@@ -2474,6 +2986,7 @@ AC.wl = {
                 });
                 var ttPromise=post('academic/get_master_timetable');
                 Promise.all([teacherPromise,ttPromise]).then(function(results){
+                    if(btn){btn.classList.remove('loading');btn.disabled=false}
                     var d=results[1];
                     if(d.status==='success'){
                         AC.tt.settings=d.settings;
@@ -2487,6 +3000,7 @@ AC.wl = {
                 });
             });
         } else {
+            if(btn){btn.classList.remove('loading');btn.disabled=false}
             AC.wl._compute();
             AC.wl.render();
         }
@@ -2690,6 +3204,6 @@ AC.wl = {
     }
 };
 
-/* ── Init on page load ── */
-AC.sa.init();
+/* ── Init on page load — scheduling tab is the default visible pane ── */
+AC.ps.init();
 </script>

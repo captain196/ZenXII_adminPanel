@@ -22,9 +22,17 @@ defined('BASEPATH') or exit('No direct script access allowed');
 class Communication_helper
 {
     private $firebase;
+    /** @var Firestore_service|null */
+    private $fs;
+    private $school_id;
     private $school_name;
     private $session_year;
     private $parent_db_key;
+
+    // Firestore collection names — must match Communication.php constants.
+    const FS_COL_TEMPLATES = 'messageTemplates';
+    const FS_COL_TRIGGERS  = 'alertTriggers';
+    const FS_COL_QUEUE     = 'messageQueue';
 
     const ALLOWED_EVENTS = [
         'student_absent', 'student_late', 'low_attendance',
@@ -40,13 +48,93 @@ class Communication_helper
 
     /**
      * Initialize with controller context.
+     *
+     * Phase 6: optional Firestore_service + school_id for Firestore-first
+     * trigger/template reads. Falls back to RTDB if $fs is null (so existing
+     * callers that haven't been updated still work).
      */
-    public function init($firebase, string $school_name, string $session_year, string $parent_db_key = ''): void
+    public function init($firebase, string $school_name, string $session_year, string $parent_db_key = '', $fs = null, string $school_id = ''): void
     {
         $this->firebase       = $firebase;
         $this->school_name    = $school_name;
         $this->session_year   = $session_year;
         $this->parent_db_key  = $parent_db_key !== '' ? $parent_db_key : $school_name;
+        $this->fs             = $fs;
+        $this->school_id      = $school_id !== '' ? $school_id : $school_name;
+    }
+
+    /**
+     * List admin-internal entities Firestore-first with RTDB fallback.
+     * Mirrors Communication::_dwListAdmin().
+     */
+    private function _list(string $fsCollection, string $rtdbSub): array
+    {
+        if ($this->fs !== null) {
+            try {
+                $rows = $this->fs->schoolWhere($fsCollection, []);
+                if (is_array($rows) && count($rows) > 0) {
+                    $out = [];
+                    foreach ($rows as $row) {
+                        $d = $row['data'] ?? $row;
+                        $data = $row['data'] ?? [];
+                        $id   = $data['id'] ?? ($d['id'] ?? '');
+                        if ($id === '') continue;
+                        if (strpos($id, $this->school_id . '_') === 0) {
+                            $id = substr($id, strlen($this->school_id) + 1);
+                        }
+                        $out[$id] = $data;
+                    }
+                    return $out;
+                }
+            } catch (\Exception $e) {
+                log_message('error', "Communication_helper::_list FS [{$fsCollection}]: " . $e->getMessage());
+            }
+        }
+        try {
+            $rtdb = $this->firebase->get("Schools/{$this->school_name}/Communication/{$rtdbSub}");
+            return is_array($rtdb) ? $rtdb : [];
+        } catch (\Exception $e) {
+            return [];
+        }
+    }
+
+    /** Single-doc Firestore-first fetch. */
+    private function _get(string $fsCollection, string $rtdbSub, string $id): ?array
+    {
+        if ($this->fs !== null) {
+            try {
+                $doc = $this->fs->get($fsCollection, "{$this->school_id}_{$id}");
+                if (is_array($doc) && !empty($doc)) return $doc;
+            } catch (\Exception $e) {
+                log_message('error', "Communication_helper::_get FS [{$fsCollection}/{$id}]: " . $e->getMessage());
+            }
+        }
+        try {
+            $r = $this->firebase->get("Schools/{$this->school_name}/Communication/{$rtdbSub}/{$id}");
+            return is_array($r) ? $r : null;
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
+
+    /** Firestore-first write for queue items, with RTDB mirror. */
+    private function _setQueue(string $id, array $data): void
+    {
+        if ($this->fs !== null) {
+            try {
+                $this->fs->set(self::FS_COL_QUEUE, "{$this->school_id}_{$id}", array_merge(
+                    ['schoolId' => $this->school_id, 'id' => $id],
+                    $data
+                ), false);
+            } catch (\Exception $e) {
+                log_message('error', "Communication_helper::_setQueue FS [{$id}]: " . $e->getMessage());
+            }
+        }
+        try {
+            $this->firebase->set("Schools/{$this->school_name}/Communication/Queue/{$id}", $data);
+        } catch (\Exception $e) {
+            log_message('error', "Communication_helper::_setQueue RTDB mirror [{$id}]: " . $e->getMessage());
+        }
     }
 
     // ====================================================================
@@ -79,9 +167,9 @@ class Communication_helper
 
         $base = "Schools/{$this->school_name}/Communication";
 
-        // Load all triggers
-        $triggers = $this->firebase->get("{$base}/Triggers");
-        if (!is_array($triggers)) return 0;
+        // Load all triggers — Firestore-first via _list().
+        $triggers = $this->_list(self::FS_COL_TRIGGERS, 'Triggers');
+        if (empty($triggers)) return 0;
 
         $queued = 0;
 
@@ -97,10 +185,10 @@ class Communication_helper
             if (!is_array($conditions)) $conditions = [];
             if (!$this->_check_conditions($conditions, $data)) continue;
 
-            // Load template
+            // Load template — Firestore-first via _get().
             $tplId = $trg['template_id'] ?? '';
             if ($tplId === '' || !preg_match('/^TPL\d+$/', $tplId)) continue;
-            $tpl = $this->firebase->get("{$base}/Templates/{$tplId}");
+            $tpl = $this->_get(self::FS_COL_TEMPLATES, 'Templates', $tplId);
             if (!is_array($tpl)) continue;
 
             // Resolve message
@@ -121,7 +209,7 @@ class Communication_helper
             $channel = $trg['channel'] ?? 'push';
             if (!in_array($channel, ['push', 'sms', 'email', 'in_app'], true)) $channel = 'push';
 
-            $this->firebase->set("{$base}/Queue/{$queueId}", [
+            $this->_setQueue($queueId, [
                 'trigger_id'        => $trgId,
                 'template_id'       => $tplId,
                 'channel'           => $channel,
@@ -196,28 +284,97 @@ class Communication_helper
         $session = $this->session_year;
         $school  = $this->school_name;
 
+        // Expanded category label map — covers all 10 Events.php ALLOWED_CATEGORIES
+        // plus a few legacy synonyms. Unknown categories fall through to "Event".
         $categoryLabels = [
-            'event'    => 'School Event',
-            'cultural' => 'Cultural Program',
-            'sports'   => 'Sports Competition',
+            'event'       => 'School Event',
+            'academic'    => 'Academic',
+            'cultural'    => 'Cultural Program',
+            'sports'      => 'Sports Competition',
+            'celebration' => 'Celebration',
+            'meeting'     => 'Meeting',
+            'workshop'    => 'Workshop / Seminar',
+            'excursion'   => 'Excursion / Field Trip',
+            'competition' => 'Competition',
+            'holiday'     => 'Holiday',
+            // Legacy / alias synonyms seen in older payloads
+            'exam'        => 'Exam',
+            'function'    => 'School Function',
+            'other'       => 'Event',
         ];
-        $catLabel = $categoryLabels[$data['category'] ?? 'event'] ?? 'Event';
+        $catKey   = $data['category'] ?? 'event';
+        $catLabel = $categoryLabels[$catKey] ?? 'Event';
+
+        // Post-migration: writers emit camelCase (startDate/endDate). Fall back
+        // to legacy snake_case so notices fired for legacy event docs keep
+        // showing dates correctly.
+        $startDate = $data['startDate'] ?? $data['start_date'] ?? '';
+        $endDate   = $data['endDate']   ?? $data['end_date']   ?? '';
 
         $title = "[{$catLabel}] " . ($data['title'] ?? '');
         $descParts = [];
         if (!empty($data['description'])) $descParts[] = $data['description'];
-        if (!empty($data['start_date']))  $descParts[] = "Date: " . $data['start_date']
-            . (!empty($data['end_date']) && $data['end_date'] !== $data['start_date'] ? " to " . $data['end_date'] : '');
+        if (!empty($startDate)) {
+            $descParts[] = "Date: " . $startDate
+                . (!empty($endDate) && $endDate !== $startDate ? " to " . $endDate : '');
+        }
         if (!empty($data['location']))    $descParts[] = "Venue: " . $data['location'];
         if (!empty($data['organizer']))   $descParts[] = "Organizer: " . $data['organizer'];
         $description = implode("\n", $descParts);
 
-        // ── 1. Communication/Notices (primary) ──
-        $counter  = (int) ($this->firebase->get("{$base}/Counters/Notice") ?? 0) + 1;
-        $this->firebase->set("{$base}/Counters/Notice", $counter);
-        $noticeId = 'NOT' . str_pad($counter, 5, '0', STR_PAD_LEFT);
+        // ── 1. Firestore `notices` (primary — what parent/teacher apps read) ──
+        //    Canonical camelCase shape. `source: "event"` lets consumers trace
+        //    back to the originating event doc via `event_ref`.
+        $nowIso = date('c');
+        try {
+            // Reuse the Communication counter in Firestore to keep noticeIds
+            // monotonic across manual + auto-generated notices.
+            $counterDoc = $this->fs ? $this->fs->get('communicationCounters', $this->school_name ?? 'default') : null;
+            $fsCounter  = (int) (($counterDoc['noticeCounter'] ?? 0)) + 1;
+            $noticeId   = 'NOT' . str_pad($fsCounter, 5, '0', STR_PAD_LEFT);
+            if ($this->fs) {
+                $this->fs->set('communicationCounters', $this->school_name ?? 'default', [
+                    'schoolId'      => $this->school_id ?? $this->school_name,
+                    'noticeCounter' => $fsCounter,
+                    'updatedAt'     => $nowIso,
+                ], /* merge */ true);
+                $this->fs->set('notices', $noticeId, [
+                    'noticeId'    => $noticeId,
+                    'schoolId'    => $this->school_id ?? $this->school_name,
+                    'title'       => $title,
+                    'description' => $description,
+                    'category'    => 'Event',            // top-level bucket for filters
+                    'eventCategory' => $catKey,           // finer-grained event type
+                    'startDate'   => $startDate,
+                    'endDate'     => $endDate,
+                    'location'    => (string) ($data['location']  ?? ''),
+                    'organizer'   => (string) ($data['organizer'] ?? ''),
+                    'priority'    => 'Normal',
+                    'targetGroup' => 'All School',
+                    'status'      => 'published',
+                    'source'      => 'event',
+                    'eventRef'    => $eventId,
+                    'createdBy'   => $adminId,
+                    'createdAt'   => $nowIso,
+                    'publishedAt' => $nowIso,
+                    'sentAt'      => $nowIso,
+                ]);
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'write_event_notice: Firestore write failed — ' . $e->getMessage());
+            // Fall through — RTDB writes below still give the mobile apps data.
+            $noticeId = $noticeId ?? 'NOT' . str_pad((int) (microtime(true) * 1000) % 100000, 5, '0', STR_PAD_LEFT);
+        }
 
-        $this->firebase->set("{$base}/Notices/{$noticeId}", [
+        // ── 2. RTDB Communication/Notices — TODO remove after 7-day verification ──
+        //    Kept for dual-write safety while the Firestore path is bedded in.
+        //    Safe to delete this entire block once parent/teacher apps are
+        //    confirmed reading from Firestore `notices` for event-sourced rows.
+        $rtdbCounter = (int) ($this->firebase->get("{$base}/Counters/Notice") ?? 0) + 1;
+        $this->firebase->set("{$base}/Counters/Notice", $rtdbCounter);
+        $rtdbNoticeId = 'NOT' . str_pad($rtdbCounter, 5, '0', STR_PAD_LEFT);
+
+        $this->firebase->set("{$base}/Notices/{$rtdbNoticeId}", [
             'title'        => $title,
             'description'  => $description,
             'priority'     => 'Normal',
@@ -227,11 +384,12 @@ class Communication_helper
             'author_id'    => $adminId,
             'author_type'  => 'Admin',
             'event_ref'    => $eventId,
-            'created_at'   => date('c'),
-            'published_at' => date('c'),
+            'created_at'   => $nowIso,
+            'published_at' => $nowIso,
         ]);
 
-        // ── 2. Legacy All Notices path (fallback for mobile apps) ──
+        // ── 3. Legacy All Notices RTDB path — TODO remove after verification ──
+        //    Older mobile app builds read from here; newer builds read Firestore.
         $legacyBase  = "Schools/{$school}/{$session}/All Notices";
         $legacyCount = (int) ($this->firebase->get("{$legacyBase}/Count") ?? 0);
         $legacyNext  = $legacyCount + 1;

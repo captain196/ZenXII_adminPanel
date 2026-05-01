@@ -152,8 +152,8 @@ function loadPipeline() {
     .then(function(r) { return r.json(); })
     .then(function(data) {
         if (data.status === 'success') {
-            pipelineData = data.data.pipeline || {};
-            stagesData = data.data.stages || {};
+            pipelineData = data.pipeline || {};
+            stagesData = data.stages || {};
             renderPipeline();
         }
     })
@@ -189,8 +189,24 @@ function renderPipeline() {
             html += '<div class="ac-col-empty"><i class="fa fa-inbox"></i>No applications</div>';
         } else {
             items.forEach(function(item) {
+                // Source badge — surfaces where this lead came from (e.g.
+                // "public_form" submissions vs admin-created "walk-in"
+                // entries) so admins can spot incoming public leads at a
+                // glance. Hidden when source is empty/unknown.
+                var src = (item.source || '').toString();
+                var srcLabel = src.replace(/_/g, ' ');
+                var srcStyle = src === 'public_form'
+                    ? 'background:#dbeafe;color:#1e40af'
+                    : 'background:#f3f4f6;color:#374151';
+                var srcBadge = src
+                    ? '<span style="' + srcStyle + ';padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.3px;">' + esc(srcLabel) + '</span>'
+                    : '';
+
                 html += '<div class="ac-pipe-card">';
-                html += '<div class="ac-pipe-name">' + esc(item.student_name) + '</div>';
+                html += '<div class="ac-pipe-name" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">';
+                html += '<span>' + esc(item.student_name) + '</span>';
+                html += srcBadge;
+                html += '</div>';
                 html += '<div class="ac-pipe-meta">';
                 html += '<span><i class="fa fa-book"></i>' + esc(item.class || '-') + '</span>';
                 html += '<span><i class="fa fa-phone"></i>' + esc(item.phone || '') + '</span>';

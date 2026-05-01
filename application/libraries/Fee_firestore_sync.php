@@ -128,6 +128,27 @@ class Fee_firestore_sync
 
             $docId = "{$this->schoolCode}_{$this->session}_{$rawClass}_{$rawSection}";
 
+            // Phase 2.5 Step 1 — preserve existing feeHeadId across saves
+            // so an edit to the same-named head keeps the same opaque ID.
+            // Build name → feeHeadId map from the previous snapshot; any
+            // head without a match gets a freshly minted ID.
+            $existingIds = [];
+            try {
+                $prev = $this->firebase->firestoreGet(self::COL_FEE_STRUCTURES, $docId);
+                if (is_array($prev) && is_array($prev['feeHeads'] ?? null)) {
+                    foreach ($prev['feeHeads'] as $h) {
+                        if (!is_array($h)) continue;
+                        $nm  = (string) ($h['name'] ?? '');
+                        $fid = (string) ($h['feeHeadId'] ?? '');
+                        if ($nm !== '' && $fid !== '') $existingIds[$nm] = $fid;
+                    }
+                }
+            } catch (\Exception $_) {}
+
+            $mintFeeHeadId = static function (): string {
+                return 'FH_' . strtoupper(bin2hex(random_bytes(6)));
+            };
+
             // Build feeHeads array from the chart
             $feeHeads = [];
             $totalMonthly = 0.0;
@@ -141,6 +162,7 @@ class Fee_firestore_sync
                     $amt = floatval($amount);
                     if (!isset($seenHeads[$name])) {
                         $feeHeads[] = [
+                            'feeHeadId' => $existingIds[$name] ?? $mintFeeHeadId(),
                             'name'      => $name,
                             'amount'    => $amt,
                             'frequency' => 'monthly',
@@ -158,6 +180,7 @@ class Fee_firestore_sync
                     $amt = floatval($amount);
                     if (!isset($seenHeads[$name])) {
                         $feeHeads[] = [
+                            'feeHeadId' => $existingIds[$name] ?? $mintFeeHeadId(),
                             'name'      => $name,
                             'amount'    => $amt,
                             'frequency' => 'annual',

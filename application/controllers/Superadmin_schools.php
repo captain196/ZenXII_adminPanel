@@ -694,25 +694,33 @@ class Superadmin_schools extends MY_Superadmin_Controller
 
         try {
             $session_root = "Schools/{$school_name}";
-            $sessionKeys  = $this->firebase->shallow_get($session_root) ?? [];
 
+            // Student count — Firestore is canonical (R1 migration).
+            // Replaces the previous nested RTDB walk over
+            // `Schools/{school}/{session}/{class}/{section}/Students/List`.
+            // The Firestore `students` collection is school-scoped via the
+            // schoolId field (admin's school_name == school_id, "SCH_xxx"),
+            // so a single query returns every active student across every
+            // class/section without iterating the tree. Side note: the
+            // legacy walk summed across sessions, which double-counted any
+            // student promoted across sessions; Firestore's count is the
+            // canonical "current students" value.
             $total_students = 0;
-            $total_staff    = 0;
+            try {
+                $studentRows = $this->firebase->firestoreQuery('students', [
+                    ['schoolId', '==', $school_name],
+                ]);
+                $total_students = is_array($studentRows) ? count($studentRows) : 0;
+            } catch (\Exception $e) {
+                log_message('error', 'refresh_school_stats: students Firestore query failed: ' . $e->getMessage());
+            }
 
+            // Staff count — RTDB iteration retained (out of R1 scope; the
+            // staff/teacher migration has its own roadmap).
+            $total_staff  = 0;
+            $sessionKeys  = $this->firebase->shallow_get($session_root) ?? [];
             foreach ($sessionKeys as $sessionKey) {
                 if (!preg_match('/^\d{4}-/', $sessionKey)) continue;
-
-                $classKeys = $this->firebase->shallow_get("{$session_root}/{$sessionKey}") ?? [];
-                foreach ($classKeys as $classKey) {
-                    if (strpos($classKey, 'Class ') !== 0) continue;
-                    $sectionKeys = $this->firebase->shallow_get("{$session_root}/{$sessionKey}/{$classKey}") ?? [];
-                    foreach ($sectionKeys as $sectionKey) {
-                        if (strpos($sectionKey, 'Section ') !== 0) continue;
-                        $students = $this->firebase->shallow_get("{$session_root}/{$sessionKey}/{$classKey}/{$sectionKey}/Students/List") ?? [];
-                        $total_students += count($students);
-                    }
-                }
-
                 $teachers    = $this->firebase->shallow_get("{$session_root}/{$sessionKey}/Teachers") ?? [];
                 $total_staff = max($total_staff, count($teachers));
             }

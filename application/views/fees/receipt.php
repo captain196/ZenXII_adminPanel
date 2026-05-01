@@ -288,7 +288,7 @@ body {
 .totals-row.net .lbl { color:#cbd5e1; font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
 .totals-row.net .val { color:#ffd479; font-size:16px; }
 
-/* Wallet / advance line — shown only when advance_credit > 0 */
+/* Carry-forward line — shown only when advance_credit > 0 (legacy receipts) */
 .advance-block {
     margin-bottom:14px;
     background:#f0fdfa;
@@ -532,7 +532,9 @@ body {
             </div>
         </div>
 
-        <!-- Advance / wallet info — only shown when overpayment occurred -->
+        <!-- Carry-forward line — only on historical receipts that had
+             unallocated surplus. Overpayment is rejected upstream now so
+             new receipts never trigger this block; kept for prior data. -->
         <?php if ($advanceCredit > 0.005): ?>
         <div class="advance-block">
             <div class="ad-row">
@@ -544,7 +546,7 @@ body {
                 <span>&#8377; <?= fmtAmt($allocatedAmount) ?></span>
             </div>
             <div class="ad-row split">
-                <span>Wallet credit (carry-forward)</span>
+                <span>Carry-forward (unallocated)</span>
                 <span>&#8377; <?= fmtAmt($advanceCredit) ?></span>
             </div>
         </div>

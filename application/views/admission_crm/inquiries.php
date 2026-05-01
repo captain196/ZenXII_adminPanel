@@ -252,7 +252,7 @@ function loadInquiries() {
     .then(function(r) { return r.json(); })
     .then(function(data) {
         if (data.status === 'success') {
-            allInquiries = data.data.inquiries || [];
+            allInquiries = data.inquiries || [];
             renderTable(allInquiries);
         }
     })

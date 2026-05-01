@@ -2,14 +2,16 @@
 defined('BASEPATH') or exit('No direct script access allowed');
 
 /**
- * Events Controller — Event and Activity Management
+ * Events Controller — Event and Activity Management (Firestore-only).
  *
- * Sub-modules: Events (school/cultural/sports), Calendar, Participation
+ * Sub-modules: Events (school/cultural/sports), Calendar, Participation.
  *
- * Firebase paths:
- *   Schools/{school_id}/Events/List/{EVT0001}
- *   Schools/{school_id}/Events/Participants/{EVT0001}/{participantId}
- *   Schools/{school_id}/Events/Counters/Event
+ * Firestore collections (auto-scoped via Firestore_service::docId):
+ *   events/{schoolId}_{EVT0001}                              (apps read this)
+ *   eventParticipants/{schoolId}_{EVT0001}_{participantId}
+ *
+ * Counter (Firestore opsCounters via operations_accounting::next_id):
+ *   Schools/{school_name}/Events/Counters/Event
  */
 class Events extends MY_Controller
 {
@@ -30,10 +32,17 @@ class Events extends MY_Controller
     const MAX_TITLE_LENGTH = 200;
     const MAX_DESC_LENGTH  = 2000;
 
+    const COL_EVENTS       = 'events';
+    const COL_PARTICIPANTS = 'eventParticipants';
+
     public function __construct()
     {
         parent::__construct();
         require_permission('Events');
+        $this->load->library('operations_accounting');
+        $this->operations_accounting->init(
+            $this->firebase, $this->school_name, $this->session_year, $this->admin_id, $this, $this->parent_db_key
+        );
     }
 
     // ── Access helpers ──────────────────────────────────────────────────
@@ -53,9 +62,6 @@ class Events extends MY_Controller
             $this->_deny_access();
     }
 
-    /**
-     * Deny access — JSON error for AJAX, redirect for page loads.
-     */
     private function _deny_access(): void
     {
         if ($this->input->is_ajax_request()) {
@@ -82,9 +88,7 @@ class Events extends MY_Controller
     }
 
     /**
-     * Strip control characters from text for safe Firebase storage.
-     * Do NOT HTML-encode here — display-layer (EV.esc in JS) handles output encoding.
-     * HTML-encoding on write + EV.esc on read = double-encoding bug.
+     * Strip control characters from text. Display layer (EV.esc in JS) handles HTML-encoding.
      */
     private function _clean_text(string $text): string
     {
@@ -99,47 +103,15 @@ class Events extends MY_Controller
         return $date;
     }
 
-    // ── Path helpers ────────────────────────────────────────────────────
-    private function _evt(string $sub = ''): string
+    /** Firestore opsCounters key — operations_accounting::next_id normalises path → docId. */
+    private function _counter_path(string $type): string
     {
-        $b = "Schools/{$this->school_name}/Events";
-        return $sub !== '' ? "{$b}/{$sub}" : $b;
+        return "Schools/{$this->school_name}/Events/Counters/{$type}";
     }
 
-    private function _counter(string $type): string
+    private function _participant_docId(string $eventId, string $participantId): string
     {
-        return $this->_evt("Counters/{$type}");
-    }
-
-    /**
-     * Generate next sequential ID with collision detection.
-     * Retries up to 3 times if a race condition produces a duplicate.
-     */
-    private function _next_id(string $type, string $prefix, int $pad = 4): string
-    {
-        $path       = $this->_counter($type);
-        $listPath   = $this->_evt('List');
-        $maxRetries = 3;
-
-        for ($attempt = 0; $attempt < $maxRetries; $attempt++) {
-            $cur  = (int) ($this->firebase->get($path) ?? 0);
-            $next = $cur + 1;
-            $this->firebase->set($path, $next);
-            $id = $prefix . str_pad($next, $pad, '0', STR_PAD_LEFT);
-
-            // Verify no collision — another request may have used this ID
-            $existing = $this->firebase->get("{$listPath}/{$id}");
-            if (!is_array($existing)) {
-                return $id;
-            }
-            // Collision detected — counter was stale; loop will re-read
-            log_message('debug', "Events: ID collision on {$id}, retrying (attempt " . ($attempt + 1) . ')');
-        }
-
-        // Fallback: append microsecond suffix to guarantee uniqueness
-        $cur = (int) ($this->firebase->get($path) ?? 0);
-        $this->firebase->set($path, $cur + 1);
-        return $prefix . str_pad($cur + 1, $pad, '0', STR_PAD_LEFT) . '_' . substr(uniqid(), -6);
+        return $this->fs->docId2($eventId, $participantId);
     }
 
     // ====================================================================
@@ -186,9 +158,7 @@ class Events extends MY_Controller
         $this->load->view('include/footer');
     }
 
-    /**
-     * Circular / advertisement page for an event (standalone printable).
-     */
+    /** Circular / advertisement page for an event (standalone printable). */
     public function circular(string $eventId = '')
     {
         $this->_require_role(self::VIEW_ROLES, 'events_view');
@@ -196,33 +166,39 @@ class Events extends MY_Controller
 
         if ($eventId === '') redirect(base_url('events/list'));
 
-        $event = $this->firebase->get($this->_evt("List/{$eventId}"));
+        $event = $this->fs->getEntity(self::COL_EVENTS, $eventId);
         if (!is_array($event)) {
             redirect(base_url('events/list'));
         }
         $event['id'] = $eventId;
 
-        // Fetch school info for the circular header
+        // School header info — Firestore `schools/{schoolId}` holds profile + logo.
         $schoolDisplay = $this->school_display_name ?: $this->school_name;
         $schoolLogo    = '';
-        $sysProfile    = $this->firebase->get("System/Schools/{$this->school_id}/profile");
-        if (is_array($sysProfile) && !empty($sysProfile['logo'])) {
-            $schoolLogo = $sysProfile['logo'];
-        } else {
-            $cfgProfile = $this->firebase->get("Schools/{$this->school_name}/Config/Profile");
-            if (is_array($cfgProfile) && !empty($cfgProfile['logo'])) {
-                $schoolLogo = $cfgProfile['logo'];
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($schoolDoc)) {
+                $schoolLogo = (string) ($schoolDoc['logo'] ?? '');
+                if ($schoolLogo === '') {
+                    $profile    = $schoolDoc['profile'] ?? ($schoolDoc['Profile'] ?? []);
+                    $schoolLogo = is_array($profile) ? (string) ($profile['logo'] ?? '') : '';
+                }
             }
+        } catch (\Exception $e) {
+            log_message('error', 'Events::circular school logo lookup failed: ' . $e->getMessage());
         }
 
-        // Count participants
-        $participants = $this->firebase->get($this->_evt("Participants/{$eventId}"));
+        // Participant count — query eventParticipants by eventId.
+        $participants = $this->firebase->firestoreQuery(self::COL_PARTICIPANTS, [
+            ['schoolId', '==', $this->school_name],
+            ['eventId',  '==', $eventId],
+        ]);
         $pCount = is_array($participants) ? count($participants) : 0;
 
         $data = [
-            'event'        => $event,
-            'school_name'  => $schoolDisplay,
-            'school_logo'  => $schoolLogo,
+            'event'             => $event,
+            'school_name'       => $schoolDisplay,
+            'school_logo'       => $schoolLogo,
             'participant_count' => $pCount,
         ];
 
@@ -239,51 +215,49 @@ class Events extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'events_view');
         $this->_require_view();
 
-        $all = $this->firebase->get($this->_evt('List'));
+        $rows = $this->firebase->firestoreQuery(self::COL_EVENTS,
+            [['schoolId', '==', $this->school_name]], 'startDate', 'DESC');
+
         $total = 0; $upcoming = 0; $ongoing = 0; $completed = 0; $cancelled = 0;
         $upcomingEvents = [];
-        $today = date('Y-m-d');
-
-        if (is_array($all)) {
-            foreach ($all as $id => $e) {
-                if (!is_array($e) || $id === 'Counter') continue;
-                $total++;
-                $s = $e['status'] ?? '';
-                if ($s === 'scheduled') {
-                    $upcoming++;
-                    $e['id'] = $id;
-                    $upcomingEvents[] = $e;
-                }
-                elseif ($s === 'ongoing')   $ongoing++;
-                elseif ($s === 'completed') $completed++;
-                elseif ($s === 'cancelled') $cancelled++;
-            }
-            usort($upcomingEvents, fn($a, $b) => strcmp($a['start_date'] ?? '', $b['start_date'] ?? ''));
-            $upcomingEvents = array_slice($upcomingEvents, 0, 5);
-        }
-
-        // Recent participants — only scan upcoming/ongoing events (not ALL events)
-        // to avoid unbounded full-tree read on the entire Participants node
-        $recentParticipants = [];
         $activeEventIds = [];
-        if (is_array($all)) {
-            foreach ($all as $id => $e) {
-                if (!is_array($e) || $id === 'Counter') continue;
-                $s = $e['status'] ?? '';
-                if ($s === 'scheduled' || $s === 'ongoing') {
-                    $activeEventIds[] = $id;
-                }
+
+        foreach ((array) $rows as $doc) {
+            $e = is_array($doc) ? $doc : [];
+            $id = (string) ($e['eventId'] ?? $e['id'] ?? '');
+            if ($id === '') continue;
+            $total++;
+            $s = $e['status'] ?? '';
+            if ($s === 'scheduled') {
+                $upcoming++;
+                $e['id']         = $id;
+                $e['start_date'] = $e['start_date'] ?? $e['startDate'] ?? '';
+                $e['end_date']   = $e['end_date']   ?? $e['endDate']   ?? '';
+                $upcomingEvents[] = $e;
+            } elseif ($s === 'ongoing')   $ongoing++;
+              elseif ($s === 'completed') $completed++;
+              elseif ($s === 'cancelled') $cancelled++;
+            if ($s === 'scheduled' || $s === 'ongoing') {
+                $activeEventIds[] = $id;
             }
         }
-        // Cap to 10 most recent active events to bound reads
+        usort($upcomingEvents, fn($a, $b) => strcmp($a['start_date'] ?? '', $b['start_date'] ?? ''));
+        $upcomingEvents = array_slice($upcomingEvents, 0, 5);
+
+        // Recent participants — bound scan to 10 most recent active events.
         $activeEventIds = array_slice($activeEventIds, 0, 10);
+        $recentParticipants = [];
         foreach ($activeEventIds as $evtId) {
-            $participants = $this->firebase->get($this->_evt("Participants/{$evtId}"));
-            if (!is_array($participants)) continue;
-            foreach ($participants as $pid => $p) {
-                if (!is_array($p)) continue;
+            $prows = $this->firebase->firestoreQuery(self::COL_PARTICIPANTS, [
+                ['schoolId', '==', $this->school_name],
+                ['eventId',  '==', $evtId],
+            ]);
+            foreach ((array) $prows as $pdoc) {
+                $p = is_array($pdoc) ? $pdoc : [];
+                $pid = (string) ($p['participantId'] ?? $p['id'] ?? '');
+                if ($pid === '') continue;
                 $p['event_id'] = $evtId;
-                $p['id'] = $pid;
+                $p['id']       = $pid;
                 $recentParticipants[] = $p;
             }
         }
@@ -312,7 +286,6 @@ class Events extends MY_Controller
         $category = trim($this->input->get('category') ?? '');
         $status   = trim($this->input->get('status') ?? '');
 
-        // Validate filter values — reject invalid enums rather than silently returning empty
         if ($category !== '' && !in_array($category, self::ALLOWED_CATEGORIES, true)) {
             $this->json_error('Invalid category filter.');
         }
@@ -320,17 +293,21 @@ class Events extends MY_Controller
             $this->json_error('Invalid status filter.');
         }
 
-        $all  = $this->firebase->get($this->_evt('List'));
+        $where = [['schoolId', '==', $this->school_name]];
+        if ($category !== '') $where[] = ['category', '==', $category];
+        if ($status   !== '') $where[] = ['status',   '==', $status];
+
+        $rows = $this->firebase->firestoreQuery(self::COL_EVENTS, $where, 'startDate', 'DESC');
         $list = [];
-        if (is_array($all)) {
-            foreach ($all as $id => $e) {
-                if (!is_array($e) || $id === 'Counter') continue;
-                if ($category !== '' && ($e['category'] ?? '') !== $category) continue;
-                if ($status !== '' && ($e['status'] ?? '') !== $status) continue;
-                $e['id'] = $id;
-                $list[] = $e;
-            }
-            usort($list, fn($a, $b) => strcmp($b['start_date'] ?? '', $a['start_date'] ?? ''));
+        foreach ((array) $rows as $doc) {
+            $e = is_array($doc) ? $doc : [];
+            $id = (string) ($e['eventId'] ?? $e['id'] ?? '');
+            if ($id === '') continue;
+            // Normalize field names for legacy JS which expects start_date/end_date.
+            $e['id']         = $id;
+            $e['start_date'] = $e['start_date'] ?? $e['startDate'] ?? '';
+            $e['end_date']   = $e['end_date']   ?? $e['endDate']   ?? '';
+            $list[] = $e;
         }
 
         $page  = max(1, (int) ($this->input->get('page') ?? 1));
@@ -346,13 +323,18 @@ class Events extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'events_view');
         $this->_require_view();
         $id = $this->safe_path_segment(trim($this->input->get('id') ?? ''), 'event_id');
-        $event = $this->firebase->get($this->_evt("List/{$id}"));
+        $event = $this->fs->getEntity(self::COL_EVENTS, $id);
         if (!is_array($event)) $this->json_error('Event not found.');
-        $event['id'] = $id;
+        $event['id']         = $id;
+        $event['start_date'] = $event['start_date'] ?? $event['startDate'] ?? '';
+        $event['end_date']   = $event['end_date']   ?? $event['endDate']   ?? '';
 
-        // Get participant count
-        $participants = $this->firebase->shallow_get($this->_evt("Participants/{$id}"));
-        $event['participant_count'] = is_array($participants) ? count($participants) : 0;
+        // Participant count
+        $pRows = $this->firebase->firestoreQuery(self::COL_PARTICIPANTS, [
+            ['schoolId', '==', $this->school_name],
+            ['eventId',  '==', $id],
+        ]);
+        $event['participant_count'] = is_array($pRows) ? count($pRows) : 0;
 
         $this->json_success(['event' => $event]);
     }
@@ -386,7 +368,6 @@ class Events extends MY_Controller
         }
         if ($maxParticipants < 0) $this->json_error('Max participants cannot be negative.');
 
-        // Clean text (strip control chars) — no HTML-encoding; display layer handles that
         $title       = $this->_clean_text($title);
         $description = $this->_clean_text($description);
         $location    = $this->_clean_text($location);
@@ -394,60 +375,47 @@ class Events extends MY_Controller
 
         $isNew = ($id === '');
         if ($isNew) {
-            $id = $this->_next_id('Event', 'EVT');
+            $id = $this->operations_accounting->next_id($this->_counter_path('Event'), 'EVT');
         } else {
             $id = $this->safe_path_segment($id, 'event_id');
-            $existing = $this->firebase->get($this->_evt("List/{$id}"));
+            $existing = $this->fs->getEntity(self::COL_EVENTS, $id);
             if (!is_array($existing)) $this->json_error('Event not found.');
         }
 
+        $effectiveEnd = $endDate !== '' ? $endDate : $startDate;
+
+        // Canonical Firestore doc — includes both snake_case (legacy admin JS)
+        // and camelCase (app EventDoc) field names.
         $data = [
+            'eventId'          => $id,
             'title'            => $title,
             'description'      => $description,
             'category'         => $category,
             'location'         => $location,
             'start_date'       => $startDate,
-            'end_date'         => $endDate !== '' ? $endDate : $startDate,
+            'end_date'         => $effectiveEnd,
+            'startDate'        => $startDate,
+            'endDate'          => $effectiveEnd,
             'organizer'        => $organizer,
             'max_participants' => $maxParticipants,
             'status'           => $status,
+            'mediaUrls'        => [],
             'updated_at'       => date('c'),
         ];
 
         if ($isNew) {
             $data['created_at']      = date('c');
+            $data['createdAt']       = date('c');
             $data['created_by']      = $this->admin_id;
+            $data['createdBy']       = $this->admin_id;
             $data['created_by_name'] = $this->admin_name;
-            $this->firebase->set($this->_evt("List/{$id}"), $data);
         } else {
-            // update() merges — preserves created_at, created_by, created_by_name
             $data['updated_by']      = $this->admin_id;
             $data['updated_by_name'] = $this->admin_name;
-            $this->firebase->update($this->_evt("List/{$id}"), $data);
         }
 
-        // ── Sync to Firestore 'events' collection ──
-        try {
-            $fsData = [
-                'schoolId'    => $this->school_name,
-                'session'     => $this->session_year,
-                'title'       => $title,
-                'description' => $description,
-                'category'    => $category,
-                'startDate'   => $startDate,
-                'endDate'     => $endDate !== '' ? $endDate : $startDate,
-                'location'    => $location,
-                'status'      => $status,
-                'mediaUrls'   => [],
-                'createdBy'   => $this->admin_id,
-                'createdAt'   => date('c'),
-            ];
-            $this->firebase->firestoreSet('events', $id, $fsData, !$isNew);
-        } catch (\Exception $e) {
-            log_message('error', "save_event: Firestore sync failed [{$id}]: " . $e->getMessage());
-        }
+        $this->fs->setEntity(self::COL_EVENTS, $id, $data, /* merge */ !$isNew);
 
-        // Fire communication event for new events
         if ($isNew) {
             $this->_fire_event_notification($id, $data);
         }
@@ -461,14 +429,22 @@ class Events extends MY_Controller
         $this->_require_admin();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'event_id');
 
-        $event = $this->firebase->get($this->_evt("List/{$id}"));
+        $event = $this->fs->getEntity(self::COL_EVENTS, $id);
         if (!is_array($event)) $this->json_error('Event not found.');
 
-        // Delete event, participants, and gallery media
-        $this->firebase->delete($this->_evt('List'), $id);
-        $this->firebase->delete($this->_evt('Participants'), $id);
-        $this->firebase->delete($this->_evt('Media'), $id);
+        // Delete participants for this event.
+        $participants = $this->firebase->firestoreQuery(self::COL_PARTICIPANTS, [
+            ['schoolId', '==', $this->school_name],
+            ['eventId',  '==', $id],
+        ]);
+        foreach ((array) $participants as $pdoc) {
+            $p = is_array($pdoc) ? $pdoc : [];
+            $pid = (string) ($p['participantId'] ?? $p['id'] ?? '');
+            if ($pid === '') continue;
+            $this->fs->remove(self::COL_PARTICIPANTS, $this->_participant_docId($id, $pid));
+        }
 
+        $this->fs->remove(self::COL_EVENTS, $this->fs->docId($id));
         $this->json_success(['message' => 'Event deleted.']);
     }
 
@@ -480,10 +456,10 @@ class Events extends MY_Controller
         $status = trim($this->input->post('status') ?? '');
         $this->_validate_enum($status, self::ALLOWED_STATUSES, 'status');
 
-        $event = $this->firebase->get($this->_evt("List/{$id}"));
+        $event = $this->fs->getEntity(self::COL_EVENTS, $id);
         if (!is_array($event)) $this->json_error('Event not found.');
 
-        $this->firebase->update($this->_evt("List/{$id}"), [
+        $this->fs->updateEntity(self::COL_EVENTS, $id, [
             'status'     => $status,
             'updated_at' => date('c'),
         ]);
@@ -507,30 +483,30 @@ class Events extends MY_Controller
         $startOfMonth = sprintf('%04d-%02d-01', $year, $month);
         $endOfMonth   = date('Y-m-t', strtotime($startOfMonth));
 
-        $all   = $this->firebase->get($this->_evt('List'));
+        $rows  = $this->firebase->firestoreQuery(self::COL_EVENTS,
+            [['schoolId', '==', $this->school_name]], 'startDate', 'ASC');
         $items = [];
-        if (is_array($all)) {
-            foreach ($all as $id => $e) {
-                if (!is_array($e) || $id === 'Counter') continue;
-                $eStart = $e['start_date'] ?? '';
-                $eEnd   = $e['end_date'] ?? $eStart;
-                if ($eStart === '') continue;
+        foreach ((array) $rows as $doc) {
+            $e = is_array($doc) ? $doc : [];
+            $id = (string) ($e['eventId'] ?? $e['id'] ?? '');
+            if ($id === '') continue;
+            $eStart = (string) ($e['start_date'] ?? $e['startDate'] ?? '');
+            $eEnd   = (string) ($e['end_date']   ?? $e['endDate']   ?? $eStart);
+            if ($eStart === '') continue;
 
-                // Include events that overlap with the requested month
-                if ($eEnd >= $startOfMonth && $eStart <= $endOfMonth) {
-                    $items[] = [
-                        'id'         => $id,
-                        'title'      => $e['title'] ?? '',
-                        'start_date' => $eStart,
-                        'end_date'   => $eEnd,
-                        'category'   => $e['category'] ?? 'event',
-                        'status'     => $e['status'] ?? 'scheduled',
-                        'location'   => $e['location'] ?? '',
-                    ];
-                }
+            if ($eEnd >= $startOfMonth && $eStart <= $endOfMonth) {
+                $items[] = [
+                    'id'         => $id,
+                    'title'      => $e['title'] ?? '',
+                    'start_date' => $eStart,
+                    'end_date'   => $eEnd,
+                    'category'   => $e['category'] ?? 'event',
+                    'status'     => $e['status'] ?? 'scheduled',
+                    'location'   => $e['location'] ?? '',
+                ];
             }
-            usort($items, fn($a, $b) => strcmp($a['start_date'], $b['start_date']));
         }
+        usort($items, fn($a, $b) => strcmp($a['start_date'], $b['start_date']));
 
         $this->json_success([
             'events' => $items,
@@ -549,19 +525,21 @@ class Events extends MY_Controller
         $this->_require_view();
         $eventId = $this->safe_path_segment(trim($this->input->get('event_id') ?? ''), 'event_id');
 
-        // Verify event exists
-        $event = $this->firebase->get($this->_evt("List/{$eventId}"));
+        $event = $this->fs->getEntity(self::COL_EVENTS, $eventId);
         if (!is_array($event)) $this->json_error('Event not found.');
 
-        $all  = $this->firebase->get($this->_evt("Participants/{$eventId}"));
+        $rows = $this->firebase->firestoreQuery(self::COL_PARTICIPANTS, [
+            ['schoolId', '==', $this->school_name],
+            ['eventId',  '==', $eventId],
+        ], 'name', 'ASC');
+
         $list = [];
-        if (is_array($all)) {
-            foreach ($all as $pid => $p) {
-                if (!is_array($p)) continue;
-                $p['id'] = $pid;
-                $list[] = $p;
-            }
-            usort($list, fn($a, $b) => strcmp($a['name'] ?? '', $b['name'] ?? ''));
+        foreach ((array) $rows as $doc) {
+            $p = is_array($doc) ? $doc : [];
+            $pid = (string) ($p['participantId'] ?? $p['id'] ?? '');
+            if ($pid === '') continue;
+            $p['id'] = $pid;
+            $list[] = $p;
         }
 
         $page  = max(1, (int) ($this->input->get('page') ?? 1));
@@ -599,25 +577,26 @@ class Events extends MY_Controller
         $class   = $this->_clean_text($class);
         $section = $this->_clean_text($section);
 
-        // Verify event exists
-        $event = $this->firebase->get($this->_evt("List/{$eventId}"));
+        $event = $this->fs->getEntity(self::COL_EVENTS, $eventId);
         if (!is_array($event)) $this->json_error('Event not found.');
 
-        // Check if event is still open for registration
         $evtStatus = $event['status'] ?? '';
         if ($evtStatus === 'completed' || $evtStatus === 'cancelled') {
             $this->json_error('Cannot register for a ' . $evtStatus . ' event.');
         }
 
-        // Check max participants (only for new registrations)
-        $existing = $this->firebase->get($this->_evt("Participants/{$eventId}/{$participantId}"));
-        $isNew = !is_array($existing);
+        $partDocId = $this->_participant_docId($eventId, $participantId);
+        $existing  = $this->firebase->firestoreGet(self::COL_PARTICIPANTS, $partDocId);
+        $isNew     = !is_array($existing);
 
         if ($isNew) {
             $maxP = (int) ($event['max_participants'] ?? 0);
             if ($maxP > 0) {
-                $currentP = $this->firebase->shallow_get($this->_evt("Participants/{$eventId}"));
-                $currentCount = is_array($currentP) ? count($currentP) : 0;
+                $currentRows = $this->firebase->firestoreQuery(self::COL_PARTICIPANTS, [
+                    ['schoolId', '==', $this->school_name],
+                    ['eventId',  '==', $eventId],
+                ]);
+                $currentCount = is_array($currentRows) ? count($currentRows) : 0;
                 if ($currentCount >= $maxP) {
                     $this->json_error("Event is full. Maximum {$maxP} participants allowed.");
                 }
@@ -625,6 +604,9 @@ class Events extends MY_Controller
         }
 
         $data = [
+            'schoolId'         => $this->school_name,
+            'eventId'          => $eventId,
+            'participantId'    => $participantId,
             'participant_id'   => $participantId,
             'participant_type' => $participantType,
             'name'             => $name,
@@ -636,7 +618,7 @@ class Events extends MY_Controller
         ];
         if ($isNew) $data['registration_date'] = date('c');
 
-        $this->firebase->set($this->_evt("Participants/{$eventId}/{$participantId}"), $data);
+        $this->firebase->firestoreSet(self::COL_PARTICIPANTS, $partDocId, $data, /* merge */ !$isNew);
 
         $this->json_success([
             'message' => $isNew ? 'Participant registered.' : 'Participant updated.',
@@ -650,10 +632,11 @@ class Events extends MY_Controller
         $eventId       = $this->safe_path_segment(trim($this->input->post('event_id') ?? ''), 'event_id');
         $participantId = $this->safe_path_segment(trim($this->input->post('participant_id') ?? ''), 'participant_id');
 
-        $existing = $this->firebase->get($this->_evt("Participants/{$eventId}/{$participantId}"));
+        $partDocId = $this->_participant_docId($eventId, $participantId);
+        $existing  = $this->firebase->firestoreGet(self::COL_PARTICIPANTS, $partDocId);
         if (!is_array($existing)) $this->json_error('Participant not found.');
 
-        $this->firebase->delete($this->_evt("Participants/{$eventId}"), $participantId);
+        $this->fs->remove(self::COL_PARTICIPANTS, $partDocId);
         $this->json_success(['message' => 'Participant removed.']);
     }
 
@@ -666,13 +649,14 @@ class Events extends MY_Controller
         $status        = trim($this->input->post('status') ?? 'attended');
         $this->_validate_enum($status, self::ALLOWED_PSTATUSES, 'attendance status');
 
-        $existing = $this->firebase->get($this->_evt("Participants/{$eventId}/{$participantId}"));
+        $partDocId = $this->_participant_docId($eventId, $participantId);
+        $existing  = $this->firebase->firestoreGet(self::COL_PARTICIPANTS, $partDocId);
         if (!is_array($existing)) $this->json_error('Participant not found.');
 
-        $this->firebase->update($this->_evt("Participants/{$eventId}/{$participantId}"), [
+        $this->firebase->firestoreSet(self::COL_PARTICIPANTS, $partDocId, [
             'status'     => $status,
             'updated_at' => date('c'),
-        ]);
+        ], /* merge */ true);
         $this->json_success(['message' => 'Attendance updated.']);
     }
 
@@ -688,57 +672,49 @@ class Events extends MY_Controller
         if (mb_strlen($query) > 100) $this->json_error('Search query too long.');
 
         $results    = [];
-        $session    = $this->session_year;
         $maxResults = 20;
 
-        // Search students
-        $sessionKeys = $this->firebase->shallow_get("Schools/{$this->school_name}/{$session}");
-        foreach ((array) $sessionKeys as $classKey) {
+        // Students — cached Firestore-backed search.
+        $students = $this->operations_accounting->search_students($query, $maxResults);
+        foreach ($students as $s) {
             if (count($results) >= $maxResults) break;
-            if (strpos($classKey, 'Class ') !== 0) continue;
-            $sectionKeys = $this->firebase->shallow_get("Schools/{$this->school_name}/{$session}/{$classKey}");
-            foreach ((array) $sectionKeys as $sectionKey) {
-                if (count($results) >= $maxResults) break;
-                if (strpos($sectionKey, 'Section ') !== 0) continue;
-                $students = $this->firebase->get("Schools/{$this->school_name}/{$session}/{$classKey}/{$sectionKey}/Students/List");
-                if (!is_array($students)) continue;
-                foreach ($students as $sid => $sName) {
-                    if (count($results) >= $maxResults) break;
-                    $name = (string) $sName;
-                    if (stripos($name, $query) !== false || stripos($sid, $query) !== false) {
-                        $sec = str_replace('Section ', '', $sectionKey);
-                        $cls = str_replace('Class ', '', $classKey);
-                        $results[] = [
-                            'id'    => $sid,
-                            'name'  => $this->_clean_text($name),
-                            'type'  => 'student',
-                            'class' => $cls,
-                            'section' => $sec,
-                            'label' => $this->_clean_text("{$name} ({$sid}) - {$classKey} {$sectionKey}"),
-                        ];
-                    }
-                }
-            }
+            $sid   = (string) ($s['id'] ?? '');
+            $name  = (string) ($s['name'] ?? '');
+            $cls   = (string) ($s['class'] ?? '');
+            $sec   = (string) ($s['section'] ?? '');
+            $label = $this->_clean_text(trim("{$name} ({$sid}) - Class {$cls} Section {$sec}"));
+            $results[] = [
+                'id'      => $sid,
+                'name'    => $this->_clean_text($name),
+                'type'    => 'student',
+                'class'   => $cls,
+                'section' => $sec,
+                'label'   => $label,
+            ];
         }
 
-        // Search teachers
+        // Teachers / staff — Firestore `staff` collection.
         if (count($results) < $maxResults) {
-            $teachers = $this->firebase->get("Schools/{$this->school_name}/{$session}/Teachers");
-            if (is_array($teachers)) {
-                foreach ($teachers as $tid => $t) {
-                    if (count($results) >= $maxResults) break;
-                    if (!is_array($t)) continue;
-                    $name = $t['Name'] ?? '';
-                    if (stripos($name, $query) !== false || stripos($tid, $query) !== false) {
-                        $results[] = [
-                            'id'      => $tid,
-                            'name'    => $this->_clean_text($name),
-                            'type'    => 'teacher',
-                            'class'   => '',
-                            'section' => '',
-                            'label'   => $this->_clean_text("{$name} ({$tid}) - Teacher"),
-                        ];
-                    }
+            $teachers = $this->firebase->firestoreQuery('staff', [
+                ['schoolId', '==', $this->school_name],
+            ]);
+            foreach ((array) $teachers as $r) {
+                if (count($results) >= $maxResults) break;
+                $d = is_array($r) ? $r : [];
+                $tid  = (string) ($d['staffId'] ?? $d['teacherId'] ?? $d['id'] ?? '');
+                $name = (string) ($d['name'] ?? $d['Name'] ?? '');
+                if ($tid === '' || $name === '') continue;
+                $role = strtolower((string) ($d['role'] ?? $d['jobFunction'] ?? ''));
+                if ($role !== '' && strpos($role, 'teach') === false && strpos($role, 'coordinator') === false) continue;
+                if (stripos($name, $query) !== false || stripos($tid, $query) !== false) {
+                    $results[] = [
+                        'id'      => $tid,
+                        'name'    => $this->_clean_text($name),
+                        'type'    => 'teacher',
+                        'class'   => '',
+                        'section' => '',
+                        'label'   => $this->_clean_text("{$name} ({$tid}) - Teacher"),
+                    ];
                 }
             }
         }
@@ -752,19 +728,13 @@ class Events extends MY_Controller
 
     /**
      * Fire event notification via Communication module.
-     *
-     * 1. Fires 'event_created' through Communication_helper::fire_event()
-     *    so any configured triggers (push/sms/email) are queued.
-     * 2. Creates a Communication/Notices entry (primary announcement)
-     *    plus a legacy All Notices entry (fallback for mobile apps).
      */
     private function _fire_event_notification(string $eventId, array $data): void
     {
         try {
             $this->load->library('communication_helper');
-            $this->communication_helper->init($this->firebase, $this->school_name, $this->session_year, $this->parent_db_key);
+            $this->communication_helper->init($this->firebase, $this->school_name, $this->session_year, $this->parent_db_key, $this->fs, $this->school_id);
 
-            // Structured payload for trigger-based notifications
             $payload = [
                 'event_id'   => $eventId,
                 'title'      => $data['title'] ?? '',
@@ -776,12 +746,7 @@ class Events extends MY_Controller
                 'school'     => $this->school_name,
             ];
 
-            // 1. Fire trigger-based notifications (push/sms/email)
-            //    Only queues messages if school has configured triggers for 'event_created'
             $this->communication_helper->fire_event('event_created', $payload);
-
-            // 2. Create announcement notice (Communication/Notices + legacy All Notices)
-            //    This is the school-wide announcement visible to everyone
             $this->communication_helper->write_event_notice($eventId, $data, $this->admin_id);
 
         } catch (\Exception $e) {

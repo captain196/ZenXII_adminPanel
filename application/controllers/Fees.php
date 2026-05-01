@@ -190,7 +190,6 @@ class Fees extends MY_Controller
             'fees_record'       => "{$studentBase}/Fees Record" . ($receiptKey ? "/{$receiptKey}" : ''),
             'month_fee'         => "{$studentBase}/Month Fee",
             'discount'          => "{$studentBase}/Discount",
-            'oversubmitted'     => "{$studentBase}/Oversubmittedfees",
             'exempted'          => "{$studentBase}/Exempted Fees",
             'vouchers'          => "{$bp}/Accounts/Vouchers",
             'account_book'      => "{$bp}/Accounts/Account_book",
@@ -382,97 +381,140 @@ class Fees extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES);
 
-        $sn           = $this->school_name;
         $sy           = $this->session_year;
         $filterClass  = trim($this->input->get('class') ?? '');
         $filterSec    = trim($this->input->get('section') ?? '');
         $minOverdue   = (int) ($this->input->get('min_overdue_days') ?? 0);
-        $today        = date('Y-m-d');
+        $limit        = max(1, min(500, (int) ($this->input->get('limit') ?? 100)));
+        $startAfterSid = trim($this->input->get('startAfterSid') ?? '');
+        $schoolFs     = $this->fs->schoolId();
 
-        // Firestore: all demands for this school+session, grouped by student.
-        $schoolFs = $this->fs->schoolId();
-        $rawDemands = $this->firebase->firestoreQuery('feeDemands', [
-            ['schoolId', '==', $schoolFs], ['session', '==', $sy],
-        ]);
-        $byStudent = [];
-        foreach ((array) $rawDemands as $r) {
-            $d = $r['data'] ?? $r;
-            if (!is_array($d)) continue;
-            $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
-            if ($sid !== '') $byStudent[$sid][] = $d;
+        // Phase 5b — studentFeeSummary is the PRIMARY source. It carries
+        // totalPaid + lastPaymentDate + lastReceiptNo (previously returned
+        // as 0 / empty). Falls back to the Phase 3 feeDefaulters path if
+        // the summary collection is missing or the query fails (e.g.,
+        // backfill hasn't been run yet).
+        //
+        // Ordering: totalBalance DESC — requires the composite index
+        // (schoolId, session, totalBalance DESC) added this phase.
+        $whereSummary = [
+            ['schoolId', '==', $schoolFs],
+            ['session',  '==', $sy],
+        ];
+        if ($filterClass !== '' && $filterSec !== '') {
+            // Narrower index — (schoolId, session, className, section, totalBalance DESC)
+            $whereSummary[] = ['className', '==', $filterClass];
+            $whereSummary[] = ['section',   '==', $filterSec];
+        }
+
+        $rows        = [];
+        $sourceUsed  = 'studentFeeSummary';
+        $cursorValue = $startAfterSid;
+        try {
+            $rows = $this->firebase->firestoreQueryPaginated(
+                'studentFeeSummary',
+                $whereSummary,
+                'totalBalance',    // orderBy
+                'DESC',
+                // Over-fetch by 2x so a page full of paid rows still
+                // yields `limit` defaulters after the in-memory filter.
+                min(500, $limit * 2),
+                $cursorValue
+            );
+        } catch (\Throwable $e) {
+            log_message('warning', "ID_GEN_INTEGRATION get_defaulter_data studentFeeSummary query failed — falling back to feeDefaulters: " . $e->getMessage());
+            $rows = [];
+        }
+
+        // Fallback: if the summary query returned nothing AND we're on
+        // the first page, treat as "summaries not populated yet" and
+        // fall back to feeDefaulters (the Phase 3 path). This keeps the
+        // endpoint working while an operator runs backfill_fee_summaries.
+        if (empty($rows) && $startAfterSid === '') {
+            log_message('info', "get_defaulter_data fallback feeDefaulters (summary empty) school={$schoolFs}");
+            $sourceUsed = 'feeDefaulters_fallback';
+            $whereFallback = [
+                ['schoolId', '==', $schoolFs],
+                ['session',  '==', $sy],
+            ];
+            if ($filterClass !== '' && $filterSec !== '') {
+                $whereFallback[] = ['className', '==', $filterClass];
+                $whereFallback[] = ['section',   '==', $filterSec];
+            }
+            try {
+                $rows = $this->firebase->firestoreQueryPaginated(
+                    'feeDefaulters',
+                    $whereFallback,
+                    'totalDues',
+                    'DESC',
+                    $limit,
+                    $cursorValue
+                );
+            } catch (\Throwable $e) {
+                log_message('error', "get_defaulter_data fallback feeDefaulters also failed: " . $e->getMessage());
+                $rows = $this->firebase->firestoreQuery('feeDefaulters', $whereFallback);
+            }
         }
 
         $defaulters = [];
+        $lastSid    = '';
+        foreach ((array) $rows as $r) {
+            $d = $r['data'] ?? $r;
+            if (!is_array($d)) continue;
 
-        foreach ($byStudent as $studentId => $demands) {
+            // Phase 5b — prefer summary's totalBalance; fall back to
+            // feeDefaulters' totalDues on the legacy branch.
+            $balance = (float) ($d['totalBalance'] ?? $d['totalDues'] ?? 0);
+            if ($balance <= 0.005) continue;
 
-            $totalDue      = 0;
-            $totalPaid     = 0;
-            $oldestUnpaid  = '';
-            $maxOverdue    = 0;
-            $unpaidCount   = 0;
-            $studentName   = '';
-            $studentClass  = '';
-            $studentSec    = '';
-
-            foreach ($demands as $d) {
-                $status = $d['status'] ?? 'unpaid';
-
-                if ($studentName === '') {
-                    $studentName  = $d['student_name'] ?? $studentId;
-                    $studentClass = $d['class'] ?? '';
-                    $studentSec   = $d['section'] ?? '';
-                }
-
-                $totalDue  += floatval($d['net_amount'] ?? 0) + floatval($d['fine_amount'] ?? 0);
-                $totalPaid += floatval($d['paid_amount'] ?? 0);
-
-                if ($status !== 'paid') {
-                    $unpaidCount++;
-                    $dueDate = $d['due_date'] ?? '';
-                    if ($dueDate !== '' && $dueDate < $today) {
-                        $days = (int) ((strtotime($today) - strtotime($dueDate)) / 86400);
-                        if ($days > $maxOverdue) $maxOverdue = $days;
-                        if ($oldestUnpaid === '' || ($d['period_key'] ?? '') < $oldestUnpaid) {
-                            $oldestUnpaid = $d['period_key'] ?? '';
-                        }
-                    }
-                }
-            }
-
-            $balance = round($totalDue - $totalPaid, 2);
-            if ($balance <= 0 || $unpaidCount === 0) continue;
-
-            // Apply filters
+            $studentClass = (string) ($d['className'] ?? '');
+            $studentSec   = (string) ($d['section']   ?? '');
+            // Class/section in-memory filter when only one of the two is
+            // provided (the narrow-index query branch above can't satisfy
+            // that combination alone).
             if ($filterClass !== '' && $studentClass !== $filterClass) continue;
-            if ($filterSec !== '' && $studentSec !== $filterSec) continue;
-            if ($minOverdue > 0 && $maxOverdue < $minOverdue) continue;
+            if ($filterSec   !== '' && $studentSec   !== $studentSec)   continue;
 
+            $unpaidMonths = is_array($d['unpaidMonths'] ?? null) ? $d['unpaidMonths'] : [];
+            $oldestUnpaid = (string) ($unpaidMonths[0] ?? '');
+
+            $lastSid = (string) ($d['studentId'] ?? $r['id'] ?? '');
             $defaulters[] = [
-                'student_id'     => $studentId,
-                'student_name'   => $studentName,
-                'class'          => $studentClass,
-                'section'        => $studentSec,
-                'total_due'      => round($totalDue, 2),
-                'total_paid'     => round($totalPaid, 2),
-                'balance'        => $balance,
-                'unpaid_months'  => $unpaidCount,
-                'oldest_unpaid'  => $oldestUnpaid,
-                'days_overdue'   => $maxOverdue,
+                'student_id'        => $lastSid,
+                'student_name'      => (string) ($d['studentName'] ?? ''),
+                'class'             => $studentClass,
+                'section'           => $studentSec,
+                'total_due'         => round((float) ($d['totalDemanded']  ?? $d['totalDues'] ?? $balance), 2),
+                // Phase 5b — totalPaid, lastPaymentDate, lastReceiptNo
+                // are now populated when primary source is used. Zero
+                // in the feeDefaulters fallback branch (same behaviour
+                // as Phase 3).
+                'total_paid'        => round((float) ($d['totalCollected'] ?? 0), 2),
+                'balance'           => round($balance, 2),
+                'unpaid_months'     => count($unpaidMonths),
+                'oldest_unpaid'     => $oldestUnpaid,
+                'days_overdue'      => 0, // requires a per-demand lookup; Student Ledger shows it
+                'last_payment_date' => (string) ($d['lastPaymentDate'] ?? ''),
+                'last_receipt_no'   => (string) ($d['lastReceiptNo']   ?? ''),
+                'status'            => (string) ($d['status'] ?? ($balance > 0 ? 'partial' : 'paid')),
             ];
+            if (count($defaulters) >= $limit) break;
         }
 
-        // Sort by balance DESC
-        usort($defaulters, function ($a, $b) { return $b['balance'] <=> $a['balance']; });
-
-        // Summary
-        $totalDefaulters = count($defaulters);
-        $totalBalance    = array_sum(array_column($defaulters, 'balance'));
+        $pageBalance = array_sum(array_column($defaulters, 'balance'));
+        $nextCursor  = count($defaulters) >= $limit ? $lastSid : '';
 
         $this->json_success([
             'defaulters'       => $defaulters,
-            'total_defaulters' => $totalDefaulters,
-            'total_balance'    => round($totalBalance, 2),
+            'page_size'        => count($defaulters),
+            'total_balance'    => round($pageBalance, 2),
+            'next_cursor'      => $nextCursor,
+            'has_more'         => $nextCursor !== '',
+            'total_defaulters' => count($defaulters),
+            // Phase 5b — source telemetry. 'studentFeeSummary' = fast
+            // path; 'feeDefaulters_fallback' = summaries not yet
+            // populated (operator should run backfill_fee_summaries).
+            'source'           => $sourceUsed,
         ]);
     }
 
@@ -484,70 +526,162 @@ class Fees extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES);
 
-        $sn = $this->school_name;
         $sy = $this->session_year;
-
         $schoolFs = $this->fs->schoolId();
-        $rawDemands = $this->firebase->firestoreQuery('feeDemands', [
-            ['schoolId', '==', $schoolFs], ['session', '==', $sy],
-        ]);
 
         $byClass   = [];
         $byMonth   = [];
         $byStatus  = ['paid' => 0, 'partial' => 0, 'unpaid' => 0];
-        $totalDemanded  = 0;
-        $totalCollected = 0;
+        $totalDemanded  = 0.0;
+        $totalCollected = 0.0;
+        $totalScanned   = 0;
+        $truncated      = false;
+        $sourceUsed     = 'classFeeSummary';
 
-        foreach ((array) $rawDemands as $r) {
-            $d = $r['data'] ?? $r;
-            if (!is_array($d)) continue;
-            $sid  = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
-            $net  = floatval($d['net_amount'] ?? 0);
-            $paid = floatval($d['paid_amount'] ?? 0);
-            // Same drift fix as the dashboard endpoint — fall back to
-            // className for legacy yearly demands.
-            $cls = (string) ($d['class'] ?? $d['className'] ?? '');
-            if ($cls === '') $cls = 'Unknown';
-            $pk   = $d['period_key'] ?? '';
-            $st   = $d['status'] ?? 'unpaid';
-
-            $totalDemanded  += $net;
-            $totalCollected += $paid;
-
-            if (!isset($byClass[$cls])) $byClass[$cls] = ['demanded' => 0, 'collected' => 0, 'students' => []];
-            $byClass[$cls]['demanded']  += $net;
-            $byClass[$cls]['collected'] += $paid;
-            $byClass[$cls]['students'][$sid] = true;
-
-            if ($pk !== '') {
-                if (!isset($byMonth[$pk])) $byMonth[$pk] = ['demanded' => 0, 'collected' => 0];
-                $byMonth[$pk]['demanded']  += $net;
-                $byMonth[$pk]['collected'] += $paid;
-            }
-
-            $byStatus[$st] = ($byStatus[$st] ?? 0) + 1;
+        // Phase 5b — classFeeSummary is the PRIMARY source. At 20
+        // sections × 13 months = 260 docs for the entire school, this
+        // replaces the 100K-document chunked scan of feeDemands with a
+        // single indexed query. If the summary collection is empty
+        // (backfill hasn't been run yet), we fall back to the Phase 3
+        // chunked scan so the endpoint keeps working during rollout.
+        $summaryRows = [];
+        try {
+            $summaryRows = $this->firebase->firestoreQuery('classFeeSummary', [
+                ['schoolId', '==', $schoolFs],
+                ['session',  '==', $sy],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('warning', "get_collection_analytics classFeeSummary query failed, will fallback: " . $e->getMessage());
+            $summaryRows = [];
         }
 
-        // Format class data
+        if (!empty($summaryRows)) {
+            // ── FAST PATH: aggregate pre-computed cells ──────────────
+            foreach ((array) $summaryRows as $r) {
+                $d = $r['data'] ?? $r;
+                if (!is_array($d)) continue;
+                $cls = (string) ($d['className'] ?? 'Unknown');
+                if ($cls === '') $cls = 'Unknown';
+                $mon = (string) ($d['month'] ?? '');
+
+                $demanded  = (float) ($d['totalDemanded']  ?? 0);
+                $collected = (float) ($d['totalCollected'] ?? 0);
+                $students  = (int)   ($d['totalStudents']  ?? 0);
+
+                $totalDemanded  += $demanded;
+                $totalCollected += $collected;
+
+                if (!isset($byClass[$cls])) $byClass[$cls] = ['demanded' => 0, 'collected' => 0, 'students' => 0];
+                $byClass[$cls]['demanded']  += $demanded;
+                $byClass[$cls]['collected'] += $collected;
+                // Max student count per class (each class-month cell
+                // reports the same roster; take max to avoid
+                // multiplying by # months).
+                if ($students > $byClass[$cls]['students']) {
+                    $byClass[$cls]['students'] = $students;
+                }
+
+                if ($mon !== '') {
+                    if (!isset($byMonth[$mon])) $byMonth[$mon] = ['demanded' => 0, 'collected' => 0];
+                    $byMonth[$mon]['demanded']  += $demanded;
+                    $byMonth[$mon]['collected'] += $collected;
+                }
+
+                $byStatus['paid']    += (int) ($d['paidStudents']    ?? 0);
+                $byStatus['partial'] += (int) ($d['partialStudents'] ?? 0);
+                $byStatus['unpaid']  += (int) ($d['unpaidStudents']  ?? 0);
+            }
+            $totalScanned = count($summaryRows);
+        } else {
+            // ── FALLBACK: Phase 3 chunked scan of feeDemands ──────────
+            log_message('info', "get_collection_analytics fallback feeDemands scan (summary empty) school={$schoolFs}");
+            $sourceUsed = 'feeDemands_fallback';
+            $pageSize = 1000;
+            $maxChunks = 100;
+            $cursor    = '';
+            $chunkNo   = 0;
+            while ($chunkNo < $maxChunks) {
+                try {
+                    $rows = $this->firebase->firestoreQueryPaginated(
+                        'feeDemands',
+                        [
+                            ['schoolId', '==', $schoolFs],
+                            ['session',  '==', $sy],
+                        ],
+                        'studentId', 'ASC', $pageSize, $cursor
+                    );
+                } catch (\Throwable $e) {
+                    log_message('error', "get_collection_analytics fallback chunked read failed: " . $e->getMessage());
+                    break;
+                }
+                $rows = (array) $rows;
+                if (empty($rows)) break;
+                foreach ($rows as $r) {
+                    $d = $r['data'] ?? $r;
+                    if (!is_array($d)) continue;
+                    $sid  = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
+                    $net  = (float) ($d['netAmount']   ?? $d['net_amount']  ?? 0);
+                    $paid = (float) ($d['paidAmount']  ?? $d['paid_amount'] ?? 0);
+                    $fine = (float) ($d['fineAmount']  ?? $d['fine_amount'] ?? 0);
+                    $cls  = (string) ($d['class'] ?? $d['className'] ?? '');
+                    if ($cls === '') $cls = 'Unknown';
+                    $pk   = (string) ($d['periodKey'] ?? $d['period_key'] ?? '');
+                    $st   = (string) ($d['status'] ?? 'unpaid');
+                    $demandedAmt = $net + $fine;
+                    $totalDemanded  += $demandedAmt;
+                    $totalCollected += $paid;
+                    if (!isset($byClass[$cls])) $byClass[$cls] = ['demanded' => 0, 'collected' => 0, 'students' => []];
+                    $byClass[$cls]['demanded']  += $demandedAmt;
+                    $byClass[$cls]['collected'] += $paid;
+                    $byClass[$cls]['students'][$sid] = true;
+                    if ($pk !== '') {
+                        if (!isset($byMonth[$pk])) $byMonth[$pk] = ['demanded' => 0, 'collected' => 0];
+                        $byMonth[$pk]['demanded']  += $demandedAmt;
+                        $byMonth[$pk]['collected'] += $paid;
+                    }
+                    $byStatus[$st] = ($byStatus[$st] ?? 0) + 1;
+                    $cursor = (string) ($r['id'] ?? $sid);
+                }
+                $totalScanned += count($rows);
+                $chunkNo++;
+                if (count($rows) < $pageSize) break;
+            }
+            if ($chunkNo >= $maxChunks) $truncated = true;
+            // Fallback branch keeps the Phase 3 shape (students is an
+            // array of unique sids); normalise to int count below.
+            foreach ($byClass as $cls => $data) {
+                if (is_array($data['students'])) {
+                    $byClass[$cls]['students'] = count($data['students']);
+                }
+            }
+        }
+
+        // Format class data. Phase 5b — students is already an int when
+        // primary (summary) path is used; the fallback branch above
+        // already normalised its `students` array to an int count.
         $classData = [];
         foreach ($byClass as $cls => $data) {
+            $students = is_array($data['students']) ? count($data['students']) : (int) $data['students'];
             $classData[] = [
                 'class'      => $cls,
                 'demanded'   => round($data['demanded'], 2),
                 'collected'  => round($data['collected'], 2),
                 'balance'    => round($data['demanded'] - $data['collected'], 2),
-                'students'   => count($data['students']),
+                'students'   => $students,
                 'rate'       => $data['demanded'] > 0 ? round(($data['collected'] / $data['demanded']) * 100, 1) : 0,
             ];
         }
         usort($classData, function ($a, $b) { return strnatcmp($a['class'], $b['class']); });
 
-        // Format month data
+        // Format month data. Primary-path key is month name ("April");
+        // fallback key is period_key ("2026-04"). Emit both so UI
+        // consumers relying on either field continue to work.
         ksort($byMonth);
         $monthData = [];
-        foreach ($byMonth as $pk => $data) {
+        foreach ($byMonth as $key => $data) {
             $monthData[] = [
-                'period_key' => $pk,
+                'period_key' => $key,
+                'month'      => $key,
                 'demanded'   => round($data['demanded'], 2),
                 'collected'  => round($data['collected'], 2),
                 'rate'       => $data['demanded'] > 0 ? round(($data['collected'] / $data['demanded']) * 100, 1) : 0,
@@ -561,6 +695,13 @@ class Fees extends MY_Controller
             'by_class'        => $classData,
             'by_month'        => $monthData,
             'by_status'       => $byStatus,
+            // Phase 3 field name kept for back-compat; in Phase 5b the
+            // fast path scans classFeeSummary docs, not demand docs.
+            'scanned_demands' => $totalScanned,
+            'truncated'       => $truncated,
+            // Phase 5b — source telemetry. 'classFeeSummary' = fast
+            // path; 'feeDemands_fallback' = summaries not yet populated.
+            'source'          => $sourceUsed,
         ]);
     }
 
@@ -582,12 +723,18 @@ class Fees extends MY_Controller
         $sn = $this->school_name;
         $sy = $this->session_year;
 
-        // Firestore: receipt allocations for this student.
+        // API-safety wrapper — Firestore errors return an empty receipts
+        // array with degraded=true rather than a 500, keeping the UI intact.
         $schoolFs = $this->fs->schoolId();
-        $rawAllocs = $this->firebase->firestoreQuery('feeReceiptAllocations', [
-            ['schoolId',  '==', $schoolFs],
-            ['studentId', '==', $studentId],
-        ]);
+        try {
+            $rawAllocs = $this->firebase->firestoreQuery('feeReceiptAllocations', [
+                ['schoolId',  '==', $schoolFs],
+                ['studentId', '==', $studentId],
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', "get_student_allocations: Firestore failed for {$studentId}: " . $e->getMessage());
+            return $this->json_success(['receipts' => [], 'degraded' => true]);
+        }
         $receipts = [];
         foreach ((array) $rawAllocs as $r) {
             $rc = $r['data'] ?? $r;
@@ -596,7 +743,6 @@ class Fees extends MY_Controller
             $receipts[] = $rc;
         }
 
-        // Sort by date DESC
         usort($receipts, function ($a, $b) {
             return strcmp($b['created_at'] ?? '', $a['created_at'] ?? '');
         });
@@ -797,9 +943,12 @@ class Fees extends MY_Controller
 
     /**
      * Deprecated — redirects to the unified Fee Titles & Categories page.
+     * Guard retained so an unauthenticated probe can't even trigger the
+     * redirect (anti-fingerprinting).
      */
     public function fees_structure()
     {
+        $this->_require_role(self::VIEW_ROLES, 'fees_structure');
         redirect(base_url('fee_management/categories'));
     }
 
@@ -808,6 +957,7 @@ class Fees extends MY_Controller
      */
     public function delete_fees_structure($feeTitle = '', $feeType = '')
     {
+        $this->_require_role(self::MANAGE_ROLES, 'delete_fees_structure');
         redirect(base_url('fee_management/categories'));
     }
 
@@ -1089,17 +1239,9 @@ class Fees extends MY_Controller
             'October','November','December','January','February','March',
             'Yearly Fees',
         ];
-        $existing = $this->fsTxn->demandsForStudent($studentId); // keyed by docId
+        $existing  = $this->fsTxn->demandsForStudent($studentId);
+        $headIdMap = $this->fsTxn->readFeeHeadIds($class, $section);
 
-        // Index existing demands by demand-id (the deterministic key
-        // we'd use for a fresh write) so we can skip any month×head
-        // that already exists — including already-PAID ones.
-        //
-        // Earlier version used `period`-word + `fee_head` which broke
-        // for "Yearly Fees" (split-on-space yielded "Yearly", which
-        // never matched "Yearly Fees" from the chart). The result was
-        // that paid Annual-Fee demands got overwritten with fresh
-        // unpaid ones on every fee-chart save.
         $haveIds = [];
         foreach ($existing as $docId => $_d) {
             if ($docId !== '') $haveIds[$docId] = true;
@@ -1113,28 +1255,30 @@ class Fees extends MY_Controller
                 $amt = (float) $amount;
                 if ($amt <= 0) continue;
 
-                $periodKey = $this->_period_key_for_month($month);
+                $periodKey   = $this->_period_key_for_month($month);
                 $periodLabel = $month === 'Yearly Fees'
                     ? "Yearly Fees {$this->session_year}"
                     : "{$month} " . $this->_year_for_month($month);
-                $demandId = "DEM_" . str_replace('-', '', $periodKey)
-                          . '_' . strtoupper(preg_replace('/[^A-Z0-9]+/i', '_', $title));
+                $feeHeadId   = (string) ($headIdMap[$title] ?? '');
+                $demandId    = $this->_buildDemandId($studentId, $periodKey, $feeHeadId, $title);
 
                 if (isset($haveIds[$demandId])) continue; // already exists, leave it alone
 
                 $this->fsTxn->writeDemand($demandId, [
-                    'studentId'     => $studentId,
-                    'className'     => $class,
-                    'section'       => $section,
-                    'fee_head'      => $title,
-                    'period'        => $periodLabel,
-                    'period_key'    => $periodKey,
-                    'original_amount'=> $amt,
-                    'net_amount'    => $amt,
-                    'paid_amount'   => 0.0,
-                    'balance'       => $amt,
-                    'status'        => 'unpaid',
-                    'generated_at'  => $today,
+                    'studentId'    => $studentId,
+                    'className'    => $class,
+                    'section'      => $section,
+                    'feeHead'      => $title,
+                    'feeHeadId'    => $feeHeadId,
+                    'period'       => $periodLabel,
+                    'periodKey'    => $periodKey,
+                    'frequency'    => $month === 'Yearly Fees' ? 'yearly' : 'monthly',
+                    'grossAmount'  => $amt,
+                    'netAmount'    => $amt,
+                    'paidAmount'   => 0.0,
+                    'balance'      => $amt,
+                    'status'       => 'unpaid',
+                    'generatedAt'  => $today,
                 ]);
                 $wrote = true;
             }
@@ -1200,12 +1344,15 @@ class Fees extends MY_Controller
         if (empty($feeChart)) return $this->json_error("No fee chart for {$class}/{$section}.");
         $discountMap = $this->_getStudentDiscounts($studentId, $class, $section);
         $dueDay      = $this->_getDueDay();
+        $headIdMap   = $this->fsTxn->readFeeHeadIds($class, $section);
+        $noBatch     = null; // sequential-write mode
 
         $totals = ['created' => 0, 'skipped' => 0, 'errors' => 0];
         foreach (self::ACADEMIC_MONTHS as $month) {
             $r = $this->_generateDemandsForMonth(
                 $studentId, $studentName, $class, $section,
-                $month, $feeChart, $discountMap, $dueDay
+                $month, $feeChart, $discountMap, $dueDay,
+                $noBatch, $headIdMap
             );
             $totals['created'] += $r['created'];
             $totals['skipped'] += $r['skipped'];
@@ -1449,16 +1596,41 @@ class Fees extends MY_Controller
         if (!$userId) { $this->output->set_output(json_encode([])); return; }
         $userId = $this->safe_path_segment($userId, 'userId');
 
+        // Phase 6 — cursor pagination. Default 100 / max 500. Cursor is
+        // the previous page's last createdAt ISO-8601 string (receipts
+        // are naturally ordered by createdAt DESC in the modal view).
+        // At a per-student scale, pagination rarely kicks in (typical
+        // student has ≤60 receipts lifetime), but guards against the
+        // edge case of long-tenured students accumulating hundreds.
+        $limit  = max(1, min(500, (int) ($this->input->post('limit') ?? 100)));
+        $cursor = trim((string) ($this->input->post('cursor') ?? ''));
+
         // Session A: query feeReceipts collection directly. studentName + class
         // are denormalised into each receipt doc at write time, so we don't
-        // need a separate profile read.
+        // need a separate profile read. Over-fetch by 1 to detect has_more
+        // without a second query.
         try {
-            $rows = $this->fs->schoolWhere('feeReceipts', [['studentId', '==', $userId]]);
+            $rows = $this->firebase->firestoreQueryPaginated(
+                'feeReceipts',
+                [
+                    ['schoolId',  '==', $this->fs->schoolId()],
+                    ['studentId', '==', $userId],
+                ],
+                'createdAt',
+                'DESC',
+                $limit + 1,
+                $cursor !== '' ? $cursor : null
+            );
         } catch (\Exception $e) {
             log_message('error', "fetch_fee_receipts failed for {$userId}: " . $e->getMessage());
             $this->output->set_output(json_encode([]));
             return;
         }
+
+        // Trim to requested limit; remember the (limit+1)th row for cursor.
+        $rows = (array) $rows;
+        $hasMore = count($rows) > $limit;
+        if ($hasMore) $rows = array_slice($rows, 0, $limit);
 
         // One bulk read of the allocation docs for this student so we can
         // tag each receipt with Full/Partial coverage (an allocation entry
@@ -1535,8 +1707,18 @@ class Fees extends MY_Controller
             }
             $remainingAfter = round($remainingAfter, 2);
 
+            // Phase 7E — surface the async status field so the history
+            // UI can render "Processing" for receipts still in the queue
+            // and disable action buttons until the worker posts. Missing
+            // `status` is treated as 'posted' for backward compat with
+            // sync-mode receipts.
+            $rcptStatus = (string) ($d['status'] ?? 'posted');
+            if ($rcptStatus === '') $rcptStatus = 'posted';
+
             $response[] = [
+                'type'       => 'receipt',
                 'receiptNo'  => (string) ($d['receiptNo'] ?? ''),
+                'receiptStatus' => $rcptStatus,
                 'date'       => (string) ($d['date']      ?? ''),
                 'student'    => trim($name . ($father !== '' ? " / {$father}" : '')),
                 'class'      => trim("{$class} {$sec}"),
@@ -1555,8 +1737,95 @@ class Fees extends MY_Controller
             ];
         }
 
-        usort($response, fn($a, $b) => (int) $b['receiptNo'] - (int) $a['receiptNo']);
-        $this->output->set_output(json_encode($response));
+        // Merge refund vouchers so the cashier sees reversals in the same
+        // timeline (matches parent-app Payments tab behaviour). Each refund
+        // becomes a type='refund' row with a negative amount; the receipt
+        // it reverses gets tagged 'refunded' = origReceiptNo so the UI can
+        // strike it through. Without this, F2 and F3 both look like Rs 1
+        // payments and the viewer wonders why Outstanding isn't 34,598.
+        $refundedReceipts = []; // keyed by origReceiptNo — tagged below
+        try {
+            $refundRows = $this->fs->schoolWhere('feeRefundVouchers', [['studentId', '==', $userId]]);
+            foreach ((array) $refundRows as $rr) {
+                $rd = $rr['data'] ?? [];
+                if (!is_array($rd)) continue;
+                $refAmt  = abs((float) ($rd['amount'] ?? 0));   // stored negative → absolute
+                $origNo  = (string) ($rd['origReceiptNo'] ?? $rd['receiptNo'] ?? '');
+                $refundedReceipts[$origNo] = true;
+                $response[] = [
+                    'type'            => 'refund',
+                    'receiptNo'       => $origNo !== '' ? "R{$origNo}" : 'R-' . substr((string) ($rd['refundId'] ?? ''), -6),
+                    'origReceiptNo'   => $origNo,
+                    'date'            => substr((string) ($rd['processedAt'] ?? $rd['updatedAt'] ?? ''), 0, 10),
+                    'student'         => trim((string) ($rd['studentName'] ?? '') . ((string) ($rd['section'] ?? '') !== '' ? ' / ' . (string) ($rd['section'] ?? '') : '')),
+                    'class'           => trim(((string) ($rd['className'] ?? '')) . ' ' . ((string) ($rd['section'] ?? ''))),
+                    'amount'          => '-' . number_format($refAmt, 2),
+                    'inputAmount'     => '-' . number_format($refAmt, 2),
+                    'allocatedAmount' => '-' . number_format($refAmt, 2),
+                    'advanceCredit'   => '0.00',
+                    'remainingAfter'  => '0.00',
+                    'fine'            => '0.00',
+                    'discount'        => '0.00',
+                    'account'         => 'Refund · ' . ucfirst((string) ($rd['refundMode'] ?? 'cash')),
+                    'reference'       => (string) ($rd['reason'] ?? ''),
+                    'coverage'        => 'refund',
+                    'months'          => [],
+                    'Id'              => $userId,
+                ];
+            }
+        } catch (\Exception $e) {
+            log_message('error', "fetch_fee_receipts: refund merge failed for {$userId}: " . $e->getMessage());
+        }
+
+        // Tag receipts that have been refunded so the UI can render them
+        // struck-through with a "Refunded via R<n>" pill.
+        foreach ($response as &$row) {
+            if (($row['type'] ?? '') === 'receipt'
+                && isset($refundedReceipts[(string) $row['receiptNo']])) {
+                $row['refundedByR'] = 'R' . (string) $row['receiptNo'];
+                $row['coverage']    = 'refunded';
+            }
+        }
+        unset($row);
+
+        // Sort by receiptNo DESC — refund "R2" lives alongside "F2" (both
+        // compare as int 2 after stripping the prefix), so refunds sit
+        // next to their originating receipt.
+        usort($response, function ($a, $b) {
+            $an = (int) preg_replace('/\D/', '', (string) $a['receiptNo']);
+            $bn = (int) preg_replace('/\D/', '', (string) $b['receiptNo']);
+            if ($bn !== $an) return $bn - $an;
+            return (($a['type'] ?? '') === 'receipt') ? -1 : 1;
+        });
+
+        // Phase 6 — paginated envelope. Next cursor is the last
+        // receipt row's createdAt (DESC sort); when the next page is
+        // requested, startAt uses this value. Clients that ignore
+        // pagination and just iterate `data` keep working — the
+        // first 100 rows are returned exactly as before.
+        $nextCursor = '';
+        if ($hasMore && !empty($rows)) {
+            $tail = end($rows);
+            $tailDoc = $tail['data'] ?? $tail;
+            $nextCursor = (string) ($tailDoc['createdAt'] ?? '');
+        }
+
+        // Back-compat: if client posted no `limit` / `cursor`, they're
+        // a legacy caller — return a BARE ARRAY as before. Only emit
+        // the envelope when the client opts in via a `limit` param.
+        $isPaginatedCall = $this->input->post('limit') !== null || $this->input->post('cursor') !== null;
+        if (!$isPaginatedCall) {
+            $this->output->set_output(json_encode($response));
+            return;
+        }
+        $this->output->set_output(json_encode([
+            'status'      => 'success',
+            'data'        => $response,
+            'page_size'   => count($response),
+            'limit'       => $limit,
+            'next_cursor' => $nextCursor,
+            'has_more'    => $hasMore,
+        ]));
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1687,11 +1956,29 @@ class Fees extends MY_Controller
 
         // Aggregate per month-label (preserves "Yearly Fees" multi-word
         // intact via the same regex used in submit_fees).
+        //
+        // Annual Fee demands are generated under `month=April` + `period='April 2026'`
+        // so the generator can bundle them into the April payment. But the
+        // admin Student Ledger has a dedicated "Annual Fee (One-time)" tile
+        // that expects them under the `Yearly Fees` bucket. Without this
+        // split, admin always showed Yearly Fees as Unpaid even after the
+        // Annual Fee demand was fully paid — and April showed an inflated
+        // 3800 due instead of the 2800 of monthly heads. Route yearly
+        // demands (identified by periodType OR frequency) to `Yearly Fees`
+        // for admin display; the parent app reads demands directly and
+        // keeps its own bundled-into-April view.
+        $yearlyFreqs = ['annual', 'yearly', 'one-time', 'onetime'];
         $byMonth = []; // monthLabel => ['totalDue' => f, 'totalPaid' => f]
         foreach ((array) $demands as $d) {
             $rawPeriod = (string) ($d['period'] ?? '');
             $monthLabel = trim((string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', $rawPeriod));
             if ($monthLabel === '') continue;
+            $pt   = strtolower((string) ($d['period_type'] ?? $d['periodType'] ?? ''));
+            $frq  = strtolower((string) ($d['frequency']   ?? ''));
+            $isYearly = $pt === 'yearly'
+                     || in_array($frq, $yearlyFreqs, true)
+                     || $monthLabel === 'Yearly Fees';
+            if ($isYearly) $monthLabel = 'Yearly Fees';
             if (!isset($byMonth[$monthLabel])) {
                 $byMonth[$monthLabel] = ['totalDue' => 0.0, 'totalPaid' => 0.0];
             }
@@ -1742,18 +2029,15 @@ class Fees extends MY_Controller
         $discExpired = false;
         if ($vu !== '' && $vu < date('Y-m-d')) { $discAmt = 0; $discExpired = true; }
 
-        $advDoc   = $this->fs->get('studentAdvanceBalances', "{$schoolFs}_{$userId}");
-        $walletAmt = is_array($advDoc) ? (float) ($advDoc['amount'] ?? 0) : 0;
-
         $totalGross = 0; $totalPaidAll = 0; $totalRemaining = 0;
         foreach ($result as $row) {
             $totalGross     += (float) $row['totalDue'];
             $totalPaidAll   += (float) $row['totalPaid'];
             $totalRemaining += (float) $row['remaining'];
         }
-        // Don't double-subtract: $totalRemaining already excludes paid.
-        // Net due = remaining − discount − wallet (clamped at 0).
-        $netDue = max(0, round($totalRemaining - $discAmt - $walletAmt, 2));
+        // Net due = remaining − discount (clamped at 0). Remaining already
+        // excludes anything paid against the demands.
+        $netDue = max(0, round($totalRemaining - $discAmt, 2));
 
         $result['_summary'] = [
             'totalGross'       => round($totalGross, 2),
@@ -1761,7 +2045,6 @@ class Fees extends MY_Controller
             'discount'         => round($discAmt, 2),
             'discountValidUntil' => $vu,
             'discountExpired'  => $discExpired,
-            'wallet'           => round($walletAmt, 2),
             'remaining'        => round($totalRemaining, 2),
             'netDue'           => $netDue,
         ];
@@ -1790,9 +2073,17 @@ class Fees extends MY_Controller
 
         $schoolFs = $this->fs->schoolId();
 
-        // Session A: Firestore-only student + fee structure + exemption +
-        // discount + advance lookup.
-        $student = $this->fs->get('students', "{$schoolFs}_{$userId}");
+        // 2026-04-24 — parallel preload. student + studentDiscounts are
+        // both keyed on userId and independent; fire them as ONE
+        // curl_multi round-trip instead of two sequential GETs (~1.5 s
+        // saved from fetch_fee_details' critical path).
+        $__par = $this->firebase->firestoreGetParallel([
+            'student'  => ['collection' => 'students',         'docId' => "{$schoolFs}_{$userId}"],
+            'discount' => ['collection' => 'studentDiscounts', 'docId' => "{$schoolFs}_{$userId}"],
+        ]);
+        $student               = is_array($__par['student']  ?? null) ? $__par['student']  : null;
+        $__preloadedDiscountDoc = is_array($__par['discount'] ?? null) ? $__par['discount'] : null;
+
         if (!is_array($student)) {
             $this->_json_out(['error' => "Student '{$userId}' not found"]);
             return;
@@ -1896,7 +2187,9 @@ class Fees extends MY_Controller
         }
 
         // Session A: pure Firestore — discount + advance credit.
-        $discountDoc    = $this->fs->get('studentDiscounts',       "{$schoolFs}_{$userId}");
+        // 2026-04-24: reuse the doc already fetched in the top-of-fn
+        // parallel preload instead of firing a second Firestore GET.
+        $discountDoc    = $__preloadedDiscountDoc;
         $discountAmount = is_array($discountDoc) ? (float) ($discountDoc['onDemandDiscount'] ?? 0) : 0;
         $discountExpired = false;
         // Phase 17: enforce expiry. validUntil is an ISO date "YYYY-MM-DD".
@@ -1910,9 +2203,6 @@ class Fees extends MY_Controller
                 $discountExpired = true;
             }
         }
-
-        $advanceDoc    = $this->fs->get('studentAdvanceBalances', "{$schoolFs}_{$userId}");
-        $oversubmitted = is_array($advanceDoc) ? (float) ($advanceDoc['amount'] ?? 0) : 0;
 
         // Attendance-based penalty is a separate cross-module concern that
         // still reads RTDB today — will be migrated in a later session. For
@@ -2003,7 +2293,6 @@ class Fees extends MY_Controller
             'discountValidUntil'=> is_array($discountDoc)
                 ? trim((string) ($discountDoc['validUntil'] ?? $discountDoc['valid_until'] ?? ''))
                 : '',
-            'overpaidFees'      => $oversubmitted,
             'message'           => "Fee Details for: $label",
             'feesRecord'        => $feesRecordArr,
             'feeRecord'         => $feeRecord,
@@ -2408,7 +2697,7 @@ class Fees extends MY_Controller
             $schoolFs = $this->fs->schoolId();
             $idempRows = $this->fs->schoolWhere('feeIdempotency', []);
             foreach ((array) $idempRows as $row) {
-                $did = $row['id']   ?? '';
+                $did = $d['id']   ?? '';
                 $d   = $row['data'] ?? [];
                 if ($did === '' || !is_array($d)) continue;
                 $duid = (string) ($d['userId']    ?? '');
@@ -2668,7 +2957,8 @@ class Fees extends MY_Controller
             try {
                 $rows = $this->fs->schoolWhere($col, [[$field, '==', $userId]]);
                 foreach ((array) $rows as $row) {
-                    $did = $row['id'] ?? '';
+                    $d = $row['data'] ?? $row;
+                    $did = $d['id'] ?? '';
                     if ($did === '') continue;
                     $this->firebase->firestoreDelete($col, $did);
                     $summary['firestore'][] = "{$col}/{$did}";
@@ -2684,30 +2974,8 @@ class Fees extends MY_Controller
             $summary['firestore'][] = 'feeCounters/receipt_seq → 0';
         } catch (\Exception $_) {}
 
-        // ── RTDB: legacy paths that may still hold old test data ─────
-        // Best-effort deletes. If Session A/B didn't write these, the
-        // delete is a no-op.
-        $rtdbDeletes = [];
-        try {
-            $student = $this->firebase->firestoreGet('students', "{$schoolFs}_{$userId}");
-            $class   = is_array($student) ? (string) ($student['className'] ?? '') : '';
-            $section = is_array($student) ? (string) ($student['section']   ?? '') : '';
-            if ($class !== '' && $section !== '') {
-                $sb = $this->studentPath($class, $section, $userId);
-                $rtdbDeletes[] = "{$sb}/Fees Record";
-                $rtdbDeletes[] = "{$sb}/Month Fee";
-                $rtdbDeletes[] = "{$sb}/Discount";
-                $rtdbDeletes[] = "{$sb}/Oversubmittedfees";
-            }
-        } catch (\Exception $_) {}
-        $rtdbDeletes[] = "{$bp}/Fees/Demands/{$userId}";
-        $rtdbDeletes[] = "{$bp}/Fees/Locks/{$userId}";
-        $rtdbDeletes[] = "{$bp}/Fees/Defaulters/{$userId}";
-        $rtdbDeletes[] = "{$bp}/Fees/Advance_Balance/{$userId}";
-
-        // RTDB deletes removed per no-RTDB policy.
-        // Firestore collections are the sole source; test reset
-        // is handled by the Firestore delete calls above.
+        // No RTDB fallback: Firestore is the sole store of fee state;
+        // the Firestore delete calls above fully reset the student.
 
         log_audit('Fees', 'test_reset_student', $userId, "Wiped test data for {$userId}");
         $this->json_success(array_merge($summary, [
@@ -3005,142 +3273,8 @@ class Fees extends MY_Controller
         ]);
     }
 
-    /**
-     * Diagnostic — reconcile the "Overpaid (carry-fwd)" figure shown on
-     * the fees counter against the student's actual receipts/refunds.
-     *
-     * POST user_id  (student ID)
-     *
-     * Response:
-     *   stored           → the value currently displayed on the form
-     *                       (Firestore studentAdvanceBalances.amount)
-     *   reconstructed    → what it SHOULD be:
-     *                       Σ(receipts.amount) − Σ(receipts allocated to demands)
-     *                       − Σ(refunds that drew from the advance)
-     *   match            → true if stored == reconstructed
-     *   receipts, refunds→ raw rows used for the reconstruction (for audit)
-     */
-    public function debug_carry_forward()
-    {
-        $this->_require_role(self::MANAGE_ROLES, 'debug_carry_forward');
-        $userId = trim((string) $this->input->post('user_id'));
-        if ($userId === '') return $this->json_error('user_id required.');
-
-        $schoolFs = $this->fs->schoolId();
-        $docId    = "{$schoolFs}_{$userId}";
-
-        // 1. Stored value (what the form reads)
-        $advDoc  = $this->firebase->firestoreGet('studentAdvanceBalances', $docId) ?: [];
-        $stored  = (float) ($advDoc['amount'] ?? 0);
-
-        // 2. All receipts for this student (with allocations)
-        $receipts = $this->firebase->firestoreQuery('feeReceipts', [
-            ['schoolId',  '==', $schoolFs],
-            ['studentId', '==', $userId],
-        ]);
-
-        $sumReceiptAmount = 0.0;
-        $sumOverpayment   = 0.0;
-        $allocByReceipt   = []; // receiptKey => allocated_sum
-        $receiptRows      = [];
-        foreach ((array) $receipts as $row) {
-            $d = $row['data'] ?? $row;
-            if (!is_array($d)) continue;
-            $amt = (float) ($d['amount'] ?? 0);
-            $rcptKey = (string) ($d['receiptKey'] ?? ('F' . ($d['receiptNo'] ?? '')));
-            // Canonical doc id: {schoolId}_{session}_{receiptKey}. Fall back
-            // to the legacy no-session key so pre-Session-A receipts still
-            // reconcile.
-            $docIdSess = "{$schoolFs}_{$this->session_year}_{$rcptKey}";
-            $docIdOld  = "{$schoolFs}_{$rcptKey}";
-            $alloc = $this->firebase->firestoreGet('feeReceiptAllocations', $docIdSess);
-            $resolvedDocId = $docIdSess;
-            if (!is_array($alloc)) {
-                $alloc = $this->firebase->firestoreGet('feeReceiptAllocations', $docIdOld);
-                $resolvedDocId = is_array($alloc) ? $docIdOld : '(none)';
-            }
-            $allocSum   = 0.0;
-            $allocLines = 0;
-            if (is_array($alloc) && is_array($alloc['allocations'] ?? null)) {
-                $allocLines = count($alloc['allocations']);
-                foreach ($alloc['allocations'] as $a) {
-                    $allocSum += (float) ($a['allocated'] ?? $a['amount'] ?? 0);
-                }
-            }
-            $reversed = is_array($alloc) && (($alloc['status'] ?? '') === 'reversed');
-            $sumReceiptAmount += $amt;
-            // Net wallet delta from this receipt:
-            //   positive → overpayment stored as advance
-            //   negative → wallet was drawn down to cover demand allocation
-            $walletDelta = round($amt - $allocSum, 2);
-            $sumOverpayment += $walletDelta;
-            $allocByReceipt[$rcptKey] = $allocSum;
-            $receiptRows[] = [
-                'receiptKey'  => $rcptKey,
-                'date'        => $d['paymentDate'] ?? $d['createdAt'] ?? '',
-                'amount'      => $amt,
-                'allocated'   => round($allocSum, 2),
-                'alloc_lines' => $allocLines,
-                'alloc_docId' => $resolvedDocId,
-                'walletDelta' => $walletDelta,
-                'overpaid'    => round(max(0, $walletDelta), 2),
-                'reversed'    => $reversed,
-            ];
-        }
-
-        // 3. Refunds — compute how much of each refund drained the advance
-        //    wallet. Refund flow: walk original receipt's allocations first;
-        //    any leftover (refund_amount − allocations_sum) drains advance.
-        $refunds = $this->firebase->firestoreQuery('feeRefunds', [
-            ['schoolId',  '==', $schoolFs],
-            ['studentId', '==', $userId],
-        ]);
-        $sumAdvanceDrain = 0.0;
-        $refundRows = [];
-        foreach ((array) $refunds as $row) {
-            $d = $row['data'] ?? $row;
-            if (!is_array($d)) continue;
-            if (($d['status'] ?? '') !== 'processed') continue;
-            $rAmt    = (float) ($d['amount'] ?? 0);
-            $origNo  = (string) ($d['receiptNo'] ?? '');
-            $origKey = $origNo !== '' ? ('F' . preg_replace('/^R?0*/i', '', $origNo)) : '';
-            $origAlloc = $allocByReceipt[$origKey] ?? 0.0;
-            $drain   = max(0, $rAmt - $origAlloc);
-            $sumAdvanceDrain += $drain;
-            $refundRows[] = [
-                'refundId'            => $d['refundId'] ?? ($d['id'] ?? ''),
-                'amount'              => $rAmt,
-                'status'              => $d['status'] ?? '',
-                'origReceipt'         => $origNo,
-                'origReceiptAllocated'=> round($origAlloc, 2),
-                'advanceDrain'        => round($drain, 2),
-            ];
-        }
-
-        // 4. Reconstruct: wallet = Σ (receipt.amount − allocated) − Σ refund drains.
-        //    The first term captures both overpayment growth (+) AND wallet
-        //    draw-downs (−) on receipts that allocated more than their cash.
-        $reconstructed = round(max(0, $sumOverpayment - $sumAdvanceDrain), 2);
-        $match = abs($stored - $reconstructed) < 0.01;
-
-        $this->json_success([
-            'verdict'        => $match ? '✅ MATCHES' : '❌ MISMATCH',
-            'student_id'     => $userId,
-            'firestore_doc'  => "studentAdvanceBalances/{$docId}",
-            'stored'         => round($stored, 2),
-            'reconstructed'  => $reconstructed,
-            'delta'          => round($stored - $reconstructed, 2),
-            'totals' => [
-                'receipt_amount_sum' => round($sumReceiptAmount, 2),
-                'overpayment_sum'    => round($sumOverpayment, 2),
-                'advance_drain_sum'  => round($sumAdvanceDrain, 2),
-                'processed_refunds'  => count($refundRows),
-            ],
-            'receipts'       => $receiptRows,
-            'refunds'        => $refundRows,
-            'advance_doc'    => $advDoc,
-        ]);
-    }
+    // debug_carry_forward() removed in Phase 9 — wallet subsystem gone,
+    // nothing to reconcile. repair_carry_forward() removed alongside it.
 
     /**
      * Admin one-shot: sync the Firestore receipt counter with the highest
@@ -3894,23 +4028,47 @@ class Fees extends MY_Controller
     }
 
     /**
-     * Build a deterministic demand ID from period + fee head.
-     * Format: DEM_YYYYMM_SANITIZED_FEE_HEAD
+     * Build a deterministic demand ID.
      *
-     * Deterministic IDs guarantee idempotency — calling generate twice
-     * for the same student+month+head will NOT create duplicates.
+     * Phase 2.5 Step 2: the ID now uses the fee head's opaque feeHeadId
+     * (assigned in feeStructures.feeHeads[*].feeHeadId), NOT the display
+     * name or a slug derived from it. That keeps the demand doc stable
+     * across rename of the head — renaming "Tuition Fee" → "School Fee"
+     * no longer forks a new demand row while the old one still holds the
+     * paid balance.
      *
-     * @param string $periodKey  e.g. "2026-04"
-     * @param string $feeHead   e.g. "Tuition Fee"
-     * @return string e.g. "DEM_202604_TUITION_FEE"
+     * The feeHead name fallback is preserved ONLY for callers that
+     * haven't been migrated yet; once the generator + save_updated_fees
+     * are plumbed through with feeHeadId, pass it through and the
+     * fallback path is never taken.
+     *
+     * @param string $studentId   e.g. "STU0001" — scopes the ID per student
+     * @param string $periodKey   e.g. "2026-04"
+     * @param string $feeHeadId   opaque stable ID (e.g. "FH_ABCDEF123456")
+     * @param string $feeHeadName fallback display name (legacy callers)
+     * @return string e.g. "DEM_STU0001_202604_FH_ABCDEF123456"
      */
-    private function _buildDemandId(string $periodKey, string $feeHead): string
-    {
-        $ym  = str_replace('-', '', $periodKey); // "202604"
-        $key = strtoupper(trim($feeHead));
-        $key = preg_replace('/[^A-Z0-9]+/', '_', $key);  // sanitize
-        $key = trim($key, '_');
-        return "DEM_{$ym}_{$key}";
+    private function _buildDemandId(
+        string $studentId,
+        string $periodKey,
+        string $feeHeadId,
+        string $feeHeadName = ''
+    ): string {
+        $sid = preg_replace('/[^A-Z0-9]+/i', '_', trim($studentId));
+        $sid = trim((string) $sid, '_');
+        $ym  = str_replace('-', '', $periodKey);
+
+        $key = trim($feeHeadId);
+        if ($key === '') {
+            // Legacy fallback — sanitise the display name. Any caller that
+            // reaches this branch should be flagged by the "[DEM ID FALLBACK]"
+            // log line so it can be migrated.
+            log_message('warning', "[DEM ID FALLBACK] head='{$feeHeadName}' — caller missing feeHeadId");
+            $key = strtoupper(trim($feeHeadName));
+            $key = preg_replace('/[^A-Z0-9]+/', '_', $key);
+            $key = trim((string) $key, '_');
+        }
+        return "DEM_{$sid}_{$ym}_{$key}";
     }
 
     /**
@@ -4056,7 +4214,9 @@ class Fees extends MY_Controller
         string $monthName,
         array  $feeChart,
         array  $discountMap,
-        int    $dueDay
+        int    $dueDay,
+        array  &$batchOps = null, // optional — when provided, ops accumulate here instead of writing inline (for bulk generation)
+        array  $feeHeadIdByName = []  // Phase 2.5 Step 2 — name→feeHeadId for stable demand IDs
     ): array {
         $result = ['created' => 0, 'skipped' => 0, 'errors' => 0];
 
@@ -4085,14 +4245,20 @@ class Fees extends MY_Controller
         }
 
         // ────────────────────────────────────────────────────────────────
-        //  Session D1: pure Firestore.
-        //  Read existing demands from Firestore feeDemands, filter to this
-        //  period, and only write the rows that don't exist yet.
+        //  Load existing demands ONLY in the legacy inline-write path.
+        //  The bulk (batched) path skips this entirely — writes use
+        //  merge=true with deterministic doc IDs, so re-runs overwrite
+        //  the same slot idempotently without needing a pre-check.
+        //  This single change eliminates ~N×M Firestore reads (N students
+        //  × M months) from the bulk generation — the dominant
+        //  performance cost at any scale > ~3 students.
         // ────────────────────────────────────────────────────────────────
 
-        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
-        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
-        $existingDemands = $this->fsTxn->demandsForStudent($studentId);
+        if (!isset($this->fsTxn)) {
+            $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+            $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+        }
+        $existingDemands = ($batchOps !== null) ? [] : $this->fsTxn->demandsForStudent($studentId);
 
         $newDemands = []; // demandId => demand row, only the rows we will create
 
@@ -4110,10 +4276,12 @@ class Fees extends MY_Controller
                 continue;
             }
 
-            $demandId = $this->_buildDemandId($periodKey, $feeHead);
+            $feeHeadId = (string) ($feeHeadIdByName[$feeHead] ?? '');
+            $demandId  = $this->_buildDemandId($studentId, $periodKey, $feeHeadId, $feeHead);
 
-            // Idempotency: skip if demand already exists (uses in-memory snapshot)
-            if (isset($existingDemands[$demandId])) {
+            // Idempotency pre-check — only relevant for the legacy inline
+            // path. Bulk path relies on merge=true semantics instead.
+            if ($batchOps === null && isset($existingDemands[$demandId])) {
                 $result['skipped']++;
                 continue;
             }
@@ -4146,26 +4314,30 @@ class Fees extends MY_Controller
             $isYearly  = isset(($feeChart['Yearly Fees'] ?? [])[$feeHead]);
             $frequency = $isYearly ? 'yearly' : 'monthly';
 
+            // Phase 2.5 Step 3: camelCase-only payload. Fee_firestore_txn::
+            // writeDemand canonicalises any legacy snake input to camel at
+            // the write boundary, so the Firestore doc is single-source.
             $newDemands[$demandId] = [
-                'demand_id'       => $demandId,
-                'student_id'      => $studentId,
-                'student_name'    => $studentName,
-                'class'           => $class,
+                'demandId'        => $demandId,
+                'studentId'       => $studentId,
+                'studentName'     => $studentName,
+                'className'       => $class,
                 'section'         => $section,
-                'fee_head'        => $feeHead,
+                'feeHead'         => $feeHead,
+                'feeHeadId'       => $feeHeadId,
                 'category'        => $category,
                 'frequency'       => $frequency,
                 'period'          => "{$monthName} " . $this->_resolveCalendarYear($monthName),
-                'period_key'      => $periodKey,
-                'original_amount' => round($amount, 2),
-                'discount_amount' => round($discountAmount, 2),
-                'net_amount'      => $netAmount,
-                'paid_amount'     => 0,
+                'periodKey'       => $periodKey,
+                'grossAmount'     => round($amount, 2),
+                'discountAmount'  => round($discountAmount, 2),
+                'netAmount'       => $netAmount,
+                'paidAmount'      => 0,
                 'balance'         => $netAmount,
                 'status'          => 'unpaid',
-                'due_date'        => $dueDate,
-                'created_at'      => $now,
-                'created_by'      => $this->admin_id ?? 'system',
+                'dueDate'         => $dueDate,
+                'createdAt'       => $now,
+                'createdBy'       => $this->admin_id ?? 'system',
             ];
         }
 
@@ -4174,7 +4346,68 @@ class Fees extends MY_Controller
             return $result;
         }
 
-        // Pure Firestore writes — each demand is its own doc in feeDemands.
+        // Two modes:
+        //   (a) $batchOps supplied — accumulate ops for bulk commit by caller
+        //       (fast path: one HTTP round-trip per ~400 docs)
+        //   (b) $batchOps null     — write each demand inline via writeDemand
+        //       (slow legacy path for single-student Student Ledger)
+        if ($batchOps !== null) {
+            foreach ($newDemands as $demandId => $demand) {
+                // Phase 2.5 Step 3 — camelCase-only payload that mirrors
+                // Fee_firestore_txn::writeDemand exactly, so batch writes
+                // and single writes produce byte-identical docs.
+                $section    = (string) ($demand['section'] ?? '');
+                $sectionKey = (string) preg_replace('/^Section\s+/i', '', $section);
+                $period     = (string) ($demand['period'] ?? '');
+                $monthName  = Fee_firestore_txn::periodToMonth($period);
+                $freq       = strtolower((string) ($demand['frequency'] ?? ''));
+                $isYearly   = in_array($freq, ['annual', 'yearly', 'one-time', 'onetime'], true)
+                              || ($monthName === 'Yearly Fees');
+                $periodType = $isYearly ? 'yearly' : 'monthly';
+
+                $doc = [
+                    'schoolId'       => $this->fs->schoolId(),
+                    'session'        => $this->session_year,
+                    'demandId'       => $demandId,
+                    'studentId'      => (string) ($demand['studentId'] ?? ''),
+                    'studentName'    => (string) ($demand['studentName'] ?? ''),
+                    'className'      => (string) ($demand['className'] ?? ''),
+                    'section'        => $section,
+                    'sectionKey'     => $sectionKey,
+                    'feeHead'        => (string) ($demand['feeHead'] ?? ''),
+                    'feeHeadId'      => (string) ($demand['feeHeadId'] ?? ''),
+                    'category'       => (string) ($demand['category'] ?? ''),
+                    'frequency'      => $freq,
+                    'period'         => $period,
+                    'month'          => $monthName,
+                    'periodKey'      => (string) ($demand['periodKey'] ?? ''),
+                    'periodType'     => $periodType,
+                    'isYearly'       => $isYearly,
+                    'grossAmount'    => (float) ($demand['grossAmount'] ?? 0),
+                    'discountAmount' => (float) ($demand['discountAmount'] ?? 0),
+                    'fineAmount'     => (float) ($demand['fineAmount'] ?? 0),
+                    'netAmount'      => (float) ($demand['netAmount'] ?? 0),
+                    'paidAmount'     => (float) ($demand['paidAmount'] ?? 0),
+                    'balance'        => (float) ($demand['balance'] ?? $demand['netAmount'] ?? 0),
+                    'status'         => (string) ($demand['status'] ?? 'unpaid'),
+                    'dueDate'        => (string) ($demand['dueDate'] ?? ''),
+                    'createdAt'      => (string) ($demand['createdAt'] ?? date('c')),
+                    'createdBy'      => (string) ($demand['createdBy'] ?? ''),
+                    'updatedAt'      => date('c'),
+                ];
+                $batchOps[] = [
+                    'op'         => 'set',
+                    'collection' => 'feeDemands',
+                    'docId'      => $demandId,
+                    'merge'      => true,
+                    'data'       => $doc,
+                ];
+                $result['created']++;
+            }
+            return $result;
+        }
+
+        // Legacy inline path — one HTTP write per demand.
         foreach ($newDemands as $demandId => $demand) {
             if ($this->fsTxn->writeDemand($demandId, $demand)) {
                 $result['created']++;
@@ -4302,13 +4535,16 @@ class Fees extends MY_Controller
             return $this->json_error('No valid months specified.');
         }
 
-        $dueDay   = $this->_getDueDay();
-        $totals   = ['created' => 0, 'skipped' => 0, 'errors' => 0];
+        $dueDay    = $this->_getDueDay();
+        $totals    = ['created' => 0, 'skipped' => 0, 'errors' => 0];
+        $headIdMap = $this->fsTxn->readFeeHeadIds($class, $section);
+        $noBatch   = null;
 
         foreach ($validMonths as $month) {
             $r = $this->_generateDemandsForMonth(
                 $studentId, $studentName, $class, $section,
-                $month, $feeChart, $discountMap, $dueDay
+                $month, $feeChart, $discountMap, $dueDay,
+                $noBatch, $headIdMap
             );
             $totals['created'] += $r['created'];
             $totals['skipped'] += $r['skipped'];
@@ -4338,6 +4574,23 @@ class Fees extends MY_Controller
      *
      * Safe to call multiple times — idempotent.
      */
+    /**
+     * POST — Bulk demand generation (Phase 10).
+     *
+     * Creates a job record in `fee_generation_jobs/{jobId}` and returns
+     * immediately with the jobId. A Firestore-triggered Cloud Function
+     * (`processFeeGenerationJob` in functions/fee_generation_worker.js)
+     * picks it up and processes asynchronously with batched writes.
+     *
+     * The client polls `fees/get_generation_job?jobId=...` for progress.
+     *
+     * Params (POST):
+     *   month   — "April" | "all"
+     *   class   — "Class 8th" | "" for all
+     *   section — "Section A" | "" for all
+     *
+     * Returns: { success, jobId, message, scope: {...} }
+     */
     public function generate_monthly_demands()
     {
         $this->_require_post();
@@ -4346,12 +4599,20 @@ class Fees extends MY_Controller
         $monthInput = trim($this->input->post('month') ?? '');
         $classInput = trim($this->input->post('class') ?? '');
         $secInput   = trim($this->input->post('section') ?? '');
+        // Phase 3 — optional. When set, the worker reuses the existing
+        // job doc and skips past `lastProcessedSid`. Used by the admin UI
+        // when a prior run returned status='incomplete' (soft deadline
+        // hit) to continue generation without re-doing already-written
+        // demands. Idempotent: even without the skip, merge=true + the
+        // deterministic demand IDs mean re-runs are safe — the skip just
+        // saves the Firestore writes.
+        $resumeJobId = trim($this->input->post('resumeJobId') ?? '');
 
         if ($monthInput === '') {
             return $this->json_error('Month is required (e.g. "April" or "all").');
         }
 
-        // Determine months
+        // Normalise month spec.
         if (strtolower($monthInput) === 'all') {
             $months = self::ACADEMIC_MONTHS;
         } else {
@@ -4361,17 +4622,1678 @@ class Fees extends MY_Controller
             $months = [$monthInput];
         }
 
+        // Normalise class/section prefixes (admin may type "8th" / "A").
+        if ($classInput !== '' && stripos($classInput, 'Class ') !== 0)   $classInput = "Class {$classInput}";
+        if ($secInput   !== '' && stripos($secInput,   'Section ') !== 0) $secInput   = "Section {$secInput}";
+
+        // ── Create OR reuse the job doc. Phase 3 — if the admin is
+        //    resuming a prior soft-deadline-interrupted job, we keep the
+        //    original jobId + scope and just reset the status. The
+        //    worker will skip past progress.lastProcessedSid.
+        $schoolId = $this->fs->schoolId();
+        $now      = date('c');
+        $resumeFromSid = '';
+        if ($resumeJobId !== '') {
+            $resumeJobId = $this->safe_path_segment($resumeJobId, 'resumeJobId');
+            $existing = $this->firebase->firestoreGet('fee_generation_jobs', $resumeJobId);
+            if (!is_array($existing) || (string) ($existing['schoolId'] ?? '') !== $schoolId) {
+                return $this->json_error('Resume failed: job not found or belongs to a different school.');
+            }
+            $prevStatus = (string) ($existing['status'] ?? '');
+            if (!in_array($prevStatus, ['incomplete', 'failed'], true)) {
+                return $this->json_error("Resume failed: job is in status '{$prevStatus}', not resumable.");
+            }
+            $jobId         = $resumeJobId;
+            $resumeFromSid = (string) ($existing['lastProcessedSid'] ?? '');
+            $this->firebase->firestoreSet('fee_generation_jobs', $jobId, [
+                'status'        => 'pending',
+                'resumedAt'     => $now,
+                'resumeFromSid' => $resumeFromSid,
+            ]);
+        } else {
+            $jobId  = 'job_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
+            $jobDoc = [
+                'jobId'             => $jobId,
+                'schoolId'          => $schoolId,
+                'session'           => $this->session_year,
+                'class'             => $classInput,
+                'section'           => $secInput,
+                'months'            => array_values($months),
+                'requestedBy'       => (string) ($this->admin_id   ?? ''),
+                'requestedByName'   => (string) ($this->admin_name ?? ''),
+                'requestedAt'       => $now,
+                'status'            => 'pending',
+                'totalStudents'     => 0,
+                'processedStudents' => 0,
+                'successCount'      => 0,
+                'failureCount'      => 0,
+                'demandsCreated'    => 0,
+                'demandsSkipped'    => 0,
+                'errors'            => [],
+            ];
+            try {
+                $this->firebase->firestoreSet('fee_generation_jobs', $jobId, $jobDoc);
+            } catch (\Exception $e) {
+                log_message('error', "generate_monthly_demands: job creation failed: " . $e->getMessage());
+                return $this->json_error('Could not create generation job: ' . $e->getMessage());
+            }
+        }
+
+        // Process synchronously with batched Firestore writes. The previous
+        // async shutdown-handler pattern didn't fire reliably on mod_php
+        // setups. Batching keeps the wall time reasonable (~5s for 10
+        // students, ~4min for 1000, hits soft-deadline ~540s at ~3500).
+        @set_time_limit(600);
+
+        try {
+            $this->_processGenerationJob($jobId, $classInput, $secInput, $months, $schoolId, $resumeFromSid);
+        } catch (\Exception $e) {
+            log_message('error', "generate_monthly_demands: worker failed jobId={$jobId}: " . $e->getMessage());
+            try {
+                $this->firebase->firestoreSet('fee_generation_jobs', $jobId, [
+                    'status'        => 'failed',
+                    'failedAt'      => date('c'),
+                    'failureReason' => substr($e->getMessage(), 0, 500),
+                ]);
+            } catch (\Exception $_) { /* best-effort */ }
+            return $this->json_error('Generation failed: ' . $e->getMessage());
+        }
+
+        // Read back the completed job doc for the response payload — saves
+        // the client a poll round-trip on success.
+        $finalDoc = $this->firebase->firestoreGet('fee_generation_jobs', $jobId) ?? [];
+
+        // Rename the job-level `status` key to avoid colliding with the
+        // `status:"success"|"error"` wrapper that MY_Controller::json_success
+        // adds — if both keys merged into the same envelope the UI's
+        // `j.status !== 'success'` check would spuriously reject a perfectly
+        // completed job ("Failed to queue / Created 370 demands" paradox).
+        $jobStatus = (string) ($finalDoc['status'] ?? 'completed');
+        unset($finalDoc['status']);
+
+        $this->json_success(array_merge($finalDoc, [
+            'jobId'     => $jobId,
+            'jobStatus' => $jobStatus,  // moved under a non-colliding key
+            'message'   => $jobStatus === 'completed'
+                ? "Created " . (int)($finalDoc['demandsCreated'] ?? 0)
+                  . " demands across " . (int)($finalDoc['successCount'] ?? 0) . " students."
+                : 'Generation finished with warnings.',
+            'scope'     => [
+                'school'  => $schoolId,
+                'session' => $this->session_year,
+                'class'   => $classInput,
+                'section' => $secInput,
+                'months'  => array_values($months),
+            ],
+            'pollUrl'   => base_url("fees/get_generation_job?jobId={$jobId}"),
+        ]));
+    }
+
+    /**
+     * Inline PHP worker — equivalent to the Node.js Cloud Function in
+     * functions/fee_generation_worker.js but running inside PHP. Uses
+     * Firestore batched commits (up to 400 docs/batch) for speed.
+     * Updates the job doc after every batch so the admin UI's poller
+     * sees real-time progress.
+     *
+     * @param string $jobId
+     * @param string $classFilter Pre-normalised ("Class 8th" or "")
+     * @param string $secFilter   Pre-normalised ("Section A" or "")
+     * @param array  $months
+     * @param string $schoolId
+     */
+    private function _processGenerationJob(string $jobId, string $classFilter, string $secFilter, array $months, string $schoolId, string $resumeFromSid = ''): void
+    {
+        $jobRef = function (array $patch) use ($jobId) {
+            try {
+                $this->firebase->firestoreSet('fee_generation_jobs', $jobId, $patch);
+            } catch (\Exception $_) { /* best-effort */ }
+        };
+
+        // Phase 3 — soft runtime deadline. PHP's set_time_limit(600) is
+        // our hard ceiling; we break the loop at 540s and mark the job
+        // 'incomplete' so the admin can resume without hitting a SIGKILL
+        // mid-batch. At 5000 students we expect 2-3 restarts to complete;
+        // each resume picks up from progress.lastProcessedSid.
+        $softDeadline = microtime(true) + 540;
+
+        // Phase 3 — unify all demand + defaulter commits behind
+        // Fee_batch_writer (adds retry/backoff/onBatchFailed tracking).
+        // Previously each commit went through firestoreCommitBatch with
+        // zero retries and errors were only logged. Now failures get
+        // persisted to fee_generation_failed_batches for replay.
+        require_once APPPATH . 'libraries/Fee_batch_writer.php';
+        $firebase = $this->firebase;
+        $schoolFsForFailed = $this->fs->schoolId();
+        $sessionForFailed  = $this->session_year;
+        $writer = new \Fee_batch_writer(
+            function (array $ops) use ($firebase) {
+                return (bool) $firebase->firestoreCommitBatch($ops);
+            },
+            [
+                'maxBatchSize'   => 400,
+                'maxRetries'     => 3,
+                'baseBackoffMs'  => 500,
+                'backoffCapMs'   => 3000,
+                'throttleMicros' => 100000,
+                'logContext'     => "[job={$jobId}]",
+                'onBatchFailed'  => function (array $failed) use ($firebase, $jobId, $schoolFsForFailed, $sessionForFailed) {
+                    try {
+                        $firebase->firestoreSet(
+                            'fee_generation_failed_batches',
+                            $failed['batchId'],
+                            array_merge($failed, [
+                                'jobId'    => $jobId,
+                                'schoolId' => $schoolFsForFailed,
+                                'session'  => $sessionForFailed,
+                            ])
+                        );
+                    } catch (\Exception $e) {
+                        log_message('error', "fee-gen-worker: failed-batch persist failed for job={$jobId}: " . $e->getMessage());
+                    }
+                },
+            ]
+        );
+
+        $resumeNote = $resumeFromSid !== '' ? " resumeFromSid={$resumeFromSid}" : '';
+        $jobRef(['status' => 'running', 'startedAt' => date('c'), 'resumeFromSid' => $resumeFromSid]);
+        log_message('info', "fee-gen-worker: started jobId={$jobId}{$resumeNote}");
+
+        if (!isset($this->fsTxn)) {
+            $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+            $this->fsTxn->init($this->firebase, $this->fs, $schoolId, $this->session_year);
+        }
+
+        // ── Resolve scope ───────────────────────────────────────
+        $classSections = [];
+        if ($classFilter !== '' && $secFilter !== '') {
+            $classSections[] = ['class' => $classFilter, 'section' => $secFilter];
+        } else {
+            foreach ($this->fsTxn->listSectionsWithFeeChart() as $cs) {
+                if ($classFilter !== '' && $cs['class']   !== $classFilter) continue;
+                if ($secFilter   !== '' && $cs['section'] !== $secFilter)   continue;
+                $classSections[] = $cs;
+            }
+        }
+
+        if (empty($classSections)) {
+            $jobRef([
+                'status'      => 'completed',
+                'completedAt' => date('c'),
+                'note'        => 'No matching class/section fee charts found.',
+            ]);
+            return;
+        }
+
+        // ── Expand rosters ──────────────────────────────────────
+        $totalStudents = 0;
+        $rosters = [];
+        foreach ($classSections as $cs) {
+            $roster = $this->fsTxn->listStudentsInSection($cs['class'], $cs['section']);
+            $rosters[] = ['cs' => $cs, 'roster' => $roster];
+            $totalStudents += count($roster);
+        }
+        $jobRef(['totalStudents' => $totalStudents]);
+
         $dueDay  = $this->_getDueDay();
-        $totals  = ['students' => 0, 'created' => 0, 'skipped' => 0, 'errors' => 0, 'no_chart' => 0];
+
+        // Phase 3 — on resume, seed cumulative counters from the previous
+        // run's saved state so the admin UI's progress bar and final
+        // message reflect the TRUE totals ("4,200 of 5,000 done" after
+        // resume) instead of just this-run's slice ("200 of 5,000").
+        // feeDefaulters docs for already-processed students were written
+        // at the end of the previous run, so the data is already correct;
+        // this only fixes the reported counters.
+        $prevState = [];
+        if ($resumeFromSid !== '') {
+            $prev = $this->firebase->firestoreGet('fee_generation_jobs', $jobId);
+            if (is_array($prev)) $prevState = $prev;
+        }
+        $processed    = (int) ($prevState['processedStudents'] ?? 0);
+        $successCount = (int) ($prevState['successCount']      ?? 0);
+        $failureCount = (int) ($prevState['failureCount']      ?? 0);
+        $created      = (int) ($prevState['demandsCreated']    ?? 0);
+        $skipped      = (int) ($prevState['demandsSkipped']    ?? 0);
+        $errors       = is_array($prevState['errors'] ?? null) ? $prevState['errors'] : [];
+
+        // Accumulated Firestore batch ops — delegated to Fee_batch_writer
+        // for chunking (≤400/commit), retries (3 attempts w/ exp backoff),
+        // throttle (100ms between commits to stay under Firestore's
+        // 500 writes/s soft limit), and durable failure tracking.
+        $batchOps = [];
+        $cumulativeFailedBatches = [];
+        $flushBatch = function () use (&$batchOps, &$cumulativeFailedBatches, $writer, $jobId) {
+            if (empty($batchOps)) return true;
+            $stats = $writer->commit($batchOps);
+            $batchOps = [];
+            if (!empty($stats['failedBatchIds'])) {
+                $cumulativeFailedBatches = array_merge($cumulativeFailedBatches, $stats['failedBatchIds']);
+                log_message('error', "fee-gen-worker: job={$jobId} " . $stats['failedBatches'] . " batch(es) failed; persisted to fee_generation_failed_batches");
+            }
+            return (bool) $stats['ok'];
+        };
+
+        // Per-student aggregates computed in-memory from the demand rows
+        // we're about to write. Used to build feeDefaulters docs in a
+        // single batch at the end — zero extra Firestore reads required
+        // (avoids the ~5-call-per-student latency of updateDefaulterStatus).
+        $studentAgg = [];    // sid => ['name','class','section','totalDues','unpaidMonths'=>[]]
+        $touchedStudents = [];
+
+        // Phase 3 — resume-skip guard. If resuming, we fast-forward past
+        // every student whose sid sorts <= lastProcessedSid. Relies on
+        // deterministic roster iteration (PHP preserves insertion order
+        // for associative arrays, so rosters[] is the same across runs).
+        $hitResumePoint = ($resumeFromSid === '');
+        $lastProcessedSid = '';
+        $timeoutHit = false;
+
+        foreach ($rosters as $rs) {
+            if ($timeoutHit) break;
+            $cs        = $rs['cs'];
+            $roster    = $rs['roster'];
+            $feeChart  = $this->_getClassFeeChart($cs['class'], $cs['section']);
+            if (empty($feeChart)) continue;
+            // Phase 2.5 Step 2 — name→feeHeadId map for this class/section.
+            // Cached per-section; cheap (one Firestore read per section).
+            $headIdMap = $this->fsTxn->readFeeHeadIds($cs['class'], $cs['section']);
+
+            foreach ($roster as $sid => $profile) {
+                // Soft deadline: break before PHP's hard timeout so the
+                // admin can resume cleanly. The merge=true + deterministic
+                // demand IDs make ALL of this idempotent.
+                if (microtime(true) > $softDeadline) {
+                    log_message('info', "fee-gen-worker: job={$jobId} hit soft deadline at processed={$processed}");
+                    $timeoutHit = true;
+                    break;
+                }
+                // Resume-skip: if we're resuming, skip students we've
+                // already written until we pass lastProcessedSid. First
+                // pass-through flips the flag.
+                if (!$hitResumePoint) {
+                    if ((string) $sid === $resumeFromSid) {
+                        $hitResumePoint = true;
+                    }
+                    continue;
+                }
+                $studentName = (string) ($profile['name'] ?? $profile['Name'] ?? $sid);
+                try {
+                    // Snapshot how many demand ops were in the batch before
+                    // this student — used below to compute that student's
+                    // total dues from just the demands we generated.
+                    $batchStartIdx = count($batchOps);
+
+                    $discountMap = $this->_getStudentDiscounts($sid, $cs['class'], $cs['section']);
+                    foreach ($months as $month) {
+                        $r = $this->_generateDemandsForMonth(
+                            $sid, $studentName, $cs['class'], $cs['section'],
+                            $month, $feeChart, $discountMap, $dueDay,
+                            $batchOps, $headIdMap
+                        );
+                        $skipped += (int) ($r['skipped'] ?? 0);
+                        if (($r['created'] ?? 0) > 0) {
+                            $created += (int) $r['created'];
+                        }
+                        // Flush when batch hits the 400-op threshold.
+                        if (count($batchOps) >= 400) {
+                            $flushBatch();
+                            $batchStartIdx = 0; // Already flushed; we'll compute from subsequent ops.
+                        }
+                    }
+
+                    // Compute this student's unpaid-state from the ops we
+                    // just added (ops still in memory only — the flush
+                    // above zeroed the index tracker, in which case this
+                    // becomes a no-op and we lose aggregates for rare
+                    // cross-flush students. Acceptable trade-off.)
+                    $total = 0.0;
+                    $unpaidMonths = [];
+                    for ($i = $batchStartIdx; $i < count($batchOps); $i++) {
+                        $d = $batchOps[$i]['data'] ?? [];
+                        $total += (float) ($d['netAmount'] ?? $d['net_amount'] ?? 0);
+                        $m = (string) ($d['month'] ?? '');
+                        if ($m !== '' && !in_array($m, $unpaidMonths, true)) $unpaidMonths[] = $m;
+                    }
+                    $studentAgg[$sid] = [
+                        'name'         => $studentName,
+                        'class'        => $cs['class'],
+                        'section'      => $cs['section'],
+                        'fatherName'   => (string) ($profile['fatherName'] ?? ''),
+                        'totalDues'    => round($total, 2),
+                        'unpaidMonths' => $unpaidMonths,
+                    ];
+
+                    $touchedStudents[] = $sid;
+                    $lastProcessedSid = (string) $sid;
+                    $successCount++;
+                } catch (\Exception $e) {
+                    $failureCount++;
+                    $errors[] = [
+                        'studentId' => $sid,
+                        'error'     => substr($e->getMessage(), 0, 300),
+                        'at'        => date('c'),
+                    ];
+                }
+                $processed++;
+
+                // Ping progress every 10 students or every 500 demands.
+                // Phase 3 — include lastProcessedSid so a resume can pick
+                // up exactly where we left off on a soft-deadline break.
+                if ($processed % 10 === 0 || $created - (int) ($jobRef_lastCreated ?? 0) >= 500) {
+                    $jobRef([
+                        'processedStudents' => $processed,
+                        'successCount'      => $successCount,
+                        'failureCount'      => $failureCount,
+                        'demandsCreated'    => $created,
+                        'demandsSkipped'    => $skipped,
+                        'lastProcessedSid'  => $lastProcessedSid,
+                        'errors'            => array_slice($errors, -100),
+                    ]);
+                }
+            }
+        }
+
+        // Final commit of any remaining demand ops.
+        $flushBatch();
+
+        // Build the feeDefaulters snapshot for every touched student in
+        // ONE batched commit — computed from the aggregates we captured
+        // during demand generation (zero extra Firestore reads).
+        //
+        // The previous per-student `updateDefaulterStatus` loop used to
+        // make ~5 Firestore+RTDB round-trips per student, which on 10
+        // students via REST added 60-120 seconds to the job. This path
+        // keeps it under a second.
+        $defaulterOps = [];
+        $schoolFs = $this->fs->schoolId();
+        $sessionNow = $this->session_year;
+        $nowIso = date('c');
+        foreach ($studentAgg as $sid => $agg) {
+            $isDef = $agg['totalDues'] > 0.005;
+            $defaulterOps[] = [
+                'op'         => 'set',
+                'collection' => 'feeDefaulters',
+                'docId'      => "{$schoolFs}_{$sessionNow}_{$sid}",
+                'merge'      => true,
+                'data'       => [
+                    'schoolId'       => $schoolFs,
+                    'session'        => $sessionNow,
+                    'studentId'      => $sid,
+                    'studentName'    => $agg['name'],
+                    'fatherName'     => $agg['fatherName'],
+                    'className'      => $agg['class'],
+                    'section'        => $agg['section'],
+                    'totalDues'      => $agg['totalDues'],
+                    'unpaidMonths'   => $agg['unpaidMonths'],
+                    'overdueMonths'  => [],   // computed lazily by the defaulter-report endpoint
+                    'isDefaulter'    => $isDef,
+                    'examBlocked'    => false,
+                    'resultWithheld' => false,
+                    'updatedAt'      => $nowIso,
+                    'source'         => 'generate_demands_bulk',
+                ],
+            ];
+        }
+        if (!empty($defaulterOps)) {
+            // Phase 3 — route through the same writer so defaulter
+            // commits get the same retry + failure-tracking guarantees.
+            $writer->commit($defaulterOps);
+        }
+
+        // Phase 5 — refresh class + student summaries after bulk generation.
+        // Bounded work: sections × months class cells + one per touched
+        // student. Runs synchronously here because the generator is
+        // already an async job; a few extra seconds on the summary
+        // refresh is acceptable.
+        try {
+            $this->load->library('Fee_summary_writer', null, 'feeSummaryWriter');
+            $this->feeSummaryWriter->init($this->firebase, $schoolFs, $sessionNow);
+            // Strip the rosters[] wrapper down to class/section pairs.
+            $classSections = [];
+            foreach ($rosters as $rs) {
+                if (!empty($rs['cs']['class']) && !empty($rs['cs']['section'])) {
+                    $classSections[] = [
+                        'class'   => $rs['cs']['class'],
+                        'section' => $rs['cs']['section'],
+                    ];
+                }
+            }
+            $this->feeSummaryWriter->onBulkDemandsGenerated(
+                $classSections,
+                array_values($months),
+                $touchedStudents
+            );
+            log_message('info', "fee-gen-worker: job={$jobId} phase5_summaries_refreshed classes=" . count($classSections) . " students=" . count($touchedStudents));
+        } catch (\Throwable $e) {
+            log_message('error', "fee-gen-worker: job={$jobId} phase5_summary_refresh_failed err=" . $e->getMessage());
+        }
+
+        // Phase 3 — resume safety net. If the caller passed a
+        // `resumeFromSid` that no longer exists in the roster (student
+        // was deleted between runs, or someone tampered with the job
+        // doc), the loop would have skipped every row without
+        // processing anything. Detect this and surface as a warning
+        // instead of a silent "completed with 0 done".
+        $resumeCursorMissed = false;
+        if ($resumeFromSid !== '' && !$hitResumePoint && count($touchedStudents) === 0) {
+            $resumeCursorMissed = true;
+            $errors[] = [
+                'at'    => date('c'),
+                'error' => "resumeFromSid '{$resumeFromSid}' not found in roster — full re-run may be needed.",
+            ];
+            log_message('warning', "fee-gen-worker: job={$jobId} resume cursor '{$resumeFromSid}' not found; no students processed.");
+        }
+
+        // Phase 3 — distinguish completed vs soft-deadline 'incomplete'.
+        // Incomplete jobs expose `lastProcessedSid` and `resumeUrl` so
+        // the admin (or the UI poller) can restart without data loss.
+        $finalStatus = $timeoutHit
+            ? 'incomplete'
+            : ($resumeCursorMissed ? 'resume_cursor_missing' : 'completed');
+        // Phase 3 — preserve the historical cursor when nothing new was
+        // processed this run (e.g., a resume that finishes the remaining
+        // sections quickly and returns zero new writes). Otherwise we
+        // would overwrite the saved lastProcessedSid with '' and any
+        // future status inspection would lose the checkpoint trail.
+        $effectiveLastSid = $lastProcessedSid !== ''
+            ? $lastProcessedSid
+            : (string) ($prevState['lastProcessedSid'] ?? '');
+        $finalPatch = [
+            'status'            => $finalStatus,
+            'completedAt'       => date('c'),
+            'processedStudents' => $processed,
+            'successCount'      => $successCount,
+            'failureCount'      => $failureCount,
+            'demandsCreated'    => $created,
+            'demandsSkipped'    => $skipped,
+            'lastProcessedSid'  => $effectiveLastSid,
+            'failedBatchCount'  => count($cumulativeFailedBatches),
+            'errors'            => array_slice($errors, -100),
+        ];
+        if ($timeoutHit) {
+            $finalPatch['resumeHint'] = [
+                'jobId'            => $jobId,
+                'resumeFromSid'    => $effectiveLastSid,
+                'totalStudents'    => $totalStudents,
+                'percentComplete'  => $totalStudents > 0 ? round(100 * $processed / $totalStudents, 1) : 0,
+            ];
+        }
+        $jobRef($finalPatch);
+
+        log_message('info',
+            "fee-gen-worker: jobId={$jobId} {$finalStatus} students={$processed}/{$totalStudents}"
+            . " created={$created} skipped={$skipped} failed={$failureCount}"
+            . " defaulters_refreshed=" . count($touchedStudents)
+            . " failedBatches=" . count($cumulativeFailedBatches)
+            . ($timeoutHit ? " [soft-deadline]" : "")
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  PHASE 5 — READ-OPTIMIZATION SUMMARY BACKFILL
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * POST — Backfill classFeeSummary + studentFeeSummary from current
+     * feeDemands + feeReceipts. Admin-only. Safe to run multiple times
+     * (idempotent: summaries are full recomputes, not deltas).
+     *
+     * Body:
+     *   class   (optional) — scope to a single class ("Class 8th")
+     *   section (optional) — scope to a single section within that class
+     *   students_only (optional, 0/1) — skip class summaries, only refresh students
+     *
+     * Runs synchronously with a soft 540s deadline (same pattern as
+     * demand generation). For very large tenants, call repeatedly
+     * with progressive class/section filters.
+     */
+    public function backfill_fee_summaries()
+    {
+        $this->_require_post();
+        $this->_require_role(self::MANAGE_ROLES, 'backfill_fee_summaries');
+
+        @set_time_limit(600);
+        $softDeadline = microtime(true) + 540;
+
+        $classFilter   = trim((string) $this->input->post('class'));
+        $sectionFilter = trim((string) $this->input->post('section'));
+        $studentsOnly  = (string) $this->input->post('students_only') === '1';
+
+        $schoolFs = $this->fs->schoolId();
+        $session  = $this->session_year;
+
+        $this->load->library('Fee_summary_writer', null, 'feeSummaryWriter');
+        $this->feeSummaryWriter->init($this->firebase, $schoolFs, $session);
+
+        // ── Resolve scope via the existing fsTxn helper ─────────────
+        if (!isset($this->fsTxn)) {
+            $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+            $this->fsTxn->init($this->firebase, $this->fs, $schoolFs, $session);
+        }
+
+        $classSections = [];
+        foreach ($this->fsTxn->listSectionsWithFeeChart() as $cs) {
+            if ($classFilter   !== '' && $cs['class']   !== $classFilter)   continue;
+            if ($sectionFilter !== '' && $cs['section'] !== $sectionFilter) continue;
+            $classSections[] = $cs;
+        }
+
+        $months = ['April','May','June','July','August','September','October','November','December','January','February','March','Yearly Fees'];
+
+        $classCellsRefreshed   = 0;
+        $studentsRefreshed     = 0;
+        $studentFailures       = 0;
+        $classCellFailures     = 0;
+        $timedOut              = false;
+        $lastStudentProcessed  = '';
+
+        // ── Class summaries first (bounded) ─────────────────────────
+        if (!$studentsOnly) {
+            foreach ($classSections as $cs) {
+                if (microtime(true) > $softDeadline) { $timedOut = true; break; }
+                foreach ($months as $m) {
+                    if (microtime(true) > $softDeadline) { $timedOut = true; break 2; }
+                    $ok = $this->feeSummaryWriter->updateClassSummary($cs['class'], $cs['section'], $m);
+                    $ok ? $classCellsRefreshed++ : $classCellFailures++;
+                }
+            }
+        }
+
+        // ── Student summaries (unbounded — iterate rosters) ─────────
+        if (!$timedOut) {
+            foreach ($classSections as $cs) {
+                if ($timedOut) break;
+                $roster = $this->fsTxn->listStudentsInSection($cs['class'], $cs['section']);
+                foreach ($roster as $sid => $_profile) {
+                    if (microtime(true) > $softDeadline) { $timedOut = true; break; }
+                    $ok = $this->feeSummaryWriter->updateStudentSummary((string) $sid);
+                    if ($ok) {
+                        $studentsRefreshed++;
+                        $lastStudentProcessed = (string) $sid;
+                    } else {
+                        $studentFailures++;
+                    }
+                }
+            }
+        }
+
+        $this->json_success([
+            'scope' => [
+                'school'  => $schoolFs,
+                'session' => $session,
+                'class'   => $classFilter,
+                'section' => $sectionFilter,
+            ],
+            'classCellsRefreshed'   => $classCellsRefreshed,
+            'classCellFailures'     => $classCellFailures,
+            'studentsRefreshed'     => $studentsRefreshed,
+            'studentFailures'       => $studentFailures,
+            'timedOut'              => $timedOut,
+            'lastStudentProcessed'  => $lastStudentProcessed,
+            'hint'                  => $timedOut
+                ? 'Soft deadline hit. Re-run (optionally scoped to a single class) to finish.'
+                : 'Backfill complete.',
+        ]);
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  PHASE 4 — SHARDED RECEIPT COUNTER (opt-in per school+session)
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * POST — Initialize the sharded counter shards for this school+session.
+     * Safe to call repeatedly; existing shard docs are left untouched
+     * (idempotent). After init, shards are populated but the flag stays
+     * OFF — writers continue on the legacy path until `enable_sharded_counter`
+     * flips the flag.
+     *
+     * Body: none (acts on current school+session context)
+     * Returns: { initialized, skipped, floor, num_shards }
+     */
+    public function init_sharded_counter()
+    {
+        $this->_require_post();
+        $this->_require_role(self::MANAGE_ROLES, 'init_sharded_counter');
+
+        $this->load->library('Fee_sharded_counter', null, 'feeShardedCounter');
+        $this->feeShardedCounter->init($this->firebase, $this->fs->schoolId(), $this->session_year);
+        $stats = $this->feeShardedCounter->initializeShards('receipt_seq');
+        $this->json_success(array_merge($stats, [
+            'schoolId'   => $this->fs->schoolId(),
+            'session'    => $this->session_year,
+            'next_step'  => 'POST /fees/enable_sharded_counter to flip the flag ON',
+        ]));
+    }
+
+    /**
+     * POST — Flip the sharded-counter flag for this school+session.
+     *
+     * Body: enabled=1|0
+     * Returns: { enabled, schoolId, session }
+     */
+    public function enable_sharded_counter()
+    {
+        $this->_require_post();
+        $this->_require_role(self::MANAGE_ROLES, 'enable_sharded_counter');
+
+        $enabled = $this->input->post('enabled');
+        $enabled = ($enabled === '1' || $enabled === 1 || $enabled === true || $enabled === 'true');
+
+        $schoolId = $this->fs->schoolId();
+        $session  = $this->session_year;
+        $docId    = "{$schoolId}_{$session}_counters";
+
+        $this->firebase->firestoreSet('feeSettings', $docId, [
+            'schoolId'        => $schoolId,
+            'session'         => $session,
+            'type'            => 'counters',
+            'shardedEnabled'  => $enabled,
+            'updatedAt'       => date('c'),
+            'updatedBy'       => (string) ($this->admin_id   ?? ''),
+            'updatedByName'   => (string) ($this->admin_name ?? ''),
+        ]);
+
+        log_message('info', "Fees::enable_sharded_counter school={$schoolId} session={$session} enabled=" . ($enabled ? '1' : '0'));
+        $this->json_success([
+            'enabled'  => $enabled,
+            'schoolId' => $schoolId,
+            'session'  => $session,
+            'note'     => $enabled
+                ? 'Sharded counter is LIVE. Fallback to legacy still kicks in on any sharded-side error.'
+                : 'Sharded counter is DISABLED. Writers use the legacy single-pointer path.',
+        ]);
+    }
+
+    /**
+     * GET — Sharded counter status (flag + per-shard high-water marks).
+     * Use this to verify initialization BEFORE enabling, and to monitor
+     * shard utilization AFTER enabling.
+     */
+    public function sharded_counter_status()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'sharded_counter_status');
+
+        $schoolId = $this->fs->schoolId();
+        $session  = $this->session_year;
+
+        // Flag
+        $cfg = $this->firebase->firestoreGet('feeSettings', "{$schoolId}_{$session}_counters");
+        $enabled = is_array($cfg) && !empty($cfg['shardedEnabled']);
+
+        // Legacy pointer
+        $legacy = $this->firebase->firestoreGet('feeCounters', "{$schoolId}_receipt_seq");
+        $legacyValue = is_array($legacy) ? (int) ($legacy['value'] ?? 0) : 0;
+
+        // Each shard
+        $shards = [];
+        for ($i = 0; $i < \Fee_sharded_counter::NUM_SHARDS; $i++) {
+            $docId = "{$schoolId}_receipt_seq_shard_" . str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+            $doc = $this->firebase->firestoreGet('feeCounterShards', $docId);
+            $shards[] = [
+                'shardIdx'    => $i,
+                'initialized' => is_array($doc),
+                'lastValue'   => is_array($doc) ? (int) ($doc['lastValue'] ?? 0) : null,
+                'updatedAt'   => is_array($doc) ? (string) ($doc['updatedAt'] ?? '') : '',
+            ];
+        }
+
+        $maxShardValue = 0;
+        foreach ($shards as $s) {
+            if ($s['lastValue'] !== null && $s['lastValue'] > $maxShardValue) {
+                $maxShardValue = $s['lastValue'];
+            }
+        }
+
+        $this->json_success([
+            'enabled'         => $enabled,
+            'schoolId'        => $schoolId,
+            'session'         => $session,
+            'legacyValue'     => $legacyValue,
+            'maxShardValue'   => $maxShardValue,
+            'currentMaxSeq'   => max($legacyValue, $maxShardValue),
+            'num_shards'      => \Fee_sharded_counter::NUM_SHARDS,
+            'shards'          => $shards,
+            'all_initialized' => !in_array(false, array_column($shards, 'initialized'), true),
+        ]);
+    }
+
+    /**
+     * GET /fees/queue_status — Phase 7D admin queue-health endpoint.
+     *
+     * Returns a snapshot of the feeJobs queue for the current school+
+     * session, plus the oldest queued job's age in seconds so ops can
+     * alert on backlog. Safe to call from a dashboard polling every
+     * few seconds — scans are capped at 200 docs per status.
+     *
+     * Example response:
+     *   {
+     *     "queued": 5,
+     *     "processing": 2,
+     *     "failed": 1,
+     *     "oldest_job_seconds": 45,
+     *     "oldest_job_id": "DPS_12",
+     *     "stuck_processing": 0,
+     *     "collected_at": "2026-04-24T21:14:08+05:30"
+     *   }
+     */
+    public function queue_status()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'queue_status');
+
+        $schoolId = $this->fs->schoolId();
+        $session  = $this->session_year;
+        $cap      = 200;
+        $stuckAfterSec   = 300;  // mirrors FeeWorker::STUCK_AFTER_SEC
+        $stuckThreshold  = date('c', time() - $stuckAfterSec);
+
+        $snapshot = [
+            'queued'             => 0,
+            'processing'         => 0,
+            'failed'             => 0,
+            'oldest_job_seconds' => 0,
+            'oldest_job_id'      => '',
+            'stuck_processing'   => 0,
+            'collected_at'       => date('c'),
+        ];
+
+        try {
+            $queued = (array) $this->firebase->firestoreQuery('feeJobs', [
+                ['schoolId', '==', $schoolId],
+                ['session',  '==', $session],
+                ['status',   '==', 'queued'],
+            ], 'createdAt', 'ASC', $cap);
+            $snapshot['queued'] = count($queued);
+            if (!empty($queued)) {
+                $first = $queued[0];
+                $createdAt = (string) ($first['data']['createdAt'] ?? '');
+                if ($createdAt !== '') {
+                    $snapshot['oldest_job_seconds'] = max(0, time() - strtotime($createdAt));
+                    $snapshot['oldest_job_id']      = (string) ($first['id'] ?? '');
+                }
+            }
+
+            $processing = (array) $this->firebase->firestoreQuery('feeJobs', [
+                ['schoolId', '==', $schoolId],
+                ['session',  '==', $session],
+                ['status',   '==', 'processing'],
+            ], 'updatedAt', 'ASC', $cap);
+            $snapshot['processing'] = count($processing);
+            foreach ($processing as $p) {
+                $ts = (string) ($p['data']['updatedAt'] ?? '');
+                if ($ts !== '' && $ts < $stuckThreshold) $snapshot['stuck_processing']++;
+            }
+
+            $failed = (array) $this->firebase->firestoreQuery('feeJobs', [
+                ['schoolId', '==', $schoolId],
+                ['session',  '==', $session],
+                ['status',   '==', 'failed'],
+            ], null, 'ASC', $cap);
+            $snapshot['failed'] = count($failed);
+
+            // Phase 7F — metrics (sampled from the most recent 50 done
+            // jobs, capped to avoid expensive scans). Success rate uses
+            // done + failed as denominator; queued/processing don't
+            // count (not resolved yet).
+            $doneSample = (array) $this->firebase->firestoreQuery('feeJobs', [
+                ['schoolId', '==', $schoolId],
+                ['session',  '==', $session],
+                ['status',   '==', 'done'],
+            ], 'finishedAt', 'DESC', 50);
+            $processingMsSum = 0; $processingMsCount = 0;
+            foreach ($doneSample as $j) {
+                $d = is_array($j['data'] ?? null) ? $j['data'] : [];
+                $c = strtotime((string) ($d['createdAt']  ?? ''));
+                $f = strtotime((string) ($d['finishedAt'] ?? ''));
+                if ($c > 0 && $f > 0 && $f >= $c) {
+                    $processingMsSum += ($f - $c) * 1000;
+                    $processingMsCount++;
+                }
+            }
+            $avgProcessingMs = $processingMsCount > 0 ? (int) round($processingMsSum / $processingMsCount) : 0;
+            $doneCount   = count($doneSample);
+            $resolved    = $doneCount + $snapshot['failed'];
+            $successRate = $resolved > 0 ? round(100.0 * $doneCount / $resolved, 1) : 100.0;
+            $snapshot['metrics'] = [
+                'avg_processing_ms'  => $avgProcessingMs,
+                'success_rate_pct'   => $successRate,
+                'failure_rate_pct'   => round(100.0 - $successRate, 1),
+                'sample_size'        => $doneCount,
+            ];
+
+            // Worker heartbeat → worker_down flag.
+            $hb = $this->firebase->firestoreGet('feeWorkerHeartbeat', "{$schoolId}_{$session}");
+            $hbAgeSec = -1;
+            if (is_array($hb) && !empty($hb['lastRunAt'])) {
+                $hbAgeSec = max(0, time() - strtotime((string) $hb['lastRunAt']));
+            }
+            $snapshot['worker'] = [
+                'last_run_at'  => is_array($hb) ? (string) ($hb['lastRunAt'] ?? '') : '',
+                'age_seconds'  => $hbAgeSec,
+                'host'         => is_array($hb) ? (string) ($hb['host'] ?? '') : '',
+                // "down" after 120 s of silence — scheduler runs at 60 s,
+                // so missing one cycle is a warning, two cycles = down.
+                'down'         => ($hbAgeSec < 0 || $hbAgeSec > 120),
+            ];
+
+            // Auto-alerts — operator-readable strings the banner uses
+            // verbatim. Order matters: most-severe first.
+            $alerts = [];
+            if ($snapshot['worker']['down']) {
+                $alerts[] = [
+                    'severity' => 'critical',
+                    'message'  => 'Background worker has not checked in — payments are still being recorded but processing is delayed. Verify the Windows Task / cron is running.',
+                ];
+            }
+            if ($snapshot['failed'] > 0) {
+                $alerts[] = [
+                    'severity' => 'error',
+                    'message'  => "{$snapshot['failed']} failed job(s) need operator attention — review the Failed list below and click Retry.",
+                ];
+            }
+            if ($snapshot['stuck_processing'] > 0) {
+                $alerts[] = [
+                    'severity' => 'warning',
+                    'message'  => "{$snapshot['stuck_processing']} job(s) stuck in 'processing' > 5 min — they will be reaped on the next worker cycle.",
+                ];
+            }
+            if ($snapshot['queued'] > 20) {
+                $alerts[] = [
+                    'severity' => 'warning',
+                    'message'  => "System is under load — {$snapshot['queued']} jobs waiting. Background processing is delayed.",
+                ];
+            }
+            if ($snapshot['oldest_job_seconds'] > 120) {
+                $alerts[] = [
+                    'severity' => 'warning',
+                    'message'  => "Oldest queued job is {$snapshot['oldest_job_seconds']}s old — processing has slowed. Check worker.",
+                ];
+            }
+            $snapshot['alerts'] = $alerts;
+
+        } catch (\Throwable $e) {
+            $snapshot['error'] = $e->getMessage();
+        }
+
+        $this->json_success($snapshot);
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  Phase 7F — bulk operator endpoints
+    //
+    //  All three write to feeAuditLogs via _auditQueueAction so every
+    //  destructive op is attributable to an admin. Scoped tight to the
+    //  caller's school + session (multi-school safety — nothing here
+    //  accepts a schoolId override from the client).
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * POST /fees/queue_retry_all_failed — re-queue every 'failed' job
+     * for the current school+session. Cap at 100 per call to keep the
+     * write amplification bounded; operator can click twice if needed.
+     */
+    public function queue_retry_all_failed()
+    {
+        $this->_require_post();
+        $this->_require_role(self::MANAGE_ROLES, 'queue_retry_all_failed');
+        $schoolId = $this->fs->schoolId();
+        $session  = $this->session_year;
+        $cap      = 100;
+
+        $rows = (array) $this->firebase->firestoreQuery('feeJobs', [
+            ['schoolId', '==', $schoolId],
+            ['session',  '==', $session],
+            ['status',   '==', 'failed'],
+        ], 'updatedAt', 'ASC', $cap);
+
+        $ops = []; $ids = [];
+        foreach ($rows as $r) {
+            $id = (string) ($r['id'] ?? '');
+            if ($id === '') continue;
+            $ops[] = [
+                'op' => 'set', 'merge' => true,
+                'collection' => 'feeJobs',
+                'docId'      => $id,
+                'data'       => [
+                    'status'      => 'queued',
+                    'attempts'    => 0,
+                    'retriedAt'   => date('c'),
+                    'retriedBy'   => $this->admin_id,
+                    'updatedAt'   => date('c'),
+                    'priorError'  => (string) (($r['data']['lastError'] ?? '')),
+                ],
+            ];
+            $ids[] = $id;
+        }
+        if (empty($ops)) {
+            $this->json_success(['retried' => 0, 'message' => 'No failed jobs to retry.']);
+            return;
+        }
+        $ok = (bool) $this->firebase->firestoreCommitBatch($ops);
+        if (!$ok) {
+            $this->json_error('Batch retry commit failed. Check logs.');
+            return;
+        }
+        // Phase 7G (H1) — drop any stale claim sentinels from crashed
+        // workers so the next worker cycle can actually pick these up.
+        $claimDeleteOps = array_map(fn($jid) => [
+            'op'         => 'delete',
+            'collection' => 'feeJobClaims',
+            'docId'      => $jid,
+        ], $ids);
+        try { $this->firebase->firestoreCommitBatch($claimDeleteOps); } catch (\Throwable $_) {}
+
+        $this->_auditQueueAction('bulk_retry_failed', [
+            'count' => count($ids),
+            'ids'   => array_slice($ids, 0, 20), // cap audit payload
+            'ids_truncated' => count($ids) > 20,
+        ]);
+        $this->json_success([
+            'retried' => count($ids),
+            'message' => count($ids) . ' failed job(s) re-queued.',
+        ]);
+    }
+
+    /**
+     * POST /fees/queue_reap_stuck — force-reset every 'processing' job
+     * older than 5 min to 'queued'. Normally the worker does this at
+     * the start of each cycle; this endpoint lets an operator trigger
+     * it without waiting.
+     */
+    public function queue_reap_stuck()
+    {
+        $this->_require_post();
+        $this->_require_role(self::MANAGE_ROLES, 'queue_reap_stuck');
+        $schoolId = $this->fs->schoolId();
+        $session  = $this->session_year;
+        $threshold = date('c', time() - 300); // 5 min (matches worker)
+
+        $rows = (array) $this->firebase->firestoreQuery('feeJobs', [
+            ['schoolId', '==', $schoolId],
+            ['session',  '==', $session],
+            ['status',   '==', 'processing'],
+        ], 'updatedAt', 'ASC', 50);
+
+        $ops = []; $ids = [];
+        foreach ($rows as $r) {
+            $d = is_array($r['data'] ?? null) ? $r['data'] : [];
+            $id = (string) ($r['id'] ?? '');
+            $upd = (string) ($d['updatedAt'] ?? '');
+            if ($id === '' || $upd === '' || $upd >= $threshold) continue;
+            $ops[] = [
+                'op' => 'set', 'merge' => true,
+                'collection' => 'feeJobs',
+                'docId'      => $id,
+                'data'       => [
+                    'status'     => 'queued',
+                    'reapedAt'   => date('c'),
+                    'reapedBy'   => $this->admin_id,
+                    'lastError'  => 'operator: force-reap from dashboard',
+                    'updatedAt'  => date('c'),
+                ],
+            ];
+            $ids[] = $id;
+        }
+        if (empty($ops)) {
+            $this->json_success(['reaped' => 0, 'message' => 'No stuck processing jobs found.']);
+            return;
+        }
+        $ok = (bool) $this->firebase->firestoreCommitBatch($ops);
+        if (!$ok) {
+            $this->json_error('Batch reap commit failed. Check logs.');
+            return;
+        }
+        // Phase 7G (H1) — also clear the claim sentinel so the reaped
+        // job can actually be re-claimed by the next worker cycle.
+        $claimDeleteOps = array_map(fn($jid) => [
+            'op'         => 'delete',
+            'collection' => 'feeJobClaims',
+            'docId'      => $jid,
+        ], $ids);
+        try { $this->firebase->firestoreCommitBatch($claimDeleteOps); } catch (\Throwable $_) {}
+
+        $this->_auditQueueAction('bulk_reap_stuck', [
+            'count' => count($ids),
+            'ids'   => array_slice($ids, 0, 20),
+        ]);
+        $this->json_success([
+            'reaped'  => count($ids),
+            'message' => count($ids) . ' stuck job(s) reset to queued.',
+        ]);
+    }
+
+    /**
+     * POST /fees/queue_clear_stale_locks — delete every feeLock whose
+     * acquiredAt is older than 120 s. Useful after a crash-recovery
+     * scenario where ghost locks block submits. Scoped to the caller's
+     * school via {schoolId}_ docId prefix on every candidate.
+     */
+    public function queue_clear_stale_locks()
+    {
+        $this->_require_post();
+        $this->_require_role(self::MANAGE_ROLES, 'queue_clear_stale_locks');
+        $schoolId = $this->fs->schoolId();
+        // Phase 7G (H5) — 2.5× the worker's LOCK_TTL_SEC (120 s). The
+        // worker's own _safeReleaseLock can still override at 120 s; this
+        // operator-path threshold is deliberately more conservative so a
+        // legitimately-slow worker isn't stripped of its lock by a
+        // dashboard click, which would permit concurrent over-collection.
+        $threshold = date('c', time() - 300);
+
+        // feeLocks aren't partitioned by session — they're per (schoolId,
+        // userId). We filter by schoolId via the doc-id prefix on read.
+        $rows = (array) $this->firebase->firestoreQuery('feeLocks', [
+            ['schoolId', '==', $schoolId],
+        ], 'acquiredAt', 'ASC', 100);
+
+        $ops = []; $cleared = [];
+        foreach ($rows as $r) {
+            $d = is_array($r['data'] ?? null) ? $r['data'] : [];
+            $id = (string) ($r['id'] ?? '');
+            $acq = (string) ($d['acquiredAt'] ?? '');
+            if ($id === '' || $acq === '' || $acq >= $threshold) continue;
+            $ops[] = ['op' => 'delete', 'collection' => 'feeLocks', 'docId' => $id];
+            $cleared[] = [
+                'lockId' => $id,
+                'userId' => (string) ($d['userId'] ?? ''),
+                'age'    => max(0, time() - strtotime($acq)),
+            ];
+        }
+        if (empty($ops)) {
+            $this->json_success(['cleared' => 0, 'message' => 'No stale locks found.']);
+            return;
+        }
+        $ok = (bool) $this->firebase->firestoreCommitBatch($ops);
+        if (!$ok) {
+            $this->json_error('Batch delete of stale locks failed. Check logs.');
+            return;
+        }
+        $this->_auditQueueAction('bulk_clear_stale_locks', [
+            'count'   => count($cleared),
+            'cleared' => array_slice($cleared, 0, 20),
+        ]);
+        $this->json_success([
+            'cleared' => count($cleared),
+            'message' => count($cleared) . ' stale lock(s) cleared.',
+        ]);
+    }
+
+    /**
+     * Phase 7F — write one row to feeAuditLogs with the admin id, the
+     * action name, and any action-specific payload. Never throws.
+     * Doc id is a sortable timestamp so operator timeline scans order
+     * naturally in the Firebase console.
+     */
+    private function _auditQueueAction(string $action, array $payload): void
+    {
+        try {
+            $schoolId = $this->fs->schoolId();
+            $session  = $this->session_year;
+            $docId = "{$schoolId}_" . date('YmdHis') . '_' . bin2hex(random_bytes(3)) . "_{$action}";
+            $this->firebase->firestoreSet('feeAuditLogs', $docId, [
+                'schoolId'  => $schoolId,
+                'session'   => $session,
+                'action'    => $action,
+                'actor'     => $this->admin_id,
+                'actorName' => $this->admin_name,
+                'at'        => date('c'),
+                'ip'        => $this->input->ip_address(),
+                'ua'        => substr((string) $this->input->user_agent(), 0, 200),
+                'payload'   => $payload,
+            ]);
+            log_message('error', "FEE_AUDIT {$action} actor={$this->admin_id} school={$schoolId}");
+        } catch (\Throwable $e) {
+            log_message('error', "FEE_AUDIT_FAIL action={$action}: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * GET /fees/receipt_status?receipt_no=N — Phase 7E lightweight
+     * endpoint the post-submit UI polls every ~3 s to learn when a
+     * queued receipt becomes posted. Cheap (one feeReceipts GET, no
+     * joins / queries) so it's safe to hit from a spinner loop.
+     *
+     * Response:
+     *   { "ok": true, "receipt_no": "12", "status": "queued"|"posted"|"unknown" }
+     *
+     * "unknown" means the receipt doc hasn't landed yet (sync commit in
+     * flight) — the caller should treat that as "still processing" and
+     * keep polling.
+     */
+    public function receipt_status()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'receipt_status');
+        $receiptNo = trim((string) $this->input->get('receipt_no'));
+        $receiptNo = preg_replace('/^F/i', '', $receiptNo);
+        if ($receiptNo === '' || !preg_match('/^\d+$/', $receiptNo)) {
+            $this->json_error('receipt_no is required (numeric).');
+            return;
+        }
+        $schoolFs   = $this->fs->schoolId();
+        $receiptKey = 'F' . $receiptNo;
+
+        $receipt = $this->firebase->firestoreGet('feeReceipts', "{$schoolFs}_{$receiptKey}");
+        if (!is_array($receipt)) {
+            $this->json_success([
+                'receipt_no' => $receiptNo,
+                'status'     => 'unknown',
+            ]);
+            return;
+        }
+        // Legacy receipts (pre-7C) have no `status` field → treat as posted.
+        $status = (string) ($receipt['status'] ?? 'posted');
+        if ($status === '') $status = 'posted';
+
+        $this->json_success([
+            'receipt_no' => $receiptNo,
+            'status'     => $status,
+            'postedAt'   => (string) ($receipt['postedAt'] ?? ''),
+            'queuedAt'   => (string) ($receipt['queuedAt'] ?? ''),
+        ]);
+    }
+
+    /**
+     * GET /fees/queue_dashboard — Phase 7E admin operator view. Renders
+     * the `fees/queue_dashboard` view which pulls health + failed-jobs
+     * list client-side from the existing JSON endpoints. Kept to a
+     * single view render so we don't re-fetch twice (view, then JS).
+     */
+    public function queue_dashboard()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'queue_dashboard');
+        $this->load->view('fees/queue_dashboard');
+    }
+
+    /**
+     * GET /fees/queue_failed_jobs — returns up to 50 failed jobs so the
+     * dashboard can render them in a table with Retry buttons. Separate
+     * from queue_status so operators can refresh the counts (cheap)
+     * without re-pulling the full failed-job payload (heavier).
+     */
+    public function queue_failed_jobs()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'queue_failed_jobs');
+        $schoolId = $this->fs->schoolId();
+        $session  = $this->session_year;
+        try {
+            $rows = (array) $this->firebase->firestoreQuery('feeJobs', [
+                ['schoolId', '==', $schoolId],
+                ['session',  '==', $session],
+                ['status',   '==', 'failed'],
+            ], 'updatedAt', 'DESC', 50);
+        } catch (\Throwable $e) {
+            $this->json_error('Failed to list jobs: ' . $e->getMessage());
+            return;
+        }
+        $out = [];
+        foreach ($rows as $r) {
+            $d = is_array($r['data'] ?? null) ? $r['data'] : [];
+            $out[] = [
+                'jobId'       => (string) ($r['id'] ?? ''),
+                'receiptNo'   => (string) ($d['receiptNo']  ?? ''),
+                'receiptKey'  => (string) ($d['receiptKey'] ?? ''),
+                'studentId'   => (string) ($d['studentId']  ?? ''),
+                'attempts'    => (int)    ($d['attempts']   ?? 0),
+                'createdAt'   => (string) ($d['createdAt']  ?? ''),
+                'updatedAt'   => (string) ($d['updatedAt']  ?? ''),
+                'lastError'   => (string) ($d['lastError']  ?? ''),
+                'lastErrorAt' => (string) ($d['lastErrorAt'] ?? ''),
+            ];
+        }
+        $this->json_success(['jobs' => $out]);
+    }
+
+    /**
+     * POST /fees/queue_job_retry — Phase 7E. Flips a failed feeJob back
+     * to status='queued' with attempts=0 so the next FeeWorker cycle
+     * picks it up. Requires MANAGE role (not VIEW) because it mutates
+     * retry state. Idempotent — calling twice is harmless.
+     *
+     * Body: { jobId: "DPS_12" }
+     */
+    public function queue_job_retry()
+    {
+        $this->_require_post();
+        $this->_require_role(self::MANAGE_ROLES, 'queue_job_retry');
+        $jobId = trim((string) $this->input->post('jobId'));
+        if ($jobId === '' || !preg_match('/^[A-Za-z0-9_.-]+$/', $jobId)) {
+            $this->json_error('Valid jobId is required.');
+            return;
+        }
+        $existing = $this->firebase->firestoreGet('feeJobs', $jobId);
+        if (!is_array($existing)) {
+            $this->json_error("Job {$jobId} not found.");
+            return;
+        }
+        $curStatus = (string) ($existing['status'] ?? '');
+        if ($curStatus === 'done') {
+            $this->json_error("Job {$jobId} is already done — nothing to retry.");
+            return;
+        }
+        $ok = $this->firebase->firestoreSet('feeJobs', $jobId, [
+            'status'     => 'queued',
+            'attempts'   => 0,
+            'retriedAt'  => date('c'),
+            'retriedBy'  => $this->admin_id,
+            'updatedAt'  => date('c'),
+            // Preserve last error text in a separate field for audit.
+            'priorError' => (string) ($existing['lastError'] ?? ''),
+        ], /* merge */ true);
+        if (!$ok) {
+            $this->json_error("Failed to reset job {$jobId}.");
+            return;
+        }
+        // Phase 7G (H1) — drop any stale claim sentinel from the crashed
+        // or failed worker so the next cycle can actually re-claim. Best
+        // effort; the reaper also covers this on its own cadence.
+        try { $this->firebase->firestoreDelete('feeJobClaims', $jobId); } catch (\Throwable $_) {}
+
+        log_message('error', "FEE_JOB_RETRY_REQUESTED jobId={$jobId} by={$this->admin_id}");
+        $this->_auditQueueAction('job_retry', ['jobId' => $jobId]);
+        $this->json_success([
+            'jobId'  => $jobId,
+            'status' => 'queued',
+            'attempts' => 0,
+            'message' => "Job {$jobId} re-queued. The next worker cycle will pick it up.",
+        ]);
+    }
+
+    /**
+     * GET — Poll the status of a background demand-generation job.
+     * Called by the UI every ~2s while a job is running.
+     *
+     * Query: jobId (required)
+     * Returns: full job document or error if not found.
+     */
+    public function get_generation_job()
+    {
+        $this->require_admin_access(self::MANAGE_ROLES, 'get_generation_job');
+        $jobId = trim($this->input->get('jobId') ?? '');
+        if ($jobId === '') return $this->json_error('jobId is required.');
+
+        try {
+            $doc = $this->firebase->firestoreGet('fee_generation_jobs', $jobId);
+            // T5 — deny cross-school access. An attacker who guesses
+            // another school's jobId would otherwise read its job doc.
+            $this->assert_school_owned_doc($doc, 'job');
+            if (is_array($doc['errors'] ?? null) && count($doc['errors']) > 50) {
+                $doc['errors'] = array_slice($doc['errors'], -50);
+                $doc['errors_truncated'] = true;
+            }
+            $this->json_success($doc);
+        } catch (\Exception $e) {
+            log_message('error', "get_generation_job({$jobId}) failed: " . $e->getMessage());
+            $this->json_error('Could not load job: ' . $e->getMessage());
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  PHASE 3.5c — JOB DASHBOARD API (Admin UI backend)
+    // ══════════════════════════════════════════════════════════════════
+    //
+    //  Endpoints consumed by application/views/fees/job_dashboard.php:
+    //    GET  /fees/jobs_list                   paginated list (status filter optional)
+    //    GET  /fees/job_detail?jobId=…          full job doc + failed-batches + retry logs
+    //    POST /fees/job_pause?jobId=…
+    //    POST /fees/job_resume?jobId=…
+    //    POST /fees/job_retry_failed?jobId=…    shells out to the CLI retry path
+    //    POST /fees/job_finalize?jobId=…        shells out to the CLI finalize path
+    //    GET  /fees/alerts_feed                 recent fee_alerts
+    //    POST /fees/alert_ack?alertId=…
+    //
+    //  All endpoints require MANAGE_ROLES and are scoped to the current
+    //  school+session (enforced via fsTxn/schoolId).
+
+    /** GET /fees/jobs_list?limit=50&status=pending|running|… */
+    public function jobs_list()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'jobs_list');
+        $this->output->set_content_type('application/json');
+        $limit  = max(1, min(200, (int) ($this->input->get('limit') ?: 50)));
+        $status = trim((string) $this->input->get('status'));
+        try {
+            $filters = [['schoolId', '==', $this->fs->schoolId()]];
+            if ($status !== '') $filters[] = ['status', '==', $status];
+            $rows = $this->firebase->firestoreQuery('fee_generation_jobs', $filters, 'requestedAt', 'DESC', $limit);
+            $out  = [];
+            foreach ((array) $rows as $r) {
+                $d  = $r['data'] ?? $r;
+                $id = $r['id']   ?? ($d['jobId'] ?? '');
+                if (!is_array($d) || $id === '') continue;
+                $out[] = $this->_jobRowProjection($d);
+            }
+            $this->json_success(['jobs' => $out, 'count' => count($out)]);
+        } catch (\Exception $e) {
+            log_message('error', "jobs_list failed: " . $e->getMessage());
+            $this->json_error('Could not load jobs.');
+        }
+    }
+
+    /** GET /fees/job_detail?jobId=… */
+    public function job_detail()
+    {
+        $this->require_admin_access(self::MANAGE_ROLES, 'job_detail');
+        $jobId = trim((string) $this->input->get('jobId'));
+        if ($jobId === '') return $this->json_error('jobId is required.');
+        try {
+            $job = $this->firebase->firestoreGet('fee_generation_jobs', $jobId);
+            // T5 — guard against cross-school job access via guessed id.
+            $this->assert_school_owned_doc($job, 'job');
+
+            // Attach failed-batches list (latest 50). Scoped to this
+            // school so even if jobId happened to match another school's
+            // batches (shouldn't — jobId is unique), we don't leak.
+            $failed = [];
+            try {
+                $fRows = $this->firebase->firestoreQuery('fee_generation_failed_batches',
+                    $this->school_scoped_where([['jobId', '==', $jobId]]),
+                    'createdAt', 'DESC', 50);
+                foreach ((array) $fRows as $r) {
+                    $d = $r['data'] ?? $r;
+                    if (!is_array($d)) continue;
+                    // Drop the heavy `ops` blob — dashboard only needs
+                    // the metadata for display; full ops are replayed
+                    // server-side via --retry-failed.
+                    unset($d['ops']);
+                    $failed[] = $d;
+                }
+            } catch (\Exception $_) {}
+
+            // Attach retry log (latest 50), same school-scope belt-and-braces.
+            $retries = [];
+            try {
+                $rRows = $this->firebase->firestoreQuery('fee_generation_retry_logs',
+                    $this->school_scoped_where([['jobId', '==', $jobId]]),
+                    'timestamp', 'DESC', 50);
+                foreach ((array) $rRows as $r) {
+                    $d = $r['data'] ?? $r;
+                    if (is_array($d)) $retries[] = $d;
+                }
+            } catch (\Exception $_) {}
+
+            // Compute per-worker health.
+            $workers = [];
+            $nowTs = time();
+            $deadThreshold = (int) ($this->input->get('deadThresholdSec') ?: 30);
+            foreach ($job as $k => $v) {
+                if (strpos($k, 'worker_') !== 0 || !is_array($v)) continue;
+                $id = substr($k, strlen('worker_'));
+                $lastHb = strtotime((string) ($v['lastHeartbeat'] ?? '1970-01-01'));
+                $age    = max(0, $nowTs - $lastHb);
+                $status = (string) ($v['status'] ?? '');
+                if ($status === 'running' && $age >= $deadThreshold) $status = 'dead';
+                $workers[] = [
+                    'workerId'                => (int) $id,
+                    'status'                  => $status,
+                    'processedCount'          => (int) ($v['processedCount']    ?? 0),
+                    'demandsWritten'          => (int) ($v['demandsWritten']    ?? 0),
+                    'batchesCommitted'        => (int) ($v['batchesCommitted']  ?? 0),
+                    'failedBatches'           => (int) ($v['failedBatches']     ?? 0),
+                    'lastProcessedStudentId'  => (string) ($v['lastProcessedStudentId'] ?? ''),
+                    'lastHeartbeat'           => (string) ($v['lastHeartbeat']  ?? ''),
+                    'heartbeatAgeSec'         => $age,
+                    'startedAt'               => (string) ($v['startedAt']      ?? ''),
+                    'finishedAt'              => (string) ($v['finishedAt']     ?? ''),
+                    'elapsedSec'              => (float)  ($v['elapsedSec']     ?? 0),
+                ];
+            }
+            usort($workers, fn($a, $b) => $a['workerId'] <=> $b['workerId']);
+
+            $this->json_success([
+                'job'            => $this->_jobRowProjection($job),
+                'workers'        => $workers,
+                'failedBatches'  => $failed,
+                'retryLogs'      => $retries,
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', "job_detail({$jobId}) failed: " . $e->getMessage());
+            $this->json_error('Could not load job detail.');
+        }
+    }
+
+    /** POST /fees/job_pause?jobId=… */
+    public function job_pause()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'job_pause');
+        $this->_flipJobStatus('paused', ['pausedAt' => date('c')]);
+    }
+    /** POST /fees/job_resume?jobId=… */
+    public function job_resume()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'job_resume');
+        $this->_flipJobStatus('running', ['resumedAt' => date('c')]);
+    }
+
+    /** POST /fees/job_retry_failed?jobId=… */
+    public function job_retry_failed()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'job_retry_failed');
+        $this->_runCliMode('--retry-failed');
+    }
+
+    /** POST /fees/job_finalize?jobId=… */
+    public function job_finalize()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'job_finalize');
+        $this->_runCliMode('--finalize');
+    }
+
+    /** GET /fees/alerts_feed?limit=30&severity=error&status=open */
+    public function alerts_feed()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'alerts_feed');
+        $this->output->set_content_type('application/json');
+        $limit    = max(1, min(100, (int) ($this->input->get('limit') ?: 30)));
+        $severity = trim((string) $this->input->get('severity'));
+        $status   = trim((string) $this->input->get('status'));
+        try {
+            $filters = [['schoolId', '==', $this->fs->schoolId()]];
+            if ($severity !== '') $filters[] = ['severity', '==', $severity];
+            if ($status   !== '') $filters[] = ['status',   '==', $status];
+            $rows = $this->firebase->firestoreQuery(Fee_alerts::COLLECTION, $filters, 'createdAt', 'DESC', $limit);
+            $out = [];
+            foreach ((array) $rows as $r) {
+                $d = $r['data'] ?? $r;
+                if (is_array($d)) $out[] = $d;
+            }
+            $this->json_success(['alerts' => $out, 'count' => count($out)]);
+        } catch (\Exception $e) {
+            log_message('error', "alerts_feed failed: " . $e->getMessage());
+            $this->json_error('Could not load alerts.');
+        }
+    }
+
+    /** POST /fees/alert_ack?alertId=… */
+    public function alert_ack()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'alert_ack');
+        $this->_require_post();
+        $alertId = trim((string) $this->input->post('alertId'));
+        $note    = trim((string) ($this->input->post('note') ?? ''));
+        if ($alertId === '') return $this->json_error('alertId is required.');
+        $this->load->library('Fee_alerts', null, 'feeAlerts');
+        $this->feeAlerts->__construct($this->firebase, $this->fs->schoolId(), $this->session_year);
+        $ok = $this->feeAlerts->acknowledge($alertId, (string) ($this->admin_id ?? 'admin'), $note);
+        $ok ? $this->json_success(['acknowledged' => true])
+            : $this->json_error('Could not acknowledge alert.');
+    }
+
+    /** GET — Render the admin job dashboard page. */
+    public function job_dashboard()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'job_dashboard');
+        $this->load->view('include/header');
+        $this->load->view('fees/job_dashboard', [
+            'school_name'  => $this->school_name,
+            'session_year' => $this->session_year,
+        ]);
+        $this->load->view('include/footer');
+    }
+
+    // ── Dashboard helpers ────────────────────────────────────────────
+
+    private function _flipJobStatus(string $newStatus, array $extra = []): void
+    {
+        $this->_require_post();
+        $this->output->set_content_type('application/json');
+        $jobId = trim((string) ($this->input->post('jobId') ?: $this->input->get('jobId')));
+        if ($jobId === '') { $this->json_error('jobId is required.'); return; }
+        try {
+            $ok = (bool) $this->firebase->firestoreSet('fee_generation_jobs', $jobId,
+                array_merge($extra, ['status' => $newStatus, 'updatedAt' => date('c')]),
+                /* merge */ true);
+            if ($ok) $this->json_success(['status' => $newStatus]);
+            else     $this->json_error('Firestore write failed.');
+        } catch (\Exception $e) {
+            log_message('error', "_flipJobStatus({$newStatus}) failed: " . $e->getMessage());
+            $this->json_error('Could not flip status: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Shell out to scripts/generate_fees.php with the given mode. Keeps
+     * the controller out of the engine's code path and guarantees that
+     * admin-triggered retries use the exact same logic as operator
+     * shell invocations — no drift between UI and CLI.
+     */
+    private function _runCliMode(string $mode): void
+    {
+        $this->_require_post();
+        $this->output->set_content_type('application/json');
+        $jobId = trim((string) ($this->input->post('jobId') ?: $this->input->get('jobId')));
+        if ($jobId === '') { $this->json_error('jobId is required.'); return; }
+
+        $php    = defined('PHP_BINARY') ? PHP_BINARY : 'php';
+        $script = realpath(FCPATH . '../scripts/generate_fees.php')
+                 ?: FCPATH . 'scripts/generate_fees.php';
+        $cmd = escapeshellcmd($php) . ' '
+             . escapeshellarg($script) . ' '
+             . escapeshellcmd($mode) . ' '
+             . '--jobId=' . escapeshellarg($jobId)
+             . ' 2>&1';
+
+        // Bounded read — anything longer than ~8 KB is verbose log noise.
+        $out = [];
+        $exit = 0;
+        @exec($cmd, $out, $exit);
+        $tail = array_slice($out, -25);
+        if ($exit === 0) {
+            $this->json_success(['mode' => $mode, 'output' => $tail]);
+        } else {
+            $this->json_error(['error' => "CLI {$mode} exit={$exit}", 'output' => $tail]);
+        }
+    }
+
+    /** Shapes a raw job doc into what the dashboard list expects. */
+    private function _jobRowProjection(array $d): array
+    {
+        $workerSlots = [];
+        foreach ($d as $k => $v) {
+            if (strpos($k, 'worker_') === 0 && is_array($v)) $workerSlots[] = $v;
+        }
+        $total     = (int) ($d['totalStudents'] ?? 0);
+        $processed = 0; $demandsWritten = 0; $failedFromSlots = 0;
+        foreach ($workerSlots as $w) {
+            $processed      += (int) ($w['processedCount']  ?? 0);
+            $demandsWritten += (int) ($w['demandsWritten']  ?? 0);
+            $failedFromSlots += (int) ($w['failedBatches']  ?? 0);
+        }
+        $failed = max((int) ($d['failedBatches'] ?? 0), $failedFromSlots);
+        $pct    = $total > 0 ? round(100 * min($processed, $total) / $total, 1) : 0;
+
+        $startedAt   = (string) ($d['startedAt']   ?? '');
+        $completedAt = (string) ($d['completedAt'] ?? '');
+        $durationSec = 0;
+        if ($startedAt !== '') {
+            $endTs = $completedAt !== '' ? strtotime($completedAt) : time();
+            $durationSec = max(0, $endTs - strtotime($startedAt));
+        }
+
+        return [
+            'jobId'             => (string) ($d['jobId']       ?? ''),
+            'schoolId'          => (string) ($d['schoolId']    ?? ''),
+            'session'           => (string) ($d['session']     ?? ''),
+            'status'            => (string) ($d['status']      ?? 'unknown'),
+            'totalStudents'     => $total,
+            'processedStudents' => $processed,
+            'demandsWritten'    => $demandsWritten,
+            'failedBatches'     => $failed,
+            'progressPercent'   => $pct,
+            'totalWorkers'      => (int) ($d['totalWorkers'] ?? count($workerSlots)),
+            'requestedAt'       => (string) ($d['requestedAt'] ?? ''),
+            'startedAt'         => $startedAt,
+            'completedAt'       => $completedAt,
+            'durationSec'       => $durationSec,
+            'finalizeReason'    => (string) ($d['finalizeReason'] ?? ''),
+            'requestedBy'       => (string) ($d['requestedBy'] ?? ''),
+            'scope'             => is_array($d['scope'] ?? null) ? $d['scope'] : [],
+        ];
+    }
+
+    /**
+     * GET — Render the bulk demand-generation admin page.
+     */
+    public function generate_demands()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'generate_demands');
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+
+        // Preload class/section options (only sections with a fee chart are
+        // addressable; sections without one would just be "no chart" errors).
+        $classSections = $this->fsTxn->listSectionsWithFeeChart();
+        // Sort: class natural, then section A-Z
+        usort($classSections, function ($a, $b) {
+            $c = strcmp($a['class'], $b['class']);
+            return $c !== 0 ? $c : strcmp($a['section'], $b['section']);
+        });
+
+        $data = [
+            'academic_months' => self::ACADEMIC_MONTHS,
+            'class_sections'  => $classSections,
+            'session_year'    => $this->session_year,
+        ];
+        $this->load->view('include/header');
+        $this->load->view('fees/generate_demands', $data);
+        $this->load->view('include/footer');
+    }
+
+    /**
+     * POST — Dry-run preview: how many students + fee heads would be
+     * affected by a generate_monthly_demands run with these parameters?
+     * Powers the confirmation modal on the Generate Demands page.
+     *
+     * Params: month (required), class (optional), section (optional)
+     * Returns: {student_count, class_section_count, month_count,
+     *           class_sections:[...], fee_head_total, estimated_demands}
+     */
+    public function preview_demand_generation()
+    {
+        $this->_require_post();
+        $this->_require_role(self::MANAGE_ROLES, 'preview_demand_generation');
+
+        $monthInput = trim($this->input->post('month') ?? '');
+        $classInput = trim($this->input->post('class') ?? '');
+        $secInput   = trim($this->input->post('section') ?? '');
+
+        if ($monthInput === '') {
+            return $this->json_error('Month is required.');
+        }
+
+        $months = (strtolower($monthInput) === 'all')
+            ? self::ACADEMIC_MONTHS
+            : (in_array($monthInput, self::ACADEMIC_MONTHS, true) ? [$monthInput] : null);
+        if ($months === null) {
+            return $this->json_error("Invalid month: {$monthInput}");
+        }
 
         $this->load->library('Fee_firestore_txn', null, 'fsTxn');
         $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
 
-        // Build class/section list to process — from Firestore feeStructures.
+        // Resolve class/section scope — same logic as the live endpoint.
         $classSections = [];
         if ($classInput !== '' && $secInput !== '') {
-            if (stripos($classInput, 'Class ') !== 0) $classInput = "Class {$classInput}";
-            if (stripos($secInput, 'Section ') !== 0) $secInput = "Section {$secInput}";
+            if (stripos($classInput, 'Class ') !== 0)   $classInput = "Class {$classInput}";
+            if (stripos($secInput, 'Section ') !== 0)   $secInput   = "Section {$secInput}";
             $classSections[] = ['class' => $classInput, 'section' => $secInput];
         } else {
             foreach ($this->fsTxn->listSectionsWithFeeChart() as $cs) {
@@ -4381,143 +6303,50 @@ class Fees extends MY_Controller
             }
         }
 
-        if (empty($classSections)) {
-            return $this->json_error('No fee structures found in current session.');
-        }
-
-        // ================================================================
-        //  TWO-PHASE CONCURRENCY LOCK
-        //
-        //  Phase 1: CHECK all required locks (no writes).
-        //           If any active lock found → abort immediately.
-        //  Phase 2: ACQUIRE all locks atomically.
-        //           Only proceeds if Phase 1 passed.
-        //
-        //  Lock key uses period_key (YYYY-MM) to avoid cross-year conflicts.
-        //  Example: Class9th_SectionA_2026-04
-        // ================================================================
-
-        $lockToken     = bin2hex(random_bytes(8));
-        $acquiredLocks = [];
-
-        // Build list of all lock keys needed (locks now live in Firestore
-        // collection `feeDemandLocks`, one doc per {class, section, period}).
-        $requiredLocks = [];
+        // Count roster + fee heads per class/section.
+        $studentCount = 0;
+        $feeHeadsByKey = [];
+        $noRosterSections = [];
+        $noChartSections  = [];
+        $preview = [];
         foreach ($classSections as $cs) {
-            $classSlug   = str_replace(' ', '', $cs['class']);
-            $sectionSlug = str_replace(' ', '', $cs['section']);
-            foreach ($months as $m) {
-                $periodKey = $this->_buildPeriodKey($m);
-                $lockKey   = "{$classSlug}_{$sectionSlug}_{$periodKey}";
-                $requiredLocks[] = [
-                    'key'     => $lockKey,
-                    'class'   => $cs['class'],
-                    'section' => $cs['section'],
-                    'month'   => $m,
-                    'period'  => $periodKey,
-                ];
-            }
+            $chart = $this->_getClassFeeChart($cs['class'], $cs['section']);
+            $roster = $this->fsTxn->listStudentsInSection($cs['class'], $cs['section']);
+            $headCount = is_array($chart) ? count($chart) : 0;
+            $rosterCount = is_array($roster) ? count($roster) : 0;
+
+            if ($headCount === 0) $noChartSections[]  = "{$cs['class']} / {$cs['section']}";
+            if ($rosterCount === 0) $noRosterSections[] = "{$cs['class']} / {$cs['section']}";
+
+            $studentCount += $rosterCount;
+            $preview[] = [
+                'class'   => $cs['class'],
+                'section' => $cs['section'],
+                'students'=> $rosterCount,
+                'heads'   => $headCount,
+            ];
         }
 
-        // ── PHASE 1: Check ALL locks before acquiring any ──
-        foreach ($requiredLocks as $rl) {
-            $existingLock = $this->fsTxn->demandLockCheck($rl['key']);
-            if (is_array($existingLock)) {
-                $lockAge = (int) ($existingLock['age_seconds'] ?? 0);
-                log_message('info',
-                    "generate_demands: PHASE1 BLOCKED key={$rl['key']}"
-                    . " held_by=" . ($existingLock['locked_by'] ?? '?')
-                    . " age={$lockAge}s"
-                );
-                $this->output->set_content_type('application/json');
-                $this->output->set_output(json_encode([
-                    'status'      => 'error',
-                    'locked'      => true,
-                    'message'     => "{$rl['class']} {$rl['section']} / {$rl['month']} is already being processed by "
-                                   . ($existingLock['locked_by'] ?? 'another admin') . ". Please wait.",
-                    'locked_by'   => $existingLock['locked_by'] ?? '',
-                    'locked_at'   => $existingLock['locked_at'] ?? '',
-                    'age_seconds' => $lockAge,
-                    'lock_key'    => $rl['key'],
-                ]));
-                return;
-            }
+        // Estimated demands = Σ(students × heads × months), capped by head
+        // category (yearly heads only contribute when 'Yearly Fees' is the
+        // month; monthly heads contribute per month). Keep the math simple
+        // for the preview — the exact count materialises at write time.
+        $estimatedDemands = 0;
+        foreach ($preview as $p) {
+            $estimatedDemands += $p['students'] * $p['heads'] * count($months);
         }
-
-        // ── PHASE 2: Acquire ALL locks ──
-        foreach ($requiredLocks as $rl) {
-            $this->fsTxn->demandLockAcquire($rl['key'], $lockToken, [
-                'locked_by' => $this->admin_name ?? '',
-                'period'    => $rl['period'],
-                'class'     => $rl['class'],
-                'section'   => $rl['section'],
-            ]);
-            $acquiredLocks[] = $rl['key'];
-        }
-
-        log_message('info',
-            "generate_demands: PHASE2 acquired " . count($acquiredLocks) . " lock(s)"
-            . " token={$lockToken} admin=" . ($this->admin_name ?? '')
-        );
-
-        // Process each class/section
-        foreach ($classSections as $cs) {
-            $class   = $cs['class'];
-            $section = $cs['section'];
-
-            // Fetch fee chart for this class/section
-            $feeChart = $this->_getClassFeeChart($class, $section);
-            if (empty($feeChart)) {
-                $totals['no_chart']++;
-                continue;
-            }
-
-            // Get student roster for this section (Firestore students collection)
-            $roster = $this->fsTxn->listStudentsInSection($class, $section);
-            if (empty($roster)) continue;
-
-            foreach ($roster as $sid => $profile) {
-                $studentName = (string) ($profile['name'] ?? $profile['Name'] ?? $sid);
-
-                // Get student-specific discounts
-                $discountMap = $this->_getStudentDiscounts($sid, $class, $section);
-
-                foreach ($months as $month) {
-                    $r = $this->_generateDemandsForMonth(
-                        $sid, $studentName, $class, $section,
-                        $month, $feeChart, $discountMap, $dueDay
-                    );
-                    $totals['created'] += $r['created'];
-                    $totals['skipped'] += $r['skipped'];
-                    $totals['errors']  += $r['errors'];
-                }
-
-                $totals['students']++;
-            }
-        }
-
-        // ── Release all demand locks (token-verified, Firestore) ──
-        foreach ($acquiredLocks as $alk) {
-            try { $this->fsTxn->demandLockRelease($alk, $lockToken); }
-            catch (\Exception $e) {
-                log_message('error', "generate_demands: lock release failed {$alk}: " . $e->getMessage());
-            }
-        }
-
-        log_message('info',
-            "generate_demands: DONE token={$lockToken} created={$totals['created']}"
-            . " skipped={$totals['skipped']} students={$totals['students']}"
-        );
 
         $this->json_success([
-            'message'   => "{$totals['created']} demands created across {$totals['students']} students. "
-                         . "{$totals['skipped']} already existed."
-                         . ($totals['no_chart'] > 0 ? " {$totals['no_chart']} class/sections had no fee chart." : ''),
-            'students'  => $totals['students'],
-            'created'   => $totals['created'],
-            'skipped'   => $totals['skipped'],
-            'errors'    => $totals['errors'],
-            'no_chart'  => $totals['no_chart'],
+            'month'                => $monthInput,
+            'month_count'          => count($months),
+            'class'                => $classInput,
+            'section'              => $secInput,
+            'class_section_count'  => count($classSections),
+            'student_count'        => $studentCount,
+            'estimated_demands'    => $estimatedDemands,
+            'class_sections'       => $preview,
+            'no_chart_sections'    => $noChartSections,
+            'no_roster_sections'   => $noRosterSections,
         ]);
     }
 
@@ -4544,9 +6373,24 @@ class Fees extends MY_Controller
         }
         $studentId = $this->safe_path_segment($studentId, 'student_id');
 
-        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
-        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
-        $raw = $this->fsTxn->demandsForStudent($studentId);
+        // API-safety wrapper: Firestore upstream failures must never break
+        // the client. Always return status=success with an empty demands
+        // array + zeroed summary instead of 500, so the UI renders a
+        // friendly "no data" state rather than an error screen.
+        try {
+            $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+            $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
+            $raw = $this->fsTxn->demandsForStudent($studentId);
+            if (!is_array($raw)) $raw = [];
+        } catch (\Exception $e) {
+            log_message('error', "get_student_demands: Firestore failed for {$studentId}: " . $e->getMessage());
+            return $this->json_success([
+                'demands' => [],
+                'summary' => ['total_net' => 0, 'total_paid' => 0, 'total_balance' => 0],
+                'count'   => 0,
+                'degraded'=> true,
+            ]);
+        }
 
         $demands  = [];
         $summary  = ['total_net' => 0, 'total_paid' => 0, 'total_balance' => 0];

@@ -169,7 +169,7 @@ class Homework extends MY_Controller
                 'teacherId'   => $hw['teacherId'] ?? '',
                 'teacherName' => $hw['teacherName'] ?? '-',
                 'dueDate'     => $dd,
-                'status'      => $isOverdue ? 'Overdue' : $status,
+                'status'      => $isOverdue ? 'Overdue' : ucfirst(strtolower($status)),
                 'rate'        => $rate ?? 0,
                 'createdAt'   => $hw['createdAt'] ?? 0,
                 'description' => $hw['description'] ?? '',
@@ -229,9 +229,11 @@ class Homework extends MY_Controller
                 'studentId'   => $d['studentId'] ?? '',
                 'studentName' => $d['studentName'] ?? '',
                 'status'      => $subStatus,
+                'text'        => $d['text'] ?? '',
                 'remarks'     => $d['remark'] ?? '',
                 'submittedAt' => $d['submittedAt'] ?? '',
                 'score'       => $d['score'] ?? -1,
+                'reviewedBy'  => $d['reviewedBy'] ?? '',
             ];
         }
 
@@ -239,6 +241,7 @@ class Homework extends MY_Controller
         $status  = $hw['status'] ?? 'active';
         $dueDate = $hw['dueDate'] ?? '';
         $isOverdue = (strtolower($status) === 'active' && $dueDate && $dueDate < $today);
+        $totalStudents = intval($hw['totalStudents'] ?? ($submitted + $pending));
 
         $this->json_success([
             'homework' => [
@@ -251,11 +254,11 @@ class Homework extends MY_Controller
                 'teacherId'   => $hw['teacherId'] ?? '',
                 'teacherName' => $hw['teacherName'] ?? '-',
                 'dueDate'     => $dueDate,
-                'status'      => $isOverdue ? 'Overdue' : $status,
+                'status'      => $isOverdue ? 'Overdue' : ucfirst(strtolower($status)),
                 'createdAt'   => $hw['createdAt'] ?? '',
                 'submitted'   => $submitted,
                 'pending'     => $pending,
-                'total'       => $submitted + $pending,
+                'total'       => max($totalStudents, $submitted + $pending),
             ],
             'submissions' => $submissionList,
         ]);
@@ -263,6 +266,9 @@ class Homework extends MY_Controller
 
     /**
      * Detailed submission list for a homework.
+     *
+     * Merges submissions from Firestore with the full class roster so students
+     * who haven't submitted still appear as "pending".
      *
      * POST: class, section, hw_id
      */
@@ -285,21 +291,97 @@ class Homework extends MY_Controller
             null, 'ASC', 500
         );
 
-        $result = [];
+        // Index submissions by studentId
+        $subMap = [];
         foreach ($subDocs as $sub) {
             $d = $sub['data'];
-            $result[] = [
-                'studentId'   => $d['studentId'] ?? '',
+            $sid = $d['studentId'] ?? '';
+            $subMap[$sid] = [
+                'studentId'   => $sid,
                 'studentName' => $d['studentName'] ?? '',
                 'rollNo'      => '-',
                 'status'      => $d['status'] ?? 'pending',
+                'text'        => $d['text'] ?? '',
                 'remarks'     => $d['remark'] ?? '',
                 'submittedAt' => $d['submittedAt'] ?? '',
                 'score'       => $d['score'] ?? -1,
+                'reviewedBy'  => $d['reviewedBy'] ?? '',
             ];
         }
 
-        $totalStudents = intval($hw['totalStudents'] ?? count($result));
+        // Fetch full class roster from Firestore students collection
+        $cls = $hw['className'] ?? '';
+        $sec = $hw['section'] ?? '';
+        $result = [];
+
+        if ($cls && $sec) {
+            $sectionKey = "{$cls}/{$sec}";
+            try {
+                $studentDocs = $this->firebase->firestoreQuery(
+                    'students',
+                    [
+                        ['schoolId', '=', $this->school_name],
+                        ['sectionKey', '=', $sectionKey],
+                    ],
+                    null, 'ASC', 500
+                );
+                foreach ($studentDocs as $doc) {
+                    $sd = $doc['data'];
+                    // Student doc ID is "{schoolId}_{studentId}" but submission
+                    // stores just the raw studentId (e.g. "STU0001"). Match by
+                    // the studentId field inside the doc, not the doc ID.
+                    $sid = $sd['studentId'] ?? $sd['userId'] ?? $doc['id'];
+                    if (isset($subMap[$sid])) {
+                        // Student has a submission doc — use it
+                        $entry = $subMap[$sid];
+                        $entry['studentName'] = $sd['name'] ?? $sd['Name'] ?? $entry['studentName'];
+                        $entry['rollNo'] = $sd['rollNo'] ?? $sd['RollNo'] ?? '-';
+                        $result[] = $entry;
+                        unset($subMap[$sid]);
+                    } else {
+                        // No submission — show as pending
+                        $result[] = [
+                            'studentId'   => $sid,
+                            'studentName' => $sd['name'] ?? $sd['Name'] ?? $sid,
+                            'rollNo'      => $sd['rollNo'] ?? $sd['RollNo'] ?? '-',
+                            'status'      => 'pending',
+                            'text'        => '',
+                            'remarks'     => '',
+                            'submittedAt' => '',
+                            'score'       => -1,
+                            'reviewedBy'  => '',
+                        ];
+                    }
+                }
+            } catch (\Exception $e) {
+                // Firestore students query failed — fall through to submission-only list
+            }
+        }
+
+        // Append any remaining submissions not matched to roster (edge case)
+        foreach ($subMap as $entry) {
+            $result[] = $entry;
+        }
+
+        // If no roster found, fall back to submission docs only
+        if (empty($result)) {
+            foreach ($subDocs as $sub) {
+                $d = $sub['data'];
+                $result[] = [
+                    'studentId'   => $d['studentId'] ?? '',
+                    'studentName' => $d['studentName'] ?? '',
+                    'rollNo'      => '-',
+                    'status'      => $d['status'] ?? 'pending',
+                    'text'        => $d['text'] ?? '',
+                    'remarks'     => $d['remark'] ?? '',
+                    'submittedAt' => $d['submittedAt'] ?? '',
+                    'score'       => $d['score'] ?? -1,
+                    'reviewedBy'  => $d['reviewedBy'] ?? '',
+                ];
+            }
+        }
+
+        $totalStudents = max(intval($hw['totalStudents'] ?? 0), count($result));
         $submittedCount = 0;
         foreach ($result as $r) {
             if (in_array(strtolower($r['status']), ['submitted', 'reviewed', 'complete', 'done'])) {
@@ -387,9 +469,9 @@ class Homework extends MY_Controller
                 $groups[$tid]['rateCount']++;
             }
             // Track week of creation for regularity
-            $ts = $hw['createdAt'] ?? 0;
+            $ts = $this->_normalizeTimestamp($hw['createdAt'] ?? 0);
             if ($ts > 0) {
-                $week = date('Y-W', intval($ts / 1000));
+                $week = date('Y-W', $ts);
                 $groups[$tid]['weeks'][$week] = true;
             }
         }
@@ -500,10 +582,10 @@ class Homework extends MY_Controller
         $weeklyRates   = [];
 
         foreach ($all as $hw) {
-            $ts = $hw['createdAt'] ?? 0;
+            $ts = $this->_normalizeTimestamp($hw['createdAt'] ?? 0);
             if ($ts <= 0) continue;
 
-            $weekKey = date('Y-W', intval($ts / 1000));
+            $weekKey = date('Y-W', $ts);
             if (!isset($weeklyCreated[$weekKey])) {
                 $weeklyCreated[$weekKey] = 0;
                 $weeklyRates[$weekKey]   = ['sum' => 0, 'count' => 0];
@@ -547,6 +629,7 @@ class Homework extends MY_Controller
 
     /**
      * Get students for a class/section (for submission tracking tab).
+     * Firestore-first, RTDB fallback.
      */
     public function get_students_for_class()
     {
@@ -555,28 +638,106 @@ class Homework extends MY_Controller
         $class   = $this->safe_path_segment($this->input->post('class') ?? '', 'class');
         $section = $this->safe_path_segment($this->input->post('section') ?? '', 'section');
 
-        $path = "Schools/{$this->school_name}/{$this->session_year}/{$class}/{$section}/Students";
-        $data = $this->firebase->get($path);
-
         $students = [];
-        if (is_array($data)) {
-            $list = $data['List'] ?? $data;
-            if (is_array($list)) {
-                foreach ($list as $sid => $info) {
-                    if (is_string($info)) {
-                        $students[] = ['id' => $sid, 'name' => $info, 'roll' => $sid];
-                    } elseif (is_array($info)) {
-                        $students[] = [
-                            'id'   => $sid,
-                            'name' => $info['Name'] ?? $info['name'] ?? $sid,
-                            'roll' => $info['RollNo'] ?? $info['Roll'] ?? $info['roll'] ?? $sid,
-                        ];
+
+        // Firestore first
+        $sectionKey = "{$class}/{$section}";
+        try {
+            $docs = $this->firebase->firestoreQuery(
+                'students',
+                [
+                    ['schoolId', '=', $this->school_name],
+                    ['sectionKey', '=', $sectionKey],
+                ],
+                null, 'ASC', 500
+            );
+            foreach ($docs as $doc) {
+                $d = $doc['data'];
+                $students[] = [
+                    'id'   => $doc['id'],
+                    'name' => $d['name'] ?? $d['Name'] ?? $doc['id'],
+                    'roll' => $d['rollNo'] ?? $d['RollNo'] ?? $doc['id'],
+                ];
+            }
+        } catch (\Exception $e) {
+            // Firestore failed — RTDB fallback
+        }
+
+        // RTDB fallback
+        if (empty($students)) {
+            $path = "Schools/{$this->school_name}/{$this->session_year}/{$class}/{$section}/Students";
+            $data = $this->firebase->get($path);
+            if (is_array($data)) {
+                $list = $data['List'] ?? $data;
+                if (is_array($list)) {
+                    foreach ($list as $sid => $info) {
+                        if (is_string($info)) {
+                            $students[] = ['id' => $sid, 'name' => $info, 'roll' => $sid];
+                        } elseif (is_array($info)) {
+                            $students[] = [
+                                'id'   => $sid,
+                                'name' => $info['Name'] ?? $info['name'] ?? $sid,
+                                'roll' => $info['RollNo'] ?? $info['Roll'] ?? $info['roll'] ?? $sid,
+                            ];
+                        }
                     }
                 }
             }
         }
 
         $this->json_success(['students' => $students]);
+    }
+
+    /**
+     * Get all class/section combos for the school (for create form + filters).
+     * Reads from Firestore sections collection.
+     */
+    public function get_class_sections()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'homework_class_sections');
+
+        $result = [];
+
+        // Firestore first — sections collection
+        try {
+            $docs = $this->firebase->firestoreQuery(
+                'sections',
+                [['schoolId', '=', $this->school_name]],
+                null, 'ASC', 500
+            );
+            foreach ($docs as $doc) {
+                $d = $doc['data'];
+                $cls = $d['className'] ?? '';
+                $sec = $d['section'] ?? '';
+                if ($cls && $sec) {
+                    $result[] = ['class' => $cls, 'section' => $sec];
+                }
+            }
+        } catch (\Exception $e) {
+            // fallback below
+        }
+
+        // RTDB fallback — shallow_get session root
+        if (empty($result)) {
+            $root = "Schools/{$this->school_name}/{$this->session_year}";
+            $keys = $this->firebase->shallow_get($root);
+            if (is_array($keys)) {
+                foreach ($keys as $key => $val) {
+                    if (strpos($key, 'Class ') === 0) {
+                        $classNode = $this->firebase->shallow_get("{$root}/{$key}");
+                        if (is_array($classNode)) {
+                            foreach ($classNode as $sk => $sv) {
+                                if (strpos($sk, 'Section ') === 0) {
+                                    $result[] = ['class' => $key, 'section' => $sk];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        $this->json_success(['class_sections' => $result]);
     }
 
     /* ================================================================
@@ -635,7 +796,7 @@ class Homework extends MY_Controller
                 'teacherId'       => $this->admin_id,
                 'teacherName'     => $this->admin_name ?? 'Admin',
                 'dueDate'         => $dueDate,
-                'createdAt'       => date('c'),
+                'createdAt'       => round(microtime(true) * 1000),
                 'status'          => 'active',
                 'submissionCount' => 0,
                 'totalStudents'   => 0,
@@ -691,7 +852,7 @@ class Homework extends MY_Controller
         if ($dd !== '') $updates['dueDate'] = $dd;
 
         $st = trim($this->input->post('status') ?? '');
-        if ($st !== '' && in_array($st, ['Active', 'Closed', 'Archived', 'active', 'closed'], true)) {
+        if ($st !== '' && in_array(strtolower($st), ['active', 'closed', 'archived'], true)) {
             $updates['status'] = strtolower($st);
         }
 
@@ -782,6 +943,28 @@ class Homework extends MY_Controller
      *
      * @return array
      */
+    /**
+     * Normalize createdAt to Unix seconds.
+     * Handles: epoch ms (number), ISO string, Firestore timestamp map.
+     */
+    private function _normalizeTimestamp($ts): int
+    {
+        if (is_numeric($ts)) {
+            $n = (int) $ts;
+            // If > 1e12 it's milliseconds
+            return $n > 1000000000000 ? intval($n / 1000) : $n;
+        }
+        if (is_string($ts) && $ts !== '') {
+            $parsed = strtotime($ts);
+            return $parsed ?: 0;
+        }
+        if (is_array($ts)) {
+            // Firestore {_seconds:…} or {seconds:…}
+            return intval($ts['_seconds'] ?? $ts['seconds'] ?? 0);
+        }
+        return 0;
+    }
+
     private function _fetch_all_homework(): array
     {
         $school = $this->school_name;
@@ -809,42 +992,61 @@ class Homework extends MY_Controller
     /**
      * Calculate submission rate for a homework item.
      *
-     * @param array $hw Homework data with submissions key
-     * @return float|null Percentage (0-100) or null if no submissions data
+     * Uses submissionCount / totalStudents from the homework doc.
+     * Falls back to querying submissions collection if counts are missing.
+     *
+     * @param array $hw Homework data
+     * @return float|null Percentage (0-100) or null if no data
      */
     private function _calc_submission_rate(array $hw): ?float
     {
-        $submissions = $hw['submissions'] ?? null;
+        $totalStudents = intval($hw['totalStudents'] ?? 0);
+        $submissionCount = intval($hw['submissionCount'] ?? 0);
 
-        // For teacher-app homework, check HomeworkStatus path
-        if ((!is_array($submissions) || empty($submissions)) && isset($hw['_source']) && $hw['_source'] === 'app') {
-            $hwId = $hw['_id'] ?? '';
-            if ($hwId) {
-                $statusPath = "HomeworkStatus/{$this->school_name}/{$hwId}";
-                $statusData = $this->firebase->get($statusPath);
-                if (is_array($statusData)) {
-                    $submissions = $statusData;
+        // If totalStudents is available and > 0, use the stored counts
+        if ($totalStudents > 0) {
+            return round(($submissionCount / $totalStudents) * 100, 1);
+        }
+
+        // Fallback: query submissions collection for this homework
+        $hwId = $hw['_id'] ?? '';
+        if (!$hwId) return null;
+
+        // Use cached submissions if available
+        if (!isset($this->_submissionCache)) {
+            $this->_submissionCache = [];
+        }
+        if (isset($this->_submissionCache[$hwId])) {
+            return $this->_submissionCache[$hwId];
+        }
+
+        try {
+            $subDocs = $this->firebase->firestoreQuery(
+                'submissions',
+                [['homeworkId', '=', $hwId]],
+                null, 'ASC', 500
+            );
+
+            $total = count($subDocs);
+            if ($total === 0) {
+                $this->_submissionCache[$hwId] = null;
+                return null;
+            }
+
+            $submitted = 0;
+            foreach ($subDocs as $sub) {
+                $d = $sub['data'];
+                $status = strtolower($d['status'] ?? '');
+                if (in_array($status, ['submitted', 'complete', 'done', 'checked', 'reviewed'], true)) {
+                    $submitted++;
                 }
             }
-        }
 
-        if (!is_array($submissions) || empty($submissions)) {
+            $rate = round(($submitted / $total) * 100, 1);
+            $this->_submissionCache[$hwId] = $rate;
+            return $rate;
+        } catch (\Exception $e) {
             return null;
         }
-
-        $total     = 0;
-        $submitted = 0;
-
-        foreach ($submissions as $sid => $sub) {
-            if (!is_array($sub)) continue;
-            $total++;
-            $status = $sub['status'] ?? '';
-            // Normalize: submitted, complete, done all count as "submitted"
-            if (in_array(strtolower($status), ['submitted', 'complete', 'done', 'checked', 'reviewed'], true)) {
-                $submitted++;
-            }
-        }
-
-        return $total > 0 ? round(($submitted / $total) * 100, 1) : null;
     }
 }

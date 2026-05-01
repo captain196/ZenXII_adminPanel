@@ -293,7 +293,14 @@ class Schools extends MY_Controller
 
             // ── Fetch plan pricing if amount fields are missing ──────────
             if (empty($sub['amount']['totalAmount']) && !empty($sub['plan_id'])) {
-                $planData = $this->firebase->get('System/Plans/' . $sub['plan_id']);
+                // Firestore-first plan read, RTDB fallback
+                $planData = null;
+                try {
+                    $planData = $this->fs->get('systemPlans', $sub['plan_id']);
+                } catch (\Exception $e) {}
+                if (empty($planData)) {
+                    $planData = $this->firebase->get('System/Plans/' . $sub['plan_id']);
+                }
                 if (is_array($planData) && !empty($planData['price'])) {
                     $price   = (float)$planData['price'];
                     $billing = $planData['billing_cycle'] ?? 'annual';

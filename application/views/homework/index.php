@@ -50,7 +50,7 @@
 }
 .hw-tab {
     padding: 11px 22px; cursor: pointer; font-weight: 600; color: var(--hw-t2);
-    border-radius: 8px; transition: all .2s; font-size: 0.92rem; white-space: nowrap;
+    border-radius: 8px; transition: all .2s; font-size: 0.95rem; white-space: nowrap;
     display: flex; align-items: center; gap: 8px; text-decoration: none; border: none;
     background: transparent;
 }
@@ -97,10 +97,10 @@
     font-family: var(--font-d); line-height: 1;
 }
 .hw-stat-label {
-    font-size: 12px; color: var(--hw-t3); margin-top: 6px;
+    font-size: 13px; color: var(--hw-t3); margin-top: 6px;
     font-weight: 600; text-transform: uppercase; letter-spacing: .3px;
 }
-.hw-stat-sub { font-size: 11px; color: var(--hw-t3); margin-top: 4px; }
+.hw-stat-sub { font-size: 12px; color: var(--hw-t3); margin-top: 4px; }
 
 /* Skeleton loading */
 .hw-skel { width: 48px; height: 24px; border-radius: 6px; background: var(--hw-bg3); animation: hwPulse 1.2s ease-in-out infinite; }
@@ -136,12 +136,12 @@
 }
 .hw-filter-group { display: flex; flex-direction: column; gap: 4px; }
 .hw-filter-group label {
-    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    font-size: 12px; font-weight: 700; text-transform: uppercase;
     letter-spacing: .4px; color: var(--hw-t3);
 }
 .hw-filter-bar select, .hw-filter-bar input[type="text"], .hw-filter-bar input[type="date"] {
-    padding: 8px 14px; border: 1px solid var(--hw-border); border-radius: 8px;
-    font-size: 13px; background: var(--hw-bg2); color: var(--hw-t1);
+    padding: 9px 14px; border: 1px solid var(--hw-border); border-radius: 8px;
+    font-size: 14px; background: var(--hw-bg2); color: var(--hw-t1);
     min-width: 140px; transition: border-color .2s, box-shadow .2s;
 }
 .hw-filter-bar select:focus, .hw-filter-bar input:focus {
@@ -150,15 +150,15 @@
 
 /* ── Table ─────────────────────────────────────────────────── */
 .hw-table-wrap { overflow-x: auto; }
-.hw-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.hw-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .hw-table thead th {
-    padding: 12px 16px; text-align: left; font-weight: 700;
-    color: var(--hw-t2); font-size: 11px; text-transform: uppercase;
+    padding: 13px 16px; text-align: left; font-weight: 700;
+    color: var(--hw-t2); font-size: 12px; text-transform: uppercase;
     letter-spacing: .4px; border-bottom: 1px solid var(--hw-border);
     background: var(--hw-bg3); white-space: nowrap;
 }
 .hw-table tbody td {
-    padding: 11px 16px; color: var(--hw-t1);
+    padding: 12px 16px; color: var(--hw-t1);
     border-bottom: 1px solid var(--hw-border); vertical-align: middle;
 }
 .hw-table tbody tr:last-child td { border-bottom: none; }
@@ -167,8 +167,8 @@
 
 /* ── Badges ───────────────────────────────────────────────── */
 .hw-badge {
-    display: inline-block; padding: 3px 10px; border-radius: 20px;
-    font-size: 11px; font-weight: 600; white-space: nowrap;
+    display: inline-block; padding: 4px 12px; border-radius: 20px;
+    font-size: 12px; font-weight: 600; white-space: nowrap;
 }
 .hw-badge-green  { background: rgba(22,163,74,.12); color: var(--hw-green); }
 .hw-badge-red    { background: rgba(220,38,38,.12); color: var(--hw-red); }
@@ -188,12 +188,12 @@
 .hw-progress-bar.green  { background: var(--hw-green); }
 .hw-progress-bar.amber  { background: var(--hw-amber); }
 .hw-progress-bar.red    { background: var(--hw-red); }
-.hw-progress-label { font-size: 11px; font-weight: 600; color: var(--hw-t2); white-space: nowrap; }
+.hw-progress-label { font-size: 12px; font-weight: 600; color: var(--hw-t2); white-space: nowrap; }
 
 /* ── Buttons ──────────────────────────────────────────────── */
 .hw-btn {
     padding: 9px 20px; border: none; border-radius: 8px; font-weight: 600;
-    font-size: 13px; cursor: pointer; transition: all .2s;
+    font-size: 14px; cursor: pointer; transition: all .2s;
     display: inline-flex; align-items: center; gap: 7px; text-decoration: none;
 }
 .hw-btn:hover { transform: translateY(-1px); }
@@ -215,7 +215,7 @@
     border: 1px solid var(--hw-border); padding: 20px; box-shadow: var(--hw-shadow);
 }
 .hw-chart-title {
-    font-size: 13px; font-weight: 700; color: var(--hw-t1);
+    font-size: 14px; font-weight: 700; color: var(--hw-t1);
     margin-bottom: 14px; display: flex; align-items: center; gap: 8px;
     font-family: var(--font-d);
 }
@@ -227,20 +227,23 @@
 .hw-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; margin-bottom: 24px; }
 
 /* ── Empty State ──────────────────────────────────────────── */
-.hw-empty { text-align: center; padding: 48px 20px; color: var(--hw-t3); font-size: 14px; }
+.hw-empty { text-align: center; padding: 48px 20px; color: var(--hw-t3); font-size: 15px; }
 .hw-empty i { font-size: 36px; margin-bottom: 12px; display: block; opacity: .4; }
 
 /* ── Modal ─────────────────────────────────────────────────── */
 .hw-modal-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 10000;
+    position: fixed !important; top: 0 !important; left: 0 !important;
+    width: 100vw !important; height: 100vh !important;
+    background: rgba(0,0,0,.5); z-index: 10000;
     display: none; align-items: center; justify-content: center;
-    backdrop-filter: blur(4px);
+    transform: none !important;
 }
-.hw-modal-overlay.show { display: flex; }
+.hw-modal-overlay.show { display: flex !important; }
 .hw-modal {
     background: var(--hw-bg2); border-radius: 16px; width: 95%; max-width: 720px;
     max-height: 90vh; overflow-y: auto; box-shadow: 0 12px 48px rgba(0,0,0,.2);
     animation: hwModalIn .2s ease;
+    margin: auto;
 }
 @keyframes hwModalIn { from { opacity: 0; transform: scale(.96) translateY(10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
 .hw-modal-head {
@@ -255,7 +258,7 @@
     display: flex; align-items: center; justify-content: center; transition: background .15s;
 }
 .hw-modal-close:hover { background: rgba(220,38,38,.1); color: var(--hw-red); }
-.hw-modal-body { padding: 24px; }
+.hw-modal-body { padding: 24px; font-size: 14px; }
 .hw-modal-foot {
     padding: 16px 24px; border-top: 1px solid var(--hw-border);
     display: flex; justify-content: flex-end; gap: 12px;
@@ -265,12 +268,12 @@
 /* ── Form ──────────────────────────────────────────────────── */
 .hw-fg { margin-bottom: 16px; }
 .hw-fg label {
-    display: block; font-weight: 700; margin-bottom: 5px; font-size: 12px;
+    display: block; font-weight: 700; margin-bottom: 5px; font-size: 13px;
     color: var(--hw-t2); text-transform: uppercase; letter-spacing: .3px;
 }
 .hw-fg input, .hw-fg select, .hw-fg textarea {
     width: 100%; padding: 10px 14px; border: 1px solid var(--hw-border);
-    border-radius: 8px; font-size: 13px; background: var(--hw-bg);
+    border-radius: 8px; font-size: 14px; background: var(--hw-bg);
     color: var(--hw-t1); transition: border-color .2s, box-shadow .2s;
 }
 .hw-fg input:focus, .hw-fg select:focus, .hw-fg textarea:focus {
@@ -294,8 +297,8 @@
 .hw-alert-dot.red { background: var(--hw-red); box-shadow: 0 0 6px rgba(220,38,38,.4); }
 .hw-alert-dot.amber { background: var(--hw-amber); box-shadow: 0 0 6px rgba(217,119,6,.4); }
 .hw-alert-info { flex: 1; }
-.hw-alert-title { font-size: 13px; font-weight: 600; color: var(--hw-t1); }
-.hw-alert-meta { font-size: 11px; color: var(--hw-t3); margin-top: 2px; }
+.hw-alert-title { font-size: 14px; font-weight: 600; color: var(--hw-t1); }
+.hw-alert-meta { font-size: 12px; color: var(--hw-t3); margin-top: 2px; }
 
 /* ── Gauge ─────────────────────────────────────────────────── */
 .hw-gauge-wrap { display: flex; align-items: center; justify-content: center; margin-top: 8px; }
@@ -307,9 +310,72 @@
 }
 
 /* ── Checkbox multi-select ────────────────────────────────── */
-.hw-check-list { max-height: 160px; overflow-y: auto; border: 1px solid var(--hw-border); border-radius: 8px; padding: 8px; }
-.hw-check-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; font-size: 13px; color: var(--hw-t1); }
-.hw-check-item input[type="checkbox"] { accent-color: var(--hw-primary); }
+/* Section chips — replaces the old vertical checkbox list. The native
+   checkboxes are hidden but kept inside each label so form semantics
+   (name="createSection", `name=createSection`:checked queries) are
+   preserved. The selected state is driven by `:has(input:checked)` —
+   needs Chrome 105 / Firefox 121 / Safari 15.4 (covered by every modern
+   admin browser). */
+.hw-check-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--hw-border);
+    border-radius: 10px;
+    background: var(--hw-bg2);
+    min-height: 56px;
+    align-items: center;
+}
+.hw-check-list .hw-check-empty {
+    width: 100%;
+    text-align: left;
+    color: var(--hw-t3);
+    font-size: 12px;
+    padding: 4px 2px;
+}
+.hw-check-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border: 1px solid var(--hw-border);
+    border-radius: 999px;
+    background: var(--hw-bg);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--hw-t1);
+    cursor: pointer;
+    user-select: none;
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+.hw-check-item:hover { border-color: var(--hw-primary); }
+.hw-check-item input[type="checkbox"] {
+    /* keep the input in the DOM for form serialization, just hide it */
+    position: absolute;
+    width: 1px; height: 1px;
+    margin: -1px; padding: 0;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    white-space: nowrap;
+    border: 0;
+}
+.hw-check-item:has(input:checked) {
+    background: var(--hw-primary);
+    border-color: var(--hw-primary);
+    color: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+}
+.hw-check-item--all {
+    background: transparent;
+    border-style: dashed;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.4px;
+    padding: 7px 12px;
+}
+.hw-check-item--all:has(input:checked) { border-style: solid; }
 
 /* ── Responsive ───────────────────────────────────────────── */
 @media (max-width: 1100px) { .hw-stats { grid-template-columns: repeat(2, 1fr); } .hw-chart-row, .hw-grid-2, .hw-grid-3 { grid-template-columns: 1fr; } }
@@ -527,12 +593,15 @@
                                 <th>Student Name</th>
                                 <th>Roll No</th>
                                 <th>Status</th>
+                                <th>Response</th>
+                                <th>Score</th>
+                                <th>Remark</th>
+                                <th>Reviewed By</th>
                                 <th>Submitted At</th>
-                                <th>Remarks</th>
                             </tr>
                         </thead>
                         <tbody id="subBody">
-                            <tr><td colspan="6" class="hw-empty"><i class="fa fa-hand-pointer-o"></i> Select a class, section, and homework to view submissions</td></tr>
+                            <tr><td colspan="9" class="hw-empty"><i class="fa fa-hand-pointer-o"></i> Select a class, section, and homework to view submissions</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -614,7 +683,7 @@
                         <div class="hw-fg">
                             <label>Sections *</label>
                             <div class="hw-check-list" id="createSectionsList">
-                                <div style="color:var(--hw-t3);font-size:12px;padding:8px;">Select a class first</div>
+                                <div class="hw-check-empty">Select a class first</div>
                             </div>
                         </div>
                     </div>
@@ -731,6 +800,12 @@ document.addEventListener('DOMContentLoaded', function(){
 (function(){
 'use strict';
 
+// Move modals to <body> to escape any ancestor transform/overflow that breaks position:fixed
+['hwDetailModal','hwEditModal'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el && el.parentElement !== document.body) document.body.appendChild(el);
+});
+
 /* ── Globals ──────────────────────────────────────────────── */
 var BASE = '<?= base_url() ?>';
 var CSRF = {
@@ -754,28 +829,41 @@ function ajaxPost(url, data, cb) {
 }
 
 function esc(s) { var d = document.createElement('div'); d.appendChild(document.createTextNode(s || '')); return d.innerHTML; }
+function escJs(s) { return (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"'); }
 function $$(sel) { if (typeof sel === 'string') return document.querySelectorAll(sel); return sel; }
 function $1(sel) { return document.querySelector(sel); }
 function setText(id, v) { var el = document.getElementById(id); if (el) el.textContent = v; }
 function setHtml(id, v) { var el = document.getElementById(id); if (el) el.innerHTML = v; }
 
 function statusBadge(s) {
+    var key = (s || '').toLowerCase();
     var map = {
-        'Active':  'hw-badge-green',
-        'Closed':  'hw-badge-gray',
-        'Archived':'hw-badge-blue',
-        'Overdue': 'hw-badge-red',
+        'active':   'hw-badge-green',
+        'closed':   'hw-badge-gray',
+        'archived': 'hw-badge-blue',
+        'overdue':  'hw-badge-red',
     };
-    return '<span class="hw-badge ' + (map[s] || 'hw-badge-gray') + '">' + esc(s) + '</span>';
+    var label = s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+    return '<span class="hw-badge ' + (map[key] || 'hw-badge-gray') + '">' + esc(label) + '</span>';
 }
 
 function subStatusBadge(s) {
+    var key = (s || '').toLowerCase();
     var map = {
-        'Submitted':      'hw-badge-green',
-        'Not Submitted':  'hw-badge-red',
-        'Pending Review': 'hw-badge-amber',
+        'submitted': 'hw-badge-green',
+        'reviewed':  'hw-badge-purple',
+        'complete':  'hw-badge-green',
+        'done':      'hw-badge-green',
+        'pending':   'hw-badge-red',
     };
-    return '<span class="hw-badge ' + (map[s] || 'hw-badge-gray') + '">' + esc(s) + '</span>';
+    var labels = {
+        'submitted': 'Submitted',
+        'reviewed':  'Reviewed',
+        'complete':  'Complete',
+        'done':      'Done',
+        'pending':   'Pending',
+    };
+    return '<span class="hw-badge ' + (map[key] || 'hw-badge-gray') + '">' + esc(labels[key] || s) + '</span>';
 }
 
 function progressBar(rate) {
@@ -787,7 +875,19 @@ function progressBar(rate) {
 
 function formatTs(ts) {
     if (!ts || ts === 0) return '-';
-    var d = new Date(typeof ts === 'number' ? ts : parseInt(ts));
+    var d;
+    if (typeof ts === 'string') {
+        // Handle ISO strings like "2026-04-09T23:38:36+05:30"
+        d = new Date(ts);
+    } else if (typeof ts === 'object' && ts._seconds) {
+        // Handle Firestore Timestamp objects {_seconds, _nanoseconds}
+        d = new Date(ts._seconds * 1000);
+    } else if (typeof ts === 'number') {
+        // Handle Unix ms or seconds
+        d = new Date(ts > 1e12 ? ts : ts * 1000);
+    } else {
+        d = new Date(parseInt(ts));
+    }
     if (isNaN(d.getTime())) return '-';
     return d.toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' }) + ' ' +
            d.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' });
@@ -816,21 +916,30 @@ var _hwCache = null;         // cached homework list
 
 function loadClassSections(cb) {
     if (_classSections) { cb(_classSections); return; }
-    // Use the homework list endpoint to discover classes, or use a dedicated one
-    // We'll fetch the list once and cache
-    ajaxPost('homework/get_homework_list', {}, function(r) {
-        if (r.status !== 'success') { cb([]); return; }
-        _hwCache = r.homework || [];
-        // Derive unique classes, sections, subjects, teachers
+    // Fetch class/sections from dedicated endpoint (all school sections, not just those with homework)
+    ajaxPost('homework/get_class_sections', {}, function(r) {
         var classMap = {};
-        var subjectSet = {};
-        (r.homework || []).forEach(function(h) {
-            if (!classMap[h.class]) classMap[h.class] = {};
-            classMap[h.class][h.section] = true;
-            if (h.subject) subjectSet[h.subject] = true;
+        if (r.status === 'success' && r.class_sections) {
+            r.class_sections.forEach(function(cs) {
+                if (!classMap[cs.class]) classMap[cs.class] = {};
+                classMap[cs.class][cs.section] = true;
+            });
+        }
+        // Also fetch homework list to get subject info
+        ajaxPost('homework/get_homework_list', {}, function(r2) {
+            _hwCache = (r2.status === 'success') ? (r2.homework || []) : [];
+            var subjectSet = {};
+            _hwCache.forEach(function(h) {
+                // Merge any extra class/sections from homework data
+                if (h.class && h.section) {
+                    if (!classMap[h.class]) classMap[h.class] = {};
+                    classMap[h.class][h.section] = true;
+                }
+                if (h.subject) subjectSet[h.subject] = true;
+            });
+            _classSections = { classMap: classMap, subjects: Object.keys(subjectSet) };
+            cb(_classSections);
         });
-        _classSections = { classMap: classMap, subjects: Object.keys(subjectSet) };
-        cb(_classSections);
     });
 }
 
@@ -1057,8 +1166,8 @@ HW.dash = {
             }
             var html = '';
             list.forEach(function(h) {
-                html += '<div class="hw-alert-item" onclick="HW.detail.open(\'' + esc(h.class) + '\',\'' + esc(h.section) + '\',\'' + esc(h.id) + '\')">' +
-                    '<div class="hw-alert-dot ' + (h.status === 'Overdue' ? 'red' : (h.status === 'Active' ? 'amber' : '')) + '"></div>' +
+                html += '<div class="hw-alert-item" onclick="HW.detail.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')">' +
+                    '<div class="hw-alert-dot ' + (h.status.toLowerCase() === 'overdue' ? 'red' : (h.status.toLowerCase() === 'active' ? 'amber' : '')) + '"></div>' +
                     '<div class="hw-alert-info"><div class="hw-alert-title">' + esc(h.title) + '</div>' +
                     '<div class="hw-alert-meta">' + esc(h.subject) + ' &middot; ' + esc(h.class) + ' / ' + esc(h.section) + ' &middot; Due: ' + formatDate(h.dueDate) + '</div></div>' +
                     statusBadge(h.status) + '</div>';
@@ -1080,7 +1189,7 @@ HW.dash = {
             }
             var html = '';
             list.forEach(function(h) {
-                html += '<div class="hw-alert-item" onclick="HW.detail.open(\'' + esc(h.class) + '\',\'' + esc(h.section) + '\',\'' + esc(h.id) + '\')">' +
+                html += '<div class="hw-alert-item" onclick="HW.detail.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')">' +
                     '<div class="hw-alert-dot red"></div>' +
                     '<div class="hw-alert-info"><div class="hw-alert-title">' + esc(h.title) + '</div>' +
                     '<div class="hw-alert-meta">' + esc(h.subject) + ' &middot; ' + esc(h.class) + ' / ' + esc(h.section) +
@@ -1148,7 +1257,8 @@ HW.list = {
 
             var html = '';
             list.forEach(function(h) {
-                html += '<tr onclick="HW.detail.open(\'' + esc(h.class) + '\',\'' + esc(h.section) + '\',\'' + esc(h.id) + '\')">' +
+                var sl = h.status.toLowerCase();
+                html += '<tr onclick="HW.detail.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')">' +
                     '<td><strong>' + esc(h.title) + '</strong></td>' +
                     '<td>' + esc(h.subject) + '</td>' +
                     '<td>' + esc(h.class) + ' / ' + esc(h.section) + '</td>' +
@@ -1157,9 +1267,9 @@ HW.list = {
                     '<td>' + statusBadge(h.status) + '</td>' +
                     '<td>' + progressBar(h.rate) + '</td>' +
                     '<td style="white-space:nowrap;" onclick="event.stopPropagation();">' +
-                        '<button class="hw-btn hw-btn-sm hw-btn-outline" title="Edit" onclick="HW.edit.open(\'' + esc(h.class) + '\',\'' + esc(h.section) + '\',\'' + esc(h.id) + '\')"><i class="fa fa-pencil"></i></button> ' +
-                        (h.status === 'Active' || h.status === 'Overdue' ? '<button class="hw-btn hw-btn-sm hw-btn-success" title="Close" onclick="HW.actions.close(\'' + esc(h.class) + '\',\'' + esc(h.section) + '\',\'' + esc(h.id) + '\')"><i class="fa fa-check"></i></button> ' : '') +
-                        '<button class="hw-btn hw-btn-sm hw-btn-danger" title="Delete" onclick="HW.actions.remove(\'' + esc(h.class) + '\',\'' + esc(h.section) + '\',\'' + esc(h.id) + '\')"><i class="fa fa-trash"></i></button>' +
+                        '<button class="hw-btn hw-btn-sm hw-btn-outline" title="Edit" onclick="HW.edit.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-pencil"></i></button> ' +
+                        (sl === 'active' || sl === 'overdue' ? '<button class="hw-btn hw-btn-sm hw-btn-success" title="Close" onclick="HW.actions.close(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-check"></i></button> ' : '') +
+                        '<button class="hw-btn hw-btn-sm hw-btn-danger" title="Delete" onclick="HW.actions.remove(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-trash"></i></button>' +
                     '</td></tr>';
             });
             setHtml('hwListBody', html);
@@ -1201,31 +1311,42 @@ HW.detail = {
             }
 
             // Submission summary
+            var detailPct = h.total > 0 ? Math.round(h.submitted / h.total * 100) : 0;
+            var detailBarCls = detailPct >= 70 ? 'green' : (detailPct >= 40 ? 'amber' : 'red');
             html += '<div style="margin-bottom:12px;display:flex;align-items:center;gap:16px;">' +
                 '<strong style="color:var(--hw-t1);font-size:14px;">Submissions</strong>' +
                 '<div class="hw-progress-wrap" style="min-width:200px;">' +
-                '<div class="hw-progress" style="height:8px;"><div class="hw-progress-bar ' + (h.total > 0 ? (h.submitted/h.total*100 >= 70 ? 'green' : (h.submitted/h.total*100 >= 40 ? 'amber' : 'red')) : 'gray') +
-                '" style="width:' + (h.total > 0 ? Math.round(h.submitted/h.total*100) : 0) + '%"></div></div>' +
+                '<div class="hw-progress" style="height:8px;"><div class="hw-progress-bar ' + detailBarCls +
+                '" style="width:' + detailPct + '%"></div></div>' +
                 '<span class="hw-progress-label">' + h.submitted + '/' + h.total + '</span></div></div>';
 
             // Submission table
             if (subs.length) {
-                html += '<div class="hw-table-wrap" style="max-height:250px;overflow-y:auto;"><table class="hw-table"><thead><tr><th>Student ID</th><th>Status</th><th>Submitted At</th><th>Remarks</th></tr></thead><tbody>';
+                html += '<div class="hw-table-wrap" style="max-height:300px;overflow-y:auto;"><table class="hw-table"><thead><tr>' +
+                    '<th>Student</th><th>Status</th><th>Response</th><th>Score</th><th>Remark</th><th>Submitted</th></tr></thead><tbody>';
                 subs.forEach(function(s) {
-                    html += '<tr><td>' + esc(s.studentId) + '</td><td>' + subStatusBadge(s.status) +
-                        '</td><td>' + formatTs(s.submittedAt) + '</td><td>' + esc(s.remarks) + '</td></tr>';
+                    var scoreStr = (s.score !== undefined && s.score >= 0) ? s.score : '-';
+                    html += '<tr>' +
+                        '<td>' + esc(s.studentName || s.studentId) + '</td>' +
+                        '<td>' + subStatusBadge(s.status) + '</td>' +
+                        '<td style="max-width:200px;white-space:pre-wrap;word-break:break-word;">' + esc(s.text || '') + '</td>' +
+                        '<td>' + scoreStr + '</td>' +
+                        '<td>' + esc(s.remarks || '') + '</td>' +
+                        '<td>' + formatTs(s.submittedAt) + '</td>' +
+                        '</tr>';
                 });
                 html += '</tbody></table></div>';
             } else {
-                html += '<div style="color:var(--hw-t3);font-size:13px;text-align:center;padding:16px;">No submission data available</div>';
+                html += '<div style="color:var(--hw-t3);font-size:14px;text-align:center;padding:16px;">No submission data available</div>';
             }
 
             setHtml('detailModalBody', html);
 
             // Footer actions
             var foot = '<button class="hw-btn hw-btn-outline" onclick="HW.detail.close()">Close</button>';
-            if (h.status === 'Active' || h.status === 'Overdue') {
-                foot += ' <button class="hw-btn hw-btn-success" onclick="HW.actions.close(\'' + esc(h.class) + '\',\'' + esc(h.section) + '\',\'' + esc(h.id) + '\');HW.detail.close();"><i class="fa fa-check"></i> Close Homework</button>';
+            var hsl = (h.status || '').toLowerCase();
+            if (hsl === 'active' || hsl === 'overdue') {
+                foot += ' <button class="hw-btn hw-btn-success" onclick="HW.actions.close(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\');HW.detail.close();"><i class="fa fa-check"></i> Close Homework</button>';
             }
             setHtml('detailModalFoot', foot);
         });
@@ -1357,7 +1478,7 @@ HW.sub = {
         var cls = document.getElementById('subClass').value;
         var sec = document.getElementById('subSection').value;
 
-        setHtml('subBody', '<tr><td colspan="6" class="hw-empty"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr>');
+        setHtml('subBody', '<tr><td colspan="9" class="hw-empty"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr>');
         document.getElementById('subSummary').style.display = 'none';
         document.getElementById('btnExportSub').style.display = 'none';
 
@@ -1382,18 +1503,22 @@ HW.sub = {
             document.getElementById('btnExportSub').style.display = '';
 
             if (!subs.length) {
-                setHtml('subBody', '<tr><td colspan="6" class="hw-empty"><i class="fa fa-inbox"></i> No students found</td></tr>');
+                setHtml('subBody', '<tr><td colspan="9" class="hw-empty"><i class="fa fa-inbox"></i> No students found</td></tr>');
                 return;
             }
 
             var html = '';
             subs.forEach(function(s, i) {
+                var scoreStr = (s.score !== undefined && s.score >= 0) ? s.score : '-';
                 html += '<tr><td>' + (i + 1) + '</td>' +
                     '<td>' + esc(s.studentName) + '</td>' +
                     '<td>' + esc(s.rollNo) + '</td>' +
                     '<td>' + subStatusBadge(s.status) + '</td>' +
-                    '<td>' + formatTs(s.submittedAt) + '</td>' +
-                    '<td>' + esc(s.remarks) + '</td></tr>';
+                    '<td style="max-width:200px;white-space:pre-wrap;word-break:break-word;">' + esc(s.text || '') + '</td>' +
+                    '<td>' + scoreStr + '</td>' +
+                    '<td>' + esc(s.remarks || '') + '</td>' +
+                    '<td>' + esc(s.reviewedBy || '') + '</td>' +
+                    '<td>' + formatTs(s.submittedAt) + '</td></tr>';
             });
             setHtml('subBody', html);
             HW.sub._lastData = subs;
@@ -1401,7 +1526,7 @@ HW.sub = {
     },
 
     _clearTable: function() {
-        setHtml('subBody', '<tr><td colspan="6" class="hw-empty"><i class="fa fa-hand-pointer-o"></i> Select a class, section, and homework to view submissions</td></tr>');
+        setHtml('subBody', '<tr><td colspan="9" class="hw-empty"><i class="fa fa-hand-pointer-o"></i> Select a class, section, and homework to view submissions</td></tr>');
         document.getElementById('subSummary').style.display = 'none';
         document.getElementById('btnExportSub').style.display = 'none';
     },
@@ -1409,9 +1534,12 @@ HW.sub = {
     exportCSV: function() {
         var data = this._lastData;
         if (!data || !data.length) return;
-        var csv = 'Student ID,Student Name,Roll No,Status,Submitted At,Remarks\n';
+        var csv = 'Student ID,Student Name,Roll No,Status,Response,Score,Remark,Reviewed By,Submitted At\n';
         data.forEach(function(s) {
-            csv += '"' + s.studentId + '","' + s.studentName + '","' + s.rollNo + '","' + s.status + '","' + formatTs(s.submittedAt) + '","' + (s.remarks || '') + '"\n';
+            var scoreStr = (s.score !== undefined && s.score >= 0) ? s.score : '';
+            csv += '"' + s.studentId + '","' + s.studentName + '","' + s.rollNo + '","' + s.status + '","' +
+                (s.text || '').replace(/"/g, '""') + '","' + scoreStr + '","' +
+                (s.remarks || '').replace(/"/g, '""') + '","' + (s.reviewedBy || '') + '","' + formatTs(s.submittedAt) + '"\n';
         });
         var blob = new Blob([csv], { type: 'text/csv' });
         var a = document.createElement('a');
@@ -1607,13 +1735,13 @@ HW.create = {
         var cls = document.getElementById('createClass').value;
         var listEl = document.getElementById('createSectionsList');
         if (!cls || !_classSections || !_classSections.classMap[cls]) {
-            listEl.innerHTML = '<div style="color:var(--hw-t3);font-size:12px;padding:8px;">Select a class first</div>';
+            listEl.innerHTML = '<div class="hw-check-empty">Select a class first</div>';
             return;
         }
         var sections = Object.keys(_classSections.classMap[cls]).sort();
-        var html = '<label class="hw-check-item"><input type="checkbox" value="__all__" onchange="HW.create.toggleAll(this)"> <strong>Select All</strong></label>';
+        var html = '<label class="hw-check-item hw-check-item--all"><input type="checkbox" value="__all__" onchange="HW.create.toggleAll(this)"><span>All</span></label>';
         sections.forEach(function(s) {
-            html += '<label class="hw-check-item"><input type="checkbox" name="createSection" value="' + esc(s) + '"> ' + esc(s) + '</label>';
+            html += '<label class="hw-check-item"><input type="checkbox" name="createSection" value="' + esc(s) + '"><span>' + esc(s) + '</span></label>';
         });
         listEl.innerHTML = html;
     },
@@ -1685,7 +1813,7 @@ HW.create = {
 
             // Reset form
             document.getElementById('createHwForm').reset();
-            document.getElementById('createSectionsList').innerHTML = '<div style="color:var(--hw-t3);font-size:12px;padding:8px;">Select a class first</div>';
+            document.getElementById('createSectionsList').innerHTML = '<div class="hw-check-empty">Select a class first</div>';
             document.getElementById('createPreview').style.display = 'none';
 
             // Reset default due date

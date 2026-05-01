@@ -438,12 +438,33 @@ class Accounting_firestore_sync
 
     // ═══════════════════════════════════════════════════════════════════
     //  BULK BACKFILL — used by firestore_bulk_sync admin endpoint
+    //
+    //  Phase 8A — RTDB backfills are GATED. RTDB has been retired from
+    //  the live path (see memory "NO RTDB — Firestore ONLY"). These
+    //  methods remain only so a post-incident "rebuild Firestore from
+    //  the last RTDB snapshot" run is still possible. They NO-OP unless
+    //  `ACCOUNTING_ALLOW_RTDB_BACKFILL=1` is explicitly set in the
+    //  environment of the PHP process (not the admin's browser cookie).
+    //
+    //  Why gate instead of delete: the RTDB data set may still be
+    //  valuable as a one-off recovery source. Deleting the code removes
+    //  that safety net; gating keeps it while preventing any accidental
+    //  call from a UI button / cron job.
     // ═══════════════════════════════════════════════════════════════════
+
+    private static function _rtdbBackfillEnabled(): bool
+    {
+        return (string) getenv('ACCOUNTING_ALLOW_RTDB_BACKFILL') === '1';
+    }
 
     /** Back-fill chart of accounts from RTDB. */
     public function syncAllChartOfAccounts(): int
     {
         if (!$this->ready) return 0;
+        if (!self::_rtdbBackfillEnabled()) {
+            log_message('error', '[ACC RTDB BACKFILL BLOCKED] syncAllChartOfAccounts — set ACCOUNTING_ALLOW_RTDB_BACKFILL=1 to explicitly enable.');
+            return 0;
+        }
         $synced = 0;
         try {
             $path = "Schools/{$this->schoolCode}/Accounts/ChartOfAccounts";
@@ -463,6 +484,10 @@ class Accounting_firestore_sync
     public function syncAllLedgerEntries(): int
     {
         if (!$this->ready) return 0;
+        if (!self::_rtdbBackfillEnabled()) {
+            log_message('error', '[ACC RTDB BACKFILL BLOCKED] syncAllLedgerEntries — set ACCOUNTING_ALLOW_RTDB_BACKFILL=1.');
+            return 0;
+        }
         $synced = 0;
         try {
             $path = "Schools/{$this->schoolCode}/{$this->session}/Accounts/Ledger";
@@ -482,6 +507,10 @@ class Accounting_firestore_sync
     public function syncAllClosingBalances(): int
     {
         if (!$this->ready) return 0;
+        if (!self::_rtdbBackfillEnabled()) {
+            log_message('error', '[ACC RTDB BACKFILL BLOCKED] syncAllClosingBalances — set ACCOUNTING_ALLOW_RTDB_BACKFILL=1.');
+            return 0;
+        }
         $synced = 0;
         try {
             $path = "Schools/{$this->schoolCode}/{$this->session}/Accounts/Closing_balances";
@@ -503,6 +532,10 @@ class Accounting_firestore_sync
     public function syncAllIncomeExpense(): int
     {
         if (!$this->ready) return 0;
+        if (!self::_rtdbBackfillEnabled()) {
+            log_message('error', '[ACC RTDB BACKFILL BLOCKED] syncAllIncomeExpense — set ACCOUNTING_ALLOW_RTDB_BACKFILL=1.');
+            return 0;
+        }
         $synced = 0;
         try {
             $path = "Schools/{$this->schoolCode}/{$this->session}/Accounts/Income_expense";
@@ -522,6 +555,10 @@ class Accounting_firestore_sync
     public function syncAllVoucherCounters(): int
     {
         if (!$this->ready) return 0;
+        if (!self::_rtdbBackfillEnabled()) {
+            log_message('error', '[ACC RTDB BACKFILL BLOCKED] syncAllVoucherCounters — set ACCOUNTING_ALLOW_RTDB_BACKFILL=1.');
+            return 0;
+        }
         $synced = 0;
         try {
             $path = "Schools/{$this->schoolCode}/{$this->session}/Accounts/Voucher_counters";

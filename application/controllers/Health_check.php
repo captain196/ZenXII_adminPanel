@@ -297,14 +297,19 @@ class Health_check extends MY_Controller
             ],
             [
                 'name' => 'Roster Format Check',
-                'fn'   => function() use ($fb, $school, $session) {
+                'fn'   => function() {
+                    // Firestore-only post-R1 migration. The legacy RTDB
+                    // shape check (`is_array($list)`) is meaningless once
+                    // the helper guarantees a stable map shape — instead
+                    // we just verify the helper returns *something* for
+                    // the first class, which exercises the compound
+                    // index + the Firestore students collection end-to-end.
                     $classes = $this->_get_session_classes();
                     if (empty($classes)) return $this->_p('No classes to check');
                     $first = $classes[0];
-                    $list = $fb->get("Schools/{$school}/{$session}/{$first['class_key']}/Section {$first['section']}/Students/List");
-                    if ($list === null) return $this->_p("Empty roster in {$first['label']} (OK for new class)");
-                    if (is_array($list)) return $this->_p("Roster is array with " . count($list) . " entries in {$first['label']}");
-                    return $this->_f("Roster is not an array in {$first['label']}: " . gettype($list));
+                    $list = $this->roster->for_class($first['class_key'], 'Section ' . $first['section']);
+                    if (empty($list)) return $this->_p("Empty roster in {$first['label']} (OK for new class)");
+                    return $this->_p('Roster has ' . count($list) . " entries in {$first['label']}");
                 },
             ],
             [
@@ -366,24 +371,38 @@ class Health_check extends MY_Controller
             ],
             [
                 'name' => 'Roster Cross-Reference (sample)',
-                'fn'   => function() use ($fb, $school_id, $school, $session) {
-                    $all = $fb->get("Users/Parents/{$school_id}");
-                    if (!is_array($all)) return $this->_p('No profiles to cross-check');
+                'fn'   => function() {
+                    // Firestore-only post-R1 migration. Picks a sample of
+                    // 5 Active students directly from the Firestore
+                    // `students` collection (the same collection the
+                    // helper queries) and verifies each one is actually
+                    // returned by `for_class()` — i.e. the compound
+                    // query path produces consistent results with the
+                    // raw schoolWhere query. A divergence here points
+                    // at a stale className/section field on the doc.
+                    $sample = $this->fs->schoolWhere(
+                        'students',
+                        [['status', '==', 'Active']],
+                        null, 'ASC', 5
+                    );
+                    if (empty($sample)) return $this->_p('No active students to cross-check');
                     $missing = [];
                     $checked = 0;
-                    foreach ($all as $id => $stu) {
-                        if ($id === 'Count' || !is_array($stu)) continue;
-                        $cls = $stu['Class'] ?? '';
-                        $sec = $stu['Section'] ?? 'A';
-                        if ($cls === '') continue;
-                        $rosterPath = "Schools/{$school}/{$session}/Class {$cls}/Section {$sec}/Students/List/{$id}";
-                        $val = $fb->get($rosterPath);
-                        if ($val === null) $missing[] = "{$id} not in roster ({$cls}/{$sec})";
+                    foreach ($sample as $entry) {
+                        $data = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                        if (!is_array($data)) continue;
+                        $sid = $data['userId'] ?? $data['studentId'] ?? '';
+                        $cls = $data['className'] ?? $data['Class'] ?? '';
+                        $sec = $data['section'] ?? $data['Section'] ?? '';
+                        if ($sid === '' || $cls === '' || $sec === '') continue;
+                        $roster = $this->roster->for_class($cls, $sec);
+                        if (!isset($roster[$sid])) {
+                            $missing[] = "{$sid} not in for_class({$cls}/{$sec})";
+                        }
                         $checked++;
-                        if ($checked >= 5) break;
                     }
-                    if (empty($missing)) return $this->_p("{$checked} students verified in roster");
-                    return $this->_f(count($missing) . ' not in roster: ' . implode('; ', $missing));
+                    if (empty($missing)) return $this->_p("{$checked} students verified");
+                    return $this->_f(count($missing) . ' inconsistencies: ' . implode('; ', $missing));
                 },
             ],
             [

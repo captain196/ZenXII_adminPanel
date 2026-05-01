@@ -148,7 +148,7 @@ function loadWaitlist() {
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (data.status === 'success') { allWaitlist = data.data.waitlist || []; renderStats(); renderTable(); }
+        if (data.status === 'success') { allWaitlist = data.waitlist || []; renderStats(); renderTable(); }
     })
     .catch(function() { document.getElementById('tableWrap').innerHTML = '<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> Failed to load</div>'; });
 }

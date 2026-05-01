@@ -321,7 +321,10 @@ $accounts          = $accounts          ?? [];
                             </div>
                         </div>
 
-                        <!-- Row 3 — Calculation strip -->
+                        <!-- Row 3 — Calculation strip.
+                             Full live-math flow so the cashier sees the effect
+                             of what they just typed:
+                               Total Fee − Discount − Paying Now = Balance After -->
                         <div class="pay-calc-strip">
                             <div class="pay-calc-item">
                                 <span class="pay-calc-label">Total Fee</span>
@@ -332,13 +335,16 @@ $accounts          = $accounts          ?? [];
                                 <span class="pay-calc-label">Discount</span>
                                 <span class="pay-calc-val pay-calc-green" id="barDiscount">₹ 0.00</span>
                             </div>
+                            <span class="pay-calc-op">−</span>
+                            <div class="pay-calc-item">
+                                <span class="pay-calc-label">Paying Now</span>
+                                <span class="pay-calc-val pay-calc-blue" id="barPayingNow">₹ 0.00</span>
+                            </div>
                             <span class="pay-calc-op">=</span>
                             <div class="pay-calc-item pay-calc-item-strong">
-                                <span class="pay-calc-label">Due</span>
+                                <span class="pay-calc-label">Balance After</span>
                                 <span class="pay-calc-val pay-calc-red" id="barDueAmount">₹ 0.00</span>
                             </div>
-                            <!-- Wallet column removed in Phase 9 (subsystem deprecated). -->
-                            <span id="barOverpaid" style="display:none;">₹ 0.00</span>
                         </div>
 
                         <!-- Row 4 — Live allocation preview -->
@@ -387,8 +393,6 @@ $accounts          = $accounts          ?? [];
                         <div class="fc-summary-row"><span>Months Selected</span><strong id="sumMonths">—</strong></div>
                         <div class="fc-summary-row"><span>Total Fee</span><strong id="sumTotal">₹ 0.00</strong></div>
                         <div class="fc-summary-row fc-green"><span>Discount</span><strong id="sumDiscountRow">₹
-                                0.00</strong></div>
-                        <div class="fc-summary-row fc-green"><span>Overpaid (carry-fwd)</span><strong id="sumOverpaid">₹
                                 0.00</strong></div>
                         <div class="fc-summary-divider"></div>
                         <div class="fc-summary-row fc-summary-due"><span>DUE AMOUNT</span><strong id="sumDue">₹
@@ -517,7 +521,7 @@ $accounts          = $accounts          ?? [];
                             <th class="th-status">Status</th>
                             <th class="th-mode">Mode</th>
                             <th class="th-num" title="What the parent/cashier paid">Input</th>
-                            <th class="th-num" title="Applied to demands (excludes wallet credit)">Allocated</th>
+                            <th class="th-num" title="Applied to demands">Allocated</th>
                             <th class="th-num" title="Outstanding on the months touched by this receipt">Remaining</th>
                             <th class="th-num">Fine</th>
                             <th class="th-num">Discount</th>
@@ -534,6 +538,64 @@ $accounts          = $accounts          ?? [];
                     </tbody>
                 </table>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══ MODAL: Grant / Edit Discount (inline) ══ -->
+<div class="fc-overlay" id="grantDiscountModal">
+    <div class="fc-modal grant-modal">
+        <div class="grant-head">
+            <div class="grant-head-left">
+                <span class="grant-head-icon"><i class="fa fa-gift"></i></span>
+                <div>
+                    <h4>Grant Discount</h4>
+                    <p class="grant-head-sub" id="grantHeadSub">For the selected student</p>
+                </div>
+            </div>
+            <button class="hist-close" onclick="closeModal('grantDiscountModal')" aria-label="Close">
+                <i class="fa fa-times"></i>
+            </button>
+        </div>
+        <div class="grant-body">
+            <div class="grant-field">
+                <label class="grant-label" for="grantAmount">
+                    Amount (₹) <span class="fc-req">*</span>
+                </label>
+                <input type="number" id="grantAmount" class="grant-input"
+                       placeholder="0.00" step="0.01" min="0">
+                <div class="grant-hint">Set to 0 to clear any existing discount.</div>
+            </div>
+            <div class="grant-field">
+                <label class="grant-label" for="grantValidUntil">
+                    Valid Until <span class="grant-opt">(optional)</span>
+                </label>
+                <input type="date" id="grantValidUntil" class="grant-input"
+                       min="<?= date('Y-m-d') ?>">
+                <div class="grant-hint">Leave blank for no expiry. Auto-clears past this date.</div>
+            </div>
+            <div class="grant-field">
+                <label class="grant-label" for="grantReason">
+                    Reason <span class="grant-opt">(optional)</span>
+                </label>
+                <input type="text" id="grantReason" class="grant-input"
+                       placeholder="e.g. Sibling waiver, principal's discretion" maxlength="120">
+            </div>
+            <div class="grant-warn">
+                <i class="fa fa-info-circle"></i>
+                For repeatable rules (e.g. "Sibling 10% Off"), use
+                <a href="<?= site_url('fee_management/discounts') ?>" target="_blank">Discount Policies</a>.
+                For named scholarships, use
+                <a href="<?= site_url('fee_management/scholarships') ?>" target="_blank">Scholarships</a>.
+            </div>
+        </div>
+        <div class="grant-foot">
+            <button type="button" class="pay-btn pay-btn-ghost" onclick="closeModal('grantDiscountModal')">
+                Cancel
+            </button>
+            <button type="button" id="grantSubmitBtn" class="pay-btn pay-btn-submit" onclick="submitGrantDiscount()">
+                <i class="fa fa-check"></i> Save Discount
+            </button>
         </div>
     </div>
 </div>
@@ -654,6 +716,12 @@ $accounts          = $accounts          ?? [];
     </button>
 </div>
 
+<!-- Floating Quick-Pay Bar removed per user request. The inline
+     "Submit Fees" button inside Step 4 (pay-actions block) is now
+     the sole submit control. CSS class rules (.qpb-*, .quick-pay-bar)
+     are left in place — they're now dead-style but removing them is
+     out of scope. -->
+
 <div id="fcToastWrap" class="fc-toast-wrap"></div>
 
 <script>
@@ -677,7 +745,6 @@ $accounts          = $accounts          ?? [];
         className: '', // e.g. "Class 8th"
         sectionName: '', // e.g. "Section B"
         discountAmt: 0,
-        overpaidAmt: 0,
         grandTotal: 0,
         selectedMonths: [],
         monthFeeMap: {},
@@ -841,7 +908,7 @@ $accounts          = $accounts          ?? [];
         // months (used by the form & Pay-Full). FC.grandGross is the
         // structure total (used wherever the label reads "Total Fee").
         var gross = (typeof FC.grandGross === 'number') ? FC.grandGross : FC.grandTotal;
-        var due = Math.max(0, FC.grandTotal - FC.discountAmt - FC.overpaidAmt);
+        var due = Math.max(0, FC.grandTotal - FC.discountAmt);
 
         // Use combined class+section for display everywhere
         var displayClassSection = getDisplayClassSection();
@@ -851,10 +918,30 @@ $accounts          = $accounts          ?? [];
         document.getElementById('statDiscount').textContent = fmtRs(FC.discountAmt);
         document.getElementById('statDue').textContent = fmtRs(due);
 
+        // Live math strip under Step 4. `due` above is the
+        // current-outstanding (already nets alreadyPaid + discount).
+        // Subtracting schoolFee gives the balance LEFT OVER AFTER this
+        // submit — the cashier's real question when typing the amount.
+        var balanceAfter = Math.max(0, due - schoolFee);
         document.getElementById('barTotalFee').textContent = fmtRs(gross);
         document.getElementById('barDiscount').textContent = fmtRs(FC.discountAmt);
-        document.getElementById('barOverpaid').textContent = fmtRs(FC.overpaidAmt);
-        document.getElementById('barDueAmount').textContent = fmtRs(due);
+        document.getElementById('barPayingNow').textContent = fmtRs(schoolFee);
+        document.getElementById('barDueAmount').textContent = fmtRs(balanceAfter);
+
+        // Mirror "due" into the Submit Payment header pill so the
+        // cashier always sees the net payable in the card title strip.
+        var phd = document.getElementById('payHeadDue');
+        var phv = document.getElementById('payHeadDueVal');
+        if (phd && phv) {
+            phv.textContent = fmtRs(due);
+            phd.style.display = (FC.selectedMonths && FC.selectedMonths.length) ? '' : 'none';
+        }
+
+        // Mirror into the floating quick-pay bar (visibility toggled
+        // by the IntersectionObserver — see DOMContentLoaded block).
+        // Floating Quick-Pay Bar DOM updaters removed — the bar itself
+        // has been deleted from the HTML. Inline Submit button handles
+        // all submit interactions now.
 
         // Mirror "due" into the Submit Payment header pill so the
         // cashier always sees the net payable in the card title strip.
@@ -881,7 +968,6 @@ $accounts          = $accounts          ?? [];
         document.getElementById('sumMonths').textContent = FC.selectedMonths.length ? FC.selectedMonths.join(', ') : '—';
         document.getElementById('sumTotal').textContent = fmtRs(gross);
         document.getElementById('sumDiscountRow').textContent = fmtRs(FC.discountAmt);
-        document.getElementById('sumOverpaid').textContent = fmtRs(FC.overpaidAmt);
         document.getElementById('sumDue').textContent = fmtRs(due);
         document.getElementById('sumFine').textContent = fmtRs(fine);
         document.getElementById('sumPayable').textContent = fmtRs(schoolFee + fine);
@@ -918,13 +1004,43 @@ $accounts          = $accounts          ?? [];
             // Show invite ONLY after a student is loaded AND no discount.
             dInvite.style.display = (hasStudent && !hasDiscount) ? '' : 'none';
         }
+
+        // Discount banner — shows the discount-on-file amount + edit button.
+        // Invite — shown when no discount is on file (after a student is
+        // loaded) so the cashier can grant a one-off in one click.
+        var dBanner  = document.getElementById('discountBanner');
+        var dBAmt    = document.getElementById('discountBannerAmt');
+        var dExpiry  = document.getElementById('discountBannerExpiry');
+        var dInvite  = document.getElementById('grantDiscountInvite');
+        var hasStudent = !!FC.userId;
+        var hasDiscount = FC.discountAmt > 0.005;
+
+        if (dBanner && dBAmt) {
+            if (hasDiscount) {
+                dBAmt.textContent = '₹ ' + fmtNum(FC.discountAmt);
+                if (dExpiry) {
+                    var vu = (FC.discountValidUntil || '').trim();
+                    if (vu) {
+                        dExpiry.textContent = '· valid until ' + vu;
+                        dExpiry.style.display = '';
+                    } else {
+                        dExpiry.style.display = 'none';
+                    }
+                }
+                dBanner.style.display = '';
+            } else {
+                dBanner.style.display = 'none';
+            }
+        }
+        if (dInvite) {
+            // Show invite ONLY after a student is loaded AND no discount.
+            dInvite.style.display = (hasStudent && !hasDiscount) ? '' : 'none';
+        }
     }
 
     /* ── Allocation Preview ── */
     function updateAllocationPreview() {
-        var cash     = parseFloat(document.getElementById('submitSchoolFees').value) || 0;
-        var wallet   = FC.overpaidAmt || 0;
-        var pool     = cash + wallet;       // wallet + cash both feed the demands
+        var pool = parseFloat(document.getElementById('submitSchoolFees').value) || 0;
         var container = document.getElementById('allocPreview');
         var list = document.getElementById('allocList');
         var advEl = document.getElementById('allocAdvance');
@@ -957,8 +1073,8 @@ $accounts          = $accounts          ?? [];
         });
         list.innerHTML = html;
 
-        // Phase 9: wallet removed. Overpayment gets a warning but no
-        // wallet-evolution line. Backend rejects >due with HTTP 409.
+        // Overpayment gets a warning — backend rejects any submit amount
+        // that exceeds total due (HTTP 409). There is no overflow sink.
         if (remaining > 0.01) {
             advEl.innerHTML = '<i class="fa fa-exclamation-triangle" style="color:#dc2626"></i> ₹ ' + fmtNum(remaining)
                 + ' exceeds total due — reduce the amount. Overpayment is no longer accepted.';
@@ -969,7 +1085,7 @@ $accounts          = $accounts          ?? [];
     }
 
     function FC_payFull() {
-        var due = Math.max(0, FC.grandTotal - FC.discountAmt - FC.overpaidAmt);
+        var due = Math.max(0, FC.grandTotal - FC.discountAmt);
         document.getElementById('submitSchoolFees').value = due.toFixed(2);
         recalc();
         updateAllocationPreview();
@@ -1033,9 +1149,21 @@ $accounts          = $accounts          ?? [];
             if (isPaid) {
                 statusHtml = '<i class="fa fa-check-circle" style="color:#16a34a"></i> Paid';
             } else if (isPartial) {
-                var pct = totalDue > 0 ? Math.round((totalPaid / totalDue) * 100) : 0;
+                // Display tiers — prevents "0%" showing when payment is
+                // a tiny fraction of due (e.g. ₹1 of ₹3,800 = 0.026% →
+                // Math.round = 0). Tiers:
+                //   totalPaid == 0        → "0%"
+                //   0 < raw < 1%          → "<1%"
+                //   1% ≤ raw < 10%        → one decimal ("2.5%")
+                //   raw ≥ 10%             → rounded integer ("42%")
+                var raw = totalDue > 0 ? (totalPaid / totalDue) * 100 : 0;
+                var pctLabel;
+                if (totalPaid <= 0)       pctLabel = '0%';
+                else if (raw < 1)         pctLabel = '<1%';
+                else if (raw < 10)        pctLabel = raw.toFixed(1) + '%';
+                else                       pctLabel = Math.round(raw) + '%';
                 statusHtml =
-                    '<i class="fa fa-clock-o" style="color:#f59e0b"></i> Partial · ' + pct + '%' +
+                    '<i class="fa fa-clock-o" style="color:#f59e0b"></i> Partial · ' + pctLabel +
                     '<div style="font-size:11px;color:#dc2626;margin-top:2px">' +
                         '₹' + remaining.toLocaleString() + ' due' +
                     '</div>';
@@ -1057,7 +1185,23 @@ $accounts          = $accounts          ?? [];
             // can take more payment to clear their remaining balance.
             if (!isPaid) {
                 tile.addEventListener('click', function() {
+                    var wasSelected = tile.classList.contains('selected');
                     tile.classList.toggle('selected');
+
+                    // Auto-bundle: clicking April auto-ticks the Yearly
+                    // Fees tile if it's unpaid — matches the Indian-school
+                    // convention that the first-month bill includes
+                    // annual heads. Cashier can still un-tick Yearly Fees
+                    // explicitly if they want to collect April alone.
+                    // No forced un-ticking — untoggling April doesn't
+                    // remove a Yearly Fees selection the cashier made.
+                    if (!wasSelected && m === 'April') {
+                        var yft = grid.querySelector('.fc-month-tile.yearly');
+                        if (yft && !yft.classList.contains('paid') && !yft.classList.contains('selected')) {
+                            yft.classList.add('selected');
+                        }
+                    }
+
                     updateFromTiles();
                 });
             }
@@ -1102,7 +1246,6 @@ $accounts          = $accounts          ?? [];
                     FC.discountAmt        = parseFloat(summary.discount)    || 0;
                     FC.discountValidUntil = (summary.discountValidUntil || '').toString();
                     FC.discountExpired    = !!summary.discountExpired;
-                    FC.overpaidAmt        = 0; // Phase 9 — wallet removed
                     // grandTotal = REMAINING (what's still owed across
                     // all months). "Pay Full Due" later uses this minus
                     // discount.
@@ -1192,7 +1335,7 @@ $accounts          = $accounts          ?? [];
         document.getElementById('sumClass').textContent = displayClassSection;
 
         // Reset fee state
-        FC.grandTotal = FC.discountAmt = FC.overpaidAmt = FC.alreadyPaid = 0;
+        FC.grandTotal = FC.discountAmt = FC.alreadyPaid = 0;
         FC.monthFeeMap = {};
         document.getElementById('breakdownCard').style.display = 'none';
         document.getElementById('paymentCard').style.display = 'none';
@@ -1270,7 +1413,6 @@ $accounts          = $accounts          ?? [];
         FC.discountAmt        = parseFloat(d.discountAmount) || 0;
         FC.discountValidUntil = (d.discountValidUntil || '').toString();
         FC.discountExpired    = !!d.discountExpired;
-        FC.overpaidAmt = 0; // Phase 9 — wallet removed
         FC.monthFeeMap = d.monthTotals || {};
         FC.monthGrossMap = d.monthGross || {};
         FC.monthAlreadyPaid = d.monthAlreadyPaid || {};
@@ -1307,7 +1449,7 @@ $accounts          = $accounts          ?? [];
         document.getElementById('breakdownCard').style.display = '';
         document.getElementById('paymentCard').style.display = '';
 
-        var due = Math.max(0, FC.grandTotal - FC.discountAmt - FC.overpaidAmt);
+        var due = Math.max(0, FC.grandTotal - FC.discountAmt);
         document.getElementById('submitSchoolFees').value = due.toFixed(2);
 
         // Modal shows the fee STRUCTURE per month — use gross totals so the
@@ -1444,15 +1586,13 @@ $accounts          = $accounts          ?? [];
 
         // Show confirmation modal instead of submitting directly
         var fineAmt = parseFloat(document.getElementById('fineAmount').value) || 0;
-        var due = Math.max(0, FC.grandTotal - FC.discountAmt - FC.overpaidAmt);
+        var due = Math.max(0, FC.grandTotal - FC.discountAmt);
         var acctText = document.getElementById('accountSelect').options[document.getElementById('accountSelect').selectedIndex].text;
 
         // Derived figures for transparency
-        var dueAfterAdvance  = Math.max(0, FC.grandTotal - FC.discountAmt - FC.overpaidAmt);
-        var appliedToDemands = Math.min(schoolFees + FC.overpaidAmt, FC.grandTotal - FC.discountAmt);
-        var remainingUnpaid  = Math.max(0, (FC.grandTotal - FC.discountAmt) - appliedToDemands);
-        var overpaymentNew   = Math.max(0, (schoolFees + FC.overpaidAmt) - (FC.grandTotal - FC.discountAmt));
-        var newWallet        = overpaymentNew; // what the wallet becomes after submit
+        var netDue           = Math.max(0, FC.grandTotal - FC.discountAmt);
+        var appliedToDemands = Math.min(schoolFees, netDue);
+        var remainingUnpaid  = Math.max(0, netDue - appliedToDemands);
 
         var row  = 'display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--fc-border)';
         var rowG = row + ';color:var(--fc-green)';
@@ -1466,12 +1606,12 @@ $accounts          = $accounts          ?? [];
         ch += '<div style="'+row+'"><span>Payment Mode</span><strong>' + acctText + '</strong></div>';
         ch += '<div style="'+row+'"><span>Total Fee</span><strong>₹ ' + fmtNum(FC.grandTotal) + '</strong></div>';
         if (FC.discountAmt > 0) ch += '<div style="'+rowG+'"><span>Discount</span><strong>- ₹ ' + fmtNum(FC.discountAmt) + '</strong></div>';
-        ch += '<div style="'+row+';font-weight:600"><span>Due</span><strong>₹ ' + fmtNum(dueAfterAdvance) + '</strong></div>';
+        ch += '<div style="'+row+';font-weight:600"><span>Due</span><strong>₹ ' + fmtNum(netDue) + '</strong></div>';
         if (fineAmt > 0) ch += '<div style="'+rowR+'"><span>Fine</span><strong>+ ₹ ' + fmtNum(fineAmt) + '</strong></div>';
         ch += '<div style="'+rowBig+'"><span style="font-weight:700">Cash from Parent Now</span><strong style="color:var(--fc-teal);font-size:18px">₹ ' + fmtNum(schoolFees + fineAmt) + '</strong></div>';
 
         // After-submit summary — partial payments stay visible. Overpayment
-        // is rejected upstream (Phase 9 wallet removal) so no wallet line.
+        // is rejected upstream so the server never keeps a surplus.
         if (remainingUnpaid > 0.005) {
             ch += '<div style="'+rowR+';font-weight:700;border-top:1px dashed var(--fc-border);padding-top:8px"><span><i class="fa fa-exclamation-triangle"></i> Remaining Unpaid After This Receipt</span><strong>₹ ' + fmtNum(remainingUnpaid) + '</strong></div>';
         }
@@ -1502,7 +1642,7 @@ $accounts          = $accounts          ?? [];
         fd.append('class', FC.className); // e.g. "Class 8th"
         fd.append('section', FC.sectionName); // e.g. "Section B"
         fd.append('userId', FC.userId);
-        fd.append('submitAmount', '0.00'); // Phase 9 — wallet removed
+        fd.append('submitAmount', '0.00'); // No overflow sink — server rejects overpayment
         fd.append('schoolFees', schoolFees.toFixed(2));
         fd.append('discountAmount', FC.discountAmt.toFixed(2));
         fd.append('fineAmount', fineAmt.toFixed(2));
@@ -1558,16 +1698,128 @@ $accounts          = $accounts          ?? [];
                         showToast('Fees submitted successfully!', 'success');
 
                         var rn = resp.receipt_no || RECEIPT_NO;
+                        // Phase 7D — block print while receipt is queued.
+                        // In async mode, the worker flips status to "posted"
+                        // within ~30 s; until then, the receipt isn't in
+                        // the demands table so a printed copy would show
+                        // allocations that may still shift.
+                        var isQueued = (resp.receipt_status && resp.receipt_status !== 'posted')
+                                     || resp.async === true;
                         var msgEl = document.getElementById('successMsg');
-                        if (msgEl) msgEl.textContent = 'Receipt #' + rn + ' — ₹ ' + fmtNum(parseFloat(document.getElementById('submitSchoolFees').value)||0) + ' collected from ' + FC.studentName;
+                        if (msgEl) {
+                            var msg = 'Receipt #' + rn + ' — ₹ ' + fmtNum(parseFloat(document.getElementById('submitSchoolFees').value)||0) + ' collected from ' + FC.studentName;
+                            if (isQueued) {
+                                msg += '  ·  receipt still processing, please wait ~30 s before printing';
+                            }
+                            msgEl.textContent = msg;
+                        }
                         var detailEl = document.getElementById('successDetail');
                         if (detailEl) detailEl.innerHTML =
                             '<div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Student</span><strong>' + FC.studentName + '</strong></div>'
                             + '<div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Months</span><strong>' + FC.selectedMonths.join(', ') + '</strong></div>'
-                            + '<div style="display:flex;justify-content:space-between"><span>Receipt No.</span><strong>#' + rn + '</strong></div>';
+                            + '<div style="display:flex;justify-content:space-between"><span>Receipt No.</span><strong>#' + rn + '</strong></div>'
+                            + (isQueued ? '<div style="margin-top:8px;padding:6px 8px;border-radius:6px;background:#fff8e1;color:#7a5d00;font-size:12px;"><i class="fa fa-clock-o"></i> Status: <strong>Processing</strong> — the receipt is being posted in the background. Print will be enabled once posting completes.</div>' : '');
                         var printBtn = document.getElementById('successPrintBtn');
-                        if (printBtn) printBtn.href = SITE_URL + '/fees/print_receipt/' + rn;
+                        if (printBtn) {
+                            printBtn.href = SITE_URL + '/fees/print_receipt/' + rn;
+                            if (isQueued) {
+                                printBtn.classList.add('fc-btn-disabled');
+                                printBtn.setAttribute('aria-disabled', 'true');
+                                printBtn.addEventListener('click', function(ev) {
+                                    ev.preventDefault();
+                                    showToast('Receipt still processing — please wait a few seconds and retry.', 'warning');
+                                }, { once: false });
+                            } else {
+                                printBtn.classList.remove('fc-btn-disabled');
+                                printBtn.removeAttribute('aria-disabled');
+                            }
+                        }
                         if (typeof openModal === 'function') openModal('successModal');
+
+                        // ── Phase 7E — live receipt-status polling ────────
+                        // If the sync response came back with status='queued'
+                        // (async mode), poll /fees/receipt_status every 3 s
+                        // until the worker flips it to 'posted', then:
+                        //   - update the success modal's status badge
+                        //   - re-enable the Print button
+                        //   - auto-refresh the payment history so the new
+                        //     row appears with the Completed pill
+                        // A delayed-processing warning fires at 15 s.
+                        if (isQueued) {
+                            window.FC_POLL_ACTIVE && clearInterval(window.FC_POLL_ACTIVE);
+                            var pollStartedAt = Date.now();
+                            var printBtnEl    = document.getElementById('successPrintBtn');
+                            var msgElPoll     = document.getElementById('successMsg');
+                            var detailElPoll  = document.getElementById('successDetail');
+                            var warnedDelay   = false;
+
+                            function onReceiptPosted() {
+                                if (printBtnEl) {
+                                    printBtnEl.classList.remove('fc-btn-disabled');
+                                    printBtnEl.removeAttribute('aria-disabled');
+                                }
+                                if (msgElPoll) {
+                                    msgElPoll.textContent = 'Receipt #' + rn + ' posted — ready to print.';
+                                }
+                                if (detailElPoll) {
+                                    // Replace the amber banner with a green "Completed" one.
+                                    var banner = detailElPoll.querySelector('div:last-child');
+                                    if (banner) {
+                                        banner.style.background = '#ecfdf5';
+                                        banner.style.color      = '#065f46';
+                                        banner.innerHTML        = '<i class="fa fa-check-circle"></i> Status: <strong>Completed</strong> — the receipt is fully posted and refund-eligible.';
+                                    }
+                                }
+                                // Auto-refresh history so the new row lands
+                                // with its now-correct pill (Task 7).
+                                if (typeof loadHistory === 'function' && typeof openModal === 'function') {
+                                    // quiet refresh only if the history modal is currently open
+                                    var histModal = document.getElementById('historyModal');
+                                    if (histModal && histModal.classList.contains('active')) loadHistory();
+                                }
+                            }
+                            function onReceiptFailed() {
+                                if (msgElPoll) msgElPoll.textContent = 'Receipt #' + rn + ' processing FAILED — admin will investigate.';
+                                if (detailElPoll) {
+                                    var banner = detailElPoll.querySelector('div:last-child');
+                                    if (banner) {
+                                        banner.style.background = '#fee2e2';
+                                        banner.style.color      = '#991b1b';
+                                        banner.innerHTML        = '<i class="fa fa-exclamation-triangle"></i> Status: <strong>Failed</strong> — the receipt was recorded but background posting failed. Contact admin to retry via Queue Dashboard.';
+                                    }
+                                }
+                            }
+
+                            window.FC_POLL_ACTIVE = setInterval(function () {
+                                var elapsed = Date.now() - pollStartedAt;
+                                if (elapsed > 120000) {
+                                    clearInterval(window.FC_POLL_ACTIVE);  // give up after 2 min
+                                    if (msgElPoll) msgElPoll.textContent = 'Still processing… please refresh Payment History manually in a minute.';
+                                    return;
+                                }
+                                if (elapsed > 15000 && !warnedDelay) {
+                                    warnedDelay = true;
+                                    showToast('Taking longer than expected. Your payment is safe — we\u2019re still posting it.', 'warning');
+                                }
+                                fetch(SITE_URL + '/fees/receipt_status?receipt_no=' + encodeURIComponent(rn), {
+                                    credentials: 'same-origin',
+                                })
+                                .then(function (r) { return r.json(); })
+                                .then(function (resp) {
+                                    var d = (resp && resp.data) ? resp.data : resp;
+                                    var st = d && d.status;
+                                    if (st === 'posted') {
+                                        clearInterval(window.FC_POLL_ACTIVE);
+                                        onReceiptPosted();
+                                    } else if (st === 'failed') {
+                                        clearInterval(window.FC_POLL_ACTIVE);
+                                        onReceiptFailed();
+                                    }
+                                })
+                                .catch(function () { /* transient — next tick retries */ });
+                            }, 3000);
+                        }
+                        // ─────────────────────────────────────────────────
 
                         ['breakdownCard', 'paymentCard', 'allocPreview', 'quickPayBtns'].forEach(function(id) {
                             var el = document.getElementById(id);
@@ -1578,7 +1830,7 @@ $accounts          = $accounts          ?? [];
                         });
                         FC.selectedMonths = [];
                         FC.monthFeeMap = {};
-                        FC.grandTotal = FC.discountAmt = FC.overpaidAmt = 0;
+                        FC.grandTotal = FC.discountAmt = 0;
                         if (typeof recalc === 'function') recalc();
 
                         /* Refresh receipt number — GET, no CSRF needed */
@@ -1645,8 +1897,7 @@ $accounts          = $accounts          ?? [];
             var m = String(modeRaw || 'N/A').trim();
             var cls = 'mode-pill mode-other';
             var ml = m.toLowerCase();
-            if (ml === 'wallet')                                  cls = 'mode-pill mode-wallet';
-            else if (ml === 'razorpay' || ml.indexOf('online') >= 0) cls = 'mode-pill mode-online';
+            if (ml === 'razorpay' || ml.indexOf('online') >= 0)       cls = 'mode-pill mode-online';
             else if (ml === 'cash')                               cls = 'mode-pill mode-cash';
             else if (ml.indexOf('bank') >= 0 || ml.indexOf('transfer') >= 0) cls = 'mode-pill mode-bank';
             return '<span class="' + cls + '">' + m + '</span>';
@@ -1668,9 +1919,15 @@ $accounts          = $accounts          ?? [];
                         '</td></tr>';
                     return;
                 }
+                // Totals are NET (refunds reduce the running total so the
+                // viewer sees the truth — F2 paid 1 + R2 refunded -1 + F3
+                // paid 1 = net 1, not 2).
                 var tInput = 0, tAlloc = 0, tRem = 0,
-                    tFin = 0, tDis = 0;
+                    tFin = 0, tDis = 0,
+                    receiptCount = 0, refundCount = 0;
                 data.forEach(function(rec) {
+                    // inputAmount for refunds is prefixed with '-' in the
+                    // backend; parseFloat handles that. Totals net naturally.
                     var inp = parseFloat(String(rec.inputAmount || rec.amount || 0).replace(/,/g, ''));
                     var alc = parseFloat(String(rec.allocatedAmount || 0).replace(/,/g, ''));
                     var rem = parseFloat(String(rec.remainingAfter || 0).replace(/,/g, ''));
@@ -1681,14 +1938,29 @@ $accounts          = $accounts          ?? [];
                     tRem   += rem;
                     tFin += fin;
                     tDis += dis;
+                    if (rec.type === 'refund') refundCount++; else receiptCount++;
 
-                    // Coverage pill: 'full' (green) | 'partial' (amber) | unknown
+                    // Coverage pill: 'full' (green) | 'partial' (amber) |
+                    // 'refunded' (red, strikethrough receipt) | 'refund' (negative row).
+                    // Phase 7E: async receipt-level status overrides the
+                    // coverage pill while the worker hasn't posted yet — a
+                    // queued/failed receipt needs to be instantly visible
+                    // before we care about full/partial.
                     var coverage = (rec.coverage || 'unknown');
+                    var asyncSt  = String(rec.receiptStatus || 'posted').toLowerCase();
                     var statusPill;
-                    if (coverage === 'full') {
+                    if (asyncSt === 'queued') {
+                        statusPill = '<span class="hist-pill hist-pill-partial" title="Worker is finalising this receipt — actions disabled until Completed."><i class="fa fa-hourglass-half"></i> Processing…</span>';
+                    } else if (asyncSt === 'failed') {
+                        statusPill = '<span class="hist-pill hist-pill-refunded" title="Background posting failed — admin must retry via Queue Dashboard."><i class="fa fa-exclamation-triangle"></i> Failed</span>';
+                    } else if (coverage === 'full') {
                         statusPill = '<span class="hist-pill hist-pill-full"><i class="fa fa-check-circle"></i> Full</span>';
                     } else if (coverage === 'partial') {
                         statusPill = '<span class="hist-pill hist-pill-partial"><i class="fa fa-clock-o"></i> Partial</span>';
+                    } else if (coverage === 'refunded') {
+                        statusPill = '<span class="hist-pill hist-pill-refunded"><i class="fa fa-undo"></i> Refunded via ' + (rec.refundedByR || 'R?') + '</span>';
+                    } else if (coverage === 'refund') {
+                        statusPill = '<span class="hist-pill hist-pill-refund"><i class="fa fa-reply"></i> Refund</span>';
                     } else {
                         statusPill = '<span class="hist-pill hist-pill-unknown">—</span>';
                     }
@@ -1702,25 +1974,45 @@ $accounts          = $accounts          ?? [];
                           }).join('')
                         : '<span class="hist-dim">—</span>';
 
-                    // When allocated < input the diff went to wallet — show
-                    // a small "+₹X wallet" tag below the allocated amount.
-                    var advance = Math.max(0, inp - alc);
+                    // With overpayment rejected upstream, allocated always
+                    // equals input. Historical receipts that pre-date the
+                    // removal may still show a gap — render it as a neutral
+                    // "carry-forward" note rather than the legacy wallet tag.
+                    var carry = Math.max(0, inp - alc);
                     var allocCell = '<span class="hist-num-strong">₹ ' + fmtNum(alc) + '</span>';
-                    if (advance > 0.01) {
-                        allocCell += '<div class="hist-num-tag wallet-tag">+₹' + fmtNum(advance) + ' wallet</div>';
+                    if (carry > 0.01) {
+                        allocCell += '<div class="hist-num-tag carry-tag">+₹' + fmtNum(carry) + ' carry-fwd</div>';
                     }
                     var remCell = (rem > 0.01)
                         ? '<span class="hist-num-due">₹ ' + fmtNum(rem) + '</span>'
                         : '<span class="hist-num-clear">₹ 0</span>';
 
                     var tr = document.createElement('tr');
+                    // Refund rows: red accent, receipt label already has "R"
+                    // prefix from backend. Refunded receipts: receipt number
+                    // with strikethrough so the viewer instantly sees it was
+                    // reversed. Amounts stay as-is; negatives render with
+                    // minus sign and a red color via the .hist-num-refund class.
+                    var isRefund       = rec.type === 'refund';
+                    var isRefunded     = rec.coverage === 'refunded';
+                    if (isRefund)   tr.className = 'hist-row-refund';
+                    if (isRefunded) tr.className = 'hist-row-refunded';
+
+                    var rcptLabel = isRefund
+                        ? '<span class="hist-rcpt hist-rcpt-refund">' + rec.receiptNo + '</span>'
+                        : '<span class="hist-rcpt' + (isRefunded ? ' hist-rcpt-struck' : '') + '">F' + rec.receiptNo + '</span>';
+
+                    var inputCell = isRefund
+                        ? '<span class="hist-num-refund">− ₹ ' + fmtNum(Math.abs(inp)) + '</span>'
+                        : '<span class="hist-num-strong">₹ ' + fmtNum(inp) + '</span>';
+
                     tr.innerHTML =
-                        '<td><span class="hist-rcpt">F' + rec.receiptNo + '</span></td>' +
+                        '<td>' + rcptLabel + '</td>' +
                         '<td class="hist-cell-date">' + (rec.date || '—') + '</td>' +
                         '<td>' + monthsHtml + '</td>' +
                         '<td>' + statusPill + '</td>' +
                         '<td>' + modePill(rec.account) + '</td>' +
-                        '<td class="hist-num"><span class="hist-num-strong">₹ ' + fmtNum(inp) + '</span></td>' +
+                        '<td class="hist-num">' + inputCell + '</td>' +
                         '<td class="hist-num">' + allocCell + '</td>' +
                         '<td class="hist-num">' + remCell + '</td>' +
                         '<td class="hist-num hist-dim">' + (fin > 0 ? '₹ ' + fmtNum(fin) : '—') + '</td>' +
@@ -1729,31 +2021,58 @@ $accounts          = $accounts          ?? [];
                 });
                 var tot = document.createElement('tr');
                 tot.className = 'hist-total';
+                // Remaining col is a per-row snapshot of demand balance
+                // immediately after each receipt. Summing them across
+                // receipts that touched the same demand is meaningless
+                // (e.g., F2 → R2 → F3 on the same Library Fee demand yields
+                // 299+0+299 = 598 which equals nothing real). The student's
+                // actual current outstanding is in the OUTSTANDING KPI at
+                // the top. Render "—" here instead of a misleading sum.
                 tot.innerHTML =
                     '<td colspan="5"><strong>TOTAL</strong></td>' +
                     '<td class="hist-num"><strong>₹ ' + fmtNum(tInput) + '</strong></td>' +
                     '<td class="hist-num"><strong>₹ ' + fmtNum(tAlloc) + '</strong></td>' +
-                    '<td class="hist-num"><strong>₹ ' + fmtNum(tRem)   + '</strong></td>' +
+                    '<td class="hist-num hist-dim"><strong>—</strong></td>' +
                     '<td class="hist-num"><strong>' + (tFin > 0 ? '₹ ' + fmtNum(tFin) : '—') + '</strong></td>' +
                     '<td class="hist-num"><strong>' + (tDis > 0 ? '₹ ' + fmtNum(tDis) : '—') + '</strong></td>';
                 tbody.appendChild(tot);
 
                 // Populate KPI chips.
                 if (kpisWrap) {
-                    document.getElementById('kpiCount').textContent = data.length;
+                    // "Receipts" KPI: show receipts count only (ignore refund rows)
+                    // so the label meaning stays stable. If any refunds exist,
+                    // surface the count as a small secondary note.
+                    var countEl = document.getElementById('kpiCount');
+                    countEl.textContent = receiptCount;
+                    if (refundCount > 0) {
+                        countEl.insertAdjacentHTML('afterend',
+                            '<div class="hist-kpi-sub">' + refundCount + ' refund' + (refundCount === 1 ? '' : 's') + '</div>');
+                    }
                     document.getElementById('kpiInput').textContent = '₹ ' + fmtNum(tInput);
                     document.getElementById('kpiAlloc').textContent = '₹ ' + fmtNum(tAlloc);
-                    document.getElementById('kpiRem').textContent   = '₹ ' + fmtNum(tRem);
+                    // Outstanding is the student's CURRENT total owed,
+                    // read from fetch_months' canonical remaining. Do NOT
+                    // sum per-receipt snapshots — double-counts when F2/R2/F3
+                    // all touched the same demand.
+                    var outstandingVal = (typeof FC.grandTotal === 'number' && FC.grandTotal >= 0)
+                        ? FC.grandTotal
+                        : tRem;
+                    document.getElementById('kpiRem').textContent = '₹ ' + fmtNum(outstandingVal);
                     kpisWrap.style.display = '';
                 }
                 if (subEl) {
-                    subEl.textContent = data.length + ' receipt' + (data.length === 1 ? '' : 's')
-                                      + ' for ' + (FC.studentName || FC.userId);
+                    var subTxt = receiptCount + ' receipt' + (receiptCount === 1 ? '' : 's');
+                    if (refundCount > 0) {
+                        subTxt += ' + ' + refundCount + ' refund' + (refundCount === 1 ? '' : 's');
+                    }
+                    subTxt += ' for ' + (FC.studentName || FC.userId);
+                    subEl.textContent = subTxt;
                 }
 
-                // alreadyPaid stat reflects ALLOCATED across demands, not
-                // gross input (avoids double-counting wallet overflow).
-                FC.alreadyPaid = tAlloc;
+                // NOTE: do NOT overwrite FC.alreadyPaid with tAlloc here.
+                // tAlloc sums receipt.allocatedAmount (gross, doesn't net
+                // refunds). fetch_months already set FC.alreadyPaid from
+                // sum(demand.paidAmount) which IS refund-aware.
                 recalc();
             })
             .catch(function(e) {
@@ -1936,6 +2255,15 @@ $accounts          = $accounts          ?? [];
             clearTimeout(__searchT);
             __searchT = setTimeout(doSearch, 300);
         });
+        // Debounced live filter as user types — re-runs the server
+        // search 300ms after the last keystroke. Empty input is now a
+        // valid query (returns the full roster), so backspacing all
+        // the way doesn't lock the table.
+        var __searchT = null;
+        document.getElementById('searchInput').addEventListener('input', function() {
+            clearTimeout(__searchT);
+            __searchT = setTimeout(doSearch, 300);
+        });
 
         document.getElementById('fetchDetailsBtn').addEventListener('click', fetchFeeDetails);
         document.getElementById('selectAllBtn').addEventListener('click', function() {
@@ -1956,6 +2284,10 @@ $accounts          = $accounts          ?? [];
         });
         document.getElementById('feesRecordBtn').addEventListener('click', loadHistory);
         document.getElementById('submitFeesBtn').addEventListener('click', submitFees);
+
+        // Floating Quick-Pay bar observer removed — the bar itself is
+        // gone. The inline Submit Fees button inside Step 4 is now the
+        // single submit control.
 
         // ── Floating Quick-Pay bar — show when Step 4 (Submit Payment)
         //    enters viewport AND a student is loaded. Hides on scroll
@@ -2543,6 +2875,24 @@ $accounts          = $accounts          ?? [];
         box-shadow: 0 0 0 2px rgba(15, 118, 110, .25);
     }
 
+    /* Yearly — teal accent so the cashier knows it's the once-per-session
+       Annual Fee, not a 13th month. Still selectable; selection enforces
+       the explicit-yearly rule the allocator now relies on (Phase 10). */
+    .fc-month-tile.yearly {
+        border-style: dashed;
+        border-color: #5eead4;
+        background: #f0fdfa;
+    }
+    .fc-month-tile.yearly:hover:not(.paid) {
+        background: #ccfbf1;
+        border-color: #14b8a6;
+    }
+    .fc-month-tile.yearly.selected {
+        border-style: solid;
+        border-color: #0f766e;
+        box-shadow: 0 0 0 2px rgba(15, 118, 110, .25);
+    }
+
     .fc-month-name {
         font-size: 12px;
         font-weight: 600;
@@ -2711,6 +3061,33 @@ $accounts          = $accounts          ?? [];
         padding: 2px 8px;
         border-radius: 20px;
         font-size: 12px;
+    }
+
+    /* Payment-history coverage pills (Full / Partial / unknown) */
+    .fc-status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 9px;
+        border-radius: 20px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: .2px;
+    }
+    .fc-status-full     { background:#dcfce7; color:#166534; }
+    .fc-status-partial  { background:#fef3c7; color:#92400e; }
+    .fc-status-unknown  { background:#f1f5f9; color:#64748b; }
+
+    /* Tiny chip for the Months column in the history modal */
+    .fc-month-chip {
+        display:inline-block;
+        background:#eef2ff;
+        color:#3730a3;
+        padding:1px 7px;
+        border-radius:10px;
+        font-size:11px;
+        font-weight:600;
+        margin:1px 2px 1px 0;
     }
 
     /* Payment-history coverage pills (Full / Partial / unknown) */
@@ -3306,6 +3683,190 @@ $accounts          = $accounts          ?? [];
         gap: 10px;
         flex-shrink: 0;
     }
+    .fc-disc-edit-btn {
+        background: #fff;
+        color: #15803d;
+        border: 1.5px solid #86efac;
+        border-radius: 8px;
+        padding: 7px 12px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        transition: background .15s, transform .12s;
+        flex-shrink: 0;
+    }
+    .fc-disc-edit-btn:hover {
+        background: #dcfce7;
+        border-color: #16a34a;
+    }
+    .fc-disc-edit-btn:active { transform: scale(.96); }
+    .fc-disc-expiry {
+        font-size: 11px;
+        font-weight: 500;
+        color: #92400e;
+        background: #fef3c7;
+        padding: 2px 7px;
+        border-radius: 10px;
+        margin-left: 8px;
+        font-family: 'DM Sans', sans-serif;
+    }
+
+    /* "No discount on file → grant one-off" invite line */
+    .fc-grant-invite {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 10px;
+        padding: 8px 12px;
+        background: #f8fafc;
+        border: 1px dashed #cbd5e1;
+        border-radius: 8px;
+        font-size: 12.5px;
+        color: #64748b;
+    }
+    .fc-grant-icon {
+        width: 22px; height: 22px;
+        border-radius: 6px;
+        background: #e0f2fe;
+        color: #0369a1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+    }
+    .fc-grant-link {
+        background: none;
+        border: none;
+        color: #0f766e;
+        font-weight: 700;
+        font-size: 12.5px;
+        cursor: pointer;
+        padding: 0;
+        margin-left: auto;
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+    .fc-grant-link:hover { color: #115e59; text-decoration: underline; }
+
+    /* Grant Discount modal (reuses .pay-btn from Step 4) */
+    .grant-modal {
+        max-width: 520px;
+        max-height: 92vh;
+        display: flex;
+        flex-direction: column;
+        padding: 0;
+        overflow: hidden;
+    }
+    .grant-head {
+        background: linear-gradient(135deg, #0f1f3a 0%, #1a3358 100%);
+        color: #fff;
+        padding: 16px 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        flex-shrink: 0;
+    }
+    .grant-head-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+    .grant-head-icon {
+        width: 36px; height: 36px;
+        border-radius: 9px;
+        background: rgba(255,212,121,.14);
+        color: #ffd479;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 15px;
+        flex-shrink: 0;
+    }
+    .grant-head h4 {
+        font-family: 'Playfair Display', serif;
+        font-size: 17px;
+        font-weight: 700;
+        color: #fff;
+        margin: 0 0 1px;
+    }
+    .grant-head-sub {
+        font-size: 12px;
+        color: rgba(255,255,255,.65);
+        margin: 0;
+    }
+    .grant-body {
+        padding: 18px 20px;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+    }
+    .grant-field {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+    }
+    .grant-label {
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .5px;
+        color: #475569;
+    }
+    .grant-opt {
+        font-weight: 500;
+        color: #94a3b8;
+        text-transform: none;
+        letter-spacing: 0;
+    }
+    .grant-input {
+        padding: 10px 12px;
+        font-size: 14px;
+        font-weight: 500;
+        color: #0f172a;
+        background: #fff;
+        border: 1.5px solid #cbd5e1;
+        border-radius: 8px;
+        font-variant-numeric: tabular-nums;
+        transition: border-color .15s, box-shadow .15s;
+    }
+    .grant-input:focus {
+        outline: none;
+        border-color: #0f766e;
+        box-shadow: 0 0 0 3px rgba(15,118,110,.14);
+    }
+    .grant-hint {
+        font-size: 11px;
+        color: #64748b;
+    }
+    .grant-warn {
+        background: #f0f9ff;
+        border: 1px solid #bae6fd;
+        border-left: 3px solid #0284c7;
+        padding: 10px 12px;
+        border-radius: 8px;
+        font-size: 11.5px;
+        color: #075985;
+        line-height: 1.5;
+    }
+    .grant-warn i { margin-right: 4px; }
+    .grant-warn a { color: #0369a1; font-weight: 700; text-decoration: none; }
+    .grant-warn a:hover { text-decoration: underline; }
+    .grant-foot {
+        padding: 14px 20px;
+        background: #f8fafc;
+        border-top: 1px solid #e2e8f0;
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        flex-shrink: 0;
+    }
     .fc-disc-icon {
         width: 36px; height: 36px;
         border-radius: 9px;
@@ -3454,6 +4015,528 @@ $accounts          = $accounts          ?? [];
         .qpb-row strong { font-size: 13px; }
         .qpb-due, .qpb-submit-amt { font-size: 15px !important; }
         .qpb-btn { padding: 9px 14px; font-size: 12.5px; }
+    }
+
+    /* ── Discount/Scholarship banner (Step 1, conditional) ─────────── */
+    .fc-disc-banner {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 12px;
+        padding: 11px 14px;
+        background: linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%);
+        border: 1px solid #bbf7d0;
+        border-left: 4px solid #16a34a;
+        border-radius: 10px;
+    }
+    .fc-disc-icon {
+        width: 36px; height: 36px;
+        border-radius: 9px;
+        background: #dcfce7;
+        color: #15803d;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 15px;
+        flex-shrink: 0;
+    }
+    .fc-disc-body { flex: 1; min-width: 0; }
+    .fc-disc-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: #14532d;
+        margin-bottom: 2px;
+    }
+    .fc-disc-title strong {
+        font-family: 'Playfair Display', serif;
+        font-size: 15px;
+        font-weight: 700;
+        color: #15803d;
+        margin-left: 4px;
+    }
+    .fc-disc-sub {
+        font-size: 11.5px;
+        color: #4d7c5f;
+        line-height: 1.5;
+    }
+    .fc-disc-link {
+        color: #15803d;
+        font-weight: 700;
+        text-decoration: none;
+        border-bottom: 1px dashed currentColor;
+    }
+    .fc-disc-link:hover {
+        color: #166534;
+        border-bottom-style: solid;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════
+       FLOATING QUICK-PAY BAR — appears when scrolled near Step 4.
+       Mirrors the Net Due + Submitting amount from the right summary
+       so the cashier doesn't have to scroll back up to act.
+       ══════════════════════════════════════════════════════════════════ */
+    .quick-pay-bar {
+        position: fixed;
+        bottom: 18px;
+        left: 50%;
+        transform: translateX(-50%) translateY(20px);
+        z-index: 7000;
+        display: flex;
+        align-items: center;
+        gap: 24px;
+        padding: 12px 16px 12px 22px;
+        background: linear-gradient(135deg, #0f1f3a 0%, #1a3358 100%);
+        border: 1px solid rgba(255, 212, 121, .25);
+        border-radius: 14px;
+        box-shadow: 0 12px 32px rgba(15, 31, 58, .35),
+                    0 4px 12px rgba(15, 31, 58, .15);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity .2s ease, transform .25s ease;
+    }
+    .quick-pay-bar.visible {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateX(-50%) translateY(0);
+    }
+
+    .qpb-info {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        color: #fff;
+    }
+    .qpb-row {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        line-height: 1.1;
+    }
+    .qpb-label {
+        font-size: 10.5px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .55px;
+        color: rgba(255, 255, 255, .55);
+    }
+    .qpb-row strong {
+        font-size: 14px;
+        font-weight: 700;
+        color: #fff;
+        font-variant-numeric: tabular-nums;
+    }
+    .qpb-due {
+        color: #fca5a5 !important;
+        font-family: 'Playfair Display', serif;
+        font-size: 17px !important;
+    }
+    .qpb-submit-amt {
+        color: #ffd479 !important;
+        font-family: 'Playfair Display', serif;
+        font-size: 17px !important;
+    }
+
+    .qpb-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 11px 22px;
+        border: none;
+        border-radius: 10px;
+        background: linear-gradient(135deg, #0f766e 0%, #0d5a55 100%);
+        color: #fff;
+        font-family: 'DM Sans', sans-serif;
+        font-size: 13.5px;
+        font-weight: 700;
+        cursor: pointer;
+        box-shadow: 0 4px 12px rgba(15, 118, 110, .35);
+        transition: transform .12s ease, box-shadow .15s ease;
+    }
+    .qpb-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 16px rgba(15, 118, 110, .45);
+    }
+    .qpb-btn:active { transform: translateY(0); }
+    .qpb-btn:disabled {
+        background: #94a3b8;
+        cursor: not-allowed;
+        box-shadow: none;
+        transform: none;
+    }
+
+    @media (max-width: 720px) {
+        .quick-pay-bar {
+            left: 12px; right: 12px;
+            transform: translateY(20px);
+            justify-content: space-between;
+            gap: 10px;
+            padding: 10px 12px;
+        }
+        .quick-pay-bar.visible { transform: translateY(0); }
+        .qpb-info { gap: 12px; }
+        .qpb-row strong { font-size: 13px; }
+        .qpb-due, .qpb-submit-amt { font-size: 15px !important; }
+        .qpb-btn { padding: 9px 14px; font-size: 12.5px; }
+    }
+
+    /* ══════════════════════════════════════════════════════════════════
+       SUBMIT PAYMENT (Step 4) — REDESIGNED
+       Scoped under .pay-card so it overrides ONLY Step 4. Other .fc-card
+       sections (Breakdown, Tiles) keep their existing look.
+       ══════════════════════════════════════════════════════════════════ */
+    .pay-card {
+        border: 1px solid #e2e8f0;
+        background: #fff;
+        box-shadow: 0 4px 18px rgba(15, 31, 58, .06);
+        overflow: hidden;
+    }
+
+    /* ── Header strip ───────────────────────────────────────────────── */
+    .pay-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 14px 20px;
+        background: linear-gradient(135deg, #0f1f3a 0%, #1a3358 100%);
+        color: #fff;
+    }
+    .pay-head-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+    }
+    .pay-step {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        background: rgba(255,255,255,.10);
+        color: #ffd479;
+        font-size: 13px;
+        font-weight: 700;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        font-family: 'DM Sans', sans-serif;
+    }
+    .pay-head h3 {
+        font-family: 'Playfair Display', serif;
+        font-size: 16px;
+        font-weight: 700;
+        color: #fff;
+        margin: 0 0 1px;
+        letter-spacing: .2px;
+    }
+    .pay-head-sub {
+        font-size: 12px;
+        margin: 0;
+        color: rgba(255,255,255,.6);
+        font-weight: 500;
+    }
+    .pay-head-due {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(255, 212, 121, .14);
+        border: 1px solid rgba(255, 212, 121, .25);
+        padding: 7px 14px;
+        border-radius: 999px;
+        flex-shrink: 0;
+    }
+    .pay-head-due-label {
+        font-size: 10.5px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .6px;
+        color: rgba(255,212,121,.85);
+    }
+    .pay-head-due-val {
+        font-family: 'Playfair Display', serif;
+        font-size: 16px;
+        font-weight: 700;
+        color: #ffd479;
+        font-variant-numeric: tabular-nums;
+    }
+
+    /* ── Body ───────────────────────────────────────────────────────── */
+    .pay-body {
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+    }
+
+    /* ── Section (groups: Mode / Amount) ────────────────────────────── */
+    .pay-section {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 14px 16px;
+    }
+    .pay-section-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .5px;
+        color: #0f1f3a;
+    }
+    .pay-section-head i {
+        color: #0f766e;
+        font-size: 13px;
+    }
+    .pay-section-head .fc-req {
+        margin-left: 2px;
+    }
+
+    /* ── Mode select (taller, primary) ──────────────────────────────── */
+    .pay-mode-wrap {
+        position: relative;
+    }
+    .pay-mode-select {
+        width: 100%;
+        padding: 11px 38px 11px 14px;
+        font-size: 14px;
+        font-weight: 600;
+        color: #0f1f3a;
+        background: #fff;
+        border: 1.5px solid #cbd5e1;
+        border-radius: 8px;
+        appearance: none;
+        cursor: pointer;
+        transition: border-color .15s, box-shadow .15s;
+    }
+    .pay-mode-select:focus {
+        outline: none;
+        border-color: #0f766e;
+        box-shadow: 0 0 0 3px rgba(15,118,110,.12);
+    }
+    .pay-mode-select:invalid {
+        color: #94a3b8;
+        font-weight: 500;
+    }
+
+    /* ── Quick chips (Pay Full / Custom) ────────────────────────────── */
+    .pay-quick-row {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+    }
+    .pay-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 14px;
+        border-radius: 999px;
+        border: 1.5px solid transparent;
+        font-size: 12.5px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: transform .12s, box-shadow .15s;
+    }
+    .pay-chip i { font-size: 12px; }
+    .pay-chip-primary {
+        background: #0f766e;
+        color: #fff;
+    }
+    .pay-chip-primary:hover {
+        background: #115e59;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 10px rgba(15,118,110,.25);
+    }
+    .pay-chip-amber {
+        background: #fff;
+        color: #b45309;
+        border-color: #fcd34d;
+    }
+    .pay-chip-amber:hover {
+        background: #fef3c7;
+        transform: translateY(-1px);
+    }
+
+    /* ── Amount inputs (3-up grid) ──────────────────────────────────── */
+    .pay-amount-grid {
+        display: grid;
+        grid-template-columns: 1.2fr 1fr 1.5fr;
+        gap: 12px;
+    }
+    @media (max-width: 720px) {
+        .pay-amount-grid { grid-template-columns: 1fr; }
+    }
+    .pay-field {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+    }
+    .pay-label {
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .5px;
+        color: #64748b;
+    }
+    .pay-input {
+        padding: 10px 12px;
+        font-size: 14px;
+        font-weight: 500;
+        color: #0f172a;
+        background: #fff;
+        border: 1.5px solid #cbd5e1;
+        border-radius: 8px;
+        font-variant-numeric: tabular-nums;
+        transition: border-color .15s, box-shadow .15s;
+    }
+    .pay-input:focus {
+        outline: none;
+        border-color: #0f766e;
+        box-shadow: 0 0 0 3px rgba(15,118,110,.12);
+    }
+    .pay-input::placeholder { color: #cbd5e1; font-weight: 400; }
+    .pay-input-primary {
+        font-weight: 700;
+        font-size: 16px;
+        color: #0f1f3a;
+        border-color: #0f766e;
+        background: #f0fdfa;
+    }
+    .pay-input-primary:focus {
+        background: #fff;
+        box-shadow: 0 0 0 3px rgba(15,118,110,.18);
+    }
+
+    /* ── Calculation strip ──────────────────────────────────────────── */
+    .pay-calc-strip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 14px 18px;
+    }
+    .pay-calc-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+    }
+    .pay-calc-label {
+        font-size: 10.5px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .5px;
+        color: #94a3b8;
+    }
+    .pay-calc-val {
+        font-family: 'Playfair Display', serif;
+        font-size: 17px;
+        font-weight: 700;
+        color: #0f1f3a;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.1;
+    }
+    .pay-calc-green { color: #16a34a; }
+    .pay-calc-red   { color: #dc2626; }
+    .pay-calc-blue  { color: #1d4ed8; }
+    .pay-calc-op {
+        font-size: 18px;
+        font-weight: 700;
+        color: #cbd5e1;
+        align-self: center;
+    }
+    .pay-calc-item-strong {
+        background: #fef2f2;
+        border-radius: 8px;
+        padding: 6px 12px;
+        margin-left: auto;
+    }
+    .pay-calc-item-strong .pay-calc-label { color: #dc2626; }
+    .pay-calc-item-strong .pay-calc-val   { font-size: 20px; }
+
+    /* ── Allocation preview ─────────────────────────────────────────── */
+    .pay-alloc {
+        background: #f0fdfa;
+        border: 1px solid #99f6e4;
+        border-left: 4px solid #0f766e;
+        border-radius: 10px;
+        padding: 14px 16px;
+    }
+    .pay-alloc-title {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        margin-bottom: 10px;
+        font-size: 12.5px;
+        font-weight: 700;
+        color: #0f766e;
+        text-transform: uppercase;
+        letter-spacing: .4px;
+    }
+    .pay-alloc-title i { font-size: 12px; }
+    .pay-alloc-hint {
+        font-size: 10.5px;
+        font-weight: 500;
+        color: #14b8a6;
+        text-transform: none;
+        letter-spacing: 0;
+        margin-left: 2px;
+    }
+
+    /* ── Action bar ─────────────────────────────────────────────────── */
+    .pay-actions {
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        padding-top: 4px;
+    }
+    .pay-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 11px 22px;
+        border-radius: 8px;
+        border: 1.5px solid transparent;
+        font-family: 'DM Sans', sans-serif;
+        font-size: 13.5px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: transform .12s, box-shadow .15s, background .15s;
+    }
+    .pay-btn-ghost {
+        background: #fff;
+        color: #475569;
+        border-color: #cbd5e1;
+    }
+    .pay-btn-ghost:hover {
+        background: #f8fafc;
+        color: #0f1f3a;
+        border-color: #94a3b8;
+    }
+    .pay-btn-submit {
+        background: linear-gradient(135deg, #0f766e 0%, #0d5a55 100%);
+        color: #fff;
+        box-shadow: 0 4px 12px rgba(15,118,110,.25);
+    }
+    .pay-btn-submit:hover {
+        background: linear-gradient(135deg, #115e59 0%, #0a4744 100%);
+        transform: translateY(-1px);
+        box-shadow: 0 6px 16px rgba(15,118,110,.35);
+    }
+    .pay-btn-submit:active { transform: translateY(0); }
+    .pay-btn-submit:disabled {
+        background: #94a3b8;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
     }
 
     /* ══════════════════════════════════════════════════════════════════
@@ -4010,7 +5093,7 @@ $accounts          = $accounts          ?? [];
         margin-top: 2px;
         line-height: 1.2;
     }
-    .hist-num-tag.wallet-tag { color: #0f766e; }
+    .hist-num-tag.carry-tag { color: #0f766e; }
 
     /* ── PILLS ──────────────────────────────────────────────────────── */
     .hist-rcpt {
@@ -4036,7 +5119,18 @@ $accounts          = $accounts          ?? [];
     }
     .hist-pill-full     { background: #dcfce7; color: #166534; }
     .hist-pill-partial  { background: #fef3c7; color: #92400e; }
+    .hist-pill-refunded { background: #fee2e2; color: #991b1b; }
+    .hist-pill-refund   { background: #fde2e2; color: #c2410c; }
     .hist-pill-unknown  { background: #f1f5f9; color: #94a3b8; padding: 3px 12px; }
+
+    /* Refund / refunded row accents — red tint so reversed money is
+       instantly visible and the viewer doesn't think F2 + F3 added up. */
+    .hist-row-refund   td       { background: #fff7f5; }
+    .hist-row-refunded td       { background: #fafafa; }
+    .hist-rcpt-refund           { color: #b91c1c; font-weight: 700; }
+    .hist-rcpt-struck           { text-decoration: line-through; color: #94a3b8; }
+    .hist-num-refund            { color: #b91c1c; font-weight: 600; }
+    .hist-kpi-sub               { font-size: 11px; color: #94a3b8; margin-top: 2px; font-weight: 500; }
 
     .mode-pill {
         display: inline-block;
@@ -4050,7 +5144,6 @@ $accounts          = $accounts          ?? [];
     .mode-cash    { background: #ecfdf5; color: #047857; }
     .mode-bank    { background: #eff6ff; color: #1d4ed8; }
     .mode-online  { background: #f3e8ff; color: #6d28d9; }
-    .mode-wallet  { background: #fef3c7; color: #92400e; }
     .mode-other   { background: #f1f5f9; color: #475569; }
 
     .hist-month-chip {

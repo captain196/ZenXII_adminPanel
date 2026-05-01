@@ -145,9 +145,10 @@ class Classes extends MY_Controller
 
             $students = [];
             foreach ($studentDocs as $sDocs) {
+                $d = $sDocs['data'] ?? $sDocs;
                 $st = $sDocs['data'];
                 $students[] = [
-                    'id'   => $st['User ID'] ?? $st['studentId'] ?? $sDocs['id'],
+                    'id'   => $st['User ID'] ?? $st['studentId'] ?? $d['id'],
                     'name' => $st['Name'] ?? $st['name'] ?? '',
                 ];
             }
@@ -345,8 +346,9 @@ class Classes extends MY_Controller
 
         $students = [];
         foreach ($studentDocs as $doc) {
+            $d = $doc['data'] ?? $doc;
             $profile = $doc['data'];
-            $stuId   = $profile['User ID'] ?? $profile['studentId'] ?? $doc['id'];
+            $stuId   = $profile['User ID'] ?? $profile['studentId'] ?? $d['id'];
             $students[] = [
                 'id'          => $stuId,
                 'name'        => $profile['Name'] ?? $profile['name'] ?? '',
@@ -603,7 +605,8 @@ class Classes extends MY_Controller
                 $totalDues = 0;
 
                 foreach ($sectionStudents as $doc) {
-                    $studentId = $doc['data']['User ID'] ?? $doc['data']['studentId'] ?? $doc['id'];
+                    $d = $doc['data'] ?? $doc;
+                    $studentId = $doc['data']['User ID'] ?? $doc['data']['studentId'] ?? $d['id'];
                     $pendingDocs = $this->fs->schoolWhere('feeDemands', [
                         ['studentId', '==', $studentId],
                         ['status', 'in', ['pending', 'Pending', 'overdue', 'Overdue']],

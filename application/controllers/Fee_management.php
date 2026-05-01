@@ -1690,15 +1690,21 @@ class Fee_management extends MY_Controller
         // different places — the success modal shows "Receipt #1", the
         // internal key is "F1", and printed receipts show "R000001".
         // Strip any prefix so all three forms resolve to the same receipt.
-        if ($receiptNo !== '') {
-            $receiptNo = preg_replace('/^R0*/i', '', $receiptNo);   // R000001 → 1
-            $receiptNo = preg_replace('/^F/i',  '', $receiptNo);    // F1      → 1
-            $receiptNo = preg_replace('/\D/',   '', $receiptNo);    // keep digits only
-            if ($receiptNo === '') {
-                $this->json_error('Could not recognise the receipt number. Enter a value like "1" or "R000001".');
-            }
-            $receiptNo = $this->safe_path_segment($receiptNo, 'receipt_no');
+        //
+        // Required: the parent app shows the refund as "R<origReceiptNo>".
+        // Without a value here it falls back to a random "R-XXXXXX" label
+        // which is confusing to parents. Server-side enforce in addition
+        // to the HTML5 required attribute on the form.
+        if ($receiptNo === '') {
+            $this->json_error('Receipt number is required. Enter the receipt this refund is against (e.g. 2 or F2).');
         }
+        $receiptNo = preg_replace('/^R0*/i', '', $receiptNo);   // R000001 → 1
+        $receiptNo = preg_replace('/^F/i',  '', $receiptNo);    // F1      → 1
+        $receiptNo = preg_replace('/\D/',   '', $receiptNo);    // keep digits only
+        if ($receiptNo === '') {
+            $this->json_error('Could not recognise the receipt number. Enter a value like "1" or "R000001".');
+        }
+        $receiptNo = $this->safe_path_segment($receiptNo, 'receipt_no');
         if ($amount <= 0)    $this->json_error('Refund amount must be greater than zero.');
         if ($feeTitle === '') $this->json_error('Fee title is required.');
         if ($reason === '')  $this->json_error('Refund reason is required.');
@@ -1736,6 +1742,12 @@ class Fee_management extends MY_Controller
             'amount'          => $amount,
             'feeTitle'        => $feeTitle,
             'receiptNo'       => $receiptNo,
+            // Emit origReceiptNo too so both the refund doc AND the
+            // later-generated voucher carry the same canonical field.
+            // Parent-app FeeRefundVoucherDoc expects `origReceiptNo`
+            // exactly — writing it here guarantees no "R-XXXXXX"
+            // random fallback regardless of processing state.
+            'origReceiptNo'   => $receiptNo,
             'reason'          => $reason,
             'status'          => 'pending',
             'requestedDate'   => $now,
@@ -2167,6 +2179,10 @@ class Fee_management extends MY_Controller
     public function fetch_due_students()
     {
         $this->_require_role(self::VIEW_ROLES, 'fetch_due_students');
+        // Fee_firestore_txn is used statically at line ~2204 for
+        // periodToMonth(). Bootstrap the library so the class file is
+        // loaded before the static call.
+        $this->_bootFsTxn();
         $classSections = $this->_getAllClassSections();
         $dueStudents   = [];
 
@@ -2252,6 +2268,36 @@ class Fee_management extends MY_Controller
             }
         }
 
+        // Enrich each student with their most recent reminder timestamp so
+        // the Due Students table's "Last Reminder" column shows when a
+        // reminder was last dispatched (instead of always "Never"). One
+        // Firestore query for the whole school, then in-memory max per
+        // studentId — cheap vs per-student lookups.
+        try {
+            $logRows = $this->firebase->firestoreQuery('feeReminderLog', [
+                ['schoolId', '==', $this->school_name],
+                ['session',  '==', $this->session_year],
+            ]);
+            $lastByStudent = [];
+            foreach ((array) $logRows as $lrow) {
+                $ldata = $lrow['data'] ?? $lrow;
+                if (!is_array($ldata)) continue;
+                $lsid  = (string) ($ldata['student_id'] ?? $ldata['studentId'] ?? '');
+                $lsent = (string) ($ldata['sent_date']  ?? $ldata['sentDate']  ?? '');
+                if ($lsid === '' || $lsent === '') continue;
+                if (!isset($lastByStudent[$lsid]) || strcmp($lsent, $lastByStudent[$lsid]) > 0) {
+                    $lastByStudent[$lsid] = $lsent;
+                }
+            }
+            foreach ($dueStudents as &$ds) {
+                $dsid = (string) $ds['user_id'];
+                if (isset($lastByStudent[$dsid])) {
+                    $ds['last_reminder'] = $lastByStudent[$dsid];
+                }
+            }
+            unset($ds);
+        } catch (\Exception $_) { /* non-fatal — table simply falls back to "Never" */ }
+
         // Sort by total_due descending
         usort($dueStudents, function ($a, $b) {
             return $b['total_due'] - $a['total_due'];
@@ -2335,8 +2381,18 @@ class Fee_management extends MY_Controller
             $name    = $student['name']      ?? ($def['studentName'] ?? '');
             $class   = $student['class']     ?? ($def['className']   ?? '');
             $section = $student['section']   ?? ($def['section']     ?? '');
-            $due     = isset($student['total_due']) ? (float) $student['total_due']
-                       : (float) ($def['totalBalance'] ?? $def['balance'] ?? 0);
+            // Prefer the UI-supplied total_due so the notification shows
+            // the exact value the admin saw in the table.
+            // Fallback order (all camelCase canonical first, snake/legacy
+            // names second) covers older defaulter docs and manual edits:
+            //   totalDues (canonical) → total_dues → totalBalance → balance
+            $due = isset($student['total_due'])
+                ? (float) $student['total_due']
+                : (float) ($def['totalDues']
+                        ?? $def['total_dues']
+                        ?? $def['totalBalance']
+                        ?? $def['balance']
+                        ?? 0);
 
             // Per-student month override: if the caller didn't pass an
             // explicit month, use this student's OLDEST unpaid month from
@@ -2591,6 +2647,44 @@ class Fee_management extends MY_Controller
      * Initialize the Payment Service with the appropriate gateway adapter.
      * Uses mock gateway for test mode, real gateway for live mode.
      */
+    /**
+     * T3 rate-limit wrapper. Returns TRUE when the caller was blocked
+     * (and the 429 response has already been written); caller must
+     * return immediately. Returns FALSE when the call is allowed and
+     * the counter has been bumped.
+     */
+    private function _rate_limit_block(string $bucket, string $userKey): bool
+    {
+        try {
+            $this->load->library('Rate_limiter', null, 'rateLimiter');
+            $verdict = $this->rateLimiter->check(
+                $this->firebase,
+                $bucket,
+                $userKey,
+                (string) $this->input->ip_address(),
+                /* max */      5,
+                /* windowSec */ 60
+            );
+        } catch (\Throwable $e) {
+            // Fail-open on limiter failure — legitimate parent payments
+            // must not be blocked by a Firestore hiccup.
+            log_message('warning', "Rate_limiter fail-open for {$bucket}/{$userKey}: " . $e->getMessage());
+            return false;
+        }
+        if (!empty($verdict['allowed'])) return false;
+
+        http_response_code(429);
+        header('Retry-After: ' . max(1, (int) $verdict['retryAfter']));
+        echo json_encode([
+            'success'     => false,
+            'error'       => 'Too many requests. Please wait a moment and try again.',
+            'code'        => 'RATE_LIMITED',
+            'retryAfter'  => (int) $verdict['retryAfter'],
+        ]);
+        log_message('warning', "[RATE_LIMIT] {$bucket} blocked for {$userKey} from " . $this->input->ip_address());
+        return true;
+    }
+
     private function _init_payment_service(): void
     {
         if (isset($this->paymentService)) return; // already initialized
@@ -2713,6 +2807,11 @@ class Fee_management extends MY_Controller
         $studentId   = (string) ($claims['uid'] ?? '');
         $studentName = '';
 
+        // T3 — rate limit BEFORE any Firestore work. 5 req/min per
+        // studentId+ip; unauthenticated requests (studentId empty) are
+        // bucketed on IP alone so an anon attacker still hits the cap.
+        if ($this->_rate_limit_block('parent_create_order', $studentId !== '' ? $studentId : 'anon')) return;
+
         // Parse body — accept JSON or form-encoded
         $raw = file_get_contents('php://input');
         $body = [];
@@ -2725,6 +2824,14 @@ class Fee_management extends MY_Controller
         $amount    = floatval($body['amount'] ?? 0);
         $feeMonths = $body['fee_months'] ?? [];
         if (!is_array($feeMonths)) $feeMonths = [];
+
+        // P9-DEBUG
+        log_message('error', '[P9-DEBUG parent_create_order] raw=' . substr((string)$raw, 0, 400)
+            . '  | post=' . json_encode($this->input->post())
+            . '  | amount=' . var_export($amount, true)
+            . '  | feeMonths=' . json_encode($feeMonths)
+            . '  | studentId=' . $studentId
+            . '  | contentType=' . ($this->input->server('CONTENT_TYPE') ?? 'none'));
 
         if ($studentId === '') {
             http_response_code(401);
@@ -2864,6 +2971,13 @@ class Fee_management extends MY_Controller
     public function parent_verify_payment()
     {
         header('Content-Type: application/json; charset=utf-8');
+
+        // T3 — rate limit. studentId comes from verified Firebase ID
+        // token (set by Api_auth upstream); unauthenticated callers
+        // fall back to IP-only bucketing.
+        $claimsForLimit = $this->_parent_claims ?: [];
+        $studentForLimit = (string) ($claimsForLimit['uid'] ?? 'anon');
+        if ($this->_rate_limit_block('parent_verify_payment', $studentForLimit)) return;
 
         $raw = file_get_contents('php://input');
         $body = [];

@@ -69,7 +69,9 @@ class MY_Controller extends CI_Controller
         }
 
         $this->load->library('firebase');
+        $this->load->library('firestore_service', null, 'fs');
         $this->load->library('session');
+        $this->load->library('request_context');
         $this->load->helper('url');
         $this->load->helper('rbac');
         $this->load->helper('audit');
@@ -94,6 +96,42 @@ class MY_Controller extends CI_Controller
         // path key for Users/Admin/{code}/ and Users/Parents/{code}/.
         // Falls back to school_id for legacy schools without school_code.
         $this->parent_db_key = $this->school_code ?: $this->school_id;
+
+        // Initialize Firestore service with school context
+        if ($this->school_id && $this->session_year) {
+            $this->fs->init($this->school_id, $this->session_year, $this->school_code);
+        }
+
+        // Initialize Roster_helper — Firestore-only class roster reads
+        // (replaces every legacy `Schools/{...}/Students/List` RTDB read).
+        // Adopts the Firestore_service we just initialised, so the helper
+        // is school-scoped automatically.
+        $this->load->library('roster_helper', null, 'roster');
+        if ($this->school_id && $this->session_year) {
+            $this->roster->init($this->fs);
+        }
+
+        // Initialize Dual-write service (RTDB + Firestore)
+        $this->load->library('dual_write', null, 'dw');
+        if ($this->school_id && $this->session_year) {
+            $this->dw->init(
+                $this->firebase,
+                $this->school_id,
+                $this->session_year,
+                $this->school_code,
+                $this->parent_db_key
+            );
+        }
+
+        // Initialize Unified Data Access Layer
+        $this->load->library('data_service', null, 'data');
+        if ($this->school_id && $this->session_year) {
+            $this->data->init(
+                $this->firebase, $this->fs,
+                $this->school_id, $this->session_year,
+                $this->school_code, $this->parent_db_key
+            );
+        }
 
         // ── Determine current route ───────────────────────────────────────
         $controller = strtolower($this->router->fetch_class());
@@ -151,6 +189,18 @@ class MY_Controller extends CI_Controller
             }
 
             $now = time();
+
+            // ── Auto-process pending push requests (throttled to once per 30s) ──
+            // This makes teacher→parent pushes fire automatically without
+            // the admin needing to visit any specific page. The check is
+            // lightweight: one Firestore query, runs at most every 30s.
+            $lastPushCheck = (int) $this->session->userdata('push_check_ts');
+            if ($this->school_id && ($now - $lastPushCheck >= 30)) {
+                $this->session->set_userdata('push_check_ts', $now);
+                try {
+                    $this->_auto_process_push_requests();
+                } catch (\Exception $e) { /* never break a page */ }
+            }
 
             // ── [BUG-1+2 FIX] [A-01] Live subscription re-check every 5 min ──
             //
@@ -482,12 +532,72 @@ class MY_Controller extends CI_Controller
     protected function assert_school_ownership(string $school_name): void
     {
         if ($school_name !== $this->school_name) {
-            log_message('error',
-                "Ownership violation: session=[{$this->school_name}]"
-                . " tried=[{$school_name}] admin=[{$this->admin_id}]"
-            );
+            $this->_log_security_event('CROSS_SCHOOL_ATTEMPT', [
+                'session_school' => $this->school_name,
+                'target_school'  => $school_name,
+            ]);
             $this->json_error('Access denied.', 403);
         }
+    }
+
+    /**
+     * Validate that a Firebase path belongs to the current school.
+     * Prevents path traversal across schools.
+     *
+     * @param string $path  Firebase path to validate
+     * @return bool  True if path is safe for this school
+     */
+    protected function assert_school_path(string $path): void
+    {
+        $schoolId   = $this->school_name;  // SCH_XXXXXX
+        $schoolCode = $this->school_code;  // login code
+
+        // Paths that must be school-scoped
+        $scoped = false;
+        if (strpos($path, 'Schools/') === 0) {
+            $scoped = (strpos($path, "Schools/{$schoolId}/") === 0);
+        } elseif (strpos($path, 'Users/Admin/') === 0) {
+            $scoped = (strpos($path, "Users/Admin/{$schoolCode}/") === 0);
+        } elseif (strpos($path, 'Users/Parents/') === 0) {
+            $parentKey = $this->parent_db_key ?? $schoolCode;
+            $scoped = (strpos($path, "Users/Parents/{$parentKey}/") === 0);
+        } else {
+            // Paths not under Schools/ or Users/ don't need school scoping
+            $scoped = true;
+        }
+
+        if (!$scoped) {
+            $this->_log_security_event('PATH_VIOLATION', [
+                'path'           => $path,
+                'session_school' => $schoolId,
+            ]);
+            $this->json_error('Access denied.', 403);
+        }
+    }
+
+    /**
+     * Log a security event to Firebase and error log.
+     */
+    private function _log_security_event(string $event, array $context = []): void
+    {
+        $entry = array_merge([
+            'event'     => $event,
+            'admin_id'  => $this->admin_id ?? 'unknown',
+            'role'      => $this->admin_role ?? 'unknown',
+            'school_id' => $this->school_name ?? 'unknown',
+            'ip'        => $this->input->ip_address(),
+            'uri'       => $this->uri->uri_string(),
+            'timestamp' => date('c'),
+        ], $context);
+
+        // Log to error log (always)
+        log_message('error', "SECURITY [{$event}] " . json_encode($entry));
+
+        // Log to Firebase (best-effort)
+        try {
+            $monthKey = date('Y-m');
+            $this->firebase->push("System/Logs/Security/{$monthKey}", $entry);
+        } catch (\Exception $e) { /* non-critical */ }
     }
 
     // =========================================================================
@@ -517,6 +627,32 @@ class MY_Controller extends CI_Controller
     // =========================================================================
     //  ROLE-BASED ACCESS CONTROL
     // =========================================================================
+
+    /**
+     * Check if the current school has been migrated to Firestore.
+     * Caches the result for the lifetime of this request.
+     *
+     * @return bool TRUE if Firestore schools doc has firestore_migrated flag
+     */
+    protected function _is_school_migrated(): bool
+    {
+        static $cache = null;
+        if ($cache !== null) return $cache;
+
+        if (!$this->school_id || !isset($this->fs)) {
+            $cache = false;
+            return false;
+        }
+
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->school_id);
+            $cache = !empty($schoolDoc['firestore_migrated']);
+        } catch (Exception $e) {
+            $cache = false;
+        }
+
+        return $cache;
+    }
 
     /**
      * Abort 403 if the current user's role is not in the allowed list.
@@ -669,5 +805,152 @@ class MY_Controller extends CI_Controller
             }
         }
         return $classes;
+    }
+
+    /**
+     * Auto-process pending push requests from Firestore `pushRequests`.
+     * Called from MY_Controller constructor (throttled to every 30s).
+     * Handles: attendance A/T, leave approve/reject, homework created/reviewed.
+     */
+    private function _auto_process_push_requests(): void
+    {
+        if (!isset($this->fs) || !$this->school_id) return;
+
+        try {
+            $docs = $this->fs->schoolWhere('pushRequests', [
+                ['status', '==', 'pending'],
+            ]);
+        } catch (\Exception $e) { return; }
+
+        if (empty($docs)) return;
+
+        $this->load->library('push_service');
+        $this->load->library('device_service');
+
+        foreach ($docs as $entry) {
+            $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+            $docId = is_array($entry) ? ($entry['id'] ?? '') : '';
+            if (!is_array($d)) continue;
+
+            $source    = $d['source'] ?? '';
+            $studentId = $d['studentId'] ?? '';
+            $markedBy  = $d['markedBy'] ?? '';
+
+            try {
+                switch ($source) {
+                    case 'teacher':
+                        // Attendance A/T push
+                        $mark  = strtoupper($d['mark'] ?? '');
+                        $day   = (int) ($d['day'] ?? 0);
+                        $month = $d['month'] ?? date('F');
+                        if ($studentId !== '' && in_array($mark, ['A', 'T']) && $day >= 1) {
+                            $this->push_service->sendToUser($studentId, [
+                                'title' => 'Attendance: ' . ($mark === 'A' ? 'Absent' : 'Late'),
+                                'body'  => "Your child was marked " . ($mark === 'A' ? 'Absent' : 'Late') . " today.",
+                                'data'  => ['type' => $mark === 'A' ? 'student_absent' : 'student_late'],
+                            ]);
+                        }
+                        break;
+
+                    case 'teacher_leave_approve':
+                        $startDate = $d['startDate'] ?? '';
+                        $endDate   = $d['endDate'] ?? '';
+                        $this->push_service->sendToUser($studentId, [
+                            'title' => 'Leave Approved',
+                            'body'  => "Leave ({$startDate} to {$endDate}) approved by {$markedBy}.",
+                            'data'  => ['type' => 'leave_approved'],
+                        ]);
+                        break;
+
+                    case 'teacher_leave_reject':
+                        $remarks = $d['remarks'] ?? '';
+                        $this->push_service->sendToUser($studentId, [
+                            'title' => 'Leave Rejected',
+                            'body'  => "Leave rejected by {$markedBy}. Reason: {$remarks}",
+                            'data'  => ['type' => 'leave_rejected'],
+                        ]);
+                        break;
+
+                    case 'homework_created':
+                        $title   = $d['title'] ?? 'New Homework';
+                        $subject = $d['subject'] ?? '';
+                        $dueDate = $d['dueDate'] ?? '';
+                        $class   = $d['class'] ?? '';
+                        $section = $d['section'] ?? '';
+                        if ($class !== '' && $section !== '') {
+                            $students = $this->_build_student_list_for_push($class, $section);
+                            foreach ($students as $sid) {
+                                $this->push_service->sendToUser($sid, [
+                                    'title' => "New Homework: {$subject}",
+                                    'body'  => "{$title} — due {$dueDate}. By {$markedBy}.",
+                                    'data'  => ['type' => 'homework_created'],
+                                ]);
+                            }
+                        }
+                        break;
+
+                    case 'homework_reviewed':
+                        $score  = $d['score'] ?? '';
+                        $remark = $d['remark'] ?? '';
+                        $scoreText = ($score !== '' && (int) $score >= 0) ? "Score: {$score}. " : '';
+                        $this->push_service->sendToUser($studentId, [
+                            'title' => 'Homework Graded',
+                            'body'  => "{$scoreText}Reviewed by {$markedBy}." . ($remark ? " \"{$remark}\"" : ''),
+                            'data'  => ['type' => 'homework_reviewed'],
+                        ]);
+                        break;
+                }
+            } catch (\Exception $e) {
+                log_message('error', "Auto push processing failed for {$source}: " . $e->getMessage());
+            }
+
+            // Delete processed request
+            if ($docId !== '') {
+                try { $this->fs->remove('pushRequests', $docId); } catch (\Exception $e) {}
+            }
+        }
+    }
+
+    /**
+     * Get student IDs for a class+section to send bulk push notifications.
+     */
+    private function _build_student_list_for_push(string $class, string $section): array
+    {
+        $studentIds = [];
+
+        // Firestore first
+        try {
+            $classPrefixed   = Firestore_service::classKey($class);
+            $sectionPrefixed = Firestore_service::sectionKey($section);
+            $docs = $this->fs->schoolWhere('students', [
+                ['Class',   '==', $classPrefixed],
+                ['Section', '==', $sectionPrefixed],
+            ]);
+            foreach ($docs as $doc) {
+                $s = is_array($doc) ? ($doc['data'] ?? $doc) : null;
+                if (!is_array($s)) continue;
+                $uid = $s['User Id'] ?? $s['studentId'] ?? '';
+                if ($uid !== '') $studentIds[] = $uid;
+            }
+            if (!empty($studentIds)) return $studentIds;
+        } catch (\Exception $e) {}
+
+        // RTDB fallback
+        try {
+            $secRoot = "Schools/{$this->school_name}/{$this->session_year}/"
+                     . Firestore_service::classKey($class) . '/'
+                     . Firestore_service::sectionKey($section);
+            $allStudents = $this->firebase->get("{$secRoot}/Students");
+            if (is_array($allStudents)) {
+                if (isset($allStudents['List']) && is_array($allStudents['List'])) {
+                    return array_keys($allStudents['List']);
+                }
+                foreach ($allStudents as $id => $v) {
+                    if ($id !== 'List' && is_string($id)) $studentIds[] = $id;
+                }
+            }
+        } catch (\Exception $e) {}
+
+        return $studentIds;
     }
 }

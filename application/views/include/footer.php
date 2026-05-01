@@ -1,4 +1,13 @@
 
+<!-- Phone prefix input group (global style) -->
+<style>
+.phone-ig{display:flex;align-items:stretch;width:100%}
+.phone-ig .phone-pfx{display:flex;align-items:center;padding:0 12px;background:#f0f0f0;border:1px solid #ccc;border-right:0;border-radius:4px 0 0 4px;font-size:14px;font-weight:600;color:#555;white-space:nowrap;user-select:none;line-height:1}
+.phone-ig input{border-radius:0 4px 4px 0!important;flex:1;min-width:0}
+/* Night mode */
+[data-theme="night"] .phone-pfx,[data-bs-theme="dark"] .phone-pfx{background:var(--bg3,#1a2540);border-color:var(--border,#2a3350);color:var(--t2,#8892aa)}
+</style>
+
 <footer class="main-footer giq-footer">
     <div class="giq-foot-inner">
 
@@ -68,6 +77,31 @@ $end   = substr($start + 1, -2);
 <script src="https://cdn.datatables.net/buttons/3.0.2/js/buttons.print.min.js"></script>
 
 <script>
+    /* ── Global 401/403 handler: redirect to login on session expiry ── */
+    $(document).ajaxComplete(function(event, xhr){
+        if(xhr.status === 401 || xhr.status === 403){
+            try {
+                var r = JSON.parse(xhr.responseText);
+                if(r.status === 'error' && r.message && /session|expired|log\s*in|deactivat|subscription/i.test(r.message)){
+                    // Show toast if available, else alert
+                    if(typeof saToast === 'function'){
+                        saToast(r.message, 'error');
+                    } else {
+                        var $t = $('<div>').css({
+                            position:'fixed',top:'20px',right:'20px',zIndex:99999,
+                            background:'#fef2f2',border:'1px solid #ef4444',borderRadius:'8px',
+                            padding:'12px 18px',fontSize:'13px',color:'#991b1b',
+                            boxShadow:'0 4px 20px rgba(0,0,0,.15)',maxWidth:'360px',
+                            fontFamily:"'Plus Jakarta Sans',sans-serif"
+                        }).html('<i class="fa fa-exclamation-circle" style="margin-right:8px;color:#ef4444;"></i>' + r.message);
+                        $('body').append($t);
+                    }
+                    setTimeout(function(){ window.location.href = '<?= base_url("admin_login") ?>'; }, 1800);
+                }
+            } catch(e){}
+        }
+    });
+
     /* ── Global helpers ── */
     function numberFormat(num) {
         return num.toLocaleString('en-IN');

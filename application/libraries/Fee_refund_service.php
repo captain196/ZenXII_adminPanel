@@ -83,7 +83,7 @@ class Fee_refund_service
         // state change. Same precedence the old code used at the top of
         // the processing block.
         $studentId     = (string) ($refund['student_id']   ?? $refund['studentId']   ?? '');
-        $origReceiptNo = (string) ($refund['receipt_no']   ?? $refund['receiptNo']   ?? '');
+        $origReceiptNo = (string) ($refund['origReceiptNo'] ?? $refund['receiptNo'] ?? $refund['receipt_no'] ?? '');
         $amount        = (float)  ($refund['amount'] ?? 0);
 
         if ($studentId === '') {
@@ -257,6 +257,37 @@ class Fee_refund_service
             }
             $this->fsTxn->writeRefund($refId, $markProcessed);
 
+            // T1 audit — refund processing is a financial mutation and
+            // MUST land in fee_audit_logs so the regulator can reconstruct
+            // who authorised the reversal and when. before/after here
+            // captures the status transition; the journal hop is logged
+            // in accountingLedger separately.
+            try {
+                require_once APPPATH . 'libraries/Fee_audit_logger.php';
+                $auditLogger = new Fee_audit_logger(
+                    $this->firebase,
+                    $this->fsTxn->getSchoolId(),
+                    $this->fsTxn->getSession()
+                );
+                $auditLogger->record('update', 'refund', $refId,
+                    [
+                        'status'      => (string) ($refund['status']      ?? 'pending'),
+                        'amount'      => (float)  ($refund['amount']      ?? 0),
+                        'receiptNo'   => (string) ($refund['receiptNo']   ?? ''),
+                        'studentId'   => $studentId,
+                    ],
+                    [
+                        'status'           => (string) ($markProcessed['status'] ?? 'processed'),
+                        'amount'           => (float) $amount,
+                        'refundReceiptKey' => $refundReceiptKey,
+                        'journalPosted'    => (bool)  ($markProcessed['journalPosted'] ?? false),
+                        'journalEntryId'   => (string)($markProcessed['journalEntryId'] ?? ''),
+                    ],
+                    (string) ($controller_admin_id ?? $refund['approvedBy'] ?? 'admin'),
+                    ['source' => 'refund_process', 'reason' => (string) ($refund['reason'] ?? '')]
+                );
+            } catch (\Throwable $_) { /* never fail the refund on audit */ }
+
             // ── 7. Cross-system defaulter recompute (Firestore-only) ─────
             // A refund can flip a 'paid' demand back to 'partial'/'unpaid',
             // which should resurface the student as a defaulter in the
@@ -266,6 +297,50 @@ class Fee_refund_service
             // Pure in-memory + single Firestore write — no RTDB calls.
             if ($studentId !== '') {
                 $this->_syncDefaulterAfterRefund($studentId, $studentName, $refClass, $refSection);
+            }
+
+            // ── 7b. Phase 5 — refresh read-optimisation summaries.
+            // Without this hook, refunds left studentFeeSummary and any
+            // touched classFeeSummary cells stale until the next receipt
+            // submit or manual backfill. Full-recompute semantics in the
+            // writer make this idempotent; a retry of the same refund
+            // (via the idempotency short-circuit above) never reaches
+            // here, so the hook fires exactly once per refund. Runs in
+            // try/catch so a summary-write failure cannot flip an
+            // already-succeeded refund into an error state — readers
+            // have their own stale/fallback handling.
+            if ($studentId !== '') {
+                try {
+                    $monthsTouched = [];
+                    foreach ($allocations as $a) {
+                        if (!is_array($a)) continue;
+                        $period = (string) ($a['period'] ?? $a['month'] ?? '');
+                        if ($period === '') continue;
+                        // "April 2026" → "April"
+                        $m = (string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', $period);
+                        if ($m !== '' && !in_array($m, $monthsTouched, true)) {
+                            $monthsTouched[] = $m;
+                        }
+                    }
+                    $CI =& get_instance();
+                    if (!isset($CI->feeSummaryWriter)) {
+                        $CI->load->library('Fee_summary_writer', null, 'feeSummaryWriter');
+                    }
+                    $CI->feeSummaryWriter->init(
+                        $CI->firebase,
+                        $this->fsTxn->getSchoolId(),
+                        $this->fsTxn->getSession()
+                    );
+                    $CI->feeSummaryWriter->onRefundProcessed(
+                        $studentId,
+                        $monthsTouched,
+                        $refClass,
+                        $refSection
+                    );
+                    log_message('debug', "Fee_refund_service: {$refId} summary_refreshed student={$studentId} months=" . implode(',', $monthsTouched));
+                } catch (\Throwable $sumErr) {
+                    log_message('error', "Fee_refund_service: {$refId} summary refresh failed (non-fatal): " . $sumErr->getMessage());
+                }
             }
 
             // R.1a: mark idempotency success so any future replay of the
@@ -834,7 +909,7 @@ class Fee_refund_service
 
         $amount         = (float)  ($refund['amount']    ?? 0);
         $mode           = (string) ($refund['refundMode'] ?? $refund['refund_mode'] ?? 'cash');
-        $origReceiptNo  = (string) ($refund['receiptNo']  ?? $refund['receipt_no']  ?? '');
+        $origReceiptNo  = (string) ($refund['origReceiptNo'] ?? $refund['receiptNo'] ?? $refund['receipt_no'] ?? '');
         $origReceiptKey = $origReceiptNo !== '' ? 'F' . $origReceiptNo : '';
         $allocations    = [];
         if ($origReceiptKey !== '') {

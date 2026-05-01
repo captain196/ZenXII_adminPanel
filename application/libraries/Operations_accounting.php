@@ -260,6 +260,18 @@ class Operations_accounting
      */
     public function create_journal(string $narration, array $lines, string $source = '', string $sourceRef = ''): string
     {
+        // Phase 8B — v2 path: idempotency + period-lock + CAS-guarded
+        // balance updates in a single atomic batch. Refund journals
+        // transit through this method (create_refund_journal → here),
+        // so converting create_journal inherits CAS protection for
+        // refunds transparently.
+        //
+        // Gated on the ACCOUNTING_V2 flag — same rollout knob as the
+        // fee journal. Legacy path remains the default.
+        if ((string) getenv('ACCOUNTING_V2') === '1') {
+            return $this->_create_journal_v2($narration, $lines, $source, $sourceRef);
+        }
+
         // Session C: pure-Firestore journal creation. Ledger, indices, closing
         // balances and voucher counters all live in Firestore collections.
         // Zero RTDB calls in this method.
@@ -357,6 +369,235 @@ class Operations_accounting
         return $entryId;
     }
 
+    // ════════════════════════════════════════════════════════════════════
+    //  Phase 8B — CAS manual-journal (ACCOUNTING_V2 path).
+    //
+    //  Same invariants as _create_fee_journal_v2:
+    //    • Exactly one ledger row per (idempKey). idempKey derived
+    //      deterministically so a retry (browser re-submit, CLI recon,
+    //      refund reversal replay) lands on the same slot.
+    //    • Ledger + all affected closing-balance writes in ONE commit
+    //      batch (atomic).
+    //    • All balance writes carry `currentDocument.updateTime` CAS so
+    //      concurrent posts can't silently overwrite each other.
+    //    • Period-closed entries are rejected.
+    //
+    //  Callers (refund wrappers, admin UI) expect `returns string`.
+    //  On permanent failure we call `$this->CI->json_error(...)` which
+    //  halts the request — matches legacy behaviour so current callers
+    //  don't need to change. A retry-loop CLI that can't tolerate
+    //  json_error should call _create_fee_journal_v2 directly instead.
+    // ════════════════════════════════════════════════════════════════════
+    private function _create_journal_v2(string $narration, array $lines, string $source, string $sourceRef): string
+    {
+        // ── 1. Validation (same rules as legacy) ─────────────────────────
+        if (count($lines) < 2) {
+            $this->CI->json_error('Journal entry requires at least 2 line items.');
+        }
+        $sync = $this->_acctFsSync();
+        if (!$sync) { $this->CI->json_error('Accounting service is not available. Please try again.'); }
+
+        $CI =& get_instance();
+        $CI->load->library('Accounting_cache',       null, 'acctCache');
+        $CI->load->library('Accounting_idempotency', null, 'acctIdemp');
+        $CI->load->library('Accounting_period_lock', null, 'acctLock');
+        $CI->acctCache->init($this->school_name, $this->session_year);
+        $CI->acctIdemp->init($this->firebase, $this->school_name, $this->session_year);
+        $CI->acctLock ->init($this->firebase, $CI->acctCache, $this->school_name, $this->session_year);
+
+        $coa = $CI->acctCache->remember('coa', 300, function () use ($sync) {
+            return $sync->readChartOfAccounts();
+        });
+
+        // Normalise lines + dr/cr + per-account aggregation. Identical to
+        // legacy path — copied verbatim so behaviour matches byte-for-byte.
+        $totalDr = 0; $totalCr = 0; $affected = [];
+        foreach ($lines as &$ln) {
+            $dr = round((float) ($ln['dr'] ?? 0), 2);
+            $cr = round((float) ($ln['cr'] ?? 0), 2);
+            $ln['dr'] = $dr; $ln['cr'] = $cr;
+            $totalDr += $dr; $totalCr += $cr;
+            $acCode = (string) ($ln['account_code'] ?? '');
+            $acct   = $coa[$acCode] ?? null;
+            $ln['account_name'] = is_array($acct) ? ($acct['name'] ?? $acCode) : $acCode;
+            if (is_array($acct) && !empty($acct['is_group'])) {
+                $this->CI->json_error("Account {$acCode} is a group account — cannot post directly.");
+            }
+            if ($acCode !== '') {
+                $affected[$acCode] = [
+                    'dr' => ($affected[$acCode]['dr'] ?? 0) + $dr,
+                    'cr' => ($affected[$acCode]['cr'] ?? 0) + $cr,
+                ];
+            }
+        }
+        unset($ln);
+        if (abs($totalDr - $totalCr) > 0.01) {
+            $this->CI->json_error("Unbalanced journal: Debit ({$totalDr}) does not equal Credit ({$totalCr}).");
+        }
+
+        $date = date('Y-m-d');
+
+        // ── 2. Period-lock check ─────────────────────────────────────────
+        // Phase 8C (R1) — bypass cache on the write path. Correctness
+        // outweighs the 1-2s cost of an extra read. Dashboards/reports
+        // still use the cached validate().
+        $lockCheck = $CI->acctLock->forceValidate($date);
+        if (!empty($lockCheck['locked'])) {
+            log_message('error', "ACC_JOURNAL_PERIOD_LOCKED source={$source} ref={$sourceRef} date={$date} lockedUntil={$lockCheck['lockedUntil']}");
+            $this->CI->json_error("Period is closed up to {$lockCheck['lockedUntil']}. Cannot post on {$date}.");
+        }
+
+        // ── 3. Derive idempotency key ────────────────────────────────────
+        //  Deterministic when sourceRef is present (fee payment, refund
+        //  reversal, gateway voucher). Hashed-payload fallback for plain
+        //  manual admin journals — double-click / re-submit within the
+        //  staleness window (120 s) collapses to the same slot.
+        if ($sourceRef !== '' && $source !== '') {
+            $sourcePrefix = strtoupper($source);
+            $sourcePrefix = preg_replace('/[^A-Z0-9_]+/', '_', $sourcePrefix);
+            $idempKey = "JE_{$sourcePrefix}_{$sourceRef}";
+        } else {
+            $sortedLines = array_map(function ($l) {
+                return [
+                    'c' => (string) ($l['account_code'] ?? ''),
+                    'd' => round((float) ($l['dr'] ?? 0), 2),
+                    'r' => round((float) ($l['cr'] ?? 0), 2),
+                ];
+            }, $lines);
+            usort($sortedLines, fn($a, $b) => strcmp($a['c'], $b['c']));
+            $idempKey = 'JE_MAN_' . md5(
+                $this->school_name . '|' . $date . '|' .
+                round($totalDr, 2) . '|' .
+                json_encode($sortedLines) . '|' .
+                $this->admin_id . '|Journal'
+            );
+        }
+
+        // ── 4. Claim idempotency slot ────────────────────────────────────
+        $claim = $CI->acctIdemp->claim($idempKey, $source ?: 'manual');
+        if (!empty($claim['dedup'])) {
+            log_message('debug', "[ACC v2] dedup hit — returning existing entry {$claim['entryId']} for idempKey={$idempKey}");
+            return (string) $claim['entryId'];
+        }
+        if (!empty($claim['in_progress'])) {
+            $ageSec = (int) ($claim['ageSec'] ?? 0);
+            log_message('error', "ACC_JOURNAL_IN_PROGRESS idempKey={$idempKey} ageSec={$ageSec}");
+            $this->CI->json_error('This journal is currently being posted. Please wait a moment and retry.');
+        }
+        if (isset($claim['error'])) {
+            log_message('error', "ACC_IDEMP_ERROR idempKey={$idempKey} error=" . $claim['error']);
+            $this->CI->json_error('Accounting idempotency service is unavailable. Please retry.');
+        }
+
+        // ── 5. Build entry + voucher + entryId ───────────────────────────
+        $seq = $sync->nextCounter('Journal');
+        if ($seq <= 0) $seq = (int) (microtime(true) * 1000) % 1000000;
+        $voucherNo = 'JV-' . str_pad((string) $seq, 6, '0', STR_PAD_LEFT);
+        //  Deterministic entryId from the idempKey so dedup lookups are
+        //  direct (no extra index). Not strictly required — entryId
+        //  could be a random id — but keeping them aligned simplifies
+        //  both reconciler and audit trails.
+        $entryId     = $idempKey;
+        $ledgerDocId = "{$this->school_name}_{$this->session_year}_{$entryId}";
+
+        $entry = [
+            'schoolId'     => $this->school_name,
+            'session'      => $this->session_year,
+            'entryId'      => $entryId,
+            'date'         => $date,
+            'voucher_no'   => $voucherNo,
+            'voucher_type' => ($source === 'fee_refund') ? 'Refund' : 'Journal',
+            'narration'    => $narration,
+            'lines'        => array_values($lines),
+            'total_dr'     => round($totalDr, 2),
+            'total_cr'     => round($totalCr, 2),
+            'source'       => $source,
+            'source_ref'   => $sourceRef !== '' ? $sourceRef : null,
+            'is_finalized' => false,
+            'status'       => 'active',
+            'created_by'   => $this->admin_id,
+            'created_at'   => date('c'),
+            'updatedAt'    => date('c'),
+        ];
+
+        // ── 6. CAS LOOP ──────────────────────────────────────────────────
+        $MAX_ATTEMPTS = 5;
+        $lastError    = '';
+        for ($attempt = 1; $attempt <= $MAX_ATTEMPTS; $attempt++) {
+            $balReqs = [];
+            foreach (array_keys($affected) as $code) {
+                $balReqs[(string) $code] = [
+                    'collection' => 'accountingClosingBalances',
+                    'docId'      => "{$this->school_name}_{$this->session_year}_{$code}",
+                ];
+            }
+            $balDocs = (array) $this->firebase->firestoreGetParallel($balReqs);
+
+            $ops = [];
+            // 1. Ledger entry (exists:false — atomic dedup backstop even
+            //    if idempotency slot was stale-overridden by a racer).
+            $ops[] = [
+                'op'           => 'create',
+                'collection'   => 'accounting',
+                'docId'        => $ledgerDocId,
+                'data'         => $entry,
+                'precondition' => ['exists' => false],
+            ];
+            // 2. Closing balances — CAS per account.
+            foreach ($affected as $code => $amounts) {
+                $cur   = is_array($balDocs[(string) $code] ?? null) ? $balDocs[(string) $code] : null;
+                $curDr = $cur ? (float) ($cur['period_dr'] ?? 0) : 0.0;
+                $curCr = $cur ? (float) ($cur['period_cr'] ?? 0) : 0.0;
+                $newDr = round($curDr + (float) $amounts['dr'], 2);
+                $newCr = round($curCr + (float) $amounts['cr'], 2);
+                $op = [
+                    'op'         => 'set',
+                    'collection' => 'accountingClosingBalances',
+                    'docId'      => "{$this->school_name}_{$this->session_year}_{$code}",
+                    'data'       => [
+                        'schoolId'      => $this->school_name,
+                        'session'       => $this->session_year,
+                        'accountCode'   => (string) $code,
+                        'period_dr'     => $newDr,
+                        'period_cr'     => $newCr,
+                        'last_entry_id' => $entryId,
+                        'last_computed' => date('c'),
+                        'updatedAt'     => date('c'),
+                    ],
+                ];
+                if ($cur === null) {
+                    $op['precondition'] = ['exists' => false];
+                } else {
+                    $ut = (string) ($cur['__updateTime'] ?? '');
+                    if ($ut !== '') $op['precondition'] = ['updateTime' => $ut];
+                }
+                $ops[] = $op;
+            }
+
+            $ok = (bool) $this->firebase->firestoreCommitBatch($ops);
+            if ($ok) {
+                $CI->acctIdemp->markSuccess($idempKey, $entryId);
+                log_message('error', "ACC_JOURNAL_COMMITTED entryId={$entryId} source={$source} attempt={$attempt} ops=" . count($ops));
+                return $entryId;
+            }
+
+            $lastError = "batch commit returned false on attempt {$attempt}";
+            log_message('error', "ACC_JOURNAL_CAS_RETRY entryId={$entryId} attempt={$attempt}");
+            if ($attempt < $MAX_ATTEMPTS) {
+                $baseMs = min(2000, 100 * (1 << ($attempt - 1)));
+                $jitter = random_int(0, 100);
+                usleep(($baseMs + $jitter) * 1000);
+            }
+        }
+
+        $CI->acctIdemp->markFailed($idempKey, $lastError);
+        log_message('error', "ACC_JOURNAL_FAILED entryId={$entryId} attempts={$MAX_ATTEMPTS} error={$lastError}");
+        $this->CI->json_error('Could not post journal after multiple attempts (concurrent update storm). Please retry.');
+        // Unreachable — json_error halts — but keep the return for the
+        // type-checker's peace of mind.
+        return '';
+    }
+
     /**
      * Public wrapper around Accounting_firestore_sync::findJournalBySourceRef.
      * Exists so Fee_refund_service::retryJournal can distinguish "already
@@ -412,6 +653,17 @@ class Operations_accounting
      */
     public function create_fee_journal(array $params): ?string
     {
+        // Phase 8A — feature-flagged v2 path: idempotency gate + period-lock
+        // guard + CAS batch commit. Default OFF for safety. Enable per-
+        // tenant via the env flag once you've smoke-tested on staging.
+        //
+        // The v2 path produces EXACTLY the same ledger+balance state as
+        // the legacy path on the happy path; it only differs on error
+        // paths (safer dedup, atomic batch, period-lock enforcement).
+        if ((string) getenv('ACCOUNTING_V2') === '1' || !empty($params['accounting_v2'])) {
+            return $this->_create_fee_journal_v2($params);
+        }
+
         // Session C: pure-Firestore fee journal. Dr Cash/Bank, Cr Fee Income.
         $date     = $params['date'] ?? date('Y-m-d');
         $amount   = round((float) ($params['amount'] ?? 0), 2);
@@ -461,10 +713,31 @@ class Operations_accounting
 
         $narration = "Fee payment: {$student} ({$stuId}) - {$class}" . ($receipt ? " Rcpt#{$receipt}" : '');
 
+        // Phase 7G (H2) — if a deterministic entry id was supplied (e.g.
+        // "JE_FEE_F12" from the async-queue worker), use it AND treat
+        // an already-existing ledger doc as a successful no-op. This
+        // makes journal creation safe to retry: the ledger entry doc
+        // gets overwritten harmlessly via `firestoreSet`, but the
+        // closing-balance updates below are read-modify-write and
+        // double-count on a second call — we MUST short-circuit.
+        $suppliedEntryId = (string) ($params['journal_entry_id'] ?? '');
+        if ($suppliedEntryId !== '') {
+            $entryId = $suppliedEntryId;
+            // Existence check — the ledger collection uses
+            // "{schoolCode}_{session}_{entryId}" as doc id (see
+            // Accounting_firestore_sync::syncLedgerEntry).
+            $existingDocId = "{$this->school_name}_{$this->session_year}_{$entryId}";
+            $existing = $this->firebase->firestoreGet('accounting', $existingDocId);
+            if (is_array($existing) && !empty($existing['entryId'])) {
+                log_message('debug', "[FEE JOURNAL IDEMPOTENT] entry {$entryId} already present — skipping re-post");
+                return $entryId;
+            }
+        } else {
+            $entryId = 'FE_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
+        }
         $seq = $sync->nextCounter('Fee');
         if ($seq <= 0) $seq = (int) (microtime(true) * 1000) % 1000000;
         $voucherNo = 'FV-' . str_pad($seq, 6, '0', STR_PAD_LEFT);
-        $entryId   = 'FE_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
 
         $lines = [
             ['account_code' => $cashBankCode,  'account_name' => $cashAcct['name'] ?? $cashBankCode,  'dr' => $amount, 'cr' => 0,       'narration' => $narration],
@@ -506,9 +779,235 @@ class Operations_accounting
         return $entryId;
     }
 
-    // ====================================================================
+    // ════════════════════════════════════════════════════════════════════
+    //  Phase 8A — CAS-based fee journal (ACCOUNTING_V2 path).
+    //
+    //  Strict invariants:
+    //    • Exactly one ledger row per (schoolId, session, entryId), where
+    //      entryId is deterministic on the caller's receipt key.
+    //    • Ledger + closing balances + audit row land in ONE commitBatch.
+    //    • Balance writes carry `currentDocument.updateTime` so concurrent
+    //      posts cannot silently over-write each other.
+    //    • Period-closed entries are rejected at the write-path.
+    //    • Idempotent under retry — same caller + same receipt returns the
+    //      already-committed entryId without re-posting.
+    //
+    //  Performance:
+    //    • Two Firestore round-trips per attempt (parallel read + one
+    //      commit batch). No sequential per-account writes.
+    //    • Cache hit on CoA + period-lock avoids extra reads when warm.
+    //
+    //  Never throws — returns the entryId on success, null on permanent
+    //  failure. Callers (FeeWorker) treat null as "retry later".
+    // ════════════════════════════════════════════════════════════════════
+    private function _create_fee_journal_v2(array $params): ?string
+    {
+        $CI =& get_instance();
+        $date     = (string) ($params['date']         ?? date('Y-m-d'));
+        $amount   = round((float) ($params['amount']   ?? 0), 2);
+        $payMode  = strtolower(trim((string) ($params['payment_mode'] ?? 'cash')));
+        $bankCode = trim((string) ($params['bank_code']    ?? ''));
+        $receipt  = (string) ($params['receipt_no']   ?? '');
+        $student  = (string) ($params['student_name'] ?? '');
+        $stuId    = (string) ($params['student_id']   ?? '');
+        $class    = (string) ($params['class']        ?? '');
+        $adminId  = (string) ($params['admin_id']     ?? $this->admin_id);
+
+        if ($amount <= 0 || $receipt === '') {
+            log_message('error', "[ACC v2] rejected: amount={$amount} receipt='{$receipt}'");
+            return null;
+        }
+
+        // ── Derive deterministic idempotency key + entryId ───────────────
+        $suppliedEntryId = (string) ($params['journal_entry_id'] ?? '');
+        $entryId  = $suppliedEntryId !== '' ? $suppliedEntryId : "JE_FEE_{$receipt}";
+        $idempKey = $entryId;  // same key — one slot, one entry
+
+        // ── Load v2 libraries ────────────────────────────────────────────
+        $CI->load->library('Accounting_cache',       null, 'acctCache');
+        $CI->load->library('Accounting_idempotency', null, 'acctIdemp');
+        $CI->load->library('Accounting_period_lock', null, 'acctLock');
+        $CI->acctCache->init($this->school_name, $this->session_year);
+        $CI->acctIdemp->init($this->firebase,    $this->school_name, $this->session_year);
+        $CI->acctLock ->init($this->firebase, $CI->acctCache, $this->school_name, $this->session_year);
+
+        // ── Period-lock guard (cached 60 s) ──────────────────────────────
+        // Phase 8C (R1) — bypass cache on the write path. Correctness
+        // outweighs the 1-2s cost of an extra read. Dashboards/reports
+        // still use the cached validate().
+        $lockCheck = $CI->acctLock->forceValidate($date);
+        if (!empty($lockCheck['locked'])) {
+            log_message('error', "ACC_JOURNAL_PERIOD_LOCKED entryId={$entryId} date={$date} lockedUntil={$lockCheck['lockedUntil']}");
+            return null;
+        }
+
+        // ── Idempotency claim ────────────────────────────────────────────
+        $claim = $CI->acctIdemp->claim($idempKey, 'fee_payment');
+        if (!empty($claim['dedup']))       return (string) $claim['entryId'];
+        if (!empty($claim['in_progress'])) {
+            log_message('error', "ACC_JOURNAL_IN_PROGRESS entryId={$entryId} ageSec=" . ($claim['ageSec'] ?? 0));
+            return null;
+        }
+        if (isset($claim['error'])) {
+            log_message('error', "ACC_IDEMP_ERROR entryId={$entryId} error=" . $claim['error']);
+            return null;
+        }
+
+        // ── Build the entry: resolve accounts + narration ────────────────
+        $sync = $this->_acctFsSync();
+        if (!$sync) { $CI->acctIdemp->markFailed($idempKey, 'accounting sync unavailable'); return null; }
+        $coa = $CI->acctCache->remember('coa', 300, function () use ($sync) {
+            return $sync->readChartOfAccounts();
+        });
+        if (empty($coa)) { $CI->acctIdemp->markFailed($idempKey, 'CoA not set up'); return null; }
+
+        if ($bankCode !== '' && isset($coa[$bankCode])) {
+            $cashBankCode = $bankCode;
+        } elseif (in_array($payMode, ['bank','cheque','upi','neft','rtgs','online','bank_transfer'], true)) {
+            $cashBankCode = '1010';
+            foreach ($coa as $code => $acct) {
+                if (!empty($acct['is_bank']) && ($acct['status'] ?? '') === 'active') { $cashBankCode = $code; break; }
+            }
+        } else {
+            $cashBankCode = '1010';
+        }
+        $feeIncomeCode = '4010';
+
+        $cashAcct = $coa[$cashBankCode]  ?? null;
+        $feeAcct  = $coa[$feeIncomeCode] ?? null;
+        if (!is_array($cashAcct) || ($cashAcct['status'] ?? '') !== 'active'
+         || !is_array($feeAcct)  || ($feeAcct['status']  ?? '') !== 'active') {
+            $CI->acctIdemp->markFailed($idempKey, "account missing/inactive cash={$cashBankCode} fee={$feeIncomeCode}");
+            return null;
+        }
+
+        $narration = "Fee payment: {$student} ({$stuId}) - {$class}" . ($receipt ? " Rcpt#{$receipt}" : '');
+        $seq       = $sync->nextCounter('Fee');
+        if ($seq <= 0) $seq = (int) (microtime(true) * 1000) % 1000000;
+        $voucherNo = 'FV-' . str_pad((string) $seq, 6, '0', STR_PAD_LEFT);
+
+        $lines = [
+            ['account_code' => $cashBankCode,  'account_name' => (string) ($cashAcct['name'] ?? $cashBankCode),
+             'dr' => $amount, 'cr' => 0,       'narration' => $narration],
+            ['account_code' => $feeIncomeCode, 'account_name' => (string) ($feeAcct['name']  ?? $feeIncomeCode),
+             'dr' => 0,       'cr' => $amount, 'narration' => $narration],
+        ];
+        $ledgerDocId = "{$this->school_name}_{$this->session_year}_{$entryId}";
+        $entry = [
+            'schoolId'     => $this->school_name,
+            'session'      => $this->session_year,
+            'entryId'      => $entryId,
+            'date'         => $date,
+            'voucher_no'   => $voucherNo,
+            'voucher_type' => 'Fee',
+            'narration'    => $narration,
+            'lines'        => $lines,
+            'total_dr'     => $amount,
+            'total_cr'     => $amount,
+            'source'       => 'fee_payment',
+            'source_ref'   => $receipt,
+            'is_finalized' => false,
+            'status'       => 'active',
+            'created_by'   => $adminId,
+            'created_at'   => date('c'),
+            'updatedAt'    => date('c'),
+        ];
+        $balanceDeltas = [
+            $cashBankCode  => ['dr' => $amount, 'cr' => 0],
+            $feeIncomeCode => ['dr' => 0,       'cr' => $amount],
+        ];
+
+        // ── CAS loop: read balances → build batch → commit-or-retry ──────
+        $MAX_ATTEMPTS = 5;
+        $lastError    = '';
+        for ($attempt = 1; $attempt <= $MAX_ATTEMPTS; $attempt++) {
+            $balReqs = [];
+            foreach (array_keys($balanceDeltas) as $ac) {
+                $balReqs[$ac] = [
+                    'collection' => 'accountingClosingBalances',
+                    'docId'      => "{$this->school_name}_{$this->session_year}_{$ac}",
+                ];
+            }
+            $balDocs = (array) $this->firebase->firestoreGetParallel($balReqs); // 1 RTT
+
+            $ops = [];
+            // 1. Ledger entry — dedup guard: exists:false (idempotency slot
+            //    already vetted duplicates; if this still races, caller
+            //    must retry via idempotency path, not here).
+            $ops[] = [
+                'op'           => 'create',
+                'collection'   => 'accounting',
+                'docId'        => $ledgerDocId,
+                'data'         => $entry,
+                'precondition' => ['exists' => false],
+            ];
+            // 2. Closing balances — CAS per doc.
+            foreach ($balanceDeltas as $ac => $delta) {
+                $cur        = is_array($balDocs[$ac] ?? null) ? $balDocs[$ac] : null;
+                $curDr      = $cur ? (float) ($cur['period_dr'] ?? 0) : 0.0;
+                $curCr      = $cur ? (float) ($cur['period_cr'] ?? 0) : 0.0;
+                $newDr      = round($curDr + (float) $delta['dr'], 2);
+                $newCr      = round($curCr + (float) $delta['cr'], 2);
+                $balDocId   = "{$this->school_name}_{$this->session_year}_{$ac}";
+                $op = [
+                    'op'         => 'set',
+                    'collection' => 'accountingClosingBalances',
+                    'docId'      => $balDocId,
+                    'data'       => [
+                        'schoolId'      => $this->school_name,
+                        'session'       => $this->session_year,
+                        'accountCode'   => $ac,
+                        'period_dr'     => $newDr,
+                        'period_cr'     => $newCr,
+                        'last_entry_id' => $entryId,
+                        'last_computed' => date('c'),
+                        'updatedAt'     => date('c'),
+                    ],
+                ];
+                if ($cur === null) {
+                    $op['precondition'] = ['exists' => false];
+                } else {
+                    $ut = (string) ($cur['__updateTime'] ?? '');
+                    if ($ut !== '') $op['precondition'] = ['updateTime' => $ut];
+                    // If updateTime is missing for some reason, proceed
+                    // without precondition rather than silently failing —
+                    // the CAS retry + idempotency gate still covers us.
+                }
+                $ops[] = $op;
+            }
+
+            // 3. Atomic commit.
+            $ok = (bool) $this->firebase->firestoreCommitBatch($ops);
+            if ($ok) {
+                $CI->acctIdemp->markSuccess($idempKey, $entryId);
+                log_message('error', "ACC_JOURNAL_COMMITTED entryId={$entryId} attempt={$attempt} ops=" . count($ops));
+                return $entryId;
+            }
+
+            // 4. Commit failed — most likely one of the balance updateTime
+            //    preconditions raced. Re-read + retry with backoff.
+            $lastError = "batch commit returned false on attempt {$attempt}";
+            log_message('error', "ACC_JOURNAL_CAS_RETRY entryId={$entryId} attempt={$attempt}");
+            if ($attempt < $MAX_ATTEMPTS) {
+                // Exponential backoff with jitter — two colliding writers
+                // must not retry in lockstep.
+                $baseMs = min(2000, 100 * (1 << ($attempt - 1)));
+                $jitter = random_int(0, 100);
+                usleep(($baseMs + $jitter) * 1000);
+            }
+        }
+
+        // All CAS attempts exhausted. Mark failed so operator sees it.
+        // Reconciliation cron will surface fee-receipt-without-journal
+        // drift if this entry truly never lands.
+        $CI->acctIdemp->markFailed($idempKey, $lastError);
+        log_message('error', "ACC_JOURNAL_FAILED entryId={$entryId} attempts={$MAX_ATTEMPTS} error={$lastError}");
+        return null;
+    }
+
+    // ════════════════════════════════════════════════════════════════════
     //  FEE HEAD → ACCOUNT CODE MAPPING
-    // ====================================================================
+    // ════════════════════════════════════════════════════════════════════
 
     /**
      * Load the fee head → account code mapping from Firebase config.

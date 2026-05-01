@@ -73,6 +73,10 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
                     href="<?= base_url('student/edit_student/' . urlencode($student['User Id'] ?? '')) ?>">
                     <i class="fa fa-pencil"></i> Edit Student
                 </a>
+                <a class="sp-btn sp-btn-ghost"
+                    href="<?= base_url('sis/history/' . urlencode($student['User Id'] ?? '')) ?>">
+                    <i class="fa fa-history"></i> History
+                </a>
             </div>
         </div>
 

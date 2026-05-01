@@ -45,6 +45,10 @@
         <div class="hr-stat-label"><i class="fa fa-users"></i> Total Staff</div>
       </div>
       <div class="hr-stat">
+        <div class="hr-stat-value" id="statActiveStaff">--</div>
+        <div class="hr-stat-label"><i class="fa fa-user-plus"></i> Active Staff</div>
+      </div>
+      <div class="hr-stat">
         <div class="hr-stat-value" id="statDepts">--</div>
         <div class="hr-stat-label"><i class="fa fa-building-o"></i> Departments</div>
       </div>
@@ -137,8 +141,11 @@
       </div>
       <div class="hr-table-wrap">
         <table class="hr-table" id="tblDepts">
-          <thead><tr><th>#</th><th>Name</th><th>Head</th><th>Staff Count</th><th>Description</th><th>Actions</th></tr></thead>
-          <tbody><tr><td colspan="6" class="hr-empty"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr></tbody>
+          <thead><tr>
+            <th style="width:32px"></th><th>Name</th><th>Head</th>
+            <th>Staff</th><th>Open Jobs</th><th>Created</th><th>Status</th><th>Actions</th>
+          </tr></thead>
+          <tbody><tr><td colspan="8" class="hr-empty"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -1407,7 +1414,11 @@ document.addEventListener('DOMContentLoaded', function(){
   function loadDashboard(){
     getJSON('hr/get_dashboard').then(function(r){
       if(!r) return;
-      $('#statTotalStaff').text(r.staff_count||0);
+      // total_staff = all staff regardless of status; active_staff =
+      // status==Active. staff_count alias falls back to active for any
+      // older payload that didn't include the new fields.
+      $('#statTotalStaff').text(r.total_staff != null ? r.total_staff : (r.staff_count||0));
+      $('#statActiveStaff').text(r.active_staff != null ? r.active_staff : (r.staff_count||0));
       $('#statDepts').text(r.dept_count||0);
       $('#statOpenJobs').text(r.open_jobs||0);
       $('#statPendingLeaves').text(r.pending_leaves||0);
@@ -1483,55 +1494,132 @@ document.addEventListener('DOMContentLoaded', function(){
       deptCache = toMap((r&&r.departments)?r.departments:(r&&r.data)?r.data:{});
       var $tb=$('#tblDepts tbody');
       var keys=Object.keys(deptCache);
-      if(!keys.length){ $tb.html('<tr><td colspan="6" class="hr-empty"><i class="fa fa-inbox"></i> No departments found. Add one to get started.</td></tr>'); return; }
+      if(!keys.length){ $tb.html('<tr><td colspan="8" class="hr-empty"><i class="fa fa-inbox"></i> No departments found. Add one to get started.</td></tr>'); return; }
       var h='', i=0;
       $.each(deptCache, function(k,d){
         i++;
-        var cnt = (d.staff_count||0);
-        var cntBadge = cnt > 0
-          ? '<span style="background:var(--gold-dim);color:var(--gold);padding:2px 8px;border-radius:10px;font-weight:700;font-size:12px;cursor:pointer" onclick="$(\'#deptStaff_'+esc(k)+'\').toggle()">'+cnt+'</span>'
+        var cnt    = (d.staff_count || 0);
+        var openCt = (d.open_count  || (d.openings ? d.openings.length : 0));
+        var hasDetail = cnt > 0 || openCt > 0;
+        var rowId = 'deptDetail_' + esc(k);
+        // Auto-expand any dept with active openings so admin sees vacancies
+        // immediately without having to click into each row.
+        var startOpen = (openCt > 0);
+
+        // Chevron — only shown when there's something to expand
+        var chevron = hasDetail
+          ? '<i class="fa fa-chevron-' + (startOpen ? 'down' : 'right') + '" id="dchev_'+esc(k)+'" style="color:var(--t3);transition:transform .15s"></i>'
+          : '<i class="fa fa-circle" style="color:var(--border);font-size:6px;vertical-align:middle"></i>';
+
+        // Staff count chip
+        var staffChip = cnt > 0
+          ? '<span style="background:var(--gold-dim);color:var(--gold);padding:2px 8px;border-radius:10px;font-weight:700;font-size:12px">'+cnt+'</span>'
           : '<span style="color:var(--t3)">0</span>';
-        h+='<tr><td class="hr-num">'+i+'</td><td><strong>'+esc(d.name)+'</strong></td><td>'+esc(staffName(d.head_staff_id))+'</td><td class="hr-num">'+cntBadge+'</td><td>'+esc(d.description||'-')+'</td>';
-        h+='<td><button class="hr-act-btn" onclick="HR.editDept(\''+esc(k)+'\')"><i class="fa fa-pencil"></i></button> ';
-        h+='<button class="hr-act-btn danger" onclick="HR.deleteDept(\''+esc(k)+'\')"><i class="fa fa-trash"></i></button></td></tr>';
-        // Expandable detail: staff list + job openings
-        if(cnt > 0 || (d.openings && d.openings.length)){
-          h+='<tr id="deptStaff_'+esc(k)+'" style="display:none"><td colspan="6" style="padding:8px 16px 12px 40px;background:var(--bg3)">';
 
-          // Staff list
-          if(cnt > 0 && d.staff && d.staff.length){
-            h+='<div style="font:600 11px/1.3 var(--font-b);color:var(--t2);margin-bottom:6px"><i class="fa fa-users" style="margin-right:4px"></i> Staff ('+cnt+')</div>';
-            h+='<table style="width:100%;font-size:12px;border-collapse:collapse;margin-bottom:12px">';
-            h+='<thead><tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">ID</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Name</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Position</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Phone</th></tr></thead><tbody>';
-            d.staff.forEach(function(s){
-              h+='<tr style="border-bottom:1px solid var(--border)"><td style="padding:4px 8px;font-family:var(--font-m);font-size:11px">'+esc(s.id)+'</td><td style="padding:4px 8px">'+esc(s.name)+'</td><td style="padding:4px 8px;color:var(--t2)">'+esc(s.position||'-')+'</td><td style="padding:4px 8px;color:var(--t3)">'+esc(s.phone||'-')+'</td></tr>';
-            });
-            h+='</tbody></table>';
+        // Open jobs chip (highlighted orange when > 0)
+        var openChip = openCt > 0
+          ? '<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:10px;font-weight:700;font-size:12px;display:inline-flex;align-items:center;gap:4px"><i class="fa fa-briefcase" style="font-size:10px"></i>'+openCt+'</span>'
+          : '<span style="color:var(--t3)">—</span>';
+
+        // Whole-row clickable when expandable; pointer-events bypass for actions cell
+        var rowStyle = hasDetail ? 'cursor:pointer' : '';
+        var rowOnClick = hasDetail ? ' onclick="HR.toggleDept(\''+esc(k)+'\', event)"' : '';
+
+        // Created date — accept ISO ("2026-04-29...") or epoch seconds/ms.
+        // Falls back to a dash so an unset field doesn't break the column.
+        var createdRaw = d.created_at || d.createdAt || d.created || '';
+        var createdLabel = '—';
+        if (createdRaw) {
+          var dt = null;
+          if (typeof createdRaw === 'number') {
+            dt = new Date(createdRaw < 1e12 ? createdRaw * 1000 : createdRaw);
+          } else if (typeof createdRaw === 'string') {
+            dt = new Date(createdRaw);
           }
+          if (dt && !isNaN(dt.getTime())) {
+            createdLabel = dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+          }
+        }
 
-          // Active job openings
-          if(d.openings && d.openings.length){
-            h+='<div style="font:600 11px/1.3 var(--font-b);color:#d97706;margin-bottom:6px"><i class="fa fa-briefcase" style="margin-right:4px"></i> Active Openings ('+d.openings.length+')</div>';
-            h+='<table style="width:100%;font-size:12px;border-collapse:collapse">';
-            h+='<thead><tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Job</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Filled / Total</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Remaining</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Status</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Deadline</th></tr></thead><tbody>';
+        // Status badge — `archived: true` flips to "Archived"; otherwise
+        // honour an explicit `status` field; default to Active.
+        var isArchived = (d.archived === true) || (d.archived === 'true');
+        var statusLabel = isArchived ? 'Archived'
+          : ((d.status && String(d.status).trim()) ? String(d.status).trim() : 'Active');
+        var statusKey = statusLabel.toLowerCase();
+        var statusColors = {
+          active:   { bg: '#dcfce7', fg: '#166534' },
+          inactive: { bg: '#fee2e2', fg: '#991b1b' },
+          archived: { bg: '#e5e7eb', fg: '#374151' }
+        };
+        var sc = statusColors[statusKey] || statusColors.active;
+        var statusBadge = '<span style="background:'+sc.bg+';color:'+sc.fg+';padding:2px 10px;border-radius:10px;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.3px">'+esc(statusLabel)+'</span>';
+
+        h += '<tr'+rowOnClick+' style="'+rowStyle+'">';
+        h += '<td style="text-align:center">'+chevron+'</td>';
+        h += '<td><strong>'+esc(d.name)+'</strong>' + (d.description ? '<div style="color:var(--t3);font-size:11px;margin-top:2px">'+esc(d.description)+'</div>' : '') + '</td>';
+        var headName = staffName(d.head_staff_id);
+        h += '<td>' + (headName
+              ? esc(headName)
+              : '<span style="color:var(--t3);font-style:italic">— not assigned —</span>') + '</td>';
+        h += '<td class="hr-num">'+staffChip+'</td>';
+        h += '<td class="hr-num">'+openChip+'</td>';
+        h += '<td style="color:var(--t2);font-size:12px;white-space:nowrap">'+createdLabel+'</td>';
+        h += '<td>'+statusBadge+'</td>';
+        h += '<td onclick="event.stopPropagation()">';
+        h +=   '<button class="hr-act-btn" onclick="HR.editDept(\''+esc(k)+'\')"><i class="fa fa-pencil"></i></button> ';
+        h +=   '<button class="hr-act-btn danger" onclick="HR.deleteDept(\''+esc(k)+'\')"><i class="fa fa-trash"></i></button>';
+        h += '</td></tr>';
+
+        if (hasDetail) {
+          h += '<tr id="'+rowId+'" style="display:'+(startOpen ? 'table-row' : 'none')+'"><td colspan="8" style="padding:12px 16px 16px 56px;background:var(--bg3);border-top:1px dashed var(--border)">';
+
+          // Active openings FIRST (more urgent than the staff list — admin
+          // usually opens this row to see vacancies, not the roster).
+          if (openCt > 0) {
+            h += '<div style="font:600 11px/1.3 var(--font-b);color:#d97706;margin-bottom:6px"><i class="fa fa-briefcase" style="margin-right:4px"></i> Active Openings ('+openCt+')</div>';
+            h += '<table style="width:100%;font-size:12px;border-collapse:collapse;margin-bottom:'+(cnt>0?'14px':'0')+'">';
+            h += '<thead><tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Job</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Filled / Total</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Remaining</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Status</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Deadline</th></tr></thead><tbody>';
             d.openings.forEach(function(j){
               var progPct = j.total_positions > 0 ? Math.round((j.filled_positions / j.total_positions) * 100) : 0;
-              h+='<tr style="border-bottom:1px solid var(--border)">';
-              h+='<td style="padding:4px 8px"><a href="<?= base_url("ats") ?>" style="color:var(--gold);text-decoration:none">'+esc(j.title)+'</a></td>';
-              h+='<td style="padding:4px 8px">'+j.filled_positions+' / '+j.total_positions+' <div style="height:4px;background:var(--border);border-radius:2px;margin-top:2px;width:80px"><div style="height:4px;background:var(--gold);border-radius:2px;width:'+progPct+'%"></div></div></td>';
-              h+='<td style="padding:4px 8px;font-weight:600;color:'+(j.remaining > 0 ? '#d97706' : '#0f766e')+'">'+j.remaining+'</td>';
-              h+='<td style="padding:4px 8px">'+badgeHtml(j.status)+'</td>';
-              h+='<td style="padding:4px 8px;color:var(--t3);font-size:11px">'+esc(j.deadline||'-')+'</td>';
-              h+='</tr>';
+              h += '<tr style="border-bottom:1px solid var(--border)">';
+              h += '<td style="padding:6px 8px"><a href="<?= base_url("ats") ?>" style="color:var(--gold);text-decoration:none;font-weight:600">'+esc(j.title)+'</a></td>';
+              h += '<td style="padding:6px 8px">'+j.filled_positions+' / '+j.total_positions+'<div style="height:4px;background:var(--border);border-radius:2px;margin-top:3px;width:80px"><div style="height:4px;background:var(--gold);border-radius:2px;width:'+progPct+'%"></div></div></td>';
+              h += '<td style="padding:6px 8px;font-weight:600;color:'+(j.remaining > 0 ? '#d97706' : '#0f766e')+'">'+j.remaining+'</td>';
+              h += '<td style="padding:6px 8px">'+badgeHtml(j.status)+'</td>';
+              h += '<td style="padding:6px 8px;color:var(--t3);font-size:11px">'+esc(j.deadline||'-')+'</td>';
+              h += '</tr>';
             });
-            h+='</tbody></table>';
+            h += '</tbody></table>';
           }
 
-          h+='</td></tr>';
+          // Staff roster
+          if (cnt > 0 && d.staff && d.staff.length) {
+            h += '<div style="font:600 11px/1.3 var(--font-b);color:var(--t2);margin-bottom:6px"><i class="fa fa-users" style="margin-right:4px"></i> Staff ('+cnt+')</div>';
+            h += '<table style="width:100%;font-size:12px;border-collapse:collapse">';
+            h += '<thead><tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">ID</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Name</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Position</th><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--t3)">Phone</th></tr></thead><tbody>';
+            d.staff.forEach(function(s){
+              h += '<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 8px;font-family:var(--font-m);font-size:11px">'+esc(s.id)+'</td><td style="padding:6px 8px">'+esc(s.name)+'</td><td style="padding:6px 8px;color:var(--t2)">'+esc(s.position||'-')+'</td><td style="padding:6px 8px;color:var(--t3)">'+esc(s.phone||'-')+'</td></tr>';
+            });
+            h += '</tbody></table>';
+          }
+
+          h += '</td></tr>';
         }
       });
       $tb.html(h);
     });
+  }
+
+  // Toggle expand/collapse for a department row + rotate the chevron.
+  function toggleDept(k, evt) {
+    if (evt && evt.target && evt.target.closest('button, a')) return; // ignore clicks on action buttons / links
+    var $row = $('#deptDetail_' + k);
+    var $chev = $('#dchev_' + k);
+    if (!$row.length) return;
+    var open = $row.is(':visible');
+    $row.toggle(!open);
+    $chev.removeClass('fa-chevron-right fa-chevron-down').addClass(open ? 'fa-chevron-right' : 'fa-chevron-down');
   }
 
   function openDeptModal(id){
@@ -2144,7 +2232,20 @@ document.addEventListener('DOMContentLoaded', function(){
       if(r&&r.status){
         var msg = r.message||'Updated';
         if(r.lwp_days && parseInt(r.lwp_days)>0){ toast(msg,'warning'); } else { toast(msg,'success'); }
-        closeModal('modalLeaveAction'); loadLeaveRequests();
+        closeModal('modalLeaveAction');
+        // Refresh BOTH panels — the request grid AND the balance grid.
+        // Approving deducts BAL.used server-side via _fsSyncLeaveBalance,
+        // but the balances panel was previously left stale because only
+        // loadLeaveRequests() was called here. That made the user think
+        // the deduction didn't happen even though it had. Permanent fix:
+        // refresh both whenever a decision is recorded.
+        loadLeaveRequests();
+        loadLeaveBalances();
+        // Dashboard pending-count widget also needs to drop. Refresh
+        // only if the dashboard panel is visible.
+        if (typeof loadDashboard === 'function' && document.getElementById('panelDashboard')) {
+          try { loadDashboard(); } catch (_) {}
+        }
       } else { toast(r.message||'Failed','error'); }
     }).catch(function(){ $btn.prop('disabled',false).html(origHtml); toast('Request failed','error'); });
   }
@@ -3349,6 +3450,7 @@ document.addEventListener('DOMContentLoaded', function(){
     saveDept:         saveDept,
     deleteDept:       deleteDept,
     seedDepartments:  seedDepartments,
+    toggleDept:       toggleDept,
     openJobModal:     openJobModal,
     editJob:          editJob,
     saveJob:          saveJob,

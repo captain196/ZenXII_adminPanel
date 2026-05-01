@@ -144,9 +144,12 @@ class Hr extends MY_Controller
             $fsDocs = $this->fs->schoolWhere('salarySlips', [['type', '==', 'run']]);
             if (is_array($fsDocs)) {
                 foreach ($fsDocs as $doc) {
+                    // Wrapper-bug fix: id is on the wrapper, not the data dict.
+                    $docId = $doc['id'] ?? '';
+                    if ($docId === '') continue;
                     $r = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $parts = explode('_RUN_', $doc['id'], 2);
-                    $rid = isset($parts[1]) ? $parts[1] : $doc['id'];
+                    $parts = explode('_RUN_', $docId, 2);
+                    $rid = isset($parts[1]) ? $parts[1] : $docId;
                     $runs[$rid] = $r;
                 }
             }
@@ -303,6 +306,7 @@ class Hr extends MY_Controller
         if (!isset($request['paid_days']))  $request['paid_days']  = $request['paidDays']      ?? 0;
         if (!isset($request['lwp_days']))   $request['lwp_days']   = $request['lwpDays']       ?? 0;
         if (!isset($request['days']))       $request['days']       = $request['numberOfDays']  ?? 1;
+        if (!isset($request['applied_on'])) $request['applied_on'] = $request['appliedOn']     ?? $request['appliedAt']     ?? '';
 
         return $request;
     }
@@ -348,6 +352,10 @@ class Hr extends MY_Controller
                 if (!isset($rd['paid_days']))  $rd['paid_days']  = $rd['paidDays']     ?? 0;
                 if (!isset($rd['lwp_days']))   $rd['lwp_days']   = $rd['lwpDays']      ?? 0;
                 if (!isset($rd['days']))       $rd['days']       = $rd['numberOfDays'] ?? 1;
+                // Teacher app writes `appliedAt` (camelCase ISO string).
+                // Several admin widgets sort by `applied_on` and would
+                // bucket Teacher rows with an empty timestamp without this.
+                if (!isset($rd['applied_on'])) $rd['applied_on'] = $rd['appliedOn']    ?? $rd['appliedAt']     ?? '';
                 $result[$docId] = $rd;
             }
         } catch (\Exception $e) {
@@ -422,11 +430,33 @@ class Hr extends MY_Controller
 
     /**
      * Sync a payroll run to Firestore.
+     *
+     * Phase HR-2C — dual-emit canonical camelCase mirror alongside the
+     * existing snake_case fields. Admin UI keeps reading snake_case; mobile
+     * apps (Teacher run-summary) read camelCase. Same dual-emit pattern as
+     * `_fsSyncPayslip` (already shipped in the April 15 canonical work) —
+     * the run doc was overlooked at that time and the gap was confirmed by
+     * today's audit (see memory `hr_payroll_canonical_schema.md`).
      */
     private function _fsSyncPayrollRun(string $runId, array $runData): void
     {
         try {
-            $fsData = array_merge($runData, [
+            // ── Canonical camelCase mirror (Teacher app) ──
+            $monthName = (string) ($runData['month'] ?? '');
+            $year      = (string) ($runData['year']  ?? '');
+            $monthIdx  = $monthName !== '' ? (int) date('m', strtotime("1 {$monthName} 2000")) : 0;
+            $monthKey  = ($year !== '' && $monthIdx > 0)
+                ? sprintf('%s-%02d', $year, $monthIdx)
+                : '';
+
+            $canonical = [
+                'monthKey'  => $monthKey,
+                'totalNet'  => (float) ($runData['total_net']  ?? 0),
+                'totalPaid' => (float) ($runData['total_paid'] ?? 0),
+                'status'    => (string) ($runData['status']    ?? 'Draft'),
+            ];
+
+            $fsData = array_merge($runData, $canonical, [
                 'schoolId'  => $this->school_id,
                 'session'   => $this->session_year,
                 'type'      => 'run',
@@ -434,7 +464,7 @@ class Hr extends MY_Controller
                 'updatedAt' => date('c'),
             ]);
             $this->fs->set('salarySlips', $this->fs->docId("RUN_{$runId}"), $fsData, true);
-            log_message('debug', "HR: Payroll run → Firestore OK for {$runId}");
+            log_message('debug', "HR: Payroll run → Firestore OK for {$runId} (monthKey={$monthKey})");
         } catch (\Exception $e) {
             log_message('error', "HR: Payroll run → Firestore FAILED for {$runId}: " . $e->getMessage());
         }
@@ -1288,12 +1318,29 @@ class Hr extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'hr_dashboard');
 
-        // Staff count from Firestore
-        $staffCount = 0;
+        // Staff counts from Firestore — single read, bucketed into both
+        // total and active so the dashboard can surface them as separate
+        // KPI tiles. Active uses a case-insensitive compare so legacy docs
+        // with `status: "active"` still count.
+        $totalStaff  = 0;
+        $activeStaff = 0;
         try {
-            $fsStaff = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
-            $staffCount = is_array($fsStaff) ? count($fsStaff) : 0;
+            $fsStaff = $this->fs->schoolList('staff');
+            if (is_array($fsStaff)) {
+                foreach ($fsStaff as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? $d['userId'] ?? ($doc['id'] ?? '');
+                    if ($sid === '' || $sid === 'Count') continue;
+                    $totalStaff++;
+                    // Default to Active when the field is missing — legacy
+                    // staff docs predate the Active/Inactive feature.
+                    $status = $d['status'] ?? 'Active';
+                    if (strtolower($status) === 'active') $activeStaff++;
+                }
+            }
         } catch (\Exception $e) {}
+        // staff_count alias kept for any older client code expecting it
+        $staffCount = $activeStaff;
 
         // Department count from Firestore
         $deptCount = 0;
@@ -1311,9 +1358,14 @@ class Hr extends MY_Controller
             $fsJobs = $this->fs->schoolList('hrJobs');
             if (is_array($fsJobs)) {
                 foreach ($fsJobs as $j) {
-                    $jid = $j['id'] ?? '';
-                    $jobs[$jid] = $j;
-                    if (($j['status'] ?? '') === 'Open') {
+                    $d = $j['data'] ?? $j;
+                    // Wrapper-bug fix: doc id lives on $j['id'], not in $d.
+                    // Falling back to $d['id'] returned '' so every record
+                    // stored under key '' and overwrote each other.
+                    $jid = $j['id'] ?? ($d['id'] ?? '');
+                    if ($jid === '') continue;
+                    $jobs[$jid] = $d;
+                    if (($d['status'] ?? '') === 'Open') {
                         $openJobs++;
                     }
                 }
@@ -1326,8 +1378,10 @@ class Hr extends MY_Controller
             $fsApps = $this->fs->schoolList('hrApplicants');
             if (is_array($fsApps)) {
                 foreach ($fsApps as $a) {
-                    $aid = $a['id'] ?? '';
-                    $applicants[$aid] = $a;
+                    $d = $a['data'] ?? $a;
+                    $aid = $a['id'] ?? ($d['id'] ?? '');
+                    if ($aid === '') continue;
+                    $applicants[$aid] = $d;
                 }
                 $totalApplicants = count($fsApps);
             }
@@ -1337,7 +1391,9 @@ class Hr extends MY_Controller
         $leaveReqs = $this->_fsGetAllLeaveRequests();
         $pendingLeaves = 0;
         foreach ($leaveReqs as $lr) {
-            if (isset($lr['status']) && $lr['status'] === 'Pending') {
+            // Case-insensitive — Teacher app writes "pending" (lowercase),
+            // legacy admin docs use "Pending". Standardize via strtolower.
+            if (isset($lr['status']) && strtolower($lr['status']) === 'pending') {
                 $pendingLeaves++;
             }
         }
@@ -1349,9 +1405,14 @@ class Hr extends MY_Controller
             if (!empty($fsDocs)) {
                 $runs = [];
                 foreach ($fsDocs as $doc) {
-                    $parts = explode('_RUN_', $doc['id'], 2);
-                    $rid = isset($parts[1]) ? $parts[1] : $doc['id'];
-                    $runs[$rid] = $doc['data'];
+                    // Disaster-recovery wrapper bug fix: Firestore doc id lives on
+                    // the WRAPPER (`$doc['id']`), not inside data. Reading $d['id']
+                    // emitted "Undefined array key 'id'" warnings on the dashboard.
+                    $docId = $doc['id'] ?? '';
+                    if ($docId === '') continue;
+                    $parts = explode('_RUN_', $docId, 2);
+                    $rid = isset($parts[1]) ? $parts[1] : $docId;
+                    $runs[$rid] = $doc['data'] ?? [];
                 }
             }
         } catch (\Exception $e) {
@@ -1450,6 +1511,8 @@ class Hr extends MY_Controller
 
         $this->json_success([
             'staff_count'        => $staffCount,
+            'total_staff'        => $totalStaff,
+            'active_staff'       => $activeStaff,
             'dept_count'         => $deptCount,
             'open_jobs'          => $openJobs,
             'total_applicants'   => $totalApplicants,
@@ -1526,8 +1589,12 @@ class Hr extends MY_Controller
             $fsJobs = $this->fs->schoolList('hrJobs');
             if (is_array($fsJobs)) {
                 foreach ($fsJobs as $j) {
-                    $jid = $j['id'] ?? '';
-                    if ($jid !== '') $allJobs[$jid] = $j;
+                    $d = $j['data'] ?? $j;
+                    // Wrapper-bug fix: doc id is on the wrapper. The unwrapped
+                    // data dict almost never carries `id`, so reading $d['id']
+                    // returned '' → empty $allJobs → empty department vacancy panel.
+                    $jid = $j['id'] ?? ($d['id'] ?? '');
+                    if ($jid !== '') $allJobs[$jid] = $d;
                 }
             }
         } catch (\Exception $e) {}
@@ -1684,7 +1751,8 @@ class Hr extends MY_Controller
             $fsJobs = $this->fs->schoolList('hrJobs');
             if (is_array($fsJobs)) {
                 foreach ($fsJobs as $j) {
-                    if (($j['department'] ?? '') === $deptName && ($j['status'] ?? '') === 'Open') {
+                    $d = $j['data'] ?? $j;
+                    if (($d['department'] ?? '') === $deptName && ($d['status'] ?? '') === 'Open') {
                         $this->json_error('Cannot delete: there are open job postings in this department.');
                     }
                 }
@@ -1738,8 +1806,9 @@ class Hr extends MY_Controller
                 $fromFirestore = true;
                 $prefix = $this->school_id . '_';
                 foreach ($fsDocs as $doc) {
+                    $d = $doc['data'] ?? $doc;
                     $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
-                    $rawId = (string) ($doc['id'] ?? '');
+                    $rawId = (string) ($d['id'] ?? '');
                     $r['id'] = (strpos($rawId, $prefix) === 0)
                         ? substr($rawId, strlen($prefix))
                         : $rawId;
@@ -1757,7 +1826,8 @@ class Hr extends MY_Controller
             $fsApps = $this->fs->schoolList('hrApplicants');
             if (is_array($fsApps)) {
                 foreach ($fsApps as $a) {
-                    $jid = $a['job_id'] ?? $a['jobId'] ?? '';
+                    $d = $a['data'] ?? $a;
+                    $jid = $d['job_id'] ?? $d['jobId'] ?? '';
                     if ($jid !== '') {
                         $countsByJob[$jid] = ($countsByJob[$jid] ?? 0) + 1;
                     }
@@ -2329,8 +2399,9 @@ HTML;
                 $fromFirestore = true;
                 $prefix = $this->school_id . '_';
                 foreach ($fsDocs as $doc) {
+                    $d = $doc['data'] ?? $doc;
                     $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
-                    $rawId = (string) ($doc['id'] ?? '');
+                    $rawId = (string) ($d['id'] ?? '');
                     $r['id'] = (strpos($rawId, $prefix) === 0)
                         ? substr($rawId, strlen($prefix))
                         : $rawId;
@@ -2782,7 +2853,7 @@ HTML;
             ], 'timestamp', 'DESC', 200);
             foreach ($fsDocs as $doc) {
                 $d = $doc['data'];
-                $d['id'] = $doc['id'] ?? '';
+                $d['id'] = $d['id'] ?? '';
                 $list[] = $d;
             }
             if (!empty($list)) {
@@ -3112,6 +3183,14 @@ HTML;
         if (!is_array($staffProfile)) {
             $this->json_error('Staff member not found.');
         }
+
+        // Phase HR-1 — block when staff is Inactive (case-insensitive + trim).
+        // Reads camelCase first, falls back to PascalCase Status for legacy docs.
+        $rawStatus = (string) ($staffProfile['status'] ?? $staffProfile['Status'] ?? 'Active');
+        if (strtolower(trim($rawStatus)) !== 'active') {
+            $this->json_error('Cannot perform this action for an inactive staff member.');
+        }
+
         $staffName = $staffProfile['Name'] ?? $staffProfile['name'] ?? $staffId;
 
         // Determine if leave type is paid — paid leaves never become LWP
@@ -3303,6 +3382,19 @@ HTML;
         $days     = (int) ($request['days'] ?? 0);
         $fromDate = $request['from_date'] ?? '';
         $year     = date('Y', strtotime($fromDate));
+
+        // Phase HR-1 — block decisions on requests for now-Inactive staff.
+        // Re-checks status at decision time (the staff may have been
+        // deactivated between submission and approval).
+        if ($staffId !== '') {
+            $staffProfile = $this->_fsGetStaffProfile($staffId);
+            if (is_array($staffProfile)) {
+                $rawStatus = (string) ($staffProfile['status'] ?? $staffProfile['Status'] ?? 'Active');
+                if (strtolower(trim($rawStatus)) !== 'active') {
+                    $this->json_error('Cannot perform this action for an inactive staff member.');
+                }
+            }
+        }
 
         // Resolve leave type — by ID or by name (Teacher app sends name, HR sends ID)
         $leaveType = null;
@@ -3519,6 +3611,19 @@ HTML;
         $days     = (int) ($request['days'] ?? 0);
         $fromDate = $request['from_date'] ?? '';
         $year     = date('Y', strtotime($fromDate));
+
+        // Phase HR-1 — block cancellation on requests for now-Inactive staff.
+        // Mirrors decide_leave: keeps the lifecycle consistent across the
+        // approve/reject/cancel triplet.
+        if ($staffId !== '') {
+            $staffProfile = $this->_fsGetStaffProfile($staffId);
+            if (is_array($staffProfile)) {
+                $rawStatus = (string) ($staffProfile['status'] ?? $staffProfile['Status'] ?? 'Active');
+                if (strtolower(trim($rawStatus)) !== 'active') {
+                    $this->json_error('Cannot perform this action for an inactive staff member.');
+                }
+            }
+        }
 
         // If was Approved, restore balance (paid days + unpaid days both tracked in used count)
         $paidDays = (int) ($request['paid_days'] ?? $days); // fallback to full days for legacy requests
@@ -4028,11 +4133,13 @@ HTML;
             $fsRuns = $this->fs->schoolWhere('salarySlips', [['type', '==', 'run']]);
             if (is_array($fsRuns)) {
                 foreach ($fsRuns as $doc) {
+                    $docId = $doc['id'] ?? '';
+                    if ($docId === '') continue;
                     $run = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
                     $status = $run['status'] ?? '';
                     if (!in_array($status, ['Finalized', 'Paid'], true)) continue;
-                    $parts = explode('_RUN_', $doc['id'], 2);
-                    $runId = isset($parts[1]) ? $parts[1] : $doc['id'];
+                    $parts = explode('_RUN_', $docId, 2);
+                    $runId = isset($parts[1]) ? $parts[1] : $docId;
                     try {
                         $fsSlip = $this->fs->get('salarySlips', $this->fs->docId("SLIP_{$runId}_{$id}"));
                         if (is_array($fsSlip) && !empty($fsSlip)) {
@@ -4101,10 +4208,12 @@ HTML;
             $fsDocs = $this->fs->schoolWhere('salarySlips', [['type', '==', 'run']]);
             if (!empty($fsDocs)) {
                 foreach ($fsDocs as $doc) {
-                    $r = $doc['data'];
+                    $docId = $doc['id'] ?? '';
+                    if ($docId === '') continue;
+                    $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
                     // Extract run ID from doc id (format: {schoolId}_RUN_{runId})
-                    $parts = explode('_RUN_', $doc['id'], 2);
-                    $r['id'] = isset($parts[1]) ? $parts[1] : ($r['id'] ?? $doc['id']);
+                    $parts = explode('_RUN_', $docId, 2);
+                    $r['id'] = isset($parts[1]) ? $parts[1] : ($r['id'] ?? $docId);
                     $list[] = $r;
                 }
             }
@@ -4156,8 +4265,10 @@ HTML;
             ]);
             if (!empty($fsRuns)) {
                 foreach ($fsRuns as $doc) {
-                    $parts = explode('_RUN_', $doc['id'], 2);
-                    $rid = isset($parts[1]) ? $parts[1] : $doc['id'];
+                    $docId = $doc['id'] ?? '';
+                    if ($docId === '') continue;
+                    $parts = explode('_RUN_', $docId, 2);
+                    $rid = isset($parts[1]) ? $parts[1] : $docId;
                     $this->json_error("A payroll run already exists for {$month} {$year} (ID: {$rid}). Delete or use it.");
                 }
             }
@@ -4252,7 +4363,8 @@ HTML;
         $monthStart = sprintf('%04d-%02d-01', (int) $year, $monthNum);
         $monthEnd   = date('Y-m-t', strtotime($monthStart));
         foreach ($allLeaveReqs as $rid => $lr) {
-            if (($lr['status'] ?? '') !== 'Pending') continue;
+            // Case-insensitive — Teacher app writes "pending" lowercase.
+            if (strtolower($lr['status'] ?? '') !== 'pending') continue;
             $lrFrom = $lr['from_date'] ?? '';
             $lrTo   = $lr['to_date'] ?? '';
             if ($lrFrom <= $monthEnd && $lrTo >= $monthStart) {
@@ -6017,9 +6129,10 @@ HTML;
             if (is_array($fsDocs) && !empty($fsDocs)) {
                 $fromFirestore = true;
                 foreach ($fsDocs as $doc) {
+                    $d = $doc['data'] ?? $doc;
                     $r = is_array($doc['data'] ?? null) ? $doc['data'] : [];
                     // Strip schoolId prefix from doc id (format: {schoolId}_APR0001)
-                    $rawId = (string) ($doc['id'] ?? '');
+                    $rawId = (string) ($d['id'] ?? '');
                     $prefix = $this->school_id . '_';
                     $r['id'] = (strpos($rawId, $prefix) === 0)
                         ? substr($rawId, strlen($prefix))
@@ -6086,6 +6199,16 @@ HTML;
         if (!is_array($staffProfile)) {
             $this->json_error('Staff member not found.');
         }
+
+        // Phase HR-1 — block appraisal create/edit for Inactive staff.
+        // Reactivate the teacher first if you genuinely need to record a
+        // final review; existing appraisal records remain editable until
+        // status flips, which is the correct audit boundary.
+        $rawStatus = (string) ($staffProfile['status'] ?? $staffProfile['Status'] ?? 'Active');
+        if (strtolower(trim($rawStatus)) !== 'active') {
+            $this->json_error('Cannot perform this action for an inactive staff member.');
+        }
+
         $staffName  = $staffProfile['Name'] ?? $staffProfile['name'] ?? $staffId;
         $department = $staffProfile['Department'] ?? $staffProfile['department'] ?? '';
 
@@ -6645,9 +6768,14 @@ HTML;
             if (!empty($fsDocs)) {
                 $runs = [];
                 foreach ($fsDocs as $doc) {
-                    $parts = explode('_RUN_', $doc['id'], 2);
-                    $rid = isset($parts[1]) ? $parts[1] : $doc['id'];
-                    $runs[$rid] = $doc['data'];
+                    // Disaster-recovery wrapper bug fix: Firestore doc id lives on
+                    // the WRAPPER (`$doc['id']`), not inside data. Reading $d['id']
+                    // emitted "Undefined array key 'id'" warnings on the dashboard.
+                    $docId = $doc['id'] ?? '';
+                    if ($docId === '') continue;
+                    $parts = explode('_RUN_', $docId, 2);
+                    $rid = isset($parts[1]) ? $parts[1] : $docId;
+                    $runs[$rid] = $doc['data'] ?? [];
                 }
             }
         } catch (\Exception $e) {

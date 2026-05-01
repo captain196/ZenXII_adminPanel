@@ -242,6 +242,9 @@
         <a href="<?= base_url('attendance/staff') ?>" class="att-action-btn outline">
             <i class="fa fa-id-badge"></i> Mark Staff Attendance
         </a>
+        <a href="<?= base_url('attendance/scan') ?>" class="att-action-btn outline">
+            <i class="fa fa-qrcode"></i> QR Scan
+        </a>
         <a href="<?= base_url('attendance/analytics') ?>" class="att-action-btn outline">
             <i class="fa fa-bar-chart"></i> View Analytics
         </a>

@@ -2,18 +2,17 @@
 defined('BASEPATH') or exit('No direct script access allowed');
 
 /**
- * Transport Management Controller
+ * Transport Management Controller — Firestore-only.
  *
- * Sub-modules: Vehicles, Routes & Stops, Student Assignments, Fee Tracking
+ * Sub-modules: Vehicles, Routes & Stops, Student Assignments, Fee Tracking.
  *
- * Firebase paths:
- *   Schools/{school}/Operations/Transport/Vehicles/{VH0001}
- *   Schools/{school}/Operations/Transport/Routes/{RT0001}
- *   Schools/{school}/Operations/Transport/Stops/{STP0001}
- *   Schools/{school}/Operations/Transport/Assignments/{student_id}
- *   Schools/{school}/Operations/Transport/Counters/{type}
+ * Firestore collections (all auto-scoped via Firestore_service::docId):
+ *   vehicles/{schoolId}_{VH0001}            (read by apps)
+ *   routes/{schoolId}_{RT0001}              (read by apps)
+ *   transportStops/{schoolId}_{STP0001}
+ *   studentRoutes/{schoolId}_{studentId}    (read by apps)
  *
- * Integration: Student module (assignments), Staff (drivers), Fees (transport fee)
+ * Integration: Student (assignments), Staff (drivers), Fee_lifecycle (transport fees).
  */
 class Transport extends MY_Controller
 {
@@ -26,6 +25,12 @@ class Transport extends MY_Controller
     const OPS_ADMIN_ROLES  = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal'];
     const TRN_MANAGE_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Operations Manager', 'Transport Manager'];
     const TRN_VIEW_ROLES   = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Operations Manager', 'Transport Manager', 'Accountant', 'Teacher'];
+
+    // Firestore collections (apps already subscribe to these)
+    const COL_VEHICLES    = 'vehicles';
+    const COL_ROUTES      = 'routes';
+    const COL_STOPS       = 'transportStops';
+    const COL_ASSIGNMENTS = 'studentRoutes';
 
     public function __construct()
     {
@@ -50,31 +55,11 @@ class Transport extends MY_Controller
             $this->json_error('Access denied.', 403);
     }
 
-    // ── Path Helpers ────────────────────────────────────────────────────
-    private function _trn(string $sub = ''): string
-    {
-        $b = "Schools/{$this->school_name}/Operations/Transport";
-        return $sub !== '' ? "{$b}/{$sub}" : $b;
-    }
-    private function _vehicles(string $id = ''): string
-    {
-        return $id !== '' ? $this->_trn("Vehicles/{$id}") : $this->_trn('Vehicles');
-    }
-    private function _routes(string $id = ''): string
-    {
-        return $id !== '' ? $this->_trn("Routes/{$id}") : $this->_trn('Routes');
-    }
-    private function _stops(string $id = ''): string
-    {
-        return $id !== '' ? $this->_trn("Stops/{$id}") : $this->_trn('Stops');
-    }
-    private function _assignments(string $id = ''): string
-    {
-        return $id !== '' ? $this->_trn("Assignments/{$id}") : $this->_trn('Assignments');
-    }
+    /** Counter path passed to operations_accounting::next_id — stays as string key,
+     * operations_accounting converts it into a Firestore opsCounters doc id. */
     private function _counters(string $type): string
     {
-        return $this->_trn("Counters/{$type}");
+        return "Schools/{$this->school_name}/Operations/Transport/Counters/{$type}";
     }
 
     // ====================================================================
@@ -99,10 +84,15 @@ class Transport extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'transport_view');
         $this->_require_view();
-        $vehicles = $this->firebase->get($this->_vehicles());
+        $rows = $this->firebase->firestoreQuery(self::COL_VEHICLES,
+            [['schoolId', '==', $this->school_name]], 'number', 'ASC');
         $list = [];
-        if (is_array($vehicles)) {
-            foreach ($vehicles as $id => $v) { $v['id'] = $id; $list[] = $v; }
+        foreach ((array) $rows as $doc) {
+            $v = is_array($doc) ? $doc : [];
+            $id = (string) ($v['vehicleId'] ?? $v['id'] ?? '');
+            if ($id === '') continue;
+            $v['id'] = $id;
+            $list[] = $v;
         }
         $this->json_success(['vehicles' => $list]);
     }
@@ -130,9 +120,9 @@ class Transport extends MY_Controller
             $id = $this->operations_accounting->next_id($this->_counters('Vehicle'), 'VH');
         } else {
             $id = $this->safe_path_segment($id, 'vehicle_id');
-            // Preserve staff_id from Firebase (not in form — future staff integration)
+            // Preserve staff_id from Firestore (not in form — future staff integration)
             if ($staffId === '') {
-                $existing = $this->firebase->get($this->_vehicles($id));
+                $existing = $this->fs->getEntity(self::COL_VEHICLES, $id);
                 $staffId = is_array($existing) ? ($existing['staff_id'] ?? '') : '';
             }
         }
@@ -141,6 +131,7 @@ class Transport extends MY_Controller
         if (!in_array($status, ['Active', 'Inactive', 'Maintenance'], true)) $status = 'Active';
 
         $data = [
+            'vehicleId'        => $id,
             'number'           => $number,
             'type'             => $type,
             'capacity'         => $capacity,
@@ -156,7 +147,7 @@ class Transport extends MY_Controller
         ];
         if ($isNew) $data['created_at'] = date('c');
 
-        $this->firebase->set($this->_vehicles($id), $data);
+        $this->fs->setEntity(self::COL_VEHICLES, $id, $data, /* merge */ true);
         $this->json_success(['id' => $id, 'message' => 'Vehicle saved.']);
     }
 
@@ -166,16 +157,16 @@ class Transport extends MY_Controller
         $this->_require_manage();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'vehicle_id');
 
-        // Check if routes use this vehicle
-        $routes = $this->firebase->get($this->_routes());
-        if (is_array($routes)) {
-            foreach ($routes as $r) {
-                if (($r['vehicle_id'] ?? '') === $id && ($r['status'] ?? '') === 'Active') {
-                    $this->json_error('Cannot delete: vehicle is assigned to an active route.');
-                }
-            }
+        // Block deletion if any active route references this vehicle.
+        $activeRoutes = $this->firebase->firestoreQuery(self::COL_ROUTES, [
+            ['schoolId',   '==', $this->school_name],
+            ['vehicle_id', '==', $id],
+            ['status',     '==', 'Active'],
+        ]);
+        if (!empty($activeRoutes)) {
+            $this->json_error('Cannot delete: vehicle is assigned to an active route.');
         }
-        $this->firebase->delete($this->_vehicles(), $id);
+        $this->fs->remove(self::COL_VEHICLES, $this->fs->docId($id));
         $this->json_success(['message' => 'Vehicle deleted.']);
     }
 
@@ -187,10 +178,15 @@ class Transport extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'transport_view');
         $this->_require_view();
-        $routes = $this->firebase->get($this->_routes());
+        $rows = $this->firebase->firestoreQuery(self::COL_ROUTES,
+            [['schoolId', '==', $this->school_name]], 'name', 'ASC');
         $list = [];
-        if (is_array($routes)) {
-            foreach ($routes as $id => $r) { $r['id'] = $id; $list[] = $r; }
+        foreach ((array) $rows as $doc) {
+            $r = is_array($doc) ? $doc : [];
+            $id = (string) ($r['routeId'] ?? $r['id'] ?? '');
+            if ($id === '') continue;
+            $r['id'] = $id;
+            $list[] = $r;
         }
         $this->json_success(['routes' => $list]);
     }
@@ -217,6 +213,7 @@ class Transport extends MY_Controller
         }
 
         $data = [
+            'routeId'     => $id,
             'name'        => $name,
             'vehicle_id'  => $vehicleId,
             'start_point' => $startPoint,
@@ -228,7 +225,7 @@ class Transport extends MY_Controller
         ];
         if ($isNew) $data['created_at'] = date('c');
 
-        $this->firebase->set($this->_routes($id), $data);
+        $this->fs->setEntity(self::COL_ROUTES, $id, $data, /* merge */ true);
         $this->json_success(['id' => $id, 'message' => 'Route saved.']);
     }
 
@@ -238,25 +235,26 @@ class Transport extends MY_Controller
         $this->_require_manage();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'route_id');
 
-        // Check student assignments
-        $assignments = $this->firebase->get($this->_assignments());
-        if (is_array($assignments)) {
-            foreach ($assignments as $a) {
-                if (($a['route_id'] ?? '') === $id) {
-                    $this->json_error('Cannot delete: students are assigned to this route.');
-                }
-            }
+        // Block deletion if any student is assigned.
+        $studentsOnRoute = $this->firebase->firestoreQuery(self::COL_ASSIGNMENTS, [
+            ['schoolId', '==', $this->school_name],
+            ['route_id', '==', $id],
+        ]);
+        if (!empty($studentsOnRoute)) {
+            $this->json_error('Cannot delete: students are assigned to this route.');
         }
-        // Delete associated stops
-        $stops = $this->firebase->get($this->_stops());
-        if (is_array($stops)) {
-            foreach ($stops as $sid => $s) {
-                if (($s['route_id'] ?? '') === $id) {
-                    $this->firebase->delete($this->_stops(), $sid);
-                }
-            }
+
+        // Delete associated stops for this route.
+        $routeStops = $this->firebase->firestoreQuery(self::COL_STOPS, [
+            ['schoolId', '==', $this->school_name],
+            ['route_id', '==', $id],
+        ]);
+        foreach ((array) $routeStops as $s) {
+            $sid = (string) ($s['stopId'] ?? $s['id'] ?? '');
+            if ($sid !== '') $this->fs->remove(self::COL_STOPS, $this->fs->docId($sid));
         }
-        $this->firebase->delete($this->_routes(), $id);
+
+        $this->fs->remove(self::COL_ROUTES, $this->fs->docId($id));
         $this->json_success(['message' => 'Route and associated stops deleted.']);
     }
 
@@ -271,14 +269,17 @@ class Transport extends MY_Controller
         $this->_require_view();
         $routeId = trim($this->input->get('route_id') ?? '');
 
-        $stops = $this->firebase->get($this->_stops());
+        $where = [['schoolId', '==', $this->school_name]];
+        if ($routeId !== '') $where[] = ['route_id', '==', $routeId];
+
+        $rows = $this->firebase->firestoreQuery(self::COL_STOPS, $where);
         $list = [];
-        if (is_array($stops)) {
-            foreach ($stops as $id => $s) {
-                if ($routeId !== '' && ($s['route_id'] ?? '') !== $routeId) continue;
-                $s['id'] = $id;
-                $list[] = $s;
-            }
+        foreach ((array) $rows as $doc) {
+            $s = is_array($doc) ? $doc : [];
+            $id = (string) ($s['stopId'] ?? $s['id'] ?? '');
+            if ($id === '') continue;
+            $s['id'] = $id;
+            $list[] = $s;
         }
         usort($list, function ($a, $b) {
             return ((int) ($a['order'] ?? 0)) - ((int) ($b['order'] ?? 0));
@@ -307,6 +308,7 @@ class Transport extends MY_Controller
         }
 
         $data = [
+            'stopId'      => $id,
             'route_id'    => $routeId,
             'name'        => $name,
             'pickup_time' => $pickupTime,
@@ -317,7 +319,7 @@ class Transport extends MY_Controller
         ];
         if ($isNew) $data['created_at'] = date('c');
 
-        $this->firebase->set($this->_stops($id), $data);
+        $this->fs->setEntity(self::COL_STOPS, $id, $data, /* merge */ true);
         $this->json_success(['id' => $id, 'message' => 'Stop saved.']);
     }
 
@@ -326,7 +328,7 @@ class Transport extends MY_Controller
         $this->_require_role(self::MANAGE_ROLES, 'delete_stop');
         $this->_require_manage();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'stop_id');
-        $this->firebase->delete($this->_stops(), $id);
+        $this->fs->remove(self::COL_STOPS, $this->fs->docId($id));
         $this->json_success(['message' => 'Stop deleted.']);
     }
 
@@ -338,10 +340,15 @@ class Transport extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'transport_view');
         $this->_require_view();
-        $assignments = $this->firebase->get($this->_assignments());
+        $rows = $this->firebase->firestoreQuery(self::COL_ASSIGNMENTS,
+            [['schoolId', '==', $this->school_name]], 'student_name', 'ASC');
         $list = [];
-        if (is_array($assignments)) {
-            foreach ($assignments as $sid => $a) { $a['student_id'] = $sid; $list[] = $a; }
+        foreach ((array) $rows as $doc) {
+            $a = is_array($doc) ? $doc : [];
+            $sid = (string) ($a['studentId'] ?? $a['student_id'] ?? '');
+            if ($sid === '') continue;
+            $a['student_id'] = $sid;
+            $list[] = $a;
         }
         $this->json_success(['assignments' => $list]);
     }
@@ -360,18 +367,18 @@ class Transport extends MY_Controller
         if ($stopId !== '') $stopId = $this->safe_path_segment($stopId, 'stop_id');
         if (!in_array($type, ['pickup', 'drop', 'both'], true)) $type = 'both';
 
-        // Verify student (use parent_db_key — legacy schools key by school_code, not school_id)
-        $student = $this->firebase->get("Users/Parents/{$this->parent_db_key}/{$studentId}");
+        // Verify student via Firestore students collection.
+        $student = $this->fs->getEntity('students', $studentId);
         if (!is_array($student)) $this->json_error('Student not found.');
 
-        // Verify route
-        $route = $this->firebase->get($this->_routes($routeId));
+        // Verify route.
+        $route = $this->fs->getEntity(self::COL_ROUTES, $routeId);
         if (!is_array($route)) $this->json_error('Route not found.');
 
-        // Verify stop belongs to selected route (if provided)
+        // Verify stop belongs to selected route (if provided).
         $stopName = '';
         if ($stopId !== '') {
-            $stop = $this->firebase->get($this->_stops($stopId));
+            $stop = $this->fs->getEntity(self::COL_STOPS, $stopId);
             if (!is_array($stop)) $this->json_error('Stop not found.');
             if (($stop['route_id'] ?? '') !== $routeId) {
                 $this->json_error('Selected stop does not belong to the chosen route.');
@@ -379,18 +386,24 @@ class Transport extends MY_Controller
             $stopName = $stop['name'] ?? '';
         }
 
-        // Check if student already has an assignment (warn on overwrite)
-        $existing = $this->firebase->get($this->_assignments($studentId));
+        // Check prior assignment (drives isUpdate branching for fee pro-rating).
+        $existing = $this->fs->getEntity(self::COL_ASSIGNMENTS, $studentId);
         $isUpdate = is_array($existing);
 
+        $studentName  = $student['name']  ?? $student['Name']  ?? $studentId;
+        $studentClass = Firestore_service::classKey($student['class'] ?? $student['Class'] ?? '')
+                      . ' '
+                      . Firestore_service::sectionKey($student['section'] ?? $student['Section'] ?? '');
+
         $data = [
+            'studentId'     => $studentId,
             'route_id'      => $routeId,
             'route_name'    => $route['name'] ?? '',
             'stop_id'       => $stopId,
             'stop_name'     => $stopName,
             'type'          => $type,
-            'student_name'  => $student['Name'] ?? $studentId,
-            'student_class' => trim(($student['Class'] ?? '') . ' ' . ($student['Section'] ?? '')),
+            'student_name'  => $studentName,
+            'student_class' => trim($studentClass),
             'monthly_fee'   => (float) ($route['monthly_fee'] ?? 0),
             'assigned_date' => $isUpdate ? ($existing['assigned_date'] ?? date('Y-m-d')) : date('Y-m-d'),
             'assigned_by'   => $this->admin_name,
@@ -398,23 +411,11 @@ class Transport extends MY_Controller
             'updated_at'    => date('c'),
         ];
 
-        $this->firebase->set($this->_assignments($studentId), $data);
+        $this->fs->setEntity(self::COL_ASSIGNMENTS, $studentId, $data, /* merge */ true);
 
-        // Write transport fee component for fee collection integration (session-scoped)
-        $feePath = "Schools/{$this->school_name}/{$this->session_year}/Fees/Student_Fee_Items/{$studentId}/Transport";
-        $this->firebase->set($feePath, [
-            'route_id'       => $routeId,
-            'route_name'     => $route['name'] ?? '',
-            'monthly_fee'    => (float) ($route['monthly_fee'] ?? 0),
-            'effective_from' => date('Y-m-d'),
-            'status'         => 'active',
-            'updated_at'     => date('c'),
-        ]);
-
-        // Auto-create transport fee demand via Fee_lifecycle
+        // Fee_lifecycle owns fee demand creation — it writes Firestore feeDemands directly.
         try {
             if ($isUpdate) {
-                // Route change — pro-rate old fee then create new demand
                 $this->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
                 $this->feeLifecycle->createModuleFee($studentId, 'Transport', [
                     'route_id'   => $routeId,
@@ -425,7 +426,6 @@ class Transport extends MY_Controller
                 ]);
                 log_message('info', "Fee_lifecycle: transport fee updated (route change) for student {$studentId} route {$routeId}");
             } else {
-                // New assignment — create demand
                 $this->feeLifecycle->createModuleFee($studentId, 'Transport', [
                     'route_id'   => $routeId,
                     'route_name' => $route['name'] ?? '',
@@ -450,33 +450,17 @@ class Transport extends MY_Controller
         $this->_require_manage();
         $studentId = $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id');
 
-        // Verify assignment exists
-        $existing = $this->firebase->get($this->_assignments($studentId));
+        $existing = $this->fs->getEntity(self::COL_ASSIGNMENTS, $studentId);
         if (!is_array($existing)) $this->json_error('No assignment found for this student.');
 
-        // Disable transport fee component (session-scoped)
-        $feePath = "Schools/{$this->school_name}/{$this->session_year}/Fees/Student_Fee_Items/{$studentId}/Transport";
-        $feeData = $this->firebase->get($feePath);
-        if (is_array($feeData)) {
-            $this->firebase->update($feePath, [
-                'monthly_fee' => 0,
-                'status'      => 'inactive',
-                'removed_at'  => date('c'),
-                'updated_at'  => date('c'),
-            ]);
-        }
-
-        // Flag transport fee for review via Fee_lifecycle — don't auto-delete
+        // Fee_lifecycle owns transport-fee cancellation — pro-rate to end-date.
         try {
-            $this->firebase->update(
-                "Schools/{$this->school_name}/{$this->session_year}/Fees/Student_Fee_Items/{$studentId}/Transport",
-                ['status' => 'cancelled', 'cancelled_at' => date('c'), 'cancelled_by' => $this->admin_id ?? 'system']
-            );
+            $this->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
         } catch (Exception $e) {
-            log_message('error', "Transport fee cancellation failed for {$studentId}: " . $e->getMessage());
+            log_message('error', "Transport fee pro-rate failed for {$studentId}: " . $e->getMessage());
         }
 
-        $this->firebase->delete($this->_assignments(), $studentId);
+        $this->fs->remove(self::COL_ASSIGNMENTS, $this->fs->docId($studentId));
         $this->json_success(['message' => 'Assignment removed.']);
     }
 

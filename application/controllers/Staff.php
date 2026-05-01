@@ -424,9 +424,10 @@ class Staff extends MY_Controller
 
         $data['staff'] = [];
         foreach ($staffDocs as $doc) {
+            $d = $doc['data'] ?? $doc;
             $s = $doc['data'];
             $s['_profilePic'] = $s['ProfilePic'] ?? $s['Photo URL'] ?? $s['profilePic'] ?? '';
-            $id = $s['User ID'] ?? $s['staffId'] ?? $doc['id'];
+            $id = $s['User ID'] ?? $s['staffId'] ?? $d['id'];
             $data['staff'][$id] = $s;
         }
 
@@ -524,10 +525,15 @@ class Staff extends MY_Controller
 
                 $rowData = array_combine($headers, $row);
 
-                // Generate globally unique TEA ID from Auth API
-                $staffId = $this->id_generator->generate('STA');
-                if (!$staffId) {
-                    $skipped[] = "Row " . ($success + $error + count($skipped) + 1) . ": ID generation failed";
+                // Phase 4.2 — safeGenerate retries transient failures
+                // and throws on catastrophic exhaustion. Per-row
+                // try/catch keeps the bulk import resilient: one bad
+                // row doesn't fail the whole CSV.
+                try {
+                    $staffId = $this->id_generator->safeGenerate('STA');
+                } catch (\Throwable $e) {
+                    log_message('error', 'ID_GEN_INTEGRATION staff_bulk_import_failed row=' . ($success + $error + count($skipped) + 1) . ' err=' . $e->getMessage());
+                    $skipped[] = "Row " . ($success + $error + count($skipped) + 1) . ": ID generation failed (" . $e->getMessage() . ")";
                     $error++;
                     continue;
                 }
@@ -606,24 +612,53 @@ class Staff extends MY_Controller
                 if (empty($roleIds)) $roleIds = ['ROLE_TEACHER'];
                 $primaryRole = $roleIds[0];
 
+                $religion    = trim($rowData['Religion'] ?? '');
+                $category    = trim($rowData['Category'] ?? '');
+                $bloodGroup  = trim($rowData['Blood Group'] ?? '');
+                $designation = trim($rowData['Designation'] ?? '');
+                $altPhone    = trim($rowData['Alt Phone'] ?? '');
+                $maritalSt   = trim($rowData['Marital Status'] ?? '');
+                $panNumber   = strtoupper(trim($rowData['PAN Number'] ?? ''));
+                $aadharNum   = trim($rowData['Aadhar Number'] ?? '');
+                $pfNumber    = trim($rowData['PF Number'] ?? '');
+                $esiNumber   = trim($rowData['ESI Number'] ?? '');
+                $teachingSubjectsRaw = trim($rowData['Teaching Subjects'] ?? '');
+                $teachingSubjects = $teachingSubjectsRaw !== ''
+                    ? array_values(array_filter(array_map('trim', explode(',', $teachingSubjectsRaw))))
+                    : [];
+
+                // If display label is non-blank, prefer it over auto-derived label.
+                $positionLabel = $designation !== '' ? $designation : $position;
+
                 $data = [
                     'User ID'         => $staffId,
                     'Name'            => $name,
-                    'Email'           => trim($rowData['Email'] ?? ''),
+                    'Email'           => $email,
                     'Phone Number'    => $phone,
-                    'Gender'          => trim($rowData['Gender'] ?? ''),
-                    'Department'      => trim($rowData['Department'] ?? ''),
-                    'Position'        => $position,
-                    'Employment Type' => trim($rowData['Employment Type'] ?? ''),
+                    'Gender'          => $gender,
+                    'Department'      => $department,
+                    'Position'        => $positionLabel,
+                    'Employment Type' => $empType,
                     'DOB'             => $dob,
-                    'Date Of Joining' => trim($rowData['Date Of Joining'] ?? ''),
-                    'Father Name'     => trim($rowData['Father Name'] ?? ''),
-                    'Blood Group'     => trim($rowData['Blood Group'] ?? ''),
+                    'Date Of Joining' => $dojRaw,
+                    'Father Name'     => $fatherName,
+                    'Blood Group'     => $bloodGroup,
+                    'Religion'        => $religion,
+                    'Category'        => $category,
                     'Password'        => $hashedPassword,
                     'Credentials'     => ['Id' => $staffId, 'Password' => $hashedPassword],
                     'lastUpdated'     => date('Y-m-d'),
                     'staff_roles'     => $roleIds,
                     'primary_role'    => $primaryRole,
+
+                    // Phase A statutory fields — mirror new_staff()
+                    'altPhone'        => $altPhone,
+                    'maritalStatus'   => $maritalSt,
+                    'designation'     => $designation,
+                    'panNumber'       => $panNumber,
+                    'aadharNumber'    => $aadharNum,
+                    'pfNumber'        => $pfNumber,
+                    'esiNumber'       => $esiNumber,
 
                     'qualificationDetails' => [
                         'highestQualification' => trim($rowData['Qualification'] ?? ''),
@@ -648,6 +683,7 @@ class Staff extends MY_Controller
                     'emergencyContact' => [
                         'name'        => trim($rowData['Emergency Contact Name'] ?? ''),
                         'phoneNumber' => trim($rowData['Emergency Contact Number'] ?? ''),
+                        'relation'    => trim($rowData['Emergency Contact Relation'] ?? ''),
                     ],
 
                     'Address' => [
@@ -657,6 +693,14 @@ class Staff extends MY_Controller
                         'PostalCode' => trim($rowData['Postal Code'] ?? ''),
                     ],
 
+                    'permanentAddress' => [
+                        'street'     => trim($rowData['Permanent Street'] ?? ''),
+                        'city'       => trim($rowData['Permanent City'] ?? ''),
+                        'state'      => trim($rowData['Permanent State'] ?? ''),
+                        'postalCode' => trim($rowData['Permanent Postal Code'] ?? ''),
+                    ],
+                    'sameAsCurrentAddress' => false,
+
                     'ProfilePic' => '',
 
                     'Doc' => [
@@ -665,19 +709,52 @@ class Staff extends MY_Controller
                     ],
                 ];
 
+                if (!empty($teachingSubjects)) {
+                    $data['teaching_subjects'] = $teachingSubjects;
+                }
+
                 // Write full record to Firestore
+                // camelCase aliases mirror new_staff() exactly — Parent + Teacher apps read these.
                 $fsData = array_merge($data, [
-                    'schoolId'  => $this->school_id,
-                    'session'   => $session_year,
-                    'sessions'  => [$session_year],
-                    'staffId'   => $staffId,
-                    'name'      => $name,         // lowercase alias for Android
-                    'phone'     => $phone,         // lowercase alias for Android
-                    'email'     => trim($rowData['Email'] ?? ''),
-                    'updatedAt' => date('c'),
+                    'schoolId'       => $this->school_id,
+                    'session'        => $session_year,
+                    'sessions'       => [$session_year],
+                    'staffId'        => $staffId,
+                    'name'           => $name,
+                    'phone'          => $phone,
+                    'email'          => $email,
+                    'status'         => 'Active',
+                    'role'           => $positionLabel,
+                    'roleId'         => $primaryRole,
+                    'position'       => $positionLabel,
+                    'department'     => $department,
+                    'gender'         => $gender,
+                    'employmentType' => $empType,
+                    'fatherName'     => $fatherName,
+                    'dateOfJoining'  => $dojRaw,
+                    'dob'            => $dob,
+                    'bloodGroup'     => $bloodGroup,
+                    'religion'       => $religion,
+                    'category'       => $category,
+                    'profilePic'     => '',
+                    'updatedAt'      => date('c'),
                 ]);
                 unset($fsData['Password'], $fsData['Credentials']);
-                $this->fs->set('staff', $this->fs->docId($staffId), $fsData, true);
+                // Phase 4.3 — guarded write. If Firestore rejects or
+                // errors, release the STA claim for this row and count
+                // it as skipped instead of burning a number + leaving
+                // an orphan claim doc.
+                try {
+                    $writeOk = $this->fs->set('staff', $this->fs->docId($staffId), $fsData, true);
+                    if (!$writeOk) throw new \RuntimeException('staff set returned falsy');
+                } catch (\Throwable $writeErr) {
+                    $staVal = (int) preg_replace('/\D/', '', $staffId);
+                    if ($staVal > 0) $this->id_generator->releaseClaim('STA', $staVal);
+                    log_message('error', "ID_GEN_INTEGRATION staff_bulk_write_failed row={$rowNum} id={$staffId} released=1 err=" . $writeErr->getMessage());
+                    $skipped[] = "Row {$rowNum}: Firestore write failed — ID released";
+                    $error++;
+                    continue;
+                }
 
                 // Auto-create salary structure for payroll
                 $this->_sync_salary_structure($staffId, $basic, $allow);
@@ -961,9 +1038,10 @@ class Staff extends MY_Controller
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
 
-        // Issue A fix: preview the *real* next staff ID via the race-safe RTDB
-        // counter (System/Counters/STA), not the stale schools.staffCount field.
-        // These two used to drift apart whenever a save failed mid-flow.
+        // Preview the next staff ID via id_generator's Firestore counter
+        // (feeCounters/_sys_STA), not the stale schools.staffCount field.
+        // The two used to drift apart whenever a save failed mid-flow.
+        // NOTE: counters fully migrated RTDB → Firestore on 2026-04-27. NO-RTDB policy.
         $this->load->library('id_generator');
         $previewedNextId = $this->id_generator->generate('STA_PEEK');
         if (empty($previewedNextId)) {
@@ -1029,22 +1107,18 @@ class Staff extends MY_Controller
                 // Non-fatal — continue; race is still possible but rare.
             }
 
-            // Generate STA ID (race-safe sequential ID)
+            // Phase 4.3 — timestamp fallback REMOVED (race-unsafe: two
+            // concurrent imports landing on the same time() value would
+            // collide). If safeGenerate exhausts every retry + self-
+            // repair tier, we surface a controlled 503 rather than
+            // silently risking a duplicate ID.
             $this->load->library('id_generator');
-            $generatedId = $this->id_generator->generate('STA');
-
-            if (!empty($generatedId)) {
-                $staffId = $generatedId;
-            } else {
-                // Fallback: use a timestamp-based ID to avoid collisions when the
-                // sequential generator is unavailable. Avoid $staffIdCount because
-                // it's read at GET time and goes stale across concurrent admins.
-                $staffId = 'STA' . str_pad((string) (time() % 1000000), 6, '0', STR_PAD_LEFT);
-                log_message('error', 'Staff: Auth API generate_id failed — using timestamp fallback ID ' . $staffId);
-            }
-
-            if (empty($staffId)) {
-                $this->json_error('Failed to generate staff ID.', 500);
+            try {
+                $staffId = $this->id_generator->safeGenerate('STA');
+            } catch (\Throwable $e) {
+                log_message('error', 'ID_GEN_INTEGRATION staff_single_create_failed err=' . $e->getMessage());
+                $this->json_error('Could not allocate a staff ID right now. Please retry in a moment.', 503);
+                return;
             }
 
             // Date formatting
@@ -1221,20 +1295,51 @@ class Staff extends MY_Controller
                 $staffRecord['teaching_subjects'] = array_values(array_filter(array_map('trim', explode(',', $teachingSubjects))));
             }
 
-            // Write full staff record to Firestore
+            // Write full staff record to Firestore.
+            // Phase 4.3 — guarded write. If this Firestore commit fails
+            // (network blip / quota / validation error), we release the
+            // STA claim so the number isn't burnt. Mirrors withClaim()
+            // semantics, applied inline because the earlier file upload
+            // steps need $staffId before this point.
             $fsData = array_merge($staffRecord, [
                 'schoolId'  => $this->school_id,
                 'session'   => $session_year,
                 'sessions'  => [$session_year],
                 'staffId'   => $staffId,
-                'name'      => $staffName,       // lowercase alias for Android
-                'phone'     => $phoneNumber,     // lowercase alias for Android
-                'email'     => $emailAddr,       // lowercase alias for Android
-                'status'    => 'Active',         // new staff is always Active
+                // ── camelCase aliases (read by Parent + Teacher apps) ──
+                // Per HR canonical schema: dual-emit PascalCase + camelCase.
+                'name'         => $staffName,
+                'phone'        => $phoneNumber,
+                'email'        => $emailAddr,
+                'status'       => 'Active',                                                 // new staff is always Active
+                'role'         => $positionLabel,                                           // human-readable label e.g. "Teacher"
+                'roleId'       => $primaryRole,                                             // canonical id e.g. "ROLE_TEACHER"
+                'position'     => $positionLabel,
+                'department'   => $normalizedPostData['department']      ?? '',
+                'gender'       => $normalizedPostData['gender']          ?? '',
+                'employmentType' => $normalizedPostData['employment_type'] ?? '',
+                'fatherName'   => $normalizedPostData['father_name']     ?? '',
+                'dateOfJoining' => $formattedData['dateOfJoining']      ?? '',
+                'dob'          => $formattedData['DOB']                  ?? '',
+                'bloodGroup'   => $normalizedPostData['blood_group']     ?? '',
+                'religion'     => $normalizedPostData['religion']        ?? '',
+                'category'     => $normalizedPostData['category']        ?? '',
+                'profilePic'   => $docData['Photo']['url']               ?? '',
                 'updatedAt' => date('c'),
             ]);
             unset($fsData['Password'], $fsData['Credentials']);
-            $result = $this->fs->set('staff', $this->fs->docId($staffId), $fsData, true);
+            try {
+                $result = $this->fs->set('staff', $this->fs->docId($staffId), $fsData, true);
+                if (!$result) {
+                    throw new \RuntimeException('Firestore staff set returned falsy.');
+                }
+            } catch (\Throwable $writeErr) {
+                $staVal = (int) preg_replace('/\D/', '', $staffId);
+                if ($staVal > 0) $this->id_generator->releaseClaim('STA', $staVal);
+                log_message('error', 'ID_GEN_INTEGRATION staff_single_write_failed id=' . $staffId . ' released=1 err=' . $writeErr->getMessage());
+                $this->json_error('Failed to save staff record. The ID has been released. Please retry.', 500);
+                return;
+            }
 
             // RTDB mirror removed per no-RTDB policy. Firestore `staff` is the sole source.
 
@@ -1345,6 +1450,271 @@ class Staff extends MY_Controller
 
     // ─────────────────────────────────────────────────────────────────────────
 
+    /**
+     * Phase 1 — flip staff status between Active and Inactive.
+     *
+     * POST /staff/set_status/<userId>
+     *   body: status (Active|Inactive), reason (optional)
+     *
+     * Writes:
+     *   - status (camelCase, read by Teacher + Parent apps)
+     *   - Status (PascalCase, legacy reads)
+     *   - audit-trail fields (deactivatedAt/By + reactivatedAt/By + reason)
+     *
+     * Phase 1 deliberately does NOT:
+     *   - disable Firebase Auth (deferred to Phase 2)
+     *   - archive subjectAssignments (deferred to Phase 3)
+     *   - block login (deferred to Phase 2)
+     */
+    public function set_status($user_id)
+    {
+        $this->_require_role(self::MANAGE_ROLES);
+        header('Content-Type: application/json');
+
+        if ($this->input->method() !== 'post') {
+            $this->json_error('POST only.', 405);
+            return;
+        }
+        if (!$user_id || !preg_match('/^[A-Za-z0-9_]+$/', $user_id)) {
+            $this->json_error('Invalid user id.', 400);
+            return;
+        }
+
+        $newStatus = trim((string) $this->input->post('status'));
+        if (!in_array($newStatus, ['Active', 'Inactive'], true)) {
+            $this->json_error('Status must be Active or Inactive.', 400);
+            return;
+        }
+
+        $reason = trim((string) $this->input->post('reason'));
+
+        // Read current doc — guard against unknown user
+        $existing = $this->_get_staff_with_fallback($user_id);
+        if (empty($existing)) {
+            $this->json_error('Staff not found.', 404);
+            return;
+        }
+
+        $oldStatus = $existing['status'] ?? $existing['Status'] ?? 'Active';
+        if ($oldStatus === $newStatus) {
+            // Note: don't put a 'status' key in the data — json_success already
+            // sets status='success'; a second 'status' key would overwrite it.
+            $this->json_success(['newStatus' => $newStatus, 'message' => 'Status unchanged.']);
+            return;
+        }
+
+        $now      = date('c');
+        $actorId  = (string) ($this->admin_id ?? '');
+
+        $patch = [
+            'status'    => $newStatus,   // camelCase — Teacher/Parent apps
+            'Status'    => $newStatus,   // PascalCase — legacy reads
+            'updatedAt' => $now,
+        ];
+        if ($newStatus === 'Inactive') {
+            $patch['deactivatedAt']      = $now;
+            $patch['deactivationReason'] = $reason;
+            $patch['deactivatedBy']      = $actorId;
+        } else { // Active (reactivation)
+            $patch['reactivatedAt'] = $now;
+            $patch['reactivatedBy'] = $actorId;
+        }
+
+        try {
+            // Use updateEntity (school-scoped) — bare update() targets the wrong doc id
+            // because Firestore staff doc id is "{schoolId}_{userId}", not bare $user_id.
+            $ok = $this->fs->updateEntity('staff', $user_id, $patch);
+            if (!$ok) {
+                $this->json_error('Update failed.', 500);
+                return;
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "set_status failed for {$user_id}: " . $e->getMessage());
+            $this->json_error('Update failed: ' . $e->getMessage(), 500);
+            return;
+        }
+
+        // Phase 3 — cascade archive into subjectAssignments. Best-effort:
+        // status flip is the source of truth; cascade failure is logged but
+        // doesn't roll back the status change. Reactivation only un-archives
+        // rows we marked ourselves (archivedBecauseOfDeactivation=true) so
+        // manually-archived rows from Academic Planner stay archived.
+        $cascadeStats = $this->_cascade_subject_assignments($user_id, $newStatus, $reason, $actorId, $now);
+
+        // Phase 2B — Firebase Auth + FCM cleanup (each step independently
+        // try/caught; status flip and Firestore writes are NEVER rolled back
+        // if these fail — Firestore stays the source of truth).
+        $authStats = ($newStatus === 'Inactive')
+            ? $this->_disable_firebase_user($user_id)
+            : $this->_enable_firebase_user($user_id);
+
+        log_message('info', "STAFF_STATUS user={$user_id} {$oldStatus}->{$newStatus} by={$actorId} "
+            . "reason=" . ($reason ?: '(none)')
+            . " cascade=" . json_encode($cascadeStats)
+            . " auth=" . json_encode($authStats));
+        // Note: 'newStatus' (not 'status') so it doesn't collide with json_success's
+        // own 'status' => 'success' field.
+        $this->json_success([
+            'newStatus' => $newStatus,
+            'message'   => 'Status changed to ' . $newStatus . '.',
+            'cascade'   => $cascadeStats,
+            'auth'      => $authStats,
+        ]);
+    }
+
+    /**
+     * Phase 2B — kick the user out of all current sessions on deactivation.
+     *
+     * 1. Disable the Firebase Auth account (admin SDK property `disabled=true`)
+     *    — blocks new sign-ins immediately.
+     * 2. Revoke all refresh tokens — forces every cached client to re-auth
+     *    on the next token refresh (~1 hour for already-issued ID tokens).
+     * 3. Delete every userDevices/{...} doc owned by this user — stops FCM
+     *    pushes from landing on their installed apps.
+     *
+     * Each step independently try/caught: if one fails, the others still
+     * run, status stays Inactive in Firestore (the source of truth), and the
+     * caller still gets a success response. Failures show up in the
+     * 'auth' field of the JSON response and in error logs.
+     */
+    private function _disable_firebase_user(string $userId): array
+    {
+        $stats = [
+            'disabled'           => false,
+            'tokensRevoked'      => false,
+            'fcmDocsDeleted'     => 0,
+            'fcmDocsFailed'      => 0,
+            'errors'             => [],
+        ];
+
+        // 1) Disable Firebase Auth user
+        try {
+            $res = $this->firebase->updateFirebaseUser($userId, ['disabled' => true]);
+            $stats['disabled'] = ($res !== null);
+            if ($res === null) $stats['errors'][] = 'updateFirebaseUser returned null';
+        } catch (\Throwable $e) {
+            $stats['errors'][] = 'disable: ' . $e->getMessage();
+            log_message('error', "Phase2B disable failed for {$userId}: " . $e->getMessage());
+        }
+
+        // 2) Revoke refresh tokens
+        try {
+            $stats['tokensRevoked'] = (bool) $this->firebase->revokeRefreshTokens($userId);
+        } catch (\Throwable $e) {
+            $stats['errors'][] = 'revoke: ' . $e->getMessage();
+            log_message('error', "Phase2B revoke failed for {$userId}: " . $e->getMessage());
+        }
+
+        // 3) Delete userDevices entries (FCM cleanup) — multiple docs per user
+        //    (one per device); we delete them all so push notifications stop.
+        try {
+            $devices = $this->fs->where('userDevices', [['userId', '==', $userId]]);
+            if (is_array($devices)) {
+                foreach ($devices as $entry) {
+                    $docId = is_array($entry) ? ($entry['id'] ?? '') : '';
+                    if ($docId === '') { $stats['fcmDocsFailed']++; continue; }
+                    try {
+                        $ok = $this->fs->remove('userDevices', $docId);
+                        $ok ? $stats['fcmDocsDeleted']++ : $stats['fcmDocsFailed']++;
+                    } catch (\Throwable $e) {
+                        $stats['fcmDocsFailed']++;
+                        log_message('error', "Phase2B FCM delete failed docId={$docId}: " . $e->getMessage());
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            $stats['errors'][] = 'fcmCleanup: ' . $e->getMessage();
+            log_message('error', "Phase2B fcm cleanup query failed for {$userId}: " . $e->getMessage());
+        }
+
+        return $stats;
+    }
+
+    /**
+     * Phase 2B — re-enable Firebase Auth on reactivation.
+     *
+     * Only flips disabled=false. We don't restore deleted userDevices docs
+     * — when the user opens the app and signs in again, the teacher/parent
+     * AuthRepository re-registers a fresh FCM token (see registerFcmToken
+     * in AuthRepository.kt). Stale device records aren't worth resurrecting.
+     */
+    private function _enable_firebase_user(string $userId): array
+    {
+        $stats = ['enabled' => false, 'errors' => []];
+        try {
+            $res = $this->firebase->updateFirebaseUser($userId, ['disabled' => false]);
+            $stats['enabled'] = ($res !== null);
+            if ($res === null) $stats['errors'][] = 'updateFirebaseUser returned null';
+        } catch (\Throwable $e) {
+            $stats['errors'][] = 'enable: ' . $e->getMessage();
+            log_message('error', "Phase2B enable failed for {$userId}: " . $e->getMessage());
+        }
+        return $stats;
+    }
+
+    /**
+     * Phase 3 — flip subjectAssignments.archived for every row owned by this teacher.
+     *
+     * Inactive: set archived=true on all rows where teacherId==userId.
+     * Active   : set archived=false on rows we previously archived (marker
+     *            archivedBecauseOfDeactivation=true). Manually-archived rows
+     *            from Academic Planner are left alone.
+     *
+     * @return array  ['matched' => int, 'patched' => int, 'failed' => int]
+     */
+    private function _cascade_subject_assignments(
+        string $userId, string $newStatus, string $reason, string $actorId, string $nowIso
+    ): array {
+        $stats = ['matched' => 0, 'patched' => 0, 'failed' => 0];
+        try {
+            $rows = $this->fs->schoolWhere('subjectAssignments', [
+                ['teacherId', '==', $userId],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', "cascade query failed for {$userId}: " . $e->getMessage());
+            return $stats;
+        }
+        if (!is_array($rows)) return $stats;
+
+        foreach ($rows as $row) {
+            $stats['matched']++;
+            $docId = $row['id'] ?? '';
+            $d     = $row['data'] ?? [];
+            if ($docId === '') { $stats['failed']++; continue; }
+
+            if ($newStatus === 'Inactive') {
+                $patch = [
+                    'archived'                       => true,
+                    'archivedAt'                     => $nowIso,
+                    'archivedReason'                 => $reason !== ''
+                        ? $reason
+                        : 'Teacher deactivated',
+                    'archivedBy'                     => $actorId,
+                    'archivedBecauseOfDeactivation'  => true,
+                ];
+            } else { // Active — only un-archive rows we ourselves archived
+                if (empty($d['archivedBecauseOfDeactivation'])) {
+                    continue; // skip — manually-archived row, leave it alone
+                }
+                $patch = [
+                    'archived'                       => false,
+                    'archivedBecauseOfDeactivation'  => false,
+                    'unarchivedAt'                   => $nowIso,
+                    'unarchivedBy'                   => $actorId,
+                ];
+            }
+
+            try {
+                $ok = $this->fs->update('subjectAssignments', $docId, $patch);
+                $ok ? $stats['patched']++ : $stats['failed']++;
+            } catch (\Throwable $e) {
+                log_message('error', "cascade patch failed docId={$docId}: " . $e->getMessage());
+                $stats['failed']++;
+            }
+        }
+        return $stats;
+    }
+
     public function delete_staff($id)
     {
         $this->_require_role(self::MANAGE_ROLES);
@@ -1442,7 +1812,7 @@ class Staff extends MY_Controller
                     'city' => 'City',
                     'street' => 'Street',
                     'state' => 'State',
-                    'postalcode' => 'PostalCode',
+                    'postal_code' => 'PostalCode',
                 ],
                 'emergencyContact' => [
                     'emergency_contact_name'     => 'name',
@@ -1574,10 +1944,29 @@ class Staff extends MY_Controller
 
             // Update staff document in Firestore
             $formattedData['updatedAt'] = date('c');
-            // Add lowercase aliases for Android
-            if (isset($formattedData['Name']))         $formattedData['name']  = $formattedData['Name'];
-            if (isset($formattedData['Phone Number'])) $formattedData['phone'] = $formattedData['Phone Number'];
-            if (isset($formattedData['Email']))        $formattedData['email'] = $formattedData['Email'];
+
+            // ── camelCase aliases — must mirror new_staff() exactly so the
+            // Parent + Teacher apps keep seeing fresh values after every edit.
+            // (Previously only name/phone/email were updated, so role/status/
+            // department/gender/etc. went stale on every edit and the teacher
+            // app showed the wrong role.)
+            if (isset($formattedData['Name']))            $formattedData['name']           = $formattedData['Name'];
+            if (isset($formattedData['Phone Number']))    $formattedData['phone']          = $formattedData['Phone Number'];
+            if (isset($formattedData['Email']))           $formattedData['email']          = $formattedData['Email'];
+            if (isset($formattedData['Position']))        $formattedData['position']       = $formattedData['Position'];
+            if (isset($formattedData['Position']))        $formattedData['role']           = $formattedData['Position'];
+            if (isset($formattedData['primary_role']))    $formattedData['roleId']         = $formattedData['primary_role'];
+            if (isset($formattedData['Department']))      $formattedData['department']     = $formattedData['Department'];
+            if (isset($formattedData['Gender']))          $formattedData['gender']         = $formattedData['Gender'];
+            if (isset($formattedData['Employment Type'])) $formattedData['employmentType'] = $formattedData['Employment Type'];
+            if (isset($formattedData['Father Name']))     $formattedData['fatherName']     = $formattedData['Father Name'];
+            if (isset($formattedData['Date Of Joining'])) $formattedData['dateOfJoining']  = $formattedData['Date Of Joining'];
+            if (isset($formattedData['DOB']))             $formattedData['dob']            = $formattedData['DOB'];
+            if (isset($formattedData['Blood Group']))     $formattedData['bloodGroup']     = $formattedData['Blood Group'];
+            if (isset($formattedData['Religion']))        $formattedData['religion']       = $formattedData['Religion'];
+            if (isset($formattedData['Category']))        $formattedData['category']       = $formattedData['Category'];
+            if (isset($formattedData['ProfilePic']))      $formattedData['profilePic']     = $formattedData['ProfilePic'];
+
             unset($formattedData['Password'], $formattedData['Credentials']);
 
             $updateRes = $this->fs->updateEntity('staff', $user_id, $formattedData);
@@ -2047,8 +2436,9 @@ class Staff extends MY_Controller
 
         $filtered = [];
         foreach ($staffDocs as $doc) {
+            $d = $doc['data'] ?? $doc;
             $s = $doc['data'];
-            $sid = $s['User ID'] ?? $s['staffId'] ?? $doc['id'];
+            $sid = $s['User ID'] ?? $s['staffId'] ?? $d['id'];
             $roles = $s['staff_roles'] ?? [];
             if (empty($roles)) {
                 $roles = $this->_infer_roles_from_position($s['Position'] ?? '');

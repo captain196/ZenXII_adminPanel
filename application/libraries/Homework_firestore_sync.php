@@ -324,14 +324,32 @@ class Homework_firestore_sync
     // ─── Private helpers ────────────────────────────────────────────
 
     /**
-     * Count students in a class/section (best-effort for totalStudents field).
+     * Count active students in a class/section — Firestore-only.
+     *
+     * Best-effort (the resulting `totalStudents` field is informational
+     * only; an error here just yields 0 and the homework still syncs).
+     *
+     * Uses CI's loaded Roster_helper when available — every controller
+     * that loads this library inherits one via MY_Controller. The
+     * direct `firestoreQuery` fallback handles the rare case where
+     * this library is invoked from a context without `$CI->roster`
+     * (e.g. CLI / cron / a controller that bypasses MY_Controller).
      */
     private function _countStudents(string $className, string $section): int
     {
         try {
-            $listPath = "Schools/{$this->schoolCode}/{$this->session}/{$className}/{$section}/Students/List";
-            $keys = $this->firebase->shallow_get($listPath);
-            return count($keys);
+            $CI = get_instance();
+            if ($CI !== null && isset($CI->roster) && method_exists($CI->roster, 'count_for_class')) {
+                return $CI->roster->count_for_class($className, $section);
+            }
+            // Fallback — same query shape as Roster_helper::for_class.
+            $rows = $this->firebase->firestoreQuery('students', [
+                ['schoolId',  '==', $this->schoolCode],
+                ['className', '==', self::_ensureClassPrefix($className)],
+                ['section',   '==', self::_ensureSectionPrefix($section)],
+                ['status',    '==', 'Active'],
+            ]);
+            return is_array($rows) ? count($rows) : 0;
         } catch (\Exception $e) {
             return 0;
         }

@@ -25,14 +25,24 @@ class Stories extends MY_Controller
     /** Roles allowed to permanently delete */
     private const DELETE_ROLES = ['Super Admin', 'School Super Admin', 'Admin'];
 
-    /** Allowed story statuses for moderation */
-    private const ALLOWED_STATUSES = ['active', 'flagged', 'removed'];
-
-    /** Maximum caption length for validation */
-    private const MAX_CAPTION_LENGTH = 500;
-
-    /** Story expiry duration in hours (24h default from mobile app) */
+    // ════════════════════════════════════════════════════════════════
+    //  SHARED CONFIG — mirror of Kotlin StorySharedConfig on both apps.
+    //  Keep these values in lockstep with:
+    //    - D:/Projects/SchoolSyncTeacher/.../StorySharedConfig.kt
+    //    - D:/Projects/SchoolSyncParent/.../StorySharedConfig.kt
+    //  Any drift will produce silent cross-system validation failures.
+    // ════════════════════════════════════════════════════════════════
+    private const ALLOWED_STATUSES    = ['active', 'flagged', 'removed'];
+    private const ALLOWED_TYPES       = ['image', 'video'];
+    private const ALLOWED_PRIORITIES  = ['high', 'normal'];
+    private const MAX_CAPTION_LENGTH  = 500;
     private const DEFAULT_EXPIRY_HOURS = 24;
+    private const MAX_IMAGE_BYTES     = 10 * 1024 * 1024;   // 10 MB
+    private const MAX_VIDEO_BYTES     = 50 * 1024 * 1024;   // 50 MB
+
+    // Rate limits (Hardening #4) — rolling 24h per author.
+    private const TEACHER_DAILY_LIMIT = 5;
+    private const ADMIN_DAILY_LIMIT   = 10;
 
     public function __construct()
     {
@@ -581,6 +591,175 @@ class Stories extends MY_Controller
             'message' => "{$success} stories updated to {$statusLabel}." . ($failed > 0 ? " {$failed} failed." : ''),
             'success' => $success,
             'failed'  => $failed,
+        ]);
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  ADMIN UPLOAD (Phase C)
+    //
+    //  Accepts a multipart POST (file + caption + priority + type) from
+    //  the Stories Management SPA, uploads the media to Firebase Storage,
+    //  then writes a canonical feeReceiptAllocations-style Firestore doc
+    //  with authorType='admin'.
+    //
+    //  Path layout (admin uploads):
+    //    gs://…/stories/admin/{schoolId}/{adminId}/{epochMillis}.{ext}
+    //
+    //  Firestore doc written to:
+    //    stories/{schoolId}_admin_{adminId}_{epochMillis}
+    //
+    //  POST fields:
+    //    media      — file upload (image/* or video/*, max 50MB)
+    //    caption    — optional, ≤ 500 chars
+    //    type       — "image" | "video"
+    //    priority   — "high" | "normal"
+    // ══════════════════════════════════════════════════════════════════
+    public function upload_story()
+    {
+        $this->_require_moderate();
+        $this->output->set_content_type('application/json');
+
+        // ── 1. Validate POST fields ───────────────────────────────────
+        $caption  = trim((string) $this->input->post('caption'));
+        $type     = strtolower(trim((string) $this->input->post('type')));
+        $priority = strtolower(trim((string) $this->input->post('priority')));
+        if (!in_array($type, self::ALLOWED_TYPES, true)) {
+            $this->json_error('Type must be image or video.');
+        }
+        if (!in_array($priority, self::ALLOWED_PRIORITIES, true)) {
+            $priority = 'normal';
+        }
+        if (strlen($caption) > self::MAX_CAPTION_LENGTH) {
+            $this->json_error('Caption exceeds ' . self::MAX_CAPTION_LENGTH . ' chars.');
+        }
+
+        // ── 2. Validate file ──────────────────────────────────────────
+        if (!isset($_FILES['media']) || $_FILES['media']['error'] !== UPLOAD_ERR_OK) {
+            $this->json_error('Media file is required.');
+        }
+        $file = $_FILES['media'];
+        $mime = (string) ($file['type'] ?? '');
+        $size = (int) ($file['size'] ?? 0);
+        $maxBytes = $type === 'image' ? self::MAX_IMAGE_BYTES : self::MAX_VIDEO_BYTES;
+        if ($size <= 0 || $size > $maxBytes) {
+            $maxMb = $maxBytes / (1024 * 1024);
+            $this->json_error(ucfirst($type) . " must be 0–{$maxMb} MB.");
+        }
+        if ($type === 'image' && !preg_match('#^image/#', $mime)) {
+            $this->json_error('Uploaded file is not an image (got ' . $mime . ').');
+        }
+        if ($type === 'video' && !preg_match('#^video/#', $mime)) {
+            $this->json_error('Uploaded file is not a video (got ' . $mime . ').');
+        }
+
+        // ── 2b. Rate limit (Hardening #4) ─────────────────────────────
+        // Query active non-expired stories for THIS admin user; reject
+        // at the cap. Fail-open if the query errors so a Firestore
+        // blip doesn't block a legitimate upload.
+        $schoolId = $this->fs->schoolId();
+        $adminId  = (string) ($this->admin_id ?? 'admin');
+        try {
+            $existing = $this->firebase->firestoreQuery('stories', [
+                ['schoolId', '==', $schoolId],
+                ['authorId', '==', $adminId],
+            ]);
+            $nowMs = (int) (microtime(true) * 1000);
+            $liveCount = 0;
+            foreach ((array) $existing as $row) {
+                $d = $row['data'] ?? $row;
+                if (!is_array($d)) continue;
+                $status = (string) ($d['status'] ?? 'active');
+                $exp    = (int) ($d['expiresAt'] ?? 0);
+                if ($status === 'active' && $exp > $nowMs) $liveCount++;
+            }
+            if ($liveCount >= self::ADMIN_DAILY_LIMIT) {
+                $this->json_error(
+                    'Daily limit reached (' . self::ADMIN_DAILY_LIMIT .
+                    '/day). Wait for an earlier story to expire before posting again.'
+                );
+            }
+        } catch (\Exception $e) {
+            log_message('warning', 'Stories::upload_story rate-limit check failed: ' . $e->getMessage());
+        }
+
+        // ── 3. Derive extension + remote path ─────────────────────────
+        $extMap = [
+            'image/jpeg' => 'jpg', 'image/jpg' => 'jpg', 'image/png' => 'png',
+            'image/webp' => 'webp', 'video/mp4' => 'mp4', 'video/quicktime' => 'mov',
+            'video/3gpp' => '3gp',
+        ];
+        $ext = $extMap[$mime] ?? ($type === 'image' ? 'jpg' : 'mp4');
+
+        $ts         = (int) (microtime(true) * 1000);
+        $remotePath = "stories/admin/{$schoolId}/{$adminId}/{$ts}.{$ext}";
+
+        // ── 4. Upload to Firebase Storage ─────────────────────────────
+        $okUp = $this->firebase->uploadFile($file['tmp_name'], $remotePath);
+        if (!$okUp) {
+            $this->json_error('Storage upload failed. Check Storage rules + service account.');
+        }
+        $downloadUrl = $this->firebase->getDownloadUrl($remotePath);
+        if ($downloadUrl === '') {
+            $this->json_error('Storage upload succeeded but download URL was empty.');
+        }
+
+        // ── 5. Write canonical Firestore doc ──────────────────────────
+        $storyId   = "{$schoolId}_admin_{$adminId}_{$ts}";
+        $expiresAt = $ts + (self::DEFAULT_EXPIRY_HOURS * 3600 * 1000);
+
+        $adminName = (string) ($this->admin_name ?? 'School Admin');
+        $adminPic  = '';   // admin profile pic is not currently denormalized
+
+        $doc = [
+            'schoolId'        => $schoolId,
+            // Phase C canonical
+            'authorId'        => $adminId,
+            'authorName'      => $adminName,
+            'authorPic'       => $adminPic,
+            'authorType'      => 'admin',
+            // Legacy aliases (parent app with legacy reader still works)
+            'teacherId'       => $adminId,
+            'teacherName'     => $adminName,
+            'teacherPic'      => $adminPic,
+            // Content
+            'mediaUrl'        => $downloadUrl,
+            'type'            => $type,
+            'caption'         => $caption,
+            'priority'        => $priority,
+            // Lifecycle — use server-side timestamp iso; Firestore accepts
+            // Firestore Timestamp via the client SDK, PHP wrapper sends
+            // ISO string which works equally for display.
+            // Canonical expiry = expiresAtTs (Firestore Timestamp).
+            // Wrapped via the REST client's timestamp() helper so the
+            // encoder emits { "timestampValue": ... } not { "stringValue": ... }.
+            // Firestore TTL policy targets this field; client listeners
+            // also filter on it with a Timestamp.now() comparison.
+            // Legacy expiresAt (Long) written for one release only.
+            'createdAt'       => date('c'),
+            'expiresAtTs'     => Firestore_rest_client::timestamp($expiresAt),
+            'expiresAt'       => $expiresAt,   // LEGACY — remove in v2.0
+            'viewCount'       => 0,
+            // Moderation defaults
+            'status'          => 'active',
+            'moderatedBy'     => '',
+            'moderatedByName' => '',
+            'moderatedAt'     => 0,
+            'moderationReason' => '',
+        ];
+
+        $okFs = $this->firebase->firestoreSet('stories', $storyId, $doc);
+        if (!$okFs) {
+            // Storage upload happened but Firestore failed — try to clean
+            // up the orphaned media so the bucket doesn't bloat over time.
+            try { $this->firebase->getStorageBucket()->object($remotePath)->delete(); } catch (\Exception $_) {}
+            $this->json_error('Firestore write failed. Storage media cleaned up.');
+        }
+
+        $this->json_success([
+            'message'   => 'Story uploaded' . ($priority === 'high' ? ' (high priority)' : '') . '.',
+            'storyId'   => $storyId,
+            'mediaUrl'  => $downloadUrl,
+            'priority'  => $priority,
         ]);
     }
 }

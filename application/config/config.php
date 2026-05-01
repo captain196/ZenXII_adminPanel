@@ -91,7 +91,7 @@ $_encKey = getenv('ENCRYPTION_KEY');
 if (empty($_encKey) && ENVIRONMENT === 'production') {
     show_error('ENCRYPTION_KEY environment variable is required in production.', 500);
 }
-$config['encryption_key'] = $_encKey ?: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
+$config['encryption_key'] = $_encKey ?: 'CHANGE_ME_IN_ENV';
 // Fallback is for local development only. Generate a production key with:
 // php -r "echo bin2hex(random_bytes(32));"
 

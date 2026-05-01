@@ -110,6 +110,10 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
 
         @media(max-width:600px) { .pf-grid { grid-template-columns:1fr; } }
     </style>
+    <!-- Razorpay Checkout SDK — loaded unconditionally so the page is
+         ready to pop the checkout modal whenever the server returns a
+         razorpay-gateway order. SDK silently no-ops if mock gateway. -->
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
 </head>
 <body>
 <div class="pf-wrap">
@@ -154,27 +158,142 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
                         <?php endif; ?>
                     </select>
                 </div>
+                <div class="pf-fg">
+                    <label>Date of Birth <span class="req">*</span></label>
+                    <input type="date" name="dob" required>
+                </div>
+                <div class="pf-fg">
+                    <label>Gender <span class="req">*</span></label>
+                    <select name="gender" required>
+                        <option value="">-- Select --</option>
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
+                        <option value="Other">Other</option>
+                    </select>
+                </div>
+                <div class="pf-fg">
+                    <label>Blood Group</label>
+                    <select name="blood_group">
+                        <option value="">-- Select --</option>
+                        <option value="A+">A+</option>
+                        <option value="A-">A-</option>
+                        <option value="B+">B+</option>
+                        <option value="B-">B-</option>
+                        <option value="AB+">AB+</option>
+                        <option value="AB-">AB-</option>
+                        <option value="O+">O+</option>
+                        <option value="O-">O-</option>
+                    </select>
+                </div>
+                <div class="pf-fg">
+                    <label>Category</label>
+                    <select name="category">
+                        <option value="">-- Select --</option>
+                        <option value="General">General</option>
+                        <option value="OBC">OBC</option>
+                        <option value="SC">SC</option>
+                        <option value="ST">ST</option>
+                        <option value="EWS">EWS</option>
+                    </select>
+                </div>
+                <div class="pf-fg">
+                    <label>Religion</label>
+                    <input type="text" name="religion" maxlength="50">
+                </div>
+                <div class="pf-fg">
+                    <label>Nationality</label>
+                    <input type="text" name="nationality" maxlength="50" placeholder="e.g. Indian">
+                </div>
             </div>
 
             <div class="pf-section"><i class="fa-solid fa-people-roof"></i> Parent / Guardian</div>
             <div class="pf-grid">
                 <div class="pf-fg">
-                    <label>Parent / Guardian Name</label>
+                    <label>Father's Name</label>
                     <input type="text" name="parent_name" maxlength="100">
+                </div>
+                <div class="pf-fg">
+                    <label>Father's Occupation</label>
+                    <input type="text" name="father_occupation" maxlength="100">
+                </div>
+                <div class="pf-fg">
+                    <label>Mother's Name</label>
+                    <input type="text" name="mother_name" maxlength="100">
+                </div>
+                <div class="pf-fg">
+                    <label>Mother's Occupation</label>
+                    <input type="text" name="mother_occupation" maxlength="100">
                 </div>
                 <div class="pf-fg">
                     <label>Phone <span class="req">*</span></label>
                     <input type="tel" name="phone" required maxlength="20" placeholder="e.g. 9876543210">
                 </div>
-                <div class="pf-fg pf-fg-full">
+                <div class="pf-fg">
                     <label>Email</label>
                     <input type="email" name="email" maxlength="150">
+                </div>
+                <div class="pf-fg">
+                    <label>Guardian Phone (alternate)</label>
+                    <input type="tel" name="guardian_phone" maxlength="20">
+                </div>
+                <div class="pf-fg">
+                    <label>Guardian Relation</label>
+                    <input type="text" name="guardian_relation" maxlength="50" placeholder="e.g. Uncle">
+                </div>
+            </div>
+
+            <div class="pf-section"><i class="fa-solid fa-location-dot"></i> Address</div>
+            <div class="pf-grid">
+                <div class="pf-fg pf-fg-full">
+                    <label>Street / Locality</label>
+                    <input type="text" name="address" maxlength="200">
+                </div>
+                <div class="pf-fg">
+                    <label>City</label>
+                    <input type="text" name="city" maxlength="80">
+                </div>
+                <div class="pf-fg">
+                    <label>State</label>
+                    <input type="text" name="state" maxlength="80">
+                </div>
+                <div class="pf-fg">
+                    <label>Pincode</label>
+                    <input type="text" name="pincode" maxlength="10" pattern="[0-9]*">
+                </div>
+            </div>
+
+            <div class="pf-section"><i class="fa-solid fa-graduation-cap"></i> Previous School (if any)</div>
+            <div class="pf-grid">
+                <div class="pf-fg">
+                    <label>Previous School Name</label>
+                    <input type="text" name="previous_school" maxlength="150">
+                </div>
+                <div class="pf-fg">
+                    <label>Previous Class</label>
+                    <input type="text" name="previous_class" maxlength="50">
+                </div>
+                <div class="pf-fg">
+                    <label>Previous Marks / Grade</label>
+                    <input type="text" name="previous_marks" maxlength="50" placeholder="e.g. 85% / A1">
                 </div>
             </div>
 
             <div class="pf-fg">
                 <label>Message / Additional Information</label>
                 <textarea name="message" rows="3" maxlength="500" placeholder="Any additional details..."></textarea>
+            </div>
+
+            <!-- Consent — required by India's DPDP Act and GDPR. Without
+                 explicit acknowledgement we shouldn't store the parent's
+                 contact + child's PII. Server rejects submission if the
+                 box isn't checked. -->
+            <div class="pf-fg" style="background:#f8fafc;border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:12px 14px;margin-top:8px;">
+                <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-weight:400;">
+                    <input type="checkbox" name="consent" id="consentCheck" required style="margin-top:3px;flex-shrink:0;">
+                    <span style="font-size:13px;line-height:1.5;color:var(--t2,#374151);">
+                        I confirm the information above is correct and consent to <strong><?= $esc($school_profile['display_name'] ?? $school_id) ?></strong> storing and processing this application data for admission purposes. I understand my contact details may be used to communicate about this application.
+                    </span>
+                </label>
             </div>
 
             <button type="submit" class="pf-submit" id="submitBtn">
@@ -189,10 +308,24 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
         <h2>Application Submitted!</h2>
         <p>Your application ID: <strong id="appIdDisplay"></strong></p>
         <p>The school will review your application and contact you shortly.</p>
+
+        <!-- Receipt download (Tier-A QW #1). The link is populated by the
+             submit-handler JS from data.receipt_url; same URL is also sent
+             to the parent via the SMS notification. -->
+        <div id="receiptSection" style="display:none;margin-top:20px;">
+            <a id="receiptLink" target="_blank" rel="noopener"
+               style="display:inline-block;padding:12px 22px;background:#0f766e;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">
+                <i class="fa-solid fa-file-pdf" style="margin-right:6px;"></i> Download Receipt (PDF)
+            </a>
+            <p style="font-size:12px;color:var(--t3);margin-top:8px;">
+                A copy of this link has been sent to your phone via SMS.
+            </p>
+        </div>
+
         <!-- Payment button (shown only if school requires admission fee) -->
         <div id="paymentSection" style="display:none;margin-top:20px;">
             <div style="background:var(--bg3);padding:16px;border-radius:8px;border:1px solid var(--border);margin-bottom:16px;">
-                <p style="font-size:13px;color:var(--t2);margin-bottom:8px;">Registration fee required:</p>
+                <p style="font-size:13px;color:var(--t2);margin-bottom:8px;"><span id="payLabel">Admission fee</span> required:</p>
                 <p style="font-size:1.5rem;font-weight:800;color:var(--gold);">&#8377;<span id="payAmount">0</span></p>
             </div>
             <button id="payBtn" class="pf-submit" style="background:#0f766e;max-width:320px;margin:0 auto;" onclick="initiatePayment()">
@@ -209,8 +342,8 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
         <i class="fa-solid fa-check-circle" style="color:#22c55e;"></i>
         <h2>Payment Successful!</h2>
         <p>Your admission fee has been received.</p>
-        <p style="margin-top:4px;">Application <strong id="paidAppId"></strong> is now <strong style="color:#22c55e;">Approved</strong>.</p>
-        <p style="font-size:12px;color:var(--t3);margin-top:8px;">The school will contact you with next steps.</p>
+        <p style="margin-top:4px;">Application <strong id="paidAppId"></strong> is now <strong style="color:#22c55e;">Awaiting school review</strong>.</p>
+        <p style="font-size:12px;color:var(--t3);margin-top:8px;">The school will verify your details and contact you with next steps. Please keep your application ID for reference.</p>
     </div>
 
     <div class="pf-footer">Powered by GraderIQ ERP</div>
@@ -257,10 +390,20 @@ document.getElementById('admissionForm').addEventListener('submit', function(e) 
             document.getElementById('appIdDisplay').textContent = data.app_id || 'Submitted';
             // Store for payment flow
             window._appId = data.app_id;
+            // Receipt link — Tier-A QW #1. Hidden by default; revealed when
+            // the server returns a receipt_url (always returned for new
+            // submissions; absent on legacy responses to keep this safe).
+            if (data.receipt_url) {
+                document.getElementById('receiptLink').setAttribute('href', data.receipt_url);
+                document.getElementById('receiptSection').style.display = 'block';
+            }
             // Show payment button if required
             if (data.payment_required && data.payment_amount > 0) {
                 document.getElementById('paymentSection').style.display = 'block';
                 document.getElementById('payAmount').textContent = parseFloat(data.payment_amount).toLocaleString('en-IN');
+                if (data.payment_label) {
+                    document.getElementById('payLabel').textContent = data.payment_label;
+                }
             }
         } else {
             showAlert(data.message || 'Submission failed. Please try again.', true);
@@ -301,14 +444,11 @@ function initiatePayment() {
         }
 
         // ── Gateway checkout ──
-        // When using Razorpay, replace this block with:
-        //   var rzp = new Razorpay({ key: RAZORPAY_KEY, order_id: order.order_id, ... });
-        //   rzp.open();
-        // For now, use mock gateway (auto-simulate):
-        if (order.gateway === 'mock') {
+        if (order.gateway === 'razorpay') {
+            launchRazorpay(order);
+        } else if (order.gateway === 'mock') {
             simulateMockPayment(order);
         } else {
-            // Future: real gateway integration point
             alert('Gateway ' + order.gateway + ' not yet integrated.');
             btn.disabled = false;
             btn.innerHTML = '<i class="fa-solid fa-credit-card"></i> Pay Now';
@@ -319,6 +459,88 @@ function initiatePayment() {
         btn.disabled = false;
         btn.innerHTML = '<i class="fa-solid fa-credit-card"></i> Pay Now';
     });
+}
+
+function launchRazorpay(order) {
+    if (typeof Razorpay === 'undefined') {
+        alert('Razorpay SDK failed to load. Check your internet connection and try again.');
+        var btn = document.getElementById('payBtn');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-credit-card"></i> Pay Now';
+        return;
+    }
+
+    var rzp = new Razorpay({
+        key:      order.key,                 // rzp_test_... from server
+        amount:   order.amount_paise,        // integer paise
+        currency: order.currency || 'INR',
+        name:     order.school_name || 'Admission Fee',
+        description: 'Admission Fee · ' + (order.student_name || ''),
+        order_id: order.order_id,
+        prefill: {
+            name:    order.student_name || '',
+            email:   order.email        || '',
+            contact: order.phone        || ''
+        },
+        notes: {
+            app_id:    window._appId,
+            payment_id: order.payment_id
+        },
+        theme: { color: '#0f766e' },
+        // Razorpay calls this on success. We then verify the signature
+        // server-side via payment_callback — never trust the client.
+        handler: function(response) {
+            var fd = new URLSearchParams({
+                payment_id:         order.payment_id,
+                order_id:           order.order_id,
+                gateway_payment_id: response.razorpay_payment_id || '',
+                signature:          response.razorpay_signature  || ''
+            });
+            fd.append(csrfName, csrfToken);
+
+            fetch('<?= base_url("admission/payment_callback/" . urlencode($school_id)) ?>', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+                body: fd.toString()
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(result) {
+                if (result.csrf_token) csrfToken = result.csrf_token;
+                if (result.status === 'success') {
+                    document.getElementById('successPanel').style.display = 'none';
+                    document.getElementById('paymentSuccessPanel').style.display = 'block';
+                    document.getElementById('paidAppId').textContent = window._appId;
+                } else {
+                    alert('Payment verification failed: ' + (result.message || 'Unknown error'));
+                    var btn = document.getElementById('payBtn');
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fa-solid fa-credit-card"></i> Retry Payment';
+                }
+            })
+            .catch(function() {
+                alert('Payment verification failed. Please contact the school.');
+            });
+        },
+        modal: {
+            // Parent dismissed the Razorpay modal without paying. Restore
+            // the Pay Now button so they can try again. The server-side
+            // admissionPayments doc stays in `created` state, harmless.
+            ondismiss: function() {
+                var btn = document.getElementById('payBtn');
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-credit-card"></i> Pay Now';
+            }
+        }
+    });
+
+    rzp.on('payment.failed', function(resp) {
+        alert('Payment failed: ' + (resp.error && resp.error.description ? resp.error.description : 'Unknown error'));
+        var btn = document.getElementById('payBtn');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-credit-card"></i> Retry Payment';
+    });
+
+    rzp.open();
 }
 
 function simulateMockPayment(order) {

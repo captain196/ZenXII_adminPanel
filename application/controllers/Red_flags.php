@@ -8,9 +8,11 @@ defined('BASEPATH') or exit('No direct script access allowed');
  * via the mobile app. Provides KPIs, analytics, flag management, and
  * student drill-down views.
  *
- * Firebase paths:
- *   Schools/{school}/{session}/{classKey}/{sectionKey}/RedFlags/{studentId}/{flagId}
- *   Schools/{school}/{session}/{classKey}/{sectionKey}/Students/{studentId}
+ * Firestore (canonical) — Phase B migration 2026-04-25:
+ *   Collection: studentFlags
+ *   Document ID: {schoolId}_{flagId}
+ *   Fields stored canonically (camelCase + lowercase enums); responses
+ *   here remap to PascalCase so existing dashboard JS keeps working.
  */
 class Red_flags extends MY_Controller
 {
@@ -78,101 +80,164 @@ class Red_flags extends MY_Controller
     }
 
     /**
-     * Collect ALL red flags across every class/section in current session.
-     * Returns flat array of flag records enriched with class/section/student info.
+     * Collapse repeated "Class " prefixes and ensure exactly one. Empty or
+     * bare-prefix input ("Class", "Class Class") → empty string.
+     * Defends against frontend bugs that double-prepend ("Class Class 9th").
+     */
+    private function _normalize_class_key(string $s): string
+    {
+        $s = trim($s);
+        if ($s === '') return '';
+        $s = preg_replace('/^(Class\s+)+/i', '', $s);
+        if ($s === '' || preg_match('/^Class\s*$/i', $s)) return '';
+        return 'Class ' . $s;
+    }
+
+    /**
+     * Same as above for "Section ". Empty stays empty (used for class-wide
+     * assignments where section is intentionally blank).
+     */
+    private function _normalize_section_key(string $s): string
+    {
+        $s = trim($s);
+        if ($s === '') return '';
+        $s = preg_replace('/^(Section\s+)+/i', '', $s);
+        if ($s === '' || preg_match('/^Section\s*$/i', $s)) return '';
+        return 'Section ' . $s;
+    }
+
+    /**
+     * Map a canonical lowercase enum value to its PascalCase display form.
+     * Falls back to ucfirst for unknown values.
+     */
+    private function _display_enum(string $value, array $whitelist): string
+    {
+        $lower = strtolower(trim($value));
+        foreach ($whitelist as $w) {
+            if (strtolower($w) === $lower) return $w;
+        }
+        return $value === '' ? '' : ucfirst($value);
+    }
+
+    /**
+     * Collect ALL red flags from Firestore for current school + session.
+     * Returns flat array in the legacy PascalCase shape so existing dashboard
+     * JS continues to work unchanged.
+     *
+     * The Firestore rule allows reads where `schoolId == X` OR `schoolCode == X`,
+     * so we query both fields and merge — this matches mobile clients that
+     * may store either field (TokenManager.schoolId vs schoolCode), and
+     * mirrors the rule's permissiveness so the admin panel doesn't silently
+     * miss flags written under the alternative key.
      *
      * @param  array|null $classFilter  Optional — restrict to specific classes
+     *                                  Items: ['class_key' => 'Class 9th', 'section' => 'A']
+     * @param  bool        $includeDeleted  When false (default) hides
+     *                                      soft-deleted flags. The audit
+     *                                      log endpoint passes true.
      * @return array
      */
-    private function _collect_all_flags(?array $classFilter = null): array
+    private function _collect_all_flags(?array $classFilter = null, bool $includeDeleted = false): array
     {
-        $classes = $this->_get_session_classes();
+        if (!isset($this->fs) || !$this->school_id) return [];
+
+        $sessionFilter = !empty($this->session_year)
+            ? [['session', '==', $this->session_year]]
+            : [];
+
+        // Two-query OR: Firestore composite queries don't support OR on
+        // different fields, so we run both and dedupe by document id.
+        $bySchoolId = (array) $this->fs->where(
+            'studentFlags',
+            array_merge([['schoolId', '==', $this->school_id]], $sessionFilter),
+            'createdAtMs',
+            'DESC',
+            500
+        );
+        $bySchoolCode = (array) $this->fs->where(
+            'studentFlags',
+            array_merge([['schoolCode', '==', $this->school_id]], $sessionFilter),
+            'createdAtMs',
+            'DESC',
+            500
+        );
+
+        // Dedupe by document id; keep the row whose createdAtMs is greatest
+        // (defensive — both queries return the same doc, so values match).
+        $deduped = [];
+        foreach (array_merge($bySchoolId, $bySchoolCode) as $row) {
+            if (!is_array($row) || !isset($row['id'])) continue;
+            $deduped[$row['id']] = $row;
+        }
+
+        // Re-sort the merged set by createdAtMs DESC so downstream code
+        // (recent-flags slice, weekly trend) sees consistent ordering.
+        $rows = array_values($deduped);
+        usort($rows, function ($a, $b) {
+            $ta = (int)($a['data']['createdAtMs'] ?? 0);
+            $tb = (int)($b['data']['createdAtMs'] ?? 0);
+            return $tb <=> $ta;
+        });
+
+        // Build classFilter as a set of canonical "Class X|Section Y" keys.
+        $filterSet = null;
+        if ($classFilter !== null) {
+            $filterSet = [];
+            foreach ($classFilter as $cf) {
+                if (!isset($cf['class_key'], $cf['section'])) continue;
+                $ck = (stripos($cf['class_key'], 'Class ') === 0)
+                    ? $cf['class_key'] : 'Class ' . $cf['class_key'];
+                $sk = 'Section ' . $cf['section'];
+                $filterSet[$ck . '|' . $sk] = true;
+            }
+        }
+
         $allFlags = [];
+        foreach ($rows as $row) {
+            $f = $row['data'];
+            $classKey   = (string)($f['className'] ?? '');
+            $sectionKey = (string)($f['section']   ?? '');
 
-        foreach ($classes as $cls) {
-            $classKey   = $cls['class_key'];
-            $sectionKey = 'Section ' . $cls['section'];
-            $label      = $cls['label'];
-
-            // Apply class filter if provided
-            if ($classFilter !== null) {
-                $filterMatch = false;
-                foreach ($classFilter as $f) {
-                    if (isset($f['class_key'], $f['section'])) {
-                        if ($f['class_key'] === $classKey && $f['section'] === $cls['section']) {
-                            $filterMatch = true;
-                            break;
-                        }
-                    }
-                }
-                if (!$filterMatch) continue;
+            if ($filterSet !== null
+                && !isset($filterSet[$classKey . '|' . $sectionKey])) {
+                continue;
             }
 
-            // Teacher role: only see assigned classes
+            // Teacher RBAC — same helper as before
             if (!$this->_teacher_can_access($classKey, $sectionKey)) {
                 continue;
             }
 
-            $basePath = $this->_class_path($classKey, $sectionKey);
-            $redFlags = $this->firebase->get("{$basePath}/RedFlags");
-
-            if (!is_array($redFlags)) continue;
-
-            // Load student names for this section (cached per section)
-            $students = $this->firebase->get("{$basePath}/Students");
-            $studentNames = [];
-            if (is_array($students)) {
-                foreach ($students as $sid => $sdata) {
-                    if (is_array($sdata)) {
-                        $studentNames[$sid] = [
-                            'name'       => $sdata['Name'] ?? $sid,
-                            'rollNo'     => $sdata['RollNo'] ?? '',
-                            'fatherName' => $sdata['FatherName'] ?? '',
-                        ];
-                    }
-                }
+            // Hide soft-deleted flags by default. Audit endpoints can opt
+            // back in via $includeDeleted=true.
+            if (!$includeDeleted
+                && strtolower((string)($f['status'] ?? '')) === 'deleted') {
+                continue;
             }
 
-            foreach ($redFlags as $studentId => $flags) {
-                if (!is_array($flags)) continue;
-
-                $stuInfo = $studentNames[$studentId] ?? [
-                    'name'       => $studentId,
-                    'rollNo'     => '',
-                    'fatherName' => '',
-                ];
-
-                foreach ($flags as $flagId => $flag) {
-                    if (!is_array($flag)) continue;
-
-                    $allFlags[] = [
-                        'flagId'      => $flagId,
-                        'studentId'   => $studentId,
-                        'studentName' => $stuInfo['name'],
-                        'rollNo'      => $stuInfo['rollNo'],
-                        'fatherName'  => $stuInfo['fatherName'],
-                        'classKey'    => $classKey,
-                        'sectionKey'  => $sectionKey,
-                        'classLabel'  => $label,
-                        'type'        => $flag['type'] ?? 'Unknown',
-                        'severity'    => $flag['severity'] ?? 'Low',
-                        'message'     => $flag['message'] ?? '',
-                        'subject'     => $flag['subject'] ?? '',
-                        'teacherId'   => $flag['teacherId'] ?? '',
-                        'teacherName' => $flag['teacherName'] ?? '',
-                        'createdAt'   => $flag['createdAt'] ?? 0,
-                        'status'      => $flag['status'] ?? 'Active',
-                        'resolvedAt'  => $flag['resolvedAt'] ?? null,
-                        'resolvedBy'  => $flag['resolvedBy'] ?? null,
-                    ];
-                }
-            }
+            $allFlags[] = [
+                'flagId'      => $f['flagId']      ?? $row['id'],
+                'studentId'   => $f['studentId']   ?? '',
+                'studentName' => $f['studentName'] ?? ($f['studentId'] ?? ''),
+                'rollNo'      => $f['rollNo']      ?? '',
+                'fatherName'  => $f['fatherName']  ?? '',
+                'classKey'    => $classKey,
+                'sectionKey'  => $sectionKey,
+                'classLabel'  => $classKey !== '' && $sectionKey !== ''
+                    ? $classKey . ' / ' . $sectionKey
+                    : ($classKey ?: $sectionKey ?: 'Unknown'),
+                'type'        => $this->_display_enum((string)($f['type']     ?? ''), self::ALLOWED_TYPES),
+                'severity'    => $this->_display_enum((string)($f['severity'] ?? 'low'), self::ALLOWED_SEVERITIES),
+                'message'     => $f['message']     ?? '',
+                'subject'     => $f['subject']     ?? '',
+                'teacherId'   => $f['teacherId']   ?? '',
+                'teacherName' => $f['teacherName'] ?? '',
+                'createdAt'   => $f['createdAtMs'] ?? 0,
+                'status'      => $this->_display_enum((string)($f['status']   ?? 'active'), self::ALLOWED_STATUSES),
+                'resolvedAt'  => $f['resolvedAtMs'] ?? null,
+                'resolvedBy'  => $f['resolvedBy']  ?? null,
+            ];
         }
-
-        // Sort by createdAt descending
-        usort($allFlags, function ($a, $b) {
-            return ($b['createdAt'] ?? 0) <=> ($a['createdAt'] ?? 0);
-        });
 
         return $allFlags;
     }
@@ -424,6 +489,26 @@ class Red_flags extends MY_Controller
             }
         }
 
+        // Student exists but has no flags? Look up profile directly so the
+        // UI can still render the student card with an empty flag list,
+        // instead of showing a misleading "not found" message.
+        if ($studentInfo === null && isset($this->fs)) {
+            $stuFs = $this->fs->getEntity('students', $studentId);
+            if (is_array($stuFs)) {
+                $cls = (string)($stuFs['className'] ?? $stuFs['Class']  ?? '');
+                $sec = (string)($stuFs['section']   ?? $stuFs['Section'] ?? '');
+                $studentInfo = [
+                    'studentId'   => $studentId,
+                    'studentName' => (string)($stuFs['name']       ?? $stuFs['Name']       ?? $studentId),
+                    'rollNo'      => (string)($stuFs['rollNo']     ?? $stuFs['RollNo']     ?? ''),
+                    'fatherName'  => (string)($stuFs['fatherName'] ?? $stuFs['FatherName'] ?? ''),
+                    'classLabel'  => $cls !== '' && $sec !== ''
+                        ? $cls . ' / ' . $sec
+                        : ($cls ?: $sec ?: ''),
+                ];
+            }
+        }
+
         // Pattern analysis
         $typeBreakdown     = ['Homework' => 0, 'Behavior' => 0, 'Performance' => 0];
         $severityBreakdown = ['Low' => 0, 'Medium' => 0, 'High' => 0];
@@ -459,37 +544,42 @@ class Red_flags extends MY_Controller
 
     /**
      * POST — Resolve a single flag.
+     *
+     * Inputs: flag_id (required); class_key/section_key/student_id accepted
+     * for backward compatibility but no longer needed.
      */
     public function resolve_flag()
     {
         $this->_require_role(self::MANAGE_ROLES, 'red_flags_resolve');
 
-        $classKey   = $this->safe_path_segment($this->input->post('class_key') ?? '', 'class_key');
-        $sectionKey = $this->safe_path_segment($this->input->post('section_key') ?? '', 'section_key');
-        $studentId  = $this->safe_path_segment($this->input->post('student_id') ?? '', 'student_id');
-        $flagId     = $this->safe_path_segment($this->input->post('flag_id') ?? '', 'flag_id');
+        $flagId = $this->safe_path_segment($this->input->post('flag_id') ?? '', 'flag_id');
+        $docId  = $this->fs->docId($flagId);
 
-        $path = $this->_class_path($classKey, $sectionKey) . "/RedFlags/{$studentId}/{$flagId}";
-
-        // Verify flag exists
-        $existing = $this->firebase->get($path);
+        $existing = $this->fs->get('studentFlags', $docId);
         if (!is_array($existing)) {
             $this->json_error('Flag not found.', 404);
         }
 
-        if (($existing['status'] ?? '') === 'Resolved') {
+        if (strtolower((string)($existing['status'] ?? '')) === 'resolved') {
             $this->json_error('Flag is already resolved.', 400);
         }
 
-        $now = time() * 1000; // millisecond timestamp to match mobile app
+        $nowMs = (int) round(microtime(true) * 1000);
 
-        $this->firebase->update($path, [
-            'status'     => 'Resolved',
-            'resolvedAt' => $now,
-            'resolvedBy' => $this->admin_id,
+        $ok = $this->fs->update('studentFlags', $docId, [
+            'status'       => 'resolved',
+            'resolvedAtMs' => $nowMs,
+            'resolvedAt'   => date('c', (int) ($nowMs / 1000)),
+            'resolvedBy'   => $this->admin_id,
+            'updatedAt'    => date('c'),
         ]);
 
-        log_audit('Red Flags', 'resolve_flag', $flagId, "Resolved flag for student {$studentId}");
+        if (!$ok) {
+            $this->json_error('Failed to resolve flag.', 500);
+        }
+
+        log_audit('Red Flags', 'resolve_flag', $flagId,
+            "Resolved flag for student " . ($existing['studentId'] ?? '?'));
 
         $this->json_success(['message' => 'Flag resolved successfully.']);
     }
@@ -505,12 +595,17 @@ class Red_flags extends MY_Controller
         $sectionKey = $this->safe_path_segment($this->input->post('section_key') ?? '', 'section_key');
         $studentId  = $this->safe_path_segment($this->input->post('student_id') ?? '', 'student_id');
 
+        // Normalize prefixes — collapse any duplication a misbehaving caller
+        // may have introduced ("Section Section A" → "Section A").
+        $classKey   = $this->_normalize_class_key($classKey);
+        $sectionKey = $this->_normalize_section_key($sectionKey);
+
         $type     = trim($this->input->post('type') ?? '');
         $severity = trim($this->input->post('severity') ?? '');
         $message  = $this->_clean_text($this->input->post('message') ?? '');
         $subject  = $this->_clean_text($this->input->post('subject') ?? '');
 
-        // Validate
+        // Validate (input is in PascalCase from existing UI; we store lowercase)
         if (!in_array($type, self::ALLOWED_TYPES, true)) {
             $this->json_error('Invalid flag type. Must be: ' . implode(', ', self::ALLOWED_TYPES));
         }
@@ -524,31 +619,72 @@ class Red_flags extends MY_Controller
             $this->json_error('Message exceeds maximum length of ' . self::MAX_MESSAGE_LENGTH . ' characters.');
         }
 
-        // Verify student exists
-        $studentPath = $this->_class_path($classKey, $sectionKey) . "/Students/{$studentId}";
-        $studentData = $this->firebase->get($studentPath);
-        if (!is_array($studentData)) {
+        // Resolve student denorm (Firestore canonical; RTDB fallback for legacy
+        // students not yet mirrored). Reading the students collection is not a
+        // module change — we're only consuming existing data.
+        $studentName = '';
+        $rollNo      = '';
+        $fatherName  = '';
+
+        $stuFs = $this->fs->getEntity('students', $studentId);
+        if (is_array($stuFs)) {
+            $studentName = (string)($stuFs['name']       ?? $stuFs['Name']       ?? '');
+            $rollNo      = (string)($stuFs['rollNo']     ?? $stuFs['RollNo']     ?? '');
+            $fatherName  = (string)($stuFs['fatherName'] ?? $stuFs['FatherName'] ?? '');
+        } else {
+            $studentPath = $this->_class_path($classKey, $sectionKey) . "/Students/{$studentId}";
+            $stuRtdb = $this->firebase->get($studentPath);
+            if (is_array($stuRtdb)) {
+                $studentName = (string)($stuRtdb['Name']       ?? '');
+                $rollNo      = (string)($stuRtdb['RollNo']     ?? '');
+                $fatherName  = (string)($stuRtdb['FatherName'] ?? '');
+            }
+        }
+        if ($studentName === '') {
             $this->json_error('Student not found.', 404);
         }
 
         $flagId = $this->_generate_flag_id();
-        $now    = time() * 1000;
+        $nowMs  = (int) round(microtime(true) * 1000);
+        $nowIso = date('c', (int) ($nowMs / 1000));
 
         $flagData = [
-            'type'        => $type,
-            'severity'    => $severity,
-            'message'     => $message,
-            'subject'     => $subject,
-            'teacherId'   => $this->admin_id,
-            'teacherName' => $this->admin_name ?? $this->admin_id,
-            'createdAt'   => $now,
-            'status'      => 'Active',
+            'flagId'        => $flagId,
+            'schoolId'      => $this->school_id,
+            'schoolCode'    => $this->school_code ?? $this->school_id,
+            'session'       => $this->session_year,
+            'studentId'     => $studentId,
+            'studentName'   => $studentName,
+            'rollNo'        => $rollNo,
+            'fatherName'    => $fatherName,
+            'className'     => $classKey,
+            'section'       => $sectionKey,
+            'type'          => strtolower($type),
+            'severity'      => strtolower($severity),
+            'status'        => 'active',
+            'message'       => $message,
+            'subject'       => $subject,
+            'teacherId'     => $this->admin_id,
+            'teacherName'   => $this->admin_name ?? $this->admin_id,
+            'createdAtMs'   => $nowMs,
+            'createdAt'     => $nowIso,
+            'updatedAt'     => $nowIso,
+            'createdByRole' => 'admin',
+            'resolvedAt'    => null,
+            'resolvedAtMs'  => null,
+            'resolvedBy'    => null,
+            'deletedAtMs'   => null,
+            'deletedBy'     => null,
+            'hwId'          => null,
         ];
 
-        $flagPath = $this->_class_path($classKey, $sectionKey) . "/RedFlags/{$studentId}/{$flagId}";
-        $this->firebase->set($flagPath, $flagData);
+        $ok = $this->fs->set('studentFlags', $this->fs->docId($flagId), $flagData);
+        if (!$ok) {
+            $this->json_error('Failed to create flag.', 500);
+        }
 
-        log_audit('Red Flags', 'create_flag', $flagId, "Created {$severity} {$type} flag for student {$studentId}");
+        log_audit('Red Flags', 'create_flag', $flagId,
+            "Created {$severity} {$type} flag for student {$studentId}");
 
         $this->json_success([
             'message' => 'Flag created successfully.',
@@ -557,28 +693,47 @@ class Red_flags extends MY_Controller
     }
 
     /**
-     * POST — Delete a flag.
+     * POST — Soft-delete a flag (sets status='deleted'; admin only).
+     *
+     * Soft delete preserves the audit trail and matches the canonical
+     * mobile-side delete path. Hard delete is intentionally not exposed
+     * here — admins who genuinely need to purge can do so via Firestore
+     * console (rules still allow `delete: if isAdmin()`).
+     *
+     * Inputs: flag_id (required); other params kept for backward compatibility.
      */
     public function delete_flag()
     {
         $this->_require_role(self::MANAGE_ROLES, 'red_flags_delete');
 
-        $classKey   = $this->safe_path_segment($this->input->post('class_key') ?? '', 'class_key');
-        $sectionKey = $this->safe_path_segment($this->input->post('section_key') ?? '', 'section_key');
-        $studentId  = $this->safe_path_segment($this->input->post('student_id') ?? '', 'student_id');
-        $flagId     = $this->safe_path_segment($this->input->post('flag_id') ?? '', 'flag_id');
+        $flagId    = $this->safe_path_segment($this->input->post('flag_id') ?? '', 'flag_id');
+        $studentId = trim($this->input->post('student_id') ?? '');
+        $docId     = $this->fs->docId($flagId);
 
-        $path = $this->_class_path($classKey, $sectionKey) . "/RedFlags/{$studentId}/{$flagId}";
-
-        // Verify exists
-        $existing = $this->firebase->get($path);
+        $existing = $this->fs->get('studentFlags', $docId);
         if (!is_array($existing)) {
             $this->json_error('Flag not found.', 404);
         }
 
-        $this->firebase->delete($path);
+        if (strtolower((string)($existing['status'] ?? '')) === 'deleted') {
+            $this->json_error('Flag is already deleted.', 400);
+        }
 
-        log_audit('Red Flags', 'delete_flag', $flagId, "Deleted flag for student {$studentId}");
+        $nowMs  = (int) round(microtime(true) * 1000);
+        $nowIso = date('c', (int) ($nowMs / 1000));
+
+        $ok = $this->fs->update('studentFlags', $docId, [
+            'status'      => 'deleted',
+            'deletedAtMs' => $nowMs,
+            'deletedBy'   => $this->admin_id,
+            'updatedAt'   => $nowIso,
+        ]);
+        if (!$ok) {
+            $this->json_error('Failed to delete flag.', 500);
+        }
+
+        log_audit('Red Flags', 'delete_flag', $flagId,
+            "Soft-deleted flag for student " . ($studentId ?: ($existing['studentId'] ?? '?')));
 
         $this->json_success(['message' => 'Flag deleted successfully.']);
     }
@@ -586,7 +741,8 @@ class Red_flags extends MY_Controller
     /**
      * POST — Bulk resolve multiple flags.
      *
-     * Expects POST body: flags[] = array of { class_key, section_key, student_id, flag_id }
+     * Expects POST body: flags[] = array of { flag_id, ... } — only flag_id
+     * is required now; class_key/section_key/student_id accepted but ignored.
      */
     public function bulk_resolve()
     {
@@ -601,50 +757,44 @@ class Red_flags extends MY_Controller
             $this->json_error('Maximum 100 flags can be resolved at once.');
         }
 
-        $now      = time() * 1000;
+        $nowMs    = (int) round(microtime(true) * 1000);
+        $nowIso   = date('c', (int) ($nowMs / 1000));
         $resolved = 0;
         $errors   = [];
 
         foreach ($flags as $i => $f) {
             if (!is_array($f)) continue;
 
-            $ck  = trim($f['class_key'] ?? '');
-            $sk  = trim($f['section_key'] ?? '');
-            $sid = trim($f['student_id'] ?? '');
             $fid = trim($f['flag_id'] ?? '');
-
-            if ($ck === '' || $sk === '' || $sid === '' || $fid === '') {
-                $errors[] = "Item {$i}: missing required fields.";
+            if ($fid === '') {
+                $errors[] = "Item {$i}: missing flag_id.";
                 continue;
             }
 
-            // Validate path safety
-            if (!preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $ck)
-                || !preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $sk)
-                || !preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $sid)
-                || !preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $fid)) {
-                $errors[] = "Item {$i}: invalid characters.";
+            // Reuse the same path-safety regex for the flag id
+            if (!preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $fid)) {
+                $errors[] = "Item {$i}: invalid characters in flag_id.";
                 continue;
             }
 
-            $path = $this->_class_path($ck, $sk) . "/RedFlags/{$sid}/{$fid}";
-            $existing = $this->firebase->get($path);
-
+            $docId    = $this->fs->docId($fid);
+            $existing = $this->fs->get('studentFlags', $docId);
             if (!is_array($existing)) {
                 $errors[] = "Item {$i}: flag not found.";
                 continue;
             }
-
-            if (($existing['status'] ?? '') === 'Resolved') {
-                continue; // Already resolved, skip silently
+            if (strtolower((string)($existing['status'] ?? '')) === 'resolved') {
+                continue; // already resolved, skip silently
             }
 
-            $this->firebase->update($path, [
-                'status'     => 'Resolved',
-                'resolvedAt' => $now,
-                'resolvedBy' => $this->admin_id,
+            $ok = $this->fs->update('studentFlags', $docId, [
+                'status'       => 'resolved',
+                'resolvedAtMs' => $nowMs,
+                'resolvedAt'   => $nowIso,
+                'resolvedBy'   => $this->admin_id,
+                'updatedAt'    => $nowIso,
             ]);
-            $resolved++;
+            if ($ok) $resolved++;
         }
 
         log_audit('Red Flags', 'bulk_resolve', '', "Bulk resolved {$resolved} flags");
@@ -777,8 +927,7 @@ class Red_flags extends MY_Controller
     /**
      * GET — Single flag detail with full student info.
      *
-     * Finds the flag across all classes (since the caller may not know the
-     * class/section). Falls back to scanning _collect_all_flags.
+     * Direct Firestore document fetch by {schoolId}_{flagId}.
      */
     public function get_flag_detail(string $flagId = '')
     {
@@ -789,19 +938,48 @@ class Red_flags extends MY_Controller
         }
 
         $flagId = $this->safe_path_segment($flagId, 'flagId');
-        $allFlags = $this->_collect_all_flags();
+        $f      = $this->fs->getEntity('studentFlags', $flagId);
 
-        $found = null;
-        foreach ($allFlags as $f) {
-            if ($f['flagId'] === $flagId) {
-                $found = $f;
-                break;
-            }
-        }
-
-        if ($found === null) {
+        if (!is_array($f)) {
             $this->json_error('Flag not found.', 404);
         }
+
+        // Same-school guard (defense in depth — the rules already enforce it
+        // for client reads, but PHP uses a service account so check here).
+        if (($f['schoolId'] ?? '') !== $this->school_id
+            && ($f['schoolCode'] ?? '') !== $this->school_id) {
+            $this->json_error('Flag not found.', 404);
+        }
+
+        // Teacher RBAC
+        $classKey   = (string)($f['className'] ?? '');
+        $sectionKey = (string)($f['section']   ?? '');
+        if (!$this->_teacher_can_access($classKey, $sectionKey)) {
+            $this->json_error('Access denied for this flag.', 403);
+        }
+
+        $found = [
+            'flagId'      => $f['flagId']      ?? $flagId,
+            'studentId'   => $f['studentId']   ?? '',
+            'studentName' => $f['studentName'] ?? ($f['studentId'] ?? ''),
+            'rollNo'      => $f['rollNo']      ?? '',
+            'fatherName'  => $f['fatherName']  ?? '',
+            'classKey'    => $classKey,
+            'sectionKey'  => $sectionKey,
+            'classLabel'  => $classKey !== '' && $sectionKey !== ''
+                ? $classKey . ' / ' . $sectionKey
+                : ($classKey ?: $sectionKey ?: 'Unknown'),
+            'type'        => $this->_display_enum((string)($f['type']     ?? ''), self::ALLOWED_TYPES),
+            'severity'    => $this->_display_enum((string)($f['severity'] ?? 'low'), self::ALLOWED_SEVERITIES),
+            'message'     => $f['message']     ?? '',
+            'subject'     => $f['subject']     ?? '',
+            'teacherId'   => $f['teacherId']   ?? '',
+            'teacherName' => $f['teacherName'] ?? '',
+            'createdAt'   => $f['createdAtMs'] ?? 0,
+            'status'      => $this->_display_enum((string)($f['status']   ?? 'active'), self::ALLOWED_STATUSES),
+            'resolvedAt'  => $f['resolvedAtMs'] ?? null,
+            'resolvedBy'  => $f['resolvedBy']  ?? null,
+        ];
 
         $this->json_success(['flag' => $found]);
     }
@@ -809,8 +987,11 @@ class Red_flags extends MY_Controller
     /**
      * POST — Get students for a specific class/section.
      *
-     * Used by the Create Flag form to populate the student dropdown
-     * independently of existing flags.
+     * Used by the Create Flag form to populate the student dropdown.
+     * Reads from Firestore (canonical) — the previous RTDB read returned
+     * a wrapper layer whose first key was "List", which then leaked into
+     * the dropdown AND caused admin-created flags to be written with
+     * studentId="List" — invisible to every parent and teacher app.
      */
     public function get_students_for_class()
     {
@@ -819,30 +1000,70 @@ class Red_flags extends MY_Controller
         $classKey   = $this->safe_path_segment($this->input->post('class_key') ?? '', 'class_key');
         $sectionKey = $this->safe_path_segment($this->input->post('section_key') ?? '', 'section_key');
 
+        // Normalize prefixes so "Section Section A" can never reach the
+        // teacher-access check or the Firestore query.
+        $classKey   = $this->_normalize_class_key($classKey);
+        $sectionKey = $this->_normalize_section_key($sectionKey);
+
         // Verify teacher access
         if (!$this->_teacher_can_access($classKey, $sectionKey)) {
             $this->json_error('Access denied for this class.', 403);
         }
 
-        $basePath = $this->_class_path($classKey, $sectionKey);
-        $students = $this->firebase->get("{$basePath}/Students");
+        // Firestore students collection: schoolId+className+section+status.
+        // Two field naming conventions exist for legacy reasons — query the
+        // canonical camelCase first, fall back to PascalCase if empty.
+        $docs = $this->fs->schoolWhere('students', [
+            ['className', '==', $classKey],
+            ['section',   '==', $sectionKey],
+            ['status',    '==', 'Active'],
+        ]);
+        if (empty($docs)) {
+            $docs = $this->fs->schoolWhere('students', [
+                ['Class',   '==', $classKey],
+                ['Section', '==', $sectionKey],
+                ['Status',  '==', 'Active'],
+            ]);
+        }
 
         $list = [];
-        if (is_array($students)) {
-            foreach ($students as $sid => $sdata) {
-                if (!is_array($sdata)) continue;
-                $list[] = [
-                    'studentId'  => $sid,
-                    'name'       => $sdata['Name'] ?? $sid,
-                    'rollNo'     => $sdata['RollNo'] ?? '',
-                    'fatherName' => $sdata['FatherName'] ?? '',
-                ];
+        foreach ((array) $docs as $row) {
+            $d = $row['data'] ?? $row;
+            $d = is_array($row) ? ($row['data'] ?? $row) : null;
+            if (!is_array($d)) continue;
+
+            // Resolve canonical bare userId — drives the studentId we
+            // write into the flag doc, which the parent app queries on.
+            // The doc id is `{schoolId}_{userId}` so strip the prefix
+            // when only the doc id is available.
+            $userId = (string)(
+                $d['userId']
+                ?? $d['User Id']
+                ?? $d['User ID']
+                ?? $d['studentId']
+                ?? ''
+            );
+            if ($userId === '' && isset($d['id'])) {
+                $rawId = (string) $d['id'];
+                $prefix = $this->school_id . '_';
+                $userId = (str_starts_with($rawId, $prefix))
+                    ? substr($rawId, strlen($prefix))
+                    : $rawId;
             }
-            // Sort by name
-            usort($list, function ($a, $b) {
-                return strcasecmp($a['name'], $b['name']);
-            });
+            if ($userId === '') continue;
+
+            $list[] = [
+                'studentId'  => $userId,
+                'name'       => (string)($d['name']       ?? $d['Name']       ?? $userId),
+                'rollNo'     => (string)($d['rollNo']     ?? $d['RollNo']     ?? ''),
+                'fatherName' => (string)($d['fatherName'] ?? $d['FatherName'] ?? ''),
+            ];
         }
+
+        // Sort by name for predictable dropdown order.
+        usort($list, function ($a, $b) {
+            return strcasecmp($a['name'], $b['name']);
+        });
 
         $this->json_success(['students' => $list]);
     }
@@ -981,10 +1202,13 @@ class Red_flags extends MY_Controller
     }
 
     /**
-     * Alias — add_flag maps to create_flag.
+     * Alias — add_flag maps to create_flag. Explicit guard here so a
+     * future refactor that inlines logic doesn't accidentally expose
+     * an unguarded entry point; create_flag re-checks as well.
      */
     public function add_flag()
     {
+        $this->_require_role(self::MANAGE_ROLES, 'red_flags_create');
         $this->create_flag();
     }
 }

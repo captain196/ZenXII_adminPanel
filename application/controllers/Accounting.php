@@ -101,6 +101,7 @@ class Accounting extends MY_Controller
             $result = [];
             $prefix = $this->school_id . '_';
             foreach ($docs as $d) {
+                $d = $d['data'] ?? $d;
                 $r = is_array($d['data'] ?? null) ? $d['data'] : $d;
                 $rawId = (string) ($d['id'] ?? '');
                 $code = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
@@ -144,6 +145,7 @@ class Accounting extends MY_Controller
             $result = [];
             $prefix = $this->school_id . '_';
             foreach ($docs as $d) {
+                $d = $d['data'] ?? $d;
                 $r = is_array($d['data'] ?? null) ? $d['data'] : $d;
                 $rawId = (string) ($d['id'] ?? '');
                 $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
@@ -229,6 +231,7 @@ class Accounting extends MY_Controller
             $result = [];
             $prefix = $this->school_id . '_BAL_' . $this->session_year . '_';
             foreach ($docs as $d) {
+                $d = $d['data'] ?? $d;
                 $rawId = (string) ($d['id'] ?? '');
                 if (strpos($rawId, $prefix) !== 0) continue;
                 $code = substr($rawId, strlen($prefix));
@@ -281,6 +284,7 @@ class Accounting extends MY_Controller
             $result = [];
             $prefix = $this->school_id . '_';
             foreach ($docs as $d) {
+                $d = $d['data'] ?? $d;
                 $r = is_array($d['data'] ?? null) ? $d['data'] : $d;
                 $rawId = (string) ($d['id'] ?? '');
                 $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;

@@ -65,6 +65,13 @@
       </div>
       <div class="fm-filter-dates">
         <div class="fm-date-group">
+          <label for="paymentSearch" style="font-size:11px;color:var(--t2,#64748b);">Search</label>
+          <input type="text" id="paymentSearch" class="fm-date-input"
+                 style="min-width:180px;padding:6px 10px;"
+                 placeholder="Student name / ID / order ID"
+                 oninput="filterBySearch()">
+        </div>
+        <div class="fm-date-group">
           <label for="dateFrom">From</label>
           <input type="date" id="dateFrom" class="fm-date-input" onchange="filterByDate()">
         </div>
@@ -442,6 +449,23 @@ document.addEventListener('DOMContentLoaded', function() {
   /* ── Filter by Date ── */
   window.filterByDate = function() {
     loadPayments(currentFilter);
+  };
+
+  /* ── Client-side search across name / student ID / order ID ── */
+  window.filterBySearch = function() {
+    var q = (document.getElementById('paymentSearch').value || '').trim().toLowerCase();
+    var rows = document.querySelectorAll('#paymentsBody tr');
+    var visible = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (q === '') { row.style.display = ''; visible++; continue; }
+      var text = row.textContent.toLowerCase();
+      var match = text.indexOf(q) !== -1;
+      row.style.display = match ? '' : 'none';
+      if (match) visible++;
+    }
+    var empty = document.getElementById('emptyState');
+    if (empty) empty.style.display = (visible === 0 && rows.length > 0) ? 'block' : 'none';
   };
 
   /* ── Show Details Modal ── */

@@ -294,21 +294,91 @@
     white-space: nowrap;
 }
 .rf-table tbody td {
-    padding: 12px 14px; border-bottom: 1px solid var(--rf-border);
+    padding: 14px 16px; border-bottom: 1px solid var(--rf-border);
     color: var(--rf-t2); vertical-align: middle;
+}
+.rf-table tbody tr:nth-child(odd):not(:hover):not(.expanded-row) {
+    background: rgba(255,255,255,.015);
 }
 .rf-table tbody tr { transition: background .12s; }
 .rf-table tbody tr:hover { background: var(--rf-bg3); }
 .rf-table tbody tr.expanded-row { background: var(--rf-bg3); }
-.rf-table tbody tr.sev-high   { background: rgba(220,38,38,.05); border-left: 3px solid var(--rf-red); }
-.rf-table tbody tr.sev-medium { background: rgba(217,119,6,.04); border-left: 3px solid var(--rf-amber); }
-.rf-table tbody tr.sev-low    { border-left: 3px solid transparent; }
-.rf-table tbody tr.sev-high:hover   { background: rgba(220,38,38,.10); }
-.rf-table tbody tr.sev-medium:hover { background: rgba(217,119,6,.08); }
+/* Severity hint: a thin colored left border only — the previous full-row
+   tinted backgrounds made the list look noisy and unprofessional. */
+.rf-table tbody tr.sev-high   { box-shadow: inset 3px 0 0 var(--rf-red); }
+.rf-table tbody tr.sev-medium { box-shadow: inset 3px 0 0 var(--rf-amber); }
+.rf-table tbody tr.sev-low    { box-shadow: inset 3px 0 0 transparent; }
 .rf-table .rf-student-name { font-weight: 600; color: var(--rf-t1); cursor: pointer; }
 .rf-table .rf-student-name:hover { color: var(--rf-primary); }
 .rf-table .rf-msg-preview {
     max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── Polished cells used by Flag Management table ───────────── */
+.rf-stu-cell { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.rf-stu-avatar {
+    width: 40px; height: 40px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 700; font-size: 14px; flex-shrink: 0;
+    font-family: var(--font-m); letter-spacing: .3px;
+    /* Subtle ring + soft shadow give the avatar depth without a heavy border */
+    box-shadow: 0 2px 6px rgba(0,0,0,.12), inset 0 0 0 2px rgba(255,255,255,.18);
+    text-shadow: 0 1px 1px rgba(0,0,0,.18);
+}
+.rf-stu-info { display: flex; flex-direction: column; min-width: 0; }
+.rf-stu-info .rf-student-name { font-size: 13px; line-height: 1.3; }
+.rf-stu-meta {
+    font-size: 11px; color: var(--rf-t4); font-family: var(--font-m);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    margin-top: 2px;
+}
+.rf-class-pill {
+    display: inline-block; padding: 4px 10px; border-radius: 6px;
+    background: var(--rf-bg3); color: var(--rf-t2); font-size: 12px;
+    font-family: var(--font-m); font-weight: 600; white-space: nowrap;
+    border: 1px solid var(--rf-border);
+}
+.rf-teacher-cell {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+    color: var(--rf-t2); white-space: nowrap;
+}
+.rf-teacher-cell i { color: var(--rf-t4); font-size: 11px; }
+.rf-date-cell { display: flex; flex-direction: column; line-height: 1.3; white-space: nowrap; }
+.rf-date-rel { font-size: 12px; font-weight: 600; color: var(--rf-t1); }
+.rf-date-abs { font-size: 10px; color: var(--rf-t4); font-family: var(--font-m); margin-top: 1px; }
+
+/* Action buttons — flat, subtle, equal-sized icon buttons.
+   The previous solid-fill green/red buttons looked loud against a
+   data-dense table; tinted backgrounds keep semantic color but don't
+   shout. They highlight on hover so the affordance stays clear. */
+.rf-action-group { display: inline-flex; gap: 6px; align-items: center; }
+.rf-action-group .rf-btn {
+    padding: 0; width: 30px; height: 30px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 7px; font-size: 12px; box-shadow: none;
+}
+.rf-action-group .rf-btn i { font-size: 12px; margin: 0; }
+.rf-action-group .rf-btn.outline {
+    background: var(--rf-bg3); border: 1px solid var(--rf-border);
+    color: var(--rf-t2);
+}
+.rf-action-group .rf-btn.outline:hover {
+    background: var(--rf-primary-dim); color: var(--rf-primary);
+    border-color: var(--rf-primary);
+}
+.rf-action-group .rf-btn.success {
+    background: var(--rf-green-dim); color: var(--rf-green);
+    border: 1px solid transparent;
+}
+.rf-action-group .rf-btn.success:hover {
+    background: var(--rf-green); color: #fff;
+}
+.rf-action-group .rf-btn.danger {
+    background: var(--rf-red-dim); color: var(--rf-red);
+    border: 1px solid transparent;
+}
+.rf-action-group .rf-btn.danger:hover {
+    background: var(--rf-red); color: #fff;
 }
 
 /* ── Expanded row detail ────────────────────────────────────── */
@@ -444,11 +514,12 @@
 
 /* ── Modal (create flag) ────────────────────────────────────── */
 .rf-modal-bg {
-    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    position: fixed !important;
+    top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
     background: rgba(0,0,0,.55); z-index: 9999;
-    display: none; align-items: center; justify-content: center;
+    display: none !important; align-items: center !important; justify-content: center !important;
 }
-.rf-modal-bg.show { display: flex; }
+.rf-modal-bg.show { display: flex !important; }
 .rf-modal {
     background: var(--rf-bg2); border: 1px solid var(--rf-border);
     border-radius: var(--rf-r); width: 520px; max-width: 95vw; max-height: 85vh;
@@ -487,11 +558,12 @@
 
 /* ── Confirm dialog ─────────────────────────────────────────── */
 .rf-confirm-bg {
-    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    position: fixed !important;
+    top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
     background: rgba(0,0,0,.55); z-index: 10000;
-    display: none; align-items: center; justify-content: center;
+    display: none !important; align-items: center !important; justify-content: center !important;
 }
-.rf-confirm-bg.show { display: flex; }
+.rf-confirm-bg.show { display: flex !important; }
 .rf-confirm-box {
     background: var(--rf-bg2); border: 1px solid var(--rf-border);
     border-radius: var(--rf-r); padding: 24px; width: 380px;
@@ -620,9 +692,6 @@
         </button>
         <button class="rf-tab" data-tab="analytics">
             <i class="fa fa-line-chart"></i> Analytics
-        </button>
-        <button class="rf-tab" data-tab="create">
-            <i class="fa fa-plus-circle"></i> Create Flag
         </button>
     </div>
 
@@ -894,67 +963,10 @@
         </div>
     </div>
 
-    <!-- ═══════════════════════════════════════════════════════════
-         TAB 5: CREATE FLAG
-         ═══════════════════════════════════════════════════════════ -->
-    <div class="rf-tab-panel" id="tab-create">
-        <div class="rf-create-wrap">
-            <div class="rf-create-card">
-                <div class="rf-create-title"><i class="fa fa-flag"></i> Create New Red Flag</div>
-                <form id="rf-tab-create-form" onsubmit="return RF.submitTabCreateFlag(event)">
-                    <div class="rf-form-row">
-                        <div class="rf-form-group">
-                            <label>Class / Section *</label>
-                            <select id="tc-class" required>
-                                <option value="">Select class</option>
-                            </select>
-                        </div>
-                        <div class="rf-form-group">
-                            <label>Student *</label>
-                            <select id="tc-student" required>
-                                <option value="">Select class first</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="rf-form-row">
-                        <div class="rf-form-group">
-                            <label>Type *</label>
-                            <select id="tc-type" required>
-                                <option value="">Select type</option>
-                                <option value="Homework">Homework</option>
-                                <option value="Behavior">Behavior</option>
-                                <option value="Performance">Performance</option>
-                            </select>
-                        </div>
-                        <div class="rf-form-group">
-                            <label>Severity *</label>
-                            <select id="tc-severity" required>
-                                <option value="">Select severity</option>
-                                <option value="Low">Low</option>
-                                <option value="Medium">Medium</option>
-                                <option value="High">High</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="rf-form-group">
-                        <label>Subject</label>
-                        <input type="text" id="tc-subject" placeholder="e.g. Mathematics" maxlength="100">
-                    </div>
-                    <div class="rf-form-group">
-                        <label>Message *</label>
-                        <textarea id="tc-message" rows="4" placeholder="Describe the issue in detail..." required maxlength="1000"></textarea>
-                        <div style="text-align:right;font-size:11px;color:var(--rf-t4);margin-top:4px;font-family:var(--font-m)">
-                            <span id="tc-char-count">0</span> / 1000
-                        </div>
-                    </div>
-                    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px;">
-                        <button type="reset" class="rf-btn outline"><i class="fa fa-eraser"></i> Reset</button>
-                        <button type="submit" class="rf-btn primary" id="tc-submit-btn"><i class="fa fa-plus"></i> Create Flag</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
+    <!-- The dedicated CREATE FLAG tab was removed — the top-right "Create
+         Flag" button (which opens the modal) is the single canonical
+         entry point. Two flows previously did the same thing and confused
+         users; the modal is preferred because it's reachable from any tab. -->
 
 </div>
 </section>
@@ -1040,7 +1052,11 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 
 <script>
-(function() {
+// jQuery is loaded by include/footer.php (after this view is rendered),
+// so the inline IIFE used to throw "$ is not defined" on parse. Defer
+// the boot to window.load — by then jQuery has finished loading and
+// every $() call inside is safe.
+function __rfInitRedFlags() {
     'use strict';
 
     /* ────────────────────────────────────────────────────────────
@@ -1049,6 +1065,14 @@
     var BASE = '<?= base_url("red_flags/") ?>';
     var CSRF_NAME  = '<?= $this->security->get_csrf_token_name() ?>';
     var CSRF_HASH  = '<?= $this->security->get_csrf_hash() ?>';
+    // Server-side role gate; mirrors Red_flags::MANAGE_ROLES on the backend.
+    // Client must NOT trust this — server still enforces — but UI hides
+    // actions the user can't perform (delete in particular).
+    var CAN_MANAGE = <?= in_array(
+        $this->admin_role ?? '',
+        ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal'],
+        true
+    ) ? 'true' : 'false' ?>;
 
     /** XSS-safe text escaper */
     function esc(str) {
@@ -1058,6 +1082,25 @@
         return d.innerHTML;
     }
 
+    /** Ensure "Class " prefix exactly once. Empty / bare-prefix input → "". */
+    function normClass(s) {
+        var v = String(s == null ? '' : s).trim();
+        if (!v) return '';
+        v = v.replace(/^(Class\s+)+/i, '');
+        // Reject bare prefix with no value: input was "Class", "class",
+        // "Class Class", etc. — nothing meaningful to use.
+        if (!v || /^Class\s*$/i.test(v)) return '';
+        return 'Class ' + v;
+    }
+    /** Ensure "Section " prefix exactly once. Empty / bare-prefix input → "". */
+    function normSection(s) {
+        var v = String(s == null ? '' : s).trim();
+        if (!v) return '';
+        v = v.replace(/^(Section\s+)+/i, '');
+        if (!v || /^Section\s*$/i.test(v)) return '';
+        return 'Section ' + v;
+    }
+
     /** Format timestamp (ms or s) to readable date */
     function fmtDate(ts) {
         if (!ts || ts === 0) return '-';
@@ -1065,6 +1108,26 @@
         if (n > 9999999999) n = Math.floor(n / 1000);
         var d = new Date(n * 1000);
         return d.toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' });
+    }
+
+    /** Initials from a person name — falls back to '?' so layout never collapses. */
+    function initialsOf(name) {
+        if (!name) return '?';
+        var parts = String(name).trim().split(/\s+/).slice(0, 2);
+        return parts.map(function (p) { return p.charAt(0).toUpperCase(); }).join('');
+    }
+
+    /** Deterministic vibrant gradient color from a string — avatars stay
+     *  consistent across renders for the same student. Uses a two-stop
+     *  gradient with similar hue for a polished, modern look (the
+     *  previous flat dark fill looked muddy at small sizes). */
+    function colorFor(seed) {
+        var s = String(seed || '');
+        var h = 0;
+        for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+        var hue = h % 360;
+        var hue2 = (hue + 30) % 360;
+        return 'linear-gradient(135deg, hsl(' + hue + ', 65%, 52%), hsl(' + hue2 + ', 70%, 42%))';
     }
 
     /** Format timestamp to relative time */
@@ -1121,6 +1184,9 @@
         allStudents: [],         // populated from flags for search
         currentStudentId: null,
         analyticsLoaded: false,
+        // expandDetailHtml is populated during loadFlags rendering and
+        // consumed by toggleExpand via DataTables row().child().
+        expandDetailHtml: {},
     };
 
     /* ────────────────────────────────────────────────────────────
@@ -1236,27 +1302,29 @@
 
             // Class change in create modal
             $('#cf-class').on('change', function() { RF.loadStudentsForClass($(this).val(), '#cf-student'); });
-
-            // Class change in Tab 5 create form
-            $('#tc-class').on('change', function() { RF.loadStudentsForClass($(this).val(), '#tc-student'); });
-
-            // Character counter for Tab 5 message
-            $('#tc-message').on('input', function() {
-                $('#tc-char-count').text($(this).val().length);
-            });
         },
 
         /* ── Refresh all ── */
         refresh: function() {
-            RF.loadOverview();
-            if ($('#tab-management').hasClass('active')) RF.loadFlags();
-            if (state.analyticsLoaded) { state.analyticsLoaded = false; RF.loadAnalytics(); }
-            toast('Dashboard refreshed', 'info');
+            var calls = [];
+            var p = RF.loadOverview();   if (p) calls.push(p);
+            if ($('#tab-management').hasClass('active')) {
+                p = RF.loadFlags();      if (p) calls.push(p);
+            }
+            if (state.analyticsLoaded) {
+                state.analyticsLoaded = false;
+                p = RF.loadAnalytics();  if (p) calls.push(p);
+            }
+            // Show the toast only after every load settles so the user
+            // doesn't see "refreshed" before the data has actually arrived.
+            $.when.apply($, calls).always(function() {
+                toast('Dashboard refreshed', 'info');
+            });
         },
 
         /* ── Load classes ── */
         loadClasses: function() {
-            ajax('get_classes', null, 'GET').done(function(r) {
+            return ajax('get_classes', null, 'GET').done(function(r) {
                 if (r.status !== 'success') return;
                 state.classes = r.classes || [];
                 var sel = '<option value="">All Classes</option>';
@@ -1269,13 +1337,12 @@
                 }
                 $('#f-class').html(sel);
                 $('#cf-class').html(cfSel);
-                $('#tc-class').html(cfSel);
             });
         },
 
         /* ── Load Overview KPIs ── */
         loadOverview: function() {
-            ajax('get_overview', null, 'GET').done(function(r) {
+            return ajax('get_overview', null, 'GET').done(function(r) {
                 if (r.status !== 'success') return;
                 state.overview = r;
 
@@ -1433,6 +1500,14 @@
         /* ── Recent Flags Timeline ── */
         renderRecentTimeline: function(flags) {
             var el = $('#recent-timeline');
+            // The initial markup uses class="rf-loading-overlay" on this
+            // container (so the spinner glyph rotates). When we replace
+            // the inner HTML, the class stays — and the global CSS
+            //   .rf-loading-overlay i { animation: rf-spin ... }
+            // would then spin EVERY <i> we render (clock, user, badges,
+            // resolve-check). Strip the class so the post-load icons stay
+            // static.
+            el.removeClass('rf-loading-overlay');
             if (!flags || flags.length === 0) {
                 el.html('<div class="rf-empty"><i class="fa fa-flag-o"></i><p>No flags recorded yet.</p></div>');
                 return;
@@ -1472,6 +1547,8 @@
         /* ── Top Flagged Students ── */
         renderTopStudents: function(students) {
             var el = $('#top-students');
+            // Same loading-overlay residue fix as renderRecentTimeline.
+            el.removeClass('rf-loading-overlay');
             if (!students || students.length === 0) {
                 el.html('<div class="rf-empty" style="padding:40px"><i class="fa fa-users"></i><p>No flagged students yet.</p></div>');
                 return;
@@ -1518,7 +1595,7 @@
                 date_to: $('#f-date-to').val() || ''
             };
 
-            ajax('get_flags', data).done(function(r) {
+            return ajax('get_flags', data).done(function(r) {
                 if (r.status !== 'success') { toast('Failed to load flags', 'error'); return; }
                 state.flags = r.flags || [];
                 state.selectedFlags = {};
@@ -1530,6 +1607,13 @@
         },
 
         renderFlagsTable: function(flags) {
+            // Destroy any previous DataTable instance bound to the same id
+            // before we wipe its DOM — otherwise jQuery DataTables throws
+            // "Cannot reinitialise DataTable" on subsequent searches.
+            if ($.fn.DataTable && $.fn.DataTable.isDataTable('#rf-flags-dt')) {
+                $('#rf-flags-dt').DataTable().destroy();
+            }
+
             if (!flags || flags.length === 0) {
                 $('#flags-table-area').html('<div class="rf-empty"><i class="fa fa-flag-o"></i><p>No flags match your filters.</p></div>');
                 $('#rf-bulk-bar').removeClass('show');
@@ -1553,28 +1637,63 @@
                 var rowId = 'row-' + i;
                 var fKey = f.classKey + '|' + f.sectionKey + '|' + f.studentId + '|' + f.flagId;
 
+                // Build a clean class-section pill (e.g. "8th · A") from
+                // the canonical "Class 8th" / "Section A" prefixed values.
+                var clsShort = (f.classKey || '').replace(/^Class\s+/i, '').trim();
+                var secShort = (f.sectionKey || '').replace(/^Section\s+/i, '').trim();
+                var classPill = clsShort && secShort
+                    ? clsShort + ' · ' + secShort
+                    : (clsShort || secShort || (f.classLabel || '—'));
+
+                var avatarColor = colorFor(f.studentId || f.studentName);
+                var metaParts = [];
+                if (f.rollNo)    metaParts.push('Roll ' + f.rollNo);
+                if (f.studentId) metaParts.push(f.studentId);
+                var metaLine = metaParts.join(' · ');
+
                 html += '<tr data-idx="' + i + '" id="' + rowId + '" class="sev-' + sevClass + '">'
                     + '<td><input type="checkbox" class="rf-check rf-flag-check" data-key="' + esc(fKey) + '" onchange="RF.updateBulkCount()"></td>'
-                    + '<td><span class="rf-student-name" onclick="RF.drillDown(\'' + esc(f.studentId) + '\')">' + esc(f.studentName) + '</span>'
-                    + '<div style="font-size:11px;color:var(--rf-t4)">' + esc(f.rollNo ? 'Roll: ' + f.rollNo : '') + '</div></td>'
-                    + '<td style="font-size:12px">' + esc(f.classLabel) + '</td>'
+                    // Student cell — avatar + name + roll/id meta
+                    + '<td>'
+                    +   '<div class="rf-stu-cell">'
+                    +     '<div class="rf-stu-avatar" style="background:' + avatarColor + '">' + esc(initialsOf(f.studentName)) + '</div>'
+                    +     '<div class="rf-stu-info">'
+                    +       '<span class="rf-student-name" onclick="RF.drillDown(\'' + esc(f.studentId) + '\')">' + esc(f.studentName) + '</span>'
+                    +       (metaLine ? '<span class="rf-stu-meta">' + esc(metaLine) + '</span>' : '')
+                    +     '</div>'
+                    +   '</div>'
+                    + '</td>'
+                    + '<td><span class="rf-class-pill">' + esc(classPill) + '</span></td>'
                     + '<td>' + RF.typeBadgeHtml(f.type) + '</td>'
                     + '<td><span class="rf-badge ' + esc(sevClass) + '">' + esc(f.severity) + '</span></td>'
-                    + '<td style="font-size:12px">' + esc(f.teacherName) + '</td>'
-                    + '<td style="font-size:12px;white-space:nowrap">' + fmtDate(f.createdAt) + '</td>'
+                    + '<td><span class="rf-teacher-cell"><i class="fa fa-user-o"></i>' + esc(f.teacherName || '—') + '</span></td>'
+                    // Date cell — relative time on top, absolute date below
+                    + '<td data-order="' + (Number(f.createdAt) || 0) + '">'
+                    +   '<div class="rf-date-cell">'
+                    +     '<span class="rf-date-rel">' + esc(timeAgo(f.createdAt) || '—') + '</span>'
+                    +     '<span class="rf-date-abs">' + esc(fmtDate(f.createdAt)) + '</span>'
+                    +   '</div>'
+                    + '</td>'
                     + '<td><span class="rf-status-badge ' + esc(statusClass) + '">' + esc(f.status) + '</span></td>'
-                    + '<td style="white-space:nowrap">'
-                    + '<button class="rf-btn outline sm" title="Details" onclick="RF.toggleExpand(' + i + ')"><i class="fa fa-eye"></i></button> ';
+                    + '<td>'
+                    +   '<div class="rf-action-group">'
+                    +     '<button class="rf-btn outline sm" title="Details" onclick="RF.toggleExpand(' + i + ')"><i class="fa fa-eye"></i></button>';
 
                 if (f.status === 'Active') {
-                    html += '<button class="rf-btn success sm" title="Resolve" onclick="RF.resolveFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-check"></i></button> ';
+                    html += '<button class="rf-btn success sm" title="Resolve" onclick="RF.resolveFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-check"></i></button>';
                 }
-                html += '<button class="rf-btn danger sm" title="Delete" onclick="RF.deleteFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-trash"></i></button>';
-                html += '</td></tr>';
+                if (CAN_MANAGE) {
+                    html += '<button class="rf-btn danger sm" title="Delete" onclick="RF.deleteFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-trash"></i></button>';
+                }
+                html += '</div></td></tr>';
 
-                // Expandable detail row
-                html += '<tr class="rf-expand-row" id="expand-' + i + '"><td colspan="9">'
-                    + '<div class="rf-expand-detail">'
+                // Build the expand-detail HTML into a separate map (NOT
+                // interleaved into the table). Inline expand rows broke
+                // DataTables — it read each colspan-only row as a malformed
+                // data row and threw "unknown parameter '1' for row 1,
+                // column 1". row().child() is the canonical DataTables
+                // pattern for expandable details.
+                state.expandDetailHtml[i] = '<div class="rf-expand-detail">'
                     + '<div class="rf-detail-item"><label>Student ID</label><span>' + esc(f.studentId) + '</span></div>'
                     + '<div class="rf-detail-item"><label>Father\'s Name</label><span>' + esc(f.fatherName || '-') + '</span></div>'
                     + '<div class="rf-detail-item"><label>Subject</label><span>' + esc(f.subject || '-') + '</span></div>'
@@ -1582,7 +1701,7 @@
                     + '<div class="rf-detail-item"><label>Created</label><span>' + fmtDate(f.createdAt) + '</span></div>'
                     + '<div class="rf-detail-item"><label>Resolved</label><span>' + (f.resolvedAt ? fmtDate(f.resolvedAt) + ' by ' + esc(f.resolvedBy) : '-') + '</span></div>'
                     + '<div class="rf-detail-msg"><label style="margin-bottom:6px">Message</label>' + esc(f.message) + '</div>'
-                    + '</div></td></tr>';
+                    + '</div>';
             }
 
             html += '</tbody></table>';
@@ -1610,9 +1729,24 @@
         },
 
         toggleExpand: function(idx) {
-            var row = $('#expand-' + idx);
-            row.toggleClass('open');
-            $('#row-' + idx).toggleClass('expanded-row');
+            // Use DataTables' row().child() API so the expand panel is
+            // injected outside the DataTables-managed row pool. Inline
+            // expand rows broke DataTables' column-count assertions.
+            var $rowEl = $('#row-' + idx);
+            if (!$rowEl.length) return;
+            var dt = $.fn.DataTable && $.fn.DataTable.isDataTable('#rf-flags-dt')
+                ? $('#rf-flags-dt').DataTable()
+                : null;
+            if (!dt) return;
+            var dtRow = dt.row($rowEl);
+            if (dtRow.child.isShown()) {
+                dtRow.child.hide();
+                $rowEl.removeClass('expanded-row');
+            } else {
+                var html = state.expandDetailHtml[idx] || '<div class="rf-empty">No details</div>';
+                dtRow.child(html, 'rf-expand-child').show();
+                $rowEl.addClass('expanded-row');
+            }
         },
 
         toggleSelectAll: function() {
@@ -1748,7 +1882,9 @@
             // Load student flags
             ajax('get_student_flags/' + encodeURIComponent(studentId), null, 'GET').done(function(r) {
                 if (r.status !== 'success' || !r.student) {
-                    $('#student-card').html('<div class="rf-empty"><i class="fa fa-user-times"></i><p>Student not found or has no flags.</p></div>');
+                    $('#student-card').html('<div class="rf-empty"><i class="fa fa-user-times"></i><p>Student not found.</p></div>');
+                    $('#student-flag-count').text('');
+                    $('#student-flags-list').html('');
                     return;
                 }
 
@@ -1869,7 +2005,7 @@
             $('#analytics-area').show();
             $('#analytics-content').hide();
 
-            ajax('get_trends', null, 'GET').done(function(r) {
+            return ajax('get_trends', null, 'GET').done(function(r) {
                 if (r.status !== 'success') { toast('Failed to load analytics', 'error'); return; }
                 state.analyticsLoaded = true;
                 $('#analytics-area').hide();
@@ -2010,7 +2146,11 @@
             times.sort(function(a, b) { return a - b; });
             var min = times[0];
             var max = times[times.length - 1];
-            var med = times[Math.floor(times.length / 2)];
+            // Correct median for both odd and even lengths.
+            var mid = Math.floor(times.length / 2);
+            var med = (times.length % 2 === 1)
+                ? times[mid]
+                : Math.round(((times[mid - 1] + times[mid]) / 2) * 10) / 10;
             var avg = data.avgResolutionHrs || 0;
 
             // Bucket into ranges
@@ -2069,8 +2209,8 @@
             var section = parts[1];
 
             ajax('get_students_for_class', {
-                class_key: classKey,
-                section_key: 'Section ' + section
+                class_key: normClass(classKey),
+                section_key: normSection(section)
             }).done(function(r) {
                 if (r.status !== 'success') {
                     $(targetSel).html('<option value="">Failed to load</option>');
@@ -2133,8 +2273,8 @@
             btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Creating...');
 
             ajax('create_flag', {
-                class_key: parts[0],
-                section_key: 'Section ' + parts[1],
+                class_key: normClass(parts[0]),
+                section_key: normSection(parts[1]),
                 student_id: $('#cf-student').val(),
                 type: $('#cf-type').val(),
                 severity: $('#cf-severity').val(),
@@ -2143,6 +2283,10 @@
             }).done(function(r) {
                 if (r.status === 'success') {
                     toast('Flag created successfully');
+                    // Reset modal form to clean state before close, so a fast
+                    // re-open never shows stale values.
+                    $('#rf-create-form')[0].reset();
+                    $('#cf-student').html('<option value="">Select class first</option>');
                     RF.closeCreateModal();
                     RF.refresh();
                 } else {
@@ -2151,48 +2295,6 @@
             }).fail(function(xhr) {
                 var msg = 'Network error';
                 try { msg = JSON.parse(xhr.responseText).message || msg; } catch(e) {}
-                toast(msg, 'error');
-            }).always(function() {
-                btn.prop('disabled', false).html('<i class="fa fa-plus"></i> Create Flag');
-            });
-
-            return false;
-        },
-
-        /* ════════════════════════════════════════════════════════
-           TAB 5: CREATE FLAG (IN-TAB FORM)
-           ════════════════════════════════════════════════════════ */
-
-        submitTabCreateFlag: function(e) {
-            e.preventDefault();
-            var classVal = $('#tc-class').val();
-            if (!classVal) { toast('Please select a class', 'error'); return false; }
-
-            var parts = classVal.split('|');
-            var btn = $('#tc-submit-btn');
-            btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Creating...');
-
-            ajax('create_flag', {
-                class_key: parts[0],
-                section_key: 'Section ' + parts[1],
-                student_id: $('#tc-student').val(),
-                type: $('#tc-type').val(),
-                severity: $('#tc-severity').val(),
-                message: $('#tc-message').val(),
-                subject: $('#tc-subject').val()
-            }).done(function(r) {
-                if (r.status === 'success') {
-                    toast('Flag created successfully');
-                    $('#rf-tab-create-form')[0].reset();
-                    $('#tc-student').html('<option value="">Select class first</option>');
-                    $('#tc-char-count').text('0');
-                    RF.loadOverview(); // refresh stats
-                } else {
-                    toast(r.message || 'Failed to create flag', 'error');
-                }
-            }).fail(function(xhr) {
-                var msg = 'Network error';
-                try { msg = JSON.parse(xhr.responseText).message || msg; } catch(ex) {}
                 toast(msg, 'error');
             }).always(function() {
                 btn.prop('disabled', false).html('<i class="fa fa-plus"></i> Create Flag');
@@ -2227,5 +2329,10 @@
         RF.init();
     });
 
-})();
+}
+if (window.jQuery) {
+    __rfInitRedFlags();
+} else {
+    window.addEventListener('load', __rfInitRedFlags);
+}
 </script>

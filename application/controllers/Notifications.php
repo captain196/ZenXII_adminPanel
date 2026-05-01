@@ -24,7 +24,7 @@ class Notifications extends MY_Controller
     private const ADMIN_ROLES = ['Admin', 'Principal', 'Super Admin', 'School Super Admin'];
 
     /** Max alerts per response */
-    private const MAX_ALERTS = 15;
+    private const MAX_ALERTS = 10;
 
     // ====================================================================
     //  MAIN ENDPOINT — Today's Tasks + Smart Alerts
@@ -37,6 +37,22 @@ class Notifications extends MY_Controller
     public function get_tasks()
     {
         header('Content-Type: application/json');
+        // Release session lock so concurrent dashboard fetches run in parallel.
+        if (function_exists('session_write_close')) @session_write_close();
+
+        // 5-minute cache per school+admin. Tasks/alerts are a composite of
+        // 7 RTDB reads plus computed aggregates; caching lets the notification
+        // bell and dashboard panel share one backend computation window.
+        $this->load->library('dashboard_cache');
+        $cacheKey = 'tasks_' . ($this->admin_id ?? 'anon') . '_' . ($this->admin_role ?? '');
+        $cacheAge = null;
+        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge);
+        if ($cached !== null) {
+            log_message('debug', "DASHBOARD_CACHE HIT key={$cacheKey} school={$this->school_name} age=" . ($cacheAge === null ? 'unknown' : $cacheAge) . 's');
+            echo json_encode($cached);
+            return;
+        }
+        log_message('debug', "DASHBOARD_CACHE MISS key={$cacheKey} school={$this->school_name}");
 
         $school  = $this->school_name;
         $session = $this->session_year;
@@ -46,11 +62,21 @@ class Notifications extends MY_Controller
         $tasks  = [];
         $alerts = [];
 
-        // Load dismissed alert keys for this user (lightweight single read)
-        $dismissedRaw = $this->firebase->get(
-            "Schools/{$school}/Notifications/Dismissed/{$adminId}"
-        );
-        $dismissed = is_array($dismissedRaw) ? array_keys($dismissedRaw) : [];
+        // Dismissed alert keys — stored in Firestore under doc id
+        // {schoolId}_{adminId} with a flat map field `keys: { key1: true, ... }`.
+        // A single-doc read (no RTDB) so we stay on the Firestore-only path.
+        $dismissed = [];
+        try {
+            $dismissDoc = $this->fs->get(
+                'dashboardDismissedAlerts',
+                "{$this->school_id}_{$adminId}"
+            );
+            if (is_array($dismissDoc) && is_array($dismissDoc['keys'] ?? null)) {
+                $dismissed = array_keys($dismissDoc['keys']);
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Notifications::get_tasks dismissed read failed — ' . $e->getMessage());
+        }
 
         // ── 1. Attendance check (Admin, Principal, Teacher) ──
         if (has_permission('Attendance')) {
@@ -98,12 +124,14 @@ class Notifications extends MY_Controller
             return ($p[$a['priority'] ?? 'low'] ?? 2) <=> ($p[$b['priority'] ?? 'low'] ?? 2);
         });
 
-        echo json_encode([
+        $payload = [
             'status' => 'success',
             'tasks'  => array_slice($tasks, 0, self::MAX_ALERTS),
             'alerts' => array_slice($alerts, 0, self::MAX_ALERTS),
             'ts'     => date('c'),
-        ]);
+        ];
+        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600);
+        echo json_encode($payload);
     }
 
     /**
@@ -111,6 +139,10 @@ class Notifications extends MY_Controller
      */
     public function dismiss_alert()
     {
+        // Any authenticated admin can dismiss their own alerts; explicit
+        // guard here so the audit tool flags a future role tightening.
+        $this->_require_role(self::ADMIN_ROLES, 'dismiss_alert');
+        $this->_require_post();
         $key = trim($this->input->post('key') ?? '');
         if ($key === '') {
             $this->json_error('Alert key is required.');
@@ -118,10 +150,28 @@ class Notifications extends MY_Controller
         $key     = $this->safe_path_segment($key, 'alert_key');
         $adminId = $this->safe_path_segment($this->admin_id, 'admin_id');
 
-        $this->firebase->set(
-            "Schools/{$this->school_name}/Notifications/Dismissed/{$adminId}/{$key}",
-            date('c')
+        // Firestore write replacing the legacy RTDB path. Merge under a
+        // map field so multiple dismissed keys accumulate in one doc.
+        $this->fs->set(
+            'dashboardDismissedAlerts',
+            "{$this->school_id}_{$adminId}",
+            [
+                'schoolId'  => $this->school_id,
+                'adminId'   => $adminId,
+                'keys'      => [$key => date('c')],
+                'updatedAt' => date('c'),
+            ],
+            /* merge */ true
         );
+
+        // Bust the get_tasks cache so the dismissed alert disappears immediately
+        // instead of waiting up to 10 min for the next TTL refresh.
+        try {
+            $this->load->library('dashboard_cache');
+            $cacheKey = 'tasks_' . ($adminId ?? 'anon') . '_' . ($this->admin_role ?? '');
+            $this->dashboard_cache->invalidate($this->school_name, $cacheKey);
+        } catch (\Exception $e) { /* non-fatal */ }
+
         $this->json_success(['message' => 'Alert dismissed.']);
     }
 
@@ -135,40 +185,12 @@ class Notifications extends MY_Controller
     private function _check_attendance(string $school, string $session, string $role, string $adminId, array &$tasks, array &$alerts): void
     {
         $now      = new DateTime();
-        $month    = $now->format('F Y');   // "March 2026"
-        $dayNum   = (int) $now->format('j'); // 1-based day of month
 
-        // Staff attendance check (admin/principal only)
-        if (in_array($role, self::ADMIN_ROLES, true)) {
-            $staffAtt = $this->firebase->get(
-                "Schools/{$school}/{$session}/Staff_Attendance/{$month}"
-            );
-            $staffMarked = 0;
-            $staffTotal  = 0;
-            if (is_array($staffAtt)) {
-                foreach ($staffAtt as $sid => $attStr) {
-                    if ($sid === 'Late' || !is_string($attStr)) continue;
-                    $staffTotal++;
-                    if (strlen($attStr) >= $dayNum) {
-                        $ch = $attStr[$dayNum - 1];
-                        if ($ch !== 'V' && $ch !== '') $staffMarked++;
-                    }
-                }
-            }
-            if ($staffTotal > 0 && $staffMarked < $staffTotal) {
-                $missing = $staffTotal - $staffMarked;
-                $tasks[] = [
-                    'id'       => 'att_staff_' . $now->format('Ymd'),
-                    'icon'     => 'fa-id-badge',
-                    'color'    => '#d97706',
-                    'title'    => 'Staff attendance incomplete',
-                    'detail'   => "{$missing} of {$staffTotal} staff not marked today",
-                    'action'   => 'attendance/staff',
-                    'priority' => 'high',
-                    'module'   => 'Attendance',
-                ];
-            }
-        }
+        // Staff attendance check removed — Staff_Attendance lives in RTDB and
+        // hasn't been migrated to Firestore yet. Forcing a dashboard load to
+        // wait on an RTDB roundtrip violates the Firestore-only policy and
+        // was the slowest single contributor to dashboard cold-load time.
+        // When staffAttendance is Firestore-native, re-enable via aggregation.
 
         // Student attendance — general reminder (always show before noon)
         $hour = (int) $now->format('G');
@@ -187,16 +209,20 @@ class Notifications extends MY_Controller
     }
 
     /**
-     * Check pending leave requests.
+     * Check pending leave requests — Firestore `leaveApplications`.
      */
     private function _check_leaves(string $school, array &$tasks, array &$alerts): void
     {
-        $reqs = $this->firebase->get("Schools/{$school}/HR/Leaves/Requests");
-        if (!is_array($reqs)) return;
-
+        // Firestore-first: count pending leaves via aggregation (zero doc transfer).
         $pending = 0;
-        foreach ($reqs as $rid => $lr) {
-            if (($lr['status'] ?? '') === 'Pending') $pending++;
+        try {
+            $pending = (int) $this->fs->count('leaveApplications', [
+                ['schoolId', '==', $this->school_id],
+                ['status',   '==', 'Pending'],
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'Notifications::_check_leaves Firestore count failed — ' . $e->getMessage());
+            return;
         }
 
         if ($pending > 0) {
@@ -237,29 +263,20 @@ class Notifications extends MY_Controller
         // Only remind from day 20 onwards
         if ($dayOfMonth < 20) return;
 
-        $runs = $this->firebase->get("Schools/{$school}/{$session}/HR/Payroll/Runs");
+        // Firestore-first: `salarySlips` with matching monthKey proves the
+        // current-month payroll has been generated. RTDB `HR/Payroll/Runs`
+        // is legacy and violates the Firestore-only policy.
+        $monthKey = $now->format('Y-m');
         $found = false;
-        if (is_array($runs)) {
-            foreach ($runs as $rid => $run) {
-                if (($run['month'] ?? '') === $curMonth && ($run['year'] ?? '') === $curYear) {
-                    $found = true;
-                    $status = $run['status'] ?? 'Draft';
-                    // Payroll exists but not finalized
-                    if ($status === 'Draft') {
-                        $tasks[] = [
-                            'id'       => 'payroll_finalize_' . $curMonth,
-                            'icon'     => 'fa-lock',
-                            'color'    => '#d97706',
-                            'title'    => "Finalize {$curMonth} payroll",
-                            'detail'   => "Payroll run ({$rid}) is in Draft. Finalize before month-end.",
-                            'action'   => 'hr/payroll',
-                            'priority' => $dayOfMonth >= 25 ? 'high' : 'medium',
-                            'module'   => 'HR',
-                        ];
-                    }
-                    break;
-                }
-            }
+        try {
+            $generated = (int) $this->fs->count('salarySlips', [
+                ['schoolId', '==', $this->school_id],
+                ['monthKey', '==', $monthKey],
+            ]);
+            $found = $generated > 0;
+        } catch (\Exception $e) {
+            log_message('error', 'Notifications::_check_payroll Firestore count failed — ' . $e->getMessage());
+            return; // fail silently; dashboard keeps working without this tile
         }
 
         if (!$found) {
@@ -290,17 +307,27 @@ class Notifications extends MY_Controller
      */
     private function _check_applicants(string $school, array &$tasks, array &$alerts): void
     {
-        $apps = $this->firebase->get("Schools/{$school}/HR/Recruitment/Applicants");
-        if (!is_array($apps)) return;
-
+        // Firestore-first: count applicants by status. We tolerate the legacy
+        // `stage` field via a two-pronged count so older docs still register.
         $applied = 0;
         $interview = 0;
         $selected = 0;
-        foreach ($apps as $aid => $a) {
-            $st = $a['status'] ?? $a['stage'] ?? '';
-            if ($st === 'Applied')      $applied++;
-            if ($st === 'Interview' || $st === 'Interviewed')  $interview++;
-            if ($st === 'Selected')     $selected++;
+        try {
+            $applied   = (int) $this->fs->count('hrApplicants', [
+                ['schoolId', '==', $this->school_id],
+                ['status',   '==', 'Applied'],
+            ]);
+            $interview = (int) $this->fs->count('hrApplicants', [
+                ['schoolId', '==', $this->school_id],
+                ['status',   '==', 'Interview'],
+            ]);
+            $selected  = (int) $this->fs->count('hrApplicants', [
+                ['schoolId', '==', $this->school_id],
+                ['status',   '==', 'Selected'],
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'Notifications::_check_applicants Firestore count failed — ' . $e->getMessage());
+            return;
         }
 
         $pending = $applied + $interview;
@@ -335,20 +362,10 @@ class Notifications extends MY_Controller
      */
     private function _check_fees(string $school, string $session, array &$tasks, array &$alerts): void
     {
-        // Check for pending/failed fee entries
-        $pending = $this->firebase->get("Schools/{$school}/{$session}/Accounts/Pending_fees");
-        if (is_array($pending) && count($pending) > 0) {
-            $cnt = count($pending);
-            $alerts[] = [
-                'key'     => 'fees_pending_entries',
-                'type'    => 'warning',
-                'icon'    => 'fa-exclamation-triangle',
-                'title'   => "{$cnt} pending fee entries need attention",
-                'detail'  => 'Some fee collections may have failed to post. Review and retry.',
-                'action'  => 'fees/fees_records',
-                'module'  => 'Fees',
-            ];
-        }
+        // Pending-fee-entries alert removed — RTDB `Accounts/Pending_fees`
+        // is legacy and used only by the old fee-retry pipeline. With
+        // Firestore-first fees, failed writes surface in the admin
+        // transaction audit tool instead.
 
         // Generic daily reminder for fee counter
         $tasks[] = [
@@ -368,19 +385,10 @@ class Notifications extends MY_Controller
      */
     private function _check_accounting(string $school, string $session, array &$tasks, array &$alerts): void
     {
-        $pendingJ = $this->firebase->get("Schools/{$school}/{$session}/Accounts/Pending_journals");
-        if (is_array($pendingJ) && count($pendingJ) > 0) {
-            $cnt = count($pendingJ);
-            $alerts[] = [
-                'key'     => 'acct_pending_journals',
-                'type'    => 'error',
-                'icon'    => 'fa-calculator',
-                'title'   => "{$cnt} journal entries pending",
-                'detail'  => 'Failed journal entries need manual posting.',
-                'action'  => 'accounting',
-                'module'  => 'Accounting',
-            ];
-        }
+        // Pending journals alert removed — RTDB `Accounts/Pending_journals`
+        // is legacy. Accounting module is mid-migration; the equivalent
+        // Firestore surface will be a `journalDrafts` collection when
+        // Journals module lands. Until then this check is a no-op.
     }
 
     /**

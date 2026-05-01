@@ -257,7 +257,9 @@ class Payment_intent_listener extends MY_Controller
                 $this->firebase,
                 $this->feesBase,
                 $gateway,
-                $this->admin_id ?? 'SYSTEM'
+                $this->admin_id ?? 'SYSTEM',
+                $this->school_name,
+                $this->session_year
             );
 
             // ── G. Create payment order ──

@@ -1,5 +1,838 @@
-/* .page_container{
-    padding-top: 50px;
-} */
+/* ==========================================================================
+   ADMIN PANEL — GLOBAL DESIGN SYSTEM
+   --------------------------------------------------------------------------
+   Loaded once via include/header.php.
+   Layers on top of existing :root tokens (--gold, --bg, --t1, --r, --ease).
+   Does not rename or override module-specific classes (.ac-*, .cf-*, .nsa-*,
+   .cm-*, .sa-*, .rf-*, .hw-*) — those keep working untouched. New canonical
+   classes (.app-page, .btn-app, .modal-app, .empty-app, .table-app, .card-app,
+   .form-app__*) are opt-in for new pages and migrating views.
+   ========================================================================== */
 
+/* ============================================================
+   1. DESIGN TOKENS
+   Spacing, typography, sizing, z-index. Brand colors come from
+   the existing :root in header.php (--gold, --bg, --t1 ...).
+   ============================================================ */
+:root {
+    /* Spacing scale — 4px base */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-7: 32px;
+    --space-8: 40px;
+    --space-10: 56px;
+    --space-12: 72px;
 
+    /* Type scale */
+    --fs-xs: 11px;
+    --fs-sm: 12px;
+    --fs-base: 13px;
+    --fs-md: 14px;
+    --fs-lg: 16px;
+    --fs-xl: 18px;
+    --fs-2xl: 22px;
+    --fs-3xl: 28px;
+    --fs-4xl: 34px;
+
+    /* Line heights & weights */
+    --lh-tight: 1.25;
+    --lh-normal: 1.5;
+    --lh-relaxed: 1.65;
+    --fw-normal: 400;
+    --fw-medium: 500;
+    --fw-semi: 600;
+    --fw-bold: 700;
+
+    /* Page container */
+    --container-max: 1320px;
+    --container-pad-x: var(--space-6);
+    --container-pad-y: var(--space-6);
+
+    /* Control heights — buttons, inputs, selects */
+    --control-h-sm: 30px;
+    --control-h-md: 36px;
+    --control-h-lg: 44px;
+
+    /* Modal widths */
+    --modal-w-sm: 420px;
+    --modal-w-md: 600px;
+    --modal-w-lg: 880px;
+    --modal-w-xl: 1100px;
+
+    /* Z-index scale */
+    --z-dropdown: 800;
+    --z-sticky: 900;
+    --z-modal: 9000;
+    --z-toast: 9500;
+    --z-tooltip: 9700;
+
+    /* Semantic color aliases over existing brand tokens */
+    --color-brand: var(--gold);
+    --color-brand-2: var(--gold2);
+    --color-brand-3: var(--gold3);
+    --color-success: var(--green);
+    --color-danger: var(--rose);
+    --color-warn: var(--amber);
+    --color-info: var(--blue);
+}
+
+@media (max-width: 767px) {
+    :root {
+        --container-pad-x: var(--space-3);
+        --container-pad-y: var(--space-4);
+    }
+}
+
+/* ============================================================
+   2. PAGE LAYOUT WRAPPER (.app-page)
+   The single canonical wrapper. Replaces .ac-wrap, .cf-wrap,
+   .nsa-wrap, .cm-wrap, .hw-wrap, .rf-wrap, .sis-students-wrap.
+   ============================================================ */
+.app-page {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: var(--container-max);
+    margin: 0 auto;
+    padding: var(--container-pad-y) var(--container-pad-x) var(--space-10);
+    color: var(--t1);
+    font-family: var(--font-b);
+}
+
+.app-page--full {
+    max-width: none;
+}
+
+.app-page--narrow {
+    max-width: 880px;
+}
+
+/* ============================================================
+   3. PAGE HEADER (.app-page-header)
+   Replaces .ac-head, .cf-page-title, .nsa-page-title,
+   .sa-page-head, .cm-header, .hw-page-header, .page-hdr,
+   .rf-header — 8 different patterns → 1 canonical.
+   ============================================================ */
+.app-page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    margin-bottom: var(--space-6);
+    padding-bottom: var(--space-4);
+    border-bottom: 1px solid var(--border);
+}
+
+.app-page-header__lead {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+}
+
+.app-page-header__icon {
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    border-radius: var(--r-sm);
+    background: var(--gold-dim);
+    color: var(--gold);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+}
+
+.app-page-header__text {
+    min-width: 0;
+}
+
+.app-page-header__title {
+    margin: 0;
+    font-family: var(--font-d);
+    font-size: var(--fs-2xl);
+    font-weight: var(--fw-bold);
+    line-height: var(--lh-tight);
+    color: var(--t1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.app-page-header__subtitle {
+    margin: 2px 0 0;
+    font-size: var(--fs-sm);
+    color: var(--t2);
+    line-height: var(--lh-normal);
+}
+
+.app-page-header__actions {
+    display: flex;
+    flex-shrink: 0;
+    gap: var(--space-2);
+    align-items: center;
+}
+
+@media (max-width: 640px) {
+    .app-page-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .app-page-header__title {
+        font-size: var(--fs-xl);
+    }
+
+    .app-page-header__actions {
+        flex-wrap: wrap;
+    }
+
+    .app-page-header__actions .btn-app {
+        flex: 1 1 auto;
+    }
+}
+
+/* ============================================================
+   4. BUTTON SYSTEM (.btn-app)
+   Replaces .ac-btn, .cf-btn, .nsa-btn, .cm-btn, .sa-btn, .hw-btn,
+   .rf-btn variants + Bootstrap's .btn-primary/.btn-danger.
+   Mandatory loading-spinner support: add .is-loading.
+   ============================================================ */
+.btn-app {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: var(--control-h-md);
+    padding: 0 var(--space-4);
+    font-family: var(--font-b);
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semi);
+    line-height: 1;
+    text-decoration: none;
+    white-space: nowrap;
+    border: 1px solid transparent;
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    user-select: none;
+    transition: background var(--ease), border-color var(--ease),
+                color var(--ease), transform var(--ease), box-shadow var(--ease);
+    position: relative;
+}
+
+.btn-app:focus { outline: 0; }
+.btn-app:focus-visible {
+    outline: 2px solid var(--gold-ring);
+    outline-offset: 2px;
+}
+
+.btn-app:active:not([disabled]):not(.is-loading) {
+    transform: translateY(1px);
+}
+
+.btn-app[disabled],
+.btn-app.is-disabled {
+    opacity: .55;
+    pointer-events: none;
+}
+
+.btn-app.is-loading {
+    pointer-events: none;
+}
+
+.btn-app > i {
+    font-size: 1em;
+}
+
+/* Variants */
+.btn-app--primary {
+    background: var(--gold);
+    color: #fff;
+    border-color: var(--gold2);
+}
+.btn-app--primary:hover { background: var(--gold2); color: #fff; }
+
+.btn-app--secondary {
+    background: transparent;
+    color: var(--t1);
+    border-color: var(--brd2);
+}
+.btn-app--secondary:hover {
+    background: var(--gold-dim);
+    border-color: var(--gold);
+    color: var(--t1);
+}
+
+.btn-app--danger {
+    background: var(--rose);
+    color: #fff;
+    border-color: var(--rose);
+}
+.btn-app--danger:hover { background: #c94a5d; color: #fff; }
+
+.btn-app--success {
+    background: var(--green);
+    color: #fff;
+    border-color: var(--green);
+}
+.btn-app--success:hover { background: #126b34; color: #fff; }
+
+.btn-app--ghost {
+    background: transparent;
+    color: var(--t2);
+    border-color: transparent;
+}
+.btn-app--ghost:hover {
+    background: var(--gold-dim);
+    color: var(--t1);
+}
+
+/* Sizes */
+.btn-app--sm {
+    height: var(--control-h-sm);
+    padding: 0 var(--space-3);
+    font-size: var(--fs-sm);
+}
+
+.btn-app--lg {
+    height: var(--control-h-lg);
+    padding: 0 var(--space-5);
+    font-size: var(--fs-lg);
+}
+
+.btn-app--block { width: 100%; }
+.btn-app--icon { padding: 0; width: var(--control-h-md); }
+.btn-app--icon.btn-app--sm { width: var(--control-h-sm); }
+
+/* Loading spinner — render an inline SVG-like ring via CSS */
+.btn-app__spinner {
+    display: none;
+    width: 14px;
+    height: 14px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: btn-app-spin .65s linear infinite;
+}
+
+.btn-app.is-loading .btn-app__spinner { display: inline-block; }
+.btn-app.is-loading .btn-app__label { opacity: .7; }
+.btn-app.is-loading > i:first-child { display: none; }
+
+@keyframes btn-app-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ============================================================
+   5. MODAL SYSTEM (.modal-app)
+   Replaces 21+ ad-hoc patterns. Always centered (flex backdrop).
+   Auto-fixes legacy Bootstrap modals at the bottom of this section.
+   ============================================================ */
+.modal-app__backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-modal);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-4);
+    background: rgba(0, 0, 0, .55);
+    overflow-y: auto;
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+}
+
+.modal-app__backdrop.is-open {
+    display: flex;
+    animation: modal-app-fade .15s ease-out;
+}
+
+.modal-app {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: var(--modal-w-md);
+    max-height: calc(100vh - var(--space-10));
+    display: flex;
+    flex-direction: column;
+    background: var(--card);
+    border: 1px solid var(--brd2);
+    border-radius: var(--r);
+    box-shadow: var(--sh);
+    color: var(--t1);
+    overflow: hidden;
+    animation: modal-app-rise .18s ease-out;
+}
+
+.modal-app--sm { max-width: var(--modal-w-sm); }
+.modal-app--lg { max-width: var(--modal-w-lg); }
+.modal-app--xl { max-width: var(--modal-w-xl); }
+
+@keyframes modal-app-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes modal-app-rise {
+    from { opacity: 0; transform: translateY(-12px) scale(.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.modal-app__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-5);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.modal-app__title {
+    margin: 0;
+    font-family: var(--font-d);
+    font-size: var(--fs-lg);
+    font-weight: var(--fw-semi);
+    color: var(--t1);
+}
+
+.modal-app__close {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: var(--r-sm);
+    color: var(--t2);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    transition: background var(--ease), color var(--ease);
+}
+
+.modal-app__close:hover {
+    background: var(--gold-dim);
+    color: var(--t1);
+}
+
+.modal-app__body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: var(--space-5);
+}
+
+.modal-app__footer {
+    flex-shrink: 0;
+    display: flex;
+    gap: var(--space-2);
+    justify-content: flex-end;
+    padding: var(--space-4) var(--space-5);
+    border-top: 1px solid var(--border);
+    background: rgba(15, 37, 69, .35);
+}
+
+@media (max-width: 600px) {
+    .modal-app__footer {
+        flex-direction: column-reverse;
+    }
+
+    .modal-app__footer .btn-app {
+        width: 100%;
+    }
+}
+
+/* Drop-in fix for legacy Bootstrap 3 modals — center them automatically.
+   Scoped so it does NOT touch .modal-app__backdrop instances. */
+body .modal:not(.modal-app__backdrop).in,
+body .modal:not(.modal-app__backdrop)[style*="display: block"],
+body .modal:not(.modal-app__backdrop).show {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+}
+body .modal:not(.modal-app__backdrop) > .modal-dialog {
+    margin: 0 auto;
+}
+
+/* ============================================================
+   6. EMPTY STATE (.empty-app)
+   Replaces .ac-empty, .nsa-empty-row, .sa-empty, .tbl-empty,
+   .msg-empty — 5 patterns → 1 canonical. Always centered.
+   ============================================================ */
+.empty-app {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: var(--space-3);
+    padding: var(--space-10) var(--space-5);
+    min-height: 240px;
+    color: var(--t2);
+}
+
+.empty-app--compact {
+    min-height: 140px;
+    padding: var(--space-7) var(--space-4);
+}
+
+.empty-app__icon {
+    flex: 0 0 auto;
+    width: 80px;
+    height: 80px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 36px;
+    color: var(--gold);
+    background: var(--gold-dim);
+    border-radius: 50%;
+}
+
+.empty-app--compact .empty-app__icon {
+    width: 56px;
+    height: 56px;
+    font-size: 24px;
+}
+
+.empty-app__title {
+    margin: 0;
+    font-family: var(--font-d);
+    font-size: var(--fs-lg);
+    font-weight: var(--fw-semi);
+    color: var(--t1);
+}
+
+.empty-app__msg {
+    margin: 0;
+    font-size: var(--fs-md);
+    color: var(--t2);
+    max-width: 420px;
+    line-height: var(--lh-normal);
+}
+
+.empty-app__cta {
+    margin-top: var(--space-3);
+}
+
+/* Empty-state inside table cell — auto-stretch the row, keep centered */
+td.empty-app-cell {
+    padding: 0;
+}
+td.empty-app-cell .empty-app {
+    min-height: 200px;
+}
+
+/* ============================================================
+   7. CARDS (.card-app)
+   Standard panel/box used across data dashboards.
+   ============================================================ */
+.card-app {
+    background: var(--card);
+    border: 1px solid var(--brd2);
+    border-radius: var(--r);
+    padding: var(--space-5);
+}
+
+.card-app--flush { padding: 0; }
+
+.card-app__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+    padding-bottom: var(--space-3);
+    border-bottom: 1px solid var(--border);
+}
+
+.card-app__title {
+    margin: 0;
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semi);
+    color: var(--t1);
+}
+
+/* ============================================================
+   8. FORMS (.form-app__*)
+   Consistent inputs, labels, hints. Use anywhere.
+   ============================================================ */
+.form-app__row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin-bottom: var(--space-4);
+}
+
+.form-app__label {
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-semi);
+    color: var(--t1);
+    line-height: var(--lh-normal);
+}
+
+.form-app__label--required::after {
+    content: " *";
+    color: var(--rose);
+}
+
+.form-app__control {
+    box-sizing: border-box;
+    width: 100%;
+    height: var(--control-h-md);
+    padding: 0 var(--space-3);
+    background: var(--bg2);
+    color: var(--t1);
+    border: 1px solid var(--brd2);
+    border-radius: var(--r-sm);
+    font-family: var(--font-b);
+    font-size: var(--fs-md);
+    transition: border-color var(--ease), box-shadow var(--ease);
+}
+
+.form-app__control:focus {
+    outline: 0;
+    border-color: var(--gold);
+    box-shadow: 0 0 0 3px var(--gold-ring);
+}
+
+.form-app__control[disabled],
+.form-app__control[readonly] {
+    background: var(--bg3);
+    color: var(--t3);
+    cursor: not-allowed;
+}
+
+textarea.form-app__control {
+    height: auto;
+    min-height: 96px;
+    padding: var(--space-3);
+    resize: vertical;
+    line-height: var(--lh-normal);
+}
+
+select.form-app__control {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--t2) 50%),
+                      linear-gradient(135deg, var(--t2) 50%, transparent 50%);
+    background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+    background-size: 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: var(--space-7);
+}
+
+.form-app__hint {
+    font-size: var(--fs-xs);
+    color: var(--t3);
+    line-height: var(--lh-normal);
+}
+
+.form-app__error {
+    font-size: var(--fs-xs);
+    color: var(--rose);
+}
+
+.form-app__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--space-4);
+}
+
+/* ============================================================
+   9. TABLES (.table-app)
+   Wrap any table in .table-app-wrap so it scrolls horizontally
+   on narrow viewports without breaking layout.
+   ============================================================ */
+.table-app-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--brd2);
+    border-radius: var(--r);
+    background: var(--card);
+    -webkit-overflow-scrolling: touch;
+}
+
+.table-app {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--fs-md);
+    color: var(--t1);
+}
+
+.table-app thead th {
+    padding: var(--space-3) var(--space-4);
+    background: var(--bg3);
+    color: var(--t3);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semi);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+.table-app tbody td {
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+
+.table-app tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+.table-app tbody tr:hover {
+    background: var(--gold-dim);
+}
+
+.table-app--sm thead th,
+.table-app--sm tbody td {
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--fs-sm);
+}
+
+/* ============================================================
+   10. RESPONSIVE GRID (.row-app)
+   For dashboard-style summary cards, stat tiles, KPI grids.
+   ============================================================ */
+.row-app {
+    display: grid;
+    gap: var(--space-4);
+}
+
+.row-app--cols-2 { grid-template-columns: repeat(2, 1fr); }
+.row-app--cols-3 { grid-template-columns: repeat(3, 1fr); }
+.row-app--cols-4 { grid-template-columns: repeat(4, 1fr); }
+.row-app--auto   { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+
+@media (max-width: 960px) {
+    .row-app--cols-3,
+    .row-app--cols-4 { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 600px) {
+    .row-app--cols-2,
+    .row-app--cols-3,
+    .row-app--cols-4 { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
+   11. UTILITY CLASSES
+   Use sparingly — prefer component classes for repeated patterns.
+   ============================================================ */
+.u-flex { display: flex; }
+.u-flex-col { display: flex; flex-direction: column; }
+.u-items-center { align-items: center; }
+.u-justify-between { justify-content: space-between; }
+.u-justify-end { justify-content: flex-end; }
+.u-flex-wrap { flex-wrap: wrap; }
+.u-gap-1 { gap: var(--space-1); }
+.u-gap-2 { gap: var(--space-2); }
+.u-gap-3 { gap: var(--space-3); }
+.u-gap-4 { gap: var(--space-4); }
+.u-gap-5 { gap: var(--space-5); }
+
+.u-mt-1 { margin-top: var(--space-1); }
+.u-mt-2 { margin-top: var(--space-2); }
+.u-mt-3 { margin-top: var(--space-3); }
+.u-mt-4 { margin-top: var(--space-4); }
+.u-mt-5 { margin-top: var(--space-5); }
+.u-mt-6 { margin-top: var(--space-6); }
+.u-mb-1 { margin-bottom: var(--space-1); }
+.u-mb-2 { margin-bottom: var(--space-2); }
+.u-mb-3 { margin-bottom: var(--space-3); }
+.u-mb-4 { margin-bottom: var(--space-4); }
+.u-mb-5 { margin-bottom: var(--space-5); }
+.u-mb-6 { margin-bottom: var(--space-6); }
+
+.u-text-center { text-align: center; }
+.u-text-right { text-align: right; }
+.u-text-muted { color: var(--t2); }
+.u-text-tertiary { color: var(--t3); }
+.u-text-sm { font-size: var(--fs-sm); }
+.u-text-md { font-size: var(--fs-md); }
+.u-text-lg { font-size: var(--fs-lg); }
+
+.u-truncate {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.u-hide-mobile {}
+.u-show-mobile { display: none !important; }
+@media (max-width: 600px) {
+    .u-hide-mobile { display: none !important; }
+    .u-show-mobile { display: initial !important; }
+}
+
+/* ============================================================
+   12. BADGES & PILLS (.pill-app)
+   Status indicators (Active / Pending / Failed / etc).
+   ============================================================ */
+.pill-app {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 3px var(--space-2);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semi);
+    line-height: 1.4;
+    border-radius: 999px;
+    background: var(--gold-dim);
+    color: var(--gold);
+    border: 1px solid var(--brd2);
+}
+
+.pill-app--success { background: rgba(21, 128, 61, .12); color: var(--green); border-color: rgba(21, 128, 61, .35); }
+.pill-app--danger  { background: rgba(224, 92, 111, .12); color: var(--rose); border-color: rgba(224, 92, 111, .35); }
+.pill-app--warn    { background: rgba(217, 119, 6, .12); color: var(--amber); border-color: rgba(217, 119, 6, .35); }
+.pill-app--info    { background: rgba(74, 181, 227, .12); color: var(--blue); border-color: rgba(74, 181, 227, .35); }
+
+/* ============================================================
+   13. SKELETON LOADER (.skeleton-app)
+   Shimmer placeholder for async-data sections.
+   ============================================================ */
+.skeleton-app {
+    display: block;
+    width: 100%;
+    height: 14px;
+    border-radius: var(--r-sm);
+    background: linear-gradient(90deg, var(--bg2) 0%, var(--bg3) 50%, var(--bg2) 100%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-app--text-lg { height: 22px; }
+.skeleton-app--block   { height: 80px; }
+
+@keyframes skel-shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+/* ============================================================
+   14. PRINT
+   Hide chrome, fit content to paper.
+   ============================================================ */
+@media print {
+    .main-header,
+    .main-sidebar,
+    .main-footer,
+    .app-page-header__actions,
+    .btn-app {
+        display: none !important;
+    }
+    .app-page {
+        max-width: none;
+        padding: 0;
+    }
+    .content-wrapper {
+        margin-left: 0 !important;
+    }
+}

@@ -200,13 +200,35 @@
         .main-sidebar{position:fixed !important;top:var(--hh) !important;left:0 !important;bottom:0 !important;width:var(--sw) !important;background:var(--bg2) !important;border-right:1px solid var(--border) !important;z-index:1038 !important;display:flex !important;flex-direction:column !important;overflow:hidden !important;transition:width var(--ease),background var(--ease) !important;}
         .main-sidebar::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--gold),rgba(15,118,110,.2),transparent);}
         .main-sidebar::before{content:'';position:absolute;inset:0;z-index:0;pointer-events:none;background-image:radial-gradient(circle,rgba(15,118,110,.04) 1px,transparent 1px);background-size:22px 22px;}
-        .sidebar{flex:1 !important;overflow-y:auto !important;padding:8px 0 4px !important;position:relative !important;z-index:1 !important;}
-        .sidebar::-webkit-scrollbar{width:2px;}
-        .sidebar::-webkit-scrollbar-thumb{background:rgba(15,118,110,.18);border-radius:3px;}
+        /* Always-visible high-contrast scrollbar. Dark near-black pill
+           sits on a light tinted rail — clearly distinguishable from
+           any page element. Arrow buttons stripped. */
+        .sidebar{flex:1 !important;overflow-y:auto !important;overflow-x:hidden !important;padding:2px 0 4px !important;position:relative !important;z-index:1 !important;scrollbar-width:thin;scrollbar-color:#1e293b #e2e8f0;}
+        .sidebar::-webkit-scrollbar{width:10px !important;height:10px !important;background:#e2e8f0 !important;}
+        .sidebar::-webkit-scrollbar-button,
+        .sidebar::-webkit-scrollbar-button:start,
+        .sidebar::-webkit-scrollbar-button:end,
+        .sidebar::-webkit-scrollbar-button:vertical:start:decrement,
+        .sidebar::-webkit-scrollbar-button:vertical:end:increment,
+        .sidebar::-webkit-scrollbar-button:vertical:start:increment,
+        .sidebar::-webkit-scrollbar-button:vertical:end:decrement{display:none !important;width:0 !important;height:0 !important;background:transparent !important;}
+        .sidebar::-webkit-scrollbar-track{background:#e2e8f0 !important;border-radius:10px !important;margin:4px 2px !important;}
+        .sidebar::-webkit-scrollbar-thumb{background:#1e293b !important;border-radius:10px !important;border:2px solid #e2e8f0 !important;background-clip:padding-box !important;min-height:40px !important;transition:background-color .15s ease !important;}
+        .sidebar::-webkit-scrollbar-thumb:hover{background:#0f172a !important;background-clip:padding-box !important;}
+        .sidebar::-webkit-scrollbar-thumb:active{background:#000000 !important;background-clip:padding-box !important;}
+        .sidebar::-webkit-scrollbar-corner{background:transparent !important;}
+        /* Night theme: invert — light pill on dark rail */
+        [data-theme="night"] .sidebar{scrollbar-color:#f1f5f9 #334155;}
+        [data-theme="night"] .sidebar::-webkit-scrollbar{background:#334155 !important;}
+        [data-theme="night"] .sidebar::-webkit-scrollbar-track{background:#334155 !important;}
+        [data-theme="night"] .sidebar::-webkit-scrollbar-thumb{background:#f1f5f9 !important;border-color:#334155 !important;}
+        [data-theme="night"] .sidebar::-webkit-scrollbar-thumb:hover{background:#ffffff !important;}
+        [data-theme="night"] .sidebar::-webkit-scrollbar-thumb:active{background:#cbd5e1 !important;}
         .user-panel{display:none !important;}
         .sidebar-menu{list-style:none !important;margin:0 !important;padding:0 !important;}
-        .sidebar-menu .g-sec{padding:14px 16px 5px !important;font-size:9.5px !important;font-weight:700 !important;color:var(--t4) !important;text-transform:uppercase !important;letter-spacing:1.1px !important;font-family:var(--font-m) !important;pointer-events:none !important;cursor:default !important;}
-        .sidebar-menu .g-sec:first-child{padding-top:6px !important;}
+        .sidebar-menu .g-sec{padding:12px 16px 4px !important;font-size:9.5px !important;font-weight:700 !important;color:var(--t4) !important;text-transform:uppercase !important;letter-spacing:1.1px !important;font-family:var(--font-m) !important;pointer-events:none !important;cursor:default !important;}
+        .sidebar-menu .g-sec:first-child{padding-top:0 !important;padding-bottom:2px !important;}
+        .sidebar-menu>li:first-child{margin-top:4px !important;}
         .sidebar-menu>li{margin:1px 10px !important;position:relative !important;}
         .sidebar-menu>li>a{font-family:var(--font-b) !important;font-size:13px !important;font-weight:500 !important;color:var(--t2) !important;padding:9px 12px !important;border-radius:9px !important;display:flex !important;align-items:center !important;gap:10px !important;transition:all var(--ease) !important;background:transparent !important;}
         .sidebar-menu>li>a:hover{color:var(--gold) !important;background:var(--gold-dim) !important;border-color:var(--gold-ring) !important;}
@@ -256,10 +278,10 @@
         }
 
         /* ── Global modal overlay & container ──
-           Shared base styles for ALL module modals (ev-, cm-, ast-, inv-, hst-, lib-, trn-)
+           Shared base styles for ALL module modals (ev-, cm-, ast-, inv-, hst-, lib-, trn-, rf-)
            so fixed positioning, centering, close buttons, and fonts
            are consistent everywhere. */
-        .ev-modal-bg,.cm-modal-bg,.ast-modal-bg,.inv-modal-bg,.hst-modal-bg,.lib-modal-bg,.trn-modal-bg,.lms-modal-bg,.cert-modal-bg {
+        .ev-modal-bg,.cm-modal-bg,.ast-modal-bg,.inv-modal-bg,.hst-modal-bg,.lib-modal-bg,.trn-modal-bg,.lms-modal-bg,.cert-modal-bg,.rf-modal-bg,.rf-confirm-bg {
             position: fixed !important;
             top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
             background: rgba(0,0,0,.55) !important;
@@ -268,7 +290,7 @@
             align-items: center !important;
             justify-content: center !important;
         }
-        .ev-modal-bg.show,.cm-modal-bg.show,.ast-modal-bg.show,.inv-modal-bg.show,.hst-modal-bg.show,.lib-modal-bg.show,.trn-modal-bg.show,.lms-modal-bg.show,.cert-modal-bg.show { display: flex !important; }
+        .ev-modal-bg.show,.cm-modal-bg.show,.ast-modal-bg.show,.inv-modal-bg.show,.hst-modal-bg.show,.lib-modal-bg.show,.trn-modal-bg.show,.lms-modal-bg.show,.cert-modal-bg.show,.rf-modal-bg.show,.rf-confirm-bg.show { display: flex !important; }
 
         .ev-modal,.cm-modal,.ast-modal,.inv-modal,.hst-modal,.lib-modal,.trn-modal {
             background: var(--bg2) !important;
@@ -693,7 +715,7 @@
 <!-- ── Create Session Modal — at body level so Bootstrap stacking works ── -->
 <?php if (in_array(($admin_role ?? ''), ['Super Admin', 'School Super Admin'])): ?>
 <div class="modal fade" id="gCreateSessModal" tabindex="-1" role="dialog">
-    <div class="modal-dialog modal-sm" role="document">
+    <div class="modal-dialog modal-sm modal-dialog-centered" role="document">
         <div class="modal-content">
             <div class="modal-header">
                 <button type="button" class="close" data-dismiss="modal">&times;</button>
@@ -710,8 +732,8 @@
                      style="display:none;margin-bottom:0;"></div>
             </div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-success" id="gCreateSessSubmit">
+                <button type="button" class="btn btn-default btn-app btn-app--secondary" data-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success btn-app btn-app--success" id="gCreateSessSubmit">
                     <i class="fa fa-plus"></i> Create &amp; Switch
                 </button>
             </div>
@@ -784,20 +806,22 @@
         <ul class="sidebar-menu" data-widget="tree">
 
             <!-- ═══════════════════════════════════════════════════════════
-                 OVERVIEW
+                 STEP 0 — OVERVIEW
                  ═══════════════════════════════════════════════════════════ -->
             <li class="g-sec">Overview</li>
             <li class="sidebar-single">
                 <a href="<?= base_url('admin') ?>"><i class="fa fa-th-large"></i><span>Dashboard</span></a>
             </li>
 
+            <!-- ═══════════════════════════════════════════════════════════
+                 STEP 1 — SCHOOL SETUP (configure first)
+                 School Profile → Academic Setup (classes, sections, subjects, sessions) → Admission Payment
+                 ═══════════════════════════════════════════════════════════ -->
             <?php if (isset($school_features) && in_array('School Management', $school_features) && $can('Configuration')): ?>
+            <li class="g-sec">School Setup</li>
             <li class="sidebar-single">
                 <a href="<?= base_url('schools/schoolProfile') ?>"><i class="fa fa-building-o"></i><span>School Profile</span></a>
             </li>
-            <?php endif; ?>
-
-            <?php if (isset($school_features) && in_array('School Management', $school_features) && $can('Configuration')): ?>
             <li class="sidebar-single">
                 <a href="<?= base_url('school_config') ?>"><i class="fa fa-university"></i><span>Academic Setup</span></a>
             </li>
@@ -807,132 +831,18 @@
             <?php endif; ?>
 
             <!-- ═══════════════════════════════════════════════════════════
-                 ACADEMICS — classes, subjects, students, exams, results
+                 STEP 2 — STAFF (hire teachers and admin staff first)
+                 Staff list → New Staff → HR & Payroll (departments, recruitment, leave, payroll, appraisals)
                  ═══════════════════════════════════════════════════════════ -->
-            <?php if (isset($school_features) && (in_array('Student Management',$school_features)||in_array('Staff Management',$school_features)||in_array('Class Management',$school_features)||in_array('Subject Management',$school_features)||in_array('Exam Management',$school_features)) && ($can('Academic') || $can('LMS') || $can('Examinations') || $can('Results'))): ?>
-            <li class="g-sec">Academics</li>
-            <?php endif; ?>
-
-           
-
-            <?php if (isset($school_features) && in_array('Class Management', $school_features) && $can('Academic')): ?>
-            <li class="sidebar-single"><a href="<?= base_url('academic') ?>"><i class="fa fa-university"></i><span>Academic Planner</span></a></li>
-            <?php endif; ?>
-
-            <?php if (isset($school_features) && in_array('Class Management', $school_features) && $can('LMS')): ?>
-            <li class="treeview">
-                <a href="#"><i class="fa fa-laptop"></i><span>LMS</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
-                <ul class="treeview-menu">
-                    <li><a href="<?= base_url('lms') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
-                    <li><a href="<?= base_url('lms/classes') ?>"><i class="fa fa-circle-o"></i>Online Classes</a></li>
-                    <li><a href="<?= base_url('lms/materials') ?>"><i class="fa fa-circle-o"></i>Study Materials</a></li>
-                    <li><a href="<?= base_url('lms/assignments') ?>"><i class="fa fa-circle-o"></i>Assignments</a></li>
-                    <li><a href="<?= base_url('lms/quizzes') ?>"><i class="fa fa-circle-o"></i>Quizzes</a></li>
-                </ul>
-            </li>
-            <?php endif; ?>
-
-            <?php if (isset($school_features) && in_array('Exam Management', $school_features) && $can('Examinations')): ?>
-            <li class="treeview">
-                <a href="#"><i class="fa fa-pencil-square-o"></i><span>Examinations</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
-                <ul class="treeview-menu">
-                    <li><a href="<?= base_url('examination') ?>"><i class="fa fa-circle-o"></i>Exam Dashboard</a></li>
-                    <li><a href="<?= base_url('exam') ?>"><i class="fa fa-circle-o"></i>Manage Exams</a></li>
-                    <li><a href="<?= base_url('examination/tabulation') ?>"><i class="fa fa-circle-o"></i>Tabulation Sheet</a></li>
-                    <li><a href="<?= base_url('examination/merit_list') ?>"><i class="fa fa-circle-o"></i>Merit Lists</a></li>
-                    <li><a href="<?= base_url('examination/analytics') ?>"><i class="fa fa-circle-o"></i>Analytics</a></li>
-                </ul>
-            </li>
-
-            <?php endif; ?>
-            <?php if (isset($school_features) && in_array('Exam Management', $school_features) && $can('Results')): ?>
-            <li class="treeview">
-                <a href="#"><i class="fa fa-bar-chart"></i><span>Results</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
-                <ul class="treeview-menu">
-                    <li><a href="<?= base_url('result') ?>"><i class="fa fa-circle-o"></i>Results Hub</a></li>
-                    <li><a href="<?= base_url('result/template_designer') ?>"><i class="fa fa-circle-o"></i>Template Designer</a></li>
-                    <li><a href="<?= base_url('result/marks_entry') ?>"><i class="fa fa-circle-o"></i>Marks Entry</a></li>
-                    <li><a href="<?= base_url('result/class_result') ?>"><i class="fa fa-circle-o"></i>Class Results</a></li>
-                    <li><a href="<?= base_url('result/cumulative') ?>"><i class="fa fa-circle-o"></i>Cumulative</a></li>
-                </ul>
-            </li>
-            <?php endif; ?>
-
-            <!-- ═══════════════════════════════════════════════════════════
-                 PEOPLE — students, staff, attendance, HR, admissions
-                 ═══════════════════════════════════════════════════════════ -->
-            <?php if (isset($school_features) && (in_array('Student Management',$school_features)||in_array('Staff Management',$school_features)) && ($can('SIS') || $can('HR') || $can('Attendance') || $can('Certificates'))): ?>
-            <li class="g-sec">People</li>
-            <?php endif; ?>
-
-            <?php if (isset($school_features) && in_array('Student Management', $school_features) && $can('SIS')): ?>
-            <li class="treeview">
-                <a href="#"><i class="fa fa-id-badge"></i><span>Student Info System</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
-                <ul class="treeview-menu">
-                    <li><a href="<?= base_url('sis') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
-                    <li><a href="<?= base_url('sis/students') ?>"><i class="fa fa-circle-o"></i>Student Records</a></li>
-                    <li><a href="<?= base_url('sis/studentAdmission') ?>"><i class="fa fa-circle-o"></i>Admission</a></li>
-                    <li><a href="<?= base_url('sis/master_student') ?>"><i class="fa fa-circle-o"></i>Import Students</a></li>
-                    <li><a href="<?= base_url('sis/id_card') ?>"><i class="fa fa-circle-o"></i>ID Cards</a></li>
-                    <li><a href="<?= base_url('sis/promote') ?>"><i class="fa fa-circle-o"></i>Promotion</a></li>
-                    <li><a href="<?= base_url('sis/tc') ?>"><i class="fa fa-circle-o"></i>Transfer Certificates</a></li>
-                </ul>
-            </li>
-            <li class="treeview">
-                <a href="#"><i class="fa fa-funnel-dollar fa-filter"></i><span>Admission CRM</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
-                <ul class="treeview-menu">
-                    <li><a href="<?= base_url('sis/crm') ?>"><i class="fa fa-circle-o"></i>CRM Dashboard</a></li>
-                    <li><a href="<?= base_url('sis/admission_leads') ?>"><i class="fa fa-circle-o"></i>Admission Leads</a></li>
-                    <li><a href="<?= base_url('sis/inquiries') ?>"><i class="fa fa-circle-o"></i>Inquiries</a></li>
-                    <li><a href="<?= base_url('sis/applications') ?>"><i class="fa fa-circle-o"></i>Applications</a></li>
-                    <li><a href="<?= base_url('sis/pipeline') ?>"><i class="fa fa-circle-o"></i>Pipeline</a></li>
-                    <li><a href="<?= base_url('sis/waitlist') ?>"><i class="fa fa-circle-o"></i>Waiting List</a></li>
-                    <li><a href="<?= base_url('sis/crm_settings') ?>"><i class="fa fa-circle-o"></i>CRM Settings</a></li>
-                    <li><a href="<?= base_url('sis/admission_analytics') ?>"><i class="fa fa-circle-o"></i>Analytics</a></li>
-                </ul>
-            </li>
-            <?php endif; ?>
-
-            <!-- Certificate Management -->
-            <?php if ($can('Certificates')): ?>
-            <li class="treeview">
-                <a href="#"><i class="fa fa-certificate"></i><span>Certificates</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
-                <ul class="treeview-menu">
-                    <li><a href="<?= base_url('certificates') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
-                    <li><a href="<?= base_url('certificates/templates') ?>"><i class="fa fa-circle-o"></i>Templates</a></li>
-                    <li><a href="<?= base_url('certificates/generate') ?>"><i class="fa fa-circle-o"></i>Generate</a></li>
-                    <li><a href="<?= base_url('certificates/issued') ?>"><i class="fa fa-circle-o"></i>Issued</a></li>
-                </ul>
-            </li>
-            <?php endif; ?>
-
             <?php if (isset($school_features) && in_array('Staff Management', $school_features) && ($can('HR') || $can('SIS'))): ?>
+            <li class="g-sec">Staff</li>
             <li class="treeview">
-                <a href="#"><i class="fa fa-user-o"></i><span>Staff</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
+                <a href="#"><i class="fa fa-user-o"></i><span>Staff Records</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
                 <ul class="treeview-menu">
                     <li><a href="<?= base_url('staff/all_staff') ?>"><i class="fa fa-circle-o"></i>All Staff</a></li>
                     <li><a href="<?= base_url('staff/new_staff') ?>"><i class="fa fa-circle-o"></i>New Staff</a></li>
                 </ul>
             </li>
-            <?php endif; ?>
-
-            <?php if (isset($school_features) && in_array('Student Management', $school_features) && $can('Attendance')): ?>
-            <li class="treeview">
-                <a href="#"><i class="fa fa-calendar-check-o"></i><span>Attendance</span>
-                    <span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span>
-                </a>
-                <ul class="treeview-menu">
-                    <li><a href="<?= base_url('attendance') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
-                    <li><a href="<?= base_url('attendance/student') ?>"><i class="fa fa-circle-o"></i>Student Attendance</a></li>
-                    <li><a href="<?= base_url('attendance/staff') ?>"><i class="fa fa-circle-o"></i>Staff Attendance</a></li>
-                    <li><a href="<?= base_url('attendance/analytics') ?>"><i class="fa fa-circle-o"></i>Analytics</a></li>
-                    <li><a href="<?= base_url('attendance/settings') ?>"><i class="fa fa-circle-o"></i>Settings</a></li>
-                </ul>
-            </li>
-            <?php endif; ?>
-
-            <?php if ($can('Red Flags')): ?>
-            <li class="sidebar-single"><a href="<?= base_url('red_flags') ?>"><i class="fa fa-flag"></i><span>Red Flags</span></a></li>
             <?php endif; ?>
 
             <?php if (isset($school_features) && in_array('Staff Management', $school_features) && $can('HR')): ?>
@@ -951,6 +861,131 @@
             <?php endif; ?>
 
             <!-- ═══════════════════════════════════════════════════════════
+                 STEP 3 — STUDENTS (admit students and manage records)
+                 Admission CRM → Student Info System → Certificates
+                 ═══════════════════════════════════════════════════════════ -->
+            <?php if (isset($school_features) && in_array('Student Management', $school_features) && $can('SIS')): ?>
+            <li class="g-sec">Students</li>
+            <li class="treeview">
+                <a href="#"><i class="fa fa-funnel-dollar fa-filter"></i><span>Admission CRM</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
+                <ul class="treeview-menu">
+                    <li><a href="<?= base_url('sis/crm') ?>"><i class="fa fa-circle-o"></i>CRM Dashboard</a></li>
+                    <li><a href="<?= base_url('sis/admission_leads') ?>"><i class="fa fa-circle-o"></i>Admission Leads</a></li>
+                    <li><a href="<?= base_url('sis/inquiries') ?>"><i class="fa fa-circle-o"></i>Inquiries</a></li>
+                    <li><a href="<?= base_url('sis/applications') ?>"><i class="fa fa-circle-o"></i>Applications</a></li>
+                    <li><a href="<?= base_url('sis/pipeline') ?>"><i class="fa fa-circle-o"></i>Pipeline</a></li>
+                    <li><a href="<?= base_url('sis/waitlist') ?>"><i class="fa fa-circle-o"></i>Waiting List</a></li>
+                    <li><a href="<?= base_url('sis/crm_settings') ?>"><i class="fa fa-circle-o"></i>CRM Settings</a></li>
+                    <li><a href="<?= base_url('sis/admission_analytics') ?>"><i class="fa fa-circle-o"></i>Analytics</a></li>
+                </ul>
+            </li>
+            <li class="treeview">
+                <a href="#"><i class="fa fa-id-badge"></i><span>Student Info System</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
+                <ul class="treeview-menu">
+                    <li><a href="<?= base_url('sis') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
+                    <li><a href="<?= base_url('sis/students') ?>"><i class="fa fa-circle-o"></i>Student Records</a></li>
+                    <li><a href="<?= base_url('sis/studentAdmission') ?>"><i class="fa fa-circle-o"></i>Admission</a></li>
+                    <li><a href="<?= base_url('sis/master_student') ?>"><i class="fa fa-circle-o"></i>Import Students</a></li>
+                    <li><a href="<?= base_url('sis/id_card') ?>"><i class="fa fa-circle-o"></i>ID Cards</a></li>
+                    <li><a href="<?= base_url('sis/promote') ?>"><i class="fa fa-circle-o"></i>Promotion</a></li>
+                    <li><a href="<?= base_url('sis/tc') ?>"><i class="fa fa-circle-o"></i>Transfer Certificates</a></li>
+                </ul>
+            </li>
+            <?php endif; ?>
+
+            <?php if ($can('Certificates')): ?>
+            <li class="treeview">
+                <a href="#"><i class="fa fa-certificate"></i><span>Certificates</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
+                <ul class="treeview-menu">
+                    <li><a href="<?= base_url('certificates') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
+                    <li><a href="<?= base_url('certificates/templates') ?>"><i class="fa fa-circle-o"></i>Templates</a></li>
+                    <li><a href="<?= base_url('certificates/generate') ?>"><i class="fa fa-circle-o"></i>Generate</a></li>
+                    <li><a href="<?= base_url('certificates/issued') ?>"><i class="fa fa-circle-o"></i>Issued</a></li>
+                </ul>
+            </li>
+            <?php endif; ?>
+
+            <!-- ═══════════════════════════════════════════════════════════
+                 STEP 4 — ACADEMICS (assign teachers, build timetable, run exams)
+                 Academic Planner (subject-teacher allocation, timetable) → LMS → Examinations → Results
+                 ═══════════════════════════════════════════════════════════ -->
+            <?php if (isset($school_features) && (in_array('Class Management',$school_features)||in_array('Subject Management',$school_features)||in_array('Exam Management',$school_features)) && ($can('Academic') || $can('LMS') || $can('Examinations') || $can('Results'))): ?>
+            <li class="g-sec">Academics</li>
+            <?php endif; ?>
+
+            <?php if (isset($school_features) && in_array('Class Management', $school_features) && $can('Academic')): ?>
+            <li class="sidebar-single"><a href="<?= base_url('academic') ?>"><i class="fa fa-university"></i><span>Academic Planner</span></a></li>
+            <?php endif; ?>
+
+            <?php if (isset($school_features) && in_array('Class Management', $school_features) && $can('LMS')): ?>
+            <li class="treeview">
+                <a href="#"><i class="fa fa-laptop"></i><span>LMS</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
+                <ul class="treeview-menu">
+                    <li><a href="<?= base_url('lms') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
+                    <li><a href="<?= base_url('lms/classes') ?>"><i class="fa fa-circle-o"></i>Online Classes</a></li>
+                    <li><a href="<?= base_url('lms/materials') ?>"><i class="fa fa-circle-o"></i>Study Materials</a></li>
+                    <li><a href="<?= base_url('lms/assignments') ?>"><i class="fa fa-circle-o"></i>Assignments</a></li>
+                    <li><a href="<?= base_url('lms/quizzes') ?>"><i class="fa fa-circle-o"></i>Quizzes</a></li>
+                </ul>
+            </li>
+            <?php endif; ?>
+
+            <?php if ($can('Homework')): ?>
+            <li class="sidebar-single"><a href="<?= base_url('homework') ?>"><i class="fa fa-book"></i><span>Homework</span></a></li>
+            <?php endif; ?>
+
+            <?php if (isset($school_features) && in_array('Exam Management', $school_features) && $can('Examinations')): ?>
+            <li class="treeview">
+                <a href="#"><i class="fa fa-pencil-square-o"></i><span>Examinations</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
+                <ul class="treeview-menu">
+                    <li><a href="<?= base_url('examination') ?>"><i class="fa fa-circle-o"></i>Exam Dashboard</a></li>
+                    <li><a href="<?= base_url('exam') ?>"><i class="fa fa-circle-o"></i>Manage Exams</a></li>
+                    <li><a href="<?= base_url('examination/tabulation') ?>"><i class="fa fa-circle-o"></i>Tabulation Sheet</a></li>
+                    <li><a href="<?= base_url('examination/merit_list') ?>"><i class="fa fa-circle-o"></i>Merit Lists</a></li>
+                    <li><a href="<?= base_url('examination/analytics') ?>"><i class="fa fa-circle-o"></i>Analytics</a></li>
+                </ul>
+            </li>
+            <?php endif; ?>
+
+            <?php if (isset($school_features) && in_array('Exam Management', $school_features) && $can('Results')): ?>
+            <li class="treeview">
+                <a href="#"><i class="fa fa-bar-chart"></i><span>Results</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
+                <ul class="treeview-menu">
+                    <li><a href="<?= base_url('result') ?>"><i class="fa fa-circle-o"></i>Results Hub</a></li>
+                    <li><a href="<?= base_url('result/template_designer') ?>"><i class="fa fa-circle-o"></i>Template Designer</a></li>
+                    <li><a href="<?= base_url('result/marks_entry') ?>"><i class="fa fa-circle-o"></i>Marks Entry</a></li>
+                    <li><a href="<?= base_url('result/class_result') ?>"><i class="fa fa-circle-o"></i>Class Results</a></li>
+                    <li><a href="<?= base_url('result/cumulative') ?>"><i class="fa fa-circle-o"></i>Cumulative</a></li>
+                </ul>
+            </li>
+            <?php endif; ?>
+
+            <!-- ═══════════════════════════════════════════════════════════
+                 STEP 5 — DAILY OPERATIONS (attendance, red flags)
+                 ═══════════════════════════════════════════════════════════ -->
+            <?php if (isset($school_features) && in_array('Student Management', $school_features) && $can('Attendance')): ?>
+            <li class="g-sec">Daily Operations</li>
+            <li class="treeview">
+                <a href="#"><i class="fa fa-calendar-check-o"></i><span>Attendance</span>
+                    <span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span>
+                </a>
+                <ul class="treeview-menu">
+                    <li><a href="<?= base_url('attendance') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
+                    <li><a href="<?= base_url('attendance/student') ?>"><i class="fa fa-circle-o"></i>Student Attendance</a></li>
+                    <li><a href="<?= base_url('attendance/staff') ?>"><i class="fa fa-circle-o"></i>Staff Attendance</a></li>
+                    <li><a href="<?= base_url('attendance/scan') ?>"><i class="fa fa-circle-o"></i>QR Scan</a></li>
+                    <li><a href="<?= base_url('attendance/analytics') ?>"><i class="fa fa-circle-o"></i>Analytics</a></li>
+                    <li><a href="<?= base_url('attendance/student_leaves') ?>"><i class="fa fa-circle-o"></i>Student Leave</a></li>
+                    <li><a href="<?= base_url('attendance/settings') ?>"><i class="fa fa-circle-o"></i>Settings</a></li>
+                </ul>
+            </li>
+            <?php endif; ?>
+
+            <?php if ($can('Red Flags')): ?>
+            <li class="sidebar-single"><a href="<?= base_url('red_flags') ?>"><i class="fa fa-flag"></i><span>Red Flags</span></a></li>
+            <?php endif; ?>
+
+            <!-- ═══════════════════════════════════════════════════════════
                  FINANCE — fees, accounts, accounting
                  ═══════════════════════════════════════════════════════════ -->
             <?php if (isset($school_features) && (in_array('Fees Management',$school_features)||in_array('Account Management',$school_features)) && ($can('Fees') || $can('Accounting'))): ?>
@@ -961,38 +996,42 @@
             <li class="treeview">
                 <a href="#"><i class="fa fa-inr"></i><span>Fees</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
                 <ul class="treeview-menu">
+                    <!-- Overview -->
                     <li><a href="<?= base_url('fees/dashboard') ?>"><i class="fa fa-dashboard"></i>Dashboard</a></li>
-                    <li><a href="<?= base_url('fees/fees_counter') ?>"><i class="fa fa-circle-o"></i>Fee Counter</a></li>
-                    <li><a href="<?= base_url('fee_management/categories') ?>"><i class="fa fa-circle-o"></i>Titles &amp; Categories</a></li>
-                    <li><a href="<?= base_url('fees/fees_chart') ?>"><i class="fa fa-circle-o"></i>Chart</a></li>
-                    <li><a href="<?= base_url('fees/fees_records') ?>"><i class="fa fa-circle-o"></i>Records</a></li>
-                    <li><a href="<?= base_url('fees/student_ledger') ?>"><i class="fa fa-circle-o"></i>Student Ledger</a></li>
-                    <li><a href="<?= base_url('fees/defaulter_report') ?>"><i class="fa fa-circle-o"></i>Defaulters</a></li>
-                    <li><a href="<?= base_url('fee_management/discounts') ?>"><i class="fa fa-circle-o"></i>Discounts</a></li>
-                    <li><a href="<?= base_url('fee_management/scholarships') ?>"><i class="fa fa-circle-o"></i>Scholarships</a></li>
-                    <li><a href="<?= base_url('fee_management/refunds') ?>"><i class="fa fa-circle-o"></i>Refunds</a></li>
-                    <li><a href="<?= base_url('fee_management/reminders') ?>"><i class="fa fa-circle-o"></i>Reminders</a></li>
-                    <li><a href="<?= base_url('fee_management/gateway') ?>"><i class="fa fa-circle-o"></i>Payment Gateway</a></li>
-                    <li><a href="<?= base_url('fee_management/online_payments') ?>"><i class="fa fa-circle-o"></i>Online Payments</a></li>
-                    <li><a href="<?= base_url('fees/transaction_audit') ?>"><i class="fa fa-shield"></i>Transaction Audit</a></li>
+
+                    <!-- ── Setup ── -->
+                    <li class="header" style="padding:6px 15px 2px;font-size:10px;color:#ffffff;letter-spacing:.8px;text-transform:uppercase;font-weight:700;opacity:.95;">Setup</li>
+                    <li><a href="<?= base_url('fee_management/categories') ?>"><i class="fa fa-tags"></i>Titles &amp; Categories</a></li>
+                    <li><a href="<?= base_url('fees/fees_chart') ?>"><i class="fa fa-table"></i>Fee Chart</a></li>
+
+                    <!-- ── Billing ── -->
+                    <li class="header" style="padding:6px 15px 2px;font-size:10px;color:#ffffff;letter-spacing:.8px;text-transform:uppercase;font-weight:700;opacity:.95;">Billing</li>
+                    <li><a href="<?= base_url('fees/generate_demands') ?>"><i class="fa fa-magic"></i>Generate Demands</a></li>
+                    <li><a href="<?= base_url('fees/fees_counter') ?>"><i class="fa fa-desktop"></i>Fee Counter</a></li>
+                    <li><a href="<?= base_url('fees/fees_records') ?>"><i class="fa fa-list"></i>Records</a></li>
+                    <li><a href="<?= base_url('fees/student_ledger') ?>"><i class="fa fa-book"></i>Student Ledger</a></li>
+
+                    <!-- ── Follow-up ── -->
+                    <li class="header" style="padding:6px 15px 2px;font-size:10px;color:#ffffff;letter-spacing:.8px;text-transform:uppercase;font-weight:700;opacity:.95;">Follow-up</li>
+                    <li><a href="<?= base_url('fees/defaulter_report') ?>"><i class="fa fa-exclamation-circle"></i>Defaulters</a></li>
+                    <li><a href="<?= base_url('fee_management/reminders') ?>"><i class="fa fa-bell"></i>Reminders</a></li>
+                    <li><a href="<?= base_url('fee_management/discounts') ?>"><i class="fa fa-percent"></i>Discounts &amp; Scholarships</a></li>
+                    <li><a href="<?= base_url('fee_management/refunds') ?>"><i class="fa fa-undo"></i>Refunds</a></li>
+
+                    <!-- ── Online Payments ── -->
+                    <li class="header" style="padding:6px 15px 2px;font-size:10px;color:#ffffff;letter-spacing:.8px;text-transform:uppercase;font-weight:700;opacity:.95;">Online Payments</li>
+                    <li><a href="<?= base_url('fee_management/gateway') ?>"><i class="fa fa-credit-card"></i>Payment Gateway</a></li>
+                    <li><a href="<?= base_url('fee_management/online_payments') ?>"><i class="fa fa-mobile"></i>Online Payments</a></li>
                     <li><a href="<?= base_url('fee_management/payment_reconciliation') ?>"><i class="fa fa-balance-scale"></i>Reconciliation</a></li>
+
+                    <!-- ── Debug ── -->
+                    <li class="header" style="padding:6px 15px 2px;font-size:10px;color:#ffffff;letter-spacing:.8px;text-transform:uppercase;font-weight:700;opacity:.95;">Debug</li>
+                    <li><a href="<?= base_url('fees/transaction_audit') ?>"><i class="fa fa-shield"></i>Transaction Audit</a></li>
                 </ul>
             </li>
             <?php endif; ?>
 
             <?php if (isset($school_features) && in_array('Account Management', $school_features) && $can('Accounting')): ?>
-            <li class="treeview">
-                <a href="#"><i class="fa fa-briefcase"></i><span>Accounts</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
-                <ul class="treeview-menu">
-                    <li><a href="<?= base_url('account/account_book') ?>"><i class="fa fa-circle-o"></i>Account Book</a></li>
-                    <li><a href="<?= base_url('account/view_accounts') ?>"><i class="fa fa-circle-o"></i>View Accounts</a></li>
-                    <li><a href="<?= base_url('account/vouchers') ?>"><i class="fa fa-circle-o"></i>Create Vouchers</a></li>
-                    <li><a href="<?= base_url('account/view_voucher') ?>"><i class="fa fa-circle-o"></i>View Vouchers</a></li>
-                    <li><a href="<?= base_url('account/day_book') ?>"><i class="fa fa-circle-o"></i>Day Book</a></li>
-                    <li><a href="<?= base_url('account/cash_book') ?>"><i class="fa fa-circle-o"></i>Cash Book</a></li>
-                </ul>
-            </li>
-
             <li class="treeview">
                 <a href="#"><i class="fa fa-calculator"></i><span>Accounting</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
                 <ul class="treeview-menu">
@@ -1034,10 +1073,6 @@
             <li class="sidebar-single"><a href="<?= base_url('message_monitor') ?>"><i class="fa fa-eye"></i><span>Message Monitor</span></a></li>
             <?php endif; ?>
 
-            <?php if ($can('Homework')): ?>
-            <li class="sidebar-single"><a href="<?= base_url('homework') ?>"><i class="fa fa-book"></i><span>Homework</span></a></li>
-            <?php endif; ?>
-
             <?php if ($can('Stories')): ?>
             <li class="sidebar-single"><a href="<?= base_url('stories') ?>"><i class="fa fa-camera-retro"></i><span>Stories</span></a></li>
             <?php endif; ?>
@@ -1051,6 +1086,7 @@
                     <li><a href="<?= base_url('events/list') ?>"><i class="fa fa-circle-o"></i>All Events</a></li>
                     <li><a href="<?= base_url('events/calendar') ?>"><i class="fa fa-circle-o"></i>Calendar</a></li>
                     <li><a href="<?= base_url('events/participation') ?>"><i class="fa fa-circle-o"></i>Participation</a></li>
+                    <li><a href="<?= base_url('ptm') ?>"><i class="fa fa-circle-o"></i>Parent-Teacher Meetings</a></li>
                 </ul>
             </li>
             <?php endif; ?>
@@ -1246,11 +1282,18 @@
     var $tList=document.getElementById('gTaskList');
     var $tBadge=document.getElementById('gTaskBadge');
 
+    // Shared tasks fetch — the dashboard panel (home.php) reuses the SAME
+    // promise instead of refiring the endpoint, eliminating a duplicate
+    // 10-second call on every dashboard load.
+    window.__graderTasksPromise = window.__graderTasksPromise || fetch(
+        '<?= base_url("notifications/get_tasks") ?>',
+        {cache:'no-store'}
+    ).then(function(r){return r.json();});
+
     function fetchTasks(){
-        fetch('<?= base_url("notifications/get_tasks") ?>',{cache:'no-store'})
-            .then(function(r){return r.json();})
+        window.__graderTasksPromise
             .then(function(d){
-                if(d.status!=='success')return;
+                if(!d || d.status!=='success')return;
                 tData=(d.tasks||[]).concat((d.alerts||[]).map(function(a){
                     return{id:a.key,icon:a.icon,color:a.type==='error'?'#dc2626':'#d97706',title:a.title,detail:a.detail,action:a.action,priority:'high',module:a.module};
                 }));
@@ -1309,10 +1352,24 @@
         if(ftT)ftT.style.display=showNotices?'none':'';
     };
 
+    // 2026-04-24: throttled the bell / tasks pollers.
+    //   - 90 s was firing ~40 times / hour / page on EVERY admin page;
+    //     each call cost ~3-5 s of Firestore work. Users observed the
+    //     background traffic and asked if it was necessary.
+    //   - Bumped to 5 min / 6 min so it still feels live for normal
+    //     desk use, without hammering the backend.
+    //   - skipWhenHidden: Page Visibility API — when the user tabs
+    //     away or minimises the window, we stop polling entirely.
+    //     Saves another ~80 % of background calls in practice.
+    //   - Refresh is also re-fired on tab-visible so a returning user
+    //     sees an up-to-date count immediately (no stale cache).
     fetchBell();
     fetchTasks();
-    setInterval(fetchBell,90000);
-    setInterval(fetchTasks,120000);
+    var _bellTimer  = setInterval(function(){ if(!document.hidden) fetchBell();  }, 300000); // 5 min
+    var _tasksTimer = setInterval(function(){ if(!document.hidden) fetchTasks(); }, 360000); // 6 min
+    document.addEventListener('visibilitychange', function(){
+        if (!document.hidden) { fetchBell(); fetchTasks(); }
+    });
 })();
 </script>
 

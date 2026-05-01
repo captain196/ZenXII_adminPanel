@@ -37,6 +37,7 @@
     <button class="pr-tab" data-tab="orphans" onclick="prTab('orphans',this)"><i class="fa fa-unlink"></i> Orphans <span id="prOrphanBadge" class="pr-badge">0</span></button>
     <button class="pr-tab" data-tab="duplicates" onclick="prTab('duplicates',this)"><i class="fa fa-clone"></i> Duplicates <span id="prDupBadge" class="pr-badge">0</span></button>
     <button class="pr-tab" data-tab="success" onclick="prTab('success',this)"><i class="fa fa-check-circle"></i> Successful</button>
+    <button class="pr-tab" data-tab="bank" onclick="prTab('bank',this)"><i class="fa fa-upload"></i> Bank Statement</button>
   </div>
 
   <!-- Panels -->
@@ -44,6 +45,32 @@
   <div class="pr-panel" id="panelOrphans"></div>
   <div class="pr-panel" id="panelDuplicates"></div>
   <div class="pr-panel" id="panelSuccess"></div>
+  <div class="pr-panel" id="panelBank">
+    <div class="pr-card">
+      <div class="pr-card-hd">
+        <div><strong>Bank Statement Reconciliation</strong>
+          <div style="font-size:11px;color:var(--t3);margin-top:2px;">
+            Upload a bank-export CSV — we match each row to gateway payments and flag unmatched ones for investigation.
+          </div>
+        </div>
+        <div>
+          <label class="pr-btn" style="cursor:pointer;">
+            <i class="fa fa-upload"></i> Upload CSV
+            <input type="file" id="bankCsv" accept=".csv,text/csv" style="display:none" onchange="handleBankCsv(event)">
+          </label>
+          <button class="pr-btn" onclick="downloadBankTemplate()"><i class="fa fa-download"></i> Template</button>
+        </div>
+      </div>
+      <div class="pr-card-bd">
+        <div style="font-size:12px;color:var(--t3);">
+          Expected columns (any order; header names matched case-insensitively):
+          <code>date, order_id, payment_id, amount, description</code>.
+          Match priority: <b>payment_id</b> → <b>order_id</b> → <b>amount+date</b>.
+        </div>
+      </div>
+    </div>
+    <div id="bankResults" style="margin-top:12px;"></div>
+  </div>
 
 </div>
 </div>
@@ -91,8 +118,115 @@ function prTab(tab,btn){
   document.querySelectorAll('.pr-tab').forEach(function(t){t.classList.remove('active');});
   document.querySelectorAll('.pr-panel').forEach(function(p){p.classList.remove('active');});
   if(btn)btn.classList.add('active');
-  var panelMap={failed:'panelFailed',orphans:'panelOrphans',duplicates:'panelDuplicates',success:'panelSuccess'};
+  var panelMap={failed:'panelFailed',orphans:'panelOrphans',duplicates:'panelDuplicates',success:'panelSuccess',bank:'panelBank'};
   document.getElementById(panelMap[tab]).classList.add('active');
+}
+
+/* ── Bank-statement CSV reconciliation ─────────────────────────── */
+var _reconSuccessful = [];  // cached from loadRecon
+var _reconFailed = [];
+function downloadBankTemplate(){
+  var csv = 'date,order_id,payment_id,amount,description\n'
+          + '17-04-2026,order_ABC123,pay_XYZ789,2800.00,Razorpay collection for STU0001\n';
+  var blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a'); a.href=url; a.download='bank_reconciliation_template.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function parseCsv(text){
+  var lines = text.split(/\r?\n/).filter(function(l){return l.trim() !== '';});
+  if (lines.length < 2) return {headers: [], rows: []};
+  var headers = lines[0].split(',').map(function(h){return h.trim().toLowerCase().replace(/"/g,'');});
+  var rows = [];
+  for (var i = 1; i < lines.length; i++) {
+    // Simple CSV split — doesn't handle quoted commas; ok for bank exports.
+    var cells = lines[i].split(',').map(function(c){return c.trim().replace(/^"|"$/g, '');});
+    var row = {};
+    headers.forEach(function(h, idx){ row[h] = cells[idx] || ''; });
+    rows.push(row);
+  }
+  return {headers: headers, rows: rows};
+}
+
+function matchBankRow(bankRow, pool){
+  var pid = (bankRow.payment_id || bankRow.paymentid || bankRow.txn_id || '').trim();
+  var oid = (bankRow.order_id   || bankRow.orderid   || bankRow.ref_id  || '').trim();
+  var amt = parseFloat(bankRow.amount || 0);
+  var dateStr = (bankRow.date || '').substring(0,10);
+
+  for (var i = 0; i < pool.length; i++) {
+    var p = pool[i];
+    if (pid && p.payment_id && pid === p.payment_id) return {match: p, by: 'payment_id'};
+    if (oid && p.order_id   && oid === p.order_id)   return {match: p, by: 'order_id'};
+  }
+  // Amount + date fallback
+  if (!isNaN(amt) && amt > 0) {
+    for (var j = 0; j < pool.length; j++) {
+      var p2 = pool[j];
+      var pAmt = parseFloat(p2.amount || 0);
+      var pDate = (p2.paid_at || p2.created_at || '').substring(0,10);
+      if (Math.abs(pAmt - amt) < 0.01 && pDate === dateStr) {
+        return {match: p2, by: 'amount+date'};
+      }
+    }
+  }
+  return {match: null, by: ''};
+}
+
+function handleBankCsv(ev){
+  var file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e){
+    var parsed = parseCsv(e.target.result);
+    var results = document.getElementById('bankResults');
+    if (!parsed.rows.length) {
+      results.innerHTML = '<div class="pr-empty" style="color:#dc2626">CSV has no data rows or could not be parsed.</div>';
+      return;
+    }
+    // Match each row against successful + failed payments we already loaded.
+    var pool = _reconSuccessful.concat(_reconFailed);
+    if (!pool.length) {
+      results.innerHTML = '<div class="pr-empty" style="color:#d97706"><i class="fa fa-exclamation-triangle"></i> Load the Successful tab first (click Load) so we have payments to match against.</div>';
+      return;
+    }
+    var matched = 0, unmatched = 0;
+    var rows = parsed.rows.map(function(r){
+      var m = matchBankRow(r, pool);
+      if (m.match) matched++; else unmatched++;
+      return {raw: r, match: m.match, by: m.by};
+    });
+
+    var h = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">'
+          + '<div class="pr-stat"><div class="pr-stat-val">'+parsed.rows.length+'</div><div class="pr-stat-lbl">Rows in CSV</div></div>'
+          + '<div class="pr-stat"><div class="pr-stat-val" style="color:#16a34a">'+matched+'</div><div class="pr-stat-lbl">Matched</div></div>'
+          + '<div class="pr-stat"><div class="pr-stat-val" style="color:#dc2626">'+unmatched+'</div><div class="pr-stat-lbl">Unmatched</div></div>'
+          + '</div>';
+
+    h += '<table style="width:100%;border-collapse:collapse;font-size:12.5px"><thead><tr style="border-bottom:2px solid var(--border)">'
+       + '<th style="text-align:left;padding:8px;color:var(--t3);font-size:11px">Date</th>'
+       + '<th style="text-align:left;padding:8px;color:var(--t3);font-size:11px">Order / Payment ID</th>'
+       + '<th style="text-align:right;padding:8px;color:var(--t3);font-size:11px">Amount</th>'
+       + '<th style="text-align:left;padding:8px;color:var(--t3);font-size:11px">Description</th>'
+       + '<th style="text-align:left;padding:8px;color:var(--t3);font-size:11px">Match</th></tr></thead><tbody>';
+    rows.forEach(function(r){
+      var color = r.match ? '#16a34a' : '#dc2626';
+      var matchCell = r.match
+        ? '<span style="color:#16a34a;font-weight:600;">✓ '+esc(r.match.receipt_key || r.match.order_id || '')+'</span> <span style="font-size:10px;color:var(--t3);">('+esc(r.by)+')</span>'
+        : '<span style="color:#dc2626;font-weight:600;">✗ Unmatched</span>';
+      h += '<tr style="border-bottom:1px solid var(--border);">'
+         + '<td style="padding:8px;">'+esc(r.raw.date || '-')+'</td>'
+         + '<td style="padding:8px;"><code style="font-size:11px">'+esc(r.raw.order_id || r.raw.payment_id || '-')+'</code></td>'
+         + '<td style="padding:8px;text-align:right;font-family:var(--font-m);">'+fmt(r.raw.amount || 0)+'</td>'
+         + '<td style="padding:8px;color:var(--t3);">'+esc(r.raw.description || '-')+'</td>'
+         + '<td style="padding:8px;">'+matchCell+'</td></tr>';
+    });
+    h += '</tbody></table>';
+    results.innerHTML = h;
+  };
+  reader.readAsText(file);
 }
 
 function loadRecon(){
@@ -105,6 +239,9 @@ function loadRecon(){
     renderOrphans(r.orphans||[]);
     renderDuplicates(r.duplicates||[]);
     renderSuccess(r.successful||[]);
+    // Cache for bank-statement CSV matching.
+    _reconSuccessful = r.successful || [];
+    _reconFailed     = r.fees_failed || [];
     document.getElementById('prFailedBadge').textContent=r.fees_failed?r.fees_failed.length:0;
     document.getElementById('prOrphanBadge').textContent=r.orphans?r.orphans.length:0;
     document.getElementById('prDupBadge').textContent=r.duplicates?r.duplicates.length:0;

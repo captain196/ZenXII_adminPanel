@@ -162,22 +162,21 @@
                         <th class="nsa-th-check">
                             <input type="checkbox" id="selectAllStaff" class="nsa-checkbox">
                         </th>
-                        <th class="nsa-th-sno">S.No.</th>
-                        <th class="nsa-th-avatar">Photo</th>
-                        <th class="nsa-sortable" data-col="3">Staff ID <i class="fa fa-sort"></i></th>
-                        <th class="nsa-sortable" data-col="4">Name <i class="fa fa-sort"></i></th>
-                        <th class="nsa-sortable" data-col="5">Position / Role <i class="fa fa-sort"></i></th>
-                        <th class="nsa-sortable" data-col="6">Department <i class="fa fa-sort"></i></th>
+                        <th class="nsa-th-sno">#</th>
+                        <th>Staff</th>
+                        <th class="nsa-sortable" data-col="3">Designation</th>
+                        <th class="nsa-sortable" data-col="4">Department</th>
                         <th>Phone</th>
-                        <th>Email</th>
-                        <th class="nsa-sortable" data-col="9">Joining Date <i class="fa fa-sort"></i></th>
+                        <th>Subjects</th>
+                        <th>Status</th>
+                        <th class="nsa-sortable" data-col="8">Joined</th>
                         <th class="nsa-th-action">Action</th>
                     </tr>
                 </thead>
                 <tbody id="staffTbody">
                     <?php if (empty($staff)): ?>
                     <tr>
-                        <td colspan="11" class="nsa-empty-row"><!-- 11 cols: check, sno, photo, id, name, role, dept, phone, email, joining, action -->
+                        <td colspan="10" class="nsa-empty-row"><!-- 10 cols: check, sno, staff, designation, dept, phone, subjects, status, joined, action -->
                             <i class="fa fa-users-slash"></i>
                             <p>No staff records found.</p>
                             <a href="<?= base_url('staff/new_staff') ?>" class="nsa-btn nsa-btn-primary nsa-btn-sm">
@@ -199,8 +198,19 @@
                         $phone    = htmlspecialchars($s['Phone Number'] ?? '—');
                         $email    = htmlspecialchars($s['Email']        ?? '—');
                         $userId   = $s['User ID'] ?? '';
-                        $joinDate = $s['Joining Date'] ?? $s['joining_date'] ?? '';
-                        $joinDateFmt = $joinDate ? date('d M Y', strtotime($joinDate)) : '—';
+                        // Joining date: actual Firestore field is "Date Of Joining"
+                        // (set by Staff::new_staff). Stored as dd-mm-yyyy (e.g. 07-04-2026)
+                        // — strtotime can't parse that on Windows, so use createFromFormat.
+                        $joinDate = $s['Date Of Joining'] ?? $s['Joining Date'] ?? $s['joining_date'] ?? '';
+                        $joinDateFmt = '—';
+                        if (!empty($joinDate)) {
+                            $dt = DateTime::createFromFormat('d-m-Y', $joinDate)
+                               ?: DateTime::createFromFormat('Y-m-d', $joinDate)
+                               ?: false;
+                            if ($dt instanceof DateTime) {
+                                $joinDateFmt = $dt->format('d M Y');
+                            }
+                        }
 
                         // Role category for avatar dot color
                         $sRolesCheck = $s['staff_roles'] ?? [];
@@ -228,67 +238,78 @@
 
                         <td class="nsa-td-sno"><?= $i++ ?></td>
 
-                        <td class="nsa-td-avatar">
-                            <div class="nsa-avatar-wrap">
-                                <img src="<?= $pic ?>"
-                                     alt="<?= $name ?>"
-                                     class="nsa-avatar"
-                                     onerror="this.src='<?= base_url('tools/dist/img/user2-160x160.jpg') ?>'">
-                                <span class="nsa-avatar-dot <?= $avatarClass ?>"></span>
+                        <!-- Staff: Photo + Name + ID -->
+                        <td>
+                            <div style="display:flex;align-items:center;gap:10px">
+                                <div class="nsa-avatar-wrap">
+                                    <img src="<?= $pic ?>" alt="<?= $name ?>" class="nsa-avatar"
+                                         onerror="this.src='<?= base_url('tools/dist/img/user2-160x160.jpg') ?>'">
+                                    <span class="nsa-avatar-dot <?= $avatarClass ?>"></span>
+                                </div>
+                                <div>
+                                    <strong style="font-size:13px"><?= $name ?></strong>
+                                    <div style="font-size:11px;color:var(--nsa-muted)"><?= $uid ?></div>
+                                </div>
                             </div>
                         </td>
 
-                        <td class="nsa-td-id">
-                            <span class="nsa-id-badge"><?= $uid ?></span>
-                        </td>
-
-                        <td class="nsa-td-name">
-                            <div class="nsa-name-cell">
-                                <strong><?= $name ?></strong>
-                                <span class="nsa-name-sub"><?= $dept ?></span>
-                            </div>
-                        </td>
-
+                        <!-- Designation -->
                         <td>
                             <?php
+                                $designation = htmlspecialchars($s['designation'] ?? $s['Position'] ?? '—');
                                 $sRoles = $s['staff_roles'] ?? [];
                                 $sPrimary = $s['primary_role'] ?? '';
-                                if (!empty($sRoles) && is_array($sRoles)):
-                                    foreach ($sRoles as $sr):
-                                        $rDef = $staff_role_defs[$sr] ?? null;
-                                        $rLabel = $rDef['label'] ?? $sr;
-                                        $isPrimary = ($sr === $sPrimary);
-                                        $catClass = match($rDef['category'] ?? '') {
-                                            'Teaching'       => 'nsa-badge-blue',
-                                            'Administrative' => 'nsa-badge-amber',
-                                            'Non-Teaching'   => 'nsa-badge-green',
-                                            'Support'        => 'nsa-badge-gray',
-                                            default          => 'nsa-badge-gray',
-                                        };
+                                $rDef = !empty($sPrimary) ? ($staff_role_defs[$sPrimary] ?? null) : null;
+                                $catClass = match($rDef['category'] ?? '') {
+                                    'Teaching'       => 'nsa-badge-blue',
+                                    'Administrative' => 'nsa-badge-amber',
+                                    'Non-Teaching'   => 'nsa-badge-green',
+                                    default          => 'nsa-badge-gray',
+                                };
                             ?>
-                                <span class="nsa-role-pill <?= $catClass ?><?= $isPrimary ? ' nsa-role-pill-primary' : '' ?>"
-                                      title="<?= htmlspecialchars($rDef['category'] ?? '') ?>">
-                                    <?= htmlspecialchars($rLabel) ?>
-                                </span>
-                            <?php endforeach; else: ?>
-                                <?= $position ?>
+                            <div style="font-size:12.5px"><?= $designation ?></div>
+                            <?php if ($rDef): ?>
+                            <span class="nsa-role-pill <?= $catClass ?>" style="font-size:10px;margin-top:2px">
+                                <?= htmlspecialchars($rDef['label'] ?? '') ?>
+                            </span>
                             <?php endif; ?>
                         </td>
-                        <td><?= $dept ?></td>
 
+                        <!-- Department -->
+                        <td style="font-size:12.5px"><?= $dept ?></td>
+
+                        <!-- Phone -->
                         <td>
-                            <a href="tel:<?= $phone ?>" class="nsa-phone-link">
-                                <i class="fa fa-phone"></i> <?= $phone ?>
+                            <a href="tel:<?= $phone ?>" class="nsa-phone-link" style="font-size:12px">
+                                <?= $phone ?>
                             </a>
                         </td>
 
-                        <td class="nsa-td-email">
-                            <span title="<?= $email ?>"><?= $email ?></span>
+                        <!-- Teaching Subjects -->
+                        <td>
+                            <?php
+                                $teachSubs = $s['teaching_subjects'] ?? [];
+                                if (is_array($teachSubs) && !empty($teachSubs)):
+                                    foreach ($teachSubs as $ts):
+                            ?>
+                                <span style="display:inline-block;padding:1px 6px;margin:1px;border-radius:4px;background:rgba(15,118,110,.08);color:var(--nsa-teal);font-size:10px;font-weight:600"><?= htmlspecialchars($ts) ?></span>
+                            <?php endforeach; else: ?>
+                                <span style="color:var(--nsa-muted);font-size:11px">—</span>
+                            <?php endif; ?>
                         </td>
 
-                        <td class="nsa-td-date">
-                            <span style="font-size:12.5px;color:var(--nsa-muted);"><?= $joinDateFmt ?></span>
+                        <!-- Status -->
+                        <td>
+                            <?php $status = $s['status'] ?? $s['Status'] ?? 'Active'; ?>
+                            <span class="staff-status-badge" data-staff-status="<?= htmlspecialchars($status) ?>"
+                                  style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;
+                                <?= $status === 'Active' ? 'background:rgba(22,163,74,.1);color:#16a34a' : 'background:rgba(220,38,38,.1);color:#dc2626' ?>">
+                                <?= htmlspecialchars($status) ?>
+                            </span>
                         </td>
+
+                        <!-- Joined -->
+                        <td style="font-size:11px;color:var(--nsa-muted);white-space:nowrap"><?= $joinDateFmt ?></td>
 
                         <td class="nsa-td-action">
                             <div class="nsa-action-group">
@@ -300,6 +321,27 @@
                                    class="nsa-action-btn nsa-action-edit" title="Edit Staff">
                                     <i class="fa fa-pencil"></i>
                                 </a>
+                                <?php if ($status === 'Active'): ?>
+                                <button type="button"
+                                        class="nsa-action-btn staff-status-toggle"
+                                        data-user-id="<?= htmlspecialchars($userId) ?>"
+                                        data-staff-name="<?= htmlspecialchars($s['Name'] ?? $s['name'] ?? $userId) ?>"
+                                        data-target-status="Inactive"
+                                        title="Deactivate Staff"
+                                        style="background:rgba(220,38,38,.08);color:#dc2626;border:none;cursor:pointer">
+                                    <i class="fa fa-ban"></i>
+                                </button>
+                                <?php else: ?>
+                                <button type="button"
+                                        class="nsa-action-btn staff-status-toggle"
+                                        data-user-id="<?= htmlspecialchars($userId) ?>"
+                                        data-staff-name="<?= htmlspecialchars($s['Name'] ?? $s['name'] ?? $userId) ?>"
+                                        data-target-status="Active"
+                                        title="Reactivate Staff"
+                                        style="background:rgba(22,163,74,.08);color:#16a34a;border:none;cursor:pointer">
+                                    <i class="fa fa-check-circle"></i>
+                                </button>
+                                <?php endif; ?>
                             </div>
                         </td>
                     </tr>
@@ -337,6 +379,92 @@
 
 
 <script>
+/* ── Phase 1: Activate / Deactivate staff toggle ──
+ * Phase 1 scope: just flips status in Firestore + repaints the row.
+ * Phase 2 (login enforcement) and Phase 3 (subjectAssignments cleanup) are
+ * deliberately not done yet — users won't be auto-logged-out from teacher app
+ * and existing class assignments stay live until later phases ship.
+ *
+ * Vanilla JS — no jQuery dependency, works regardless of script order.
+ */
+(function() {
+    var STATUS_URL  = '<?= base_url("staff/set_status/") ?>';
+    var CSRF_NAME   = '<?= $this->security->get_csrf_token_name() ?>';
+    var CSRF_VALUE  = '<?= $this->security->get_csrf_hash() ?>';
+
+    var ACTIVE_BADGE_STYLE   = 'padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:rgba(22,163,74,.1);color:#16a34a';
+    var INACTIVE_BADGE_STYLE = 'padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:rgba(220,38,38,.1);color:#dc2626';
+    var DEACT_BTN_STYLE      = 'background:rgba(220,38,38,.08);color:#dc2626;border:none;cursor:pointer';
+    var REACT_BTN_STYLE      = 'background:rgba(22,163,74,.08);color:#16a34a;border:none;cursor:pointer';
+
+    document.addEventListener('click', function(e) {
+        var btn = e.target.closest && e.target.closest('.staff-status-toggle');
+        if (!btn) return;
+        e.preventDefault();
+
+        var userId       = btn.getAttribute('data-user-id');
+        var staffName    = btn.getAttribute('data-staff-name') || userId;
+        var targetStatus = btn.getAttribute('data-target-status');
+
+        var promptMsg = (targetStatus === 'Inactive')
+            ? 'Deactivate ' + staffName + '?\n\nThey will be excluded from active staff lists, payroll batches, and assignment dropdowns.\n\n(Reason — optional, can be left empty)'
+            : 'Reactivate ' + staffName + '?\n\nThey will be added back to active staff lists.';
+
+        var reason = window.prompt(promptMsg, '');
+        if (reason === null) return;
+
+        btn.disabled = true;
+        var originalHtml = btn.innerHTML;
+        btn.innerHTML   = '<i class="fa fa-spinner fa-spin"></i>';
+
+        var body = new URLSearchParams();
+        body.append('status', targetStatus);
+        body.append('reason', reason);
+        body.append(CSRF_NAME, CSRF_VALUE);
+
+        fetch(STATUS_URL + encodeURIComponent(userId), {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body:    body.toString(),
+            credentials: 'same-origin'
+        })
+        .then(function(r) { return r.json().catch(function() { return { status: 'error', message: 'Server returned non-JSON.' }; }); })
+        .then(function(res) {
+            if (!res || res.status !== 'success') {
+                alert((res && res.message) ? res.message : 'Status change failed.');
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+                return;
+            }
+            // Repaint the row in place — no reload
+            var row   = btn.closest('tr');
+            var badge = row && row.querySelector('.staff-status-badge');
+            if (badge) {
+                badge.textContent = targetStatus;
+                badge.setAttribute('style', targetStatus === 'Active' ? ACTIVE_BADGE_STYLE : INACTIVE_BADGE_STYLE);
+                badge.setAttribute('data-staff-status', targetStatus);
+            }
+            if (targetStatus === 'Active') {
+                btn.setAttribute('data-target-status', 'Inactive');
+                btn.setAttribute('title', 'Deactivate Staff');
+                btn.setAttribute('style', DEACT_BTN_STYLE);
+                btn.innerHTML = '<i class="fa fa-ban"></i>';
+            } else {
+                btn.setAttribute('data-target-status', 'Active');
+                btn.setAttribute('title', 'Reactivate Staff');
+                btn.setAttribute('style', REACT_BTN_STYLE);
+                btn.innerHTML = '<i class="fa fa-check-circle"></i>';
+            }
+            btn.disabled = false;
+        })
+        .catch(function(err) {
+            alert('Network error: ' + (err && err.message ? err.message : 'unknown'));
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        });
+    });
+})();
+
 /* ── Migrate Staff Roles (one-shot) ── */
 function migrateStaffRoles() {
     if (!confirm('This will auto-assign role IDs to all staff based on their Position field.\n\nStaff who already have roles will be skipped.\n\nProceed?')) return;

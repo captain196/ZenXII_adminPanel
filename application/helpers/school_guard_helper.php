@@ -33,20 +33,18 @@ if (!function_exists('validate_public_school_id')) {
             exit;
         }
 
-        // Existence check: school must have Config/Profile or exist in System/Schools
+        // Existence check — Firestore-only per the absolute NO-RTDB rule.
+        // The school's canonical record is `schools/{schoolId}`; any school
+        // that's been onboarded since the Firestore migration has it. The
+        // older `Schools/{id}/Config/Profile` and `System/Schools/{id}/profile`
+        // RTDB fallbacks were removed when we tightened the policy.
         $CI =& get_instance();
-        if (!isset($CI->firebase)) {
-            $CI->load->library('firebase');
+        if (!isset($CI->fs)) {
+            $CI->load->library('firestore_service', null, 'fs');
         }
-
-        $profile = $CI->firebase->get("Schools/{$school_id}/Config/Profile");
-        if (is_array($profile) && !empty($profile)) {
-            return $school_id;
-        }
-
-        // Fallback: check System/Schools (onboarded but profile not yet in Config/)
-        $sysProfile = $CI->firebase->get("System/Schools/{$school_id}/profile");
-        if (is_array($sysProfile) && !empty($sysProfile)) {
+        $CI->fs->init($school_id);
+        $schoolDoc = $CI->fs->get('schools', $school_id);
+        if (is_array($schoolDoc) && !empty($schoolDoc)) {
             return $school_id;
         }
 
