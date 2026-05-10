@@ -36,6 +36,29 @@ class Fee_firestore_txn
     /** @var string */ private $session;
     /** @var bool   */ private $ready = false;
 
+    /**
+     * Canonical balance epsilon for the entire fee subsystem.
+     *
+     * IEEE-754 double arithmetic on rupee×paise values introduces
+     * sub-paise noise (e.g. 1500 - 200 - 300 - 1000 - 0 may produce
+     * 4.547e-13 instead of 0). Treat any balance whose magnitude is
+     * within half a paise as zero so a "fully paid" demand never
+     * reads as "partial" due to float noise — and vice versa.
+     *
+     * 0.005 (half-paise) is the value already used implicitly across
+     * FeeCollectionService, Fee_firestore_txn allocation logic,
+     * Fee_refund_service, Fee_summary_reader and Fee_summary_writer.
+     * Stage A hardening (2026-05-10) brought Fee_defaulter_check —
+     * which was using `> 0` directly — into line with the same value.
+     *
+     * Accounting/integrity layers (Fee_integrity_checker,
+     * Operations_accounting) intentionally use a coarser 0.01 epsilon
+     * for ledger-balanced (Dr == Cr) checks; that is a separate
+     * concept from the per-demand balance comparison this constant
+     * governs. Do NOT replace those usages with this constant.
+     */
+    public const BALANCE_EPSILON = 0.005;
+
     private const COL_COUNTERS    = 'feeCounters';
     private const COL_RCPT_INDEX  = 'feeReceiptIndex';
     private const COL_RCPT        = 'feeReceipts';
@@ -701,7 +724,7 @@ class Fee_firestore_txn
             $out = [];
             foreach ((array) $rows as $r) {
                 $d  = $r['data'] ?? [];
-                $id = $d['id']   ?? '';
+                $id = $r['id']   ?? '';
                 if ($id !== '' && is_array($d)) $out[$id] = self::normalizeDemandDoc($d);
             }
             return $out;

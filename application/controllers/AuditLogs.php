@@ -4,8 +4,9 @@ defined('BASEPATH') OR exit('No direct script access allowed');
 /**
  * AuditLogs — Centralized ERP Audit Trail
  *
- * Provides a read-only view of all auditable actions across the ERP.
- * Logs are stored at Schools/{school}/AuditLogs/{logId}.
+ * Read-only view of all auditable actions across the ERP. Logs live in
+ * Firestore (collection `auditLogs`, doc ID `{schoolId}_{logId}`); the
+ * helper `log_audit()` writes them. Migrated from RTDB 2026-05-05.
  *
  * Access:
  *   Admin / Super Admin — full access (view + archive)
@@ -17,6 +18,9 @@ class AuditLogs extends MY_Controller
     /** Max logs to keep before archiving older entries */
     private const LOG_LIMIT = 10000;
 
+    /** Cap returned to the UI — paging is not required at this scale. */
+    private const UI_PAGE_SIZE = 500;
+
     public function __construct()
     {
         parent::__construct();
@@ -24,10 +28,31 @@ class AuditLogs extends MY_Controller
         require_permission('Admin Users'); // Audit logs live under Admin Users RBAC gate
     }
 
-    /** Firebase base path for this school's audit logs */
-    private function _base(): string
+    /**
+     * Pull the most recent N entries for the current school. The
+     * Firestore index is (schoolId ASC, timestampMs DESC); a single
+     * query returns docs already sorted newest-first.
+     */
+    private function _recent_logs(int $limit = self::UI_PAGE_SIZE): array
     {
-        return "Schools/{$this->school_name}/AuditLogs";
+        $rows = $this->fs->where(
+            'auditLogs',
+            [['schoolId', '==', $this->school_id]],
+            'timestampMs',
+            'DESC',
+            $limit
+        );
+
+        $logs = [];
+        foreach ((array) $rows as $row) {
+            if (!is_array($row)) continue;
+            $data = $row['data'] ?? null;
+            if (!is_array($data)) continue;
+            // Surface logId at the top level so existing JS keeps working.
+            $data['logId'] = $data['logId'] ?? ($row['id'] ?? '');
+            $logs[] = $data;
+        }
+        return $logs;
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -48,7 +73,7 @@ class AuditLogs extends MY_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    //  AJAX: get_logs — returns most recent logs (paginated)
+    //  AJAX: get_logs — most recent logs for the current school
     // ─────────────────────────────────────────────────────────────────────
 
     public function get_logs(): void
@@ -56,27 +81,12 @@ class AuditLogs extends MY_Controller
         $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'audit_get_logs');
 
         try {
-            $all = $this->firebase->get($this->_base()) ?? [];
-            if (!is_array($all)) $all = [];
-
-            $logs = [];
-            foreach ($all as $id => $entry) {
-                if (!is_array($entry)) continue;
-                $entry['logId'] = $id;
-                $logs[] = $entry;
-            }
-
-            // Sort newest first
-            usort($logs, function ($a, $b) {
-                return strcmp($b['timestamp'] ?? '', $a['timestamp'] ?? '');
-            });
-
-            // Limit to 500 for UI performance
-            $logs = array_slice($logs, 0, 500);
+            $logs  = $this->_recent_logs(self::UI_PAGE_SIZE);
+            $total = $this->fs->count('auditLogs', [['schoolId', '==', $this->school_id]]);
 
             $this->json_success([
                 'logs'  => $logs,
-                'total' => count($all),
+                'total' => $total,
             ]);
         } catch (\Exception $e) {
             log_message('error', 'AuditLogs::get_logs — ' . $e->getMessage());
@@ -85,7 +95,7 @@ class AuditLogs extends MY_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    //  AJAX: filter_logs — filter by module, action, date range, user
+    //  AJAX: filter_logs — module / action / user / date filters
     // ─────────────────────────────────────────────────────────────────────
 
     public function filter_logs(): void
@@ -99,43 +109,22 @@ class AuditLogs extends MY_Controller
         $dateTo    = trim($this->input->post('date_to', TRUE) ?? '');
 
         try {
-            $all = $this->firebase->get($this->_base()) ?? [];
-            if (!is_array($all)) $all = [];
-
             $logs = [];
-            foreach ($all as $id => $entry) {
-                if (!is_array($entry)) continue;
-
-                // Module filter
+            foreach ($this->_recent_logs(self::UI_PAGE_SIZE) as $entry) {
                 if ($module !== '' && ($entry['module'] ?? '') !== $module) continue;
-
-                // Action filter
                 if ($action !== '' && stripos($entry['action'] ?? '', $action) === false) continue;
-
-                // User filter
                 if ($userId !== '') {
-                    $matchUser = stripos($entry['userId'] ?? '', $userId) !== false
+                    $matchUser = stripos($entry['userId']   ?? '', $userId) !== false
                               || stripos($entry['userName'] ?? '', $userId) !== false;
                     if (!$matchUser) continue;
                 }
 
-                // Date range filter
-                $ts = $entry['timestamp'] ?? '';
-                $dateStr = substr($ts, 0, 10); // YYYY-MM-DD from ISO timestamp
-
+                $dateStr = substr($entry['timestamp'] ?? '', 0, 10);
                 if ($dateFrom !== '' && $dateStr < $dateFrom) continue;
-                if ($dateTo !== '' && $dateStr > $dateTo) continue;
+                if ($dateTo   !== '' && $dateStr > $dateTo)   continue;
 
-                $entry['logId'] = $id;
                 $logs[] = $entry;
             }
-
-            // Sort newest first
-            usort($logs, function ($a, $b) {
-                return strcmp($b['timestamp'] ?? '', $a['timestamp'] ?? '');
-            });
-
-            $logs = array_slice($logs, 0, 500);
 
             $this->json_success([
                 'logs'  => $logs,
@@ -148,7 +137,7 @@ class AuditLogs extends MY_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    //  AJAX: get_user_activity — all logs for a specific admin user
+    //  AJAX: get_user_activity — all logs for one admin user
     // ─────────────────────────────────────────────────────────────────────
 
     public function get_user_activity(): void
@@ -162,24 +151,14 @@ class AuditLogs extends MY_Controller
         }
 
         try {
-            $all = $this->firebase->get($this->_base()) ?? [];
-            if (!is_array($all)) $all = [];
-
             $logs = [];
-            foreach ($all as $id => $entry) {
-                if (!is_array($entry)) continue;
+            foreach ($this->_recent_logs(self::UI_PAGE_SIZE) as $entry) {
                 if (($entry['userId'] ?? '') !== $userId) continue;
-                $entry['logId'] = $id;
                 $logs[] = $entry;
             }
-
-            usort($logs, function ($a, $b) {
-                return strcmp($b['timestamp'] ?? '', $a['timestamp'] ?? '');
-            });
-
             $logs = array_slice($logs, 0, 200);
 
-            // Compute summary
+            // Per-module summary
             $modules = [];
             foreach ($logs as $l) {
                 $m = $l['module'] ?? 'Unknown';
@@ -206,20 +185,16 @@ class AuditLogs extends MY_Controller
         $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'audit_stats');
 
         try {
-            $all = $this->firebase->get($this->_base()) ?? [];
-            if (!is_array($all)) $all = [];
+            $rows = $this->_recent_logs(self::UI_PAGE_SIZE);
 
-            $total       = 0;
-            $byModule    = [];
-            $byUser      = [];
-            $todayCount  = 0;
-            $today       = gmdate('Y-m-d');
-            $adminList   = [];
+            $total      = $this->fs->count('auditLogs', [['schoolId', '==', $this->school_id]]);
+            $byModule   = [];
+            $byUser     = [];
+            $todayCount = 0;
+            $today      = gmdate('Y-m-d');
+            $adminList  = [];
 
-            foreach ($all as $id => $entry) {
-                if (!is_array($entry)) continue;
-                $total++;
-
+            foreach ($rows as $entry) {
                 $mod  = $entry['module'] ?? 'Unknown';
                 $uid  = $entry['userId'] ?? '';
                 $name = $entry['userName'] ?? $uid;
@@ -229,7 +204,6 @@ class AuditLogs extends MY_Controller
                 $byUser[$uid]   = ($byUser[$uid] ?? 0) + 1;
 
                 if ($ts === $today) $todayCount++;
-
                 if ($uid && !isset($adminList[$uid])) {
                     $adminList[$uid] = $name;
                 }
@@ -246,12 +220,13 @@ class AuditLogs extends MY_Controller
                 'admin_list' => $adminList,
             ]);
         } catch (\Exception $e) {
+            log_message('error', 'AuditLogs::get_stats — ' . $e->getMessage());
             $this->json_error('Failed to load audit stats.');
         }
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    //  AJAX: archive_old — move oldest logs to AuditArchive
+    //  AJAX: archive_old — relocate oldest logs to auditArchive
     // ─────────────────────────────────────────────────────────────────────
 
     public function archive_old(): void
@@ -259,7 +234,7 @@ class AuditLogs extends MY_Controller
         $this->_require_role(['Super Admin', 'Admin'], 'audit_archive');
 
         try {
-            $archived = audit_archive_old($this->firebase, $this->school_name, self::LOG_LIMIT);
+            $archived = audit_archive_old(null, $this->school_id, self::LOG_LIMIT);
             $this->json_success([
                 'message'  => $archived > 0
                     ? "Archived {$archived} old log(s)."
@@ -267,6 +242,7 @@ class AuditLogs extends MY_Controller
                 'archived' => $archived,
             ]);
         } catch (\Exception $e) {
+            log_message('error', 'AuditLogs::archive_old — ' . $e->getMessage());
             $this->json_error('Archive operation failed.');
         }
     }

@@ -749,6 +749,71 @@ class Firebase
         return $this->firestoreDb->getDocument($collection, $docId);
     }
 
+    /**
+     * Multi-document read shim — additive stabilization repair (2026-05-10).
+     *
+     * Original engine code (Operations_accounting, FeeWorker, Reconciler,
+     * FeeCollectionService, Fees, Fee_firestore_txn) calls this method
+     * expecting a "1 RTT" parallel batch-get. The actual implementation
+     * was missing from this branch, causing every fee-posting attempt to
+     * throw `Call to undefined method`.
+     *
+     * This sequential implementation is behaviorally equivalent to N
+     * sequential firestoreGet() calls — same return shape, same error
+     * handling, same result keys. It is NOT parallelized; the "1 RTT"
+     * comment in callers refers to the intended optimization, not a
+     * correctness requirement. Sequential reads produce identical
+     * results, just with N RTTs instead of 1.
+     *
+     * Scope is strictly additive:
+     *   • no engine semantic change
+     *   • no journal-creation flow change
+     *   • no balance/idempotency/routing/reconciler change
+     *   • single-method addition, fully reversible by deletion
+     *
+     * Input shape:
+     *   $reqs = [
+     *     '<key>' => ['collection' => '<col>', 'docId' => '<id>'],
+     *     ...
+     *   ]
+     *
+     * Output shape:
+     *   ['<key>' => <doc data array> | null, ...]
+     *
+     * On the missing/null/error path the corresponding key is set to null,
+     * matching the behavior callers already handle (every call site
+     * defensively reads `is_array($docs[$key] ?? null)`).
+     *
+     * @param array $reqs  Associative requests, keys arbitrary (callers
+     *                     typically use account_code / receipt_id / etc.)
+     * @return array       Same keys, each value is the doc data or null.
+     */
+    public function firestoreGetParallel(array $reqs): array
+    {
+        if ($this->firestoreDb === null) {
+            log_message('error', 'Firebase::firestoreGetParallel() — Firestore not initialized');
+            return [];
+        }
+        $out = [];
+        foreach ($reqs as $key => $req) {
+            $col = is_array($req) ? (string) ($req['collection'] ?? '') : '';
+            $doc = is_array($req) ? (string) ($req['docId']      ?? '') : '';
+            if ($col === '' || $doc === '') {
+                $out[$key] = null;
+                continue;
+            }
+            try {
+                $out[$key] = $this->firestoreDb->getDocument($col, $doc);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "Firebase::firestoreGetParallel() read failed key={$key} "
+                    . "col={$col} doc={$doc} err=" . $e->getMessage());
+                $out[$key] = null;
+            }
+        }
+        return $out;
+    }
+
     public function firestoreSet(string $collection, string $docId, array $data, bool $merge = false): bool
     {
         if ($this->firestoreDb === null) { log_message('error', 'Firebase::firestoreSet() — Firestore not initialized'); return false; }
@@ -806,10 +871,16 @@ class Firebase
         array $conditions = [],
         ?string $orderBy = null,
         string $direction = 'ASC',
-        ?int $limit = null
+        ?int $limit = null,
+        $startAfter = null
     ): array {
         if ($this->firestoreDb === null) { log_message('error', 'Firebase::firestoreQuery() — Firestore not initialized'); return []; }
-        return $this->firestoreDb->query($collection, $conditions, $orderBy, $direction, $limit);
+        // Phase 4 (V-MED-4 / V-MED-5) — exposed startAfter cursor for
+        // multi-cycle reconciler pagination. Backward-compatible: every
+        // call site that doesn't pass startAfter behaves exactly as
+        // before. Reconciler sweeps pass the orderBy-field value of
+        // the last doc seen on the previous cycle.
+        return $this->firestoreDb->query($collection, $conditions, $orderBy, $direction, $limit, $startAfter);
     }
 }
 

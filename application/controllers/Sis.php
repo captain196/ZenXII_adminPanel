@@ -496,6 +496,20 @@ class Sis extends MY_Controller
             log_message('error', "Fee_lifecycle::assignInitialFees failed for {$userId}: " . $e->getMessage());
         }
 
+        // Phase 3D (2026-05-09) — admission-time defaulter projection sync.
+        // assignInitialFees creates feeDemands but does NOT emit the defaulter
+        // event, so a never-paid student would have unpaid demands but no
+        // feeDefaulters doc until first payment (verified leak: STU0004,
+        // STU0005). updateDefaulterStatus reads feeDemands canonically and
+        // writes the projection idempotently. Fail-soft: admission still
+        // succeeds even if the projection write fails — the doc can be
+        // recreated by a future payment event or by backfill_defaulters.js.
+        try {
+            $this->feeDefaulter->updateDefaulterStatus($userId);
+        } catch (\Throwable $e) {
+            log_message('error', "Phase 3D admission defaulter sync failed for {$userId}: " . $e->getMessage());
+        }
+
         $this->_log_history($school_id, $userId, 'ADMISSION',
             "Student admitted to {$classOrd} / {$section} ({$session})",
             ['class' => $classOrd, 'section' => $section, 'session' => $session]
@@ -1186,19 +1200,67 @@ class Sis extends MY_Controller
         // permits it. Runs BEFORE student fetch so we don't leak an
         // unauthorised preview.
         try {
+            // Phase TC-2 (2026-05-09) — canonical-reader alignment.
+            // Was: Fee_dues_check::check (denormalized feeDefaulters;
+            //   fees-only). Stale defaulter docs (e.g. STU0004/STU0005
+            //   baseline pre-Phase-3D) could leak through this gate.
+            // Now: Fee_dues_check for POLICY only (block_tc, threshold,
+            //   admin_override_allowed); Fee_defaulter_check for canonical
+            //   cross-module dues calculation (feeDemands + library +
+            //   hostel + transport). Brings print_tc to parity with
+            //   issue_tc + withdraw_student, which already use this path
+            //   via _check_outstanding_dues().
+            //
+            // Side effect: calculateClearanceStatus refreshes the
+            // studentClearance/{schoolId}_{studentId} doc (idempotent
+            // merge, fail-soft). This same write already occurs on
+            // every issue_tc + withdraw_student call today. No new write
+            // class is introduced — only a new write-trigger location.
+
+            // Step 1 — policy lookup (decides whether to block at all).
             $this->load->library('Fee_dues_check', null, 'duesCheck');
             $this->duesCheck->init($this->firebase, $this->school_name, $this->session_year);
-            $override = (bool) $this->input->get('force_override');
-            $verdict  = $this->duesCheck->check($userId, 'tc', $override);
-            if ($verdict['blocked']) {
-                // Keep the HTML error (this is a printable page, not JSON).
-                $this->output->set_status_header(403);
-                echo '<!DOCTYPE html><html><head><title>TC Withheld</title><style>body{font:15px/1.5 system-ui;padding:60px;color:#334155;text-align:center;}h1{color:#dc2626;}a{color:#0f766e;}</style></head><body>'
-                   . '<h1>Transfer Certificate Withheld</h1>'
-                   . '<p>' . htmlspecialchars($verdict['message']) . '</p>'
-                   . '<p><a href="' . base_url('sis/tc_list') . '">← Back to TC list</a></p>'
-                   . '</body></html>';
-                return;
+            $policy = $this->duesCheck->getPolicy();
+
+            // Step 2 — only run dues check if school policy says block_tc.
+            if (!empty($policy['block_tc'])) {
+                $override = (bool) $this->input->get('force_override');
+                // Policy can disallow override.
+                if (empty($policy['admin_override_allowed'])) $override = false;
+
+                // Step 3 — canonical clearance via Fee_defaulter_check.
+                $this->load->library('Fee_defaulter_check', null, 'feeDefaulter');
+                $this->feeDefaulter->init($this->firebase, $this->school_name, $this->session_year);
+                $clearance = $this->feeDefaulter->calculateClearanceStatus($userId);
+
+                $threshold = (float) ($policy['threshold_amount'] ?? 0);
+                $totalDues = (float) ($clearance['total_dues'] ?? 0);
+                $blocked   = !$override && ($totalDues > $threshold);
+
+                if ($blocked) {
+                    // Compose summary across modules for operator clarity.
+                    $parts = [];
+                    if (!($clearance['fees_clear']      ?? true)) $parts[] = 'Fees Rs ' . number_format((float)($clearance['fees_dues']      ?? 0), 2);
+                    if (!($clearance['library_clear']   ?? true)) {
+                        $libPart = 'Library Rs ' . number_format((float)($clearance['library_dues'] ?? 0), 2);
+                        if ((int)($clearance['library_unreturned_books'] ?? 0) > 0) $libPart .= ' + ' . (int)$clearance['library_unreturned_books'] . ' book(s)';
+                        $parts[] = $libPart;
+                    }
+                    if (!($clearance['hostel_clear']    ?? true)) $parts[] = 'Hostel Rs ' . number_format((float)($clearance['hostel_dues']    ?? 0), 2);
+                    if (!($clearance['transport_clear'] ?? true)) $parts[] = 'Transport Rs ' . number_format((float)($clearance['transport_dues'] ?? 0), 2);
+                    $message = !empty($parts)
+                        ? 'Outstanding dues — ' . implode('; ', $parts) . ' (Total Rs ' . number_format($totalDues, 2) . ').'
+                        : 'Outstanding dues found (Rs ' . number_format($totalDues, 2) . ').';
+
+                    // Keep the HTML error (this is a printable page, not JSON).
+                    $this->output->set_status_header(403);
+                    echo '<!DOCTYPE html><html><head><title>TC Withheld</title><style>body{font:15px/1.5 system-ui;padding:60px;color:#334155;text-align:center;}h1{color:#dc2626;}a{color:#0f766e;}</style></head><body>'
+                       . '<h1>Transfer Certificate Withheld</h1>'
+                       . '<p>' . htmlspecialchars($message) . '</p>'
+                       . '<p><a href="' . base_url('sis/tc_list') . '">← Back to TC list</a></p>'
+                       . '</body></html>';
+                    return;
+                }
             }
         } catch (\Exception $e) {
             log_message('error', 'print_tc: dues check failed: ' . $e->getMessage());
@@ -3215,7 +3277,7 @@ class Sis extends MY_Controller
             // collection is queried+deleted in isolation; a failure on
             // one (e.g. a missing collection on a fresh school)
             // doesn't block the others.
-            foreach (['attendanceSummary', 'attendance', 'marks', 'feeReceipts', 'feeDemands'] as $cascadeCol) {
+            foreach (['attendanceSummary', 'attendance', 'marks', 'feeReceipts', 'feeDemands', 'studentFlags', 'submissions', 'teacherMarks'] as $cascadeCol) {
                 try {
                     $rows = $this->fs->schoolWhere($cascadeCol, [
                         ['studentId', '==', $id],

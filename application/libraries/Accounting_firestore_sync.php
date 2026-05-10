@@ -113,7 +113,13 @@ class Accounting_firestore_sync
             $ok = (bool) $this->firebase->firestoreSet(self::COL_LEDGER, $docId, $doc);
 
             // Write date + per-account indices so readers can filter without
-            // scanning the full collection.
+            // scanning the full collection. Phase 2 (R-P4) replaced the
+            // silent best-effort catch with structured logging so the
+            // index-drift sweep (AccountingReconciler::_sweepIndexDrift)
+            // can correlate a logged ACC_IDX_SYNC_FAILED line with the
+            // ledger entry it failed to index. Each individual write
+            // is now wrapped so one bad line doesn't abort the rest of
+            // the indexes for this entry.
             $date = (string) ($entry['date'] ?? date('Y-m-d'));
             try {
                 $this->firebase->firestoreSet(self::COL_IDX_DATE,
@@ -124,9 +130,16 @@ class Accounting_firestore_sync
                         'entryId'   => $entryId,
                         'updatedAt' => date('c'),
                     ]);
-                foreach (($entry['lines'] ?? []) as $line) {
-                    $ac = (string) ($line['account_code'] ?? '');
-                    if ($ac === '') continue;
+            } catch (\Exception $e) {
+                log_message('error',
+                    "ACC_IDX_SYNC_FAILED kind=date entryId={$entryId} date={$date} "
+                    . "schoolId={$this->schoolCode} session={$this->session} "
+                    . "error=" . $e->getMessage());
+            }
+            foreach (($entry['lines'] ?? []) as $line) {
+                $ac = (string) ($line['account_code'] ?? '');
+                if ($ac === '') continue;
+                try {
                     $this->firebase->firestoreSet(self::COL_IDX_ACCT,
                         "{$this->schoolCode}_{$this->session}_{$ac}_{$entryId}", [
                             'schoolId'    => $this->schoolCode,
@@ -135,8 +148,13 @@ class Accounting_firestore_sync
                             'entryId'     => $entryId,
                             'updatedAt'   => date('c'),
                         ]);
+                } catch (\Exception $e) {
+                    log_message('error',
+                        "ACC_IDX_SYNC_FAILED kind=account entryId={$entryId} accountCode={$ac} "
+                        . "schoolId={$this->schoolCode} session={$this->session} "
+                        . "error=" . $e->getMessage());
                 }
-            } catch (\Exception $_) { /* indices are best-effort */ }
+            }
 
             return $ok;
         } catch (\Exception $e) {

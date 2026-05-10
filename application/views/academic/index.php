@@ -223,6 +223,7 @@ html{font-size:16px !important}
         <div class="ac-tab" data-tab="timetable"><i class="fa fa-th"></i> Master Timetable</div>
         <div class="ac-tab" data-tab="substitutes"><i class="fa fa-exchange"></i> Substitutes</div>
         <div class="ac-tab" data-tab="curriculum"><i class="fa fa-list-ol"></i> Curriculum</div>
+        <div class="ac-tab" data-tab="planner"><i class="fa fa-pencil-square-o"></i> Lesson Planner</div>
         <div class="ac-tab" data-tab="calendar"><i class="fa fa-calendar"></i> Calendar</div>
         <div class="ac-tab" data-tab="workload"><i class="fa fa-bar-chart"></i> Teacher Workload</div>
     </div>
@@ -367,7 +368,7 @@ html{font-size:16px !important}
                     <select id="curSubject" class="ac-fg" style="margin:0;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:12px;min-width:140px">
                         <option value="">Select Subject...</option>
                     </select>
-                    <button class="ac-btn ac-btn-p ac-btn-sm" onclick="AC.cur.load()"><i class="fa fa-refresh"></i> Load</button>
+                    <button class="ac-btn ac-btn-p ac-btn-sm" style="min-width:88px" onclick="AC.cur.load(this)"><i class="fa fa-refresh"></i> Load</button>
                 </div>
             </div>
             <div class="ac-card-body">
@@ -388,7 +389,7 @@ html{font-size:16px !important}
                         <div class="ac-fg" style="max-width:100px"><label>Est. Periods</label><input type="number" id="curTopicPeriods" value="1" min="0"></div>
                     </div>
                     <div style="display:flex;gap:8px;margin-top:4px">
-                        <button class="ac-btn ac-btn-p ac-btn-sm" onclick="AC.cur.addTopic()"><i class="fa fa-plus"></i> Add Topic</button>
+                        <button class="ac-btn ac-btn-p ac-btn-sm" style="min-width:104px" onclick="AC.cur.addTopic(this)"><i class="fa fa-plus"></i> Add Topic</button>
                         <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.cur.toggleForm()">Cancel</button>
                     </div>
                 </div>
@@ -637,6 +638,60 @@ html{font-size:16px !important}
         </div>
     </div>
 
+    <!-- ═══════════ TAB: LESSON PLANNER (Phase 6B) ═══════════ -->
+    <div class="ac-pane" id="pane-planner">
+        <div class="ac-card">
+            <div class="ac-card-hd">
+                <h3><i class="fa fa-pencil-square-o" style="color:var(--gold);margin-right:6px"></i>Lesson Planner</h3>
+                <div class="ac-pills" id="lpViewPills" style="margin-left:auto">
+                    <button class="ac-pill active" data-v="daily" type="button">Daily</button>
+                    <button class="ac-pill" data-v="monthly" type="button">Monthly</button>
+                </div>
+            </div>
+            <div class="ac-card-body">
+                <!-- Selectors -->
+                <div class="ac-row" style="margin-bottom:14px">
+                    <div class="ac-fg"><label>Class</label>
+                        <select id="lpClass"><option value="">Select…</option></select>
+                    </div>
+                    <div class="ac-fg"><label>Section</label>
+                        <select id="lpSection" disabled><option value="">Select…</option></select>
+                    </div>
+                    <div class="ac-fg"><label>Teacher</label>
+                        <select id="lpTeacher"><option value="">Select…</option></select>
+                    </div>
+                    <div class="ac-fg" id="lpDateWrap"><label>Date</label>
+                        <input type="date" id="lpDate">
+                    </div>
+                    <div class="ac-fg" style="flex:0 0 auto">
+                        <label>&nbsp;</label>
+                        <button class="ac-btn ac-btn-p" id="lpLoadBtn" onclick="AC.lp.load(this)"><i class="fa fa-refresh"></i> Load</button>
+                    </div>
+                </div>
+
+                <!-- Daily view -->
+                <div id="lpDailyView">
+                    <div id="lpDailyHd" style="display:none;margin-bottom:10px;padding:10px 14px;background:var(--bg3);border-radius:8px;font-size:12px;color:var(--t2)"></div>
+                    <div id="lpDailyContent">
+                        <div class="ac-empty"><i class="fa fa-pencil-square-o"></i>Pick class, section, teacher, and date — then click Load.</div>
+                    </div>
+                </div>
+
+                <!-- Monthly view -->
+                <div id="lpMonthlyView" style="display:none">
+                    <div class="ac-cal-nav">
+                        <button type="button" onclick="AC.lp.month(-1)"><i class="fa fa-chevron-left"></i> Prev</button>
+                        <div class="ac-cal-month" id="lpMonthLabel">—</div>
+                        <button type="button" onclick="AC.lp.month(1)">Next <i class="fa fa-chevron-right"></i></button>
+                    </div>
+                    <div id="lpCalContent">
+                        <div class="ac-empty"><i class="fa fa-calendar"></i>Pick a teacher and click Load to view the month.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
 </div><!-- .ac-wrap -->
 </div><!-- .content-wrapper -->
 
@@ -698,6 +753,7 @@ document.getElementById('acTabs').addEventListener('click',function(e){
     if(k==='timetable' && !AC.tt._loaded) AC.tt.load();
     if(k==='substitutes' && !AC.sub._loaded) AC.sub.init();
     if(k==='workload' && !AC.wl._loaded) AC.wl.load();
+    if(k==='planner' && !AC.lp._loaded) AC.lp.init();
 });
 
 /* ── Shared Data Cache ── */
@@ -1382,6 +1438,37 @@ AC.cur = {
     _loaded:false,
     topics: [],
     filter: 'all',
+    // ── Phase 2 (Frontend Hardening) — concurrency + counter state ──
+    // These mirror server-side fields populated by get_curriculum and
+    // every write response. They make the JS UI a true client of the
+    // backend's optimistic-concurrency machinery (version-check + 409).
+    version: 0,
+    topicsModel: 'array',
+    totalTopics: 0,
+    completedTopics: 0,
+    percentComplete: 0,
+    // 409 conflict guard — auto-reload the curriculum if the server
+    // reports a version mismatch. Returns true if the response was a
+    // conflict (caller should bail out).
+    _handleConflict: function(d){
+        if (d && d.status === 'error' && typeof d.message === 'string'
+            && d.message.indexOf('Conflict:') === 0) {
+            toast('Curriculum updated by another user. Reloading...', false);
+            AC.cur.load();
+            return true;
+        }
+        return false;
+    },
+    // Apply the counter / version fields the server echoes back into AC.cur
+    // state. Tolerant of missing keys (legacy un-migrated curriculum docs
+    // don't return them — fall back to JS-computed values).
+    _applyServerState: function(d){
+        if (typeof d.version          === 'number') AC.cur.version          = d.version;
+        if (typeof d.topicsModel      === 'string') AC.cur.topicsModel      = d.topicsModel;
+        if (typeof d.totalTopics      === 'number') AC.cur.totalTopics      = d.totalTopics;
+        if (typeof d.completedTopics  === 'number') AC.cur.completedTopics  = d.completedTopics;
+        if (typeof d.percentComplete  === 'number') AC.cur.percentComplete  = d.percentComplete;
+    },
     init: function(){
         AC.cur._loaded=true;
         loadSharedData(function(){
@@ -1426,24 +1513,41 @@ AC.cur = {
             subSel.innerHTML+='<option value="'+esc(s.name)+'">'+esc(label)+'</option>';
         });
     },
-    load: function(){
+    load: function(btn){
         var cs=document.getElementById('curClass').value;
         var sub=document.getElementById('curSubject').value;
         if(!cs||!sub){toast('Select class and subject first',false);return}
-        post('academic/get_curriculum',{class_section:cs,subject:sub}).then(function(d){
+        withBtn(btn,post('academic/get_curriculum',{class_section:cs,subject:sub})).then(function(d){
             if(d.status==='success'){
-                AC.cur.topics=d.topics||[];
+                AC.cur.topics = d.topics || [];
+                // Phase 2: capture server-side version + counters; fall back
+                // to JS computation only if the server didn't supply them.
+                AC.cur._applyServerState(d);
+                if (typeof d.totalTopics !== 'number') {
+                    AC.cur.totalTopics = AC.cur.topics.length;
+                    AC.cur.completedTopics = AC.cur.topics.filter(function(x){return x.status==='completed'}).length;
+                    AC.cur.percentComplete = AC.cur.totalTopics>0
+                        ? Math.round(AC.cur.completedTopics/AC.cur.totalTopics*100) : 0;
+                }
                 AC.cur.render();
-                toast('Loaded '+AC.cur.topics.length+' topics',true);
+                toast('Loaded '+AC.cur.totalTopics+' topics',true);
             } else toast(d.message,false);
         });
     },
     render: function(){
         var t=AC.cur.topics;
         var f=AC.cur.filter;
-        // Progress
-        var total=t.length, done=t.filter(function(x){return x.status==='completed'}).length;
-        var pct=total>0?Math.round(done/total*100):0;
+        // Phase 2: progress counters come from the server (single source of
+        // truth). Fall back to JS compute only if the server didn't supply
+        // them (legacy un-migrated curriculum docs).
+        var total = (typeof AC.cur.totalTopics === 'number' && AC.cur.totalTopics >= 0)
+            ? AC.cur.totalTopics : t.length;
+        var done  = (typeof AC.cur.completedTopics === 'number' && AC.cur.completedTopics >= 0)
+            ? AC.cur.completedTopics
+            : t.filter(function(x){return x.status==='completed'}).length;
+        var pct = (typeof AC.cur.percentComplete === 'number')
+            ? AC.cur.percentComplete
+            : (total>0 ? Math.round(done/total*100) : 0);
         var pg=document.getElementById('curProgress');
         pg.style.display=total>0?'block':'none';
         document.getElementById('curProgressPct').textContent=pct+'%';
@@ -1468,12 +1572,12 @@ AC.cur = {
             html+='<td style="white-space:nowrap">';
             if(topic.status!=='completed'){
                 var next=topic.status==='not_started'?'in_progress':'completed';
-                html+='<button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.cur.setStatus('+i+',\''+next+'\')"><i class="fa fa-arrow-right"></i></button> ';
+                html+='<button class="ac-btn ac-btn-s ac-btn-sm" style="min-width:34px" onclick="AC.cur.setStatus('+i+',\''+next+'\',this)"><i class="fa fa-arrow-right"></i></button> ';
             }
             if(topic.status==='completed'){
-                html+='<button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.cur.setStatus('+i+',\'in_progress\')"><i class="fa fa-undo"></i></button> ';
+                html+='<button class="ac-btn ac-btn-s ac-btn-sm" style="min-width:34px" onclick="AC.cur.setStatus('+i+',\'in_progress\',this)"><i class="fa fa-undo"></i></button> ';
             }
-            html+='<button class="ac-btn ac-btn-d ac-btn-sm" onclick="AC.cur.deleteTopic('+i+')"><i class="fa fa-trash"></i></button>';
+            html+='<button class="ac-btn ac-btn-d ac-btn-sm" style="min-width:34px" onclick="AC.cur.deleteTopic('+i+',this)"><i class="fa fa-trash"></i></button>';
             html+='</td></tr>';
         });
         html+='</tbody></table>';
@@ -1484,7 +1588,7 @@ AC.cur = {
         f.classList.toggle('show');
         if(f.classList.contains('show')) document.getElementById('curTopicTitle').focus();
     },
-    addTopic: function(){
+    addTopic: function(btn){
         var title=document.getElementById('curTopicTitle').value.trim();
         if(!title){toast('Topic title required',false);return}
         AC.cur.topics.push({
@@ -1495,42 +1599,74 @@ AC.cur = {
             completed_date:'',
             sort_order:AC.cur.topics.length
         });
-        AC.cur.saveFull();
+        // Pass btn through so the spinner shows during the actual save round-trip.
+        AC.cur.saveFull(btn);
         document.getElementById('curTopicTitle').value='';
         document.getElementById('curTopicChapter').value='';
         document.getElementById('curTopicPeriods').value='1';
     },
-    setStatus: function(idx,status){
+    setStatus: function(idx,status,btn){
         var cs=document.getElementById('curClass').value;
         var sub=document.getElementById('curSubject').value;
-        post('academic/update_topic_status',{class_section:cs,subject:sub,index:idx,status:status}).then(function(d){
+        var topic = AC.cur.topics[idx] || {};
+        // Phase 2: send expected_version (concurrency check) + topicId
+        // (preferred over array index for forward-compat).
+        var payload = {
+            class_section: cs,
+            subject:       sub,
+            index:         idx,
+            status:        status,
+            expected_version: AC.cur.version
+        };
+        if (topic.topicId) payload.topicId = topic.topicId;
+        withBtn(btn, post('academic/update_topic_status', payload)).then(function(d){
+            if (AC.cur._handleConflict(d)) return;
             if(d.status==='success'){
-                AC.cur.topics[idx].status=status;
-                if(status==='completed') AC.cur.topics[idx].completed_date=new Date().toISOString().slice(0,10);
+                AC.cur.topics[idx].status = status;
+                AC.cur.topics[idx].completed_date = (status==='completed')
+                    ? new Date().toISOString().slice(0,10) : '';
+                AC.cur._applyServerState(d);
                 AC.cur.render();
                 toast('Status updated',true);
             } else toast(d.message,false);
         });
     },
-    deleteTopic: function(idx){
+    deleteTopic: function(idx,btn){
         if(!confirm('Delete this topic?'))return;
         var cs=document.getElementById('curClass').value;
         var sub=document.getElementById('curSubject').value;
-        post('academic/delete_topic',{class_section:cs,subject:sub,index:idx}).then(function(d){
+        var topic = AC.cur.topics[idx] || {};
+        var payload = {
+            class_section:    cs,
+            subject:          sub,
+            index:            idx,
+            expected_version: AC.cur.version
+        };
+        if (topic.topicId) payload.topicId = topic.topicId;
+        withBtn(btn, post('academic/delete_topic', payload)).then(function(d){
+            if (AC.cur._handleConflict(d)) return;
             if(d.status==='success'){
-                AC.cur.topics=d.topics||[];
+                AC.cur.topics = d.topics || [];
+                AC.cur._applyServerState(d);
                 AC.cur.render();
                 toast('Topic deleted',true);
             } else toast(d.message,false);
         });
     },
-    saveFull: function(){
+    saveFull: function(btn){
         var cs=document.getElementById('curClass').value;
         var sub=document.getElementById('curSubject').value;
         if(!cs||!sub) return;
-        post('academic/save_curriculum',{class_section:cs,subject:sub,topics:JSON.stringify(AC.cur.topics)}).then(function(d){
+        withBtn(btn, post('academic/save_curriculum', {
+            class_section:    cs,
+            subject:          sub,
+            topics:           JSON.stringify(AC.cur.topics),
+            expected_version: AC.cur.version
+        })).then(function(d){
+            if (AC.cur._handleConflict(d)) return;
             if(d.status==='success'){
-                AC.cur.topics=d.topics||[];
+                AC.cur.topics = d.topics || [];
+                AC.cur._applyServerState(d);
                 AC.cur.render();
                 toast('Curriculum saved',true);
             } else toast(d.message,false);
@@ -3201,6 +3337,406 @@ AC.wl = {
         a.click();
         URL.revokeObjectURL(a.href);
         toast('CSV exported',true);
+    }
+};
+
+/* ══════════════════════════════════════════════════════════════
+   LESSON PLANNER  (Phase 6B)
+   APIs used:
+     - academic/get_master_timetable  → class/section options + day grid
+     - academic/get_all_teachers      → teacher dropdown
+     - academic/get_curriculum        → topic dropdown (lazy by subject)
+     - academic/get_daily_plan        → existing plans for table
+     - academic/save_lesson_plan      → upsert (with expected_version)
+     - academic/get_monthly_plan      → calendar totals
+══════════════════════════════════════════════════════════════ */
+AC.lp = {
+    _loaded:false,
+    _mt:null,                 // master timetable cache: {settings, timetables, classes, ...}
+    _topicsBySubject:{},      // "ClassLabel/Section|Subject" → [{topicId,title}]
+    _state:{
+        view:'daily',
+        className:'',         // "Class 8th"
+        sectionLetter:'',     // "A"
+        sectionLabel:'',      // "Section A"
+        teacherId:'',
+        teacherName:'',
+        date:'',              // YYYY-MM-DD
+        plansByPeriod:{},     // {periodIndex: planDoc}
+        cellsByPeriod:[],     // [{periodNumber,subject,teacher,teacherId,startTime,endTime,type}, ...]
+        monthY:0, monthM:0
+    },
+
+    init:function(){
+        AC.lp._loaded=true;
+        // Default date = today
+        var d=new Date();
+        var iso=d.toISOString().slice(0,10);
+        document.getElementById('lpDate').value=iso;
+        var s=AC.lp._state;
+        s.date=iso; s.monthY=d.getFullYear(); s.monthM=d.getMonth()+1;
+
+        // View switcher (daily / monthly)
+        document.getElementById('lpViewPills').addEventListener('click',function(e){
+            var p=e.target.closest('.ac-pill'); if(!p) return;
+            document.querySelectorAll('#lpViewPills .ac-pill').forEach(function(x){x.classList.remove('active')});
+            p.classList.add('active');
+            AC.lp._state.view=p.dataset.v;
+            document.getElementById('lpDailyView').style.display   = (p.dataset.v==='daily')   ? '' : 'none';
+            document.getElementById('lpMonthlyView').style.display = (p.dataset.v==='monthly') ? '' : 'none';
+            document.getElementById('lpDateWrap').style.display    = (p.dataset.v==='daily')   ? '' : 'none';
+        });
+
+        // Class change → repopulate sections
+        document.getElementById('lpClass').addEventListener('change',AC.lp._onClassChange);
+
+        // Bootstrap data: master timetable + teachers (parallel)
+        var pMt=post('academic/get_master_timetable');
+        var pTe=(_teachers.length>0) ? Promise.resolve({status:'success',teachers:_teachers})
+                                     : post('academic/get_all_teachers');
+        Promise.all([pMt,pTe]).then(function(rs){
+            var mt=rs[0], te=rs[1];
+            if(mt.status==='success'){ AC.lp._mt=mt; AC.lp._populateClassSection(mt); }
+            else toast('Failed to load timetable: '+(mt.message||''),false);
+            if(te.status==='success'){ _teachers=te.teachers||[]; AC.lp._populateTeachers(); }
+        });
+    },
+
+    _populateClassSection:function(mt){
+        // Derive distinct (class, section) pairs from timetable keys "Class X (Section Y)"
+        var bySection={}; // class → Set(section)
+        Object.keys(mt.timetables||{}).forEach(function(k){
+            var m=k.match(/^(.+?)\s*\((.+?)\)\s*$/); if(!m) return;
+            var cn=m[1].trim(), sec=m[2].trim();
+            if(!bySection[cn]) bySection[cn]={};
+            bySection[cn][sec]=true;
+        });
+        var classNames=Object.keys(bySection).sort();
+        var sel=document.getElementById('lpClass');
+        sel.innerHTML='<option value="">Select…</option>';
+        classNames.forEach(function(cn){
+            sel.innerHTML+='<option value="'+esc(cn)+'">'+esc(cn)+'</option>';
+        });
+        AC.lp._sectionsByClass=bySection;
+    },
+
+    _onClassChange:function(){
+        var cn=document.getElementById('lpClass').value;
+        var ss=document.getElementById('lpSection');
+        ss.innerHTML='<option value="">Select…</option>';
+        if(!cn || !AC.lp._sectionsByClass[cn]){ ss.disabled=true; return; }
+        Object.keys(AC.lp._sectionsByClass[cn]).sort().forEach(function(sec){
+            ss.innerHTML+='<option value="'+esc(sec)+'">'+esc(sec)+'</option>';
+        });
+        ss.disabled=false;
+    },
+
+    _populateTeachers:function(){
+        var sel=document.getElementById('lpTeacher');
+        sel.innerHTML='<option value="">Select…</option>';
+        _teachers.forEach(function(t){
+            sel.innerHTML+='<option value="'+esc(t.id)+'" data-name="'+esc(t.name)+'">'+esc(t.name)+'</option>';
+        });
+    },
+
+    load:function(btn){
+        var s=AC.lp._state;
+        var clsSel=document.getElementById('lpClass');
+        var secSel=document.getElementById('lpSection');
+        var tSel  =document.getElementById('lpTeacher');
+        s.className     =clsSel.value;
+        s.sectionLabel  =secSel.value;                       // e.g. "Section A"
+        s.sectionLetter =s.sectionLabel.replace(/^Section\s+/i,''); // e.g. "A"
+        s.teacherId     =tSel.value;
+        s.teacherName   =(tSel.options[tSel.selectedIndex]||{}).dataset?.name || '';
+
+        if(s.view==='daily'){
+            s.date=document.getElementById('lpDate').value;
+            if(!s.className||!s.sectionLabel||!s.teacherId||!s.date){
+                toast('Pick class, section, teacher, and date',false); return;
+            }
+            return withBtn(btn, AC.lp._loadDaily());
+        }
+        // monthly
+        if(!s.teacherId){ toast('Pick a teacher',false); return; }
+        return withBtn(btn, AC.lp._loadMonth());
+    },
+
+    _loadDaily:function(){
+        var s=AC.lp._state;
+        // 1. Read the day's cells from cached master timetable
+        var dayName=AC.lp._dayOfWeek(s.date);
+        var label=s.className+' ('+s.sectionLabel+')';
+        var dayMap=(AC.lp._mt && AC.lp._mt.timetables && AC.lp._mt.timetables[label]) || {};
+        var dayCells=dayMap[dayName] || {};
+        // Convert sparse map { idx: cell } → ordered array
+        var maxIdx=-1; Object.keys(dayCells).forEach(function(k){ var i=+k; if(i>maxIdx)maxIdx=i; });
+        // Also use settings.no_of_periods as a floor so we render empty rows too
+        var maxPeriods=Math.max(maxIdx+1, (AC.lp._mt && AC.lp._mt.settings && AC.lp._mt.settings.no_of_periods) || 0);
+        s.cellsByPeriod=[];
+        for(var i=0;i<maxPeriods;i++){
+            var c=dayCells[i] || {};
+            s.cellsByPeriod.push({
+                periodIndex:i, periodNumber:i+1,
+                subject:c.subject||'', teacher:c.teacher||'',
+                teacherId:c.teacherId||c.teacher_id||'',
+                startTime:c.startTime||'', endTime:c.endTime||'',
+                type:c.type||'class'
+            });
+        }
+        // 2. Fetch existing lesson plans for (teacher, date) — envelope: {daily:[…]}
+        return post('academic/get_daily_plan',{teacher_id:s.teacherId, date:s.date}).then(function(d){
+            s.plansByPeriod={};
+            if(d.status==='success' && Array.isArray(d.daily)){
+                d.daily.forEach(function(p){ s.plansByPeriod[p.periodIndex|0]=p; });
+            } else if(d.status!=='success'){
+                toast(d.message||'Failed to load plans',false);
+            }
+            AC.lp._renderDaily(dayName);
+        });
+    },
+
+    _renderDaily:function(dayName){
+        var s=AC.lp._state;
+        var label=s.className+' ('+s.sectionLabel+')';
+        document.getElementById('lpDailyHd').style.display='';
+        document.getElementById('lpDailyHd').innerHTML='<strong>'+esc(label)+'</strong> · '+esc(dayName)+' · '+esc(s.date)+
+            ' · Teacher: <strong>'+esc(s.teacherName||s.teacherId)+'</strong>';
+
+        // Filter to slots that match the selected teacher (admin can plan only their slots; but admin role can plan any)
+        var rows=s.cellsByPeriod.map(function(c){
+            var ownsCell=(c.teacherId && c.teacherId===s.teacherId);
+            var plan=s.plansByPeriod[c.periodIndex] || null;
+            return AC.lp._rowHtml(c, plan, ownsCell);
+        }).join('');
+
+        var html =
+            '<div style="overflow-x:auto"><table class="ac-table" style="min-width:840px">'+
+            '<thead><tr>'+
+                '<th style="width:46px">#</th>'+
+                '<th>Subject</th>'+
+                '<th>Teacher</th>'+
+                '<th style="min-width:160px">Topic</th>'+
+                '<th style="min-width:120px">Status</th>'+
+                '<th style="min-width:200px">Notes / Reschedule</th>'+
+                '<th style="width:90px">Actions</th>'+
+            '</tr></thead>'+
+            '<tbody>'+rows+'</tbody></table></div>';
+        document.getElementById('lpDailyContent').innerHTML=html;
+
+        // Lazy-load topics per distinct (class_section, subject) on this day
+        var seen={};
+        s.cellsByPeriod.forEach(function(c){
+            if(!c.subject) return;
+            var key=label+'|'+c.subject;
+            if(seen[key]) return; seen[key]=true;
+            AC.lp._loadTopics(c.subject);
+        });
+    },
+
+    _rowHtml:function(c, plan, ownsCell){
+        var s=AC.lp._state;
+        var status=(plan && plan.status) || 'planned';
+        var notes =(plan && plan.notes)  || '';
+        var topicId=(plan && plan.topicId) || '';
+        var topicTitle=(plan && plan.topicTitle) || '';
+        var rsTo  =(plan && plan.rescheduledTo) || '';
+        var version=(plan && (plan.version|0)) || 0;
+        var disabled=!ownsCell ? 'disabled' : ''; // can plan only when teacher matches the timetable cell
+        var disabledMsg=!ownsCell && c.subject ? ' <small style="color:#dc2626">(timetable shows '+esc(c.teacher||'a different teacher')+')</small>' : '';
+
+        // Reschedule fields parse "YYYY-MM-DD_P{N}"
+        var rsDate='', rsP='';
+        var m=rsTo.match(/^(\d{4}-\d{2}-\d{2})_P(\d+)$/); if(m){ rsDate=m[1]; rsP=m[2]; }
+
+        if(c.type==='break' || c.type==='lunch'){
+            return '<tr><td>'+(c.periodNumber)+'</td><td colspan="6" style="color:var(--t3);font-style:italic">— '+esc(c.type)+' —</td></tr>';
+        }
+        if(!c.subject){
+            return '<tr><td>'+(c.periodNumber)+'</td><td colspan="6" style="color:var(--t3)">empty period</td></tr>';
+        }
+
+        var subOptions=
+            '<option value="">— no topic —</option>'+
+            (topicId? '<option value="'+esc(topicId)+'" selected data-title="'+esc(topicTitle)+'">'+esc(topicTitle||topicId)+'</option>':'');
+
+        var statusOpts=['planned','completed','skipped','rescheduled'].map(function(st){
+            return '<option value="'+st+'"'+(status===st?' selected':'')+'>'+st+'</option>';
+        }).join('');
+
+        return ''+
+        '<tr data-pi="'+c.periodIndex+'" data-version="'+version+'" data-subject="'+esc(c.subject)+'">'+
+            '<td>'+(c.periodNumber)+'</td>'+
+            '<td>'+esc(c.subject)+'</td>'+
+            '<td>'+esc(c.teacher||'—')+disabledMsg+'</td>'+
+            '<td><select class="lp-topic" data-subject="'+esc(c.subject)+'" '+disabled+' style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg3);font-size:12px">'+subOptions+'</select></td>'+
+            '<td><select class="lp-status" '+disabled+' onchange="AC.lp._onStatusChange(this)" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg3);font-size:12px">'+statusOpts+'</select></td>'+
+            '<td>'+
+                '<textarea class="lp-notes" '+disabled+' rows="1" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg3);font-size:11.5px;resize:vertical;min-height:28px" placeholder="Notes…">'+esc(notes)+'</textarea>'+
+                '<div class="lp-rs" style="display:'+(status==='rescheduled'?'flex':'none')+';gap:4px;margin-top:4px">'+
+                    '<input type="date" class="lp-rs-date" '+disabled+' value="'+esc(rsDate)+'" style="flex:1;padding:4px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:var(--bg3)">'+
+                    '<input type="number" class="lp-rs-p" '+disabled+' value="'+esc(rsP)+'" min="0" placeholder="P#" style="width:62px;padding:4px 6px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:var(--bg3)">'+
+                '</div>'+
+            '</td>'+
+            '<td><button class="ac-btn ac-btn-p ac-btn-sm" '+disabled+' onclick="AC.lp.save(this)"><i class="fa fa-save"></i> Save</button></td>'+
+        '</tr>';
+    },
+
+    _onStatusChange:function(sel){
+        var tr=sel.closest('tr');
+        var rs=tr.querySelector('.lp-rs');
+        if(rs) rs.style.display = (sel.value==='rescheduled') ? 'flex' : 'none';
+    },
+
+    /** Lazy fetch+cache topic list for one subject under the currently
+        selected (className/section). The dropdown for matching rows is
+        repopulated when topics arrive. */
+    _loadTopics:function(subject){
+        var s=AC.lp._state;
+        var cs=s.className+'/'+s.sectionLabel;
+        var key=cs+'|'+subject;
+        if(AC.lp._topicsBySubject[key]) return Promise.resolve(AC.lp._topicsBySubject[key]);
+
+        return post('academic/get_curriculum',{class_section:cs, subject:subject}).then(function(d){
+            var topics=(d.status==='success' && Array.isArray(d.topics)) ? d.topics : [];
+            AC.lp._topicsBySubject[key]=topics;
+            // Repopulate dropdowns for matching rows
+            document.querySelectorAll('#lpDailyContent select.lp-topic[data-subject="'+CSS.escape(subject)+'"]').forEach(function(sel){
+                var current=sel.value;
+                var opts=['<option value="">— no topic —</option>'];
+                topics.forEach(function(t){
+                    var sel2=(t.topicId===current?' selected':'');
+                    opts.push('<option value="'+esc(t.topicId)+'" data-title="'+esc(t.title)+'"'+sel2+'>'+esc(t.title)+(t.chapter?' — '+esc(t.chapter):'')+'</option>');
+                });
+                sel.innerHTML=opts.join('');
+            });
+            return topics;
+        }).catch(function(){ AC.lp._topicsBySubject[key]=[]; return []; });
+    },
+
+    save:function(btn){
+        var tr=btn.closest('tr');
+        var s=AC.lp._state;
+        var pi=+tr.dataset.pi;
+        var version=+tr.dataset.version;
+        var subject=tr.dataset.subject;
+        var topicSel=tr.querySelector('.lp-topic');
+        var topicId=topicSel ? topicSel.value : '';
+        var status =tr.querySelector('.lp-status').value;
+        var notes  =tr.querySelector('.lp-notes').value;
+        var rsDate =tr.querySelector('.lp-rs-date').value;
+        var rsP    =tr.querySelector('.lp-rs-p').value;
+        var rescheduledTo='';
+        if(status==='rescheduled'){
+            if(!rsDate || rsP===''){ toast('Reschedule needs a date and period',false); return; }
+            rescheduledTo=rsDate+'_P'+(parseInt(rsP,10)|0);
+        }
+
+        var payload={
+            class_name:    s.className,
+            section_name:  s.sectionLabel,
+            subject:       subject,
+            teacher_id:    s.teacherId,
+            teacher_name:  s.teacherName,
+            date:          s.date,
+            period_index:  pi,
+            topic_id:      topicId,
+            notes:         notes,
+            status:        status,
+            rescheduled_to:rescheduledTo
+        };
+        if(version>0) payload.expected_version=version;
+
+        withBtn(btn, post('academic/save_lesson_plan', payload)).then(function(d){
+            if(d.status==='success'){
+                toast('Saved',true);
+                AC.lp.load();   // auto-refresh the day
+                return;
+            }
+            // 409 conflict → reload day silently with a notice
+            if(d.message && d.message.indexOf('Conflict:')===0){
+                toast('Plan was modified by another user. Reloading…',false);
+                AC.lp.load();
+                return;
+            }
+            toast(d.message||'Save failed',false);
+        });
+    },
+
+    /** Monthly calendar view — totals (planned/completed) per date */
+    month:function(delta){
+        var s=AC.lp._state;
+        s.monthM += delta;
+        if(s.monthM<1){ s.monthM=12; s.monthY--; }
+        if(s.monthM>12){ s.monthM=1;  s.monthY++; }
+        AC.lp._loadMonth();
+    },
+
+    _loadMonth:function(){
+        var s=AC.lp._state;
+        if(!s.teacherId){ toast('Pick a teacher',false); return; }
+        var label=new Date(s.monthY, s.monthM-1, 1).toLocaleString(undefined,{month:'long',year:'numeric'});
+        document.getElementById('lpMonthLabel').textContent=label;
+        document.getElementById('lpCalContent').innerHTML='<div class="ac-empty"><i class="fa fa-spinner fa-spin"></i> Loading…</div>';
+        return post('academic/get_monthly_plan',{teacher_id:s.teacherId, year:s.monthY, month:s.monthM}).then(function(d){
+            if(d.status!=='success'){ toast(d.message||'Failed',false); return; }
+            AC.lp._renderMonth(d);
+        });
+    },
+
+    _renderMonth:function(d){
+        var s=AC.lp._state;
+        var days=d.days || {};
+        var totals=d.totals || {};
+        var firstDay=new Date(s.monthY, s.monthM-1, 1);
+        var lastDay =new Date(s.monthY, s.monthM,   0).getDate();
+        var startWd=firstDay.getDay(); // 0=Sun
+        var todayIso=new Date().toISOString().slice(0,10);
+
+        var hd=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+                .map(function(x){return '<div class="ac-cal-hd">'+x+'</div>'}).join('');
+        var cells=[];
+        for(var i=0;i<startWd;i++) cells.push('<div class="ac-cal-day other"></div>');
+        for(var dn=1;dn<=lastDay;dn++){
+            var iso=s.monthY+'-'+String(s.monthM).padStart(2,'0')+'-'+String(dn).padStart(2,'0');
+            var arr=days[iso]||[];
+            var total=arr.length;
+            var completed=arr.filter(function(p){return (p.status||'')==='completed'}).length;
+            var todayCls=(iso===todayIso)?' today':'';
+            var content=total>0
+                ? '<div class="ac-cal-dot event">'+total+' plans</div>'+(completed>0?'<div class="ac-cal-dot" style="background:rgba(22,163,74,.15);color:#16a34a">'+completed+' done</div>':'')
+                : '';
+            cells.push('<div class="ac-cal-day'+todayCls+'" onclick="AC.lp._jumpToDate(\''+iso+'\')"><div class="num">'+dn+'</div>'+content+'</div>');
+        }
+        var totalsHtml=
+            '<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;font-size:12px;color:var(--t2)">'+
+            '<span><strong>'+(totals.total||0)+'</strong> total</span>'+
+            '<span style="color:#16a34a"><strong>'+(totals.completed||0)+'</strong> completed</span>'+
+            '<span><strong>'+(totals.planned||0)+'</strong> planned</span>'+
+            '<span style="color:#dc2626"><strong>'+(totals.skipped||0)+'</strong> skipped</span>'+
+            '<span style="color:#92400e"><strong>'+(totals.rescheduled||0)+'</strong> rescheduled</span>'+
+            '</div>';
+        document.getElementById('lpCalContent').innerHTML =
+            totalsHtml + '<div class="ac-cal-grid">'+hd+cells.join('')+'</div>';
+    },
+
+    _jumpToDate:function(iso){
+        var s=AC.lp._state;
+        // Switch to daily view, set date, trigger load if class/section/teacher selected
+        document.querySelectorAll('#lpViewPills .ac-pill').forEach(function(x){x.classList.remove('active')});
+        document.querySelector('#lpViewPills .ac-pill[data-v="daily"]').classList.add('active');
+        s.view='daily';
+        document.getElementById('lpDailyView').style.display='';
+        document.getElementById('lpMonthlyView').style.display='none';
+        document.getElementById('lpDateWrap').style.display='';
+        document.getElementById('lpDate').value=iso;
+        s.date=iso;
+        if(s.className && s.sectionLabel && s.teacherId) AC.lp._loadDaily();
+    },
+
+    _dayOfWeek:function(iso){
+        var dt=new Date(iso+'T00:00:00');
+        return ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][dt.getDay()];
     }
 };
 

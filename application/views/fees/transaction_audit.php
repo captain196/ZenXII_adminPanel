@@ -18,7 +18,7 @@
       </ol>
     </div>
     <div style="display:flex;gap:8px">
-      <button class="fd-btn fd-btn-ghost" onclick="loadStale()"><i class="fa fa-exclamation-triangle"></i> Recovery Panel</button>
+      <button class="fd-btn fd-btn-ghost" onclick="switchTab('recovery',document.querySelector('.ta-tab[data-tab=&quot;recovery&quot;]'))"><i class="fa fa-exclamation-triangle"></i> Recovery Panel</button>
     </div>
   </div>
 
@@ -113,6 +113,31 @@ var csrfHash = '<?= $this->security->get_csrf_hash() ?>';
 function esc(s){var d=document.createElement('div');d.textContent=String(s||'');return d.innerHTML;}
 function fmt(n){return parseFloat(n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});}
 
+// Convert any ISO/RFC timestamp to a human-readable IST (Asia/Kolkata) string
+// in DD-MM-YYYY HH:MM:SS AM/PM format. Server timestamps are ISO 8601 with the
+// server's timezone offset (often +02:00 for the dev box, or Z/+00:00 in
+// production); the admin office is in India, so we always render in IST.
+// Falls back to the original string if the input isn't parseable.
+function fmtIST(iso){
+  if(!iso) return '';
+  var d = new Date(iso);
+  if(isNaN(d.getTime())) return String(iso);
+  // Use Intl with Asia/Kolkata for correct IST conversion incl. handling of
+  // any source timezone offset. Output: "24-04-2026 08:57:34 AM"
+  try {
+    var dateStr = d.toLocaleDateString('en-GB', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      timeZone: 'Asia/Kolkata'
+    }).replace(/\//g, '-');
+    var timeStr = d.toLocaleTimeString('en-IN', {
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: true,
+      timeZone: 'Asia/Kolkata'
+    });
+    return dateStr + ' ' + timeStr + ' IST';
+  } catch(e) { return String(iso); }
+}
+
 function switchTab(tab,btn){
   document.querySelectorAll('.ta-tab').forEach(function(t){t.classList.remove('active');});
   document.querySelectorAll('.ta-panel').forEach(function(p){p.classList.remove('active');});
@@ -130,19 +155,73 @@ function post(url,data){
     .then(function(r){if(r.csrf_hash)csrfHash=r.csrf_hash;return r;});
 }
 
+// Last successful search (saved so we can render a "Back" button when drilling
+// into a single receipt from a student receipt list).
+var lastSearchQuery = '';
+var lastSearchType  = '';
+
 function doAuditSearch(){
   var q=document.getElementById('auditQuery').value.trim();
   if(!q)return;
   var el=document.getElementById('auditResults');
   el.innerHTML='<div style="text-align:center;padding:30px 0;color:var(--t3)"><i class="fa fa-spinner fa-spin"></i> Searching...</div>';
-  post('fees/search_transaction',{query:q,type:document.getElementById('auditType').value}).then(function(r){
+  var typ=document.getElementById('auditType').value;
+  post('fees/search_transaction',{query:q,type:typ}).then(function(r){
     if(r.status!=='success'){el.innerHTML='<div style="padding:20px;color:#dc2626">'+esc(r.message)+'</div>';return;}
+    // Record the search context for back-navigation. Auto-detect resolution:
+    // a numeric query becomes receipt_no on the server; we reflect that here
+    // so the Back button doesn't drop the user on the same receipt detail.
+    var resolvedType=typ;
+    if(typ==='auto'){
+      if(q.indexOf('TXN_')===0) resolvedType='txn_id';
+      else if(/^\d+$/.test(q))  resolvedType='receipt_no';
+      else                       resolvedType='student_id';
+    }
+    if(resolvedType==='student_id' && r.fees_records){
+      lastSearchQuery=q; lastSearchType='student_id';
+    }
     renderAuditResults(r,el);
   }).catch(function(){el.innerHTML='<div style="padding:20px;color:#dc2626">Search failed.</div>';});
 }
 
+// Restore the previous student-id search (the receipt list).
+function backToStudentList(){
+  if(!lastSearchQuery) return;
+  document.getElementById('auditQuery').value=lastSearchQuery;
+  document.getElementById('auditType').value=lastSearchType;
+  doAuditSearch();
+}
+
+// Return to the Recovery panel after drilling into a receipt from there.
+function backToRecovery(){
+  switchTab('recovery', document.querySelector('.ta-tab[data-tab="recovery"]'));
+}
+
+// Field-fallback helper — Firestore canonical schema is camelCase, but a few
+// server response paths still use snake_case for legacy reasons. Read both
+// forms so the UI doesn't show empty cells when one form is missing.
+function pick(obj){
+  for(var i=1;i<arguments.length;i++){
+    var k=arguments[i];
+    if(obj && obj[k]!=null && obj[k]!=='') return obj[k];
+  }
+  return '';
+}
+
 function renderAuditResults(r,el){
   var h='';
+
+  // Contextual "Back" button. Three navigation sources can land here:
+  //   1. student-id search → receipt # click  → back to student receipt list
+  //   2. Recovery panel  → View button       → back to Recovery
+  //   3. direct receipt-no search             → no back (entry point)
+  if(document.getElementById('auditType').value==='receipt_no'){
+    if(lastSearchType==='student_id' && lastSearchQuery){
+      h+='<div style="margin-bottom:14px"><button class="fd-btn fd-btn-ghost" onclick="backToStudentList()"><i class="fa fa-arrow-left"></i> Back to '+esc(lastSearchQuery)+'\'s receipts</button></div>';
+    } else if(lastSearchType==='recovery_jump'){
+      h+='<div style="margin-bottom:14px"><button class="fd-btn fd-btn-ghost" onclick="backToRecovery()"><i class="fa fa-arrow-left"></i> Back to Recovery Panel</button></div>';
+    }
+  }
 
   // Idempotency / Transaction trace
   var idemp=r.idempotency||(r.idempotency_history?r.idempotency_history[0]:null);
@@ -151,15 +230,16 @@ function renderAuditResults(r,el){
     var st=idemp.status||'unknown';
     var bc=st==='success'?'success':st==='processing'?'processing':'error';
     h+='<div class="ta-card"><div class="ta-card-hd"><i class="fa fa-exchange"></i> Transaction Trace <span class="ta-badge '+bc+'">'+esc(st)+'</span></div><div class="ta-card-bd">';
-    if(idemp.txn_id)  h+='<div class="ta-row"><span class="ta-label">Transaction ID</span><span class="ta-val" style="font-weight:700;color:var(--gold)">'+esc(idemp.txn_id)+'</span></div>';
-    if(idemp.receipt_no) h+='<div class="ta-row"><span class="ta-label">Receipt #</span><span class="ta-val">'+esc(idemp.receipt_no)+'</span></div>';
-    if(idemp.user_id) h+='<div class="ta-row"><span class="ta-label">Student ID</span><span class="ta-val">'+esc(idemp.user_id)+'</span></div>';
-    if(idemp.amount)  h+='<div class="ta-row"><span class="ta-label">Amount</span><span class="ta-val">Rs '+fmt(idemp.amount)+'</span></div>';
-    if(idemp.started_at) h+='<div class="ta-row"><span class="ta-label">Started</span><span class="ta-val">'+esc(idemp.started_at)+'</span></div>';
-    if(idemp.completed_at) h+='<div class="ta-row"><span class="ta-label">Completed</span><span class="ta-val">'+esc(idemp.completed_at)+'</span></div>';
-    if(idemp.duration_ms) h+='<div class="ta-row"><span class="ta-label">Duration</span><span class="ta-val">'+idemp.duration_ms+'ms</span></div>';
-    if(idemp.writes_count) h+='<div class="ta-row"><span class="ta-label">Writes</span><span class="ta-val">'+idemp.writes_count+'</span></div>';
-    if(idemp.step) h+='<div class="ta-row"><span class="ta-label">Last Step</span><span class="ta-val">'+esc(idemp.step)+'</span></div>';
+    var v;
+    v=pick(idemp,'txnId','txn_id');         if(v) h+='<div class="ta-row"><span class="ta-label">Transaction ID</span><span class="ta-val" style="font-weight:700;color:var(--gold)">'+esc(v)+'</span></div>';
+    v=pick(idemp,'receiptNo','receipt_no'); if(v) h+='<div class="ta-row"><span class="ta-label">Receipt #</span><span class="ta-val">'+esc(v)+'</span></div>';
+    v=pick(idemp,'userId','user_id','studentId'); if(v) h+='<div class="ta-row"><span class="ta-label">Student ID</span><span class="ta-val">'+esc(v)+'</span></div>';
+    v=pick(idemp,'amount');                  if(v) h+='<div class="ta-row"><span class="ta-label">Amount</span><span class="ta-val">Rs '+fmt(v)+'</span></div>';
+    v=pick(idemp,'startedAt','started_at');   if(v) h+='<div class="ta-row"><span class="ta-label">Started</span><span class="ta-val">'+esc(fmtIST(v))+'</span></div>';
+    v=pick(idemp,'completedAt','completed_at'); if(v) h+='<div class="ta-row"><span class="ta-label">Completed</span><span class="ta-val">'+esc(fmtIST(v))+'</span></div>';
+    v=pick(idemp,'durationMs','duration_ms'); if(v) h+='<div class="ta-row"><span class="ta-label">Duration</span><span class="ta-val">'+v+'ms</span></div>';
+    v=pick(idemp,'writesCount','writes_count'); if(v) h+='<div class="ta-row"><span class="ta-label">Writes</span><span class="ta-val">'+v+'</span></div>';
+    v=pick(idemp,'step');                    if(v) h+='<div class="ta-row"><span class="ta-label">Last Step</span><span class="ta-val">'+esc(v)+'</span></div>';
     if(idemp.steps&&idemp.steps.length){
       h+='<div style="margin-top:8px"><span class="ta-label">Step Trace</span><div class="ta-steps">';
       idemp.steps.forEach(function(s){h+='<span class="ta-step">'+esc(s)+'</span>';});
@@ -168,16 +248,29 @@ function renderAuditResults(r,el){
     h+='</div></div>';
   }
 
-  // Fees Record
-  if(r.fees_record){
-    var fr=r.fees_record;
-    h+='<div class="ta-card"><div class="ta-card-hd"><i class="fa fa-file-text-o"></i> Fees Record</div><div class="ta-card-bd">';
-    h+='<div class="ta-row"><span class="ta-label">Amount</span><span class="ta-val">'+esc(fr.Amount)+'</span></div>';
-    h+='<div class="ta-row"><span class="ta-label">Discount</span><span class="ta-val">'+esc(fr.Discount)+'</span></div>';
-    h+='<div class="ta-row"><span class="ta-label">Fine</span><span class="ta-val">'+esc(fr.Fine)+'</span></div>';
-    h+='<div class="ta-row"><span class="ta-label">Mode</span><span class="ta-val">'+esc(fr.Mode)+'</span></div>';
-    h+='<div class="ta-row"><span class="ta-label">Date</span><span class="ta-val">'+esc(fr.Date)+'</span></div>';
-    if(fr.txn_id) h+='<div class="ta-row"><span class="ta-label">TXN ID</span><span class="ta-val" style="color:var(--gold)">'+esc(fr.txn_id)+'</span></div>';
+  // Fees Record (single — receipt_no search returns r.receipt; legacy r.fees_record kept as fallback)
+  var fr = r.receipt || r.fees_record;
+  if(fr && typeof fr==='object'){
+    h+='<div class="ta-card"><div class="ta-card-hd"><i class="fa fa-file-text-o"></i> Fees Record';
+    var rn = pick(fr,'receiptNo','receipt_no');
+    if(rn) h+=' <span class="ta-badge success" style="margin-left:6px">Receipt #'+esc(rn)+'</span>';
+    h+='</div><div class="ta-card-bd">';
+    var v;
+    v=pick(fr,'studentName','student_name'); if(v) h+='<div class="ta-row"><span class="ta-label">Student</span><span class="ta-val">'+esc(v)+'</span></div>';
+    v=pick(fr,'studentId','student_id');     if(v) h+='<div class="ta-row"><span class="ta-label">Student ID</span><span class="ta-val">'+esc(v)+'</span></div>';
+    v=pick(fr,'className','class','Class');  if(v) h+='<div class="ta-row"><span class="ta-label">Class</span><span class="ta-val">'+esc(v)+'</span></div>';
+    v=pick(fr,'section','Section');           if(v) h+='<div class="ta-row"><span class="ta-label">Section</span><span class="ta-val">'+esc(v)+'</span></div>';
+    v=pick(fr,'amount','Amount');             if(v!=='') h+='<div class="ta-row"><span class="ta-label">Amount</span><span class="ta-val">Rs '+fmt(v)+'</span></div>';
+    v=pick(fr,'discount','Discount');         if(v!=='') h+='<div class="ta-row"><span class="ta-label">Discount</span><span class="ta-val">Rs '+fmt(v)+'</span></div>';
+    v=pick(fr,'fine','Fine');                 if(v!=='') h+='<div class="ta-row"><span class="ta-label">Fine</span><span class="ta-val">Rs '+fmt(v)+'</span></div>';
+    v=pick(fr,'paymentMode','mode','Mode');   if(v) h+='<div class="ta-row"><span class="ta-label">Mode</span><span class="ta-val">'+esc(v)+'</span></div>';
+    // Receipt 'date' field is already DD-MM-YYYY (Indian); only ISO timestamps need IST conversion.
+    v=pick(fr,'date','Date','paymentDate');   if(v) h+='<div class="ta-row"><span class="ta-label">Date</span><span class="ta-val">'+esc(v)+'</span></div>';
+    v=pick(fr,'collectedBy','collected_by');  if(v) h+='<div class="ta-row"><span class="ta-label">Collected By</span><span class="ta-val">'+esc(v)+'</span></div>';
+    v=pick(fr,'txnId','txn_id');              if(v) h+='<div class="ta-row"><span class="ta-label">TXN ID</span><span class="ta-val" style="color:var(--gold);font-family:var(--font-m);font-size:11px">'+esc(v)+'</span></div>';
+    v=pick(fr,'remarks');                     if(v) h+='<div class="ta-row"><span class="ta-label">Remarks</span><span class="ta-val">'+esc(v)+'</span></div>';
+    v=pick(fr,'createdAt','created_at');      if(v) h+='<div class="ta-row"><span class="ta-label">Created</span><span class="ta-val" style="font-size:11px;color:var(--t3)">'+esc(fmtIST(v))+'</span></div>';
+    v=pick(fr,'updatedAt','updated_at');      if(v) h+='<div class="ta-row"><span class="ta-label">Last Updated</span><span class="ta-val" style="font-size:11px;color:var(--t3)">'+esc(fmtIST(v))+'</span></div>';
     h+='</div></div>';
   }
 
@@ -207,8 +300,12 @@ function renderAuditResults(r,el){
   if(r.ledger_entries&&r.ledger_entries.length){
     h+='<div class="ta-card"><div class="ta-card-hd"><i class="fa fa-calculator"></i> Accounting Journal Entries ('+r.ledger_entries.length+')</div><div class="ta-card-bd">';
     r.ledger_entries.forEach(function(e){
+      // Ledger 'date' may be either DD-MM-YYYY (already Indian) or ISO 8601 with TZ.
+      // Detect by presence of 'T' to decide whether to run IST conversion.
+      var dateRaw = e.date || e.createdAt || e.created_at || '';
+      var dateOut = (typeof dateRaw==='string' && dateRaw.indexOf('T')!==-1) ? fmtIST(dateRaw) : dateRaw;
       h+='<div style="padding:8px 0;border-bottom:1px solid var(--border)">';
-      h+='<div style="display:flex;justify-content:space-between;font-size:12px"><span style="font-weight:600">'+esc(e.voucher_no||e._id)+'</span><span style="color:var(--t3)">'+esc(e.date)+'</span></div>';
+      h+='<div style="display:flex;justify-content:space-between;font-size:12px"><span style="font-weight:600">'+esc(e.voucher_no||e._id)+'</span><span style="color:var(--t3)">'+esc(dateOut)+'</span></div>';
       h+='<div style="font-size:12px;color:var(--t2);margin-top:2px">'+esc(e.narration)+'</div>';
       h+='<div style="font-size:11px;color:var(--t3);margin-top:2px">Dr: '+fmt(e.total_dr)+' | Cr: '+fmt(e.total_cr)+'</div>';
       h+='</div>';
@@ -216,15 +313,40 @@ function renderAuditResults(r,el){
     h+='</div></div>';
   }
 
-  // Student receipts list (for student_id search)
-  if(r.fees_records&&typeof r.fees_records==='object'){
-    var rks=Object.keys(r.fees_records);
-    if(rks.length){
-      h+='<div class="ta-card"><div class="ta-card-hd"><i class="fa fa-list"></i> All Receipts ('+rks.length+')</div><div class="ta-card-bd">';
-      h+='<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="border-bottom:2px solid var(--border)"><th style="text-align:left;padding:5px 8px;color:var(--t3)">Receipt</th><th style="text-align:left;padding:5px 8px;color:var(--t3)">Date</th><th style="text-align:right;padding:5px 8px;color:var(--t3)">Amount</th><th style="text-align:left;padding:5px 8px;color:var(--t3)">Mode</th></tr></thead><tbody>';
-      rks.forEach(function(rk){
-        var rec=r.fees_records[rk];
-        h+='<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="document.getElementById(\'auditQuery\').value=\''+rk.replace('F','')+'\';document.getElementById(\'auditType\').value=\'receipt_no\';doAuditSearch()"><td style="padding:5px 8px;color:var(--gold);font-weight:600">'+esc(rk)+'</td><td style="padding:5px 8px">'+esc(rec.Date)+'</td><td style="padding:5px 8px;text-align:right;font-family:var(--font-m)">'+esc(rec.Amount)+'</td><td style="padding:5px 8px">'+esc(rec.Mode)+'</td></tr>';
+  // Student receipts list (for student_id search). Backend sends an array of
+  // receipt docs in canonical Firestore camelCase shape (receiptNo, amount,
+  // paymentMode, date, txnId, ...).
+  if(r.fees_records){
+    var recs = Array.isArray(r.fees_records)
+      ? r.fees_records
+      : Object.keys(r.fees_records).map(function(k){return r.fees_records[k];});
+    if(recs.length){
+      // Sort by receiptNo numerically (Firestore returns unordered).
+      recs.sort(function(a,b){
+        var ra=parseInt(pick(a,'receiptNo','receipt_no')||'0',10);
+        var rb=parseInt(pick(b,'receiptNo','receipt_no')||'0',10);
+        return ra-rb;
+      });
+      h+='<div class="ta-card"><div class="ta-card-hd"><i class="fa fa-list"></i> All Receipts ('+recs.length+')</div><div class="ta-card-bd">';
+      h+='<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="border-bottom:2px solid var(--border)"><th style="text-align:left;padding:5px 8px;color:var(--t3)">Receipt #</th><th style="text-align:left;padding:5px 8px;color:var(--t3)">Date</th><th style="text-align:right;padding:5px 8px;color:var(--t3)">Amount</th><th style="text-align:left;padding:5px 8px;color:var(--t3)">Mode</th><th style="text-align:left;padding:5px 8px;color:var(--t3)">TXN</th></tr></thead><tbody>';
+      recs.forEach(function(rec){
+        var recNo  = pick(rec,'receiptNo','receipt_no');
+        var recDt  = pick(rec,'date','Date','paymentDate');
+        var recAmt = pick(rec,'amount','Amount');
+        var recMd  = pick(rec,'paymentMode','mode','Mode');
+        var recTxn = pick(rec,'txnId','txn_id');
+        var clk = recNo
+          ? 'document.getElementById(\'auditQuery\').value=\''+esc(recNo)+'\';document.getElementById(\'auditType\').value=\'receipt_no\';doAuditSearch()'
+          : '';
+        h+='<tr style="border-bottom:1px solid var(--border);'+(recNo?'cursor:pointer':'')+'"'
+          + (clk?' onclick="'+clk+'"':'')
+          + '>';
+        h+='<td style="padding:5px 8px;color:var(--gold);font-weight:700">'+esc(recNo||'—')+'</td>';
+        h+='<td style="padding:5px 8px">'+esc(recDt||'—')+'</td>';
+        h+='<td style="padding:5px 8px;text-align:right;font-family:var(--font-m)">Rs '+fmt(recAmt)+'</td>';
+        h+='<td style="padding:5px 8px">'+esc(recMd||'—')+'</td>';
+        h+='<td style="padding:5px 8px;font-family:var(--font-m);font-size:10px;color:var(--t3)">'+esc(recTxn||'—')+'</td>';
+        h+='</tr>';
       });
       h+='</tbody></table></div></div>';
     }
@@ -271,10 +393,25 @@ function loadStale(){
       items.forEach(function(it){
         var key=it._key||it._receipt_no||it._student_id||'';
         var age=Math.round((it._age_seconds||0)/60);
-        var info=it.receipt_no?'Receipt: '+it.receipt_no:'';
-        if(it.user_id) info+=(info?' | ':'')+'Student: '+it.user_id;
-        if(it.step) info+=(info?' | ':'')+'Step: '+it.step;
-        if(it.amount) info+=(info?' | ':'')+'Amt: '+fmt(it.amount);
+        // Read with camelCase + snake_case fallback. Firestore canonical
+        // schema is camelCase (receiptNo, userId, etc.), but a few legacy
+        // writers still emit snake_case. pick() returns the first non-empty
+        // value found — so the row info string + button args stay populated
+        // regardless of which writer produced the doc.
+        var receiptNo = pick(it,'receiptNo','receipt_no');
+        var userId    = pick(it,'userId','user_id','studentId','student_id');
+        var step      = pick(it,'step');
+        var amount    = pick(it,'amount');
+        var refundId  = pick(it,'refundId','refund_id');
+        var kind      = pick(it,'kind');
+
+        var info='';
+        if(kind)      info+=(info?' | ':'')+'Kind: '+kind;
+        if(receiptNo) info+=(info?' | ':'')+'Receipt: '+receiptNo;
+        if(userId)    info+=(info?' | ':'')+'Student: '+userId;
+        if(step)      info+=(info?' | ':'')+'Step: '+step;
+        if(amount)    info+=(info?' | ':'')+'Amt: Rs '+fmt(amount);
+        if(refundId)  info+=(info?' | ':'')+'Refund: '+refundId;
 
         s+='<div class="ta-issue" id="issue_'+esc(key)+'">';
         s+='<div class="ta-issue-info"><strong>'+esc(key)+'</strong><div class="ta-issue-age">'+esc(info)+' | Age: '+age+' min</div></div>';
@@ -283,11 +420,11 @@ function loadStale(){
         // Smart action buttons based on issue type
         if(type==='processing'){
           // Stale processing — offer Diagnose first, then Clear
-          s+='<button class="ta-action-btn diagnose" onclick="diagnoseIssue(\''+esc(key)+'\',\''+esc(it.receipt_no||'')+'\',\''+esc(it.user_id||'')+'\')" title="Analyze what was written"><i class="fa fa-stethoscope"></i> Diagnose</button>';
-          s+='<button class="ta-action-btn view" onclick="viewInAudit(\''+esc(it.receipt_no||'')+'\')" title="View full audit trail"><i class="fa fa-eye"></i> View</button>';
+          s+='<button class="ta-action-btn diagnose" onclick="diagnoseIssue(\''+esc(key)+'\',\''+esc(receiptNo)+'\',\''+esc(userId)+'\')" title="Analyze what was written"><i class="fa fa-stethoscope"></i> Diagnose</button>';
+          s+='<button class="ta-action-btn view" onclick="viewInAudit(\''+esc(receiptNo)+'\')" title="View full audit trail" '+(receiptNo?'':'disabled style="opacity:.4;cursor:not-allowed"')+'><i class="fa fa-eye"></i> View</button>';
           s+='<button class="ta-action-btn clear" onclick="confirmResolve(\''+defaultAction+'\',\''+esc(key)+'\',\'Stale processing record\')" title="Mark as manually cleared"><i class="fa fa-times"></i> Clear</button>';
         } else if(type==='pending'){
-          s+='<button class="ta-action-btn view" onclick="viewInAudit(\''+esc(key.replace(/^F/,"")||'')+'\')" title="View receipt"><i class="fa fa-eye"></i> View</button>';
+          s+='<button class="ta-action-btn view" onclick="viewInAudit(\''+esc(receiptNo)+'\')" title="View receipt" '+(receiptNo?'':'disabled style="opacity:.4;cursor:not-allowed"')+'><i class="fa fa-eye"></i> View</button>';
           s+='<button class="ta-action-btn clear" onclick="confirmResolve(\''+defaultAction+'\',\''+esc(key)+'\',\'Pending fees marker\')" title="Clear pending marker"><i class="fa fa-times"></i> Clear</button>';
         } else if(type==='reservation'){
           s+='<button class="ta-action-btn clear" onclick="confirmResolve(\''+defaultAction+'\',\''+esc(key)+'\',\'Stale receipt reservation\')" title="Release reserved receipt number"><i class="fa fa-times"></i> Release</button>';
@@ -368,9 +505,12 @@ function diagnoseIssue(idempKey,receiptNo,studentId){
   });
 }
 
-// View a receipt in the audit search tab
+// View a receipt in the audit search tab. Mark navigation source as 'recovery'
+// so the receipt detail can offer a "Back to Recovery" button.
 function viewInAudit(receiptNo){
   if(!receiptNo)return;
+  lastSearchQuery = '';            // clear student-list context
+  lastSearchType  = 'recovery_jump'; // signal: came from Recovery
   document.getElementById('auditQuery').value=receiptNo;
   document.getElementById('auditType').value='receipt_no';
   switchTab('search',document.querySelector('.ta-tab[data-tab="search"]'));

@@ -18,6 +18,20 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 class Fee_defaulter_check
 {
+    /**
+     * Half-paise epsilon for balance comparisons. Mirrors
+     * Fee_firestore_txn::BALANCE_EPSILON (canonical definition lives
+     * there). Defined locally to avoid a class-load dependency on the
+     * txn library when this checker runs in isolation (e.g. inside a
+     * shutdown handler that runs after CI cleanup).
+     *
+     * Stage A hardening 2026-05-10: previously this file used bare
+     * `> 0` / `<= 0.0` which diverged from the rest of the financial
+     * subsystem and caused defaulter projection drift when sub-paise
+     * float noise placed a balance between 0 and 0.005.
+     */
+    private const BALANCE_EPSILON = 0.005;
+
     private $firebase;
     private $schoolName;
     private $sessionYear;
@@ -123,7 +137,7 @@ class Fee_defaulter_check
                 if (!is_array($d)) continue;
 
                 $balance = $this->_toFloat($d['balance'] ?? 0);
-                if ($balance <= 0.0) {
+                if ($balance <= self::BALANCE_EPSILON) {
                     if (!empty($d['updatedAt']) && (string)$d['updatedAt'] > $lastPaymentDate) {
                         $lastPaymentDate = (string) $d['updatedAt'];
                     }
@@ -538,21 +552,44 @@ class Fee_defaulter_check
     }
 
     /**
-     * Fees sub-check: sums pending fees.
+     * Fees sub-check: sums pending fees from the canonical feeDemands
+     * source. Symmetric with _checkHostelClearance / _checkTransportClearance
+     * which already query feeDemands directly.
+     *
+     * Phase TC-3 (2026-05-09): replaced denormalized feeDefaulters lookup
+     * with canonical aggregation. The previous implementation read
+     * feeDefaulters.totalDues, which is only populated by
+     * updateDefaulterStatus() — meaning students who never had payment
+     * activity (no receipts written) had no defaulter doc and were
+     * silently treated as fees_clear=true even when feeDemands showed
+     * unpaid balances (verified live with STU0004: Rs 34,600 unpaid,
+     * defaulter doc absent, leak path through TC issuance).
+     *
+     * Hostel/Transport categories are excluded here so they remain
+     * exclusively counted by their dedicated sub-checks; this prevents
+     * total_dues from double-counting those amounts.
      */
     private function _checkFeesClearance(string $studentId, array &$clearance): void
     {
         try {
-            // Phase 5 — read from Firestore feeDefaulters which IS the
-            // canonical "how much does this student owe" source; the old
-            // RTDB Accounts/Pending_fees tree is frozen.
-            $doc = $this->firebase->firestoreGet(
-                'feeDefaulters',
-                "{$this->schoolName}_{$this->sessionYear}_{$studentId}"
-            );
-            $totalDues = is_array($doc) ? $this->_toFloat($doc['totalDues'] ?? 0) : 0.0;
+            $rows = $this->firebase->firestoreQuery('feeDemands', [
+                ['schoolId',  '==', $this->schoolName],
+                ['session',   '==', $this->sessionYear],
+                ['studentId', '==', $studentId],
+            ]);
+            $totalDues = 0.0;
+            foreach ((array) $rows as $row) {
+                $d = is_array($row['data'] ?? null) ? $row['data'] : $row;
+                if (!is_array($d)) continue;
+                $cat = (string) ($d['category'] ?? '');
+                if ($cat === 'Hostel' || $cat === 'Transport') continue;
+                $status = strtolower(trim((string) ($d['status'] ?? '')));
+                if ($status === 'paid') continue;
+                $balance = $this->_toFloat($d['balance'] ?? 0);
+                if ($balance > self::BALANCE_EPSILON) $totalDues += $balance;
+            }
             $clearance['fees_dues']  = round($totalDues, 2);
-            $clearance['fees_clear'] = ($totalDues <= 0);
+            $clearance['fees_clear'] = ($totalDues <= self::BALANCE_EPSILON);
         } catch (\Exception $e) {
             log_message('error', "Fee_defaulter_check::_checkFeesClearance failed for student [{$studentId}]: " . $e->getMessage());
             // On error, conservatively mark as NOT clear
@@ -628,7 +665,7 @@ class Fee_defaulter_check
                 $status  = strtolower(trim((string) ($d['status'] ?? '')));
                 if ($status === 'paid') continue;
                 $balance = $this->_toFloat($d['balance'] ?? 0);
-                if ($balance > 0) $hostelDues += $balance;
+                if ($balance > self::BALANCE_EPSILON) $hostelDues += $balance;
             }
 
             $clearance['hostel_dues']  = round($hostelDues, 2);
@@ -662,11 +699,11 @@ class Fee_defaulter_check
                 $status  = strtolower(trim((string) ($d['status'] ?? '')));
                 if ($status === 'paid') continue;
                 $balance = $this->_toFloat($d['balance'] ?? 0);
-                if ($balance > 0) $transportDues += $balance;
+                if ($balance > self::BALANCE_EPSILON) $transportDues += $balance;
             }
 
             $clearance['transport_dues']  = round($transportDues, 2);
-            $clearance['transport_clear'] = ($transportDues <= 0);
+            $clearance['transport_clear'] = ($transportDues <= self::BALANCE_EPSILON);
 
         } catch (\Exception $e) {
             log_message('error', "Fee_defaulter_check::_checkTransportClearance failed for student [{$studentId}]: " . $e->getMessage());

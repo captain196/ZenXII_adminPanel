@@ -130,6 +130,30 @@ final class Accounting_period_lock
      * Invalidate the cache. Call IMMEDIATELY after lock / reopen writes
      * so in-flight requests pick up the new state within one cache
      * lookup (rather than 60 s later).
+     *
+     * ⚠ FOOTGUN — this method is NOT auto-wired. Every code path that
+     * mutates the period-lock doc (locks a period, reopens a period,
+     * adjusts lockedUntil) MUST manually invoke invalidateCache()
+     * IMMEDIATELY after the firestoreSet. Otherwise the APCU cache
+     * holds the prior state for up to 60 s, allowing in-flight writes
+     * to land in a period that the admin just closed (or be wrongly
+     * rejected after a reopen).
+     *
+     * Stage M1A.6 maintainability hardening 2026-05-10: this docblock
+     * makes the contract explicit because the previous comment only
+     * explained WHEN to call it, not WHO is responsible. If you add a
+     * new endpoint that writes the period-lock doc and skip this
+     * call, in-flight journal posts will silently behave according
+     * to the old lock state for up to 60 s — a rare but financially
+     * meaningful drift window.
+     *
+     * Pattern to use everywhere a lock is mutated:
+     *   $this->firebase->firestoreSet('accountingConfig', $docId, $payload, true);
+     *   $this->acctLock->invalidateCache();   // ← MUST follow the set
+     *
+     * If a future refactor moves all lock-doc writes through a single
+     * helper inside this class, replace this comment block with an
+     * "auto-invalidating set()" method and delete this warning.
      */
     public function invalidateCache(): void
     {

@@ -5,9 +5,13 @@
  * Every write that touches money (demand create/update, receipt
  * finalise, payment mark-processed, manual admin edits) should call
  * `record()` with a before+after snapshot. The logger stores the
- * diff in fee_audit_logs/{auditId} for regulator-ready history.
+ * diff in feeAuditLogs/{auditId} for regulator-ready history.
+ * (Pre-Phase-1 the collection was `fee_audit_logs` (snake); rolled to
+ * camelCase 2026-05-07 to match Firestore rules + project canon. The
+ * snake collection is preserved post-backfill for a 30-day grace
+ * window, then will be retired.)
  *
- * Doc shape (fee_audit_logs/{auditId}):
+ * Doc shape (feeAuditLogs/{auditId}):
  *   {
  *     auditId,                      // stable, sortable (YYYYMMDD + hex)
  *     schoolId, session,
@@ -34,7 +38,7 @@
  */
 final class Fee_audit_logger
 {
-    public const COLLECTION = 'fee_audit_logs';
+    public const COLLECTION = 'feeAuditLogs';
 
     /** @var object must expose firestoreSet($collection, $docId, array $data[, bool $merge]) */
     private $firebase;

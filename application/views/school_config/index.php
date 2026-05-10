@@ -510,9 +510,30 @@
                     <div id="rollPromoteWarn" style="display:none;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.45);border-radius:8px;padding:10px;font-size:12px;color:#92400e;margin-bottom:12px;">
                         <b>Heads up:</b> Student promotion updates each student's <code>session</code> and <code>className</code> in place. After rollover the source session will show NO active students (historical marks/attendance/fees remain intact with their original session stamp). Class 12 students become <code>status=Alumni</code>.
                     </div>
-                    <div style="display:flex;justify-content:flex-end;gap:8px;">
+
+                    <!-- ────────────────────────────────────────────────
+                         R1.4 — Step 2: Fees rollover (freeze + carry-forward)
+                         Independent flow. Admin can run Step 1 (academic),
+                         Step 2 (fees), or both. Each step has its own
+                         preview + execute. Type-to-confirm gates Step 2.
+                         ──────────────────────────────────────────────── -->
+                    <div style="margin-top:6px;padding:12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                            <h4 style="margin:0;font-size:14px;"><i class="fa fa-archive"></i> Step 2 — Freeze fees &amp; carry forward dues <span style="font-size:11px;color:var(--t3);font-weight:normal;">(optional, runs against the same From/To above)</span></h4>
+                            <button class="sc-btn sc-btn-ghost sc-btn-sm" onclick="rollFeesPreview()"><i class="fa fa-eye"></i> Preview</button>
+                        </div>
+                        <div style="font-size:12px;color:var(--t2);margin-bottom:8px;">
+                            Closes the source session for new payments and writes carry-forward records (unpaid balances) into the target session. Run this AFTER Step 1 or independently. Does NOT affect Razorpay verifications already in flight.
+                        </div>
+                        <div id="rollFeesPreviewBox" style="display:none;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px;font-size:12.5px;"></div>
+                        <div style="display:flex;justify-content:flex-end;gap:8px;">
+                            <button class="sc-btn sc-btn-warn" id="rollFeesExecBtn" onclick="rollFeesExecute()" style="display:none;"><i class="fa fa-snowflake-o"></i> Freeze old session + carry forward</button>
+                        </div>
+                    </div>
+
+                    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
                         <button class="sc-btn sc-btn-ghost" onclick="closeRolloverModal()">Cancel</button>
-                        <button class="sc-btn sc-btn-primary" id="rollExecBtn" onclick="rollExecute()"><i class="fa fa-play"></i> Execute Rollover</button>
+                        <button class="sc-btn sc-btn-primary" id="rollExecBtn" onclick="rollExecute()"><i class="fa fa-play"></i> Execute Step 1</button>
                     </div>
                 </div>
             </div>
@@ -1340,6 +1361,241 @@ window.rollExecute = function() {
         }
     });
 };
+
+/* ────────────────────────────────────────────────────────────────
+ * R1.4 — Step 2: Fees rollover (freeze + carry-forward)
+ *
+ * Independent of Step 1. Hits Fees::year_rollover_prepare for
+ * read-only preview and Fees::year_rollover_execute for the
+ * irreversible freeze + per-student carry-forward write.
+ *
+ * Type-to-confirm: admin must type the target session year EXACTLY
+ * before the execute call fires. This is the single most destructive
+ * Fees-domain operation in the system; an accidental click should
+ * never trigger it.
+ * ──────────────────────────────────────────────────────────────── */
+
+window.rollFeesPreview = function() {
+    var from = document.getElementById('rollFrom').value;
+    var to   = document.getElementById('rollTo').value.trim();
+    if (!from || !to) { toast('Select both From and To sessions above.', false); return; }
+    if (!/^\d{4}-\d{2}$/.test(to)) { toast('Target session must be YYYY-YY format.', false); return; }
+    if (from === to) { toast('From and To sessions must differ.', false); return; }
+
+    post('fees/year_rollover_prepare', { new_session: to }, function(d) {
+        if (d.status !== 'success') { toast(d.message || 'Preview failed.', false); return; }
+        var box = document.getElementById('rollFeesPreviewBox');
+        var execBtn = document.getElementById('rollFeesExecBtn');
+        var html = '';
+
+        // Headline counts.
+        html += '<div style="margin-bottom:8px;"><b>Preview: ' + esc(from) + ' &rarr; ' + esc(to) + '</b></div>';
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;">'
+              + '<div><b>' + (d.carry_forward_count || 0) + '</b> students with dues</div>'
+              + '<div>Total: <b>₹ ' + Number(d.total_carry_forward || 0).toLocaleString("en-IN") + '</b></div>'
+              + '</div>';
+
+        // Blockers — must be empty before execute is allowed.
+        var blockers = [];
+        if (d.in_flight_count > 0)   blockers.push(d.in_flight_count + ' in-flight payment lock(s)');
+        if (d.open_orders_count > 0) blockers.push(d.open_orders_count + ' unverified Razorpay order(s)');
+        if (blockers.length) {
+            html += '<div style="background:rgba(220,38,38,.10);border:1px solid rgba(220,38,38,.4);border-radius:6px;padding:8px;margin-bottom:6px;color:#991b1b;">'
+                  + '<b>Blocked:</b> ' + esc(blockers.join(', '))
+                  + '<div style="font-size:11px;margin-top:4px;">Wait for these to clear before executing.</div>'
+                  + '</div>';
+        }
+
+        // Warnings — non-blocking but worth surfacing.
+        if (d.already_frozen) {
+            html += '<div style="background:rgba(217,119,6,.10);border:1px solid rgba(217,119,6,.4);border-radius:6px;padding:8px;margin-bottom:6px;color:#92400e;">'
+                  + '<b>Already frozen:</b> ' + esc(from) + ' was rolled over on ' + esc(d.frozen_at || 'unknown') + ' by ' + esc(d.frozen_by || 'unknown') + '. Re-running within 24h is blocked unless you pass force=1.'
+                  + '</div>';
+        }
+        if (d.target_warning) {
+            html += '<div style="background:rgba(217,119,6,.10);border:1px solid rgba(217,119,6,.4);border-radius:6px;padding:8px;margin-bottom:6px;color:#92400e;">'
+                  + esc(d.target_warning)
+                  + '</div>';
+        }
+
+        // Top dues — anomaly spot-check.
+        if (Array.isArray(d.top_dues) && d.top_dues.length) {
+            html += '<div style="margin-top:8px;"><b>Top dues:</b><ul style="margin:4px 0 0 18px;padding:0;">';
+            d.top_dues.slice(0, 5).forEach(function(t) {
+                html += '<li>' + esc(t.student_name || t.student_id) + ' &mdash; ' + esc(t.class || '') + ' ' + esc(t.section || '')
+                      + ' &mdash; <b>₹ ' + Number(t.dues).toLocaleString("en-IN") + '</b></li>';
+            });
+            html += '</ul></div>';
+        }
+
+        // Per-class breakdown — sanity check distribution.
+        if (Array.isArray(d.per_class_breakdown) && d.per_class_breakdown.length) {
+            html += '<div style="margin-top:8px;"><b>By class:</b> '
+                  + d.per_class_breakdown.map(function(c) {
+                        return esc(c.class) + ' (' + c.count + ' &middot; ₹ ' + Number(c.dues).toLocaleString("en-IN") + ')';
+                    }).join(', ')
+                  + '</div>';
+        }
+
+        box.innerHTML = html;
+        box.style.display = 'block';
+
+        // Execute button gating.
+        if (d.can_proceed && !d.already_frozen) {
+            execBtn.style.display = 'inline-flex';
+            execBtn.disabled = false;
+        } else {
+            execBtn.style.display = 'none';
+        }
+
+        // Cache the preview snapshot for the type-to-confirm dialog.
+        window._feesRollPreview = d;
+    });
+};
+
+window.rollFeesExecute = function() {
+    var from = document.getElementById('rollFrom').value;
+    var to   = document.getElementById('rollTo').value.trim();
+    if (!from || !to) { toast('Select both From and To sessions above.', false); return; }
+    if (!/^\d{4}-\d{2}$/.test(to)) { toast('Target session must be YYYY-YY format.', false); return; }
+
+    var snap = window._feesRollPreview || {};
+    var summary = (snap.carry_forward_count || 0) + ' students &middot; ₹ '
+                + Number(snap.total_carry_forward || 0).toLocaleString("en-IN");
+
+    _typeToConfirmDialog({
+        title: 'Freeze ' + from + ' and carry forward dues',
+        body: 'You are about to:\n\n' +
+              '  • Mark ' + from + ' as FROZEN (no new payments accepted)\n' +
+              '  • Write ' + (snap.carry_forward_count || 0) + ' carry-forward record(s) into ' + to + '\n' +
+              '  • Total amount carried forward: ₹ ' + Number(snap.total_carry_forward || 0).toLocaleString("en-IN") + '\n\n' +
+              'This action is irreversible from the UI. Type the target session below to confirm.',
+        expectedToken: to,
+        confirmText: 'Freeze and carry forward',
+        dangerous: true
+    }).then(function(ok) {
+        if (!ok) return;
+        var btn = document.getElementById('rollFeesExecBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Rolling over...';
+        post('fees/year_rollover_execute', { new_session: to }, function(d) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa fa-snowflake-o"></i> Freeze old session + carry forward';
+            if (d.status !== 'success') {
+                toast(d.message || 'Rollover failed.', false);
+                return;
+            }
+            toast('Rollover complete: ' + (d.message || ''), true);
+            // Refresh preview so the admin sees the new "frozen" state.
+            rollFeesPreview();
+        });
+    });
+};
+
+/**
+ * Type-to-confirm dialog for irreversible operations. Admin must type
+ * `expectedToken` (here: the target session year) verbatim before the
+ * Confirm button enables. Esc cancels. Backdrop click does NOT dismiss
+ * — operation is too destructive for accidental dismissal.
+ *
+ * Returns Promise<boolean>.
+ */
+function _typeToConfirmDialog(opts) {
+    return new Promise(function(resolve) {
+        var prevFocus = document.activeElement;
+        var bd = document.createElement('div');
+        bd.setAttribute('role', 'dialog');
+        bd.setAttribute('aria-modal', 'true');
+        bd.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:11000;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+        var card = document.createElement('div');
+        card.style.cssText = 'background:#fff;border-radius:14px;max-width:540px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3);';
+
+        var hdr = document.createElement('div');
+        hdr.style.cssText = 'padding:14px 18px;border-bottom:1px solid #e5e7eb;background:' + (opts.dangerous ? '#fef2f2' : '#f8fafc') + ';display:flex;align-items:center;gap:10px;';
+        var icon = document.createElement('i');
+        icon.className = 'fa ' + (opts.dangerous ? 'fa-exclamation-triangle' : 'fa-question-circle');
+        icon.style.cssText = 'font-size:20px;color:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+        hdr.appendChild(icon);
+        var title = document.createElement('h4');
+        title.style.cssText = 'margin:0;font-size:15px;font-weight:600;color:#0f172a;';
+        title.textContent = opts.title || 'Please confirm';
+        hdr.appendChild(title);
+
+        var body = document.createElement('div');
+        body.style.cssText = 'padding:18px;color:#334155;font-size:13.5px;line-height:1.55;white-space:pre-wrap;';
+        body.textContent = opts.body || '';
+
+        var inputWrap = document.createElement('div');
+        inputWrap.style.cssText = 'padding:0 18px 16px;';
+        var inputLabel = document.createElement('label');
+        inputLabel.textContent = 'Type "' + (opts.expectedToken || '') + '" to confirm:';
+        inputLabel.style.cssText = 'display:block;font-size:12px;color:#64748b;margin-bottom:4px;';
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.style.cssText = 'width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px;font-family:inherit;';
+        inputWrap.appendChild(inputLabel);
+        inputWrap.appendChild(input);
+
+        var ftr = document.createElement('div');
+        ftr.style.cssText = 'padding:12px 16px;border-top:1px solid #e5e7eb;background:#f8fafc;display:flex;gap:8px;justify-content:flex-end;';
+        var btnCancel = document.createElement('button');
+        btnCancel.type = 'button';
+        btnCancel.textContent = 'Cancel';
+        btnCancel.style.cssText = 'padding:8px 16px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;color:#475569;font-weight:500;cursor:pointer;';
+        var btnConfirm = document.createElement('button');
+        btnConfirm.type = 'button';
+        btnConfirm.textContent = opts.confirmText || 'Confirm';
+        btnConfirm.disabled = true;
+        btnConfirm.style.cssText = 'padding:8px 16px;border-radius:8px;border:none;color:#fff;font-weight:600;cursor:pointer;'
+            + 'background:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';opacity:.5;';
+        ftr.appendChild(btnCancel);
+        ftr.appendChild(btnConfirm);
+
+        card.appendChild(hdr);
+        card.appendChild(body);
+        card.appendChild(inputWrap);
+        card.appendChild(ftr);
+        bd.appendChild(card);
+        document.body.appendChild(bd);
+
+        function cleanup() {
+            document.removeEventListener('keydown', onKey, true);
+            if (bd.parentNode) bd.parentNode.removeChild(bd);
+            if (prevFocus && typeof prevFocus.focus === 'function') {
+                try { prevFocus.focus(); } catch (_) {}
+            }
+        }
+        function done(v) { cleanup(); resolve(v); }
+
+        function onKey(e) {
+            if (e.key === 'Escape') { e.preventDefault(); done(false); return; }
+            if (e.key === 'Tab') {
+                // 3-element trap: input, cancel, confirm.
+                var seq = btnConfirm.disabled ? [input, btnCancel] : [input, btnCancel, btnConfirm];
+                var idx = seq.indexOf(document.activeElement);
+                if (idx === -1) return;
+                e.preventDefault();
+                var nextIdx = e.shiftKey ? (idx - 1 + seq.length) % seq.length : (idx + 1) % seq.length;
+                seq[nextIdx].focus();
+            }
+        }
+        document.addEventListener('keydown', onKey, true);
+
+        input.addEventListener('input', function() {
+            var match = input.value === (opts.expectedToken || '');
+            btnConfirm.disabled = !match;
+            btnConfirm.style.opacity = match ? '1' : '.5';
+        });
+        btnCancel.addEventListener('click', function() { done(false); });
+        btnConfirm.addEventListener('click', function() {
+            if (input.value === (opts.expectedToken || '')) done(true);
+        });
+
+        // Focus the input so admin can start typing immediately.
+        setTimeout(function() { input.focus(); }, 0);
+    });
+}
 
 window.archiveSession = function(sess, doArchive) {
     var verb = doArchive ? 'archive' : 'unarchive';

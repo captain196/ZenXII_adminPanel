@@ -3158,6 +3158,19 @@ HTML;
             $this->json_error('To date cannot be before from date.');
         }
 
+        // Half-day support — stored on the leave doc; payroll prorates later.
+        // Half-day leave does NOT mark attendance 'L' (the staff worked the
+        // other half), so we mix it into the leave system only.
+        $halfDay = filter_var($this->input->post('half_day'), FILTER_VALIDATE_BOOLEAN);
+        $halfDayPeriod = strtoupper(trim((string) ($this->input->post('half_day_period') ?? '')));
+        if (!in_array($halfDayPeriod, ['AM', 'PM'], true)) $halfDayPeriod = '';
+        if ($halfDay) {
+            if ($fromDate !== $toDate) {
+                $this->json_error('Half-day leave must be for a single day.');
+            }
+            if ($halfDayPeriod === '') $halfDayPeriod = 'AM';   // default to morning
+        }
+
         // Calculate days
         $from = new DateTime($fromDate);
         $to   = new DateTime($toDate);
@@ -3269,6 +3282,8 @@ HTML;
             'days'                => $days,
             'paid_days'           => $paidDays,
             'lwp_days'            => $lwpDays,
+            'half_day'            => $halfDay,
+            'half_day_period'     => $halfDayPeriod,
             'pay_label'           => $payLabel,
             'calculation_reason'  => $calcReason,
             'balance_at_apply'    => $currentBalance,
@@ -3296,6 +3311,8 @@ HTML;
                 'toDate'    => $toDate,
                 'paidDays'  => $paidDays,
                 'lwpDays'   => $lwpDays,
+                'halfDay'        => $halfDay,
+                'halfDayPeriod'  => $halfDayPeriod,
                 'payLabel'  => $payLabel,
                 'calculationReason' => $calcReason,
                 'balanceAtApply'    => $currentBalance,
@@ -3359,6 +3376,16 @@ HTML;
         $currentStatus = strtolower($request['status'] ?? '');
         if ($currentStatus !== 'pending') {
             $this->json_error('Only pending requests can be decided.');
+        }
+
+        // Past-date sanity guard — prevent decisions on stale requests
+        // (start date older than 60 days). HR can still cancel via cancel_leave;
+        // this only blocks new approve/reject decisions on ancient leaves.
+        if ($decision === 'Approved') {
+            $startTs = strtotime((string) ($request['from_date'] ?? ''));
+            if ($startTs && (time() - $startTs) > (60 * 86400)) {
+                $this->json_error('Cannot approve leave whose start date is older than 60 days.');
+            }
         }
 
         // M-04 FIX: Atomically mark request as "Processing"
@@ -3541,8 +3568,10 @@ HTML;
             log_message('error', "HR: decide_leave -> Firestore FAILED for {$id}: " . $e->getMessage());
         }
 
-        // On approval, automatically mark attendance as "L" (Leave) for each leave day
-        if ($decision === 'Approved') {
+        // On approval, automatically mark attendance as "L" (Leave) for each leave day —
+        // EXCEPT for half-day leave, which lives only on the leave doc (payroll prorates).
+        $isHalfDay = filter_var($request['half_day'] ?? $request['halfDay'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        if ($decision === 'Approved' && !$isHalfDay) {
             $this->_apply_leave_to_attendance(
                 $staffId,
                 $request['from_date'] ?? '',
@@ -3551,6 +3580,34 @@ HTML;
                 $paidDays,
                 $lwpDays
             );
+        }
+
+        // FCM — notify the staff member about the decision (best-effort, never fatal)
+        try {
+            $this->load->library('push_service');
+            $fromDate = (string) ($request['from_date'] ?? '');
+            $toDate   = (string) ($request['to_date'] ?? '');
+            $halfTag  = $isHalfDay ? ' (half-day)' : '';
+            $title    = "Leave {$decision}";
+            $body     = ($decision === 'Approved')
+                ? "Your {$ltCode} leave from {$fromDate} to {$toDate}{$halfTag} has been approved."
+                : ("Your {$ltCode} leave was rejected" . ($remarks !== '' ? ": {$remarks}" : '.'));
+            $this->push_service->sendToUser($staffId, [
+                'title' => $title,
+                'body'  => $body,
+                'data'  => [
+                    'type'       => 'leave_' . strtolower($decision),
+                    'requestId'  => $id,
+                    'decision'   => $decision,
+                    'fromDate'   => $fromDate,
+                    'toDate'     => $toDate,
+                    'leaveType'  => $ltCode,
+                    'halfDay'    => $isHalfDay ? '1' : '0',
+                    'remarks'    => $remarks,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            log_message('warning', 'decide_leave FCM push failed for ' . $staffId . ': ' . $e->getMessage());
         }
 
         // Audit log
@@ -4226,6 +4283,65 @@ HTML;
             return strcmp($b['created_at'] ?? '', $a['created_at'] ?? '');
         });
 
+        // ── M-5: Stale-payroll detection ────────────────────────────
+        // For each run, check if any attendance correction was approved
+        // AFTER the run was generated for any of the run's months. If so,
+        // the slips are potentially out of date — mark stale=true so the
+        // admin UI can surface a "regenerate?" hint. Cheap query: one
+        // attendanceAuditLog lookup per call (not per run).
+        try {
+            $auditRows = $this->fs->schoolWhere('attendanceAuditLog', [
+                ['action',     '==', 'CORRECTION_APPROVE'],
+                ['targetType', '==', 'staff'],
+            ], 'timestamp', 'DESC', 200);
+            $approvalsByDate = [];   // 'YYYY-MM-DD' => latest approval timestamp
+            foreach ($auditRows as $entry) {
+                $d = is_array($entry['data'] ?? null) ? $entry['data'] : (is_array($entry) ? $entry : null);
+                if (!is_array($d)) continue;
+                $dateStr  = (string) ($d['date'] ?? '');
+                $tsString = (string) ($d['timestamp'] ?? '');
+                if ($dateStr === '' || $tsString === '') continue;
+                if (!isset($approvalsByDate[$dateStr]) || $tsString > $approvalsByDate[$dateStr]) {
+                    $approvalsByDate[$dateStr] = $tsString;
+                }
+            }
+
+            $monthMap = ['January'=>1,'February'=>2,'March'=>3,'April'=>4,
+                         'May'=>5,'June'=>6,'July'=>7,'August'=>8,
+                         'September'=>9,'October'=>10,'November'=>11,'December'=>12];
+            foreach ($list as &$r) {
+                $r['stale']        = false;
+                $r['stale_reason'] = '';
+                $createdAt = (string) ($r['created_at'] ?? '');
+                $regenAt   = (string) ($r['last_regenerated_at'] ?? '');
+                $effective = ($regenAt !== '' && $regenAt > $createdAt) ? $regenAt : $createdAt;
+                if ($effective === '') continue;
+
+                $mn = $monthMap[$r['month'] ?? ''] ?? 0;
+                $yr = (int) ($r['year'] ?? 0);
+                if ($mn === 0 || $yr === 0) continue;
+                $monthPrefix = sprintf('%04d-%02d', $yr, $mn);
+
+                $staleCount = 0;
+                $latestApprovalTs = '';
+                foreach ($approvalsByDate as $dateStr => $apprTs) {
+                    if (strpos($dateStr, $monthPrefix) !== 0) continue;
+                    if ($apprTs > $effective) {
+                        $staleCount++;
+                        if ($apprTs > $latestApprovalTs) $latestApprovalTs = $apprTs;
+                    }
+                }
+                if ($staleCount > 0) {
+                    $r['stale']        = true;
+                    $r['stale_reason'] = "{$staleCount} correction(s) approved after this run was generated; latest at " . substr($latestApprovalTs, 0, 19);
+                }
+            }
+            unset($r);
+        } catch (\Exception $e) {
+            log_message('warning', 'M-5 stale check failed: ' . $e->getMessage());
+            // Don't block the listing — just leave stale flags absent.
+        }
+
         $this->json_success(['payroll_runs' => $list]);
     }
 
@@ -4632,70 +4748,27 @@ HTML;
             $monthStart = sprintf('%04d-%02d-01', (int) $year, array_search($month, $validMonths) + 1);
             $monthEnd   = date('Y-m-t', strtotime($monthStart));
             foreach ($allLeaveReqs as $rid => $lr) {
-                if (($lr['status'] ?? '') !== 'Approved') continue;
-                $sid = $lr['staff_id'] ?? '';
+                $sid = (string) ($lr['staff_id'] ?? '');
                 if ($sid === '') continue;
 
-                // Check if leave overlaps with this payroll month at all
-                $lrFrom = $lr['from_date'] ?? '';
-                $lrToRaw = $lr['to_date'] ?? '';
-                if ($lrFrom > $monthEnd || $lrToRaw < $monthStart) continue;
+                // Single source of truth — same helper used by regenerate_staff_payroll.
+                // Applies CR-1 (LWP on paid types with exhausted balance), CR-3
+                // (deleted-type fallback), CR-4 (employment-window filtering).
+                $sp = is_array($roster[$sid] ?? null) ? $roster[$sid] : [];
+                $res = $this->_process_leave_for_payroll($lr, $leaveTypeConfig, $sp, $monthStart, $monthEnd, (string) $rid);
+                if ($res === null) continue;
 
-                $ltId  = $lr['type_id'] ?? '';
-                $ltCfg = $leaveTypeConfig[$ltId] ?? null;
-                $ltCode = is_array($ltCfg) ? strtoupper(trim($ltCfg['code'] ?? '')) : ($lr['type_code'] ?? '?');
-                $ltPaid = true; // safe default
-
-                if (is_array($ltCfg)) {
-                    $ltPaid = ($ltCfg['paid'] === true || $ltCfg['paid'] === 'true' || $ltCfg['paid'] === '1');
-                } else {
-                    log_message('error', "generate_payroll: leave type '{$ltId}' not found for request '{$rid}' — skipping LWP deduction (safe default)");
-                }
-
-                // Collect leave detail for payslip transparency
                 if (!isset($leaveDetailStaff[$sid])) $leaveDetailStaff[$sid] = [];
-                $leaveDetailStaff[$sid][] = [
-                    'request_id' => $rid,
-                    'type_code'  => $ltCode,
-                    'type_name'  => $lr['type_name'] ?? ($ltCfg['name'] ?? 'Unknown'),
-                    'paid'       => $ltPaid,
-                    'from'       => $lrFrom,
-                    'to'         => $lrToRaw,
-                    'total_days' => (int) ($lr['days'] ?? 0),
-                    'paid_days'  => (int) ($lr['paid_days'] ?? 0),
-                    'lwp_days'   => (int) ($lr['lwp_days'] ?? 0),
-                    'pay_label'  => $lr['pay_label'] ?? ($ltPaid ? 'Paid Leave' : 'Unpaid Leave (LWP)'),
-                ];
+                $leaveDetailStaff[$sid][] = $res['leaveDetail'];
 
-                // Skip LWP deduction for paid leave types
-                if ($ltPaid) {
-                    log_message('debug', "generate_payroll: skipping LWP for request '{$rid}' — leave type '{$ltId}' is paid (code: {$ltCode})");
-                    continue;
-                }
-
-                $lwp = (int) ($lr['lwp_days'] ?? 0);
-                if ($lwp <= 0) continue;
-                $sid = $lr['staff_id'] ?? '';
-                if ($sid === '') continue;
-                // LWP days are at the END of the leave period (paid days consumed first)
-                $lrTo = $lr['to_date'] ?? '';
-                // Calculate the start date of the LWP-only portion
-                $lwpStart = date('Y-m-d', strtotime("{$lrTo} -" . ($lwp - 1) . " days"));
-                // Check if LWP date range overlaps with this payroll month
-                if ($lwpStart <= $monthEnd && $lrTo >= $monthStart) {
-                    $overlapStart = max($lwpStart, $monthStart);
-                    $overlapEnd   = min($lrTo, $monthEnd);
-                    $lwpInMonth   = (int) (new DateTime($overlapStart))->diff(new DateTime($overlapEnd))->days + 1;
-                    if (!isset($lwpByStaff[$sid])) $lwpByStaff[$sid] = 0;
-                    $lwpByStaff[$sid] += $lwpInMonth;
-
-                    // Track which day-of-month numbers are LWP days (1-based)
+                if ($res['lwpDays'] > 0) {
+                    if (!isset($lwpByStaff[$sid]))     $lwpByStaff[$sid]     = 0.0;
                     if (!isset($lwpDaysByStaff[$sid])) $lwpDaysByStaff[$sid] = [];
-                    $cursor = new DateTime($overlapStart);
-                    $end    = new DateTime($overlapEnd);
-                    while ($cursor <= $end) {
-                        $lwpDaysByStaff[$sid][(int) $cursor->format('j')] = true;
-                        $cursor->modify('+1 day');
+                    $lwpByStaff[$sid] = (float) $lwpByStaff[$sid] + $res['lwpDays'];
+                    foreach ($res['lwpDaySet'] as $dn => $portion) {
+                        // Existing full-day mark wins over a later half-day mark.
+                        if (isset($lwpDaysByStaff[$sid][$dn]) && $lwpDaysByStaff[$sid][$dn] === true) continue;
+                        $lwpDaysByStaff[$sid][$dn] = $portion;
                     }
                 }
             }
@@ -4837,32 +4910,64 @@ HTML;
             $department = $profile['Department'] ?? '';
             $position   = $profile['Position'] ?? '';
 
+            // ── Per-staff working days — pro-rated for join/exit ──
+            // If the staff joined or left mid-month, only count working days
+            // inside their employment window. Days outside the window are
+            // ignored (not absent, not vacant).
+            $jd = $profile['joinDate']  ?? $profile['Date Of Joining'] ?? $profile['Joining Date']    ?? null;
+            $xd = $profile['exitDate']  ?? $profile['Resignation Date'] ?? $profile['leaveDate']       ?? null;
+            $swd = $this->_staff_working_days($monthNum, (int) $year, $holidays, $jd, $xd);
+            $staffWorkingDays = $swd['working'];
+            $staffInWindow    = $swd['inWindow'];
+
+            // If the staff didn't work this month at all (joined after / left before)
+            // skip the slip entirely — no salary, no warning that would clutter the UI.
+            if ($staffWorkingDays <= 0) {
+                $payrollWarnings[] = $staffName . ": outside employment window for {$month} {$year} — skipped";
+                continue;
+            }
+
             // Determine absent days and leave days from attendance string.
             // Attendance marks: P=Present, A=Absent, L=Leave, H=Holiday, T=Late, V=Vacant
             // "L" marks are set automatically when leave is approved (see _apply_leave_to_attendance).
             // NOTE: Skip days already covered by approved LWP leave to avoid double-counting.
-            $daysAbsent      = 0;
+            //
+            // staffLwpSet entries:
+            //   true → full-day LWP (one whole day deducted by leave)
+            //   0.5  → half-day LWP (Phase 4 half-day support)
+            $daysAbsent      = 0.0;
             $paidLeaveDays   = 0;
             $unpaidLeaveDays = 0;
-            $vacantDays      = 0; // days not marked at all
+            $vacantDays      = 0;
             $staffLwpSet     = isset($lwpDaysByStaff[$staffId]) ? $lwpDaysByStaff[$staffId] : [];
 
-            // Config: how to treat vacant (unmarked) days
-            // 'absent' = treat as absent (default), 'present' = treat as present, 'ignore' = exclude
-            $vacantTreatment = is_array($attConfig) ? ($attConfig['vacant_treatment'] ?? 'absent') : 'absent';
+            // Config: how to treat vacant (unmarked) days.
+            //   'block'   = refuse to generate slip; admin must override (default — payroll-safe)
+            //   'absent'  = treat as absent (legacy — risky)
+            //   'present' = treat as present
+            //   'ignore'  = exclude entirely
+            $vacantTreatment = is_array($attConfig) ? ($attConfig['vacant_treatment'] ?? 'block') : 'block';
 
             if (is_array($attendance) && isset($attendance[$staffId])) {
                 $attStr = (string) $attendance[$staffId];
                 $len    = strlen($attStr);
                 for ($i = 0; $i < $len; $i++) {
                     $dayNum = $i + 1;
+                    // Days outside the employment window are not the staff's
+                    // problem — pre-join and post-exit days don't count as
+                    // absent or vacant.
+                    if (!isset($staffInWindow[$dayNum])) continue;
                     $ch = strtoupper($attStr[$i]);
                     if ($ch === 'A') {
                         if (!isset($staffLwpSet[$dayNum])) {
-                            $daysAbsent++;
+                            $daysAbsent += 1.0;
+                        } elseif ($staffLwpSet[$dayNum] === 0.5) {
+                            // Half-day LWP — attendance 'A' on the OTHER half also deducts
+                            $daysAbsent += 0.5;
                         }
+                        // Full-day LWP (=== true) → fully covered by leave, 0 absent
                     } elseif ($ch === 'L') {
-                        if (isset($staffLwpSet[$dayNum])) {
+                        if (isset($staffLwpSet[$dayNum]) && $staffLwpSet[$dayNum] === true) {
                             $unpaidLeaveDays++;
                         } else {
                             $paidLeaveDays++;
@@ -4870,45 +4975,56 @@ HTML;
                     } elseif ($ch === 'V') {
                         $vacantDays++;
                         if ($vacantTreatment === 'absent') {
-                            $daysAbsent++;
+                            $daysAbsent += 1.0;
                         }
-                        // 'present' and 'ignore' = don't add to absent
+                        // 'present', 'ignore', 'block' → don't add to absent here
                     }
                 }
             } else {
-                // No attendance at all — entire month is vacant
-                $vacantDays = $workingDays;
+                // No attendance doc at all — every in-window day is vacant
+                $vacantDays = $staffWorkingDays;
                 if ($vacantTreatment === 'absent') {
-                    $daysAbsent = $workingDays;
+                    $daysAbsent = $staffWorkingDays;
                 }
             }
 
-            // Add warning if attendance has unmarked days
+            // Payroll-safe block: refuse to generate this slip if any working
+            // day is unmarked AND policy is 'block'. Admin must either backfill
+            // attendance or change config to an explicit treatment.
+            if ($vacantDays > 0 && $vacantTreatment === 'block') {
+                $this->_log_payroll_warning('attendance_missing', $staffId,
+                    "{$vacantDays} day(s) unmarked — slip skipped (set vacant_treatment to 'absent' or 'present' to override)");
+                $payrollWarnings[] = $staffName . ": {$vacantDays} day(s) not marked — slip not generated (admin override required)";
+                continue;
+            }
+
+            // Add warning if attendance has unmarked days (non-blocking modes)
             if ($vacantDays > 0) {
                 $payrollWarnings[] = ($staffName) . ": {$vacantDays} day(s) not marked (treated as {$vacantTreatment})";
             }
 
-            // LWP days for this staff from approved leave requests
-            $staffLwpDays = isset($lwpByStaff[$staffId]) ? (int) $lwpByStaff[$staffId] : 0;
+            // LWP days for this staff from approved leave requests (float — supports half-day 0.5)
+            $staffLwpDays = isset($lwpByStaff[$staffId]) ? (float) $lwpByStaff[$staffId] : 0.0;
 
-            // Payable days = working_days - absent - LWP days
-            // Paid leave is counted as present (no salary deduction)
-            // Absent counter walks all calendar days, so clamp to workingDays to avoid
-            // weekend/holiday vacancy inflating the deduction above 100%.
-            if ($daysAbsent > $workingDays) $daysAbsent = $workingDays;
-            $daysWorked = $workingDays - $daysAbsent - $staffLwpDays;
+            // Payable days = staff_working_days - absent - LWP days
+            // Paid leave is counted as present (no salary deduction).
+            // Mid-month joiner/exiter: $staffWorkingDays already excludes
+            // pre-join / post-exit days, so deductions and base pay are
+            // proportional to the employment window.
+            if ($daysAbsent > $staffWorkingDays) $daysAbsent = $staffWorkingDays;
+            $daysWorked = $staffWorkingDays - $daysAbsent - $staffLwpDays;
             if ($daysWorked < 0) $daysWorked = 0;
 
             // Calculate pay — basic reduced proportionally for absent + LWP days only
             // Paid leave days do NOT reduce salary
             $basic = (float) ($sal['basic'] ?? 0);
             $deductionDays  = $daysAbsent + $staffLwpDays;
-            if ($deductionDays > $workingDays) $deductionDays = $workingDays;
-            $absentFraction = ($workingDays > 0) ? ($deductionDays / $workingDays) : 0;
+            if ($deductionDays > $staffWorkingDays) $deductionDays = $staffWorkingDays;
+            $absentFraction = ($staffWorkingDays > 0) ? ($deductionDays / $staffWorkingDays) : 0;
             $effectiveBasic = round($basic * (1 - $absentFraction), 2);
 
             // Calculate LWP deduction amount separately for payslip display
-            $dailySalary   = ($workingDays > 0) ? round($basic / $workingDays, 2) : 0;
+            $dailySalary   = ($staffWorkingDays > 0) ? round($basic / $staffWorkingDays, 2) : 0;
             $lwpDeduction  = round($dailySalary * $staffLwpDays, 2);
 
             // HR-6 FIX: Pro-rate allowances by the same absent fraction as basic
@@ -5020,7 +5136,13 @@ HTML;
                 'leave_days'       => $paidLeaveDays + $unpaidLeaveDays,
                 'lwp_days'         => $staffLwpDays,
                 'lwp_deduction'    => $lwpDeduction,
-                'working_days'     => $workingDays,
+                'working_days'     => $staffWorkingDays,
+                'staff_window'     => [
+                    'startDay' => $swd['startDay'],
+                    'endDay'   => $swd['endDay'],
+                    'joinDate' => $jd,
+                    'exitDate' => $xd,
+                ],
                 'daily_salary'     => $dailySalary,
                 'deduction_days'   => $deductionDays,
                 'deduction_reason' => $staffLwpDays > 0
@@ -6889,5 +7011,804 @@ HTML;
         }
 
         $this->json_success(['report' => 'departments', 'data' => $list]);
+    }
+
+    /* ================================================================
+       PAYROLL HARDENING — mid-month join/exit + unlock + regenerate
+       ================================================================ */
+
+    /**
+     * M-4: Normalize a date string to canonical YYYY-MM-DD.
+     * Accepts:
+     *   • YYYY-MM-DD
+     *   • YYYY/MM/DD
+     *   • DD-MM-YYYY      (Indian school convention)
+     *   • DD/MM/YYYY
+     * Returns null on unparseable input and logs a warning with $context.
+     */
+    private function _normalize_date(?string $input, string $context = ''): ?string
+    {
+        if ($input === null) return null;
+        $s = trim($input);
+        if ($s === '') return null;
+
+        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $s, $m))   return "{$m[1]}-{$m[2]}-{$m[3]}";
+        if (preg_match('/^(\d{4})\/(\d{2})\/(\d{2})$/', $s, $m)) return "{$m[1]}-{$m[2]}-{$m[3]}";
+        if (preg_match('/^(\d{2})-(\d{2})-(\d{4})$/', $s, $m))   return "{$m[3]}-{$m[2]}-{$m[1]}";
+        if (preg_match('/^(\d{2})\/(\d{2})\/(\d{4})$/', $s, $m)) return "{$m[3]}-{$m[2]}-{$m[1]}";
+
+        log_message('warning', "M-4 date normalize failed for '{$s}'" . ($context !== '' ? " (context: {$context})" : ''));
+        return null;
+    }
+
+    /**
+     * Is $date (YYYY-MM-DD) within the staff's employment window?
+     * Empty / unparseable join or exit dates are treated as no constraint
+     * (defensive — better to pay than to silently under-deduct).
+     * M-4: accepts join/exit dates in multiple formats via _normalize_date.
+     */
+    private function _in_employment_window(string $date, ?string $joinDate, ?string $exitDate): bool
+    {
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) return true;
+        $jd = $this->_normalize_date($joinDate, 'employment_window.joinDate');
+        $xd = $this->_normalize_date($exitDate, 'employment_window.exitDate');
+        if ($jd !== null && $date < $jd) return false;
+        if ($xd !== null && $date > $xd) return false;
+        return true;
+    }
+
+    /**
+     * Process a single approved leave doc and produce the payroll-relevant
+     * fragments (leave_details entry + LWP day attribution).
+     *
+     * Single source of truth for CR-1 / CR-3 / CR-4 payroll behavior.
+     * Used by BOTH:
+     *   • generate_payroll (run-wide leaves loop)
+     *   • regenerate_staff_payroll (single-staff leaves loop)
+     * to guarantee identical outputs.
+     *
+     * Caller responsibility:
+     *   - filter $leaveDoc by staff (regenerate side) or status (both sides)
+     *     before calling — this fn returns null on status!=Approved or
+     *     month-no-overlap so a generic foreach can call unconditionally.
+     *   - merge the returned fragments into its own accumulators.
+     *
+     * Returns null when the leave should be ignored entirely. Otherwise:
+     *   [
+     *     'leaveDetail' => assoc array suitable for leave_details[] push,
+     *     'lwpDays'     => float days to add to staff's lwpByStaff total,
+     *     'lwpDaySet'   => array<int dayNum, true|0.5 portion>,
+     *   ]
+     */
+    private function _process_leave_for_payroll(
+        array $leaveDoc,
+        array $leaveTypeConfig,
+        array $staffProfile,
+        string $monthStart,
+        string $monthEnd,
+        string $rid = ''
+    ): ?array {
+        if (($leaveDoc['status'] ?? '') !== 'Approved') return null;
+
+        $lrFrom = (string) ($leaveDoc['from_date'] ?? '');
+        $lrTo   = (string) ($leaveDoc['to_date']   ?? '');
+        if ($lrFrom === '' || $lrTo === '') return null;
+        if ($lrFrom > $monthEnd || $lrTo < $monthStart) return null;
+
+        // Resolve leave type config + paid flag (CR-3 fallback)
+        $ltId  = (string) ($leaveDoc['type_id'] ?? '');
+        $ltCfg = $leaveTypeConfig[$ltId] ?? null;
+        $ltCode = is_array($ltCfg)
+            ? strtoupper(trim($ltCfg['code'] ?? ''))
+            : (string) ($leaveDoc['type_code'] ?? '?');
+
+        if (is_array($ltCfg)) {
+            $ltPaid = ($ltCfg['paid'] === true || $ltCfg['paid'] === 'true' || $ltCfg['paid'] === '1');
+        } else {
+            // CR-3: deleted leave type → fall back to leave doc's stored type_paid.
+            $ltPaid = filter_var(
+                $leaveDoc['type_paid'] ?? $leaveDoc['typePaid'] ?? true,
+                FILTER_VALIDATE_BOOLEAN
+            );
+            $ridLog = $rid !== '' ? "for '{$rid}'" : '';
+            log_message('warning', "_process_leave_for_payroll: type '{$ltId}' missing {$ridLog} — fallback type_paid=" . ($ltPaid ? 'true' : 'false'));
+        }
+
+        // Half-day flag (Phase 4)
+        $isHalfDay  = filter_var($leaveDoc['half_day'] ?? $leaveDoc['halfDay'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $halfPeriod = strtoupper(trim((string) ($leaveDoc['half_day_period'] ?? $leaveDoc['halfDayPeriod'] ?? '')));
+
+        // Always emit a leave detail (even when no LWP attribution applies)
+        // so the slip's Leave Breakdown lists every overlapping leave.
+        $leaveDetail = [
+            'request_id'      => $rid !== '' ? $rid : (string) ($leaveDoc['requestId'] ?? $leaveDoc['id'] ?? ''),
+            'type_code'       => $ltCode,
+            'type_name'       => $leaveDoc['type_name'] ?? ($ltCfg['name'] ?? 'Unknown'),
+            'paid'            => $ltPaid,
+            'from'            => $lrFrom,
+            'to'              => $lrTo,
+            'total_days'      => (int) ($leaveDoc['days']      ?? 0),
+            'paid_days'       => (int) ($leaveDoc['paid_days'] ?? 0),
+            'lwp_days'        => (int) ($leaveDoc['lwp_days']  ?? 0),
+            'half_day'        => $isHalfDay,
+            'half_day_period' => $isHalfDay ? $halfPeriod : '',
+            'pay_label'       => $leaveDoc['pay_label'] ?? ($ltPaid ? 'Paid Leave' : 'Unpaid Leave (LWP)'),
+        ];
+
+        $emptyResult = ['leaveDetail' => $leaveDetail, 'lwpDays' => 0.0, 'lwpDaySet' => []];
+
+        // CR-1: only skip LWP attribution when paid type AND no LWP days. A
+        // paid type with lwp_days>0 (balance was exhausted at decide time)
+        // MUST still produce a deduction.
+        $lwpDaysOnDoc = (int) ($leaveDoc['lwp_days'] ?? 0);
+        if ($ltPaid && $lwpDaysOnDoc === 0) return $emptyResult;
+
+        // CR-4: staff employment window for filtering pre-join/post-exit days
+        $jd = $staffProfile['joinDate']  ?? $staffProfile['Date Of Joining'] ?? $staffProfile['Joining Date'] ?? null;
+        $xd = $staffProfile['exitDate']  ?? $staffProfile['Resignation Date'] ?? $staffProfile['leaveDate']  ?? null;
+
+        // Half-day branch — always single-day, contributes 0.5 LWP
+        if ($isHalfDay) {
+            if ($lrFrom < $monthStart || $lrFrom > $monthEnd) return $emptyResult;
+            if (!$this->_in_employment_window($lrFrom, $jd, $xd)) return $emptyResult;
+            $dn = (int) date('j', strtotime($lrFrom));
+            return [
+                'leaveDetail' => $leaveDetail,
+                'lwpDays'     => 0.5,
+                'lwpDaySet'   => [$dn => 0.5],
+            ];
+        }
+
+        // Full-day LWP branch — paid days consumed first, LWP days at the END
+        if ($lwpDaysOnDoc <= 0) return $emptyResult;
+        $lwpStart = date('Y-m-d', strtotime("{$lrTo} -" . ($lwpDaysOnDoc - 1) . " days"));
+        if ($lwpStart > $monthEnd || $lrTo < $monthStart) return $emptyResult;
+        $overlapStart = max($lwpStart, $monthStart);
+        $overlapEnd   = min($lrTo, $monthEnd);
+
+        $lwpInWindow = 0;
+        $lwpDaySet   = [];
+        $cursor = new DateTime($overlapStart);
+        $end    = new DateTime($overlapEnd);
+        while ($cursor <= $end) {
+            $dateStr = $cursor->format('Y-m-d');
+            if ($this->_in_employment_window($dateStr, $jd, $xd)) {
+                $lwpInWindow++;
+                $lwpDaySet[(int) $cursor->format('j')] = true;
+            }
+            $cursor->modify('+1 day');
+        }
+
+        return [
+            'leaveDetail' => $leaveDetail,
+            'lwpDays'     => (float) $lwpInWindow,
+            'lwpDaySet'   => $lwpDaySet,
+        ];
+    }
+
+    /**
+     * Compute per-staff working days within their employment window
+     * (joinDate / exitDate) for a given month. Excludes Sundays,
+     * 2nd & 4th Saturdays, and configured holidays — same calendar
+     * as generate_payroll's global computation, just clipped to the
+     * employment window.
+     *
+     * @param array $holidays  ['dayNum' => true] for holidays in this month
+     * @return array {
+     *   'working'  => int,                   // working days in window
+     *   'inWindow' => array<int,bool>,       // dayNum => true if inside window
+     *   'startDay' => int,                   // 1-based day where window starts
+     *   'endDay'   => int                    // 1-based day where window ends
+     * }
+     */
+    private function _staff_working_days(
+        int $monthNum, int $year, array $holidays,
+        ?string $joinDate, ?string $exitDate
+    ): array {
+        $daysInMonth = (int) date('t', mktime(0, 0, 0, $monthNum, 1, $year));
+        $monthStart  = sprintf('%04d-%02d-01',  $year, $monthNum);
+        $monthEnd    = sprintf('%04d-%02d-%02d', $year, $monthNum, $daysInMonth);
+
+        // M-4: Accept multiple date formats; unparseable → no constraint.
+        $jd = $this->_normalize_date($joinDate, 'staff_working_days.joinDate') ?? '';
+        $xd = $this->_normalize_date($exitDate, 'staff_working_days.exitDate') ?? '';
+
+        $windowStart = ($jd !== '' && $jd > $monthStart) ? $jd : $monthStart;
+        $windowEnd   = ($xd !== '' && $xd < $monthEnd)   ? $xd : $monthEnd;
+
+        if ($windowStart > $windowEnd) {
+            // Staff did not work this month at all (joined after / left before)
+            return ['working' => 0, 'inWindow' => [], 'startDay' => 0, 'endDay' => 0];
+        }
+
+        $startDay = (int) substr($windowStart, 8, 2);
+        $endDay   = (int) substr($windowEnd, 8, 2);
+
+        $working  = 0;
+        $inWindow = [];
+        $satCount = 0;
+
+        // Walk every day so Saturday counter (1st/2nd/3rd/4th/5th)
+        // stays correct regardless of where the window starts.
+        for ($d = 1; $d <= $daysInMonth; $d++) {
+            $dow = (int) date('w', mktime(0, 0, 0, $monthNum, $d, $year));
+            if ($dow === 6) $satCount++;
+
+            if ($d < $startDay || $d > $endDay) continue;
+            $inWindow[$d] = true;
+
+            if ($dow === 0) continue;
+            if ($dow === 6 && ($satCount === 2 || $satCount === 4)) continue;
+            if (isset($holidays[$d])) continue;
+
+            $working++;
+        }
+
+        return [
+            'working'  => $working,
+            'inWindow' => $inWindow,
+            'startDay' => $startDay,
+            'endDay'   => $endDay,
+        ];
+    }
+
+    /**
+     * POST — Unlock a Finalized payroll run so individual slips can be
+     * regenerated. Reverses finalize_payroll. Reason ≥10 chars required;
+     * audit-logged.
+     */
+    public function unlock_payroll()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'unlock_payroll');
+
+        $runId  = $this->safe_path_segment(trim($this->input->post('run_id') ?? ''), 'run_id');
+        $reason = trim((string) $this->input->post('reason'));
+
+        if ($runId === '')             $this->json_error('run_id is required.');
+        if (strlen($reason) < 10)      $this->json_error('Reason ≥10 chars required.');
+
+        $run = $this->_fsGetRun($runId);
+        if (!is_array($run)) $this->json_error('Payroll run not found.');
+        $curStatus = (string) ($run['status'] ?? '');
+        // M-6: accept both Finalized AND Approved (admin sometimes needs to
+        // walk back from Approved when a late correction lands).
+        if (!in_array($curStatus, ['Finalized', 'Approved'], true)) {
+            $this->json_error("Only Finalized or Approved runs can be unlocked. Current status: " . ($curStatus !== '' ? $curStatus : 'unknown'));
+        }
+
+        // Flip run status
+        $update = [
+            'status'             => 'Draft',
+            'unlocked_at'        => date('c'),
+            'unlocked_by'        => $this->admin_name ?: $this->admin_id,
+            'unlock_reason'      => $reason,
+            'unlocked_from_status' => $curStatus,    // audit context: was it Finalized or Approved?
+        ];
+        $this->_fsSyncPayrollRun($runId, array_merge($run, $update));
+
+        // Cascade slip statuses
+        $slips = $this->_fsGetAllSlips($runId);
+        foreach ($slips as $sid => $s) {
+            $this->_fsSyncPayslip($runId, $sid, array_merge($s, ['status' => 'Draft']));
+        }
+
+        $this->_log_payroll('unlocked', $runId, [
+            'reason'      => $reason,
+            'unlocked_by' => $update['unlocked_by'],
+            'slip_count'  => count($slips),
+        ]);
+
+        $this->json_success([
+            'message' => 'Payroll run unlocked. Edits and regeneration are now allowed.',
+            'run_id'  => $runId,
+            'status'  => 'Draft',
+        ]);
+    }
+
+    /**
+     * POST — Regenerate ONE staff member's slip in a Draft payroll run.
+     * Re-reads attendance + leave + salary structure, applies the
+     * same per-day formula as generate_payroll, archives the previous
+     * slip, replaces it, and updates run-level totals.
+     *
+     * Body: run_id, staff_id, reason (≥10 chars)
+     * Refuses if the run is Finalized — admin must call unlock_payroll first.
+     */
+    public function regenerate_staff_payroll()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'regenerate_staff_payroll');
+
+        $runId   = $this->safe_path_segment(trim($this->input->post('run_id') ?? ''), 'run_id');
+        $staffId = $this->safe_path_segment(trim($this->input->post('staff_id') ?? ''), 'staff_id');
+        $reason  = trim((string) $this->input->post('reason'));
+
+        if ($runId === '')         $this->json_error('run_id is required.');
+        if ($staffId === '')       $this->json_error('staff_id is required.');
+        if (strlen($reason) < 10)  $this->json_error('Reason ≥10 chars required.');
+
+        // ── Validate run state ──────────────────────────────────────
+        $run = $this->_fsGetRun($runId);
+        if (!is_array($run)) $this->json_error('Payroll run not found.');
+        $runStatus = $run['status'] ?? '';
+        if ($runStatus === 'Finalized') {
+            $this->json_error('Run is Finalized. Call /hr/unlock_payroll first.');
+        }
+        if ($runStatus !== 'Draft') {
+            $this->json_error("Run status '{$runStatus}' does not support regeneration. Must be Draft.");
+        }
+
+        $month = $run['month'] ?? '';
+        $year  = $run['year']  ?? '';
+        $validMonths = [
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December',
+        ];
+        $monthNum = array_search($month, $validMonths);
+        if ($monthNum === false) $this->json_error('Run has invalid month.');
+        $monthNum = $monthNum + 1;
+
+        // ── Load existing slip (we'll archive it) ──────────────────
+        $slipDocId = $this->fs->docId("SLIP_{$runId}_{$staffId}");
+        $oldSlip   = $this->fs->get('salarySlips', $slipDocId);
+        if (!is_array($oldSlip)) {
+            $this->json_error('Slip not found in this run for that staff member.');
+        }
+
+        // ── M-3: Atomic Processing flag (prevent concurrent regenerate) ─
+        // Same pattern as decide_leave: flip to Processing, re-read to
+        // confirm we won the race. Final new-slip write naturally clears
+        // the flag because $oldSlip (in memory, status='Draft') is the
+        // base of the merged write.
+        $preStatus = (string) ($oldSlip['status'] ?? 'Draft');
+        if ($preStatus === 'Processing') {
+            $startedAt = (string) ($oldSlip['processingStartedAt'] ?? '');
+            // Stale-flag escape: if Processing was set >5 min ago, assume
+            // the prior request crashed and let this one proceed.
+            $isStale = $startedAt !== '' && (strtotime($startedAt) + 300) < time();
+            if (!$isStale) {
+                $this->json_error('Slip is being regenerated by another admin. Try again in a moment.', 409);
+            }
+        }
+        $procOk = $this->fs->set('salarySlips', $slipDocId, [
+            'status'              => 'Processing',
+            'processingStartedAt' => date('c'),
+            'processingBy'        => $this->admin_name ?: $this->admin_id,
+        ], true);
+        if (!$procOk) {
+            $this->json_error('Failed to acquire processing lock.', 500);
+        }
+        $recheck = $this->fs->get('salarySlips', $slipDocId);
+        if (!is_array($recheck) || ($recheck['status'] ?? '') !== 'Processing'
+            || ($recheck['processingBy'] ?? '') !== ($this->admin_name ?: $this->admin_id)) {
+            $this->json_error('Lost the race — another admin is regenerating this slip.', 409);
+        }
+
+        // ── Load profile + structure ───────────────────────────────
+        $profile = null;
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', [['staffId', '==', $staffId]]);
+            if (is_array($fsDocs) && !empty($fsDocs)) {
+                $profile = is_array($fsDocs[0]['data'] ?? null) ? $fsDocs[0]['data'] : $fsDocs[0];
+            }
+        } catch (\Exception $e) {}
+        if (!is_array($profile)) $this->json_error('Staff profile not found.');
+
+        // ── M-2: Inactive-staff warning (don't block regenerate) ───
+        $regenWarnings = [];
+        $rawStaffStatus = (string) ($profile['status'] ?? $profile['Status'] ?? 'Active');
+        if (strtolower(trim($rawStaffStatus)) !== 'active') {
+            $regenWarnings[] = "Staff status is '{$rawStaffStatus}' — regenerating slip for an inactive staff member.";
+        }
+
+        $structureDoc = $this->fs->get('salarySlips', $this->fs->docId("SAL_{$staffId}"));
+        $structure = is_array($structureDoc) ? $structureDoc : null;
+        if (!is_array($structure)) {
+            $autoStruct = $this->_auto_create_from_profile($staffId, $profile);
+            if ($autoStruct === null) $this->json_error('Cannot recompute — no salary data for staff.');
+            $structure = $autoStruct;
+        }
+        $sal = $this->_validate_structure($structure);
+        if ($sal === null) $this->json_error('Salary structure is corrupt.');
+
+        // ── Holidays for the month (same source as generate_payroll) ─
+        $holidays = [];
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($schoolDoc)) {
+                $hd = $schoolDoc['holidays'] ?? [];
+                if (is_array($hd)) {
+                    foreach ($hd as $h) {
+                        $hDate = is_string($h) ? $h : ($h['date'] ?? '');
+                        if ($hDate && (int) date('n', strtotime($hDate)) === $monthNum) {
+                            $holidays[(int) date('j', strtotime($hDate))] = true;
+                        }
+                    }
+                }
+                $attH = $schoolDoc['attendanceConfig']['holidays'] ?? [];
+                if (is_array($attH)) {
+                    foreach ($attH as $date => $name) {
+                        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $date, $m)) {
+                            if ((int) $m[1] === (int) $year && (int) $m[2] === $monthNum) {
+                                $holidays[(int) $m[3]] = true;
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (\Exception $e) {}
+
+        // ── Per-staff working days (includes join/exit pro-ration) ─
+        $jd = $profile['joinDate']  ?? $profile['Date Of Joining'] ?? $profile['Joining Date'] ?? null;
+        $xd = $profile['exitDate']  ?? $profile['Resignation Date'] ?? $profile['leaveDate'] ?? null;
+        $swd = $this->_staff_working_days($monthNum, (int) $year, $holidays, $jd, $xd);
+        $staffWorkingDays = $swd['working'];
+        if ($staffWorkingDays <= 0) {
+            $this->json_error('Staff has zero working days this month (joined after or left before the month).');
+        }
+
+        // ── Approved leaves overlapping the month, scoped to this staff ─
+        $monthStart = sprintf('%04d-%02d-01', $year, $monthNum);
+        $monthEnd   = date('Y-m-t', strtotime($monthStart));
+        $monthKey   = sprintf('%04d-%02d', (int) $year, $monthNum);
+
+        $allLeaveTypes   = $this->_fsGetLeaveType('');
+        $leaveTypeConfig = is_array($allLeaveTypes) ? $allLeaveTypes : [];
+        $allLeaveReqs    = $this->_fsGetAllLeaveRequests();
+
+        $lwpDays      = 0.0;            // total LWP days for this staff (float — supports half-day)
+        $lwpDaysSet   = [];             // dayNum => true | 0.5
+        $leaveDetail  = [];
+
+        if (!empty($allLeaveReqs)) {
+            foreach ($allLeaveReqs as $rid => $lr) {
+                // Filter to this one staff — generate_payroll runs across all
+                // staff but regenerate is single-staff scoped.
+                if ((string) ($lr['staff_id'] ?? '') !== $staffId) continue;
+
+                // Single source of truth — same helper as generate_payroll.
+                // CR-1, CR-3, CR-4 are now applied identically here.
+                $res = $this->_process_leave_for_payroll($lr, $leaveTypeConfig, $profile, $monthStart, $monthEnd, (string) $rid);
+                if ($res === null) continue;
+
+                $leaveDetail[] = $res['leaveDetail'];
+                if ($res['lwpDays'] > 0) {
+                    $lwpDays = (float) $lwpDays + $res['lwpDays'];
+                    foreach ($res['lwpDaySet'] as $dn => $portion) {
+                        // Existing full-day mark wins over a later half-day mark.
+                        if (isset($lwpDaysSet[$dn]) && $lwpDaysSet[$dn] === true) continue;
+                        $lwpDaysSet[$dn] = $portion;
+                    }
+                }
+            }
+        }
+
+        // ── Attendance for the month ────────────────────────────────
+        $attStr = '';
+        try {
+            $sumDocs = $this->fs->schoolWhere('staffAttendanceSummary', [
+                ['month',   '==', $monthKey],
+                ['staffId', '==', $staffId],
+            ]);
+            if (!empty($sumDocs)) {
+                $d = is_array($sumDocs[0]['data'] ?? null) ? $sumDocs[0]['data'] : $sumDocs[0];
+                $attStr = (string) ($d['dayWise'] ?? '');
+            }
+        } catch (\Exception $e) {}
+
+        // ── Walk attendance, applying same rules as generate_payroll ─
+        $daysInMonth = (int) date('t', mktime(0, 0, 0, $monthNum, 1, (int) $year));
+        $attConfig = [];
+        try {
+            $sd = $this->fs->get('schools', $this->fs->schoolId());
+            if (is_array($sd) && is_array($sd['attendanceRules'] ?? null)) {
+                $attConfig = $sd['attendanceRules'];
+            }
+        } catch (\Exception $e) {}
+        $vacantTreatment = is_array($attConfig) ? ($attConfig['vacant_treatment'] ?? 'block') : 'block';
+
+        $daysAbsent      = 0.0;
+        $paidLeaveDays   = 0;
+        $unpaidLeaveDays = 0;
+        $vacantDays      = 0;
+
+        if ($attStr !== '') {
+            $len = strlen($attStr);
+            for ($i = 0; $i < $len; $i++) {
+                $dayNum = $i + 1;
+                if (!isset($swd['inWindow'][$dayNum])) continue;   // outside employment window — ignore
+                $ch = strtoupper($attStr[$i]);
+                if ($ch === 'A') {
+                    if (!isset($lwpDaysSet[$dayNum])) {
+                        $daysAbsent += 1.0;
+                    } elseif ($lwpDaysSet[$dayNum] === 0.5) {
+                        $daysAbsent += 0.5;
+                    }
+                } elseif ($ch === 'L') {
+                    if (isset($lwpDaysSet[$dayNum]) && $lwpDaysSet[$dayNum] === true) {
+                        $unpaidLeaveDays++;
+                    } else {
+                        $paidLeaveDays++;
+                    }
+                } elseif ($ch === 'V') {
+                    $vacantDays++;
+                    if ($vacantTreatment === 'absent') $daysAbsent += 1.0;
+                }
+            }
+        } else {
+            // No attendance doc — treat all in-window days as vacant
+            $vacantDays = $staffWorkingDays;
+            if ($vacantTreatment === 'absent') $daysAbsent = $staffWorkingDays;
+        }
+
+        if ($vacantDays > 0 && $vacantTreatment === 'block') {
+            $this->json_error("Cannot regenerate — {$vacantDays} day(s) unmarked. Backfill attendance or change vacant_treatment policy.");
+        }
+
+        // ── Pay computation (same formula as generate_payroll) ──────
+        if ($daysAbsent > $staffWorkingDays) $daysAbsent = $staffWorkingDays;
+        $daysWorked = $staffWorkingDays - $daysAbsent - $lwpDays;
+        if ($daysWorked < 0) $daysWorked = 0;
+
+        $basic = (float) ($sal['basic'] ?? 0);
+        $deductionDays  = $daysAbsent + $lwpDays;
+        if ($deductionDays > $staffWorkingDays) $deductionDays = $staffWorkingDays;
+        $absentFraction = ($staffWorkingDays > 0) ? ($deductionDays / $staffWorkingDays) : 0;
+        $effectiveBasic = round($basic * (1 - $absentFraction), 2);
+
+        $dailySalary  = ($staffWorkingDays > 0) ? round($basic / $staffWorkingDays, 2) : 0;
+        $lwpDeduction = round($dailySalary * $lwpDays, 2);
+
+        $hra      = round((float) ($sal['hra'] ?? 0)              * (1 - $absentFraction), 2);
+        $da       = round((float) ($sal['da']  ?? 0)              * (1 - $absentFraction), 2);
+        $ta       = round((float) ($sal['ta']  ?? 0)              * (1 - $absentFraction), 2);
+        $medical  = round((float) ($sal['medical'] ?? 0)          * (1 - $absentFraction), 2);
+        $otherAll = round((float) ($sal['other_allowances'] ?? 0) * (1 - $absentFraction), 2);
+        $gross    = round($effectiveBasic + $hra + $da + $ta + $medical + $otherAll, 2);
+
+        $origBasic = (float) ($sal['basic'] ?? 0);
+        $origGross = $origBasic + (float) ($sal['hra'] ?? 0) + (float) ($sal['da'] ?? 0)
+                   + (float) ($sal['ta'] ?? 0) + (float) ($sal['medical'] ?? 0)
+                   + (float) ($sal['other_allowances'] ?? 0);
+
+        $pfEmployee   = round($origBasic * ((float) ($sal['pf_employee'] ?? 0) / 100), 2);
+        $esiEmployee  = round($origGross * ((float) ($sal['esi_employee'] ?? 0) / 100), 2);
+        $tds          = round($origGross * ((float) ($sal['tds'] ?? 0) / 100), 2);
+        $profTax      = (float) ($sal['professional_tax'] ?? 0);
+        $otherDed     = (float) ($sal['other_deductions'] ?? 0);
+        $totalDed     = round($pfEmployee + $esiEmployee + $tds + $profTax + $otherDed, 2);
+        $netPay       = round($gross - $totalDed, 2);
+        if ($netPay < 0) $netPay = 0;
+
+        $oldNetPay = (float) ($oldSlip['net_pay'] ?? 0);
+
+        // ── Archive old slip ─────────────────────────────────────────
+        $archiveDocId = $this->fs->docId("SLIP_ARCHIVE_{$runId}_{$staffId}_" . time());
+        $this->fs->set('salarySlips', $archiveDocId, array_merge($oldSlip, [
+            'type'              => 'slip_archive',
+            'archivedFromSlipId'=> $slipDocId,
+            'regeneratedAt'     => date('c'),
+            'regeneratedBy'     => $this->admin_name ?: $this->admin_id,
+            'regeneratedReason' => $reason,
+        ]), false);
+
+        // ── Replace slip ────────────────────────────────────────────
+        // Explicit `status` + cleared processing fields ensure the
+        // M-3 Processing flag is released by this write.
+        $newSlip = array_merge(is_array($oldSlip) ? $oldSlip : [], [
+            'status'              => $preStatus,
+            'processingStartedAt' => '',
+            'processingBy'        => '',
+            'staff_id'         => $staffId,
+            'staff_name'       => $profile['Name'] ?? $profile['name'] ?? $staffId,
+            'month'            => $month,
+            'year'             => $year,
+            'monthKey'         => $monthKey,
+            'working_days'     => $staffWorkingDays,
+            'days_worked'      => $daysWorked,
+            'days_absent'      => $daysAbsent,
+            'paid_leave_days'  => $paidLeaveDays,
+            'leave_days'       => $paidLeaveDays + $unpaidLeaveDays,
+            'lwp_days'         => $lwpDays,
+            'lwp_deduction'    => $lwpDeduction,
+            'basic'            => $effectiveBasic,
+            'hra'              => $hra,
+            'da'               => $da,
+            'ta'               => $ta,
+            'medical'          => $medical,
+            'other_allowances' => $otherAll,
+            'gross'            => $gross,
+            'pf_employee'      => $pfEmployee,
+            'esi_employee'     => $esiEmployee,
+            'tds'              => $tds,
+            'professional_tax' => $profTax,
+            'other_deductions' => $otherDed,
+            'total_deductions' => $totalDed,
+            'net_pay'          => $netPay,
+            'leave_details'    => $leaveDetail,
+            'attendance_notes' => ($vacantDays > 0)
+                ? "{$vacantDays} day(s) unmarked (treated as {$vacantTreatment})"
+                : '',
+            'staff_window'     => [
+                'startDay' => $swd['startDay'],
+                'endDay'   => $swd['endDay'],
+                'joinDate' => $jd,
+                'exitDate' => $xd,
+            ],
+            'regeneratedAt'    => date('c'),
+            'regeneratedBy'    => $this->admin_name ?: $this->admin_id,
+            'regenerationReason'=> $reason,
+            'previousNetPay'   => $oldNetPay,
+            'updatedAt'        => date('c'),
+        ]);
+        $this->fs->set('salarySlips', $slipDocId, $newSlip, true);
+
+        // ── CR-2: Adjustment journal entry to keep books in sync ────
+        // Compute slip-level deltas and post a corrective JE so the
+        // accounting books match the regenerated slip. Sign convention:
+        //   • dGross > 0 (salary increased): DR expense, CR liabilities
+        //   • dGross < 0 (salary decreased): CR expense, DR liabilities
+        // Deductions are usually constant across regenerates (PF/ESI/TDS
+        // ride on origBasic / origGross which the salary structure owns),
+        // so most regens produce a journal with just expense + 2020 lines.
+        $dGross    = round($gross        - (float) ($oldSlip['gross']            ?? 0), 2);
+        $dNet      = round($netPay       - (float) ($oldSlip['net_pay']          ?? 0), 2);
+        $dPF       = round($pfEmployee   - (float) ($oldSlip['pf_employee']      ?? 0), 2);
+        $dESI      = round($esiEmployee  - (float) ($oldSlip['esi_employee']     ?? 0), 2);
+        $dTDS      = round($tds          - (float) ($oldSlip['tds']              ?? 0), 2);
+        $dProfTax  = round($profTax      - (float) ($oldSlip['professional_tax'] ?? 0), 2);
+        $dOtherDed = round($otherDed     - (float) ($oldSlip['other_deductions'] ?? 0), 2);
+
+        $adjJournalId = '';
+        $hasDelta = (abs($dGross) >= 0.005)
+                 || (abs($dNet)   >= 0.005)
+                 || (abs($dPF)    >= 0.005)
+                 || (abs($dESI)   >= 0.005)
+                 || (abs($dTDS)   >= 0.005)
+                 || (abs($dProfTax) >= 0.005)
+                 || (abs($dOtherDed) >= 0.005);
+
+        if ($hasDelta) {
+            // Determine teaching vs non-teaching for the expense account
+            $staffRoles = $profile['staff_roles'] ?? [];
+            $isTeaching = false;
+            if (!empty($staffRoles) && is_array($staffRoles)) {
+                $roleDefs = [];
+                try {
+                    $sdRoles = $this->fs->get('schools', $this->fs->schoolId());
+                    if (is_array($sdRoles) && is_array($sdRoles['staffRoles'] ?? null)) {
+                        $roleDefs = $sdRoles['staffRoles'];
+                    }
+                } catch (\Exception $e) {}
+                foreach ($staffRoles as $_rid) {
+                    if (is_array($roleDefs[$_rid] ?? null) && (($roleDefs[$_rid]['category'] ?? '') === 'Teaching')) {
+                        $isTeaching = true;
+                        break;
+                    }
+                }
+            } else {
+                $_pos = (string) ($profile['Position']  ?? '');
+                $_dep = (string) ($profile['Department'] ?? '');
+                $isTeaching = (
+                    stripos($_pos, 'teacher')  !== false ||
+                    stripos($_pos, 'lecturer') !== false ||
+                    stripos($_dep, 'teaching') !== false
+                );
+            }
+            $expenseAcct = $isTeaching ? '5010' : '5020';
+
+            $adjLines = [];
+            // Expense accounts: positive delta = DR (more expense), negative = CR (less)
+            if (abs($dGross) >= 0.005) {
+                $adjLines[] = [
+                    'account_code' => $expenseAcct,
+                    'dr' => $dGross > 0 ? abs($dGross) : 0,
+                    'cr' => $dGross < 0 ? abs($dGross) : 0,
+                ];
+            }
+            // Liability accounts: positive delta = CR (more liability), negative = DR (less)
+            $liabDeltas = [
+                '2020' => $dNet, '2030' => $dPF, '2031' => $dESI,
+                '2032' => $dTDS, '2033' => $dProfTax, '2034' => $dOtherDed,
+            ];
+            foreach ($liabDeltas as $code => $delta) {
+                if (abs($delta) < 0.005) continue;
+                $adjLines[] = [
+                    'account_code' => $code,
+                    'dr' => $delta < 0 ? abs($delta) : 0,
+                    'cr' => $delta > 0 ? abs($delta) : 0,
+                ];
+            }
+
+            if (!empty($adjLines)) {
+                try {
+                    $narration = "Payroll adjustment - {$month} {$year} - regenerated slip for {$staffId}"
+                               . " (net Δ " . ($netPay - $oldNetPay >= 0 ? '+' : '') . round($netPay - $oldNetPay, 2) . ")";
+                    $adjJournalId = $this->_create_acct_journal($narration, $adjLines, $runId);
+                } catch (\Exception $e) {
+                    log_message('error', 'regenerate_staff_payroll: adjustment journal failed: ' . $e->getMessage());
+                    // Don't fail the regenerate just because the journal didn't post.
+                    // Surface the gap in the audit log so operator can re-post manually.
+                }
+            }
+        }
+
+        // ── Recompute run totals from all slips ─────────────────────
+        $allSlips = $this->_fsGetAllSlips($runId);
+        $totals = [
+            'gross' => 0.0, 'net' => 0.0, 'pf' => 0.0, 'esi' => 0.0,
+            'tds' => 0.0, 'profTax' => 0.0, 'otherDed' => 0.0, 'count' => 0,
+        ];
+        foreach ($allSlips as $sid => $sl) {
+            $totals['gross']    += (float) ($sl['gross'] ?? 0);
+            $totals['net']      += (float) ($sl['net_pay'] ?? 0);
+            $totals['pf']       += (float) ($sl['pf_employee'] ?? 0);
+            $totals['esi']      += (float) ($sl['esi_employee'] ?? 0);
+            $totals['tds']      += (float) ($sl['tds'] ?? 0);
+            $totals['profTax']  += (float) ($sl['professional_tax'] ?? 0);
+            $totals['otherDed'] += (float) ($sl['other_deductions'] ?? 0);
+            $totals['count']++;
+        }
+        $totals['totalDeductions'] = round($totals['pf'] + $totals['esi'] + $totals['tds'] + $totals['profTax'] + $totals['otherDed'], 2);
+
+        // CR-2: append adjustment journal id to run's history list
+        $existingAdj = (is_array($run['adjustment_journal_ids'] ?? null)) ? $run['adjustment_journal_ids'] : [];
+        if ($adjJournalId !== '') {
+            $existingAdj[] = [
+                'journalId'  => $adjJournalId,
+                'staffId'    => $staffId,
+                'reason'     => $reason,
+                'oldNetPay'  => $oldNetPay,
+                'newNetPay'  => $netPay,
+                'netDelta'   => round($netPay - $oldNetPay, 2),
+                'grossDelta' => $dGross,
+                'createdAt'  => date('c'),
+                'createdBy'  => $this->admin_name ?: $this->admin_id,
+            ];
+        }
+
+        $this->_fsSyncPayrollRun($runId, array_merge($run, [
+            'total_gross'        => round($totals['gross'], 2),
+            'total_net'          => round($totals['net'], 2),
+            'total_pf'           => round($totals['pf'], 2),
+            'total_esi'          => round($totals['esi'], 2),
+            'total_tds'          => round($totals['tds'], 2),
+            'total_professional_tax' => round($totals['profTax'], 2),
+            'total_other_deductions' => round($totals['otherDed'], 2),
+            'total_deductions'   => $totals['totalDeductions'],
+            'staff_count'        => $totals['count'],
+            'last_regenerated_at'=> date('c'),
+            'last_regenerated_by'=> $this->admin_name ?: $this->admin_id,
+            'adjustment_journal_ids' => $existingAdj,
+        ]));
+
+        // ── Audit ───────────────────────────────────────────────────
+        $this->_log_payroll('slip_regenerated', $runId, [
+            'staff_id'              => $staffId,
+            'reason'                => $reason,
+            'old_net_pay'           => $oldNetPay,
+            'new_net_pay'           => $netPay,
+            'archive_id'            => $archiveDocId,
+            'working_days'          => $staffWorkingDays,
+            'days_absent'           => $daysAbsent,
+            'lwp_days'              => $lwpDays,
+            'adjustment_journal_id' => $adjJournalId,
+            'gross_delta'           => $dGross,
+            'net_delta'             => round($netPay - $oldNetPay, 2),
+        ]);
+
+        $this->json_success([
+            'message'              => 'Slip regenerated.',
+            'run_id'               => $runId,
+            'staff_id'             => $staffId,
+            'old_net_pay'          => $oldNetPay,
+            'new_net_pay'          => $netPay,
+            'difference'           => round($netPay - $oldNetPay, 2),
+            'warnings'             => $regenWarnings,   // M-2: inactive-staff hints
+            'archive_id'           => $archiveDocId,
+            'working_days'         => $staffWorkingDays,
+            'days_absent'          => $daysAbsent,
+            'lwp_days'             => $lwpDays,
+            'adjustment_journal_id'=> $adjJournalId,
+        ]);
     }
 }

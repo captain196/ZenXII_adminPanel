@@ -99,7 +99,7 @@
                 <th width="90">Date</th>
                 <th>Order ID</th>
                 <th>Student Name</th>
-                <th width="80">Class</th>
+                <th width="140">Class / Section</th>
                 <th width="90">Amount</th>
                 <th>Fee Months</th>
                 <th width="80">Gateway</th>
@@ -229,28 +229,38 @@
               <span class="fm-detail-value" id="mdClass">-</span>
             </div>
             <div class="fm-detail-cell">
-              <span class="fm-detail-label">Amount</span>
-              <span class="fm-detail-value fm-detail-amount" id="mdAmount">-</span>
+              <span class="fm-detail-label">Section</span>
+              <span class="fm-detail-value" id="mdSection">-</span>
             </div>
           </div>
           <div class="fm-detail-row">
+            <div class="fm-detail-cell">
+              <span class="fm-detail-label">Amount</span>
+              <span class="fm-detail-value fm-detail-amount" id="mdAmount">-</span>
+            </div>
             <div class="fm-detail-cell">
               <span class="fm-detail-label">Fee Months</span>
               <span class="fm-detail-value" id="mdFeeMonths">-</span>
             </div>
+          </div>
+          <div class="fm-detail-row">
             <div class="fm-detail-cell">
               <span class="fm-detail-label">Gateway</span>
               <span class="fm-detail-value" id="mdGateway">-</span>
             </div>
-          </div>
-          <div class="fm-detail-row">
             <div class="fm-detail-cell">
               <span class="fm-detail-label">Status</span>
               <span class="fm-detail-value" id="mdStatus">-</span>
             </div>
+          </div>
+          <div class="fm-detail-row">
             <div class="fm-detail-cell">
               <span class="fm-detail-label">Method</span>
               <span class="fm-detail-value" id="mdMethod">-</span>
+            </div>
+            <div class="fm-detail-cell">
+              <span class="fm-detail-label">Receipt</span>
+              <span class="fm-detail-value" id="mdReceipt">-</span>
             </div>
           </div>
           <div class="fm-detail-row fm-detail-row-full">
@@ -276,35 +286,14 @@
   </div>
 </div>
 
-<!-- ── Refund Confirmation Modal ── -->
-<div class="modal fade" id="refundModal" tabindex="-1" role="dialog">
-  <div class="modal-dialog modal-sm" role="document">
-    <div class="modal-content fm-modal">
-      <div class="modal-header fm-modal-header fm-modal-header-warn">
-        <button type="button" class="close fm-modal-close" data-dismiss="modal">&times;</button>
-        <h4 class="modal-title"><i class="fa fa-undo"></i> Confirm Refund</h4>
-      </div>
-      <div class="modal-body fm-modal-body">
-        <p class="fm-refund-msg">Are you sure you want to initiate a refund for this payment?</p>
-        <div class="fm-refund-info">
-          <div><strong>Order ID:</strong> <span id="rfOrderId">-</span></div>
-          <div><strong>Student:</strong> <span id="rfStudent">-</span></div>
-          <div><strong>Amount:</strong> <span id="rfAmount">-</span></div>
-        </div>
-        <div class="fm-form-group" style="margin-top:12px;">
-          <label class="fm-label">Reason (optional)</label>
-          <textarea id="rfReason" class="fm-input fm-textarea" rows="2" placeholder="Refund reason..."></textarea>
-        </div>
-      </div>
-      <div class="modal-footer fm-modal-footer">
-        <button type="button" class="fm-btn fm-btn-outline" data-dismiss="modal">Cancel</button>
-        <button type="button" class="fm-btn fm-btn-red" id="btnConfirmRefund" onclick="confirmRefund()">
-          <i class="fa fa-undo"></i> Initiate Refund
-        </button>
-      </div>
-    </div>
-  </div>
-</div>
+<!--
+  Phase 1.X (2026-05-09) — refund modal removed.
+  This page no longer offers an inline refund action. Refunds are processed
+  on the dedicated /fee_management/refunds page (which has the proper
+  workflow: pending -> approved -> processed, audit logging, gateway-side
+  refund initiation, accounting journal posting).
+-->
+
 
 <!-- Toast -->
 <div id="fmToast" class="fm-toast"></div>
@@ -319,7 +308,6 @@ document.addEventListener('DOMContentLoaded', function() {
   var CSRF_HASH = document.querySelector('meta[name="csrf-token"]').content;
   var paymentsCache = [];
   var currentFilter = 'all';
-  var refundTargetId = null;
 
   /* ── Load Payments ── */
   window.loadPayments = function(status, dateFrom, dateTo) {
@@ -391,17 +379,27 @@ document.addEventListener('DOMContentLoaded', function() {
       else months = p.fee_months;
     }
 
+    // Phase 1.X (2026-05-09) — refund button removed. The previous
+    // inline refund action POSTed to fee_management/refund_online_payment
+    // which never had a controller method or route. Refund workflow
+    // lives on the dedicated /fee_management/refunds page.
     var actions = '<button class="fm-action-btn" onclick="showDetails(\'' + escHtml(p.id || p.order_id) + '\')" title="View Details"><i class="fa fa-eye"></i></button>';
-    if (sl === 'paid') {
-      actions += ' <button class="fm-action-btn fm-action-refund" onclick="initiateRefund(\'' + escHtml(p.id || p.order_id) + '\')" title="Refund"><i class="fa fa-undo"></i></button>';
-    }
+
+    // Phase 1.X (2026-05-09) — Class + Section combined into one cell so
+    // both are visible without widening the table. Backend emits both in
+    // the item shape; view previously displayed only `class`.
+    var classSection = '';
+    if (p.class && p.section) classSection = escHtml(p.class) + ' / ' + escHtml(p.section);
+    else if (p.class)         classSection = escHtml(p.class);
+    else if (p.section)       classSection = escHtml(p.section);
+    else                      classSection = '-';
 
     return '<tr>' +
       '<td>' + sno + '</td>' +
       '<td>' + escHtml(p.date || '-') + '</td>' +
       '<td class="fm-mono">' + escHtml(p.order_id || '-') + '</td>' +
       '<td>' + escHtml(p.student_name || '-') + '</td>' +
-      '<td>' + escHtml(p.class || '-') + '</td>' +
+      '<td>' + classSection + '</td>' +
       '<td class="fm-amount">&#8377;' + formatNum(p.amount || 0) + '</td>' +
       '<td>' + escHtml(months || '-') + '</td>' +
       '<td>' + escHtml(p.gateway || '-') + '</td>' +
@@ -478,9 +476,11 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('mdStudentName').textContent = p.student_name || '-';
     document.getElementById('mdStudentId').textContent = p.student_id || '-';
     document.getElementById('mdClass').textContent = p.class || '-';
+    document.getElementById('mdSection').textContent = p.section || '-';
     document.getElementById('mdAmount').textContent = '\u20B9' + formatNum(p.amount || 0);
     document.getElementById('mdGateway').textContent = p.gateway || '-';
     document.getElementById('mdMethod').textContent = p.method || '-';
+    document.getElementById('mdReceipt').textContent = p.receipt_key || '-';
     document.getElementById('mdNotes').textContent = p.notes || 'None';
 
     var months = '';
@@ -526,58 +526,13 @@ document.addEventListener('DOMContentLoaded', function() {
     '</div>';
   }
 
-  /* ── Initiate Refund ── */
-  window.initiateRefund = function(id) {
-    var p = findPayment(id);
-    if (!p) return;
-    refundTargetId = id;
-
-    document.getElementById('rfOrderId').textContent = p.order_id || '-';
-    document.getElementById('rfStudent').textContent = p.student_name || '-';
-    document.getElementById('rfAmount').textContent = '\u20B9' + formatNum(p.amount || 0);
-    document.getElementById('rfReason').value = '';
-
-    $('#refundModal').modal('show');
+  // Phase 1.X (2026-05-09) — initiateRefund / confirmRefund removed.
+  // Posted to fee_management/refund_online_payment which never existed.
+  // Refund workflow lives on /fee_management/refunds.
+  window.initiateRefund = function() {
+    if (typeof showToast === 'function') showToast('Use /fee_management/refunds for refunds', 'error');
   };
-
-  window.confirmRefund = function() {
-    if (!refundTargetId) return;
-
-    var btn = document.getElementById('btnConfirmRefund');
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Processing...';
-
-    var params = {};
-    params[CSRF_NAME] = CSRF_HASH;
-    params.id = refundTargetId;
-    params.reason = document.getElementById('rfReason').value.trim();
-
-    $.ajax({
-      url: BASE + 'fee_management/refund_online_payment',
-      type: 'POST',
-      data: params,
-      dataType: 'json',
-      success: function(res) {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa fa-undo"></i> Initiate Refund';
-        if (res.csrf_hash) CSRF_HASH = res.csrf_hash;
-
-        if (res.status === 'success') {
-          $('#refundModal').modal('hide');
-          showToast('Refund initiated successfully', 'success');
-          loadPayments();
-        } else {
-          showToast(res.message || 'Refund failed', 'error');
-        }
-      },
-      error: function() {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa fa-undo"></i> Initiate Refund';
-        showToast('Network error', 'error');
-      }
-    });
-  };
-
+  window.confirmRefund = function() { /* no-op — refund moved to /fee_management/refunds */ };
   /* ── Create Test Order ── */
   window.createTestOrder = function(e) {
     e.preventDefault();
@@ -724,17 +679,23 @@ document.addEventListener('DOMContentLoaded', function() {
     return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : '';
   }
 
+  // Phase 1.X (2026-05-09) — fixed 2-decimal precision so ₹100 reads as
+  // 100.00, ₹100.50 as 100.50 (was: 100 / 100.5 — inconsistent).
   function formatNum(n) {
     n = parseFloat(n) || 0;
-    return n.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
+  // Phase 1.X (2026-05-09) — IST conversion enforced regardless of the
+  // admin's browser timezone or server tz. Online-payment timestamps are
+  // financially-relevant; bank-statement matching depends on consistent
+  // dates across reconciliation surfaces.
   function formatTimestamp(ts) {
     if (!ts) return '-';
     var d = new Date(ts);
     if (isNaN(d.getTime())) return ts;
-    return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) +
-      ' ' + d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) +
+      ' ' + d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
   }
 
   /* ── Initial Load ── */

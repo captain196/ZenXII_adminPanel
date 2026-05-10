@@ -1,0 +1,27 @@
+═══════════════════════════════════════════════════════════════
+  Phase 1 — live Firestore rules verification
+  project: graderadmin
+═══════════════════════════════════════════════════════════════
+  realAuditId for 17b: AUD_20260424052742_RECEIPT_1f559f
+
+Minting ID tokens...
+  admin: ok
+  parent: ok
+
+Test 17a — admin write to feeAuditLogs (must DENY)
+✅ 17a — admin write to feeAuditLogs
+     expected=DENY  actual=DENY  (HTTP 403)
+Test 17b — admin read of real feeAuditLogs doc (must ALLOW)
+✅ 17b — admin read of real feeAuditLogs doc
+     expected=ALLOW  actual=ALLOW  (HTTP 200)
+Test 17c — parent read of /studentFeeSummary/anything (must DENY)
+✅ 17c — parent read of /studentFeeSummary/anything
+     expected=DENY  actual=DENY  (HTTP 403)
+Test 17d — admin read of /feeCarryForward/SCH_*_2026-27_anyStudent (must ALLOW)
+✅ 17d — admin read of feeCarryForward (non-existent)
+     expected=ALLOW  actual=ALLOW (doc absent)  (HTTP 404)
+───────────────────────────────────────────────────────────────
+Result: 4/4 pass, 0 fail
+
+Post-flight leak check on /feeAuditLogs/test_phase1_lock_check ...
+  ✅ no leak — rule held

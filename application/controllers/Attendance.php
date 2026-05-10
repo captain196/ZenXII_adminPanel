@@ -92,6 +92,21 @@ class Attendance extends MY_Controller
     }
 
     /**
+     * Phase 2 Control Panel — daily summary + lock + corrections.
+     * View-only renderer; all data is fetched client-side via the
+     * existing Phase 1/2 JSON endpoints.
+     */
+    public function control()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'attendance/control');
+        $data['Classes']      = $this->_build_class_list();
+        $data['session_year'] = $this->session_year;
+        $this->load->view('include/header', $data);
+        $this->load->view('attendance/control', $data);
+        $this->load->view('include/footer');
+    }
+
+    /**
      * Dashboard stats — today's actual attendance counts (students + staff).
      * Reads today's mark (single character) from each student/staff attendance string.
      */
@@ -3885,6 +3900,14 @@ class Attendance extends MY_Controller
             return $this->json_error('Invalid leave application data.');
         }
 
+        // Past-date sanity guard — reject approval when start date is older than 60 days.
+        // Stops late-night data tampering on ancient leave records; legitimate
+        // backdated cases should go through the correction-request flow.
+        $startTs = strtotime($startDate);
+        if ($startTs && (time() - $startTs) > (60 * 86400)) {
+            return $this->json_error('Cannot approve leave whose start date is older than 60 days.');
+        }
+
         // Teachers can only approve for their assigned classes
         if (!$this->_is_admin_role()) {
             $sec = str_replace('Section ', '', $section);
@@ -6270,5 +6293,1351 @@ class Attendance extends MY_Controller
             $clean .= in_array($raw[$i], $this->valid_marks) ? $raw[$i] : 'V';
         }
         return str_pad($clean, $daysInMonth, 'V');
+    }
+
+    /* ================================================================
+       PHASE 1 — TIME-BASED EDIT CONTROL (smart save + state machine)
+       ================================================================
+       Implements the refactored attendance contract:
+         - single PHP write path
+         - server-time-only date resolution
+         - 3-stage gate (S1 free → S2 restricted → S3 locked)
+         - per-day attendance docs + Firestore audit log
+         - default-to-Present "smart save"
+       New endpoint: POST /attendance/save
+       Legacy endpoints (save_student_attendance, mark_student_day) remain
+       untouched until parity is verified.
+       ================================================================ */
+
+    /** Per-request cache of school timezone (DateTimeZone). */
+    private $_p1_tz_cache = null;
+
+    /** Per-request cache of holidays keyed by "Y-m". */
+    private $_p1_holiday_cache = [];
+
+    /**
+     * Resolve school timezone. Defaults to Asia/Kolkata.
+     * Reads `schools/{id}.timezone` once per request; matches the canonical
+     * pattern in Admin.php:662–664.
+     */
+    private function _get_school_timezone(): \DateTimeZone
+    {
+        if ($this->_p1_tz_cache !== null) return $this->_p1_tz_cache;
+        $tzName = 'Asia/Kolkata';
+        try {
+            $sdata = $this->fs->get('schools', $this->school_id);
+            $candidate = is_array($sdata) ? (string) ($sdata['timezone'] ?? '') : '';
+            if ($candidate !== '' && in_array($candidate, timezone_identifiers_list(), true)) {
+                $tzName = $candidate;
+            }
+        } catch (\Exception $e) { /* fall through to IST default */ }
+        return $this->_p1_tz_cache = new \DateTimeZone($tzName);
+    }
+
+    /**
+     * Server "today" in the school's timezone (YYYY-MM-DD).
+     * Clients MUST NOT send a date for today operations — this is the source.
+     */
+    private function _server_today(): string
+    {
+        return (new \DateTime('now', $this->_get_school_timezone()))->format('Y-m-d');
+    }
+
+    /**
+     * Server "now" as a DateTime in the school's timezone.
+     */
+    private function _server_now(): \DateTime
+    {
+        return new \DateTime('now', $this->_get_school_timezone());
+    }
+
+    /**
+     * Build the deterministic lock document id.
+     * Spaces in class/section keys replaced with hyphens so the id has no
+     * whitespace. Result is stable for a given (school, class, section, date).
+     */
+    private function _lock_doc_id(string $class, string $section, string $date): string
+    {
+        $cls = str_replace(' ', '-', Firestore_service::classKey($class));
+        $sec = str_replace(' ', '-', Firestore_service::sectionKey($section));
+        return "{$this->school_id}_{$cls}_{$sec}_{$date}";
+    }
+
+    /**
+     * Fetch the lock state for (class, section, date).
+     * Missing doc = unlocked (default).
+     *
+     * @return array{locked:bool, lockedBy:?string, lockedAt:?string}
+     */
+    private function _get_lock(string $class, string $section, string $date): array
+    {
+        $docId = $this->_lock_doc_id($class, $section, $date);
+        $doc   = $this->fs->get('attendanceLocks', $docId);
+        if (!is_array($doc)) {
+            return ['locked' => false, 'lockedBy' => null, 'lockedAt' => null];
+        }
+        return [
+            'locked'       => (bool) ($doc['locked'] ?? false),
+            'lockedBy'     => $doc['lockedBy']     ?? null,
+            'lockedAt'     => $doc['lockedAt']     ?? null,
+            'lockReason'   => $doc['lockReason']   ?? null,
+            'unlockedBy'   => $doc['unlockedBy']   ?? null,
+            'unlockedAt'   => $doc['unlockedAt']   ?? null,
+            'unlockReason' => $doc['unlockReason'] ?? null,
+        ];
+    }
+
+    /**
+     * Compute the edit stage for (class, section, date).
+     *   S1_FREE        → today, before 10:30, unlocked
+     *   S2_RESTRICTED  → today, 10:30 ≤ now < 18:00, unlocked  (reason required)
+     *   S3_LOCKED      → otherwise (locked, past day, future day, or after 18:00)
+     *
+     * Phase 2 extension: an explicit admin unlock (lock doc with locked=false
+     * AND unlockedAt set) bypasses the time-of-day cutoff and treats the
+     * date as S2_RESTRICTED until the admin re-locks.
+     */
+    private function _stage(string $class, string $section, string $date): string
+    {
+        // Any non-today write is locked. Backdated/forward edits go through
+        // the correction-request flow (Phase 2).
+        $today = $this->_server_today();
+        if ($date !== $today) return 'S3_LOCKED';
+
+        $lock = $this->_get_lock($class, $section, $date);
+
+        // Explicit lock takes precedence over everything below.
+        if (!empty($lock['locked'])) return 'S3_LOCKED';
+
+        // Phase 2 — admin explicit unlock bypasses the 18:00 time gate.
+        // Doc was created by the auto-lock cron / admin lock; admin then
+        // flipped locked → false, which sets unlockedAt. Edits are allowed
+        // but always restricted (reason required).
+        if (!empty($lock['unlockedAt'])) return 'S2_RESTRICTED';
+
+        $tz   = $this->_get_school_timezone();
+        $now  = $this->_server_now();
+        $cutG = new \DateTime("{$today} 10:30:00", $tz);
+        $cutL = new \DateTime("{$today} 18:00:00", $tz);
+
+        if ($now < $cutG) return 'S1_FREE';
+        if ($now < $cutL) return 'S2_RESTRICTED';
+
+        // After 18:00 with no lock doc yet (cron lag) → still locked.
+        return 'S3_LOCKED';
+    }
+
+    /**
+     * Enforce the stage contract. Exits with the right HTTP status if blocked.
+     * Phase 1 has no admin-bypass — those land in Phase 2 with the correction flow.
+     */
+    private function _gate_write(string $stage, string $reason, string $role): void
+    {
+        if ($stage === 'S1_FREE') return;
+        if ($stage === 'S2_RESTRICTED') {
+            if (strlen(trim($reason)) < 10) {
+                $this->json_error('Reason required for edits after 10:30 AM (min 10 chars).', 400);
+            }
+            return;
+        }
+        // S3_LOCKED
+        $this->json_error('Attendance is locked. File a correction request.', 423);
+    }
+
+    /**
+     * Write one row to the Firestore audit log. Direct write — no JSONL queue.
+     * Failures are logged but never abort the user-visible action.
+     */
+    private function _audit_write(array $row): void
+    {
+        $row = array_merge([
+            'schoolId'  => $this->school_id,
+            'userId'    => $this->admin_id ?: 'system',
+            'role'      => $this->admin_role ?: 'system',
+            'sourceIp'  => $this->input->ip_address(),
+            'timestamp' => date('c'),
+        ], $row);
+        try {
+            // Monotonic + random suffix avoids collisions inside the same second
+            $docId = "{$this->school_id}_A" . date('YmdHis') . sprintf('%04d', mt_rand(0, 9999));
+            $this->fs->set('attendanceAuditLog', $docId, $row, false);
+        } catch (\Exception $e) {
+            log_message('error', 'attendanceAuditLog write failed: ' . $e->getMessage()
+                . ' row=' . json_encode($row, JSON_UNESCAPED_UNICODE));
+        }
+    }
+
+    /**
+     * Active roster for (class, section), keyed by studentId.
+     * Returns: [ studentId => [ name, admissionDate ] ]
+     * Filters status='Active' canonically. Uses Roster_helper first;
+     * falls back to a direct `students` query.
+     */
+    private function _get_active_roster(string $class, string $section): array
+    {
+        $classPrefixed   = Firestore_service::classKey($class);
+        $sectionPrefixed = Firestore_service::sectionKey($section);
+
+        $out = [];
+
+        // Strategy 0 — Roster_helper (R5 canonical Firestore source)
+        try {
+            if (isset($this->roster) && method_exists($this->roster, 'for_class')) {
+                $rows = $this->roster->for_class($classPrefixed, $sectionPrefixed);
+                if (is_array($rows) && !empty($rows)) {
+                    foreach ($rows as $uid => $fields) {
+                        if (!is_array($fields)) continue;
+                        $statusVal = (string) ($fields['Status'] ?? $fields['status'] ?? 'Active');
+                        if (strcasecmp($statusVal, 'Active') !== 0) continue;
+                        $out[(string) $uid] = [
+                            'name' => (string) ($fields['Name'] ?? $fields['name'] ?? $uid),
+                            'admissionDate' => (string) (
+                                $fields['admissionDate']
+                                    ?? $fields['Admission Date']
+                                    ?? $fields['admission_date']
+                                    ?? ''
+                            ),
+                        ];
+                    }
+                    if (!empty($out)) return $out;
+                }
+            }
+        } catch (\Exception $e) { /* fall through */ }
+
+        // Strategy 1 — direct students collection query
+        try {
+            $docs = $this->fs->schoolWhere('students', [
+                ['Class',   '==', $classPrefixed],
+                ['Section', '==', $sectionPrefixed],
+            ], 'Name', 'ASC');
+            foreach ($docs as $doc) {
+                $d = is_array($doc) ? ($doc['data'] ?? $doc) : null;
+                if (!is_array($d)) continue;
+                $statusVal = (string) ($d['Status'] ?? $d['status'] ?? 'Active');
+                if (strcasecmp($statusVal, 'Active') !== 0) continue;
+                $uid = (string) ($d['User Id'] ?? $d['studentId'] ?? '');
+                if ($uid === '') continue;
+                $out[$uid] = [
+                    'name' => (string) ($d['Name'] ?? $d['name'] ?? $uid),
+                    'admissionDate' => (string) (
+                        $d['admissionDate']
+                            ?? $d['Admission Date']
+                            ?? $d['admission_date']
+                            ?? ''
+                    ),
+                ];
+            }
+        } catch (\Exception $e) { /* return what we have */ }
+
+        return $out;
+    }
+
+    /**
+     * Is $date (YYYY-MM-DD) a holiday in the school's calendar?
+     * Reuses the existing attendance helper to read non-working days.
+     */
+    private function _is_holiday(string $date): bool
+    {
+        $parts = explode('-', $date);
+        if (count($parts) !== 3) return false;
+        $y = (int) $parts[0]; $m = (int) $parts[1]; $d = (int) $parts[2];
+        if ($y < 1970 || $m < 1 || $m > 12 || $d < 1 || $d > 31) return false;
+
+        $cacheKey = "{$y}-{$m}";
+        if (!array_key_exists($cacheKey, $this->_p1_holiday_cache)) {
+            $this->load->helper('attendance');
+            try {
+                $this->_p1_holiday_cache[$cacheKey] =
+                    get_non_working_days($this->firebase, $this->school_name, $m, $y) ?: [];
+            } catch (\Exception $e) {
+                $this->_p1_holiday_cache[$cacheKey] = [];
+            }
+        }
+        return !empty($this->_p1_holiday_cache[$cacheKey][$d]);
+    }
+
+    /**
+     * Validate that admission date is on or before $serverDate.
+     * Returns true if writable, false to block. Unknown / unparseable
+     * admission dates are NOT blocked (defensive).
+     */
+    private function _admission_allows(string $admStr, string $serverDate): bool
+    {
+        $admStr = trim($admStr);
+        if ($admStr === '') return true;
+        $ts = strtotime($admStr);
+        if ($ts === false) return true;
+        return date('Y-m-d', $ts) <= $serverDate;
+    }
+
+    /* ================================================================
+       PHASE 1 — POST /attendance/save  (smart default-Present)
+       ================================================================
+       Body:
+         class    : string  (required)
+         section  : string  (required, letter only e.g. "A")
+         absent   : string[]                               (studentIds → A)
+         leave    : string[]                               (studentIds → L)
+         late     : array<{studentId, lateMinutes?}>       (P + late=true)
+         reason   : string                                 (required in S2,
+                                                            min 10 chars)
+       Date is server-resolved — clients MUST NOT supply a date.
+       Everything in the active roster but NOT in the three sets is
+       written as Present.
+
+       Phase 1 writes ONLY the per-day `attendance` collection.
+       The `attendanceSummary` collection is NOT updated here — it will be
+       computed on read or rebuilt by a Phase 3 job. This avoids the
+       read-modify-write race that comes with maintaining derived state
+       on every write.
+
+       Concurrency model: Firestore set(merge:true) is the unit of safety.
+       Two writers on the same student-day → last write wins. Every write
+       carries lastUpdatedBy/lastUpdatedAt/lastUpdateStage and produces an
+       audit row, so conflicts are reconstructible after the fact.
+       ================================================================ */
+    public function save()
+    {
+        $this->_require_role(self::MARK_ROLES, 'attendance/save');
+
+        $class   = trim((string) $this->input->post('class'));
+        $section = trim((string) $this->input->post('section'));
+        $reason  = trim((string) $this->input->post('reason'));
+        if ($class === '' || $section === '') {
+            return $this->json_error('class and section are required.');
+        }
+        $class   = $this->safe_path_segment($class, 'class');
+        $section = $this->safe_path_segment($section, 'section');
+
+        // Class-ownership check (no-op for non-Teacher roles)
+        if (!$this->_teacher_can_access($class, "Section {$section}")) {
+            return $this->json_error('You are not assigned to this class/section.', 403);
+        }
+
+        // Decode arrays — accept JSON strings or PHP-encoded arrays
+        $absent = $this->input->post('absent');
+        $leave  = $this->input->post('leave');
+        $late   = $this->input->post('late');
+        if (is_string($absent)) $absent = json_decode($absent, true);
+        if (is_string($leave))  $leave  = json_decode($leave,  true);
+        if (is_string($late))   $late   = json_decode($late,   true);
+        if (!is_array($absent)) $absent = [];
+        if (!is_array($leave))  $leave  = [];
+        if (!is_array($late))   $late   = [];
+
+        // Server-resolved date — body MUST NOT carry one
+        $serverDate = $this->_server_today();
+
+        // Holiday gate
+        if ($this->_is_holiday($serverDate)) {
+            return $this->json_error('Cannot mark attendance on a declared holiday.', 422);
+        }
+
+        // Stage gate (also enforces lock + after-18:00)
+        $stage = $this->_stage($class, $section, $serverDate);
+        $this->_gate_write($stage, $reason, $this->admin_role ?? '');
+
+        // Active roster — must exist
+        $roster = $this->_get_active_roster($class, $section);
+        if (empty($roster)) {
+            return $this->json_error('No active students in this section.', 404);
+        }
+
+        // Build delta sets (intersect with roster — silently drop unknown ids;
+        // first-claim wins so a student listed in absent + leave goes to absent)
+        $absentSet = [];
+        foreach ($absent as $sid) {
+            $sid = is_string($sid) ? trim($sid) : '';
+            if ($sid !== '' && isset($roster[$sid])) $absentSet[$sid] = true;
+        }
+        $leaveSet = [];
+        foreach ($leave as $sid) {
+            $sid = is_string($sid) ? trim($sid) : '';
+            if ($sid !== '' && isset($roster[$sid]) && !isset($absentSet[$sid])) {
+                $leaveSet[$sid] = true;
+            }
+        }
+        $lateSet = [];
+        foreach ($late as $entry) {
+            if (is_string($entry)) $entry = ['studentId' => $entry];
+            if (!is_array($entry)) continue;
+            $sid = trim((string) ($entry['studentId'] ?? ''));
+            if ($sid === '' || !isset($roster[$sid])) continue;
+            if (isset($absentSet[$sid]) || isset($leaveSet[$sid])) continue;
+            $lm = (int) ($entry['lateMinutes'] ?? 0);
+            if ($lm < 0)   $lm = 0;
+            if ($lm > 180) $lm = 180;   // sanity cap (3h)
+            $lateSet[$sid] = $lm;
+        }
+
+        $sectionKey  = Firestore_service::buildSectionKey($class, $section);
+        $classKeyN   = Firestore_service::classKey($class);
+        $sectionKeyN = Firestore_service::sectionKey($section);
+        $userId      = $this->admin_id ?: 'system';
+        $role        = $this->admin_role ?: 'system';
+        $nowIso      = $this->_server_now()->format('c');
+
+        // ── PRE-FETCH (single network call) ───────────────────────────────
+        // Fetch every existing attendance doc for this section+date in one
+        // schoolWhere query. Replaces N per-student get() calls. Used to:
+        //   (a) detect no-ops so we don't write/audit rows that didn't change
+        //   (b) carry old values into the audit log for traceability
+        $existing = [];
+        try {
+            $rows = $this->fs->schoolWhere('attendance', [
+                ['date',       '==', $serverDate],
+                ['sectionKey', '==', $sectionKey],
+            ]);
+            foreach ($rows as $entry) {
+                $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                if (!is_array($d)) continue;
+                $sid = (string) ($d['studentId'] ?? '');
+                if ($sid !== '') $existing[$sid] = $d;
+            }
+        } catch (\Exception $e) {
+            // If the pre-fetch fails the loop falls back to "treat as new
+            // mark" — slightly less rich audit but still safe.
+            log_message('warning', 'attendance pre-fetch failed: ' . $e->getMessage());
+        }
+
+        // ── BUILD BATCH ──────────────────────────────────────────────────
+        $attendanceWrites = [];   // docId => doc
+        $auditWrites      = [];   // docId => doc
+        $updated          = [];
+        $rejected         = [];
+
+        $auditPrefix = "{$this->school_id}_A" . date('YmdHis');
+        $auditSeq    = 0;
+
+        foreach ($roster as $sid => $info) {
+            // Admission gate — never mark before admission
+            if (!$this->_admission_allows((string) $info['admissionDate'], $serverDate)) {
+                $rejected[] = ['studentId' => $sid, 'reason' => 'before admission date'];
+                continue;
+            }
+
+            // Resolve target status + late
+            $newStatus = 'P'; $newLate = false; $newLm = 0;
+            if (isset($absentSet[$sid]))    { $newStatus = 'A'; }
+            elseif (isset($leaveSet[$sid])) { $newStatus = 'L'; }
+            elseif (isset($lateSet[$sid]))  { $newStatus = 'P'; $newLate = true; $newLm = $lateSet[$sid]; }
+
+            $prev      = $existing[$sid] ?? null;
+            $oldStatus = is_array($prev) ? (string) ($prev['status']      ?? '')    : '';
+            $oldLate   = is_array($prev) ? (bool)   ($prev['late']        ?? false) : false;
+            $oldLm     = is_array($prev) ? (int)    ($prev['lateMinutes'] ?? 0)     : 0;
+
+            if ($oldStatus === $newStatus && $oldLate === $newLate && $oldLm === $newLm) {
+                continue;   // no-op; nothing to write, nothing to audit
+            }
+
+            $perDayId = "{$this->school_id}_{$serverDate}_{$sid}";
+            $attendanceWrites[$perDayId] = [
+                'schoolId'        => $this->school_id,
+                'date'            => $serverDate,
+                'studentId'       => $sid,
+                'studentName'     => $info['name'],
+                'sectionKey'      => $sectionKey,
+                'className'       => $classKeyN,
+                'section'         => $sectionKeyN,
+                'status'          => $newStatus,
+                'late'            => $newLate,
+                'lateMinutes'     => $newLm,
+                'lastUpdatedBy'   => $userId,
+                'lastUpdatedRole' => $role,
+                'lastUpdatedAt'   => $nowIso,
+                'lastUpdateStage' => $stage,
+            ];
+
+            $auditId = $auditPrefix . '_' . sprintf('%04d', $auditSeq++) . sprintf('%04d', mt_rand(0, 9999));
+            $auditWrites[$auditId] = [
+                'schoolId'      => $this->school_id,
+                'userId'        => $userId,
+                'role'          => $role,
+                'sourceIp'      => $this->input->ip_address(),
+                'timestamp'     => $nowIso,
+                'action'        => ($oldStatus === '') ? 'MARK' : 'EDIT',
+                'stage'         => $stage,
+                'targetType'    => 'student',
+                'targetId'      => $sid,
+                'date'          => $serverDate,
+                'oldValue'      => ($oldStatus === '') ? null
+                    : ['status' => $oldStatus, 'late' => $oldLate, 'lateMinutes' => $oldLm],
+                'newValue'      => ['status' => $newStatus, 'late' => $newLate, 'lateMinutes' => $newLm],
+                'changedFields' => array_values(array_filter([
+                    $oldStatus !== $newStatus ? 'status'      : null,
+                    $oldLate   !== $newLate   ? 'late'        : null,
+                    $oldLm     !== $newLm     ? 'lateMinutes' : null,
+                ])),
+                'reason'        => $reason !== '' ? $reason : null,
+                'className'     => $classKeyN,
+                'section'       => $sectionKeyN,
+            ];
+
+            $updated[] = $sid;
+        }
+
+        // ── COMMIT ───────────────────────────────────────────────────────
+        // batchSet returns the count of successful writes. We don't unwind
+        // partial failures — Firestore set(merge:true) is idempotent, so
+        // a retry of the whole save() converges to the intended state.
+        if (!empty($attendanceWrites)) {
+            $okAtt = $this->fs->batchSet('attendance', $attendanceWrites);
+            if ($okAtt < count($attendanceWrites)) {
+                log_message('error', sprintf(
+                    'attendance batchSet partial: %d/%d for school=%s section=%s date=%s',
+                    $okAtt, count($attendanceWrites),
+                    $this->school_id, $sectionKey, $serverDate
+                ));
+            }
+        }
+        if (!empty($auditWrites)) {
+            try { $this->fs->batchSet('attendanceAuditLog', $auditWrites); }
+            catch (\Exception $e) {
+                log_message('error', 'attendanceAuditLog batchSet failed: ' . $e->getMessage());
+            }
+        }
+
+        return $this->json_success([
+            'updated'    => $updated,
+            'rejected'   => $rejected,
+            'date'       => $serverDate,
+            'stage'      => $stage,
+            'rosterSize' => count($roster),
+        ]);
+    }
+
+    /* ================================================================
+       PHASE 2 — LOCK SYSTEM + CORRECTION FLOW
+       ================================================================
+       New endpoints:
+         GET  /attendance/lock              → lock_get
+         POST /attendance/lock/set          → lock_set            (admin)
+         POST /attendance/cron/auto_lock    → cron_auto_lock      (cron / admin)
+         POST /attendance/correction/submit → correction_submit   (teacher)
+         GET  /attendance/correction/list   → correction_list
+         POST /attendance/correction/decide → correction_decide   (admin)
+
+       Adds collections:
+         attendanceLocks                    (one doc per class+section+date)
+         attendanceCorrectionRequests       (auto-id per request)
+
+       Audit actions added:
+         LOCK, UNLOCK, AUTO_LOCK,
+         CORRECTION_REQUEST, CORRECTION_APPROVE, CORRECTION_REJECT
+       ================================================================ */
+
+    /**
+     * Privileged write — bypasses _gate_write entirely.
+     * Used only by correction_decide('approve') after admin review.
+     * Always writes one EDIT audit row tied to the request id.
+     */
+    private function _privileged_write_attendance(
+        string $serverDate, string $studentId, string $studentName,
+        string $class, string $section, string $sectionKey,
+        string $newStatus, bool $newLate, int $newLm,
+        string $reason, ?string $requestId
+    ): bool {
+        $perDayId = "{$this->school_id}_{$serverDate}_{$studentId}";
+
+        $prev      = $this->fs->get('attendance', $perDayId);
+        $oldStatus = is_array($prev) ? (string) ($prev['status']      ?? '')    : '';
+        $oldLate   = is_array($prev) ? (bool)   ($prev['late']        ?? false) : false;
+        $oldLm     = is_array($prev) ? (int)    ($prev['lateMinutes'] ?? 0)     : 0;
+
+        $isNoOp = ($oldStatus === $newStatus && $oldLate === $newLate && $oldLm === $newLm);
+
+        $userId = $this->admin_id ?: 'system';
+        $role   = $this->admin_role ?: 'system';
+        $nowIso = $this->_server_now()->format('c');
+
+        if (!$isNoOp) {
+            $ok = $this->fs->set('attendance', $perDayId, [
+                'schoolId'        => $this->school_id,
+                'date'            => $serverDate,
+                'studentId'       => $studentId,
+                'studentName'     => $studentName,
+                'sectionKey'      => $sectionKey,
+                'className'       => Firestore_service::classKey($class),
+                'section'         => Firestore_service::sectionKey($section),
+                'status'          => $newStatus,
+                'late'            => $newLate,
+                'lateMinutes'     => $newLm,
+                'lastUpdatedBy'   => $userId,
+                'lastUpdatedRole' => $role,
+                'lastUpdatedAt'   => $nowIso,
+                'lastUpdateStage' => 'CORRECTION',
+            ], true);
+            if (!$ok) return false;
+
+            $this->_audit_write([
+                'action'        => 'EDIT',
+                'stage'         => 'CORRECTION',
+                'targetType'    => 'student',
+                'targetId'      => $studentId,
+                'date'          => $serverDate,
+                'oldValue'      => ($oldStatus === '') ? null
+                    : ['status' => $oldStatus, 'late' => $oldLate, 'lateMinutes' => $oldLm],
+                'newValue'      => ['status' => $newStatus, 'late' => $newLate, 'lateMinutes' => $newLm],
+                'changedFields' => array_values(array_filter([
+                    $oldStatus !== $newStatus ? 'status'      : null,
+                    $oldLate   !== $newLate   ? 'late'        : null,
+                    $oldLm     !== $newLm     ? 'lateMinutes' : null,
+                ])),
+                'reason'        => $reason !== '' ? $reason : null,
+                'requestId'     => $requestId,
+                'className'     => Firestore_service::classKey($class),
+                'section'       => Firestore_service::sectionKey($section),
+            ]);
+        }
+        return true;
+    }
+
+    /* ────────────────────────  LOCK  ──────────────────────── */
+
+    /**
+     * GET /attendance/lock?class=&section=&date=
+     * Returns current lock state + computed stage for the date.
+     */
+    public function lock_get()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'lock_get');
+
+        $class   = trim((string) $this->input->get('class'));
+        $section = trim((string) $this->input->get('section'));
+        $date    = trim((string) $this->input->get('date'));
+        if ($class === '' || $section === '') {
+            return $this->json_error('class and section are required.');
+        }
+        if ($date === '') $date = $this->_server_today();
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            return $this->json_error('date must be YYYY-MM-DD.');
+        }
+        $class   = $this->safe_path_segment($class, 'class');
+        $section = $this->safe_path_segment($section, 'section');
+
+        return $this->json_success([
+            'date'  => $date,
+            'lock'  => $this->_get_lock($class, $section, $date),
+            'stage' => $this->_stage($class, $section, $date),
+        ]);
+    }
+
+    /**
+     * POST /attendance/lock/set
+     * Body: class, section, date, locked (bool|"true"|"1"), reason
+     * Admin only. Unlock requires reason ≥10 chars; lock reason is optional.
+     */
+    public function lock_set()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'lock_set');
+
+        $class   = trim((string) $this->input->post('class'));
+        $section = trim((string) $this->input->post('section'));
+        $date    = trim((string) $this->input->post('date'));
+        $locked  = $this->input->post('locked');
+        $reason  = trim((string) $this->input->post('reason'));
+
+        if ($class === '' || $section === '' || $date === '') {
+            return $this->json_error('class, section and date are required.');
+        }
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            return $this->json_error('date must be YYYY-MM-DD.');
+        }
+
+        if (is_string($locked)) $locked = strtolower(trim($locked));
+        $lockedBool = ($locked === true || $locked === 1 || $locked === '1' || $locked === 'true');
+
+        if (!$lockedBool && strlen($reason) < 10) {
+            return $this->json_error('Unlock requires a reason (min 10 chars).', 400);
+        }
+
+        $class   = $this->safe_path_segment($class, 'class');
+        $section = $this->safe_path_segment($section, 'section');
+        $userId  = $this->admin_id ?: 'system';
+        $nowIso  = $this->_server_now()->format('c');
+        $cls     = Firestore_service::classKey($class);
+        $sec     = Firestore_service::sectionKey($section);
+        $docId   = $this->_lock_doc_id($class, $section, $date);
+
+        $payload = [
+            'schoolId'  => $this->school_id,
+            'className' => $cls,
+            'section'   => $sec,
+            'date'      => $date,
+            'locked'    => $lockedBool,
+        ];
+        if ($lockedBool) {
+            $payload['lockedAt']   = $nowIso;
+            $payload['lockedBy']   = $userId;
+            if ($reason !== '') $payload['lockReason'] = $reason;
+        } else {
+            $payload['unlockedAt']   = $nowIso;
+            $payload['unlockedBy']   = $userId;
+            $payload['unlockReason'] = $reason;
+        }
+
+        if (!$this->fs->set('attendanceLocks', $docId, $payload, true)) {
+            return $this->json_error('Failed to update lock.', 500);
+        }
+
+        // Misuse signal — count UNLOCK actions in the last 7 days for this
+        // school. We tag the audit row with the running count so dashboards
+        // and alert rules can light up on repeated unlocks.
+        $unlocksLast7Days = 0;
+        $frequentFlag     = false;
+        if (!$lockedBool) {
+            try {
+                $weekAgoIso = $this->_server_now()->modify('-7 days')->format('c');
+                $rows = $this->fs->schoolWhere('attendanceAuditLog', [
+                    ['action', '==', 'UNLOCK'],
+                ], null, 'ASC', 200);
+                foreach ($rows as $entry) {
+                    $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                    if (!is_array($d)) continue;
+                    $ts = (string) ($d['timestamp'] ?? '');
+                    if ($ts !== '' && $ts >= $weekAgoIso) $unlocksLast7Days++;
+                }
+                // Include the unlock about to happen
+                $unlocksLast7Days++;
+                $frequentFlag = $unlocksLast7Days >= 3;
+                if ($frequentFlag) {
+                    log_message('warning', sprintf(
+                        'frequent UNLOCK: school=%s admin=%s class=%s section=%s date=%s count7d=%d',
+                        $this->school_id, $userId, $cls, $sec, $date, $unlocksLast7Days
+                    ));
+                }
+            } catch (\Exception $e) {
+                log_message('warning', 'unlock frequency check failed: ' . $e->getMessage());
+            }
+        }
+
+        $auditRow = [
+            'action'     => $lockedBool ? 'LOCK' : 'UNLOCK',
+            'stage'      => 'LOCK',
+            'targetType' => 'class',
+            'targetId'   => "{$cls}|{$sec}",
+            'date'       => $date,
+            'newValue'   => ['locked' => $lockedBool],
+            'reason'     => $reason !== '' ? $reason : null,
+            'className'  => $cls,
+            'section'    => $sec,
+        ];
+        if (!$lockedBool) {
+            $auditRow['unlocksLast7Days'] = $unlocksLast7Days;
+            if ($frequentFlag) $auditRow['flag'] = 'frequent_unlock';
+        }
+        $this->_audit_write($auditRow);
+
+        return $this->json_success([
+            'date'  => $date,
+            'lock'  => $this->_get_lock($class, $section, $date),
+            'stage' => $this->_stage($class, $section, $date),
+        ]);
+    }
+
+    /**
+     * Cron-only auth gate. Allows:
+     *   • CLI execution (php_sapi_name === 'cli')
+     *   • HTTP with X-Cron-Token header matching env ATTENDANCE_CRON_TOKEN
+     * Rejects everything else with 403. Replaces session/role auth for
+     * cron endpoints so a logged-in admin alone cannot trigger them.
+     */
+    private function _require_cron_token(): void
+    {
+        if (PHP_SAPI === 'cli') return;
+
+        $configured = (string) (getenv('ATTENDANCE_CRON_TOKEN') ?: '');
+        $provided   = (string) ($this->input->server('HTTP_X_CRON_TOKEN') ?? '');
+
+        if ($configured === '' || $provided === '' || !hash_equals($configured, $provided)) {
+            log_message('error', sprintf(
+                'cron unauthorized: ip=%s ua=%s',
+                $this->input->ip_address(),
+                substr((string) $this->input->user_agent(), 0, 120)
+            ));
+            $this->json_error('Unauthorized cron call.', 403);
+        }
+    }
+
+    /**
+     * POST /attendance/cron/auto_lock
+     * Locks every (class, section) that has any attendance for today.
+     * Idempotent: skips already-locked (class, section, today).
+     * Should be wired to a 6 PM scheduled job per school.
+     *
+     * Auth: cron token (or CLI). NOT session-gated — see _require_cron_token.
+     */
+    public function cron_auto_lock()
+    {
+        $this->_require_cron_token();
+
+        $serverDate = $this->_server_today();
+        $nowIso     = $this->_server_now()->format('c');
+
+        $rows = [];
+        try {
+            $rows = $this->fs->schoolWhere('attendance', [
+                ['date', '==', $serverDate],
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'cron_auto_lock query failed: ' . $e->getMessage());
+            return $this->json_error('Query failed.', 500);
+        }
+
+        // Group by (className, section)
+        $groups = [];
+        foreach ($rows as $entry) {
+            $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+            if (!is_array($d)) continue;
+            $cn = (string) ($d['className'] ?? '');
+            $sc = (string) ($d['section']   ?? '');
+            if ($cn === '' || $sc === '') continue;
+            $groups["{$cn}|{$sc}"] = ['className' => $cn, 'section' => $sc];
+        }
+
+        $lockWrites  = [];
+        $auditWrites = [];
+        $auditPrefix = "{$this->school_id}_A" . date('YmdHis');
+        $auditSeq    = 0;
+
+        foreach ($groups as $g) {
+            $cn = $g['className']; $sc = $g['section'];
+            $docId = $this->_lock_doc_id($cn, $sc, $serverDate);
+
+            $existing = $this->fs->get('attendanceLocks', $docId);
+            if (is_array($existing) && !empty($existing['locked'])) continue;  // already locked
+
+            $lockWrites[$docId] = [
+                'schoolId'   => $this->school_id,
+                'className'  => $cn,
+                'section'    => $sc,
+                'date'       => $serverDate,
+                'locked'     => true,
+                'lockedAt'   => $nowIso,
+                'lockedBy'   => 'system',
+                'lockReason' => 'auto-lock 18:00',
+            ];
+
+            $auditId = $auditPrefix . '_' . sprintf('%04d', $auditSeq++) . sprintf('%04d', mt_rand(0, 9999));
+            $auditWrites[$auditId] = [
+                'schoolId'   => $this->school_id,
+                'userId'     => 'system',
+                'role'       => 'system',
+                'sourceIp'   => $this->input->ip_address(),
+                'timestamp'  => $nowIso,
+                'action'     => 'AUTO_LOCK',
+                'stage'      => 'LOCK',
+                'targetType' => 'class',
+                'targetId'   => "{$cn}|{$sc}",
+                'date'       => $serverDate,
+                'newValue'   => ['locked' => true],
+                'reason'     => 'auto-lock 18:00',
+                'className'  => $cn,
+                'section'    => $sc,
+            ];
+        }
+
+        $written = 0;
+        if (!empty($lockWrites))  $written = $this->fs->batchSet('attendanceLocks', $lockWrites);
+        if (!empty($auditWrites)) $this->fs->batchSet('attendanceAuditLog', $auditWrites);
+
+        return $this->json_success([
+            'date'             => $serverDate,
+            'sectionsScanned'  => count($groups),
+            'sectionsLocked'   => $written,
+        ]);
+    }
+
+    /* ──────────────────────  CORRECTION  ────────────────────── */
+
+    /**
+     * POST /attendance/correction/submit
+     * Body: studentId, date, requestedMark{status,late?,lateMinutes?}, reason (≥10)
+     * Teacher must be assigned to the student's class+section.
+     */
+    public function correction_submit()
+    {
+        $this->_require_role(self::MARK_ROLES, 'correction_submit');
+
+        $studentId    = trim((string) $this->input->post('studentId'));
+        $date         = trim((string) $this->input->post('date'));
+        $reason       = trim((string) $this->input->post('reason'));
+        $requestedRaw = $this->input->post('requestedMark');
+        if (is_string($requestedRaw)) $requestedRaw = json_decode($requestedRaw, true);
+
+        if ($studentId === '' || $date === '' || strlen($reason) < 10) {
+            return $this->json_error('studentId, date and reason (min 10 chars) are required.');
+        }
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            return $this->json_error('date must be YYYY-MM-DD.');
+        }
+        if ($date > $this->_server_today()) {
+            return $this->json_error('Cannot file a correction for a future date.');
+        }
+
+        if (!is_array($requestedRaw)) {
+            return $this->json_error('requestedMark must be {status, late?, lateMinutes?}.');
+        }
+        $reqStatus = strtoupper((string) ($requestedRaw['status'] ?? ''));
+        if (!in_array($reqStatus, ['P', 'A', 'L'], true)) {
+            return $this->json_error('requestedMark.status must be P, A, or L.');
+        }
+        $reqLate = !empty($requestedRaw['late']);
+        $reqLm   = (int) ($requestedRaw['lateMinutes'] ?? 0);
+        if ($reqLm < 0)   $reqLm = 0;
+        if ($reqLm > 180) $reqLm = 180;
+        if ($reqStatus !== 'P') { $reqLate = false; $reqLm = 0; }
+
+        // Fetch existing attendance doc for context (and ownership check)
+        $perDayId = "{$this->school_id}_{$date}_{$studentId}";
+        $cur      = $this->fs->get('attendance', $perDayId);
+        if (!is_array($cur)) {
+            return $this->json_error('No attendance record exists for that student on that date.', 404);
+        }
+        $className   = (string) ($cur['className']   ?? '');
+        $section     = (string) ($cur['section']     ?? '');
+        $studentName = (string) ($cur['studentName'] ?? $studentId);
+
+        if (!$this->_teacher_can_access($className, $section)) {
+            return $this->json_error('You are not assigned to this class/section.', 403);
+        }
+
+        // Reject if a pending request already exists for this student+date.
+        // Same teacher submitting twice = no-op; different teacher = collision
+        // that admin must resolve on the existing request first.
+        try {
+            $dups = $this->fs->schoolWhere('attendanceCorrectionRequests', [
+                ['studentId', '==', $studentId],
+                ['date',      '==', $date],
+                ['status',    '==', 'pending'],
+            ], null, 'ASC', 1);
+            if (!empty($dups)) {
+                $first    = $dups[0];
+                $existing = is_array($first) ? ($first['data'] ?? $first) : null;
+                $existingId = is_array($existing)
+                    ? (string) ($existing['id'] ?? $existing['docId'] ?? '')
+                    : '';
+                http_response_code(409);
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'status'            => 'error',
+                    'message'           => 'A pending correction already exists for this student on this date.',
+                    'existingRequestId' => $existingId,
+                    'csrf_token'        => $this->security->get_csrf_hash(),
+                ]);
+                exit;
+            }
+        } catch (\Exception $e) {
+            // Index not deployed yet → don't block; submission proceeds.
+            // Admin will see the duplicate when reviewing.
+            log_message('warning', 'duplicate-pending check failed: ' . $e->getMessage());
+        }
+
+        $reqId   = "{$this->school_id}_C" . date('YmdHis') . sprintf('%04d', mt_rand(0, 9999));
+        $userId  = $this->admin_id ?: 'system';
+        $role    = $this->admin_role ?: 'system';
+        $nowIso  = $this->_server_now()->format('c');
+
+        $currentMark = [
+            'status'      => (string) ($cur['status']      ?? ''),
+            'late'        => (bool)   ($cur['late']        ?? false),
+            'lateMinutes' => (int)    ($cur['lateMinutes'] ?? 0),
+        ];
+        $requestedMark = [
+            'status'      => $reqStatus,
+            'late'        => $reqLate,
+            'lateMinutes' => $reqLm,
+        ];
+
+        $request = [
+            'schoolId'        => $this->school_id,
+            'requestedBy'     => $userId,
+            'requestedByRole' => $role,
+            'requestedAt'     => $nowIso,
+            'requestedAtTs'   => time(),
+            'className'       => $className,
+            'section'         => $section,
+            'date'            => $date,
+            'studentId'       => $studentId,
+            'studentName'     => $studentName,
+            'currentMark'     => $currentMark,
+            'requestedMark'   => $requestedMark,
+            'reason'          => $reason,
+            'status'          => 'pending',
+        ];
+
+        if (!$this->fs->set('attendanceCorrectionRequests', $reqId, $request, false)) {
+            return $this->json_error('Failed to submit request.', 500);
+        }
+
+        $this->_audit_write([
+            'action'     => 'CORRECTION_REQUEST',
+            'stage'      => 'CORRECTION',
+            'targetType' => 'student',
+            'targetId'   => $studentId,
+            'date'       => $date,
+            'oldValue'   => $currentMark,
+            'newValue'   => $requestedMark,
+            'reason'     => $reason,
+            'requestId'  => $reqId,
+            'className'  => $className,
+            'section'    => $section,
+        ]);
+
+        return $this->json_success([
+            'requestId' => $reqId,
+            'status'    => 'pending',
+        ]);
+    }
+
+    /**
+     * GET /attendance/correction/list?status=&date=
+     * Admin/HR/Coordinator: see all (default status=pending).
+     * Teacher: own requests only.
+     */
+    public function correction_list()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'correction_list');
+
+        $statusFilter = strtolower(trim((string) $this->input->get('status')));
+        if ($statusFilter === '') $statusFilter = 'pending';
+        if (!in_array($statusFilter, ['pending', 'approved', 'rejected', 'all'], true)) {
+            $statusFilter = 'pending';
+        }
+        $dateFilter = trim((string) $this->input->get('date'));
+
+        // Pagination — cursor on requestedAtTs (descending). Caller passes
+        // back the last page's `nextCursor` to fetch the next chunk.
+        $limit = (int) ($this->input->get('limit') ?: 25);
+        if ($limit < 1)   $limit = 1;
+        if ($limit > 100) $limit = 100;
+        $cursor = (int) $this->input->get('cursor');
+
+        $conds = [];
+        if ($statusFilter !== 'all') $conds[] = ['status', '==', $statusFilter];
+        if ($dateFilter !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFilter)) {
+            $conds[] = ['date', '==', $dateFilter];
+        }
+        if (strcasecmp($this->admin_role ?? '', 'Teacher') === 0) {
+            $conds[] = ['requestedBy', '==', $this->admin_id];
+        }
+        if ($cursor > 0) {
+            $conds[] = ['requestedAtTs', '<', $cursor];
+        }
+
+        $rows = [];
+        try {
+            $rows = $this->fs->schoolWhere(
+                'attendanceCorrectionRequests',
+                $conds,
+                'requestedAtTs', 'DESC',
+                $limit
+            );
+        } catch (\Exception $e) {
+            log_message('error', 'correction_list query failed: ' . $e->getMessage());
+        }
+
+        $out        = [];
+        $nextCursor = null;
+        foreach ($rows as $entry) {
+            $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+            if (!is_array($d)) continue;
+            // Expose the Firestore doc id (already on $entry['id']) so the
+            // admin UI can call /correction/decide with the right requestId.
+            $d['requestId'] = $entry['id'] ?? ($d['requestId'] ?? null);
+            $out[] = $d;
+            $nextCursor = (int) ($d['requestedAtTs'] ?? 0);
+        }
+        // Only expose nextCursor when the page is full — otherwise we've
+        // reached the end and the client should stop paginating.
+        if (count($out) < $limit) $nextCursor = null;
+
+        return $this->json_success([
+            'requests'   => $out,
+            'count'      => count($out),
+            'limit'      => $limit,
+            'nextCursor' => $nextCursor,
+            'filter'     => ['status' => $statusFilter, 'date' => $dateFilter],
+        ]);
+    }
+
+    /**
+     * POST /attendance/correction/decide
+     * Body: requestId, decision ("approve"|"reject"), note?, overrideMark?
+     * Admin only. Approve = privileged write to attendance + status=approved.
+     * Reject = status=rejected only.
+     */
+    public function correction_decide()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'correction_decide');
+
+        $reqId    = trim((string) $this->input->post('requestId'));
+        $decision = strtolower(trim((string) $this->input->post('decision')));
+        $note     = trim((string) $this->input->post('note'));
+        $override = $this->input->post('overrideMark');
+        if (is_string($override)) $override = json_decode($override, true);
+
+        if ($reqId === '' || !in_array($decision, ['approve', 'reject'], true)) {
+            return $this->json_error('requestId and decision (approve|reject) are required.');
+        }
+
+        $req = $this->fs->get('attendanceCorrectionRequests', $reqId);
+        if (!is_array($req)) {
+            return $this->json_error('Request not found.', 404);
+        }
+        if ((string) ($req['schoolId'] ?? '') !== $this->school_id) {
+            return $this->json_error('Cross-school access denied.', 403);
+        }
+        if (((string) ($req['status'] ?? 'pending')) !== 'pending') {
+            return $this->json_error('Request already decided.', 409);
+        }
+
+        $userId = $this->admin_id ?: 'system';
+        $nowIso = $this->_server_now()->format('c');
+
+        $studentId   = (string) ($req['studentId']   ?? '');
+        $studentName = (string) ($req['studentName'] ?? $studentId);
+        $date        = (string) ($req['date']        ?? '');
+        $className   = (string) ($req['className']   ?? '');
+        $section     = (string) ($req['section']     ?? '');
+
+        if ($decision === 'reject') {
+            $this->fs->set('attendanceCorrectionRequests', $reqId, [
+                'status'       => 'rejected',
+                'reviewedBy'   => $userId,
+                'reviewedAt'   => $nowIso,
+                'reviewedAtTs' => time(),
+                'reviewNote'   => $note,
+            ], true);
+
+            $this->_audit_write([
+                'action'     => 'CORRECTION_REJECT',
+                'stage'      => 'CORRECTION',
+                'targetType' => 'student',
+                'targetId'   => $studentId,
+                'date'       => $date,
+                'reason'     => $note !== '' ? $note : null,
+                'requestId'  => $reqId,
+                'className'  => $className,
+                'section'    => $section,
+            ]);
+
+            return $this->json_success(['decision' => 'rejected']);
+        }
+
+        // ── approve ──
+        // Drift check: re-read the live attendance doc and compare against
+        // the snapshot the request was filed with. If something changed in
+        // the meantime, refuse unless admin explicitly passes force=true.
+        $force = $this->input->post('force');
+        $force = ($force === true || $force === 1 || $force === '1' || $force === 'true');
+
+        $liveDoc   = $this->fs->get('attendance', "{$this->school_id}_{$date}_{$studentId}");
+        $liveMark  = [
+            'status'      => is_array($liveDoc) ? (string) ($liveDoc['status']      ?? '')    : '',
+            'late'        => is_array($liveDoc) ? (bool)   ($liveDoc['late']        ?? false) : false,
+            'lateMinutes' => is_array($liveDoc) ? (int)    ($liveDoc['lateMinutes'] ?? 0)     : 0,
+        ];
+        $reqSnapshot = is_array($req['currentMark'] ?? null) ? $req['currentMark'] : [];
+        $expMark = [
+            'status'      => (string) ($reqSnapshot['status']      ?? ''),
+            'late'        => (bool)   ($reqSnapshot['late']        ?? false),
+            'lateMinutes' => (int)    ($reqSnapshot['lateMinutes'] ?? 0),
+        ];
+        $drift = ($liveMark['status'] !== $expMark['status']
+               || $liveMark['late']   !== $expMark['late']
+               || $liveMark['lateMinutes'] !== $expMark['lateMinutes']);
+
+        if ($drift && !$force) {
+            http_response_code(409);
+            header('Content-Type: application/json');
+            echo json_encode([
+                'status'     => 'error',
+                'message'    => 'Live attendance has changed since this request was filed. Pass force=true to override.',
+                'expected'   => $expMark,
+                'current'    => $liveMark,
+                'csrf_token' => $this->security->get_csrf_hash(),
+            ]);
+            exit;
+        }
+
+        $reqMark = is_array($req['requestedMark'] ?? null) ? $req['requestedMark'] : [];
+        if (is_array($override)) {
+            if (isset($override['status']))      $reqMark['status']      = $override['status'];
+            if (isset($override['late']))        $reqMark['late']        = $override['late'];
+            if (isset($override['lateMinutes'])) $reqMark['lateMinutes'] = $override['lateMinutes'];
+        }
+
+        $newStatus = strtoupper((string) ($reqMark['status'] ?? ''));
+        if (!in_array($newStatus, ['P', 'A', 'L'], true)) {
+            return $this->json_error('Invalid status in approval payload.', 400);
+        }
+        $newLate = !empty($reqMark['late']);
+        $newLm   = (int) ($reqMark['lateMinutes'] ?? 0);
+        if ($newLm < 0)   $newLm = 0;
+        if ($newLm > 180) $newLm = 180;
+        if ($newStatus !== 'P') { $newLate = false; $newLm = 0; }
+
+        $sectionKey = Firestore_service::buildSectionKey($className, $section);
+        $reasonStr  = (string) ($req['reason'] ?? '');
+
+        if (!$this->_privileged_write_attendance(
+            $date, $studentId, $studentName,
+            $className, $section, $sectionKey,
+            $newStatus, $newLate, $newLm,
+            $reasonStr, $reqId
+        )) {
+            return $this->json_error('Failed to apply correction.', 500);
+        }
+
+        $this->fs->set('attendanceCorrectionRequests', $reqId, [
+            'status'       => 'approved',
+            'reviewedBy'   => $userId,
+            'reviewedAt'   => $nowIso,
+            'reviewedAtTs' => time(),
+            'reviewNote'   => $note,
+            'forceApplied' => ($drift && $force),
+            'liveMarkAtApproval' => $liveMark,
+            'appliedMark'  => [
+                'status'      => $newStatus,
+                'late'        => $newLate,
+                'lateMinutes' => $newLm,
+            ],
+        ], true);
+
+        $this->_audit_write([
+            'action'      => 'CORRECTION_APPROVE',
+            'stage'       => 'CORRECTION',
+            'targetType'  => 'student',
+            'targetId'    => $studentId,
+            'date'        => $date,
+            'newValue'    => ['status' => $newStatus, 'late' => $newLate, 'lateMinutes' => $newLm],
+            'reason'      => $note !== '' ? $note : null,
+            'requestId'   => $reqId,
+            'className'   => $className,
+            'section'     => $section,
+            'forceApplied'=> ($drift && $force),
+            'driftFromExpected' => $drift,
+        ]);
+
+        return $this->json_success([
+            'decision'    => 'approved',
+            'appliedMark' => ['status' => $newStatus, 'late' => $newLate, 'lateMinutes' => $newLm],
+        ]);
+    }
+
+    /* ================================================================
+       PHASE 3 — GET /attendance/summary  (compute on read)
+       ================================================================
+       Counts P/A/L/late from the canonical `attendance` collection on
+       demand. NO write-time aggregation. Costs one Firestore query per
+       call; result is small (one row) and the existing
+       (schoolId, sectionKey, date) composite index covers both modes:
+
+         • Daily:    ?class=…&section=…&date=YYYY-MM-DD
+         • Monthly:  ?class=…&section=…&month=YYYY-MM
+                     (translates to date >= start AND date <= end)
+
+       Response: { present, absent, leave, late, total, scope }
+       ================================================================ */
+    public function summary()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'attendance/summary');
+
+        $class   = trim((string) $this->input->get('class'));
+        $section = trim((string) $this->input->get('section'));
+        $date    = trim((string) $this->input->get('date'));
+        $month   = trim((string) $this->input->get('month'));
+
+        if ($class === '' || $section === '') {
+            return $this->json_error('class and section are required.');
+        }
+
+        // Class-ownership check — non-admins limited to their assigned classes
+        if (!$this->_teacher_can_access($class, "Section {$section}")) {
+            return $this->json_error('You are not assigned to this class/section.', 403);
+        }
+
+        $class   = $this->safe_path_segment($class, 'class');
+        $section = $this->safe_path_segment($section, 'section');
+        $sectionKey = Firestore_service::buildSectionKey($class, $section);
+
+        // Resolve date range
+        $rangeStart = ''; $rangeEnd = ''; $scopeLabel = '';
+        if ($date !== '') {
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+                return $this->json_error('date must be YYYY-MM-DD.');
+            }
+            $rangeStart = $date;
+            $rangeEnd   = $date;
+            $scopeLabel = $date;
+        } elseif ($month !== '') {
+            if (!preg_match('/^\d{4}-\d{2}$/', $month)) {
+                return $this->json_error('month must be YYYY-MM.');
+            }
+            [$y, $m] = array_map('intval', explode('-', $month));
+            $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $m, $y);
+            $rangeStart  = sprintf('%04d-%02d-01',  $y, $m);
+            $rangeEnd    = sprintf('%04d-%02d-%02d', $y, $m, $daysInMonth);
+            $scopeLabel  = $month;
+        } else {
+            // Default — today
+            $today      = $this->_server_today();
+            $rangeStart = $today;
+            $rangeEnd   = $today;
+            $scopeLabel = $today;
+        }
+
+        // Build the query. Equalities + range on `date` is supported by
+        // the (schoolId, sectionKey, date) composite index.
+        $conds = [
+            ['sectionKey', '==', $sectionKey],
+            ['date',       '>=', $rangeStart],
+            ['date',       '<=', $rangeEnd],
+        ];
+
+        $rows = [];
+        try {
+            $rows = $this->fs->schoolWhere('attendance', $conds, 'date', 'ASC');
+        } catch (\Exception $e) {
+            log_message('error', 'attendance/summary query failed: ' . $e->getMessage());
+            return $this->json_error('Query failed.', 500);
+        }
+
+        // Tally in-memory. Single pass, O(n).
+        $present = $absent = $leave = $late = $holiday = $vacation = 0;
+        foreach ($rows as $entry) {
+            $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+            if (!is_array($d)) continue;
+            $status = (string) ($d['status'] ?? '');
+            $isLate = (bool)   ($d['late']   ?? false);
+            switch ($status) {
+                case 'P': $present++;  if ($isLate) $late++; break;
+                case 'A': $absent++;   break;
+                case 'L': $leave++;    break;
+                case 'H': $holiday++;  break;
+                case 'V': $vacation++; break;
+            }
+        }
+        $total = $present + $absent + $leave;
+
+        return $this->json_success([
+            'present'  => $present,
+            'absent'   => $absent,
+            'leave'    => $leave,
+            'late'     => $late,
+            'holiday'  => $holiday,
+            'vacation' => $vacation,
+            'total'    => $total,
+            'scope'    => [
+                'class'   => Firestore_service::classKey($class),
+                'section' => Firestore_service::sectionKey($section),
+                'range'   => $scopeLabel,
+                'from'    => $rangeStart,
+                'to'      => $rangeEnd,
+                'mode'    => $date !== '' ? 'daily' : ($month !== '' ? 'monthly' : 'today'),
+            ],
+        ]);
     }
 }

@@ -323,6 +323,16 @@ $route['academic/get_curriculum']                = 'Academic/get_curriculum';
 $route['academic/save_curriculum']               = 'Academic/save_curriculum';
 $route['academic/update_topic_status']           = 'Academic/update_topic_status';
 $route['academic/delete_topic']                  = 'Academic/delete_topic';
+$route['academic/get_lesson_plan']               = 'Academic/get_lesson_plan';
+$route['academic/get_daily_plan']                = 'Academic/get_daily_plan';
+$route['academic/save_lesson_plan']              = 'Academic/save_lesson_plan';
+$route['academic/get_monthly_plan']              = 'Academic/get_monthly_plan';
+$route['academic/analytics_syllabus_progress']   = 'Academic/analytics_syllabus_progress';
+$route['academic/analytics_daily_monitoring']    = 'Academic/analytics_daily_monitoring';
+$route['academic/analytics_delays']              = 'Academic/analytics_delays';
+$route['academic/analytics_subject_progress']    = 'Academic/analytics_subject_progress';
+$route['academic/parent_daily_lessons']          = 'Academic/parent_daily_lessons';
+$route['academic/parent_subject_progress']       = 'Academic/parent_subject_progress';
 $route['academic/get_calendar_events']           = 'Academic/get_calendar_events';
 $route['academic/save_event']                    = 'Academic/save_event';
 $route['academic/delete_event']                  = 'Academic/delete_event';
@@ -586,6 +596,23 @@ $route['attendance/list_student_leaves']         = 'Attendance/list_student_leav
 $route['attendance/approve_student_leave']       = 'Attendance/approve_student_leave';
 $route['attendance/reject_student_leave']        = 'Attendance/reject_student_leave';
 
+// Phase 1 — time-based edit control + smart save
+$route['attendance/save']                        = 'Attendance/save';
+
+// Phase 2 — lock system + correction flow
+$route['attendance/lock']                        = 'Attendance/lock_get';
+$route['attendance/lock/set']                    = 'Attendance/lock_set';
+$route['attendance/cron/auto_lock']              = 'Attendance/cron_auto_lock';
+$route['attendance/correction/submit']           = 'Attendance/correction_submit';
+$route['attendance/correction/list']             = 'Attendance/correction_list';
+$route['attendance/correction/decide']           = 'Attendance/correction_decide';
+
+// Admin Control Panel UI (renders one view; no business logic)
+$route['attendance/control']                     = 'Attendance/control';
+
+// Phase 3 — read-only summary (compute on demand from `attendance` docs)
+$route['attendance/summary']                     = 'Attendance/summary';
+
 // ─── Health Checker
 $route['health_check']                                   = 'Health_check/index';
 $route['health_check/run']                               = 'Health_check/run';
@@ -635,6 +662,10 @@ $route['accounting/export_excel']                       = 'Accounting/export_exc
 $route['accounting/export_pdf']                         = 'Accounting/export_pdf';
 $route['accounting/ledger_report']                      = 'Accounting/ledger_report';
 $route['accounting/recompute_balances']                 = 'Accounting/recompute_balances';
+// Health dashboard endpoints (2026-05-10 — health_dashboard.php was 404ing)
+$route['accounting/health_json']                        = 'Accounting/health_json';
+$route['accounting/acknowledge_alert']                  = 'Accounting/acknowledge_alert';
+
 // Settings
 $route['accounting/get_settings']                       = 'Accounting/get_settings';
 $route['accounting/lock_period']                        = 'Accounting/lock_period';
@@ -643,6 +674,24 @@ $route['accounting/unmatch_transaction']                = 'Accounting/unmatch_tr
 $route['accounting/suggest_matches']                    = 'Accounting/suggest_matches';
 $route['accounting/carry_forward_balances']             = 'Accounting/carry_forward_balances';
 $route['accounting/get_audit_log']                      = 'Accounting/get_audit_log';
+
+// ─── Payroll Stage 3 — UI integration around PayrollAccountingService ──────
+//   All POST endpoints route through PayrollAccountingService → Operations_accounting.
+//   No bypass paths; feature-flag gated via payroll_engine_integration.
+$route['payroll']                                       = 'Payroll/index';
+$route['payroll/preview_accrual']                       = 'Payroll/preview_accrual';
+$route['payroll/preview_payout']                        = 'Payroll/preview_payout';
+$route['payroll/preview_statutory']                     = 'Payroll/preview_statutory';
+$route['payroll/post_accrual']                          = 'Payroll/post_accrual';
+$route['payroll/post_payout']                           = 'Payroll/post_payout';
+$route['payroll/post_statutory_deposit']                = 'Payroll/post_statutory_deposit';
+$route['payroll/post_reversal']                         = 'Payroll/post_reversal';
+$route['payroll/get_recent_posts']                      = 'Payroll/get_recent_posts';
+// Stage 4 operational metadata queries (read-only)
+$route['payroll/get_period_accruals']                   = 'Payroll/get_period_accruals';
+$route['payroll/get_period_payouts']                    = 'Payroll/get_period_payouts';
+$route['payroll/get_period_statutory']                  = 'Payroll/get_period_statutory';
+$route['payroll/get_employee_history']                  = 'Payroll/get_employee_history';
 
 // ─── Staff Import ───────────────────────────────────────────────────────────────
 $route['staff/master_staff']                              = 'Staff/master_staff';
@@ -720,6 +769,8 @@ $route['hr/generate_payroll']                              = 'Hr/generate_payrol
 $route['hr/auto_create_payroll_accounts']                  = 'Hr/auto_create_payroll_accounts';
 $route['hr/get_payroll_slips']                             = 'Hr/get_payroll_slips';
 $route['hr/finalize_payroll']                              = 'Hr/finalize_payroll';
+$route['hr/unlock_payroll']                                = 'Hr/unlock_payroll';
+$route['hr/regenerate_staff_payroll']                      = 'Hr/regenerate_staff_payroll';
 $route['hr/mark_payroll_paid']                             = 'Hr/mark_payroll_paid';
 $route['hr/get_payslip']                                   = 'Hr/get_payslip';
 $route['hr/my_payslips']                                   = 'Hr/my_payslips';
@@ -799,7 +850,10 @@ $route['fee_management/get_blocking_policy']             = 'Fee_management/get_b
 $route['fee_management/save_blocking_policy']            = 'Fee_management/save_blocking_policy';
 $route['fee_management/parent_create_order']             = 'Fee_management/parent_create_order';
 $route['fee_management/parent_verify_payment']           = 'Fee_management/parent_verify_payment';
-$route['fee_management/parent_pay_from_wallet']          = 'Fee_management/parent_pay_from_wallet';
+// `parent_pay_from_wallet` route removed 2026-05-10 (C6 cleanup).
+// The controller method was deleted in Phase 9 with the wallet
+// subsystem; the route was leaking a 404 to anyone who hit the URL.
+// Parent app never called this endpoint — no client breakage.
 // Parent-app (Firebase Bearer-token) endpoints
 $route['fee_management/get_blocking_policy']             = 'Fee_management/get_blocking_policy';
 $route['fee_management/save_blocking_policy']            = 'Fee_management/save_blocking_policy';
@@ -1137,6 +1191,7 @@ $route['red_flags/get_flags']                        = 'Red_flags/get_flags';
 $route['red_flags/get_flag_detail']                  = 'Red_flags/get_flag_detail';
 $route['red_flags/resolve_flag']                     = 'Red_flags/resolve_flag';
 $route['red_flags/delete_flag']                      = 'Red_flags/delete_flag';
+$route['red_flags/restore_flag']                     = 'Red_flags/restore_flag';
 $route['red_flags/get_student_flags']                = 'Red_flags/get_student_flags';
 $route['red_flags/get_class_summary']                = 'Red_flags/get_class_summary';
 $route['red_flags/get_teacher_activity']             = 'Red_flags/get_teacher_activity';
@@ -1184,6 +1239,7 @@ $route['homework/get_overdue_report']                = 'Homework/get_overdue_rep
 $route['homework/get_trend_data']                    = 'Homework/get_trend_data';
 $route['homework/get_students_for_class']            = 'Homework/get_students_for_class';
 $route['homework/get_class_sections']                = 'Homework/get_class_sections';
+$route['homework/get_subjects_for_class']            = 'Homework/get_subjects_for_class';
 $route['homework/create_homework']                   = 'Homework/create_homework';
 $route['homework/update_homework']                   = 'Homework/update_homework';
 $route['homework/delete_homework']                   = 'Homework/delete_homework';

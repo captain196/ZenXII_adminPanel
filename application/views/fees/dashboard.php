@@ -96,7 +96,7 @@
             <div class="fd-card-title"><i class="fa fa-graduation-cap"></i> Class-wise Collection</div>
             <div class="fd-table-wrap">
                 <table class="fd-table" id="tblClass">
-                    <thead><tr><th>Class</th><th>Students</th><th>Collected</th><th>Due</th><th>Paid %</th></tr></thead>
+                    <thead><tr><th>Class / Section</th><th>Students</th><th>Collected</th><th>Due</th><th>Paid %</th></tr></thead>
                     <tbody><tr><td colspan="5" class="fd-empty"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr></tbody>
                 </table>
             </div>
@@ -142,11 +142,19 @@ document.addEventListener('DOMContentLoaded', function(){
     var chartMonthly = null;
     var chartModes = null;
 
+    // Stage B2: smart-paise — show 2 decimals only when non-zero paise
+    // exist, en-IN lakh/crore grouping always.
     function fmt(n) {
-        return Number(n || 0).toLocaleString('en-IN', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+        var v = Number(n || 0);
+        var paiseInt = Math.round(v * 100);
+        var hasPaise = (paiseInt % 100) !== 0;
+        return v.toLocaleString('en-IN', {
+            minimumFractionDigits: hasPaise ? 2 : 0,
+            maximumFractionDigits: hasPaise ? 2 : 0
+        });
     }
     function fmtCurrency(n) {
-        return '₹' + fmt(n);
+        return '₹ ' + fmt(n);
     }
 
     function loadDashboard() {
@@ -291,8 +299,16 @@ document.addEventListener('DOMContentLoaded', function(){
         var h = '';
         data.forEach(function(c){
             var barColor = c.paid_pct >= 80 ? '#16a34a' : c.paid_pct >= 50 ? '#d97706' : '#dc2626';
+            // Phase 1.X (2026-05-09) — compact "9th — A" display.
+            // Canonical "Class 9th" / "Section A" preserved in c.class
+            // and c.section; we just strip the prefixes and join with
+            // an em-dash for table density.
+            var _cls = (c.class||'').replace(/^Class\s+/, '');
+            var _sec = (c.section||'').replace(/^Section\s+/, '');
+            var classCell = (_cls && _sec) ? (_cls + ' — ' + _sec)
+                            : (_cls || _sec || '—');
             h += '<tr>';
-            h += '<td><strong>' + c.class.replace('Class ','') + '</strong></td>';
+            h += '<td><strong>' + classCell + '</strong></td>';
             h += '<td>' + c.students + '</td>';
             h += '<td class="fd-num">₹' + fmt(c.collected) + '</td>';
             h += '<td class="fd-num" style="color:#dc2626;">₹' + fmt(c.due) + '</td>';

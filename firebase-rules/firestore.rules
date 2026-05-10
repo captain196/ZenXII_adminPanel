@@ -126,34 +126,164 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // ── Attendance ───────────────────────────────────────────────
+    // ── Attendance (Phase 3 — clients READ ONLY; backend writes via service account)
+    //
+    // Phase 1+2 moved every attendance writer behind the PHP backend
+    // (`/attendance/save`, `/attendance/correction/decide`, etc.). The
+    // service account bypasses these rules entirely; client SDKs
+    // (Teacher app, Parent app) get hard-deny on writes.
+    //
+    // Read scoping:
+    //   • Staff (Teacher / Admin / Principal …) → school-wide read.
+    //     Per-class enforcement is done in PHP (`_teacher_can_access`).
+    //     Tightening to per-class at the rule layer would require
+    //     custom claims listing each teacher's classes — deferred.
+    //   • Parent → only own child's docs (auth.uid == studentId).
     match /attendance/{docId} {
-      allow read: if isSameSchool();
-      allow create: if isStaff() && isSameSchoolWrite();
-      allow update: if isStaff() && isSameSchool();
-      allow delete: if isAdmin();
+      allow read:  if (isStaff() && isSameSchool())
+                   || (isAuth() && isSameSchool() && isOwnStudent());
+      allow write: if false;   // PHP service account bypasses
     }
 
-    // ── Attendance Summary ───────────────────────────────────────
+    // ── Attendance Summary (Phase 3 — same scoping as attendance) ─
     match /attendanceSummary/{docId} {
-      allow read: if isSameSchool();
-      allow write: if isStaff();
+      allow read:  if (isStaff() && isSameSchool())
+                   || (isAuth() && isSameSchool() && isOwnStudent());
+      allow write: if false;
+    }
+
+    // ── Attendance Locks (Phase 3 — staff read for stage display) ─
+    // Parents do not see lock state; only staff render the stage badge.
+    match /attendanceLocks/{docId} {
+      allow read:  if isStaff() && isSameSchool();
+      allow write: if false;
+    }
+
+    // ── Correction Requests (Phase 3 — teacher own / admin all) ───
+    // Teachers may only read requests THEY filed (requestedBy == auth.uid).
+    // Admins/Principals see every request in the school.
+    match /attendanceCorrectionRequests/{docId} {
+      allow read:  if (isAdmin() && isSameSchool())
+                   || (isStaff() && isSameSchool() && resource.data.requestedBy == request.auth.uid);
+      allow write: if false;
+    }
+
+    // ── Audit Log (Phase 3 — admin only; never writable by clients) ─
+    match /attendanceAuditLog/{docId} {
+      allow read:  if isAdmin() && isSameSchool();
+      allow write: if false;
     }
 
     // ── Homework ──────────────────────────────────────────────────
     match /homework/{docId} {
-      allow read: if isSameSchool();
+      allow read:   if isSameSchool();
       allow create: if isStaff() && isSameSchoolWrite();
+
+      // Staff path — full edit access on their school's homework.
       allow update: if isStaff() && isSameSchool();
+
+      // Parent path — may ONLY increment submissionCount by exactly +1
+      // (atomic counter bump on first submission). All other field changes
+      // are rejected, decrements are blocked, and arbitrary increments are
+      // capped — without the +1 cap a tampered client could push the
+      // counter to any value to fake high submission rates.
+      allow update: if isAuth() && isSameSchool() && !isStaff()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['submissionCount'])
+        && request.resource.data.submissionCount == resource.data.submissionCount + 1;
+
       allow delete: if isStaff() && isSameSchool();
     }
 
     // ── Homework Submissions ─────────────────────────────────────
     match /submissions/{docId} {
-      allow read: if isSameSchool();
-      allow create: if isAuth() && isSameSchoolWrite();
-      allow update: if isAuth() && isSameSchool();
+      allow read:   if isSameSchool();
+      // Use isSameSchoolWrite() (checks request.resource.data.schoolId),
+      // not isSameSchool() — on create, resource is null so isSameSchool()
+      // returns true unconditionally for any authed user, letting a
+      // tampered client write `schoolId: "OTHER_SCHOOL"` while still
+      // passing the studentId == auth.uid check with their own UID.
+      allow create: if isAuth()
+        && isSameSchoolWrite()
+        && request.auth.uid == request.resource.data.studentId;
+
+      // Parent (non-staff) update path — limited to work-in-progress
+      // fields, and status (if changed) must be "submitted".
+      allow update: if isAuth() && isSameSchool() && !isStaff()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['text', 'files', 'submittedAt', 'status'])
+        && (
+             !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status'])
+             || request.resource.data.status == 'submitted'
+           );
+
+      // Teacher update path — grading fields only; status (if changed)
+      // must be "reviewed" or "graded".
+      allow update: if isStaff() && isSameSchool()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['score', 'reviewedBy', 'reviewedAt', 'remark', 'status'])
+        && (
+             !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status'])
+             || request.resource.data.status in ['reviewed', 'graded']
+           );
+
       allow delete: if isStaff() && isSameSchool();
+    }
+
+    // ── Teacher Marks (recorded grade for students who didn't submit) ─
+    match /teacherMarks/{docId} {
+      allow read:   if isAuth() && isSameSchool();
+      allow create: if isAuth() && isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isStaff() && isSameSchool();
+    }
+
+    // ── Lesson Plans (Phase 6/7 — Academic Planner) ──────────────
+    // Visible to all same-school users so parents can see today's
+    // lessons for their child's class. Only staff (admin/teacher) can
+    // write; admin's PHP service bypasses these rules via service
+    // account anyway.
+    match /lessonPlans/{docId} {
+      allow read:   if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isAdmin() && isSameSchool();
+    }
+
+    // ── Subject Plan Progress (Phase 8 — per-class counters) ─────
+    // Read by same-school (parents see their class's progress strip).
+    // Writes only by staff (PHP hook + future Cloud Function via admin
+    // SDK; teacher app doesn't write summaries directly).
+    match /subjectPlanProgress/{docId} {
+      allow read:  if isSameSchool();
+      allow write: if isStaff() && (isSameSchoolWrite() || isSameSchool());
+    }
+
+    // ── Daily Teacher Monitoring (Phase 8 — admin oversight only) ─
+    // Staff-only read: contains per-teacher daily plan counts that
+    // parents shouldn't browse across all staff.
+    match /dailyTeacherMonitoring/{docId} {
+      allow read:  if isStaff() && isSameSchool();
+      allow write: if isStaff() && (isSameSchoolWrite() || isSameSchool());
+    }
+
+    // ── Academic Audit Log (admin-only) ──────────────────────────
+    match /academicAuditLog/{docId} {
+      allow read:  if isAdmin() && isSameSchool();
+      allow write: if isStaff() && isSameSchoolWrite();
+    }
+
+    // ── Curriculum + topic subcollection ─────────────────────────
+    // Same-school read so the parent app can resolve topicTitle if it
+    // ever fetches a topic by id; writes restricted to staff.
+    match /curriculum/{docId} {
+      allow read:  if isSameSchool();
+      allow create, update: if isStaff() && (isSameSchoolWrite() || isSameSchool());
+      allow delete: if isAdmin() && isSameSchool();
+      match /topics/{topicId} {
+        allow read:  if isSameSchool();
+        allow write: if isStaff();
+      }
     }
 
     // ── Exams ────────────────────────────────────────────────────
@@ -273,10 +403,30 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // ── Fee audit logs (admin-only) ──────────────────────────────
+    // ── Fee audit logs (admin-readable, server-write-only) ───────
+    // Audit integrity depends on this being immutable from clients.
+    // PHP backend writes via the service account and bypasses rules
+    // entirely, so locking writes here costs nothing and prevents a
+    // compromised admin token from rewriting the financial trail.
+    // (Phase 1 hardening — 2026-05-07.)
     match /feeAuditLogs/{docId} {
-      allow read: if isAdmin();
-      allow write: if isAdmin();
+      allow read:  if isAdmin();
+      allow write: if false;
+    }
+
+    // ── Fee operational alerts (Phase 3A — server-write-only) ────
+    // Populated by the feeOpsSweep Cloud Function (detect-only).
+    // Admins read for dashboard surfacing; clients can never write
+    // (alert integrity depends on server-only emission). Same
+    // isolation pattern as feeAuditLogs but with explicit per-tenant
+    // schoolId scoping so cross-school admins cannot see another
+    // school's alerts. (Phase 3A — 2026-05-08.)
+    match /feeOpsAlerts/{docId} {
+      allow read:  if isAdmin() && (
+        resource == null ||
+        resource.data.schoolId == request.auth.token.school_id
+      );
+      allow write: if false;
     }
 
     // ── Server-only fee infrastructure ───────────────────────────
@@ -289,6 +439,30 @@ service cloud.firestore {
     match /feeReceiptIndex/{docId}   { allow read, write: if false; }
     match /feeDemandLocks/{docId}    { allow read, write: if false; }
     match /feePendingWrites/{docId}  { allow read, write: if false; }
+
+    // ── Fee carry-forward (Phase 9 wallet replacement) ───────────
+    // Per-student doc carrying accumulated unpaid dues across
+    // session boundaries. Read by Parent (FeeFirestoreRepository)
+    // and Teacher (FeeFirestoreRepository) — same exposure shape
+    // as feeDefaulters above. Pre-Phase-1 this had no rule block,
+    // so reads silently failed under default-deny. (2026-05-07.)
+    match /feeCarryForward/{docId} {
+      allow read:  if isStaffOrOwnStudent();
+      allow write: if isAdmin();
+    }
+
+    // ── Server-only denormalized summaries ───────────────────────
+    // Written by Fee_summary_writer; read only by Fee_summary_reader
+    // (PHP) and admin reports. Mobile must continue to use feeDemands
+    // directly until a denormalized teacher-safe summary architecture
+    // ships in Phase 4. (2026-05-07.)
+    match /studentFeeSummary/{docId} { allow read, write: if false; }
+    match /classFeeSummary/{docId}   { allow read, write: if false; }
+
+    // ── Server-only webhook log ──────────────────────────────────
+    // Stores raw gateway payloads + HMAC traces. PHP-only.
+    // (2026-05-07.)
+    match /feeOnlinePayments/{docId} { allow read, write: if false; }
 
     // ── Fee refunds ──────────────────────────────────────────────
     // Refund docs are per-student. Previously readable by any user in
@@ -551,9 +725,68 @@ service cloud.firestore {
     }
 
     // ── Curriculum ──────────────────────────────────────────────
+    // Phase 0 hardening:
+    //   • Read: same-school staff or admin (parents can't see syllabus
+    //     directly — that path will route through curriculumProgress in
+    //     a future phase, not raw curriculum docs).
+    //   • Write: admin-tier OR teacher-only. Accountant role excluded
+    //     (was permitted by the prior `isStaff()` check). Per-assignment
+    //     authorization is enforced server-side in PHP — Firestore rules
+    //     can't see subjectAssignments without a get() round-trip.
+    //   • Strict schoolId match (no schoolCode legacy fallback) — every
+    //     curriculum doc written by Academic.php carries `schoolId`.
     match /curriculum/{docId} {
-      allow read: if isSameSchool();
-      allow write: if isStaff();
+      allow read: if isAuth()
+                  && resource != null
+                  && resource.data.schoolId == request.auth.token.school_id
+                  && request.auth.token.role in [
+                       'Admin','admin','Teacher','teacher',
+                       'School Super Admin','school_super_admin',
+                       'Super Admin','super_admin','Principal','Vice Principal',
+                       'Academic Coordinator'
+                     ];
+      allow create, update: if isAuth()
+                  && request.resource.data.schoolId == request.auth.token.school_id
+                  && request.auth.token.role in [
+                       'Admin','admin','Teacher','teacher',
+                       'School Super Admin','school_super_admin',
+                       'Super Admin','super_admin','Principal',
+                       'Academic Coordinator'
+                     ];
+      allow delete: if isAdmin()
+                  && resource.data.schoolId == request.auth.token.school_id;
+
+      // Phase 1 — topics subcollection. Each topic doc carries `schoolId`
+      // (denormalized from parent) so the rule can do a direct check
+      // without a get() round-trip into the parent doc. Per-assignment
+      // authorization (only the assigned teacher can edit a class's
+      // curriculum) is enforced server-side in PHP — see
+      // Academic::_can_edit_curriculum.
+      match /topics/{topicId} {
+        allow read: if isAuth()
+                    && resource != null
+                    && resource.data.schoolId == request.auth.token.school_id
+                    && request.auth.token.role in [
+                         'Admin','admin','Teacher','teacher',
+                         'School Super Admin','school_super_admin',
+                         'Super Admin','super_admin','Principal','Vice Principal',
+                         'Academic Coordinator'
+                       ];
+        allow create, update: if isAuth()
+                    && request.resource.data.schoolId == request.auth.token.school_id
+                    && request.auth.token.role in [
+                         'Admin','admin','Teacher','teacher',
+                         'School Super Admin','school_super_admin',
+                         'Super Admin','super_admin','Principal',
+                         'Academic Coordinator'
+                       ];
+        allow delete: if isAuth()
+                    && resource.data.schoolId == request.auth.token.school_id
+                    && request.auth.token.role in [
+                         'Admin','admin','School Super Admin','school_super_admin',
+                         'Super Admin','super_admin','Principal','Academic Coordinator'
+                       ];
+      }
     }
 
     // ── Leave Applications ───────────────────────────────────────
@@ -634,10 +867,14 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // ── Push Requests (teacher → admin push pipeline) ──────────
-    // Teacher writes a request; admin processes + deletes it.
+    // ── Push Requests (teacher / admin → push pipeline) ────────
+    // Staff (teacher / admin) writes a request; the Cloud Function
+    // (admin SDK, bypasses rules) processes it and writes status back.
+    // Reads tightened to staff only — these docs carry student/section
+    // metadata about who's been notified about red flags, marks, etc.
+    // and shouldn't be visible to parents/students browsing the SDK.
     match /pushRequests/{docId} {
-      allow read: if isSameSchool();
+      allow read: if isStaff() && isSameSchool();
       allow create: if isAuth() && isSameSchoolWrite();
       allow update: if isAuth() && isSameSchool();
       allow delete: if isStaff();
@@ -735,22 +972,37 @@ service cloud.firestore {
       //     for soft-delete, only when createdByRole == 'teacher'.
       //     (Admin-created flags assigned to a teacher's uid still
       //     can't be soft-deleted by that teacher.)
-      // Immutable fields locked across all updates.
+      // Immutable fields locked across all updates — protects identity
+      // (studentId/flagId/teacherId/createdAtMs) AND audit-trail integrity
+      // by freezing the semantic fields (severity/type/message/subject)
+      // at creation time. Even admin cannot retroactively downgrade a
+      // 'high' severity flag to 'low'. Hard-delete + recreate is the only
+      // way to "edit" these — and that leaves an audit signal.
       allow update: if
         resource.data.schoolId == request.auth.token.school_id
         && request.resource.data.studentId   == resource.data.studentId
         && request.resource.data.flagId      == resource.data.flagId
         && request.resource.data.teacherId   == resource.data.teacherId
         && request.resource.data.createdAtMs == resource.data.createdAtMs
+        && request.resource.data.get('severity', '') == resource.data.get('severity', '')
+        && request.resource.data.get('type',     '') == resource.data.get('type',     '')
+        && request.resource.data.get('message',  '') == resource.data.get('message',  '')
+        && request.resource.data.get('subject',  '') == resource.data.get('subject',  '')
         && (
           isAdmin()
           || (
             isStaff()
-            && request.auth.uid == resource.data.teacherId
             && (
+              // Resolve: any school staff may close a flag for a student
+              // in their school. Audit trail preserved via resolvedBy /
+              // resolvedAtMs.
               request.resource.data.status == 'resolved'
-              || (request.resource.data.status == 'deleted'
-                  && resource.data.createdByRole == 'teacher')
+              // Soft-delete: any school staff may retract a flag —
+              // accidental flags, post-resolve cleanup, and class-teacher
+              // moderation all need this. Audit trail preserved via
+              // deletedBy / deletedAtMs (status='deleted' is a soft
+              // marker; original record stays for hard-delete by admin).
+              || request.resource.data.status == 'deleted'
             )
           )
         );
@@ -761,6 +1013,55 @@ service cloud.firestore {
         && resource.data.schoolId == request.auth.token.school_id;
     }
 
+
+    // ── Project-wide Audit Logs ──────────────────────────────────
+    // Written by the PHP `log_audit()` helper through a service account
+    // (bypasses these rules). Client reads are restricted to admin-tier
+    // roles in the same school. Client writes are NEVER allowed — audit
+    // integrity depends on the server being the only writer.
+    match /auditLogs/{logId} {
+      allow read: if isAuth()
+                  && resource != null
+                  && resource.data.schoolId == request.auth.token.school_id
+                  && request.auth.token.role in [
+                       'Admin','admin',
+                       'Super Admin','super_admin',
+                       'School Super Admin','school_super_admin',
+                       'Principal'
+                     ];
+      allow write: if false;
+    }
+
+    // Same shape as auditLogs; populated by audit_archive_old() when the
+    // active log count exceeds the per-school cap.
+    match /auditArchive/{logId} {
+      allow read: if isAuth()
+                  && resource != null
+                  && resource.data.schoolId == request.auth.token.school_id
+                  && request.auth.token.role in [
+                       'Admin','admin',
+                       'Super Admin','super_admin',
+                       'School Super Admin','school_super_admin',
+                       'Principal'
+                     ];
+      allow write: if false;
+    }
+
+    // ── Academic Audit Log (Phase 4) ─────────────────────────────
+    // Write-only from server (PHP backend uses service account → bypasses rules).
+    // Reads restricted to admin-tier roles within the same school. NO client
+    // writes ever — log integrity depends on this being server-only.
+    match /academicAuditLog/{logId} {
+      allow read: if isAuth()
+                  && resource != null
+                  && resource.data.schoolId == request.auth.token.school_id
+                  && request.auth.token.role in [
+                       'Admin','admin',
+                       'School Super Admin','school_super_admin',
+                       'Super Admin','super_admin','Principal'
+                     ];
+      allow write: if false;
+    }
 
     // ── Deny everything else (catch-all) ─────────────────────────
     match /{document=**} {

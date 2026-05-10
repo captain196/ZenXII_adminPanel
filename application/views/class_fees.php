@@ -199,8 +199,21 @@ function cfToast(msg, type) {
     }, dur);
 }
 
+/**
+ * Smart-paise rupee formatter. Stage B2 fix 2026-05-10:
+ * was `maximumFractionDigits: 0`, which silently truncated paise
+ * (e.g. ₹100.50 → ₹ 101 — financial display drift). Now shows 2
+ * decimals when paise are non-zero, 0 decimals for whole rupees so
+ * round amounts stay visually clean (₹ 1,500 not ₹ 1,500.00).
+ */
 function fmtRs(n) {
-    return '₹ ' + parseFloat(n||0).toLocaleString('en-IN', {minimumFractionDigits:0, maximumFractionDigits:0});
+    var v = parseFloat(n || 0);
+    var paiseInt = Math.round(v * 100);
+    var hasPaise = (paiseInt % 100) !== 0;
+    return '₹ ' + v.toLocaleString('en-IN', {
+        minimumFractionDigits: hasPaise ? 2 : 0,
+        maximumFractionDigits: hasPaise ? 2 : 0
+    });
 }
 
 /* ── Populate section dropdown when class changes ── */
@@ -632,6 +645,26 @@ document.addEventListener('DOMContentLoaded', function() {
         .cf-stat-strip {
             grid-template-columns: 1fr 1fr;
         }
+    }
+
+    /*
+     * Stage B2 (2026-05-10) — narrow-viewport survivability for the
+     * class-fees table. Same pattern as fees_records.php.
+     */
+    @media(max-width: 768px) {
+        .cf-table-wrap {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            max-height: 60vh;
+        }
+        .cf-table th, .cf-table td {
+            font-size: 12px;
+            padding: 8px 6px;
+        }
+        .cf-table th[style*="min-width:200px"] { min-width: 130px !important; }
+        .cf-table th[style*="min-width:110px"] { min-width: 80px !important; }
+        .cf-table th[style*="min-width:100px"] { min-width: 75px !important; }
+        .cf-table th[style*="min-width:90px"]  { min-width: 70px !important; }
     }
 
     .cf-stat {

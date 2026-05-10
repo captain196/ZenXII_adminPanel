@@ -1,0 +1,56 @@
+═══════════════════════════════════════════════════════════════
+  Phase 1 — Parent & Teacher app smoke (Firestore-side equiv)
+  project: graderadmin
+═══════════════════════════════════════════════════════════════
+
+Discovering real test fixtures from live data...
+  studentA:  STU0001
+  studentB:  STU0004 (used for cross-isolation DENY test)
+  schoolId:  SCH_D94FE8F7AD
+  session:   2026-27
+  demandA.id: DEM_STU0001_202604_FH_0BF749A16C68
+  demandB.id: DEM_STU0004_202604_FH_0BF749A16C68
+  receiptA:   SCH_D94FE8F7AD_F2
+
+Minting ID tokens...
+  parentA: ok
+  teacher: ok
+
+── PARENT APP READ EQUIVALENT (uid = studentA) ──
+
+P1 — parent reads own feeDemand (must ALLOW)
+✅ P1 — feeDemands/{ownDemandId}
+     expected=ALLOW  actual=ALLOW  (HTTP 200)
+P2 — parent reads a feeReceipt (must ALLOW or DENY based on ownership)
+✅ P2 — feeReceipts/SCH_D94FE8F7AD_F2 (recOwner=self)
+     expected=ALLOW  actual=ALLOW  (HTTP 200)
+P3 — parent reads own feeDefaulters (must ALLOW; doc may be absent)
+✅ P3 — feeDefaulters/{ownDocId}
+     expected=ALLOW  actual=ALLOW  (HTTP 200)
+P4 — parent reads own feeCarryForward (must ALLOW; doc may be absent — Phase 1 NEW RULE)
+✅ P4 — feeCarryForward/{ownDocId}
+     expected=ALLOW  actual=ALLOW (doc absent)  (HTTP 404)
+P5 — parent reads OTHER student feeDefaulters (must DENY — cross-student isolation)
+❌ P5 — feeDefaulters/{otherStudentDocId}
+     expected=DENY  actual=ALLOW (doc absent)  (HTTP 404)
+P6 — parent reads OTHER student feeDemand (must DENY — cross-student isolation)
+✅ P6 — feeDemands/{otherStudentDemandId}
+     expected=DENY  actual=DENY  (HTTP 403)
+
+── TEACHER APP READ EQUIVALENT (synthetic teacher uid) ──
+
+T1 — teacher reads any feeDemand (must ALLOW — staff blanket access)
+✅ T1 — feeDemands/{anyDemandId}
+     expected=ALLOW  actual=ALLOW  (HTTP 200)
+T2 — teacher reads a feeReceipt (must ALLOW — staff blanket access)
+✅ T2 — feeReceipts/{anyReceiptId}
+     expected=ALLOW  actual=ALLOW  (HTTP 200)
+T3 — teacher reads any feeDefaulters (must ALLOW)
+✅ T3 — feeDefaulters/{anyDocId}
+     expected=ALLOW  actual=ALLOW  (HTTP 200)
+T4 — teacher reads any feeCarryForward (must ALLOW — Phase 1 NEW RULE)
+✅ T4 — feeCarryForward/{anyDocId}
+     expected=ALLOW  actual=ALLOW (doc absent)  (HTTP 404)
+
+───────────────────────────────────────────────────────────────
+Result: 9 pass, 1 fail

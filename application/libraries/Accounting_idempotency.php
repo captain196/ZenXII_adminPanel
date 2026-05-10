@@ -108,11 +108,61 @@ final class Accounting_idempotency
             return ['in_progress' => true, 'ageSec' => $ageSec];
         }
 
-        // Stale (>= 120s) or failed → overwrite with a fresh claim.
-        // attempts is incremented so operators can see chronic retries.
+        // Stale (>= 120s) or failed → reclaim the slot for ourselves.
+        //
+        // Phase 4.5 (V-LOW-1) — CAS-protected reclaim. Pre-Phase-4.5
+        // the reclaim was a plain merge=false set: two callers seeing
+        // the slot at age=119s could both override at the same instant
+        // and both proceed to write ledger entries (the duplicate
+        // would later be caught by the ledger doc's `exists:false`
+        // precondition, but only AFTER both writers ran their batch
+        // commits). The CAS precondition closes that pre-ledger race
+        // by gating the reclaim on the existing slot's `__updateTime`:
+        // the second concurrent reclaimer's batch fails CAS, and we
+        // return `in_progress` so the caller retries instead of
+        // proceeding into the commit path.
         $slot['attempts'] = ((int) ($existing['attempts'] ?? 0)) + 1;
+
+        $existingUt = (string) ($existing['__updateTime'] ?? '');
+        if ($existingUt !== '') {
+            $reclaimOp = [
+                'op'           => 'set',
+                'collection'   => self::COL,
+                'docId'        => $docId,
+                'data'         => $slot,
+                'precondition' => ['updateTime' => $existingUt],
+            ];
+            $ok = (bool) $this->firebase->firestoreCommitBatch([$reclaimOp]);
+            if (!$ok) {
+                // Another caller reclaimed the slot between our read and
+                // our write. Yield: the reclaimer is now the owner;
+                // we re-enter as if the slot had been freshly claimed.
+                log_message('error',
+                    "ACC_IDEMP_RECLAIM_CAS_CONFLICT key={$idempKey} "
+                    . "priorStatus={$status} ageSec={$ageSec}");
+                return ['in_progress' => true, 'ageSec' => 0, 'reclaim_race' => true];
+            }
+            log_message('error',
+                "ACC_IDEMP_STALE_OVERRIDE key={$idempKey} priorStatus={$status} "
+                . "ageSec={$ageSec} cas=ok");
+            return ['stale_override' => true, 'attempts' => $slot['attempts']];
+        }
+
+        // Fallback: existing slot lacks __updateTime metadata (e.g. a
+        // pre-Phase-4.5 doc, or a read path that stripped it). We
+        // can't safely CAS — fall back to the legacy merge=false set.
+        // This is the only window where the V-LOW-1 race remains
+        // theoretically possible; the ledger doc's `exists:false`
+        // precondition is still the canonical safety net. Loud log
+        // surfaces these slots so operators can clear them manually
+        // (a no-op merge write installs Firestore metadata for
+        // subsequent reads).
+        log_message('error',
+            "ACC_IDEMP_RECLAIM_NO_CAS key={$idempKey} priorStatus={$status} "
+            . "ageSec={$ageSec} — slot lacks __updateTime; using non-CAS override. "
+            . "Ledger-level CAS still prevents duplicate entries.");
         $this->firebase->firestoreSet(self::COL, $docId, $slot, /* merge */ false);
-        log_message('error', "ACC_IDEMP_STALE_OVERRIDE key={$idempKey} priorStatus={$status} ageSec={$ageSec}");
+        log_message('error', "ACC_IDEMP_STALE_OVERRIDE key={$idempKey} priorStatus={$status} ageSec={$ageSec} cas=fallback");
         return ['stale_override' => true, 'attempts' => $slot['attempts']];
     }
 

@@ -214,7 +214,17 @@ document.addEventListener('DOMContentLoaded', function(){
     var analyticsCache = null;
     var chartClass = null, chartMonth = null;
 
-    function fmt(n){ return Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:0,maximumFractionDigits:0}); }
+    // Stage B2: smart-paise. Defaulter rupee figures normally land on
+    // whole rupees, but show paise when they exist so partial-payment
+    // residue is honestly displayed.
+    function fmt(n){
+        var v = Number(n||0);
+        var hasPaise = (Math.round(v*100) % 100) !== 0;
+        return v.toLocaleString('en-IN',{
+            minimumFractionDigits: hasPaise?2:0,
+            maximumFractionDigits: hasPaise?2:0
+        });
+    }
     function esc(s){ var d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
 
     function loadData(){
@@ -288,7 +298,16 @@ document.addEventListener('DOMContentLoaded', function(){
             h+='<td><input type="checkbox" class="fm-check-input fm-row-chk" data-sid="'+esc(d.student_id)+'" onclick="FDR.updateSelection()"></td>';
             h+='<td class="fm-muted">'+(i+1)+'</td>';
             h+='<td><div class="fm-cell-title">'+esc(d.student_name)+'</div><div class="fm-cell-sub">'+esc(d.student_id)+'</div></td>';
-            h+='<td>'+esc((d.class||'').replace('Class ',''))+' <span class="fm-muted">'+esc((d.section||'').replace('Section ',''))+'</span></td>';
+            // Phase 1.X (2026-05-09) — compact em-dash display:
+            // "10th — A". Underlying canonical form stays
+            // intact in Firestore ("Class 10th" / "Section A"); we
+            // just strip the prefixes for UI density and join with
+            // a typographic em-dash so the row scans cleanly.
+            var _cls = (d.class||'').replace(/^Class\s+/, '');
+            var _sec = (d.section||'').replace(/^Section\s+/, '');
+            var _classCell = (_cls && _sec) ? (esc(_cls) + ' &mdash; ' + esc(_sec))
+                            : (_cls ? esc(_cls) : (_sec ? esc(_sec) : '—'));
+            h+='<td class="fm-class-cell">'+_classCell+'</td>';
             h+='<td class="fm-num">&#8377;'+fmt(d.total_due)+'</td>';
             h+='<td class="fm-num">&#8377;'+fmt(d.total_paid)+'</td>';
             h+='<td class="fm-num fm-cell-danger">&#8377;'+fmt(d.balance)+'</td>';

@@ -1,0 +1,15 @@
+fee_audit_logs	17
+feeAuditLogs	0
+feeReceipts	7
+feeDemands	542
+feeRefunds	1
+feeRefundVouchers	1
+feeRefundAudit	6
+feeCarryForward	0
+feeReceiptIndex	7
+feeReceiptAllocations	7
+feeIdempotency	30
+feeOnlineOrders	3
+feeOnlinePayments	2
+studentFeeSummary	1
+classFeeSummary	1
