@@ -7,8 +7,14 @@ defined('BASEPATH') or exit('No direct script access allowed');
  * Admin portal module for monitoring, managing, and analysing homework
  * assigned by teachers through the mobile app.
  *
- * Firebase structure (written by Teacher mobile app):
- *   Schools/{schoolId}/{session}/{className}/{sectionName}/Homework/{hwId}
+ * Firestore structure (shared with Teacher + Parent apps):
+ *   homework/{hwId}        — class-level assignments. Doc ID format
+ *                            "{schoolId}_{epochMs}". Filtered by
+ *                            schoolId + sectionKey ("Class 8th/Section A").
+ *   submissions/{subId}    — per-student submission. Doc ID format
+ *                            "{hwId}_{studentId}".
+ *   teacherMarks/{markId}  — teacher score for non-submitters. Doc ID
+ *                            format "{hwId}_{studentId}".
  *
  * All AJAX endpoints return JSON via json_success() / json_error().
  */
@@ -70,7 +76,7 @@ class Homework extends MY_Controller
         foreach ($all as $hw) {
             $total++;
             $status  = $hw['status'] ?? 'Active';
-            $dueDate = $hw['dueDate'] ?? '';
+            $dueDate = $this->_dueDatePrefix($hw['dueDate'] ?? '');
 
             if (strcasecmp($status, 'Active') === 0) {
                 $active++;
@@ -99,7 +105,8 @@ class Homework extends MY_Controller
         foreach ($all as $hw) {
             $status  = $hw['status'] ?? 'Active';
             if (strcasecmp($status, 'Active') !== 0) continue;
-            $dd = $hw['dueDate'] ?? '';
+            $dd = $this->_dueDatePrefix($hw['dueDate'] ?? '');
+            if ($dd === '') continue;
             if ($dd === $today) $dueToday++;
             if ($dd >= $today && $dd <= $weekEnd) $dueWeek++;
         }
@@ -144,21 +151,22 @@ class Homework extends MY_Controller
             if ($filterTeacher && ($hw['teacherId'] ?? '') !== $filterTeacher) continue;
 
             $status = $hw['status'] ?? 'Active';
+            // Date-only prefix for comparisons — see _dueDatePrefix() doc.
+            $ddRaw  = $hw['dueDate'] ?? '';
+            $ddDate = $this->_dueDatePrefix($ddRaw);
             if ($filterStatus) {
                 if (strcasecmp($filterStatus, 'Overdue') === 0) {
-                    $dd = $hw['dueDate'] ?? '';
-                    if (!(strcasecmp($status, 'Active') === 0 && $dd && $dd < $today)) continue;
+                    if (!(strcasecmp($status, 'Active') === 0 && $ddDate && $ddDate < $today)) continue;
                 } else {
                     if (strcasecmp($status, $filterStatus) !== 0) continue;
                 }
             }
 
-            $dd = $hw['dueDate'] ?? '';
-            if ($dateFrom && $dd && $dd < $dateFrom) continue;
-            if ($dateTo && $dd && $dd > $dateTo) continue;
+            if ($dateFrom && $ddDate && $ddDate < $dateFrom) continue;
+            if ($dateTo   && $ddDate && $ddDate > $dateTo)   continue;
 
             $rate = $this->_calc_submission_rate($hw);
-            $isOverdue = (strcasecmp($status, 'Active') === 0 && $dd && $dd < $today);
+            $isOverdue = (strcasecmp($status, 'Active') === 0 && $ddDate && $ddDate < $today);
 
             $list[] = [
                 'id'          => $hw['_id'],
@@ -168,7 +176,7 @@ class Homework extends MY_Controller
                 'section'     => $hw['_section'],
                 'teacherId'   => $hw['teacherId'] ?? '',
                 'teacherName' => $hw['teacherName'] ?? '-',
-                'dueDate'     => $dd,
+                'dueDate'     => $ddRaw,
                 'status'      => $isOverdue ? 'Overdue' : ucfirst(strtolower($status)),
                 'rate'        => $rate ?? 0,
                 'createdAt'   => $hw['createdAt'] ?? 0,
@@ -205,6 +213,9 @@ class Homework extends MY_Controller
         if (!is_array($hw)) {
             $this->json_error('Homework not found.', 404);
         }
+        if (($hw['schoolId'] ?? $hw['schoolCode'] ?? '') !== $this->school_name) {
+            $this->json_error('Unauthorized', 403);
+        }
 
         // Read submissions from Firestore
         $subDocs = $this->firebase->firestoreQuery(
@@ -216,17 +227,20 @@ class Homework extends MY_Controller
         $submissionList = [];
         $submitted = 0;
         $pending   = 0;
+        $seenStudentIds = [];  // dedupe against teacherMarks below
 
         foreach ($subDocs as $sub) {
             $d = $sub['data'];
             $subStatus = $d['status'] ?? 'pending';
+            $sid = $d['studentId'] ?? '';
+            if ($sid !== '') $seenStudentIds[$sid] = true;
             if (in_array(strtolower($subStatus), ['submitted', 'reviewed', 'complete', 'done'])) {
                 $submitted++;
             } else {
                 $pending++;
             }
             $submissionList[] = [
-                'studentId'   => $d['studentId'] ?? '',
+                'studentId'   => $sid,
                 'studentName' => $d['studentName'] ?? '',
                 'status'      => $subStatus,
                 'text'        => $d['text'] ?? '',
@@ -237,10 +251,51 @@ class Homework extends MY_Controller
             ];
         }
 
+        // Include students evaluated via teacherMarks (no submission doc).
+        // Without this, evaluated non-submitters are invisible here even though
+        // the parent app shows them as "Evaluated".
+        try {
+            $tmDocs = $this->firebase->firestoreQuery(
+                'teacherMarks',
+                [
+                    ['schoolId',   '=', $this->school_name],
+                    ['homeworkId', '=', $hwId],
+                ],
+                null, 'ASC', 500
+            );
+            foreach ($tmDocs as $tm) {
+                $td  = $tm['data'];
+                $tsid = $td['studentId'] ?? '';
+                if ($tsid === '' || isset($seenStudentIds[$tsid])) continue;
+                // Read the teacherMark's actual status — was hardcoded to
+                // 'reviewed' before the Teacher app's reviewOrMark fix that
+                // started persisting the chosen status. Legacy docs without
+                // a status field default to 'reviewed' (the previous
+                // hardcoded value) so older marks render the same.
+                $tmStatus = $td['status'] ?? 'reviewed';
+                if (in_array(strtolower($tmStatus), ['submitted', 'reviewed', 'complete', 'done'])) {
+                    $submitted++;
+                }
+                $submissionList[] = [
+                    'studentId'   => $tsid,
+                    'studentName' => '',
+                    'status'      => $tmStatus,
+                    'text'        => '',
+                    'remarks'     => $td['remark'] ?? '',
+                    'submittedAt' => '',
+                    'score'       => $td['score'] ?? -1,
+                    'reviewedBy'  => $td['teacherId'] ?? '',
+                ];
+            }
+        } catch (\Exception $e) {
+            // best-effort
+        }
+
         $today = date('Y-m-d');
         $status  = $hw['status'] ?? 'active';
         $dueDate = $hw['dueDate'] ?? '';
-        $isOverdue = (strtolower($status) === 'active' && $dueDate && $dueDate < $today);
+        $ddDate  = $this->_dueDatePrefix($dueDate);
+        $isOverdue = (strtolower($status) === 'active' && $ddDate && $ddDate < $today);
         $totalStudents = intval($hw['totalStudents'] ?? ($submitted + $pending));
 
         $this->json_success([
@@ -306,7 +361,48 @@ class Homework extends MY_Controller
                 'submittedAt' => $d['submittedAt'] ?? '',
                 'score'       => $d['score'] ?? -1,
                 'reviewedBy'  => $d['reviewedBy'] ?? '',
+                'source'      => 'submission',
             ];
+        }
+
+        // Index teacherMarks by studentId. The teacher app records evaluations
+        // for students who never submitted in a separate collection so it
+        // doesn't fabricate submission docs. Without merging, those students
+        // would show "Pending" here while the parent app shows them as
+        // evaluated.
+        $tmMap = [];
+        try {
+            $tmDocs = $this->firebase->firestoreQuery(
+                'teacherMarks',
+                [
+                    ['schoolId',   '=', $this->school_name],
+                    ['homeworkId', '=', $hwId],
+                ],
+                null, 'ASC', 500
+            );
+            foreach ($tmDocs as $tm) {
+                $td = $tm['data'];
+                $tsid = $td['studentId'] ?? '';
+                if ($tsid === '') continue;
+                // Read the teacherMark's actual status — pre-2026-05-06
+                // marks default to 'reviewed' (the previously hardcoded
+                // value) for back-compat.
+                $tmStatus = $td['status'] ?? 'reviewed';
+                $tmMap[$tsid] = [
+                    'studentId'   => $tsid,
+                    'studentName' => '',
+                    'rollNo'      => '-',
+                    'status'      => $tmStatus,
+                    'text'        => '',
+                    'remarks'     => $td['remark'] ?? '',
+                    'submittedAt' => '',
+                    'score'       => $td['score'] ?? -1,
+                    'reviewedBy'  => $td['teacherId'] ?? '',
+                    'source'      => 'teacherMark',
+                ];
+            }
+        } catch (\Exception $e) {
+            // teacherMarks query failed — best-effort, continue without them
         }
 
         // Fetch full class roster from Firestore students collection
@@ -332,14 +428,23 @@ class Homework extends MY_Controller
                     // the studentId field inside the doc, not the doc ID.
                     $sid = $sd['studentId'] ?? $sd['userId'] ?? $doc['id'];
                     if (isset($subMap[$sid])) {
-                        // Student has a submission doc — use it
+                        // Student has a submission doc — use it (the canonical
+                        // record; teacher reviews update this, not teacherMarks)
                         $entry = $subMap[$sid];
                         $entry['studentName'] = $sd['name'] ?? $sd['Name'] ?? $entry['studentName'];
                         $entry['rollNo'] = $sd['rollNo'] ?? $sd['RollNo'] ?? '-';
                         $result[] = $entry;
                         unset($subMap[$sid]);
+                        unset($tmMap[$sid]);  // submission supersedes any stray mark
+                    } elseif (isset($tmMap[$sid])) {
+                        // Teacher recorded a mark without a submission
+                        $entry = $tmMap[$sid];
+                        $entry['studentName'] = $sd['name'] ?? $sd['Name'] ?? $sid;
+                        $entry['rollNo']      = $sd['rollNo'] ?? $sd['RollNo'] ?? '-';
+                        $result[] = $entry;
+                        unset($tmMap[$sid]);
                     } else {
-                        // No submission — show as pending
+                        // No submission, no mark — pending
                         $result[] = [
                             'studentId'   => $sid,
                             'studentName' => $sd['name'] ?? $sd['Name'] ?? $sid,
@@ -350,6 +455,7 @@ class Homework extends MY_Controller
                             'submittedAt' => '',
                             'score'       => -1,
                             'reviewedBy'  => '',
+                            'source'      => 'roster',
                         ];
                     }
                 }
@@ -358,12 +464,18 @@ class Homework extends MY_Controller
             }
         }
 
-        // Append any remaining submissions not matched to roster (edge case)
+        // Append any remaining submissions not matched to roster (edge case:
+        // student left the section after submitting).
         foreach ($subMap as $entry) {
             $result[] = $entry;
         }
+        // Append any remaining teacher marks not matched to roster.
+        foreach ($tmMap as $entry) {
+            $result[] = $entry;
+        }
 
-        // If no roster found, fall back to submission docs only
+        // If no roster found, fall back to submission docs only (and any
+        // teacherMarks already enqueued via $tmMap append above).
         if (empty($result)) {
             foreach ($subDocs as $sub) {
                 $d = $sub['data'];
@@ -377,6 +489,7 @@ class Homework extends MY_Controller
                     'submittedAt' => $d['submittedAt'] ?? '',
                     'score'       => $d['score'] ?? -1,
                     'reviewedBy'  => $d['reviewedBy'] ?? '',
+                    'source'      => 'submission',
                 ];
             }
         }
@@ -543,11 +656,14 @@ class Homework extends MY_Controller
         foreach ($all as $hw) {
             $status  = $hw['status'] ?? 'Active';
             $dueDate = $hw['dueDate'] ?? '';
+            $ddDate  = $this->_dueDatePrefix($dueDate);
 
             if (strcasecmp($status, 'Active') !== 0) continue;
-            if (!$dueDate || $dueDate >= $today) continue;
+            if (!$ddDate || $ddDate >= $today) continue;
 
-            $daysPast = (int) ((strtotime($today) - strtotime($dueDate)) / 86400);
+            // Day-diff is computed from the date prefix to avoid timezone
+            // bias from the ISO time/offset suffix.
+            $daysPast = (int) ((strtotime($today) - strtotime($ddDate)) / 86400);
             $rate = $this->_calc_submission_rate($hw);
 
             $list[] = [
@@ -628,8 +744,97 @@ class Homework extends MY_Controller
     }
 
     /**
+     * Get the canonical list of subjects taught in a class (or, if no
+     * class is given, every subject taught in the school). Sourced from
+     * `subjectAssignments` so the dropdown matches what teachers actually
+     * teach — preventing the previous "type any string" footgun that let
+     * "Maths" / "Mathematics" / "MATH" coexist as separate subjects in
+     * the homework collection.
+     *
+     * Admin-only meta assignments (e.g. "Class Teacher Duty" with code 999)
+     * are filtered out so they don't pollute the homework dropdown.
+     *
+     * Common spelling drift is normalised on the way out so the dropdown
+     * never shows both "Maths" AND "Mathematics" as separate options. The
+     * underlying data should still be cleaned via the Maths-fix script.
+     *
+     * POST: class (optional)
+     */
+    public function get_subjects_for_class()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'homework_subjects');
+
+        $class = trim($this->input->post('class') ?? '');
+
+        // Filter to the current session — subjectAssignments stores one doc
+        // per (school, session, class, section, subjectCode) so an
+        // un-scoped query returns last year's assignments alongside this
+        // year's, doubling/tripling every entry in the dropdown.
+        $filters = [
+            ['schoolId', '=', $this->school_name],
+            ['session',  '=', $this->session_year],
+        ];
+        if ($class !== '') {
+            // Normalize so "8" / "8th" / "Class 8th" all resolve to the
+            // same canonical "Class 8th" written by the assignments writer.
+            require_once APPPATH . 'libraries/Entity_firestore_sync.php';
+            $cs = \Entity_firestore_sync::normalizeClassSection($class, '');
+            $canonClass = $cs['className'] ?: $class;
+            $filters[] = ['className', '=', $canonClass];
+        }
+
+        // Subject names that are admin/duty meta-assignments rather than
+        // actual teachable subjects — must not appear in the homework
+        // dropdown. Match case-insensitively.
+        $excludedSubjects = ['class teacher duty', 'duty', 'class teacher'];
+        // Admin/meta subject codes (legacy + current). 999 is the canonical
+        // class-teacher marker in this codebase.
+        $excludedCodes = ['999'];
+        // Subject-name normalisation — collapses common spelling variants
+        // so the dropdown shows one canonical entry. Lowercased keys.
+        $aliasMap = [
+            'maths' => 'Mathematics',
+            'math'  => 'Mathematics',
+        ];
+
+        $subjects = [];
+        try {
+            $docs = $this->firebase->firestoreQuery(
+                'subjectAssignments', $filters, null, 'ASC', 1000
+            );
+            $seen = [];
+            foreach ($docs as $doc) {
+                $d = $doc['data'] ?? [];
+                $code = trim((string)($d['subjectCode'] ?? ''));
+                if (in_array($code, $excludedCodes, true)) continue;
+
+                $rawName = trim((string)($d['subjectName'] ?? ''));
+                if ($rawName === '') continue;
+
+                $lower = strtolower($rawName);
+                if (in_array($lower, $excludedSubjects, true)) continue;
+
+                // Normalise via alias map so "Maths" → "Mathematics" before
+                // dedup. Falls through with original name otherwise.
+                $name = $aliasMap[$lower] ?? $rawName;
+
+                $key = strtolower($name);
+                if (isset($seen[$key])) continue;
+                $seen[$key] = true;
+                $subjects[] = $name;
+            }
+            sort($subjects, SORT_NATURAL | SORT_FLAG_CASE);
+        } catch (\Exception $e) {
+            // Firestore failed — return empty list. Per the no-RTDB policy,
+            // there is no fallback.
+        }
+
+        $this->json_success(['subjects' => $subjects]);
+    }
+
+    /**
      * Get students for a class/section (for submission tracking tab).
-     * Firestore-first, RTDB fallback.
+     * Firestore-only (no RTDB fallback).
      */
     public function get_students_for_class()
     {
@@ -640,13 +845,21 @@ class Homework extends MY_Controller
 
         $students = [];
 
-        // Firestore first
-        $sectionKey = "{$class}/{$section}";
+        // Normalize the inbound class/section so the sectionKey matches what
+        // the mobile apps wrote. The form already submits canonical values in
+        // most cases, but defend against legacy short forms ("8", "A") that
+        // would silently miss every document.
+        require_once APPPATH . 'libraries/Entity_firestore_sync.php';
+        $cs = \Entity_firestore_sync::normalizeClassSection($class, $section);
+        $cls     = $cs['className'] ?: $class;
+        $secFull = $cs['section']   ?: $section;
+        $sectionKey = "{$cls}/{$secFull}";
+
         try {
             $docs = $this->firebase->firestoreQuery(
                 'students',
                 [
-                    ['schoolId', '=', $this->school_name],
+                    ['schoolId',   '=', $this->school_name],
                     ['sectionKey', '=', $sectionKey],
                 ],
                 null, 'ASC', 500
@@ -660,29 +873,8 @@ class Homework extends MY_Controller
                 ];
             }
         } catch (\Exception $e) {
-            // Firestore failed — RTDB fallback
-        }
-
-        // RTDB fallback
-        if (empty($students)) {
-            $path = "Schools/{$this->school_name}/{$this->session_year}/{$class}/{$section}/Students";
-            $data = $this->firebase->get($path);
-            if (is_array($data)) {
-                $list = $data['List'] ?? $data;
-                if (is_array($list)) {
-                    foreach ($list as $sid => $info) {
-                        if (is_string($info)) {
-                            $students[] = ['id' => $sid, 'name' => $info, 'roll' => $sid];
-                        } elseif (is_array($info)) {
-                            $students[] = [
-                                'id'   => $sid,
-                                'name' => $info['Name'] ?? $info['name'] ?? $sid,
-                                'roll' => $info['RollNo'] ?? $info['Roll'] ?? $info['roll'] ?? $sid,
-                            ];
-                        }
-                    }
-                }
-            }
+            // Firestore failed — return empty list. Per the no-RTDB policy,
+            // there is no fallback.
         }
 
         $this->json_success(['students' => $students]);
@@ -698,7 +890,7 @@ class Homework extends MY_Controller
 
         $result = [];
 
-        // Firestore first — sections collection
+        // Firestore sections collection — single source of truth.
         try {
             $docs = $this->firebase->firestoreQuery(
                 'sections',
@@ -714,27 +906,8 @@ class Homework extends MY_Controller
                 }
             }
         } catch (\Exception $e) {
-            // fallback below
-        }
-
-        // RTDB fallback — shallow_get session root
-        if (empty($result)) {
-            $root = "Schools/{$this->school_name}/{$this->session_year}";
-            $keys = $this->firebase->shallow_get($root);
-            if (is_array($keys)) {
-                foreach ($keys as $key => $val) {
-                    if (strpos($key, 'Class ') === 0) {
-                        $classNode = $this->firebase->shallow_get("{$root}/{$key}");
-                        if (is_array($classNode)) {
-                            foreach ($classNode as $sk => $sv) {
-                                if (strpos($sk, 'Section ') === 0) {
-                                    $result[] = ['class' => $key, 'section' => $sk];
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // Firestore failed — return empty list. Per the no-RTDB policy,
+            // there is no fallback.
         }
 
         $this->json_success(['class_sections' => $result]);
@@ -774,15 +947,48 @@ class Homework extends MY_Controller
 
         $createdIds = [];
 
+        // Canonical class/section normalizer — must match the format Teacher +
+        // Parent apps use ("Class 8th" / "Section A"), otherwise the docs
+        // become invisible to mobile queries that filter by sectionKey.
+        require_once APPPATH . 'libraries/Entity_firestore_sync.php';
+        // Firestore Timestamp helper — admin must write `createdAt` as a
+        // proper Timestamp so it sorts together with Teacher-app writes
+        // (which use serverTimestamp()). Number-vs-Timestamp mixed types
+        // sort separately in Firestore, pushing admin docs to the bottom
+        // of the mobile-app's "recent homework" lists.
+        require_once APPPATH . 'libraries/Firestore_rest_client.php';
+
         foreach ($sections as $sec) {
             $sec = $this->safe_path_segment(trim($sec), 'section');
 
-            // Ensure class/section prefixes
-            $cls = (stripos($class, 'Class ') === 0) ? $class : "Class {$class}";
-            $secFull = (stripos($sec, 'Section ') === 0) ? $sec : "Section {$sec}";
+            // Normalize via the canonical helper (same as every other admin
+            // writer — Academic, Attendance, Subject_assignment_service, etc).
+            // "8" → "Class 8th", "A" → "Section A", and existing prefixes
+            // pass through unchanged.
+            $cs = \Entity_firestore_sync::normalizeClassSection($class, $sec);
+            $cls     = $cs['className'] ?: $class;
+            $secFull = $cs['section']   ?: $sec;
             $sectionKey = "{$cls}/{$secFull}";
 
             $hwId = "{$this->school_name}_" . round(microtime(true) * 1000);
+
+            // Roster size for accurate submission rate. Best-effort: if the
+            // students query fails or returns empty, leave totalStudents at 0
+            // and the rate will fall back to counting submissions.
+            $totalStudents = 0;
+            try {
+                $rosterDocs = $this->firebase->firestoreQuery(
+                    'students',
+                    [
+                        ['schoolId',   '=', $this->school_name],
+                        ['sectionKey', '=', $sectionKey],
+                    ],
+                    null, 'ASC', 1000
+                );
+                $totalStudents = is_array($rosterDocs) ? count($rosterDocs) : 0;
+            } catch (\Exception $e) {
+                // leave totalStudents = 0
+            }
 
             $hwData = [
                 'schoolId'        => $this->school_name,
@@ -795,11 +1001,11 @@ class Homework extends MY_Controller
                 'subject'         => $subject,
                 'teacherId'       => $this->admin_id,
                 'teacherName'     => $this->admin_name ?? 'Admin',
-                'dueDate'         => $dueDate,
-                'createdAt'       => round(microtime(true) * 1000),
+                'dueDate'         => $this->_normalizeDueDate($dueDate),
+                'createdAt'       => \FirestoreRestClient::timestamp(round(microtime(true) * 1000)),
                 'status'          => 'active',
                 'submissionCount' => 0,
-                'totalStudents'   => 0,
+                'totalStudents'   => $totalStudents,
                 'attachments'     => [],
             ];
 
@@ -807,6 +1013,52 @@ class Homework extends MY_Controller
             $ok = $this->firebase->firestoreSet('homework', $hwId, $hwData);
 
             if ($ok) {
+                // Enqueue a push request so parents (and class teachers) get
+                // notified — mirrors the Teacher app's HomeworkFirestoreRepo
+                // shape so a single Cloud Function dispatcher can fan out
+                // both admin- and teacher-created homework. The dispatcher
+                // for HOMEWORK_CREATED is not yet wired into functions/
+                // index.js (see comment at the early-return on unknown mark);
+                // until that lands, the doc sits with status=pending and is
+                // harmless. Best-effort write — swallowed errors don't abort
+                // the homework create.
+                try {
+                    $reqId = "{$this->school_name}_hw_{$hwId}";
+                    // Pre-format the due date in IST so the Cloud Function (or
+                    // any future notification renderer) doesn't have to parse
+                    // ISO. End user sees "06 May 2026, 11:59 PM IST" instead
+                    // of "2026-05-06T23:59:59+05:30".
+                    $dueDateDisplay = $hwData['dueDate'];
+                    try {
+                        $dt = new \DateTime($hwData['dueDate']);
+                        $dt->setTimezone(new \DateTimeZone('Asia/Kolkata'));
+                        $dueDateDisplay = $dt->format('d M Y, h:i A') . ' IST';
+                    } catch (\Exception $eFmt) {
+                        // Leave as raw ISO if parse failed
+                    }
+                    $this->firebase->firestoreSet('pushRequests', $reqId, [
+                        'schoolId'        => $this->school_name,
+                        'studentId'       => '',
+                        'mark'            => 'HOMEWORK_CREATED',
+                        'class'           => $cls,
+                        'section'         => $secFull,
+                        'day'             => 0,
+                        'month'           => '',
+                        'date'            => '',
+                        'source'          => 'homework_created',
+                        'markedBy'        => $this->admin_name ?? 'Admin',
+                        'status'          => 'pending',
+                        'homeworkId'      => $hwId,
+                        'title'           => $title,
+                        'subject'         => $subject,
+                        'dueDate'         => $hwData['dueDate'],   // raw ISO
+                        'dueDateDisplay'  => $dueDateDisplay,       // human-readable
+                        'sectionKey'      => $sectionKey,
+                        'createdAt'       => date('c'),
+                    ]);
+                } catch (\Exception $e) {
+                    log_message('error', 'homework_create pushRequests write failed (non-fatal): ' . $e->getMessage());
+                }
                 $createdIds[] = ['class' => $cls, 'section' => $secFull, 'id' => $hwId];
             }
         }
@@ -836,6 +1088,9 @@ class Homework extends MY_Controller
         if (!is_array($existing)) {
             $this->json_error('Homework not found.', 404);
         }
+        if (($existing['schoolId'] ?? $existing['schoolCode'] ?? '') !== $this->school_name) {
+            $this->json_error('Unauthorized', 403);
+        }
 
         $updates = [];
 
@@ -849,7 +1104,7 @@ class Homework extends MY_Controller
         if ($subj !== '') $updates['subject'] = $subj;
 
         $dd = trim($this->input->post('due_date') ?? '');
-        if ($dd !== '') $updates['dueDate'] = $dd;
+        if ($dd !== '') $updates['dueDate'] = $this->_normalizeDueDate($dd);
 
         $st = trim($this->input->post('status') ?? '');
         if ($st !== '' && in_array(strtolower($st), ['active', 'closed', 'archived'], true)) {
@@ -884,25 +1139,90 @@ class Homework extends MY_Controller
         if (!is_array($existing)) {
             $this->json_error('Homework not found.', 404);
         }
-
-        // Delete from Firestore
-        $this->firebase->firestoreDelete('homework', $hwId);
-
-        // Also delete all submissions for this homework
-        try {
-            $submissions = $this->firebase->firestoreQuery(
-                'submissions',
-                [['homeworkId', '=', $hwId]],
-                null, 'ASC', 500
-            );
-            foreach ($submissions as $sub) {
-                $this->firebase->firestoreDelete('submissions', $sub['id']);
-            }
-        } catch (\Exception $e) {
-            // Non-critical
+        if (($existing['schoolId'] ?? $existing['schoolCode'] ?? '') !== $this->school_name) {
+            $this->json_error('Unauthorized', 403);
         }
 
-        log_audit('Homework', 'homework_delete', $hwId, "Deleted homework: " . ($existing['title'] ?? ''));
+        // Chunked atomic delete with deterministic cursor pagination.
+        // Pages through submissions ordered by document ID (__name__) using
+        // startAfter(lastDocId) — guarantees no skipped docs and no repeated
+        // reads even when the dataset exceeds the 499-per-batch cap. Each
+        // batch commit is checked; any failure aborts and surfaces an error
+        // without progressing to the homework delete.
+        $totalDeleted = 0;
+        $chunkLimit   = 499;
+        $lastDocId    = '';
+        $maxIters     = 250;  // safety cap: 250 × 499 ≈ 125k subs/homework
+
+        for ($iter = 0; $iter < $maxIters; $iter++) {
+            try {
+                $submissions = $this->firebase->firestoreQuery(
+                    'submissions',
+                    [['homeworkId', '=', $hwId]],
+                    '__name__',
+                    'ASC',
+                    $chunkLimit,
+                    $lastDocId !== '' ? $lastDocId : null
+                );
+            } catch (\Exception $e) {
+                $this->json_error('Failed to query submissions. Delete aborted (' . $totalDeleted . ' submissions removed before failure).', 500);
+                return;
+            }
+
+            if (empty($submissions)) break;
+
+            $ops = [];
+            $newLast = '';
+            foreach ($submissions as $sub) {
+                $subId = $sub['id'] ?? '';
+                if ($subId === '') continue;
+                $ops[] = ['op' => 'delete', 'collection' => 'submissions', 'docId' => $subId];
+                $newLast = $subId;
+            }
+            if (empty($ops)) break;
+
+            // Pagination safety — if the cursor didn't advance, the query
+            // stalled (e.g. orderBy index/fallback issue). Abort instead of
+            // looping forever or repeatedly deleting the same docs.
+            if ($newLast === $lastDocId) {
+                $this->json_error('Pagination cursor stalled. Delete aborted (' . $totalDeleted . ' submissions removed before failure).', 500);
+                return;
+            }
+
+            $ok = false;
+            try { $ok = $this->firebase->firestoreCommitBatch($ops); }
+            catch (\Exception $e) { $ok = false; }
+
+            if (!$ok) {
+                $this->json_error('Failed to delete submissions. Delete aborted (' . $totalDeleted . ' removed before failure). Homework not removed.', 500);
+                return;
+            }
+
+            $totalDeleted += count($ops);
+            $lastDocId    = $newLast;
+
+            if (count($submissions) < $chunkLimit) break;
+        }
+
+        if ($iter >= $maxIters) {
+            $this->json_error('Submission delete iteration cap reached (' . $totalDeleted . ' removed). Re-run delete to continue.', 500);
+            return;
+        }
+
+        // All submissions gone — now remove the homework doc itself.
+        $ok = false;
+        try {
+            $ok = $this->firebase->firestoreCommitBatch([
+                ['op' => 'delete', 'collection' => 'homework', 'docId' => $hwId]
+            ]);
+        } catch (\Exception $e) { $ok = false; }
+
+        if (!$ok) {
+            $this->json_error('Submissions removed (' . $totalDeleted . ') but homework deletion failed. Re-run delete to retry.', 500);
+            return;
+        }
+
+        log_audit('Homework', 'homework_delete', $hwId, "Deleted homework: " . ($existing['title'] ?? '') . " (+" . $totalDeleted . " submissions)");
 
         $this->json_success(['message' => 'Homework deleted successfully.']);
     }
@@ -921,6 +1241,9 @@ class Homework extends MY_Controller
         $existing = $this->firebase->firestoreGet('homework', $hwId);
         if (!is_array($existing)) {
             $this->json_error('Homework not found.', 404);
+        }
+        if (($existing['schoolId'] ?? $existing['schoolCode'] ?? '') !== $this->school_name) {
+            $this->json_error('Unauthorized', 403);
         }
 
         // Update in Firestore directly
@@ -1048,5 +1371,49 @@ class Homework extends MY_Controller
         } catch (\Exception $e) {
             return null;
         }
+    }
+
+    /**
+     * Normalise a dueDate input to ISO 8601 with timezone offset
+     * (e.g. "2026-05-15T23:59:59+05:30"). Inputs already in ISO-with-TZ
+     * form are returned unchanged. Date-only "YYYY-MM-DD" inputs are
+     * pinned to end-of-day in IST so existing date-picker UIs keep
+     * working without any client change. Anything unrecognised is
+     * returned as-is so legacy/foreign formats don't crash the write.
+     */
+    private function _normalizeDueDate(string $input): string
+    {
+        $input = trim($input);
+        if ($input === '') return '';
+        // Already ISO 8601 with timezone offset or 'Z' — leave it.
+        if (preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}([+-]\d{2}:?\d{2}|Z)$/', $input)) {
+            return $input;
+        }
+        // Date-only — pin to end of school day in IST.
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $input)) {
+            return $input . 'T23:59:59+05:30';
+        }
+        try {
+            $dt = new \DateTime($input, new \DateTimeZone('Asia/Kolkata'));
+            return $dt->format('Y-m-d\TH:i:sP');
+        } catch (\Exception $e) {
+            return $input;
+        }
+    }
+
+    /**
+     * Return the YYYY-MM-DD prefix of a stored dueDate value so it can be
+     * lexicographically compared against `date('Y-m-d')` strings.
+     *
+     * dueDate is stored as ISO 8601 with timezone (e.g.
+     * "2026-05-15T23:59:59+05:30") so a raw `$dd === $today` or
+     * `$dd <= $weekEnd` would never match. This helper strips the time/TZ
+     * suffix without converting through strtotime — the comparison stays
+     * date-only and timezone-agnostic.
+     */
+    private function _dueDatePrefix($dd): string
+    {
+        if (!is_string($dd) || $dd === '') return '';
+        return substr($dd, 0, 10);
     }
 }

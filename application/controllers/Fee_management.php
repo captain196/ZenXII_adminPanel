@@ -1836,6 +1836,12 @@ class Fee_management extends MY_Controller
     public function process_refund()
     {
         $this->_require_role(self::ADMIN_ROLES, 'process_refund');
+        // L1.0 period-lock enforcement — block refund posting if
+        // today's date falls within a closed accounting period.
+        // Refund creates a NEW reversal journal entry; same gating
+        // policy as fee posting. This sits BEFORE _bootFsTxn so the
+        // 423 fires cleanly without any heavy library bootstrapping.
+        $this->_abort_if_period_locked();
         $this->_bootFsTxn();
 
         // A single refund touches ~15 Firestore REST ops (reverse allocations,
@@ -1873,15 +1879,15 @@ class Fee_management extends MY_Controller
             $this->ops_acct
         );
 
-        // R.6 (Phase 9 update): wallet subsystem removed. A stale-allocation
-        // refund (demands owned by a newer receipt) is now always rejected —
-        // there is no wallet to route the amount into. The acknowledge_stale
-        // override flag is no longer honoured.
-        $ackStale = false;
-
-        $result = $this->refund_svc->process($refId, $refundMode, [
-            'acknowledge_stale' => $ackStale,
-        ]);
+        // R.6 (Phase 9): wallet subsystem removed, so stale-allocation
+        // refunds are always rejected — there's no wallet to route the
+        // amount into. The acknowledge_stale flag the UI used to send
+        // (and which this controller used to forward) was already a
+        // no-op service-side; C6 cleanup 2026-05-10 removed the dead
+        // plumbing. STALE_ALLOCATION still surfaces structured details
+        // to the UI so the admin can see which newer receipts are
+        // blocking the refund.
+        $result = $this->refund_svc->process($refId, $refundMode);
 
         if (!$result['ok']) {
             log_message('error', "process_refund failed for {$refId}: " . ($result['error'] ?? ''));
@@ -2587,6 +2593,27 @@ class Fee_management extends MY_Controller
             $this->json_error('Mode must be "test" or "live".');
         }
 
+        // Phase 3F — Razorpay key-prefix vs mode consistency check.
+        // Razorpay enforces strict prefix conventions:
+        //   rzp_live_*  ⇒ ONLY works against the live account
+        //   rzp_test_*  ⇒ ONLY works against the test account
+        // A misconfig (e.g., live key with mode='test') silently disables
+        // HMAC enforcement on the webhook handler, allowing spoofed
+        // payloads from anyone who knows the endpoint URL. Block at save.
+        // Empty/legacy/partner keys pass through unchecked — Razorpay's
+        // current docs lock these two prefixes; future formats may need
+        // an updated guard.
+        if ($provider === 'razorpay' && $apiKey !== '') {
+            $isLiveKey = strpos($apiKey, 'rzp_live_') === 0;
+            $isTestKey = strpos($apiKey, 'rzp_test_') === 0;
+            if ($isLiveKey && $mode !== 'live') {
+                $this->json_error('Mode/key mismatch: rzp_live_* key requires mode=live. Either change the mode or use a rzp_test_* key.');
+            }
+            if ($isTestKey && $mode !== 'test') {
+                $this->json_error('Mode/key mismatch: rzp_test_* key requires mode=test. Either change the mode or use a rzp_live_* key.');
+            }
+        }
+
         // If secret contains only asterisks, preserve existing value
         $existingConfig = $this->firebase->firestoreGet('feeSettings', "{$this->school_name}_{$this->session_year}_gateway");
         if (preg_match('/^\*+/', $apiSecret) && is_array($existingConfig) && !empty($existingConfig['api_secret'])) {
@@ -2624,23 +2651,117 @@ class Fee_management extends MY_Controller
     }
 
     /**
-     * GET — Fetch all online payment records.
+     * GET/POST — Fetch online payment orders for the admin dashboard.
+     *
+     * Phase 1.X (2026-05-09) — collection + Pattern-B rewrite.
+     * Was: queried `feeOnlinePayments` (which is mostly webhook event logs;
+     *      sparse fields). Most table cells rendered empty. View also sent
+     *      filter params (status, date_from, date_to) that backend ignored.
+     * Now: queries `feeOnlineOrders` (canonical order lifecycle —
+     *      reconciliation already reads from here). Explicitly transforms
+     *      each Firestore doc into the shape the view expects:
+     *        order_id     <- gateway_order_id
+     *        payment_id   <- gateway_payment_id
+     *        date         <- substr(created_at, 0, 10)
+     *        student_name, class, amount, fee_months, gateway, status,
+     *        created_at, paid_at, updated_at, receipt_key, method, notes
+     *      Filters (status, date_from, date_to) honored in-memory after
+     *      the query. Server-side stats included so the JS doesn't have
+     *      to recount over a filtered window.
+     *
+     * Status filter mapping (view-pill -> Firestore status):
+     *   paid     -> ['paid']
+     *   created  -> ['created', 'verified']
+     *   failed   -> ['fees_failed', 'failed']
+     *   refunded -> ['refunded']
      */
     public function fetch_online_payments()
     {
         $this->_require_role(self::VIEW_ROLES, 'fetch_online_payments');
-        $rows = $this->firebase->firestoreQuery('feeOnlinePayments', [
+
+        // Filters from view (POST). Empty / missing means no filter.
+        $filterStatus = trim((string) ($this->input->post('status') ?? ''));
+        $dateFrom     = trim((string) ($this->input->post('date_from') ?? ''));
+        $dateTo       = trim((string) ($this->input->post('date_to') ?? ''));
+
+        // Status pill -> Firestore status set
+        static $statusMap = [
+            'paid'     => ['paid'],
+            'created'  => ['created', 'verified'],
+            'failed'   => ['fees_failed', 'failed'],
+            'refunded' => ['refunded'],
+        ];
+        $statusAllowed = ($filterStatus !== '' && isset($statusMap[$filterStatus]))
+            ? $statusMap[$filterStatus]
+            : null;
+
+        $rows = $this->firebase->firestoreQuery('feeOnlineOrders', [
             ['schoolId', '==', $this->school_name],
         ], 'created_at', 'DESC');
+
         $payments = [];
+        $stats = [
+            'total' => 0, 'paid' => 0, 'created' => 0, 'failed' => 0,
+            'refunded' => 0, 'total_amount' => 0.0,
+        ];
+
         foreach ((array) $rows as $row) {
-            $pay = $row['data'] ?? $row;
-            if (!is_array($pay)) continue;
-            $pay['id'] = $this->_stripSchoolPrefix($row['id'] ?? '');
-            $payments[] = $pay;
+            $o = $row['data'] ?? $row;
+            if (!is_array($o)) continue;
+
+            $createdAt = (string) ($o['created_at'] ?? '');
+            $oDate     = substr($createdAt, 0, 10); // YYYY-MM-DD prefix
+            $status    = (string) ($o['status'] ?? 'created');
+
+            // In-memory filter pass — date range + status pill.
+            if ($dateFrom !== '' && $oDate !== '' && $oDate < $dateFrom) continue;
+            if ($dateTo   !== '' && $oDate !== '' && $oDate > $dateTo)   continue;
+            if ($statusAllowed !== null && !in_array($status, $statusAllowed, true)) continue;
+
+            $item = [
+                'id'           => $this->_stripSchoolPrefix($row['id'] ?? ''),
+                'date'         => $oDate,
+                'order_id'     => (string) ($o['gateway_order_id']   ?? $o['order_id']   ?? ''),
+                'payment_id'   => (string) ($o['gateway_payment_id'] ?? $o['payment_id'] ?? ''),
+                'student_id'   => (string) ($o['student_id']   ?? ''),
+                'student_name' => (string) ($o['student_name'] ?? ''),
+                'class'        => (string) ($o['class']        ?? $o['className'] ?? ''),
+                'section'      => (string) ($o['section']      ?? ''),
+                'amount'       => (float)  ($o['amount']       ?? 0),
+                'fee_months'   => is_array($o['fee_months'] ?? null) ? $o['fee_months'] : [],
+                'gateway'      => (string) ($o['gateway']      ?? 'razorpay'),
+                'status'       => $status,
+                'created_at'   => $createdAt,
+                'paid_at'      => (string) ($o['paid_at']      ?? ''),
+                'updated_at'   => (string) ($o['updated_at']   ?? ''),
+                'receipt_key'  => (string) ($o['receipt_key']  ?? ''),
+                'method'       => (string) ($o['method']       ?? ''),
+                'notes'        => (string) ($o['notes']        ?? ''),
+            ];
+
+            // Stats accumulation across the post-filter window.
+            $stats['total']++;
+            if ($status === 'paid') {
+                $stats['paid']++;
+                $stats['total_amount'] += $item['amount'];
+            } elseif ($status === 'created' || $status === 'verified') {
+                $stats['created']++;
+            } elseif ($status === 'fees_failed' || $status === 'failed') {
+                $stats['failed']++;
+            } elseif ($status === 'refunded') {
+                $stats['refunded']++;
+            }
+
+            $payments[] = $item;
         }
 
-        $this->json_success(['payments' => $payments, 'total' => count($payments)]);
+        $stats['total_amount'] = round($stats['total_amount'], 2);
+
+        $this->json_success([
+            'payments' => $payments,
+            'total'    => count($payments),
+            'stats'    => $stats,
+        ]);
     }
 
     /**
@@ -2806,6 +2927,19 @@ class Fee_management extends MY_Controller
         $claims = $this->_parent_claims ?: [];
         $studentId   = (string) ($claims['uid'] ?? '');
         $studentName = '';
+
+        // R1.1 freeze enforcement — block new orders if the active
+        // session is closed for year-end rollover. NOT applied to
+        // parent_verify_payment (verification of an already-captured
+        // payment must always complete to avoid orphaning the receipt).
+        $this->_abort_if_session_frozen();
+        // L1.0 period-lock enforcement — block new orders if today's
+        // date falls within a closed accounting period. Same
+        // in-flight-verify exemption applies: parent_verify_payment
+        // is not gated. The order has not yet been created with
+        // Razorpay at this point, so a 423 here cleanly aborts before
+        // any external state is mutated.
+        $this->_abort_if_period_locked();
 
         // T3 — rate limit BEFORE any Firestore work. 5 req/min per
         // studentId+ip; unauthenticated requests (studentId empty) are
@@ -3399,6 +3533,37 @@ class Fee_management extends MY_Controller
         }
 
         $gwMode = is_array($gwConfig) ? ($gwConfig['mode'] ?? '') : '';
+
+        // Phase 3F — defensive prefix vs mode assertion at webhook receive time.
+        // Layer 1 (save_gateway_config) blocks new misconfig writes, but
+        // legacy docs / direct Firestore edits / migrations may already
+        // carry a mismatch. Refuse the webhook with a loud error so the
+        // misconfig surfaces in logs immediately rather than silently
+        // bypassing HMAC enforcement.
+        //
+        // Drift detection is collapsed into a single $driftReason string
+        // so each webhook request emits AT MOST ONE log_message call —
+        // prevents log-line cascades during malformed retry storms.
+        $apiKey    = is_array($gwConfig) ? ($gwConfig['api_key'] ?? '') : '';
+        $isLiveKey = strpos($apiKey, 'rzp_live_') === 0;
+        $isTestKey = strpos($apiKey, 'rzp_test_') === 0;
+        $driftReason = '';
+        if ($isLiveKey && $gwMode !== 'live') {
+            $driftReason = "rzp_live_* key with mode='{$gwMode}'";
+        } elseif ($isTestKey && $gwMode === 'live') {
+            $driftReason = "rzp_test_* key with mode='live'";
+        }
+        if ($driftReason !== '') {
+            log_message('error',
+                "payment_webhook: CONFIG DRIFT — {$driftReason} " .
+                "(school={$this->school_name}, session={$this->session_year}). " .
+                "Webhook refused. Fix gateway config in admin UI before retrying."
+            );
+            http_response_code(500);
+            echo json_encode(['status' => 'error', 'message' => 'Gateway configuration mismatch. Contact admin.']);
+            return;
+        }
+
         if (!$ipAllowed && $gwMode !== 'mock') {
             log_message('error', "payment_webhook: IP BLOCKED ip={$ip}");
             http_response_code(403);
@@ -4222,11 +4387,22 @@ class Fee_management extends MY_Controller
         $duplicates   = [];
         $stats        = ['total' => 0, 'paid' => 0, 'failed' => 0, 'orphan' => 0, 'duplicate' => 0, 'total_amount' => 0, 'failed_amount' => 0];
 
-        // Track order_ids seen in payments for orphan detection
+        // Track order_ids seen in payments for duplicate detection.
+        //
+        // Phase 1.X (2026-05-09) — field-name correction. Canonical
+        // feeOnlinePayments schema (Razorpay-era, snake_case) emits
+        // `order_id`, NOT `gateway_order_id`. Reading the wrong field
+        // left $orderIdsInPayments empty, so $hitCount > 1 was never
+        // true and the Duplicates tab never populated — even when a
+        // single order legitimately had multiple webhook events
+        // (verified live: order_SgFq8BpdRjVFA3 received webhook
+        // payloads on 2026-04-21 AND 2026-05-08). camelCase fallback
+        // is preserved defensively in case a future writer emits the
+        // alternate shape.
         $orderIdsInPayments = [];
         foreach ($allPayments as $pid => $pay) {
             if (!is_array($pay)) continue;
-            $oid = $pay['gateway_order_id'] ?? '';
+            $oid = $pay['order_id'] ?? $pay['gateway_order_id'] ?? '';
             if ($oid) $orderIdsInPayments[$oid] = ($orderIdsInPayments[$oid] ?? 0) + 1;
         }
 

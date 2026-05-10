@@ -1,0 +1,770 @@
+rules_version = '2';
+
+// Firestore Security Rules for SchoolSync
+//
+// PHP backend uses service account (bypasses these rules entirely).
+// These rules protect DIRECT client access from Android apps.
+//
+// Principle: deny-all by default. Only explicitly listed collections are accessible.
+// Every read requires: authenticated + matching schoolId
+// Every write requires: authenticated + correct role + matching schoolId
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ─────────────────────────────────────────
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    // Match schoolId field in document to school_id in auth token.
+    // Supports both field names: schoolId (new) and schoolCode (legacy).
+    // For non-existent docs (get), resource is null — allow if authenticated.
+    function isSameSchool() {
+      return isAuth() && (
+        resource == null ||
+        resource.data.schoolId == request.auth.token.school_id ||
+        resource.data.schoolCode == request.auth.token.school_id
+      );
+    }
+
+    function isSameSchoolWrite() {
+      return isAuth() && (
+        request.resource.data.schoolId == request.auth.token.school_id ||
+        request.resource.data.schoolCode == request.auth.token.school_id
+      );
+    }
+
+    function isAdmin() {
+      return isAuth() && request.auth.token.role in ['Admin', 'admin', 'School Super Admin', 'school_super_admin', 'Super Admin', 'super_admin', 'Principal'];
+    }
+
+    function isStaff() {
+      return isAuth() && request.auth.token.role in ['Admin', 'admin', 'Teacher', 'teacher', 'School Super Admin', 'school_super_admin', 'Super Admin', 'super_admin', 'Accountant', 'Principal', 'Vice Principal'];
+    }
+
+    function isSuperAdmin() {
+      return isAuth() && request.auth.token.role in ['Super Admin', 'super_admin'];
+    }
+
+    // Per-student fee collections need to differentiate "this parent
+    // accessing their own child's data" from "this parent accessing
+    // some other student's data". Parent-app auth uses the student's
+    // userId as the Firebase auth UID, so we check studentId against
+    // request.auth.uid.
+    //
+    // Supports camelCase `studentId` (canonical) and snake_case
+    // `student_id` (legacy — to be purged after migration). Using
+    // .get(key, '') with a default avoids rule-eval errors when
+    // either field is absent.
+    //
+    // For non-existent docs (resource == null), we can't compare —
+    // allow if authenticated so a missing doc returns null cleanly
+    // instead of 403. Same-school check is applied by callers.
+    function isOwnStudent() {
+      return isAuth() && (
+        resource == null ||
+        resource.data.get('studentId', '')  == request.auth.uid ||
+        resource.data.get('student_id', '') == request.auth.uid
+      );
+    }
+
+    // Convenience: read is allowed when caller is staff (sees all
+    // school records) OR the same school AND the doc belongs to
+    // their own student. The `resource == null` arm covers parents
+    // calling `get()` on a doc that doesn't exist — Firestore evaluates
+    // the rule against `null`, and we shouldn't punish a missing read.
+    function isStaffOrOwnStudent() {
+      return isStaff() || (isSameSchool() && isOwnStudent());
+    }
+
+    // ── Schools (read-only for apps) ─────────────────────────────
+    match /schools/{docId} {
+      allow read: if isAuth() && (
+        resource.data.schoolId == request.auth.token.school_id ||
+        docId == request.auth.token.school_id
+      );
+      allow write: if isAdmin();
+    }
+
+    // ── Sections ─────────────────────────────────────────────────
+    match /sections/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Students ─────────────────────────────────────────────────
+    match /students/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+      // Phase A — students can clear their own mustChangePassword flag
+      // after their first password change. Restricted to two fields so
+      // a student can't escalate (e.g. change Class, Section, Status).
+      // Doc id is `{schoolId}_{studentId}` and auth.uid == studentId.
+      allow update: if isSameSchool()
+                    && request.auth.uid == resource.data.studentId
+                    && request.resource.data.diff(resource.data)
+                          .affectedKeys()
+                          .hasOnly(['mustChangePassword', 'updatedAt']);
+    }
+
+    // ── Staff ────────────────────────────────────────────────────
+    match /staff/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Subjects ─────────────────────────────────────────────────
+    match /subjects/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Subject Assignments (canonical: who teaches what to which class/section) ──
+    match /subjectAssignments/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Attendance ───────────────────────────────────────────────
+    match /attendance/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // ── Attendance Summary ───────────────────────────────────────
+    match /attendanceSummary/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Homework ──────────────────────────────────────────────────
+    match /homework/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isStaff() && isSameSchool();
+    }
+
+    // ── Homework Submissions ─────────────────────────────────────
+    match /submissions/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAuth() && isSameSchoolWrite();
+      allow update: if isAuth() && isSameSchool();
+      allow delete: if isStaff() && isSameSchool();
+    }
+
+    // ── Exams ────────────────────────────────────────────────────
+    match /exams/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Exam Schedule ────────────────────────────────────────────
+    match /examSchedule/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Marks ────────────────────────────────────────────────────
+    match /marks/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Results ──────────────────────────────────────────────────
+    match /results/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Fee Structures ───────────────────────────────────────────
+    match /feeStructures/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Fee Demands ──────────────────────────────────────────────
+    // Per-student doc with `studentId` field — parents see only their
+    // own child, staff see everyone in the school. Writes are admin-
+    // only AND cross-school-blocked (defense-in-depth; PHP service
+    // account bypasses rules entirely, so this only guards direct
+    // Firebase-SDK admin writes).
+    match /feeDemands/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin() && isSameSchool();
+    }
+
+    // ── Fee Receipts ─────────────────────────────────────────────
+    match /feeReceipts/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin() && isSameSchool();
+    }
+
+    // ── Fee Receipt Allocations (per-demand breakdown of each receipt) ─
+    match /feeReceiptAllocations/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow write: if isAdmin();
+    }
+
+    // ── Fee Defaulters (per-student dues snapshot) ───────────────
+    // Teachers see all students in their school; parents see only
+    // their own child's snapshot (drives the dashboard dues banner).
+    match /feeDefaulters/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow write: if isAdmin();
+    }
+
+    // ── Fee Reminder Log (Phase 8) ───────────────────────────────
+    // Records every fee reminder (push/whatsapp/sms/email/log) the
+    // admin dispatches. Teacher app reads to show "✓ Reminded" pill
+    // on Defaulter rows; parent app reads its own child's history.
+    match /feeReminderLog/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow write: if isAdmin();
+    }
+
+    // ── Fee Generation Jobs (Phase 10) ───────────────────────────
+    // Admin UI writes a job spec; Cloud Function processes it and
+    // writes progress updates back to the same doc. Only admins read
+    // or write — parents/teachers have no business here.
+    match /fee_generation_jobs/{docId} {
+      allow read:  if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // Student advance (wallet) balances — removed in Phase 9.
+    // Tombstone docs (amount=0, migrationReason set) remain in Firestore
+    // for audit but no app reads or writes them anymore. Rule omitted so
+    // default-deny blocks any accidental reads from old builds.
+
+    // ── Student discounts ────────────────────────────────────────
+    match /studentDiscounts/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow write: if isAdmin();
+    }
+
+    // ── Scholarship awards ───────────────────────────────────────
+    match /scholarshipAwards/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow write: if isAdmin();
+    }
+
+    // ── Fee online orders (Razorpay/mock order lifecycle) ────────
+    // Historically written with snake_case `student_id`; canonical
+    // writers now emit camelCase `studentId`. isOwnStudent() matches
+    // either field so in-flight legacy docs continue to work until
+    // the snake_case purge is complete (see migration strategy).
+    // Parents read only their own order; staff read school-wide.
+    match /feeOnlineOrders/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin() && isSameSchool();
+    }
+
+    // ── Fee settings (gateway, blocking policy, reminders) ───────
+    // Parent reads gateway provider/api_key for the Razorpay SDK.
+    match /feeSettings/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Fee audit logs (admin-only) ──────────────────────────────
+    match /feeAuditLogs/{docId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // ── Server-only fee infrastructure ───────────────────────────
+    // These collections are written and read exclusively by the PHP
+    // backend (which uses the service account and bypasses these
+    // rules). Any direct client access is a bug — deny it explicitly.
+    match /feeIdempotency/{docId}    { allow read, write: if false; }
+    match /feeLocks/{docId}          { allow read, write: if false; }
+    match /feeCounters/{docId}       { allow read, write: if false; }
+    match /feeReceiptIndex/{docId}   { allow read, write: if false; }
+    match /feeDemandLocks/{docId}    { allow read, write: if false; }
+    match /feePendingWrites/{docId}  { allow read, write: if false; }
+
+    // ── Fee refunds ──────────────────────────────────────────────
+    // Refund docs are per-student. Previously readable by any user in
+    // the same school — which leaked other parents' refund history.
+    // Now restricted: staff see all, parents see only their own child.
+    match /feeRefunds/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin() && isSameSchool();
+    }
+    match /feeRefundAudit/{docId} {
+      allow read: if isAdmin();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin() && isSameSchool();
+    }
+    match /feeRefundVouchers/{docId} {
+      allow read: if isStaffOrOwnStudent();
+      allow create, update: if isAdmin() && isSameSchoolWrite();
+      allow delete: if isAdmin() && isSameSchool();
+    }
+
+    // ── Circulars / Notices ──────────────────────────────────────
+    match /circulars/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // Notices collection — admin Notice Board writes here; Parent + Teacher
+    // apps read alongside circulars. Same permission shape as circulars.
+    match /notices/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // ── Circular Reads / Acks ────────────────────────────────────
+    match /circularReads/{docId} {
+      allow read: if isAuth();
+      allow write: if isAuth();
+    }
+
+    // Circular acknowledgements (Phase 3 rename of circularReads for admin side)
+    match /circularAcks/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAuth();
+    }
+
+    // ── Notifications ────────────────────────────────────────────
+    match /notifications/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Events ───────────────────────────────────────────────────
+    match /events/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // ── PTM Events (admin-managed, school-scoped read) ───────────
+    match /ptmEvents/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // ── PTM RSVPs (Phase D — section-wise, lifecycle-aware) ───────
+    //
+    // Architecture: Firestore-first. The parent app writes via
+    // `applyToPtm()` / `declineFromPtm()` (the apply path runs inside a
+    // transaction that allocates a queue number from `ptmCounters`).
+    // The teacher app writes via `markDelivered()` / `markAllDelivered()`.
+    //
+    // These rules pin the invariants the apps already enforce so a
+    // tampered client cannot bypass them:
+    //
+    //   PARENT (auth.uid == studentId — established by the project's
+    //           parent-app auth model):
+    //     • Can only create/update an RSVP whose `studentId == auth.uid`.
+    //     • Can only set `status` ∈ {applied, declined}.
+    //     • Cannot edit `teacherId` directly — must keep whatever the
+    //       transaction set (server resolves from PTM.sections[] snapshot).
+    //     • Cannot edit `queueNumber` directly — only the apply
+    //       transaction allocates it from the counter.
+    //
+    //   TEACHER (isStaff()):
+    //     • Can only update an RSVP whose `teacherId == auth.uid`
+    //       (= they are the section's class teacher).
+    //     • Can only flip `status` to {applied, delivered, no-show}.
+    //     • Can only change the lifecycle/audit fields — not student
+    //       identity, not queue number, not section.
+    //
+    //   ADMIN:
+    //     • Reads anything in school. Deletes only.
+    //     • Admin save runs via the Admin SDK (PHP), bypasses these rules.
+    match /ptmRsvps/{docId} {
+      allow read: if isSameSchool();
+
+      // Parent — apply / decline / re-apply on their own RSVP doc.
+      allow create:
+            if isAuth()
+            && request.resource.data.studentId == request.auth.uid
+            && request.resource.data.schoolId == request.auth.token.school_id
+            && request.resource.data.status in ["applied", "declined"];
+
+      // Parent — update existing RSVP (status flip + note edit). The
+      // apply transaction does a full set() (no merge) so it replaces the
+      // doc; identity is pinned via three explicit equality checks
+      // (studentId, schoolId, ptmEventId), and the rest of the keys are
+      // gated by hasOnly().
+      //
+      // hasOnly() lists EVERY key the apply payload may carry. It mixes
+      // two groups:
+      //   1. Lifecycle / queue / response fields — populated by the
+      //      apply transaction (status, queueNumber, teacherId, ...).
+      //   2. Parent-profile snapshot fields — re-written on every apply
+      //      from tokenManager.user (studentName, parentPhone, ...).
+      //      These are legitimately mutable: a parent who updated their
+      //      phone since the previous RSVP must be able to re-apply
+      //      without rule rejection. Identity stays anchored via the
+      //      pinned studentId/schoolId/ptmEventId checks above, so
+      //      letting the labels drift is safe.
+      allow update:
+            if isAuth()
+            && resource.data.studentId == request.auth.uid
+            && request.resource.data.studentId == resource.data.studentId
+            && request.resource.data.schoolId == resource.data.schoolId
+            && request.resource.data.ptmEventId == resource.data.ptmEventId
+            && request.resource.data.status in ["applied", "declined"]
+            // queueNumber is server-allocated by the apply transaction.
+            // The hasOnly() list below lets the key APPEAR in changed
+            // keys (so the apply path that re-allocates on declined →
+            // applied still works), but this clause forces the value to
+            // stay equal UNLESS the update is the legitimate re-apply
+            // transition. That stops a tampered client from setting an
+            // arbitrary queueNumber via a plain UPDATE.
+            && (
+                 request.resource.data.queueNumber == resource.data.queueNumber
+                 || (resource.data.status == "declined"
+                     && request.resource.data.status == "applied")
+               )
+            && request.resource.data.diff(resource.data).changedKeys()
+                 .hasOnly([
+                   // Group 1 — lifecycle / queue / response.
+                   "status","note","queueNumber","teacherId","teacherName",
+                   "sectionKey","appliedAt","respondedAt","respondedBy",
+                   "updatedAt","bookings","slotIndex","slotStartTime",
+                   "slotEndTime","deliveredAt","markedBy",
+                   // Group 2 — parent-profile snapshot, allowed to drift.
+                   "studentName","className","section","rollNo",
+                   "parentName","parentPhone","parentEmail",
+                   // Group 3 — migration audit fields. Written by the
+                   // admin backfill_legacy_teacher_ids endpoint to mark
+                   // canonicalised legacy RSVPs. The parent apply path
+                   // does a full set() with no merge, so these fields
+                   // are dropped from the doc on re-apply — that counts
+                   // as a changedKey, and listing them here keeps the
+                   // re-apply legal. Identity remains pinned by the
+                   // studentId/schoolId/ptmEventId equality checks
+                   // above; allowing audit-field removal is safe.
+                   "backfilledAt","backfilledBy"
+                 ]);
+
+      // Teacher — flip lifecycle on their assigned section's RSVPs.
+      // The hasOnly() guard prevents this rule from being a back door
+      // to mutate student identity, queue number, or section.
+      allow update:
+            if isStaff()
+            && resource.data.teacherId == request.auth.uid
+            && request.resource.data.teacherId == resource.data.teacherId
+            && request.resource.data.studentId == resource.data.studentId
+            && request.resource.data.status in ["applied", "delivered", "no-show"]
+            && request.resource.data.diff(resource.data).changedKeys()
+                 .hasOnly(["status","markedBy","markedAt","deliveredAt","updatedAt","note"]);
+
+      allow delete: if isAdmin();
+    }
+
+    // ── PTM Counters (Phase D — apply-transaction queue allocator) ─
+    //
+    // Doc ID: `{schoolId}_{ptmEventId}_{sectionKey}` — each section gets
+    // its own monotonically increasing counter. Updated from inside the
+    // parent app's apply transaction; never edited otherwise.
+    //
+    //   • Read: any school member (admin RSVP page may show queue rolls).
+    //   • Create/Update: any authenticated school user — but only via
+    //     a transaction that's also writing the matching RSVP. Rules
+    //     can't enforce "must be in the same transaction", so we just
+    //     gate on schoolId membership; the `nextQueue` increment is
+    //     enforced by the transaction's optimistic-concurrency check
+    //     (concurrent writes retry, so no two parents get the same N).
+    //   • Delete: admin only.
+    match /ptmCounters/{docId} {
+      allow read: if isSameSchool();
+      allow create, update:
+            if isAuth()
+            && request.resource.data.schoolId == request.auth.token.school_id
+            && request.resource.data.nextQueue is int
+            && request.resource.data.nextQueue >= 1;
+      allow delete: if isAdmin();
+    }
+
+    // ── Gallery ──────────────────────────────────────────────────
+    match /galleryAlbums/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    match /galleryMedia/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Stories ──────────────────────────────────────────────────
+    match /stories/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Timetables ───────────────────────────────────────────────
+    match /timetables/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Timetable Settings ──────────────────────────────────────
+    match /timetableSettings/{docId} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // ── Substitutes ─────────────────────────────────────────────
+    match /substitutes/{docId} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // ── Staff Attendance ────────────────────────────────────────
+    match /staffAttendance/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Staff Attendance Summary ────────────────────────────────
+    match /staffAttendanceSummary/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Calendar Events ─────────────────────────────────────────
+    match /calendarEvents/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Curriculum ──────────────────────────────────────────────
+    match /curriculum/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // ── Leave Applications ───────────────────────────────────────
+    match /leaveApplications/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAuth() && isSameSchoolWrite();
+      allow update: if isAuth() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // ── Transport ────────────────────────────────────────────────
+    match /routes/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    match /vehicles/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    match /studentRoutes/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Library ──────────────────────────────────────────────────
+    match /libraryBooks/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    match /libraryIssues/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isStaff();
+    }
+
+    // Outstanding fines — read by parent / teacher / admin; written by staff.
+    match /libraryFines/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // ── Messaging (canonical Firestore schema) ───────────────────
+    // Mirrors Messaging_service.php on the admin side. All three
+    // collections are scoped by schoolId; teachers/parents can only
+    // touch rows where they are listed as a participant.
+    match /conversations/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAuth() && isSameSchoolWrite();
+      allow update: if isAuth() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    match /messages/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAuth() && isSameSchoolWrite();
+      allow update: if isAuth() && isSameSchool();
+      allow delete: if isAdmin();
+    }
+
+    // Inbox stubs are per-user but kept in one collection. Each doc id
+    // is `{schoolId}_{role}_{userId}_{conversationId}` so we enforce
+    // ownership by matching the userId field to the caller's uid OR by
+    // letting same-school staff list their own inbox via query filter.
+    match /messageInboxes/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAuth() && isSameSchoolWrite();
+      allow update: if isAuth() && isSameSchool();
+      allow delete: if isAuth() && isSameSchool();
+    }
+
+    // ── Salary Slips ─────────────────────────────────────────────
+    match /salarySlips/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Push Requests (teacher → admin push pipeline) ──────────
+    // Teacher writes a request; admin processes + deletes it.
+    match /pushRequests/{docId} {
+      allow read: if isSameSchool();
+      allow create: if isAuth() && isSameSchoolWrite();
+      allow update: if isAuth() && isSameSchool();
+      allow delete: if isStaff();
+    }
+
+    // ── User Devices (FCM token registry) ────────────────────
+    // Any authenticated user can register their device. Admin
+    // reads all for push delivery.
+    match /userDevices/{docId} {
+      allow read: if isAuth();
+      allow create: if isAuth();
+      allow update: if isAuth();
+      allow delete: if isAdmin();
+    }
+
+    // ── Attendance Events Fired (push dedup) ─────────────────
+    match /attendanceEventsFired/{docId} {
+      allow read: if isAuth();
+      allow write: if isAuth();
+    }
+
+    // ── HR Jobs (recruitment) ───────────────────────────────────
+    match /hrJobs/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── HR Applicants (recruitment) ──────────────────────────────
+    match /hrApplicants/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Appraisals ──────────────────────────────────────────────
+    match /appraisals/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── RBAC Roles ──────────────────────────────────────────────
+    match /rbacRoles/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin();
+    }
+
+    // ── Student Red Flags (canonical Firestore source) ──────────
+    // Replaces dual RTDB sources:
+    //   admin RTDB: Schools/{school}/{session}/{class}/{section}/RedFlags/{sid}/{fid}
+    //   mobile RTDB: StudentFlags/{schoolCode}/{studentId}/{flagId}
+    // Document ID: {schoolId}_{flagId}
+    match /studentFlags/{flagId} {
+      // Staff (admin/teacher/principal/etc.) can read all flags in their school.
+      allow read: if isStaff() && (
+        resource == null
+        || resource.data.schoolId   == request.auth.token.school_id
+        || resource.data.schoolCode == request.auth.token.school_id
+      );
+
+      // Parents/students read flags for their own student record.
+      // Three fallbacks for studentId ownership, in preferred order:
+      //   1. `student_ids` array claim (canonical multi-child setup)
+      //   2. `student_id` single claim (legacy)
+      //   3. `request.auth.uid` (this install logs students in with their
+      //      studentId as the Auth UID, so the doc's studentId equals
+      //      auth.uid and no extra claim is needed)
+      // The role gate is kept loose ('Parent'/'parent'/'Student'/'student'
+      // or empty) because not every backend mints a role claim.
+      allow read: if isAuth()
+        && resource != null
+        && (resource.data.schoolId   == request.auth.token.school_id
+            || resource.data.schoolCode == request.auth.token.school_id
+            || resource.data.schoolId   == request.auth.token.get('school_code', '')
+            || resource.data.schoolCode == request.auth.token.get('school_code', ''))
+        && (
+          resource.data.studentId in request.auth.token.get('student_ids', [])
+          || resource.data.studentId == request.auth.token.get('student_id', '')
+          || resource.data.studentId == request.auth.uid
+        );
+
+      // Staff create flags as themselves with canonical lowercase enums.
+      // createdByRole stamps the origin so soft-delete can enforce
+      // "teachers can only delete what teachers created".
+      allow create: if isStaff()
+        && isSameSchoolWrite()
+        && request.resource.data.teacherId == request.auth.uid
+        && request.resource.data.status   == 'active'
+        && request.resource.data.type     in ['homework', 'behavior', 'performance']
+        && request.resource.data.severity in ['low', 'medium', 'high']
+        && request.resource.data.createdByRole in ['admin', 'teacher'];
+
+      // Updates cover BOTH resolve (status→'resolved') and soft-delete
+      // (status→'deleted'). Permission model:
+      //   - Admin: any update on any flag in their school.
+      //   - Teacher: only on flags where teacherId == their uid AND
+      //     for soft-delete, only when createdByRole == 'teacher'.
+      //     (Admin-created flags assigned to a teacher's uid still
+      //     can't be soft-deleted by that teacher.)
+      // Immutable fields locked across all updates.
+      allow update: if
+        resource.data.schoolId == request.auth.token.school_id
+        && request.resource.data.studentId   == resource.data.studentId
+        && request.resource.data.flagId      == resource.data.flagId
+        && request.resource.data.teacherId   == resource.data.teacherId
+        && request.resource.data.createdAtMs == resource.data.createdAtMs
+        && (
+          isAdmin()
+          || (
+            isStaff()
+            && request.auth.uid == resource.data.teacherId
+            && (
+              request.resource.data.status == 'resolved'
+              || (request.resource.data.status == 'deleted'
+                  && resource.data.createdByRole == 'teacher')
+            )
+          )
+        );
+
+      // Hard-delete still admin-only — soft-delete is the canonical path
+      // (preserves audit trail). Kept for genuine purges by an admin tool.
+      allow delete: if isAdmin()
+        && resource.data.schoolId == request.auth.token.school_id;
+    }
+
+
+    // ── Deny everything else (catch-all) ─────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

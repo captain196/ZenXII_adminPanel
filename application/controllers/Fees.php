@@ -45,14 +45,30 @@ class Fees extends MY_Controller
     }
 
     /**
-     * Enforce HTTP POST method. Returns 405 if request is not POST.
-     * Call at the top of any data-mutating endpoint.
+     * Enforce HTTP POST method. Aborts the request with HTTP 405 when
+     * the method is not POST.
+     *
+     * Previously this method called `_json_out` (which only QUEUES output
+     * via `$this->output->set_output()`) and then `return true` — leaving
+     * the calling endpoint to keep executing on a GET request. Combined
+     * with CodeIgniter's input class falling back to $_GET in many cases,
+     * any GET to a "POST-only" mutation endpoint would still run the
+     * mutation logic, with only `_require_role()` standing between the
+     * caller and a Firestore write.
+     *
+     * `json_error` (defined in MY_Controller) emits headers + body via
+     * raw `echo` and calls `exit`, so terminating through it is the
+     * cleanest fix and avoids any ambiguity about whether CI's output
+     * buffer was flushed.
      */
     private function _require_post(): bool
     {
         if ($this->input->method() !== 'post') {
-            $this->output->set_status_header(405);
-            $this->_json_out(['status' => 'error', 'message' => 'Method not allowed. Use POST.']);
+            $this->json_error('Method not allowed. Use POST.', 405);
+            // Unreachable — json_error() exits. The `return true` below
+            // exists purely to keep the boolean signature for any caller
+            // that did `if ($this->_require_post()) { ... }`; in practice
+            // every existing caller ignores the return value.
         }
         return true;
     }
@@ -72,6 +88,32 @@ class Fees extends MY_Controller
     /**
      * Validate and sanitize receipt number. If invalid/missing/duplicate, generate new.
      */
+    /**
+     * Phase 1.X (2026-05-09) — days_overdue helper for the defaulter
+     * report. feeDefaulters stores `unpaidMonths` as an array of month
+     * names ("April", "May"...). Convert the oldest unpaid month + the
+     * Indian academic session ("2026-27" → April 2026 ... March 2027)
+     * to days since the assumed due date (10th of that month). Used to
+     * power aging buckets + overdue filter pills + per-row badges.
+     */
+    private function _monthNameToDaysOverdue(string $monthName, string $sessionYear): int
+    {
+        static $monthMap = [
+            'April'=>4, 'May'=>5, 'June'=>6, 'July'=>7, 'August'=>8,
+            'September'=>9, 'October'=>10, 'November'=>11, 'December'=>12,
+            'January'=>1, 'February'=>2, 'March'=>3,
+        ];
+        $m = $monthMap[$monthName] ?? 0;
+        if ($m === 0) return 0;
+        $startYear = (int) substr($sessionYear, 0, 4);
+        if ($startYear === 0) return 0;
+        // Indian academic year: April YYYY → March (YYYY+1)
+        $year  = ($m >= 4) ? $startYear : ($startYear + 1);
+        $dueTs = strtotime(sprintf('%04d-%02d-10', $year, $m)); // assume 10th due
+        if ($dueTs === false) return 0;
+        return max(0, (int) floor((time() - $dueTs) / 86400));
+    }
+
     private function _validateReceiptNo($receiptNo): string
     {
         $receiptNo = trim((string)($receiptNo ?? ''));
@@ -389,72 +431,73 @@ class Fees extends MY_Controller
         $startAfterSid = trim($this->input->get('startAfterSid') ?? '');
         $schoolFs     = $this->fs->schoolId();
 
-        // Phase 5b — studentFeeSummary is the PRIMARY source. It carries
-        // totalPaid + lastPaymentDate + lastReceiptNo (previously returned
-        // as 0 / empty). Falls back to the Phase 3 feeDefaulters path if
-        // the summary collection is missing or the query fails (e.g.,
-        // backfill hasn't been run yet).
-        //
-        // Ordering: totalBalance DESC — requires the composite index
-        // (schoolId, session, totalBalance DESC) added this phase.
-        $whereSummary = [
+        // Phase 1.X (2026-05-09) — flipped projection priority.
+        // Was: studentFeeSummary primary, feeDefaulters fallback only
+        //   when summary was COMPLETELY empty. studentFeeSummary is
+        //   event-sourced (Fee_summary_writer fires only on receipt
+        //   write), so for schools with low payment activity the
+        //   summary is sparse — at SCH_D94FE8F7AD it had 1 doc out of
+        //   12 active defaulters, hiding 11/12 from the admin report.
+        // Now: feeDefaulters is PRIMARY (100%-populated post-Phase 3D
+        //   admission-side trigger + one-shot backfill).
+        //   studentFeeSummary is read separately and used to ENRICH
+        //   each row with totalPaid + lastPaymentDate + lastReceiptNo
+        //   when present. Pagination cursor + filters preserved.
+        $whereDefaulters = [
             ['schoolId', '==', $schoolFs],
             ['session',  '==', $sy],
         ];
         if ($filterClass !== '' && $filterSec !== '') {
-            // Narrower index — (schoolId, session, className, section, totalBalance DESC)
-            $whereSummary[] = ['className', '==', $filterClass];
-            $whereSummary[] = ['section',   '==', $filterSec];
+            $whereDefaulters[] = ['className', '==', $filterClass];
+            $whereDefaulters[] = ['section',   '==', $filterSec];
         }
 
+        // Note on pagination: the Firebase wrapper exposes
+        // firestoreQuery() (orderBy + limit, no startAfter cursor) but
+        // NOT firestoreQueryPaginated(). Cursor pagination is therefore
+        // deferred — for schools < 500 active defaulters this single
+        // fetch returns the full set. Large-cohort pagination is
+        // tracked as the Fix #4 deferred item.
         $rows        = [];
-        $sourceUsed  = 'studentFeeSummary';
-        $cursorValue = $startAfterSid;
+        $sourceUsed  = 'feeDefaulters';
         try {
-            $rows = $this->firebase->firestoreQueryPaginated(
-                'studentFeeSummary',
-                $whereSummary,
-                'totalBalance',    // orderBy
+            $rows = $this->firebase->firestoreQuery(
+                'feeDefaulters',
+                $whereDefaulters,
+                'totalDues',
                 'DESC',
-                // Over-fetch by 2x so a page full of paid rows still
-                // yields `limit` defaulters after the in-memory filter.
-                min(500, $limit * 2),
-                $cursorValue
+                min(500, $limit * 2)
             );
         } catch (\Throwable $e) {
-            log_message('warning', "ID_GEN_INTEGRATION get_defaulter_data studentFeeSummary query failed — falling back to feeDefaulters: " . $e->getMessage());
-            $rows = [];
+            log_message('warning', "get_defaulter_data feeDefaulters query failed — trying studentFeeSummary: " . $e->getMessage());
+            try {
+                $rows = $this->firebase->firestoreQuery(
+                    'studentFeeSummary', $whereDefaulters, 'totalBalance', 'DESC',
+                    min(500, $limit * 2)
+                );
+                $sourceUsed = 'studentFeeSummary_fallback';
+            } catch (\Throwable $e2) {
+                log_message('error', "get_defaulter_data summary fallback also failed: " . $e2->getMessage());
+                $rows = $this->firebase->firestoreQuery('feeDefaulters', $whereDefaulters);
+                $sourceUsed = 'feeDefaulters_unsorted';
+            }
         }
 
-        // Fallback: if the summary query returned nothing AND we're on
-        // the first page, treat as "summaries not populated yet" and
-        // fall back to feeDefaulters (the Phase 3 path). This keeps the
-        // endpoint working while an operator runs backfill_fee_summaries.
-        if (empty($rows) && $startAfterSid === '') {
-            log_message('info', "get_defaulter_data fallback feeDefaulters (summary empty) school={$schoolFs}");
-            $sourceUsed = 'feeDefaulters_fallback';
-            $whereFallback = [
+        // Build studentFeeSummary enrichment map. Best-effort — if this
+        // probe fails, rows still render with totalPaid=0 / no lastPayment
+        // (same as the Phase 3 fallback branch did before this fix).
+        $summaryMap = [];
+        try {
+            $summaryRows = $this->firebase->firestoreQuery('studentFeeSummary', [
                 ['schoolId', '==', $schoolFs],
                 ['session',  '==', $sy],
-            ];
-            if ($filterClass !== '' && $filterSec !== '') {
-                $whereFallback[] = ['className', '==', $filterClass];
-                $whereFallback[] = ['section',   '==', $filterSec];
+            ], null, 'ASC', 500);
+            foreach ((array) $summaryRows as $sr) {
+                $sd  = $sr['data'] ?? $sr;
+                $sid = (string) ($sd['studentId'] ?? '');
+                if ($sid !== '') $summaryMap[$sid] = $sd;
             }
-            try {
-                $rows = $this->firebase->firestoreQueryPaginated(
-                    'feeDefaulters',
-                    $whereFallback,
-                    'totalDues',
-                    'DESC',
-                    $limit,
-                    $cursorValue
-                );
-            } catch (\Throwable $e) {
-                log_message('error', "get_defaulter_data fallback feeDefaulters also failed: " . $e->getMessage());
-                $rows = $this->firebase->firestoreQuery('feeDefaulters', $whereFallback);
-            }
-        }
+        } catch (\Throwable $_) { /* enrichment best-effort */ }
 
         $defaulters = [];
         $lastSid    = '';
@@ -478,24 +521,45 @@ class Fees extends MY_Controller
             $unpaidMonths = is_array($d['unpaidMonths'] ?? null) ? $d['unpaidMonths'] : [];
             $oldestUnpaid = (string) ($unpaidMonths[0] ?? '');
 
+            // Phase 1.X (2026-05-09) — real days_overdue computation.
+            // Was hardcoded to 0 (TODO from a previous phase); broke
+            // aging buckets, overdue filter pills, and per-row badges.
+            $daysOverdue = $this->_monthNameToDaysOverdue($oldestUnpaid, $sy);
+
             $lastSid = (string) ($d['studentId'] ?? $r['id'] ?? '');
+            $sumDoc  = $summaryMap[$lastSid] ?? null;
+
             $defaulters[] = [
                 'student_id'        => $lastSid,
                 'student_name'      => (string) ($d['studentName'] ?? ''),
                 'class'             => $studentClass,
                 'section'           => $studentSec,
                 'total_due'         => round((float) ($d['totalDemanded']  ?? $d['totalDues'] ?? $balance), 2),
-                // Phase 5b — totalPaid, lastPaymentDate, lastReceiptNo
-                // are now populated when primary source is used. Zero
-                // in the feeDefaulters fallback branch (same behaviour
-                // as Phase 3).
-                'total_paid'        => round((float) ($d['totalCollected'] ?? 0), 2),
+                // Enrich totalPaid / lastPaymentDate / lastReceiptNo
+                // from studentFeeSummary when available; otherwise pull
+                // from feeDefaulters' own fields (which Phase 3D
+                // backfill populates via Fee_defaulter_check::isDefaulter
+                // -> updateDefaulterStatus). Falls back to 0 / '' if
+                // neither source has them.
+                'total_paid'        => round((float) (
+                    is_array($sumDoc) && isset($sumDoc['totalCollected'])
+                        ? $sumDoc['totalCollected']
+                        : ($d['totalCollected'] ?? $d['totalPaid'] ?? 0)
+                ), 2),
                 'balance'           => round($balance, 2),
                 'unpaid_months'     => count($unpaidMonths),
                 'oldest_unpaid'     => $oldestUnpaid,
-                'days_overdue'      => 0, // requires a per-demand lookup; Student Ledger shows it
-                'last_payment_date' => (string) ($d['lastPaymentDate'] ?? ''),
-                'last_receipt_no'   => (string) ($d['lastReceiptNo']   ?? ''),
+                'days_overdue'      => $daysOverdue,
+                'last_payment_date' => (string) (
+                    is_array($sumDoc) && isset($sumDoc['lastPaymentDate'])
+                        ? $sumDoc['lastPaymentDate']
+                        : ($d['lastPaymentDate'] ?? '')
+                ),
+                'last_receipt_no'   => (string) (
+                    is_array($sumDoc) && isset($sumDoc['lastReceiptNo'])
+                        ? $sumDoc['lastReceiptNo']
+                        : ($d['lastReceiptNo'] ?? '')
+                ),
                 'status'            => (string) ($d['status'] ?? ($balance > 0 ? 'partial' : 'paid')),
             ];
             if (count($defaulters) >= $limit) break;
@@ -555,7 +619,40 @@ class Fees extends MY_Controller
             $summaryRows = [];
         }
 
-        if (!empty($summaryRows)) {
+        // Phase 1.X (2026-05-09) — summary-completeness check.
+        // classFeeSummary is event-sourced (Fee_summary_writer fires
+        // only on receipt write). For schools with active demands but
+        // low payment activity it stays sparse, materially under-
+        // reporting class + monthly aggregates on the analytics
+        // dashboard. Detect this by comparing summary row count to
+        // distinct active-section count from feeDefaulters (which
+        // Phase 3D fixed to be 100%-populated). If summary has fewer
+        // rows than active sections, fall back to the canonical
+        // feeDemands chunked scan.
+        $summaryCount  = count((array) $summaryRows);
+        $summaryUsable = $summaryCount > 0;
+        if ($summaryUsable) {
+            try {
+                $defs = $this->firebase->firestoreQuery('feeDefaulters', [
+                    ['schoolId', '==', $schoolFs],
+                    ['session',  '==', $sy],
+                ], null, 'ASC', 100);
+                $activeSections = [];
+                foreach ((array) $defs as $rdef) {
+                    $dd = $rdef['data'] ?? $rdef;
+                    if (!is_array($dd)) continue;
+                    $sec = ($dd['className'] ?? '') . '|' . ($dd['section'] ?? '');
+                    if ($sec !== '|') $activeSections[$sec] = true;
+                }
+                if (count($activeSections) > 0 && $summaryCount < count($activeSections)) {
+                    log_message('info', "get_collection_analytics: classFeeSummary count={$summaryCount} < active sections=" . count($activeSections) . " — falling back to feeDemands scan");
+                    $summaryUsable = false;
+                    $sourceUsed    = 'feeDemands_fallback_incomplete_summary';
+                }
+            } catch (\Throwable $_) { /* on probe failure, trust summary */ }
+        }
+
+        if ($summaryUsable) {
             // ── FAST PATH: aggregate pre-computed cells ──────────────
             foreach ((array) $summaryRows as $r) {
                 $d = $r['data'] ?? $r;
@@ -593,29 +690,38 @@ class Fees extends MY_Controller
             }
             $totalScanned = count($summaryRows);
         } else {
-            // ── FALLBACK: Phase 3 chunked scan of feeDemands ──────────
-            log_message('info', "get_collection_analytics fallback feeDemands scan (summary empty) school={$schoolFs}");
-            $sourceUsed = 'feeDemands_fallback';
-            $pageSize = 1000;
-            $maxChunks = 100;
-            $cursor    = '';
-            $chunkNo   = 0;
-            while ($chunkNo < $maxChunks) {
-                try {
-                    $rows = $this->firebase->firestoreQueryPaginated(
-                        'feeDemands',
-                        [
-                            ['schoolId', '==', $schoolFs],
-                            ['session',  '==', $sy],
-                        ],
-                        'studentId', 'ASC', $pageSize, $cursor
-                    );
-                } catch (\Throwable $e) {
-                    log_message('error', "get_collection_analytics fallback chunked read failed: " . $e->getMessage());
-                    break;
-                }
-                $rows = (array) $rows;
-                if (empty($rows)) break;
+            // ── FALLBACK: scan of feeDemands ────────────────────────
+            // Phase 1.X (2026-05-09) — replaced firestoreQueryPaginated
+            // (which doesn't exist on the Firebase wrapper) with the
+            // single-page firestoreQuery + a high limit. For schools
+            // with thousands of demand rows this caps at 5000 — adequate
+            // for any realistic school size (12 students × 12 months ×
+            // ~6 fee heads = ~864 rows). Cursor pagination here remains
+            // deferred along with Fix #4 of the audit.
+            log_message('info', "get_collection_analytics fallback feeDemands scan school={$schoolFs}");
+            if (!isset($sourceUsed) || $sourceUsed !== 'feeDemands_fallback_incomplete_summary') {
+                $sourceUsed = 'feeDemands_fallback';
+            }
+            $rows = [];
+            try {
+                $rows = $this->firebase->firestoreQuery(
+                    'feeDemands',
+                    [
+                        ['schoolId', '==', $schoolFs],
+                        ['session',  '==', $sy],
+                    ],
+                    null,    // no orderBy — full-set scan
+                    'ASC',
+                    5000     // hard cap; large enough for realistic schools
+                );
+            } catch (\Throwable $e) {
+                log_message('error', "get_collection_analytics fallback feeDemands scan failed: " . $e->getMessage());
+                $rows = [];
+            }
+            $rows = (array) $rows;
+            $totalScanned = count($rows);
+            if (count($rows) >= 5000) $truncated = true;
+            if (!empty($rows)) {
                 foreach ($rows as $r) {
                     $d = $r['data'] ?? $r;
                     if (!is_array($d)) continue;
@@ -640,13 +746,8 @@ class Fees extends MY_Controller
                         $byMonth[$pk]['collected'] += $paid;
                     }
                     $byStatus[$st] = ($byStatus[$st] ?? 0) + 1;
-                    $cursor = (string) ($r['id'] ?? $sid);
                 }
-                $totalScanned += count($rows);
-                $chunkNo++;
-                if (count($rows) < $pageSize) break;
             }
-            if ($chunkNo >= $maxChunks) $truncated = true;
             // Fallback branch keeps the Phase 3 shape (students is an
             // array of unique sids); normalise to int count below.
             foreach ($byClass as $cls => $data) {
@@ -740,6 +841,21 @@ class Fees extends MY_Controller
             $rc = $r['data'] ?? $r;
             if (!is_array($rc)) continue;
             $rc['_key'] = $r['id'] ?? ($rc['receiptKey'] ?? '');
+            // Phase 1.X (2026-05-09) — dual-emit snake_case aliases for the
+            // legacy student_ledger view. Firestore feeReceiptAllocations
+            // canonical schema is camelCase (receiptNo, totalAmount,
+            // paymentMode, createdAt); the view at student_ledger.php
+            // reads snake_case. Without this normalization the Payment
+            // History table renders empty Receipt #, Amount, and Mode
+            // columns + receipts come back in arbitrary order (sort below
+            // operates on the missing created_at key).
+            // Mirrors the dual-emit pattern already in
+            // Fee_management::fetch_refunds(). isset() guards prevent
+            // overwriting any pre-existing snake_case fields.
+            if (!isset($rc['receipt_no']))   $rc['receipt_no']   = (string) ($rc['receiptNo']    ?? '');
+            if (!isset($rc['total_amount'])) $rc['total_amount'] = (float)  ($rc['totalAmount']  ?? 0);
+            if (!isset($rc['payment_mode'])) $rc['payment_mode'] = (string) ($rc['paymentMode']  ?? '');
+            if (!isset($rc['created_at']))   $rc['created_at']   = (string) ($rc['createdAt']    ?? $rc['updatedAt'] ?? '');
             $receipts[] = $rc;
         }
 
@@ -869,18 +985,48 @@ class Fees extends MY_Controller
             // "Unknown" so the UI shows something sensible.
             $cls = (string) ($d['class'] ?? $d['className'] ?? '');
             if ($cls === '') $cls = 'Unknown';
+            // Phase 1.X (2026-05-09) — section split-out. Aggregation
+            // key now class|section so 9A and 9B don't collapse into
+            // one row. Empty section (legacy demand without one) keeps
+            // the row visible under the class.
+            $sec = (string) ($d['section'] ?? '');
+            $bucketKey = $cls . '|' . $sec;
             $sid  = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
             // Skip demands whose student is no longer Active.
             if ($hasActiveFilter && $sid !== '' && !isset($activeIds[$sid])) continue;
-            $net  = (float) ($d['net_amount'] ?? 0);
-            $paid = (float) ($d['paid_amount'] ?? 0);
-            $bal  = (float) ($d['balance'] ?? max(0, $net - $paid));
 
-            if (!isset($byClass[$cls])) $byClass[$cls] = ['collected' => 0, 'due' => 0, 'students' => []];
-            $byClass[$cls]['collected'] += $paid;
-            $byClass[$cls]['due']       += $bal;
+            // Phase 1.X (2026-05-09) — camelCase-first reads. Direct
+            // firestoreQuery on feeDemands does NOT pass through
+            // Fee_firestore_txn::normalizeDemandDoc, so the snake_case
+            // aliases (paid_amount, net_amount) can be stale on docs
+            // where the post-Phase-6b camelCase write didn't refresh
+            // them. Reading camelCase first gives the canonical value;
+            // snake remains as a fallback for any pre-migration row.
+            $net  = (float) ($d['netAmount']   ?? $d['net_amount']  ?? 0);
+            $paid = (float) ($d['paidAmount']  ?? $d['paid_amount'] ?? 0);
+            $bal  = (float) ($d['balance']     ?? max(0, $net - $paid));
+
+            if (!isset($byClass[$bucketKey])) $byClass[$bucketKey] = [
+                'class' => $cls, 'section' => $sec,
+                'collected' => 0, 'due' => 0, 'students' => [],
+            ];
+            $byClass[$bucketKey]['collected'] += $paid;
+            $byClass[$bucketKey]['due']       += $bal;
             if ($sid !== '') {
-                $byClass[$cls]['students'][$sid] = ($byClass[$cls]['students'][$sid] ?? false) || ($paid > 0);
+                // Phase 1.X (2026-05-09) — defaulter definition aligned
+                // with defaulter_report. Previously a student counted
+                // as "paid" if any single demand had paid_amount > 0 —
+                // a partial payer (STU0001: Rs 2 of Rs 36,600) was hidden
+                // from the dashboard's Defaulters stat while still
+                // appearing on defaulter_report (definition: balance>0).
+                // Now both pages agree: a student is "paid" iff every
+                // demand they have is zero-balance. AND across demands.
+                // Starts with `true` so the first demand we see for a
+                // student sets the flag, then subsequent demands can
+                // only flip it to false (not back to true).
+                $thisDemandClear = ($bal <= 0.005);
+                $prevFlag = $byClass[$bucketKey]['students'][$sid] ?? true;
+                $byClass[$bucketKey]['students'][$sid] = $prevFlag && $thisDemandClear;
                 $studentSet[$sid] = true;
             }
         }
@@ -890,14 +1036,19 @@ class Fees extends MY_Controller
         $paidStudents    = 0;
         $totalDue        = 0;
 
-        foreach ($byClass as $cls => $data) {
+        foreach ($byClass as $bucketKey => $data) {
             $stuCount = count($data['students']);
             $stuPaid  = count(array_filter($data['students']));
             $paidStudents += $stuPaid;
             $totalDue     += $data['due'];
             $totalThisCls = $data['collected'] + $data['due']; // demanded
+            // Phase 1.X (2026-05-09) — emit canonical `class` + `section`
+            // separately. View renders combined "9th — A" but underlying
+            // data stays canonical. Bucket key uses class|section so
+            // 9A and 9B remain distinct rows.
             $classCollection[] = [
-                'class'        => $cls,
+                'class'        => (string) ($data['class']   ?? ''),
+                'section'      => (string) ($data['section'] ?? ''),
                 'students'     => $stuCount,
                 'collected'    => round($data['collected'], 2),
                 'due'          => round($data['due'], 2),
@@ -913,7 +1064,12 @@ class Fees extends MY_Controller
                 'students_paid_pct' => $stuCount > 0 ? round(($stuPaid / $stuCount) * 100) : 0,
             ];
         }
-        usort($classCollection, fn($a, $b) => strnatcmp($a['class'], $b['class']));
+        // Sort by class (natural) then section, so 9th-A precedes 9th-B,
+        // both before 10th-A.
+        usort($classCollection, function ($a, $b) {
+            $c = strnatcmp($a['class'], $b['class']);
+            return $c !== 0 ? $c : strnatcmp($a['section'], $b['section']);
+        });
 
         $thisMonthName       = date('F');
         $thisMonthCollection = $monthlyCollection[$thisMonthName] ?? 0;
@@ -1386,11 +1542,30 @@ class Fees extends MY_Controller
         if ($cache !== null) return $cache;
         $cache = [];
         try {
-            $rows = $this->fs->schoolWhere('students', [['status', '==', 'Active']]);
+            // Phase 1.X (2026-05-09) — case-insensitive status match.
+            // Some students were imported / created with status="active"
+            // (lowercase) while the canonical write convention is
+            // "Active" (TitleCase). Firestore equality is case-
+            // sensitive, so a strict `status == 'Active'` query dropped
+            // the lowercase rows entirely — the dashboard then under-
+            // counted Total Due / total students because demand rows
+            // for those students were filtered out as "inactive". Load
+            // the full school roster and filter in PHP. Read cost for
+            // typical school sizes (12-1000 students) is negligible.
+            //
+            // Inactive states explicitly excluded: TC, Withdrawn,
+            // Inactive, Suspended (case-insensitive match). Empty
+            // status defaults to Active (legacy data without the field).
+            $rows = $this->fs->schoolWhere('students', []);
+            $excluded = ['tc', 'withdrawn', 'inactive', 'suspended'];
             foreach ((array) $rows as $r) {
                 $d   = $r['data'] ?? $r;
                 $sid = (string) ($d['studentId'] ?? $d['userId'] ?? '');
-                if ($sid !== '') $cache[$sid] = true;
+                if ($sid === '') continue;
+                $st  = strtolower(trim((string) ($d['status'] ?? '')));
+                if ($st === '' || !in_array($st, $excluded, true)) {
+                    $cache[$sid] = true;
+                }
             }
         } catch (\Exception $e) {
             log_message('error', '_activeStudentIds query failed: ' . $e->getMessage());
@@ -1559,12 +1734,18 @@ class Fees extends MY_Controller
                 $studentName = is_array($stu) ? ((string) ($stu['name'] ?? $stu['Name'] ?? '')) : '';
                 $defaulterStatus = $this->feeDefaulter->updateDefaulterStatus($userId);
                 $this->fsSync->syncDefaulterStatus($userId, $defaulterStatus, $studentName, $class, $section);
-            } catch (Exception $e) {
+            } catch (\Throwable $e) {
+                // \Throwable (not \Exception) so PHP `Error` (e.g.,
+                // undefined-method on a Firebase wrapper) is also caught.
+                // Same reasoning as the fetch_fee_receipts fix earlier.
                 log_message('error', "submit_discount: defaulter sync failed for {$userId}: " . $e->getMessage());
             }
 
             $this->_json_out(['success' => true, 'newTotalDiscount' => $new]);
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
+            // Outer guard — catches both \Exception and \Error so a
+            // typo or undefined-method in any nested call surfaces as a
+            // structured JSON 500 instead of a CodeIgniter white-screen.
             log_message('error', 'submit_discount: ' . $e->getMessage());
             $this->_json_out(['success' => false, 'message' => 'Internal server error.']);
         }
@@ -1596,21 +1777,22 @@ class Fees extends MY_Controller
         if (!$userId) { $this->output->set_output(json_encode([])); return; }
         $userId = $this->safe_path_segment($userId, 'userId');
 
-        // Phase 6 — cursor pagination. Default 100 / max 500. Cursor is
-        // the previous page's last createdAt ISO-8601 string (receipts
-        // are naturally ordered by createdAt DESC in the modal view).
-        // At a per-student scale, pagination rarely kicks in (typical
-        // student has ≤60 receipts lifetime), but guards against the
-        // edge case of long-tenured students accumulating hundreds.
-        $limit  = max(1, min(500, (int) ($this->input->post('limit') ?? 100)));
+        // Phase 6 — cursor pagination was originally planned via
+        // firestoreQueryPaginated, but that method doesn't exist on the
+        // Firebase wrapper. Same fix as get_collection_analytics
+        // (line ~691): single-page firestoreQuery with a high limit.
+        // Per-student receipts max out around a few hundred lifetime, so
+        // a 500-row cap is comfortably above any realistic scenario.
+        $limit  = max(1, min(500, (int) ($this->input->post('limit') ?? 500)));
+        // Cursor is read for forward-compat but ignored — see above.
         $cursor = trim((string) ($this->input->post('cursor') ?? ''));
+        unset($cursor);
 
         // Session A: query feeReceipts collection directly. studentName + class
         // are denormalised into each receipt doc at write time, so we don't
-        // need a separate profile read. Over-fetch by 1 to detect has_more
-        // without a second query.
+        // need a separate profile read.
         try {
-            $rows = $this->firebase->firestoreQueryPaginated(
+            $rows = $this->firebase->firestoreQuery(
                 'feeReceipts',
                 [
                     ['schoolId',  '==', $this->fs->schoolId()],
@@ -1618,10 +1800,13 @@ class Fees extends MY_Controller
                 ],
                 'createdAt',
                 'DESC',
-                $limit + 1,
-                $cursor !== '' ? $cursor : null
+                $limit
             );
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            // Use Throwable not Exception — `Call to undefined method`
+            // throws \Error which Exception doesn't catch. Returning []
+            // here means the modal renders "No payments yet" instead of
+            // "Couldn't load history" on a server-side blip.
             log_message('error', "fetch_fee_receipts failed for {$userId}: " . $e->getMessage());
             $this->output->set_output(json_encode([]));
             return;
@@ -2431,6 +2616,19 @@ class Fees extends MY_Controller
     {
         $this->_require_post();
         $this->_require_role(self::COUNTER_ROLES, 'submit_fees');
+        // R1.1 freeze enforcement — block counter collections on a
+        // session that's closed for year-end rollover. The admin UI
+        // surfaces the rollover state separately so this guard is the
+        // last-line defence against a stale tab still posting.
+        $this->_abort_if_session_frozen();
+        // L1.0 period-lock enforcement — block counter collections
+        // when today's date falls within a closed accounting period.
+        // Sits at the gate so the receipt + demand + journal cascade
+        // never starts; prevents the deferred-shutdown split-brain
+        // scenario where the receipt lands but the journal post is
+        // rejected by Operations_accounting::forceValidate() inside
+        // register_shutdown_function.
+        $this->_abort_if_period_locked();
         $this->output->set_content_type('application/json');
 
         $userIdRaw  = trim((string) $this->input->post('userId'));
@@ -2465,6 +2663,10 @@ class Fees extends MY_Controller
     // ══════════════════════════════════════════════════════════════════
     public function void_test_receipt()
     {
+        // Destructive endpoint — deletes feeReceipts, feeReceiptIndex,
+        // feeLocks etc. Must reject GET so a casual link-tap or accidental
+        // `curl` cannot erase a receipt. Stage A hardening 2026-05-10.
+        $this->_require_post();
         $this->_require_role(self::MANAGE_ROLES, 'void_test_receipt');
 
         $receiptNo = trim((string) $this->input->post('receipt_no'));
@@ -2915,9 +3117,14 @@ class Fees extends MY_Controller
         $summary  = ['firestore' => [], 'rtdb' => []];
 
         // ── Firestore: per-student docs ──────────────────────────────
+        // Stage M1A.3 cleanup 2026-05-10: removed the
+        // 'studentAdvanceBalances' entry. Phase 9 deleted the wallet/
+        // advance-balance subsystem, so the deletion call was always
+        // a no-op (the collection has no live writers). Kept the path
+        // string out of this dictionary so it doesn't advertise to
+        // future maintainers that the collection is alive.
         $fsCollections = [
             'feeDefaulters'           => "{$schoolFs}_{$this->session_year}_{$userId}",
-            'studentAdvanceBalances'  => "{$schoolFs}_{$userId}",
             'studentDiscounts'        => "{$schoolFs}_{$userId}",
             'feeLocks'                => "{$schoolFs}_{$userId}",
         ];
@@ -5722,23 +5929,42 @@ class Fees extends MY_Controller
      * action name, and any action-specific payload. Never throws.
      * Doc id is a sortable timestamp so operator timeline scans order
      * naturally in the Firebase console.
+     *
+     * Phase 2B (2026-05-08) — emit canonical Shape A matching
+     * Fee_audit_logger output. Pre-2B this method emitted a divergent
+     * shape (actor/at/payload) into the same collection, creating a
+     * dual-shape contract any future audit-history UI would have to
+     * branch on. Zero Shape B docs existed in production at migration
+     * time (verified live), so the rename is a clean cutover with no
+     * backfill needed. The Shape B writer is fully retired here.
      */
     private function _auditQueueAction(string $action, array $payload): void
     {
         try {
             $schoolId = $this->fs->schoolId();
             $session  = $this->session_year;
-            $docId = "{$schoolId}_" . date('YmdHis') . '_' . bin2hex(random_bytes(3)) . "_{$action}";
-            $this->firebase->firestoreSet('feeAuditLogs', $docId, [
-                'schoolId'  => $schoolId,
-                'session'   => $session,
-                'action'    => $action,
-                'actor'     => $this->admin_id,
-                'actorName' => $this->admin_name,
-                'at'        => date('c'),
-                'ip'        => $this->input->ip_address(),
-                'ua'        => substr((string) $this->input->user_agent(), 0, 200),
-                'payload'   => $payload,
+            $auditId  = 'AUD_' . date('YmdHis') . '_QUEUE_' . substr(bin2hex(random_bytes(3)), 0, 6);
+            $this->firebase->firestoreSet('feeAuditLogs', $auditId, [
+                'auditId'     => $auditId,
+                'schoolId'    => $schoolId,
+                'session'     => $session,
+                'action'      => 'create',                            // Shape A canon — queue audits are emit-only
+                'entity'      => 'queue',
+                'entityId'    => $action,                             // e.g. 'bulk_retry_failed', 'job_retry'
+                'before'      => [],                                  // queue ops have no prior state
+                'after'       => $payload,
+                'changedKeys' => array_values(array_keys($payload)),
+                'performedBy' => (string) $this->admin_id,
+                'source'      => 'queue_dashboard',
+                'reason'      => (string) $this->admin_name,
+                'timestamp'   => date('c'),
+                // Diagnostic context preserved as additive Shape A side
+                // fields (canonical camelCase). The legacy Shape B fields
+                // `actor`/`at`/`ip`/`ua`/`payload` are intentionally not
+                // emitted — Phase 2B retires them outright since zero
+                // readers consume them.
+                'actorIp'     => $this->input->ip_address(),
+                'actorUa'     => substr((string) $this->input->user_agent(), 0, 200),
             ]);
             log_message('error', "FEE_AUDIT {$action} actor={$this->admin_id} school={$schoolId}");
         } catch (\Throwable $e) {
@@ -6969,11 +7195,20 @@ class Fees extends MY_Controller
     {
         $this->_require_role(self::MANAGE_ROLES);
 
-        $schoolFs = $this->fs->schoolId();
-        $sy       = $this->session_year;
+        $schoolFs   = $this->fs->schoolId();
+        $sy         = $this->session_year;
+        // R1.2 — preview is per-target. The UI passes new_session so the
+        // dry-run can verify that target session exists and isn't already
+        // populated. Backwards compat: if not passed, target-specific
+        // checks are skipped (legacy behaviour preserved).
+        $newSession = trim((string) ($this->input->get('new_session') ?? $this->input->post('new_session') ?? ''));
 
         try {
-            // Check for in-flight locks (stale receipts still "processing")
+            // Read-only contract — this method must NEVER mutate. Used
+            // by the admin "Preview rollover" UI to surface blockers
+            // before the irreversible execute path runs.
+
+            // ── Blocker 1: in-flight payment locks ─────────────────────
             $inFlight = [];
             $lockRows = $this->firebase->firestoreQuery('feeLocks', [['schoolId','==',$schoolFs]]);
             foreach ((array) $lockRows as $r) {
@@ -6987,17 +7222,90 @@ class Fees extends MY_Controller
                 }
             }
 
-            // Carry-forward candidates: students with unpaid demand balance.
+            // ── Blocker 2: created-but-unverified online orders ────────
+            // R1.2 addition: a parent who tapped Pay 60 seconds ago has
+            // a feeOnlineOrders doc with status='created' and Razorpay
+            // capture pending. Rolling over now would leave that
+            // payment orphaned (verify-side has no demand to allocate
+            // against). Treat same severity as feeLocks.
+            $openOrders = [];
+            try {
+                $orderRows = $this->firebase->firestoreQuery('feeOnlineOrders', [
+                    ['schoolId','==',$schoolFs],
+                    ['status','==','created'],
+                ]);
+                foreach ((array) $orderRows as $r) {
+                    $d = $r['data'] ?? $r;
+                    $openOrders[] = [
+                        'type'       => 'order',
+                        'order_id'   => $d['orderId'] ?? ($r['id'] ?? ''),
+                        'student_id' => $d['studentId'] ?? '',
+                        'amount'     => (float) ($d['amount'] ?? 0),
+                    ];
+                }
+            } catch (\Throwable $e) {
+                log_message('warning', "year_rollover_prepare: open-orders read failed (non-fatal): " . $e->getMessage());
+            }
+
+            // ── Blocker 3: source session already frozen ───────────────
+            // Re-running rollover on a frozen session is an "are you
+            // sure?" condition — surface it as a warning so the UI can
+            // show "ran X hours ago by Y; re-running will overwrite".
+            $alreadyFrozen = false;
+            $frozenAt      = '';
+            $frozenBy      = '';
+            try {
+                $frozenDoc = $this->firebase->firestoreGet('feeSettings', "{$schoolFs}_{$sy}_rollover");
+                if (is_array($frozenDoc) && (string) ($frozenDoc['status'] ?? '') === 'frozen') {
+                    $alreadyFrozen = true;
+                    $frozenAt      = (string) ($frozenDoc['frozen_at'] ?? '');
+                    $frozenBy      = (string) ($frozenDoc['frozen_by'] ?? '');
+                }
+            } catch (\Throwable $_) { /* best-effort */ }
+
+            // ── Blocker 4: target session sanity ───────────────────────
+            $targetExists = null;     // null = not asked
+            $targetWarning = '';
+            if ($newSession !== '') {
+                if (!preg_match('/^\d{4}-\d{2}$/', $newSession)) {
+                    $this->_json_out(['status' => 'error', 'message' => "Target session '{$newSession}' must be in YYYY-YY format."]);
+                    return;
+                }
+                if ($newSession === $sy) {
+                    $this->_json_out(['status' => 'error', 'message' => 'Source and target sessions must differ.']);
+                    return;
+                }
+                try {
+                    $schoolDoc = $this->fs->get('schools', $schoolFs);
+                    $sessions  = (is_array($schoolDoc['sessions'] ?? null))
+                        ? array_values(array_filter($schoolDoc['sessions'], 'is_string')) : [];
+                    $targetExists = in_array($newSession, $sessions, true);
+                    if (!$targetExists) {
+                        $targetWarning = "Target session '{$newSession}' is not yet in the sessions list. Add it via Settings → Sessions before executing rollover.";
+                    }
+                } catch (\Throwable $_) { /* best-effort */ }
+            }
+
+            // ── Carry-forward candidates: students with unpaid demand balance ──
             $demandRows = $this->firebase->firestoreQuery('feeDemands', [
                 ['schoolId','==',$schoolFs], ['session','==',$sy],
             ]);
             $byStudent  = [];
+            $byClass    = [];
             foreach ((array) $demandRows as $r) {
                 $d   = $r['data'] ?? $r;
                 $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
                 $bal = (float) ($d['balance'] ?? 0);
                 if ($sid !== '' && $bal > 0) {
-                    if (!isset($byStudent[$sid])) $byStudent[$sid] = ['dues' => 0, 'months' => []];
+                    if (!isset($byStudent[$sid])) {
+                        $byStudent[$sid] = [
+                            'dues'   => 0,
+                            'months' => [],
+                            'name'   => (string) ($d['studentName'] ?? ''),
+                            'class'  => (string) ($d['className']   ?? ''),
+                            'section'=> (string) ($d['section']     ?? ''),
+                        ];
+                    }
                     $byStudent[$sid]['dues'] += $bal;
                     $pk = $d['period_key'] ?? '';
                     if ($pk !== '') $byStudent[$sid]['months'][$pk] = true;
@@ -7009,23 +7317,64 @@ class Fees extends MY_Controller
             foreach ($byStudent as $sid => $info) {
                 $carryForward[] = [
                     'student_id'    => $sid,
+                    'student_name'  => $info['name'],
+                    'class'         => $info['class'],
+                    'section'       => $info['section'],
                     'dues'          => round($info['dues'], 2),
                     'unpaid_months' => array_keys($info['months']),
                 ];
                 $totalCarryForward += $info['dues'];
+
+                // Per-class roll-up — useful at-a-glance sanity check
+                // for the admin (e.g. "Class 10 has 15 carry-forwards
+                // — is that expected for board-exam year?").
+                $clsKey = trim($info['class'] . ' ' . $info['section']);
+                if ($clsKey === '') $clsKey = '(unassigned)';
+                if (!isset($byClass[$clsKey])) $byClass[$clsKey] = ['count' => 0, 'dues' => 0.0];
+                $byClass[$clsKey]['count']++;
+                $byClass[$clsKey]['dues'] += $info['dues'];
             }
 
+            // Top 10 dues — sorted desc. Lets admin spot anomalies
+            // (e.g. one student carrying ₹2 lakh because of a missing
+            // discount) before pulling the trigger.
+            usort($carryForward, fn($a, $b) => $b['dues'] <=> $a['dues']);
+            $topDues = array_slice($carryForward, 0, 10);
+            // Round per-class dues for transport-stable JSON.
+            $perClass = [];
+            foreach ($byClass as $k => $v) {
+                $perClass[] = ['class' => $k, 'count' => $v['count'], 'dues' => round($v['dues'], 2)];
+            }
+
+            $blockers = array_merge($inFlight, $openOrders);
+            $canProceed = count($blockers) === 0;
+            $blockReason = '';
+            if (count($inFlight) > 0)    $blockReason  = count($inFlight)    . ' in-flight payment lock(s). ';
+            if (count($openOrders) > 0)  $blockReason .= count($openOrders)  . ' unverified Razorpay order(s). ';
+            $blockReason = trim($blockReason ?: '');
+
             $this->_json_out([
-                'status'               => 'success',
-                'in_flight_payments'   => $inFlight,
-                'in_flight_count'      => count($inFlight),
-                'carry_forward'        => $carryForward,
-                'carry_forward_count'  => count($carryForward),
-                'total_carry_forward'  => round($totalCarryForward, 2),
-                'can_proceed'          => count($inFlight) === 0,
-                'block_reason'         => count($inFlight) > 0 ? 'In-flight payments must complete before rollover' : '',
+                'status'                => 'success',
+                'source_session'        => $sy,
+                'target_session'        => $newSession,
+                'target_in_session_list'=> $targetExists,
+                'target_warning'        => $targetWarning,
+                'already_frozen'        => $alreadyFrozen,
+                'frozen_at'             => $frozenAt,
+                'frozen_by'             => $frozenBy,
+                'in_flight_payments'    => $inFlight,
+                'in_flight_count'       => count($inFlight),
+                'open_orders'           => $openOrders,
+                'open_orders_count'     => count($openOrders),
+                'carry_forward'         => $carryForward,        // full list
+                'carry_forward_count'   => count($carryForward),
+                'total_carry_forward'   => round($totalCarryForward, 2),
+                'top_dues'              => $topDues,             // first 10
+                'per_class_breakdown'   => $perClass,
+                'can_proceed'           => $canProceed,
+                'block_reason'          => $canProceed ? '' : $blockReason,
             ]);
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             log_message('error', "year_rollover_prepare failed: " . $e->getMessage());
             $this->_json_out(['status' => 'error', 'message' => 'Failed to prepare rollover: ' . $e->getMessage()]);
         }
@@ -7043,10 +7392,68 @@ class Fees extends MY_Controller
         $schoolFs   = $this->fs->schoolId();
         $sy         = $this->session_year;
         $newSession = trim($this->input->post('new_session') ?? '');
+        $force      = (string) $this->input->post('force') === '1';
 
         if ($newSession === '') {
             $this->_json_out(['status' => 'error', 'message' => 'New session year is required.']);
             return;
+        }
+        if (!preg_match('/^\d{4}-\d{2}$/', $newSession)) {
+            $this->_json_out(['status' => 'error', 'message' => "New session must be in YYYY-YY format."]);
+            return;
+        }
+        if ($newSession === $sy) {
+            $this->_json_out(['status' => 'error', 'message' => 'Source and target sessions must differ.']);
+            return;
+        }
+
+        // R1.5 — Idempotency guard. Hash the (school, from, to) tuple.
+        // A duplicate execute within 24h returns the prior outcome
+        // instead of re-running the whole loop. `force=1` bypasses the
+        // guard for the rare admin-recovery case (e.g. a partial run
+        // on a large school that needs to be re-attempted).
+        $idempKey = 'rollover_' . md5("{$schoolFs}|{$sy}|{$newSession}");
+        if (!$force) {
+            try {
+                $prior = $this->firebase->firestoreGet('feeIdempotency', $idempKey);
+                if (is_array($prior)) {
+                    $startedAt = strtotime((string) ($prior['startedAt'] ?? '2000-01-01'));
+                    $age       = time() - $startedAt;
+                    $status    = (string) ($prior['status'] ?? '');
+                    if ($status === 'success' && $age < 86400) {
+                        $this->_json_out([
+                            'status'      => 'error',
+                            'code'        => 'ALREADY_RAN',
+                            'message'     => 'Rollover for this session pair was already completed within the last 24 hours. Use force=1 only if you intend to re-run.',
+                            'prior_run'   => $prior,
+                        ]);
+                        return;
+                    }
+                    if ($status === 'processing' && $age < 600) {
+                        $this->_json_out([
+                            'status'  => 'error',
+                            'code'    => 'IN_PROGRESS',
+                            'message' => 'A rollover for this session pair is currently running (started ' . round($age / 60, 1) . ' min ago). Wait for it to complete.',
+                        ]);
+                        return;
+                    }
+                }
+            } catch (\Throwable $_) { /* best-effort */ }
+        }
+
+        // Mark in-progress so a concurrent admin tab can't double-fire.
+        try {
+            $this->firebase->firestoreSet('feeIdempotency', $idempKey, [
+                'kind'        => 'year_rollover',
+                'schoolId'    => $schoolFs,
+                'fromSession' => $sy,
+                'toSession'   => $newSession,
+                'status'      => 'processing',
+                'startedAt'   => date('c'),
+                'startedBy'   => $this->admin_id ?? 'system',
+            ]);
+        } catch (\Throwable $e) {
+            log_message('warning', "year_rollover_execute: idempotency write failed (continuing): " . $e->getMessage());
         }
 
         try {
@@ -7108,6 +7515,32 @@ class Fees extends MY_Controller
                 $cfTotal += $info['dues'];
             }
 
+            // R1.5 — mark idempotency success so re-runs within 24h
+            // are short-circuited unless force=1.
+            try {
+                $this->firebase->firestoreSet('feeIdempotency', $idempKey, [
+                    'kind'                => 'year_rollover',
+                    'schoolId'            => $schoolFs,
+                    'fromSession'         => $sy,
+                    'toSession'           => $newSession,
+                    'status'              => 'success',
+                    'completedAt'         => date('c'),
+                    'completedBy'         => $this->admin_id ?? 'system',
+                    'carry_forward_count' => $cfCount,
+                    'carry_forward_total' => round($cfTotal, 2),
+                ]);
+            } catch (\Throwable $_) { /* non-fatal */ }
+
+            // R1.3 — durable audit log entry. Year rollover is a
+            // high-impact financial operation; a written record is
+            // mandatory for compliance and post-incident forensics.
+            log_audit(
+                'Fees',
+                'year_rollover_execute',
+                "{$sy}_to_{$newSession}",
+                "Rollover {$sy} → {$newSession}: {$cfCount} students, Rs. " . round($cfTotal, 2) . " carried forward."
+            );
+
             $this->_json_out([
                 'status'               => 'success',
                 'message'              => "{$cfCount} students with Rs. " . round($cfTotal, 2) . " carried forward.",
@@ -7116,8 +7549,35 @@ class Fees extends MY_Controller
                 'frozen_session'       => $sy,
                 'new_session'          => $newSession,
             ]);
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
+            // Widened to \Throwable per Stage A pattern — undefined-method
+            // errors on Firebase wrapper now surface as structured JSON
+            // rather than a CodeIgniter white-screen mid-rollover.
             log_message('error', "year_rollover_execute failed: " . $e->getMessage());
+            // R1.3 — failure audit. Critical: an aborted rollover may
+            // have already written the freeze doc + some carry-forward
+            // docs before crashing. Auditing the failure makes the
+            // partial state recoverable later.
+            log_audit(
+                'Fees',
+                'year_rollover_execute_failed',
+                "{$sy}_to_{$newSession}",
+                'Rollover failed: ' . $e->getMessage()
+            );
+            // R1.5 — mark idempotency failure so retry without force=1
+            // is allowed (we don't want to lock out recovery attempts
+            // because of a transient infra blip).
+            try {
+                $this->firebase->firestoreSet('feeIdempotency', $idempKey, [
+                    'kind'        => 'year_rollover',
+                    'schoolId'    => $schoolFs,
+                    'fromSession' => $sy,
+                    'toSession'   => $newSession,
+                    'status'      => 'failed',
+                    'failedAt'    => date('c'),
+                    'error'       => $e->getMessage(),
+                ]);
+            } catch (\Throwable $_) { /* non-fatal */ }
             $this->_json_out(['status' => 'error', 'message' => 'Rollover failed: ' . $e->getMessage()]);
         }
     }

@@ -26,6 +26,21 @@ class FeeCollectionService
         $data = is_array($data) ? $data : [];
         $writeToOutput = $data['write_response_to_output'] ?? true;
 
+        // ── L1.0 period-lock defensive gate ────────────────────────────
+        // Belt-and-suspenders behind the controller-level gates at
+        // submit_fees and parent_create_order. Catches any future
+        // internal caller that bypasses the controller (e.g., a
+        // worker / cron / migration script) and would otherwise post
+        // a receipt into a closed accounting period.
+        //
+        // POLICY: only fires on counter-path calls (writeToOutput=true).
+        // Parent-flow calls (writeToOutput=false) are the verify path,
+        // which by design must complete for already-captured payments
+        // even when the period is locked — see R1.1 precedent.
+        if ($writeToOutput && method_exists($controller, '_abort_if_period_locked')) {
+            $controller->_abort_if_period_locked();
+        }
+
         // ── Perf instrumentation (temporary) ───────────────────────────
         //  Captures wall-clock ms at each phase of submit. On return we
         //  log a single JSON line to help identify where the 44s spent.
@@ -165,25 +180,28 @@ class FeeCollectionService
         // ── Idempotency check + claim-doc preload (Firestore) ──────────
         $idempHash = $controller->fsTxn->idempKey($userId, $receiptNo, $selectedMonths, $schoolFees);
 
-        // Phase 7B: parallel-fetch FOUR docs every submit needs to know
-        // about before the first write — idempotency, feeStructure,
-        // lock, receiptIndex. One curl_multi round-trip replaces what
-        // used to be four separate reads (idempotency, feeStructure,
-        // lock-check inside acquireLock, receipt-check inside
-        // reserveReceipt). Collapsing these from ~6 s sequential to
-        // ~1.5 s parallel is the single biggest win in this phase.
-        $__parPreloadT0 = microtime(true);
-        $__parReq = [
-            'idemp'  => ['collection' => 'feeIdempotency',  'docId' => "{$schoolFs}_{$idempHash}"],
-            'struct' => ['collection' => 'feeStructures',   'docId' => "{$schoolFs}_{$session}_{$class}_{$section}"],
-            'lock'   => ['collection' => 'feeLocks',        'docId' => "{$schoolFs}_{$userId}"],
-            'rcpt'   => ['collection' => 'feeReceiptIndex', 'docId' => "{$schoolFs}_{$session}_{$receiptNo}"],
-        ];
-        $__parResp = $controller->firebase->firestoreGetParallel($__parReq);
-        $idemp           = is_array($__parResp['idemp']  ?? null) ? $__parResp['idemp']  : null;
-        $__feeStructure  = is_array($__parResp['struct'] ?? null) ? $__parResp['struct'] : null;
-        $__existingLock  = is_array($__parResp['lock']   ?? null) ? $__parResp['lock']   : null;
-        $__existingRcpt  = is_array($__parResp['rcpt']   ?? null) ? $__parResp['rcpt']   : null;
+        // Phase 7B intent: parallel-fetch FOUR docs every submit needs to
+        // know about before the first write — idempotency, feeStructure,
+        // lock, receiptIndex. The original Phase-7B code targeted a
+        // `firestoreGetParallel()` method on the Firebase wrapper that
+        // never existed (only Firestore_rest_client has the underlying
+        // `getDocumentsParallel`). Calling it threw every time, which
+        // surfaced as HTTP 500 on parent_verify_payment AFTER Razorpay
+        // had already captured the money — a real-money-in-transit bug.
+        //
+        // Phase 1.X (2026-05-09) — collapsed to four sequential reads.
+        // Same payload, same response shape; slower (~6 s vs the
+        // theoretical 1.5 s parallel) but functionally correct. The
+        // entire Phase 7B "speedup" was illusory because the code path
+        // never actually ran. If a real parallel-read API is ever
+        // exposed on the Firebase wrapper, this is the one place to
+        // re-introduce it (preserve the keyed response shape so the
+        // four assignments below still work).
+        $__parPreloadT0  = microtime(true);
+        $idemp           = $controller->firebase->firestoreGet('feeIdempotency',  "{$schoolFs}_{$idempHash}");
+        $__feeStructure  = $controller->firebase->firestoreGet('feeStructures',   "{$schoolFs}_{$session}_{$class}_{$section}");
+        $__existingLock  = $controller->firebase->firestoreGet('feeLocks',        "{$schoolFs}_{$userId}");
+        $__existingRcpt  = $controller->firebase->firestoreGet('feeReceiptIndex', "{$schoolFs}_{$session}_{$receiptNo}");
         $__parPreloadMs  = (int) round((microtime(true) - $__parPreloadT0) * 1000);
 
         if (is_array($idemp)) {
@@ -946,6 +964,20 @@ class FeeCollectionService
                             // Phase 7G (H2) — deterministic entry id so
                             // retries skip re-posting the same journal.
                             'journal_entry_id' => "JE_FEE_{$receiptKey}",
+                            // Phase A0 (canonical fee-accounting
+                            // normalization, 2026-05-10) — pass the
+                            // full allocation breakdown so the v2
+                            // journal path can build per-fee-head
+                            // credit lines (Cr 4040 Transport, Cr 4010
+                            // Tuition, etc.) instead of crediting all
+                            // revenue to 4010. Fine + discount are
+                            // also passed for proper double-entry —
+                            // discount becomes Dr Discount-Allowed
+                            // expense rather than reducing revenue.
+                            // See Operations_accounting::_buildGranularLines.
+                            'allocations'      => $allocationsForBatch,
+                            'fine_amount'      => round((float) ($fineAmount ?? 0), 2),
+                            'discount_amount'  => round((float) ($discountFees ?? 0), 2),
                         ],
                         'context'   => [
                             'userId'      => $userId,
@@ -1469,6 +1501,18 @@ class FeeCollectionService
             'student_id'   => $userId,
             'class'        => "{$class} {$section}",
             'admin_id'     => $adminId,
+            // Phase A0 (canonical fee-accounting normalization,
+            // 2026-05-10) — pass allocation breakdown so the v2
+            // journal builds per-fee-head credit lines instead of
+            // crediting all revenue to 4010. See the matching block
+            // in the async opsAcctPayload above for full rationale.
+            'allocations'      => is_array($allocations ?? null) ? $allocations : [],
+            'fine_amount'      => round((float) ($fineAmount ?? 0), 2),
+            'discount_amount'  => round((float) ($discountFees ?? 0), 2),
+            // Deterministic entry id so retries skip re-posting the
+            // same journal — was implicit in the async path above
+            // but missing from the sync deferred path until A0.
+            'journal_entry_id' => "JE_FEE_{$receiptKey}",
         ];
         $defaulterCtx = [
             'studentName' => $studentName,

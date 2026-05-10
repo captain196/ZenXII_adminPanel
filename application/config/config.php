@@ -96,6 +96,26 @@ $config['encryption_key'] = $_encKey ?: 'CHANGE_ME_IN_ENV';
 // php -r "echo bin2hex(random_bytes(32));"
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Phase: Discount/Concession Journaling (Stage 1, 2026-05-10)
+//  Feature flag for the additive concessions[] payload in
+//  Operations_accounting::_buildGranularLines. Default false: existing
+//  receipt flows produce byte-identical journals to the pre-concession
+//  engine. Operator opts in when the CoA has the contra-revenue accounts
+//  configured (4990-4998 range or 5190 fallback) and the fee-counter UI
+//  emits the new payload field.
+// ─────────────────────────────────────────────────────────────────────────────
+$config['concessions_enabled'] = (string) (getenv('CONCESSIONS_ENABLED') ?: '') === '1';
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Phase: Payroll Foundation Architecture (Stage 2, 2026-05-10)
+//  Feature flag for the canonical PayrollAccountingService. When false the
+//  service refuses every posting method with a logged event — no ledger
+//  writes occur. Operator opts in once the payroll module is ready to
+//  route through the new service (Stage 3+ HR-module wiring).
+// ─────────────────────────────────────────────────────────────────────────────
+$config['payroll_engine_integration'] = (string) (getenv('PAYROLL_ENGINE_INTEGRATION') ?: '') === '1';
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  SESSION SETTINGS
 //  FIX: secure cookies, strict SameSite, HttpOnly, longer expiry
 // ─────────────────────────────────────────────────────────────────────────────

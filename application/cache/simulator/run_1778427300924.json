@@ -1,0 +1,44 @@
+[
+    {
+        "entryId": "JE_PAYROLL_ACCRUAL_2026-04_TEST_EMP_1778427300924_E1",
+        "source": "payroll_accrual",
+        "type": "E1",
+        "at": "2026-05-10T17:35:18+02:00"
+    },
+    {
+        "entryId": "JE_PAYROLL_ACCRUAL_2026-04_TEST_EMP_1778427300924_E2",
+        "source": "payroll_accrual",
+        "type": "E2_setup",
+        "at": "2026-05-10T17:35:33+02:00"
+    },
+    {
+        "entryId": "JE_PAYROLL_PAYOUT_2026-04_TEST_EMP_1778427300924_E2",
+        "source": "payroll_payout",
+        "type": "E2",
+        "at": "2026-05-10T17:35:43+02:00"
+    },
+    {
+        "entryId": "JE_PAYROLL_STAT_2026-04_R1778427300924_2030",
+        "source": "payroll_stat",
+        "type": "E3",
+        "at": "2026-05-10T17:35:55+02:00"
+    },
+    {
+        "entryId": "JE_PAYROLL_ACCRUAL_2026-04_TEST_EMP_1778427300924_E4",
+        "source": "payroll_accrual",
+        "type": "E4_setup",
+        "at": "2026-05-10T17:36:12+02:00"
+    },
+    {
+        "entryId": "JE_PAYROLL_REVERSAL_JE_PAYROLL_ACCRUAL_2026-04_TEST_EMP_1778427300924_E4",
+        "source": "payroll_reversal",
+        "type": "E4",
+        "at": "2026-05-10T17:36:28+02:00"
+    },
+    {
+        "entryId": "JE_PAYROLL_ACCRUAL_2026-04_TEST_EMP_1778427300924_E5",
+        "source": "payroll_accrual",
+        "type": "E5",
+        "at": "2026-05-10T17:37:01+02:00"
+    }
+]

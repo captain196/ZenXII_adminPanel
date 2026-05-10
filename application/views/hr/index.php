@@ -827,6 +827,23 @@
   </div>
 </div>
 
+<!-- Reason-Prompt Modal (shared by Unlock + Regenerate) -->
+<div class="hr-modal-overlay" id="modalReasonPrompt">
+  <div class="hr-modal" style="max-width:480px;">
+    <div class="hr-modal-title" id="reasonPromptTitle"><i class="fa fa-comment"></i> Reason Required</div>
+    <div id="reasonPromptSubtitle" style="padding:10px 12px;background:var(--bg3);border-radius:8px;margin-bottom:14px;font-size:12.5px;color:var(--t2);line-height:1.5"></div>
+    <div class="hr-fg" style="margin-bottom:6px">
+      <label>Reason <span class="req">*</span> <small style="opacity:.6">(min 10 chars)</small></label>
+      <textarea id="reasonPromptText" rows="3" placeholder="Why are you doing this..." style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:13px;font-family:inherit;resize:vertical;box-sizing:border-box"></textarea>
+      <div id="reasonPromptHint" style="font-size:11px;color:var(--t3);margin-top:4px">0 chars · need 10+</div>
+    </div>
+    <div class="hr-modal-actions">
+      <button class="hr-btn hr-btn-ghost" onclick="HR.closeModal('modalReasonPrompt')">Cancel</button>
+      <button class="hr-btn hr-btn-primary" id="btnReasonPromptConfirm" disabled><i class="fa fa-check"></i> Confirm</button>
+    </div>
+  </div>
+</div>
+
 <!-- Appraisal Modal -->
 <div class="hr-modal-overlay" id="modalAppraisal">
   <div class="hr-modal" style="max-width:660px;">
@@ -1146,6 +1163,58 @@
 .hr-slip-net-row{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;margin-top:14px;border-radius:8px;background:var(--gold-dim);border:1px solid var(--gold-ring)}
 .hr-slip-net-label{font:700 13px/1 var(--font-b);color:var(--gold)}
 .hr-slip-net-value{font:700 16px/1 var(--font-b);color:var(--gold);font-variant-numeric:tabular-nums}
+
+/* UX-1+UX-2: Day-classification chip strip + tooltips */
+.hr-day-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:14px}
+.hr-day-chip{display:flex;flex-direction:column;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);cursor:help;transition:transform .12s var(--ease)}
+.hr-day-chip:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.06)}
+.hr-day-chip-label{font:600 10.5px/1.2 var(--font-b);text-transform:uppercase;letter-spacing:.4px;color:var(--t3);margin-bottom:4px;display:flex;align-items:center;gap:5px}
+.hr-day-chip-value{font:700 20px/1 var(--font-b);font-variant-numeric:tabular-nums;color:var(--t1)}
+.hr-day-chip-sub{font:400 10.5px/1.3 var(--font-m);color:var(--t3);margin-top:3px}
+.hr-day-chip.working .hr-day-chip-label{color:#475569}
+.hr-day-chip.present .hr-day-chip-label,.hr-day-chip.present .hr-day-chip-value{color:#0f766e}
+.hr-day-chip.present{background:rgba(15,118,110,.04)}
+.hr-day-chip.paid-leave .hr-day-chip-label,.hr-day-chip.paid-leave .hr-day-chip-value{color:#2563eb}
+.hr-day-chip.paid-leave{background:rgba(37,99,235,.04)}
+.hr-day-chip.lwp .hr-day-chip-label,.hr-day-chip.lwp .hr-day-chip-value{color:#dc2626}
+.hr-day-chip.lwp{background:rgba(220,38,38,.04)}
+.hr-day-chip.half-day .hr-day-chip-label,.hr-day-chip.half-day .hr-day-chip-value{color:#7c3aed}
+.hr-day-chip.half-day{background:rgba(124,58,237,.05)}
+.hr-day-chip.absent .hr-day-chip-label,.hr-day-chip.absent .hr-day-chip-value{color:#9a3412}
+.hr-day-chip.absent{background:rgba(234,88,12,.04)}
+.hr-day-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
+.hr-day-dot.present{background:#10b981}
+.hr-day-dot.paid-leave{background:#3b82f6}
+.hr-day-dot.lwp{background:#dc2626}
+.hr-day-dot.half-day{background:#a855f7}
+.hr-day-dot.absent{background:#ea580c}
+
+/* UX-2: small ⓘ help-tooltip badge — uses native title attr */
+.hr-tip{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:var(--bg3);color:var(--t3);font-size:9.5px;cursor:help;margin-left:4px;font-weight:700;border:1px solid var(--border);font-style:italic;font-family:Georgia,serif}
+.hr-tip:hover{background:var(--t3);color:var(--bg)}
+
+/* UX-3: Stale-data banner + row decoration */
+.hr-stale-banner{display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-radius:8px;background:rgba(217,119,6,.08);border:1px solid rgba(217,119,6,.25);color:#92400e;font:500 12.5px/1.5 var(--font-m);margin-bottom:12px}
+.hr-stale-banner i{font-size:18px;color:#d97706;margin-top:1px;flex-shrink:0}
+.hr-stale-banner b{color:#92400e;display:block;font-size:13px}
+.hr-stale-row td{background:rgba(217,119,6,.05)!important}
+.hr-stale-row td:first-child{box-shadow:inset 3px 0 0 #d97706}
+.hr-stale-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;background:rgba(217,119,6,.15);color:#92400e;font:600 10px/1 var(--font-b);text-transform:uppercase;letter-spacing:.4px;margin-left:6px;cursor:help}
+
+/* UX-4: Confirm-modal warning callout */
+.hr-confirm-warning{padding:11px 13px;border-radius:8px;background:rgba(220,38,38,.06);border-left:4px solid #dc2626;color:#7f1d1d;font:500 12.5px/1.6 var(--font-m);margin-bottom:6px}
+.hr-confirm-warning.amber{background:rgba(217,119,6,.06);border-left-color:#d97706;color:#7c2d12}
+.hr-confirm-warning b{color:inherit;display:block;margin-bottom:4px;font-size:13px;font-family:var(--font-b)}
+.hr-confirm-warning ul{margin:6px 0 0;padding-left:18px}
+.hr-confirm-warning li{margin:2px 0}
+.hr-confirm-warning li.muted{color:var(--t2)}
+
+/* UX-5: warnings panel for generate response */
+.hr-warnings-panel{margin:14px 0;padding:12px 14px;border-radius:8px;background:rgba(217,119,6,.05);border:1px solid rgba(217,119,6,.2)}
+.hr-warnings-panel h5{margin:0 0 8px;font:700 12px/1.2 var(--font-b);color:#92400e;display:flex;align-items:center;gap:6px}
+.hr-warnings-panel ul{margin:0;padding-left:20px;font:400 12px/1.6 var(--font-m);color:var(--t2)}
+.hr-warnings-panel li{margin:2px 0}
+.hr-warnings-panel li b{color:#92400e}
 
 /* Toast */
 #hrToastContainer{position:fixed;top:20px;right:20px;z-index:99999;display:flex;flex-direction:column;gap:8px}
@@ -2734,18 +2803,23 @@ document.addEventListener('DOMContentLoaded', function(){
           if(pr.paid_by) payInfo+='<br><span style="opacity:.6">By: '+esc(pr.paid_by)+'</span>';
           payInfo+='</div>';
         }
-        h+='<tr><td class="hr-num">'+i+'</td><td class="hr-num" style="font-size:11px">'+esc(rid)+'</td>';
+        // UX-3: stale runs get a yellow stripe + pill in status column
+        var rowClass = pr.stale ? ' class="hr-stale-row"' : '';
+        h+='<tr'+rowClass+'><td class="hr-num">'+i+'</td><td class="hr-num" style="font-size:11px">'+esc(rid)+'</td>';
         h+='<td>'+(pr.month||'')+'</td><td class="hr-num">'+(pr.year||'')+'</td>';
         h+='<td class="hr-num">'+(pr.staff_count||0)+'</td>';
         h+='<td class="hr-num">'+fmt(pr.total_gross)+'</td>';
         h+='<td class="hr-num" style="color:#d97706">'+fmt(pr.total_deductions)+'</td>';
         h+='<td class="hr-num"><strong style="color:var(--gold)">'+fmt(pr.total_net)+'</strong></td>';
-        h+='<td>'+payrollBadge(pr.status)+'</td>';
+        h+='<td>'+payrollBadge(pr.status);
+        if(pr.stale) h+='<span class="hr-stale-pill" title="'+esc(pr.stale_reason||'Corrections approved after this run was generated')+'"><i class="fa fa-exclamation-triangle"></i> Stale</span>';
+        h+='</td>';
         h+='<td>'+payInfo+'</td>';
         h+='<td style="white-space:nowrap">';
         h+='<button class="hr-act-btn" onclick="HR.viewPayslips(\''+esc(rid)+'\')" title="View Payslips"><i class="fa fa-file-text-o"></i></button> ';
         if(st==='draft') h+='<button class="hr-act-btn" onclick="HR.finalizeRun(\''+esc(rid)+'\')" title="Finalize"><i class="fa fa-lock"></i></button> ';
         if(st==='finalized') h+='<button class="hr-act-btn" style="background:#fef3c7;color:#92400e" onclick="HR.approvePayroll(\''+esc(rid)+'\')" title="Approve"><i class="fa fa-check-circle"></i></button> ';
+        if(st==='finalized') h+='<button class="hr-act-btn" style="background:#ede9fe;color:#6d28d9" onclick="HR.unlockRun(\''+esc(rid)+'\')" title="Unlock (requires reason)"><i class="fa fa-unlock-alt"></i></button> ';
         if(st==='finalized'||st==='approved') h+='<button class="hr-act-btn" style="background:#d1fae5;color:#065f46" onclick="HR.openPaymentModal(\''+esc(rid)+'\')" title="Mark as Paid"><i class="fa fa-credit-card"></i></button> ';
         if(st==='partially paid') h+='<button class="hr-act-btn" style="background:#d1fae5;color:#065f46" onclick="HR.openPaymentModal(\''+esc(rid)+'\')" title="Record Payment"><i class="fa fa-credit-card"></i></button> ';
         // Export buttons
@@ -2850,9 +2924,27 @@ document.addEventListener('DOMContentLoaded', function(){
         $btn.prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Generating...');
         post('hr/generate_payroll', {month:m, year:y}).then(function(r2){
           if(r2&&r2.status==='success'){
-            toast(r2.message||'Payroll generated successfully','success');
-            closeModal('modalGenPayroll');
-            loadPayrollRuns();
+            // UX-5: surface warnings inline before closing the modal so
+            // admin can SEE who got skipped instead of silently scrolling
+            // past a brief toast.
+            var w = (r2.warnings && r2.warnings.length) ? r2.warnings : [];
+            if (w.length){
+              var panel = '<div class="hr-warnings-panel"><h5><i class="fa fa-exclamation-triangle"></i> Payroll generated with '+w.length+' warning(s)</h5><ul>';
+              for (var i=0;i<w.length;i++){
+                panel += '<li>'+esc(w[i])+'</li>';
+              }
+              panel += '</ul><div style="margin-top:10px;font-size:11px;color:var(--t3)">Affected staff did not receive a slip. Backfill attendance or change <code>vacant_treatment</code> to override, then regenerate the run.</div></div>';
+              $result.html(panel).slideDown(200);
+              $btn.prop('disabled',false).html('<i class="fa fa-check"></i> OK, Close').off('click').on('click', function(){
+                closeModal('modalGenPayroll');
+                loadPayrollRuns();
+              });
+              toast('Payroll generated — '+w.length+' warning(s) — review the modal','info');
+            } else {
+              toast(r2.message||'Payroll generated successfully','success');
+              closeModal('modalGenPayroll');
+              loadPayrollRuns();
+            }
           } else if(r2 && r2.error_type==='missing_accounts'){
             $result.html(_renderMissingAccounts(r2.missing_accounts||[])).slideDown(200);
             $btn.prop('disabled',true).html('<i class="fa fa-ban"></i> Blocked');
@@ -2903,6 +2995,115 @@ document.addEventListener('DOMContentLoaded', function(){
     }).always(function(){
       window._finalizeInFlight = false;
       loadPayrollRuns();
+    });
+  }
+
+  /* ── Reason-prompt modal (shared by Unlock + Regenerate) ──
+     opts: { title, subtitle, confirmLabel, confirmIcon, titleIcon, onConfirm } */
+  function promptReason(opts){
+    var titleIcon = opts.titleIcon || 'fa-comment';
+    $('#reasonPromptTitle').html('<i class="fa '+titleIcon+'"></i> '+esc(opts.title||'Reason Required'));
+    $('#reasonPromptSubtitle').html(opts.subtitle || '');
+    $('#reasonPromptText').val('');
+    $('#reasonPromptHint').text('0 chars · need 10+').css('color','var(--t3)');
+    var $btn=$('#btnReasonPromptConfirm');
+    $btn.html('<i class="fa '+(opts.confirmIcon||'fa-check')+'"></i> '+esc(opts.confirmLabel||'Confirm')).prop('disabled', true);
+
+    $('#reasonPromptText').off('input').on('input', function(){
+      var n = (this.value||'').trim().length;
+      $('#reasonPromptHint').text(n + ' chars · need 10+').css('color', n>=10 ? '#16a34a' : 'var(--t3)');
+      $btn.prop('disabled', n < 10);
+    });
+
+    $btn.off('click').on('click', function(){
+      var reason = ($('#reasonPromptText').val()||'').trim();
+      if (reason.length < 10) return;
+      $btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Working…');
+      Promise.resolve(opts.onConfirm(reason))
+        .then(function(){ closeModal('modalReasonPrompt'); })
+        .catch(function(){
+          // Keep modal open so user can adjust reason / retry
+          $btn.prop('disabled', false).html('<i class="fa '+(opts.confirmIcon||'fa-check')+'"></i> '+esc(opts.confirmLabel||'Confirm'));
+        });
+    });
+
+    openModal('modalReasonPrompt');
+    setTimeout(function(){ $('#reasonPromptText').focus(); }, 100);
+  }
+
+  function unlockRun(runId){
+    promptReason({
+      title:        'Unlock Payroll Run',
+      titleIcon:    'fa-unlock-alt',
+      subtitle:
+        '<div class="hr-confirm-warning amber">'
+        + '<b><i class="fa fa-exclamation-triangle"></i> You are unlocking a finalized payroll.</b>'
+        + 'Changes will affect salary calculations.'
+        + '<ul>'
+        +   '<li>Run <b>'+esc(runId)+'</b> will move from <b>Finalized/Approved</b> back to <b>Draft</b>.</li>'
+        +   '<li>All slips become editable. Admin can regenerate individual slips.</li>'
+        +   '<li>Accounting books are <b>not</b> reversed by this action — re-finalize after edits to keep them aligned.</li>'
+        +   '<li class="muted">Reason is audit-logged with your admin id and timestamp.</li>'
+        + '</ul>'
+        + '</div>',
+      confirmLabel: 'Yes, Unlock Run',
+      confirmIcon:  'fa-unlock-alt',
+      onConfirm: function(reason){
+        return new Promise(function(resolve, reject){
+          post('hr/unlock_payroll', {run_id:runId, reason:reason}).then(function(r){
+            if (r && r.status === 'success') {
+              toast(r.message || 'Run unlocked','success');
+              loadPayrollRuns();
+              resolve();
+            } else {
+              toast((r && r.message) || 'Failed to unlock','error');
+              reject(r);
+            }
+          }).fail(function(){ toast('Network error','error'); reject(); });
+        });
+      }
+    });
+  }
+
+  function regenerateSlip(runId, staffId, staffName){
+    promptReason({
+      title:        'Regenerate Salary Slip',
+      titleIcon:    'fa-refresh',
+      subtitle:
+        '<div class="hr-confirm-warning amber">'
+        + '<b><i class="fa fa-refresh"></i> This will recalculate salary.</b>'
+        + 'Previous values will be archived (audit-safe).'
+        + '<ul>'
+        +   '<li>Recomputing slip for <b>'+esc(staffName||staffId)+'</b> from the latest attendance + approved leaves.</li>'
+        +   '<li>The existing slip is archived (not deleted) — old net pay remains queryable.</li>'
+        +   '<li>An adjustment journal entry will be posted automatically to keep accounting books aligned.</li>'
+        +   '<li class="muted">Reason is audit-logged with your admin id and timestamp.</li>'
+        + '</ul>'
+        + '</div>',
+      confirmLabel: 'Yes, Regenerate',
+      confirmIcon:  'fa-refresh',
+      onConfirm: function(reason){
+        return new Promise(function(resolve, reject){
+          post('hr/regenerate_staff_payroll', {run_id:runId, staff_id:staffId, reason:reason}).then(function(r){
+            if (r && r.status === 'success') {
+              var diff = parseFloat(r.difference || 0);
+              var direction = diff > 0 ? 'increased' : (diff < 0 ? 'decreased' : 'unchanged');
+              var amt = fmt(Math.abs(diff));
+              var msg = 'Slip regenerated. Net pay '+direction+(diff===0?'':' by '+amt);
+              // UX-2: surface server warnings (M-2 inactive staff, etc.)
+              if (r.warnings && r.warnings.length) {
+                msg += ' · ' + r.warnings.length + ' warning(s) — see slip detail';
+              }
+              toast(msg, 'success');
+              viewPayslips(runId);
+              resolve();
+            } else {
+              toast((r && r.message) || 'Failed to regenerate','error');
+              reject(r);
+            }
+          }).fail(function(){ toast('Network error','error'); reject(); });
+        });
+      }
     });
   }
 
@@ -2995,7 +3196,28 @@ document.addEventListener('DOMContentLoaded', function(){
       // Run-level info for payslip header
       var runData = r.run||{};
       var runStatus = (runData.status||'Draft').toLowerCase();
-      $('#payslipRunInfo').html('Run: '+esc(runData.id||runId)+' '+payrollBadge(runData.status||'Draft')).show();
+      var runHeaderHtml = 'Run: '+esc(runData.id||runId)+' '+payrollBadge(runData.status||'Draft');
+      // UX-3: surface stale status next to the run header
+      if(runData.stale){
+        runHeaderHtml += '<span class="hr-stale-pill" title="'+esc(runData.stale_reason||'')+'"><i class="fa fa-exclamation-triangle"></i> Stale</span>';
+      }
+      $('#payslipRunInfo').html(runHeaderHtml).show();
+
+      // UX-3: prominent banner above the slip table when stale
+      var $banner = $('#staleBanner');
+      if($banner.length === 0){
+        $banner = $('<div id="staleBanner" class="hr-stale-banner" style="display:none"></div>').insertBefore('#payslipTableWrap');
+      }
+      if(runData.stale){
+        var actionHtml = (runStatus==='draft')
+          ? ' Open any slip\'s row and click <b>Regenerate</b> to refresh, OR delete and re-create the run.'
+          : ' <b>Unlock</b> the run from the Payroll Runs tab, then regenerate affected slips.';
+        $banner.html('<i class="fa fa-exclamation-triangle"></i><div><b>This payroll run may be stale.</b><br>'
+          +esc(runData.stale_reason||'Attendance corrections were approved after this run was generated.')
+          +actionHtml+'</div>').show();
+      } else {
+        $banner.hide();
+      }
 
       if(!keys.length){ $tb.html('<tr><td colspan="13" class="hr-empty"><i class="fa fa-inbox"></i> No payslips in this run.</td></tr>'); return; }
       var h='', i=0;
@@ -3016,6 +3238,50 @@ document.addEventListener('DOMContentLoaded', function(){
         // Detail row — structured payslip breakdown
         h+='<tr class="hr-payslip-detail" id="detail_'+esc(k)+'">';
         h+='<td colspan="13"><div class="hr-payslip-breakdown">';
+
+        // ── UX-1: DAY CLASSIFICATION strip (top) ──
+        // Computes summary chips so admin sees at-a-glance how the month
+        // breaks down. All values come from server fields — no client calc.
+        var leaveDetailsArr = (p.leave_details && typeof p.leave_details==='object') ? Object.values(p.leave_details) : [];
+        var halfDayCount   = leaveDetailsArr.filter(function(x){return x && x.half_day;}).length;
+        var halfDayUnpaidCount = leaveDetailsArr.filter(function(x){return x && x.half_day && !x.paid;}).length;
+        var halfDayDeduction = halfDayUnpaidCount * 0.5 * (parseFloat(p.daily_salary)||0);
+        var fullLwpDeduction = Math.max(0, (parseFloat(p.lwp_deduction)||0) - halfDayDeduction);
+        h+='<div class="hr-day-strip">';
+        h+= '<div class="hr-day-chip working" title="Calendar working days for this month: total days minus Sundays, 2nd/4th Saturdays, and configured holidays">'
+          +   '<div class="hr-day-chip-label">Working Days <span class="hr-tip" title="Total days payable for this month (excludes Sundays, 2nd/4th Saturdays, holidays)">i</span></div>'
+          +   '<div class="hr-day-chip-value">'+(p.working_days||'-')+'</div>'
+          +   '<div class="hr-day-chip-sub">'+(runData.month||'')+' '+(runData.year||'')+'</div>'
+          + '</div>';
+        h+= '<div class="hr-day-chip present" title="Days the staff was Present (P) at work">'
+          +   '<div class="hr-day-chip-label"><span class="hr-day-dot present"></span>Present</div>'
+          +   '<div class="hr-day-chip-value">'+(p.days_worked||0)+'</div>'
+          +   '<div class="hr-day-chip-sub">no salary impact</div>'
+          + '</div>';
+        h+= '<div class="hr-day-chip paid-leave" title="Approved paid-type leave days. No salary deduction; balance was reduced.">'
+          +   '<div class="hr-day-chip-label"><span class="hr-day-dot paid-leave"></span>Paid Leave</div>'
+          +   '<div class="hr-day-chip-value">'+(p.paid_leave_days||0)+'</div>'
+          +   '<div class="hr-day-chip-sub">no deduction</div>'
+          + '</div>';
+        h+= '<div class="hr-day-chip lwp" title="Leave Without Pay — salary deducted for these days">'
+          +   '<div class="hr-day-chip-label"><span class="hr-day-dot lwp"></span>LWP <span class="hr-tip" title="Leave Without Pay — salary is deducted at the daily rate for each LWP day">i</span></div>'
+          +   '<div class="hr-day-chip-value">'+(p.lwp_days||0)+'</div>'
+          +   '<div class="hr-day-chip-sub">'+(parseFloat(p.lwp_deduction)>0 ? '−'+fmt(p.lwp_deduction)+' total' : 'no deduction')+'</div>'
+          + '</div>';
+        h+= '<div class="hr-day-chip half-day" title="Half-day leave count — each contributes 0.5 day. Unpaid half-days are deducted at half the daily rate.">'
+          +   '<div class="hr-day-chip-label"><span class="hr-day-dot half-day"></span>Half-Day <span class="hr-tip" title="Half-day leaves don\'t mark attendance as L; they live on the leave doc. 0.5-day deduction applies if the leave type is unpaid (or balance was exhausted).">i</span></div>'
+          +   '<div class="hr-day-chip-value">'+halfDayCount+'</div>'
+          +   '<div class="hr-day-chip-sub">'+(halfDayUnpaidCount>0 ? halfDayUnpaidCount+' unpaid · −'+fmt(halfDayDeduction) : (halfDayCount>0 ? 'all paid' : 'none'))+'</div>'
+          + '</div>';
+        if(parseFloat(p.days_absent)>0){
+          h+= '<div class="hr-day-chip absent" title="Days marked Absent in attendance — full-day deduction applies (overlap with approved LWP is excluded automatically).">'
+            +   '<div class="hr-day-chip-label"><span class="hr-day-dot absent"></span>Absent</div>'
+            +   '<div class="hr-day-chip-value">'+(p.days_absent||0)+'</div>'
+            +   '<div class="hr-day-chip-sub">deducted</div>'
+            + '</div>';
+        }
+        h+='</div>';
+
         h+='<div class="hr-slip-sections">';
 
         // ── LEFT: Earnings ──
@@ -3033,13 +3299,23 @@ document.addEventListener('DOMContentLoaded', function(){
         // ── RIGHT: Deductions ──
         h+='<div class="hr-slip-section">';
         h+='<div class="hr-slip-section-hd deduct"><i class="fa fa-minus-circle"></i> Deductions</div>';
-        if(parseFloat(p.pf_employee))      h+='<div class="hr-slip-row"><span class="hr-slip-label">PF (Employee)</span><span class="hr-slip-value">'+fmt(p.pf_employee)+'</span></div>';
-        if(parseFloat(p.esi_employee))     h+='<div class="hr-slip-row"><span class="hr-slip-label">ESI (Employee)</span><span class="hr-slip-value">'+fmt(p.esi_employee)+'</span></div>';
+        if(parseFloat(p.pf_employee))      h+='<div class="hr-slip-row"><span class="hr-slip-label">PF (Employee) <span class="hr-tip" title="Provident Fund — % of basic salary (statutory)">i</span></span><span class="hr-slip-value">'+fmt(p.pf_employee)+'</span></div>';
+        if(parseFloat(p.esi_employee))     h+='<div class="hr-slip-row"><span class="hr-slip-label">ESI (Employee) <span class="hr-tip" title="Employees State Insurance — % of gross">i</span></span><span class="hr-slip-value">'+fmt(p.esi_employee)+'</span></div>';
         if(parseFloat(p.professional_tax)) h+='<div class="hr-slip-row"><span class="hr-slip-label">Professional Tax</span><span class="hr-slip-value">'+fmt(p.professional_tax)+'</span></div>';
-        if(parseFloat(p.tds))              h+='<div class="hr-slip-row"><span class="hr-slip-label">TDS (Income Tax)</span><span class="hr-slip-value">'+fmt(p.tds)+'</span></div>';
+        if(parseFloat(p.tds))              h+='<div class="hr-slip-row"><span class="hr-slip-label">TDS (Income Tax) <span class="hr-tip" title="Tax Deducted at Source on gross salary">i</span></span><span class="hr-slip-value">'+fmt(p.tds)+'</span></div>';
         if(parseFloat(p.other_deductions)) h+='<div class="hr-slip-row"><span class="hr-slip-label">Other Deductions</span><span class="hr-slip-value">'+fmt(p.other_deductions)+'</span></div>';
+        // UX-1: split LWP deduction into full-day vs half-day so admin sees the source
         if(parseFloat(p.lwp_deduction)>0){
-          h+='<div class="hr-slip-row"><span class="hr-slip-label">LWP Deduction ('+parseInt(p.lwp_days||0)+' days)</span><span class="hr-slip-value amber">-'+fmt(p.lwp_deduction)+'</span></div>';
+          if(halfDayUnpaidCount>0 && fullLwpDeduction>0){
+            // Full-day LWP first
+            var fullLwpDays = (parseFloat(p.lwp_days)||0) - 0.5*halfDayUnpaidCount;
+            h+='<div class="hr-slip-row"><span class="hr-slip-label">Full-Day LWP <span style="opacity:.7">('+fullLwpDays.toFixed(1).replace(/\.0$/,'')+' days)</span></span><span class="hr-slip-value amber">−'+fmt(fullLwpDeduction)+'</span></div>';
+            h+='<div class="hr-slip-row"><span class="hr-slip-label">Half-Day Leave <span style="opacity:.7">('+halfDayUnpaidCount+' × 0.5 day)</span></span><span class="hr-slip-value amber">−'+fmt(halfDayDeduction)+'</span></div>';
+          } else if(halfDayUnpaidCount>0){
+            h+='<div class="hr-slip-row"><span class="hr-slip-label">Half-Day Leave <span style="opacity:.7">('+halfDayUnpaidCount+' × 0.5 day)</span></span><span class="hr-slip-value amber">−'+fmt(p.lwp_deduction)+'</span></div>';
+          } else {
+            h+='<div class="hr-slip-row"><span class="hr-slip-label">LWP Deduction <span style="opacity:.7">('+(p.lwp_days||0)+' days)</span></span><span class="hr-slip-value amber">−'+fmt(p.lwp_deduction)+'</span></div>';
+          }
         }
         h+='<div class="hr-slip-row total"><span class="hr-slip-label">Total Deductions</span><span class="hr-slip-value red">'+fmt(p.total_deductions)+'</span></div>';
         h+='</div>';
@@ -3051,8 +3327,13 @@ document.addEventListener('DOMContentLoaded', function(){
         h+='<span class="hr-slip-net-label"><i class="fa fa-inr" style="margin-right:4px"></i>Net Pay</span>';
         h+='<span class="hr-slip-net-value">'+fmt(p.net_pay)+'</span>';
         h+='</div>';
-        h+='<div style="text-align:center;margin-top:8px">';
+        h+='<div style="text-align:center;margin-top:8px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap">';
         h+='<a class="hr-btn hr-btn-ghost hr-btn-sm" href="'+BASE+'hr/download_payslip?run_id='+encodeURIComponent(currentRunId)+'&staff_id='+encodeURIComponent(p.staff_id||k)+'" target="_blank"><i class="fa fa-file-pdf-o"></i> Download Payslip PDF</a>';
+        // Regenerate is only allowed while the run is in Draft. Finalized runs
+        // must be unlocked first via the runs-table Unlock button.
+        if(runStatus==='draft'){
+          h+='<button class="hr-btn hr-btn-ghost hr-btn-sm" onclick="event.stopPropagation();HR.regenerateSlip(\''+esc(currentRunId)+'\',\''+esc(p.staff_id||k)+'\',\''+esc(p.staff_name||'').replace(/\'/g,"&#39;")+'\')" title="Recompute this slip from latest attendance + leaves"><i class="fa fa-refresh"></i> Regenerate</button>';
+        }
         h+='</div>';
 
         // ── Working Info + Leave (bottom row, 2 cols) ──
@@ -3061,23 +3342,26 @@ document.addEventListener('DOMContentLoaded', function(){
         if(hasWorkInfo||hasLeaves||slipStatus==='paid'){
           h+='<div class="hr-slip-sections" style="margin-top:14px">';
 
-          // Working info
+          // Working info — calendar breakdown + daily salary
+          // (headline counts are now in the day-classification chips above)
           if(hasWorkInfo){
             h+='<div class="hr-slip-section">';
-            h+='<div class="hr-slip-section-hd info"><i class="fa fa-calendar"></i> Working Info</div>';
-            // Working days breakdown (from run data)
+            h+='<div class="hr-slip-section-hd info"><i class="fa fa-calendar"></i> Calendar & Daily Rate</div>';
             if(runData.days_in_month){
-              h+='<div class="hr-slip-row" style="opacity:.7"><span class="hr-slip-label">Total Days in Month</span><span class="hr-slip-value">'+(runData.days_in_month||'-')+'</span></div>';
-              h+='<div class="hr-slip-row" style="opacity:.7"><span class="hr-slip-label">Sundays</span><span class="hr-slip-value">-'+(runData.sundays||0)+'</span></div>';
-              if(parseInt(runData.off_saturdays)>0) h+='<div class="hr-slip-row" style="opacity:.7"><span class="hr-slip-label">2nd/4th Saturdays</span><span class="hr-slip-value">-'+(runData.off_saturdays||0)+'</span></div>';
-              if(parseInt(runData.holidays)>0) h+='<div class="hr-slip-row" style="opacity:.7"><span class="hr-slip-label">Holidays</span><span class="hr-slip-value">-'+(runData.holidays||0)+'</span></div>';
+              h+='<div class="hr-slip-row"><span class="hr-slip-label">Total Days in Month</span><span class="hr-slip-value">'+(runData.days_in_month||'-')+'</span></div>';
+              h+='<div class="hr-slip-row" style="opacity:.7"><span class="hr-slip-label">Sundays</span><span class="hr-slip-value">−'+(runData.sundays||0)+'</span></div>';
+              if(parseInt(runData.off_saturdays)>0) h+='<div class="hr-slip-row" style="opacity:.7"><span class="hr-slip-label">2nd/4th Saturdays</span><span class="hr-slip-value">−'+(runData.off_saturdays||0)+'</span></div>';
+              if(parseInt(runData.holidays)>0) h+='<div class="hr-slip-row" style="opacity:.7"><span class="hr-slip-label">School Holidays</span><span class="hr-slip-value">−'+(runData.holidays||0)+'</span></div>';
+              h+='<div class="hr-slip-row total"><span class="hr-slip-label">= Working Days</span><span class="hr-slip-value">'+(p.working_days||'-')+'</span></div>';
             }
-            h+='<div class="hr-slip-row"><span class="hr-slip-label"><strong>Working Days</strong></span><span class="hr-slip-value"><strong>'+(p.working_days||'-')+'</strong></span></div>';
-            h+='<div class="hr-slip-row"><span class="hr-slip-label">Days Worked</span><span class="hr-slip-value">'+(p.days_worked||'-')+'</span></div>';
-            h+='<div class="hr-slip-row"><span class="hr-slip-label">Days Absent</span><span class="hr-slip-value">'+(p.days_absent||0)+'</span></div>';
-            if(parseInt(p.lwp_days)>0) h+='<div class="hr-slip-row"><span class="hr-slip-label">LWP Days</span><span class="hr-slip-value amber">'+(p.lwp_days||0)+'</span></div>';
-            h+='<div class="hr-slip-row"><span class="hr-slip-label">Daily Salary</span><span class="hr-slip-value">'+fmt(p.daily_salary)+'</span></div>';
-            if(p.deduction_reason && p.deduction_reason!=='No deduction') h+='<div class="hr-slip-row"><span class="hr-slip-label">Deduction Reason</span><span class="hr-slip-value" style="font-size:11px;max-width:180px;text-align:right">'+esc(p.deduction_reason)+'</span></div>';
+            h+='<div class="hr-slip-row"><span class="hr-slip-label">Daily Salary <span class="hr-tip" title="Basic salary ÷ Working days. Used to compute LWP deductions.">i</span></span><span class="hr-slip-value">'+fmt(p.daily_salary)+'</span></div>';
+            if(p.deduction_reason && p.deduction_reason!=='No deduction'){
+              h+='<div class="hr-slip-row" style="background:var(--bg);border-radius:4px;padding:6px 8px"><span class="hr-slip-label" style="font-size:11px">Deduction Reason</span><span class="hr-slip-value" style="font-size:11px;max-width:200px;text-align:right;white-space:normal">'+esc(p.deduction_reason)+'</span></div>';
+            }
+            // Minor 8 hint — only when both absent days AND leave records exist.
+            if(parseFloat(p.days_absent)>0 && hasLeaves){
+              h+='<div class="hr-slip-row" style="background:rgba(124,58,237,.06);border-radius:4px;padding:6px 8px;margin-top:4px"><span class="hr-slip-label" style="font-size:11px;color:#7c3aed;font-weight:500"><i class="fa fa-info-circle"></i> Verify against leave breakdown</span><span class="hr-slip-value" style="font-size:11px;color:#7c3aed">overlap days are not double-counted</span></div>';
+            }
             h+='</div>';
           }
 
@@ -3087,9 +3371,15 @@ document.addEventListener('DOMContentLoaded', function(){
             h+='<div class="hr-slip-section-hd leave"><i class="fa fa-calendar-minus-o"></i> Leave Breakdown</div>';
             $.each(p.leave_details, function(idx, ld){
               var paidTag = ld.paid ? ' <span style="color:var(--gold);font-size:10px">(Paid)</span>' : ' <span style="color:#991b1b;font-size:10px">(LWP)</span>';
-              var label = esc(ld.type_code||ld.type_name||'Leave') + paidTag;
+              // Minor 7: half-day badge
+              var halfTag = ld.half_day
+                ? ' <span style="background:rgba(124,58,237,.15);color:#7c3aed;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:4px">Half-day' + (ld.half_day_period ? ' · ' + esc(ld.half_day_period) : '') + '</span>'
+                : '';
+              var label = esc(ld.type_code||ld.type_name||'Leave') + paidTag + halfTag;
               var dateRange = ld.from ? '<div style="font-size:10px;color:var(--t3);margin-top:1px">'+esc(ld.from)+' to '+esc(ld.to||'?')+'</div>' : '';
-              h+='<div class="hr-slip-row" style="flex-wrap:wrap"><span class="hr-slip-label">'+label+dateRange+'</span><span class="hr-slip-value">'+esc(''+(ld.total_days||ld.days||0))+' day(s)</span></div>';
+              // Show 0.5 day for half-day; otherwise integer day count
+              var dayLabel = ld.half_day ? '0.5 day' : (esc(''+(ld.total_days||ld.days||0))+' day(s)');
+              h+='<div class="hr-slip-row" style="flex-wrap:wrap"><span class="hr-slip-label">'+label+dateRange+'</span><span class="hr-slip-value">'+dayLabel+'</span></div>';
             });
             h+='</div>';
           }
@@ -3491,6 +3781,8 @@ document.addEventListener('DOMContentLoaded', function(){
     generatePayroll:  generatePayroll,
     autoCreateAccounts: autoCreateAccounts,
     finalizeRun:      finalizeRun,
+    unlockRun:        unlockRun,
+    regenerateSlip:   regenerateSlip,
     approvePayroll:   approvePayroll,
     deletePayrollRun: deletePayrollRun,
     exportPayroll:    exportPayroll,

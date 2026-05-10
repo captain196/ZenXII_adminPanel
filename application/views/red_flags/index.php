@@ -208,6 +208,7 @@
 }
 .rf-status-badge.active-s   { background: var(--rf-red-dim); color: var(--rf-red); }
 .rf-status-badge.resolved-s { background: var(--rf-green-dim); color: var(--rf-green); }
+.rf-status-badge.deleted-s  { background: rgba(120,120,120,.18); color: var(--rf-t3); }
 
 .rf-type-badge {
     display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px;
@@ -408,6 +409,22 @@
     width: 16px; height: 16px; accent-color: var(--rf-primary);
     cursor: pointer; margin: 0;
 }
+
+/* ── Time-window strip (Flag Management retention indicator) ── */
+.rf-window-strip {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 20px; background: var(--rf-bg3);
+    border-bottom: 1px solid var(--rf-border);
+    font-size: 12px; color: var(--rf-t3); font-family: var(--font-m);
+}
+.rf-window-strip.full-history { background: var(--rf-primary-dim); color: var(--rf-primary); }
+.rf-window-info { display: inline-flex; align-items: center; gap: 6px; }
+.rf-window-info i { font-size: 11px; }
+.rf-window-link {
+    color: var(--rf-primary); text-decoration: none; font-weight: 600;
+    padding: 4px 10px; border-radius: 6px; transition: background .15s;
+}
+.rf-window-link:hover { background: var(--rf-primary-dim); text-decoration: none; }
 
 /* ── Bulk action bar ────────────────────────────────────────── */
 .rf-bulk-bar {
@@ -826,9 +843,11 @@
                 <div class="rf-filter-group">
                     <label>Status</label>
                     <select id="f-status">
-                        <option value="">All</option>
+                        <option value="">All (active &amp; resolved)</option>
                         <option value="Active">Active</option>
                         <option value="Resolved">Resolved</option>
+                        <option value="Deleted">Deleted only</option>
+                        <option value="__ALL_INCL_DELETED__">All (including deleted)</option>
                     </select>
                 </div>
                 <div class="rf-filter-group">
@@ -837,7 +856,7 @@
                 </div>
                 <div class="rf-filter-group">
                     <label>From</label>
-                    <input type="date" id="f-date-from">
+                    <input type="date" id="f-date-from" title="Default view = last 60 days. Pick an earlier date to widen the window.">
                 </div>
                 <div class="rf-filter-group">
                     <label>To</label>
@@ -849,6 +868,20 @@
                 <div class="rf-filter-group" style="justify-content:flex-end;">
                     <button class="rf-btn outline" onclick="RF.clearFilters()"><i class="fa fa-times"></i> Clear</button>
                 </div>
+            </div>
+
+            <!-- Window-mode strip: subtle, single-line. Shows the active
+                 retention window and lets admins flip to full history
+                 without fighting for space in the filter row. Hidden
+                 checkbox kept so existing JS can still read the value. -->
+            <div class="rf-window-strip">
+                <span class="rf-window-info">
+                    <i class="fa fa-clock-o"></i>
+                    <span id="rf-window-label">Showing last 60 days</span>
+                </span>
+                <a href="#" id="rf-window-toggle" class="rf-window-link"
+                    onclick="RF.toggleFullHistory(); return false;">Show full archive</a>
+                <input type="checkbox" id="f-full-history" style="display:none">
             </div>
 
             <!-- Bulk Actions -->
@@ -1016,7 +1049,9 @@
             </div>
             <div class="rf-form-group">
                 <label>Subject</label>
-                <input type="text" id="cf-subject" placeholder="e.g. Mathematics" maxlength="100">
+                <select id="cf-subject">
+                    <option value="">Select class first</option>
+                </select>
             </div>
             <div class="rf-form-group">
                 <label>Message *</label>
@@ -1063,16 +1098,21 @@ function __rfInitRedFlags() {
        CORE MODULE
        ──────────────────────────────────────────────────────────── */
     var BASE = '<?= base_url("red_flags/") ?>';
+    var ROOT = '<?= base_url() ?>';
     var CSRF_NAME  = '<?= $this->security->get_csrf_token_name() ?>';
     var CSRF_HASH  = '<?= $this->security->get_csrf_hash() ?>';
     // Server-side role gate; mirrors Red_flags::MANAGE_ROLES on the backend.
     // Client must NOT trust this — server still enforces — but UI hides
     // actions the user can't perform (delete in particular).
-    var CAN_MANAGE = <?= in_array(
-        $this->admin_role ?? '',
-        ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal'],
-        true
-    ) ? 'true' : 'false' ?>;
+    // Case-insensitive comparison so this matches MY_Controller::_require_role —
+    // session role values can arrive as 'school_super_admin' (legacy snake_case)
+    // alongside the canonical 'School Super Admin'.
+    // CAN_MANAGE retained as a no-op true for any references that haven't
+    // been migrated yet — server enforcement (Red_flags::_require_role)
+    // is the actual permission gate. Client-side hiding caused false
+    // negatives when the session role string had snake_case / casing
+    // drift, so we no longer try to predict the server's verdict here.
+    var CAN_MANAGE = true;
 
     /** XSS-safe text escaper */
     function esc(str) {
@@ -1263,6 +1303,13 @@ function __rfInitRedFlags() {
 
         /* ── Init ── */
         init: function() {
+            // Detach the modal overlays from `.content-wrapper` and reparent
+            // to <body>. AdminLTE applies a transform/filter to the wrapper
+            // which traps `position:fixed` descendants — they end up sized
+            // by the wrapper instead of the viewport, producing a tiny
+            // strip at the top instead of a full-screen overlay.
+            $('#rf-confirm, #rf-create-modal').appendTo('body');
+
             RF.loadClasses();
             RF.loadOverview();
 
@@ -1300,8 +1347,43 @@ function __rfInitRedFlags() {
                 }
             });
 
-            // Class change in create modal
-            $('#cf-class').on('change', function() { RF.loadStudentsForClass($(this).val(), '#cf-student'); });
+            // Class change in create modal — load both students and the
+            // subject list filtered to that class. The subject dropdown
+            // replaced a free-text input so admin-created flags carry a
+            // valid subject for the per-subject analytics breakdown.
+            $('#cf-class').on('change', function() {
+                var v = $(this).val();
+                RF.loadStudentsForClass(v, '#cf-student');
+                RF.loadSubjectsForClass(v, '#cf-subject');
+            });
+
+            // Delegated handler for quick-resolve buttons rendered in the
+            // Overview tab's Recent Flags timeline. Inline onclick attrs
+            // were silently failing on some renders; delegation is robust
+            // against re-rendering and re-binding races.
+            $(document).on('click', '.rf-quick-resolve', function() {
+                var btn = $(this);
+                RF.resolveFlag(
+                    btn.data('class-key')   || '',
+                    btn.data('section-key') || '',
+                    btn.data('student-id')  || '',
+                    btn.data('flag-id')     || ''
+                );
+            });
+
+            // Delete button on the same timeline — soft-deletes the flag
+            // via the existing RF.deleteFlag confirm flow (admin only;
+            // gated server-side regardless of UI by Red_flags::delete_flag
+            // RBAC + same-school check).
+            $(document).on('click', '.rf-quick-delete', function() {
+                var btn = $(this);
+                RF.deleteFlag(
+                    btn.data('class-key')   || '',
+                    btn.data('section-key') || '',
+                    btn.data('student-id')  || '',
+                    btn.data('flag-id')     || ''
+                );
+            });
         },
 
         /* ── Refresh all ── */
@@ -1524,19 +1606,43 @@ function __rfInitRedFlags() {
                     + '<span class="rf-badge ' + esc(sevClass) + '">' + esc(f.severity) + '</span>'
                     + RF.typeBadgeHtml(f.type)
                     + '<span class="rf-timeline-class">' + esc(f.classLabel) + '</span>'
+                    + (f.subject ? '<span class="rf-timeline-class" style="color:var(--rf-primary)"><i class="fa fa-book"></i> ' + esc(f.subject) + '</span>' : '')
                     + '</div>'
                     + '<div class="rf-timeline-msg">' + esc(f.message) + '</div>'
                     + '<div class="rf-timeline-foot">'
                     + '<span class="rf-timeline-time"><i class="fa fa-clock-o"></i> ' + timeAgo(f.createdAt) + '</span>'
                     + '<span class="rf-timeline-time"><i class="fa fa-user"></i> ' + esc(f.teacherName) + '</span>';
 
+                // Action buttons row. Resolve only when active. Delete is
+                // available regardless of status for admin-tier (CAN_MANAGE)
+                // — accidental flag, post-resolve cleanup, etc. — and
+                // routes through the same RF.deleteFlag soft-delete path
+                // used by the Flag Management table.
+                html += '<div class="rf-timeline-actions">';
                 if (f.status === 'Active') {
-                    html += '<div class="rf-timeline-actions">'
-                        + '<button class="rf-btn success sm" onclick="RF.resolveFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-check"></i></button>'
-                        + '</div>';
+                    html += '<button type="button" class="rf-btn success sm rf-quick-resolve"'
+                        +   ' data-class-key="'   + esc(f.classKey)   + '"'
+                        +   ' data-section-key="' + esc(f.sectionKey) + '"'
+                        +   ' data-student-id="'  + esc(f.studentId)  + '"'
+                        +   ' data-flag-id="'     + esc(f.flagId)     + '"'
+                        +   ' title="Resolve flag">'
+                        + '<i class="fa fa-check"></i></button>';
                 } else {
-                    html += '<span class="rf-status-badge resolved-s">Resolved</span>';
+                    html += '<span class="rf-status-badge resolved-s" style="margin-right:6px">Resolved</span>';
                 }
+                // Delete button is rendered for everyone; the server enforces
+                // permission via _require_role on the actual delete endpoint.
+                // Hiding client-side based on CAN_MANAGE was producing false
+                // negatives when the session role string didn't match the
+                // whitelist exactly (case / underscore drift).
+                html += '<button type="button" class="rf-btn danger sm rf-quick-delete"'
+                    +   ' data-class-key="'   + esc(f.classKey)   + '"'
+                    +   ' data-section-key="' + esc(f.sectionKey) + '"'
+                    +   ' data-student-id="'  + esc(f.studentId)  + '"'
+                    +   ' data-flag-id="'     + esc(f.flagId)     + '"'
+                    +   ' title="Delete flag">'
+                    + '<i class="fa fa-trash"></i></button>';
+                html += '</div>';
 
                 html += '</div></div></li>';
             }
@@ -1584,15 +1690,26 @@ function __rfInitRedFlags() {
 
             var classVal = $('#f-class').val() || '';
             var parts = classVal.split('|');
+            // The Status filter encodes both the value and the
+            // include-deleted intent in one control:
+            //   ''                       → All except deleted (default)
+            //   'Active' / 'Resolved'    → just that status
+            //   'Deleted only'           → only deleted (sentinel = 'Deleted')
+            //   '__ALL_INCL_DELETED__'   → everything, including deleted
+            var rawStatus = $('#f-status').val() || '';
+            var statusVal = rawStatus === '__ALL_INCL_DELETED__' ? '' : rawStatus;
+            var includeDeleted = rawStatus === 'Deleted' || rawStatus === '__ALL_INCL_DELETED__';
             var data = {
                 class_key: parts[0] || '',
                 section: parts[1] || '',
                 type: $('#f-type').val() || '',
                 severity: $('#f-severity').val() || '',
-                status: $('#f-status').val() || '',
+                status: statusVal,
                 student: $('#f-student').val() || '',
                 date_from: $('#f-date-from').val() || '',
-                date_to: $('#f-date-to').val() || ''
+                date_to: $('#f-date-to').val() || '',
+                include_deleted: includeDeleted ? '1' : '0',
+                full_history: $('#f-full-history').is(':checked') ? '1' : '0'
             };
 
             return ajax('get_flags', data).done(function(r) {
@@ -1633,7 +1750,9 @@ function __rfInitRedFlags() {
             for (var i = 0; i < flags.length; i++) {
                 var f = flags[i];
                 var sevClass = (f.severity || 'Low').toLowerCase();
-                var statusClass = f.status === 'Active' ? 'active-s' : 'resolved-s';
+                var statusClass = f.status === 'Active'
+                    ? 'active-s'
+                    : (f.status === 'Deleted' ? 'deleted-s' : 'resolved-s');
                 var rowId = 'row-' + i;
                 var fKey = f.classKey + '|' + f.sectionKey + '|' + f.studentId + '|' + f.flagId;
 
@@ -1682,7 +1801,12 @@ function __rfInitRedFlags() {
                 if (f.status === 'Active') {
                     html += '<button class="rf-btn success sm" title="Resolve" onclick="RF.resolveFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-check"></i></button>';
                 }
-                if (CAN_MANAGE) {
+                // Deleted flags get a Restore button instead of Delete.
+                // Active/Resolved flags can still be soft-deleted. Server
+                // enforces the permission — no client-side role gate.
+                if (f.status === 'Deleted') {
+                    html += '<button class="rf-btn outline sm" title="Restore" onclick="RF.restoreFlag(\'' + esc(f.flagId) + '\')"><i class="fa fa-undo"></i></button>';
+                } else {
                     html += '<button class="rf-btn danger sm" title="Delete" onclick="RF.deleteFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-trash"></i></button>';
                 }
                 html += '</div></td></tr>';
@@ -1800,6 +1924,47 @@ function __rfInitRedFlags() {
             );
         },
 
+        /* ── Flip the time-window mode (60-day default ↔ full archive) ── */
+        toggleFullHistory: function() {
+            var $cb   = $('#f-full-history');
+            var on    = !$cb.is(':checked');
+            $cb.prop('checked', on);
+
+            // Update the strip's visual state and the link label so
+            // it's always clear which mode is active.
+            var $strip = $('.rf-window-strip');
+            var $label = $('#rf-window-label');
+            var $link  = $('#rf-window-toggle');
+            if (on) {
+                $strip.addClass('full-history');
+                $label.text('Showing full archive — every flag ever raised');
+                $link.text('Show last 60 days');
+            } else {
+                $strip.removeClass('full-history');
+                $label.text('Showing last 60 days');
+                $link.text('Show full archive');
+            }
+
+            RF.loadFlags();
+        },
+
+        /* ── Restore a soft-deleted flag (admin only) ── */
+        restoreFlag: function(flagId) {
+            showConfirm('Restore Flag', 'Bring this deleted flag back to Active?',
+                '<i class="fa fa-undo" style="color:var(--rf-primary)"></i>', 'primary',
+                function() {
+                    ajax('restore_flag', { flag_id: flagId }).done(function(r) {
+                        if (r.status === 'success') {
+                            toast('Flag restored');
+                            RF.refresh();
+                        } else {
+                            toast(r.message || 'Failed to restore', 'error');
+                        }
+                    }).fail(function() { toast('Network error', 'error'); });
+                }
+            );
+        },
+
         /* ── Bulk resolve ── */
         bulkResolve: function() {
             var checked = [];
@@ -1830,6 +1995,12 @@ function __rfInitRedFlags() {
         clearFilters: function() {
             $('#f-class, #f-type, #f-severity, #f-status').val('');
             $('#f-student, #f-date-from, #f-date-to').val('');
+            $('#f-full-history').prop('checked', false);
+            // Reset the window-strip to its default 60-day state so
+            // a fresh Clear leaves no stale "Showing full archive" hint.
+            $('.rf-window-strip').removeClass('full-history');
+            $('#rf-window-label').text('Showing last 60 days');
+            $('#rf-window-toggle').text('Show full archive');
             RF.loadFlags();
         },
 
@@ -2189,7 +2360,54 @@ function __rfInitRedFlags() {
         openCreateModal: function() {
             $('#rf-create-form')[0].reset();
             $('#cf-student').html('<option value="">Select class first</option>');
+            $('#cf-subject').html('<option value="">Select class first</option>');
             $('#rf-create-modal').addClass('show');
+        },
+
+        loadSubjectsForClass: function(val, targetSel) {
+            targetSel = targetSel || '#cf-subject';
+            if (!val) {
+                $(targetSel).html('<option value="">Select class first</option>');
+                return;
+            }
+            var classKey = normClass(val.split('|')[0]);
+            $(targetSel).html('<option value="">Loading...</option>');
+
+            // Cross-controller call — Academic owns subject data, so route
+            // there directly instead of duplicating the lookup here.
+            $.ajax({
+                url: ROOT + 'academic/get_class_subjects',
+                type: 'POST',
+                dataType: 'json',
+                headers: { 'X-CSRF-Token': CSRF_HASH },
+                data: (function () {
+                    var d = { class_name: classKey };
+                    d[CSRF_NAME] = CSRF_HASH;
+                    return d;
+                })()
+            }).done(function (r) {
+                updateCsrf(r);
+                if (!r || r.status !== 'success') {
+                    $(targetSel).html('<option value="">Failed to load</option>');
+                    return;
+                }
+                var subs = (r.class_subjects && r.class_subjects.length)
+                    ? r.class_subjects
+                    : (r.all_subjects || []);
+                if (!subs.length) {
+                    $(targetSel).html('<option value="">No subjects configured</option>');
+                    return;
+                }
+                var html = '<option value="">— Select subject —</option>';
+                for (var i = 0; i < subs.length; i++) {
+                    var name = subs[i].name || subs[i].code || '';
+                    if (!name) continue;
+                    html += '<option value="' + esc(name) + '">' + esc(name) + '</option>';
+                }
+                $(targetSel).html(html);
+            }).fail(function () {
+                $(targetSel).html('<option value="">Failed to load</option>');
+            });
         },
 
         closeCreateModal: function() {
@@ -2310,10 +2528,15 @@ function __rfInitRedFlags() {
         }
     };
 
-    // Confirm button click
+    // Confirm button click. closeConfirm() nulls `confirmCallback` as
+    // part of teardown, so capture the callback first, close the modal,
+    // then invoke the captured reference. (Calling closeConfirm() before
+    // capturing was a real bug — the callback ran against a null value
+    // and the underlying resolve/delete ajax never fired.)
     $(document).on('click', '#rf-confirm-btn', function() {
+        var cb = confirmCallback;
         RF.closeConfirm();
-        if (typeof confirmCallback === 'function') confirmCallback();
+        if (typeof cb === 'function') cb();
     });
 
     // Escape key closes modals

@@ -420,6 +420,58 @@
         </span>
     </div>
 
+    <!-- Phase 2/3 — Stage + Lock + Corrections strip (auto-shown for current-month view) -->
+    <style>
+    .sa-stage-strip {
+        display: none;
+        align-items: center; gap: 12px;
+        padding: 10px 14px; margin: 0 0 14px;
+        background: var(--bg2); border: 1px solid var(--border);
+        border-left-width: 4px; border-radius: 8px;
+        font-size: 13px; color: var(--t1); flex-wrap: wrap;
+    }
+    .sa-stage-strip.visible    { display: flex; }
+    .sa-stage-strip.s1         { border-left-color: #16a34a; }
+    .sa-stage-strip.s2         { border-left-color: #d97706; }
+    .sa-stage-strip.s3         { border-left-color: #dc2626; }
+    .sa-stage-strip.unknown    { border-left-color: #6b7280; }
+    .sa-stage-pill {
+        display: inline-block; padding: 2px 9px; border-radius: 12px;
+        font-size: 11px; font-weight: 700; letter-spacing: 0.3px;
+    }
+    .sa-stage-strip.s1 .sa-stage-pill { background: rgba(22,163,74,0.15);  color: #16a34a; }
+    .sa-stage-strip.s2 .sa-stage-pill { background: rgba(217,119,6,0.15);  color: #d97706; }
+    .sa-stage-strip.s3 .sa-stage-pill { background: rgba(220,38,38,0.15);  color: #dc2626; }
+    .sa-stage-strip.unknown .sa-stage-pill { background: var(--bg3); color: var(--t3); }
+    .sa-stage-msg     { color: var(--t2); }
+    .sa-stage-spacer  { flex: 1; }
+    .sa-stage-link {
+        color: var(--gold); text-decoration: none; font-weight: 600;
+        font-size: 12.5px; padding: 4px 10px; border-radius: 6px;
+        border: 1px solid var(--border); background: var(--bg2);
+    }
+    .sa-stage-link:hover { background: var(--bg3); }
+    .sa-stage-link.warn  { color: #d97706; border-color: rgba(217,119,6,0.3); }
+    .sa-stage-link.danger{ color: #dc2626; border-color: rgba(220,38,38,0.3); }
+    .sa-corr-badge {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;
+        background: rgba(217,119,6,0.15); color: #d97706;
+    }
+    </style>
+    <div class="sa-stage-strip unknown" id="saStageStrip" data-current-month="0">
+        <span class="sa-stage-pill" id="saStagePill">—</span>
+        <span class="sa-stage-msg"  id="saStageMsg">Pick a class and section to see today's status.</span>
+        <span class="sa-corr-badge" id="saCorrBadge" style="display:none">
+            <i class="fa fa-flag-checkered"></i> <span id="saCorrCount">0</span> pending
+        </span>
+        <span class="sa-stage-spacer"></span>
+        <a class="sa-stage-link" id="saStageOpenPanel"
+           href="<?= base_url('attendance/control') ?>" target="_blank">
+            Open Control Panel <i class="fa fa-external-link"></i>
+        </a>
+    </div>
+
     <!-- Filter Card -->
     <div class="sa-filter-card">
         <div class="sa-fg">
@@ -1082,5 +1134,130 @@
         }
     });
 
+})();
+</script>
+
+<!-- Phase 2/3 — Stage + Lock + Pending corrections (read-only banner) -->
+<script>
+(function(){
+    'use strict';
+    var BASE = '<?= base_url() ?>';
+    var TODAY = new Date().toISOString().slice(0,10);
+    var TODAY_MONTH = (new Date().toLocaleString('en-US', { month: 'long' })) + ' ' + new Date().getFullYear();
+
+    var $strip   = document.getElementById('saStageStrip');
+    var $pill    = document.getElementById('saStagePill');
+    var $msg     = document.getElementById('saStageMsg');
+    var $corr    = document.getElementById('saCorrBadge');
+    var $corrN   = document.getElementById('saCorrCount');
+    var $link    = document.getElementById('saStageOpenPanel');
+    var $cls     = document.getElementById('attClass');
+    var $sec     = document.getElementById('attSection');
+    var $month   = document.getElementById('attMonth');
+    if (!$strip || !$cls || !$sec || !$month) return;
+
+    function setStage(stage, lock) {
+        $strip.className = 'sa-stage-strip visible';
+        var cls = 'unknown', text = 'Status unavailable.';
+        switch (stage) {
+            case 'S1_FREE':
+                cls = 's1';
+                text = 'Open — free edit. Reason not required until 10:30 AM.';
+                $link.className = 'sa-stage-link';
+                $link.textContent = 'Open Control Panel ↗';
+                break;
+            case 'S2_RESTRICTED':
+                cls = 's2';
+                if (lock && lock.unlockedAt) {
+                    text = 'Admin-unlocked window. Reason required on every save.';
+                } else {
+                    text = 'Restricted edit window (10:30 AM – 6 PM). Reason required.';
+                }
+                $link.className = 'sa-stage-link warn';
+                $link.textContent = 'Open Control Panel ↗';
+                break;
+            case 'S3_LOCKED':
+                cls = 's3';
+                if (lock && lock.locked && lock.lockedBy) {
+                    text = 'Locked by ' + lock.lockedBy + (lock.lockReason ? ' — ' + lock.lockReason : '') + '. File a correction request.';
+                } else {
+                    text = 'Locked. Direct edits rejected; use the correction flow.';
+                }
+                $link.className = 'sa-stage-link danger';
+                $link.textContent = 'Request Correction ↗';
+                $link.href = BASE + 'attendance/control#corrections';
+                break;
+            default:
+                cls = 'unknown';
+                text = 'Stage unknown.';
+        }
+        $strip.className = 'sa-stage-strip visible ' + cls;
+        $pill.textContent = (stage || '—').replace('_', ' ');
+        $msg.textContent  = text;
+    }
+
+    function setCorrCount(n) {
+        if (n > 0) {
+            $corr.style.display = '';
+            $corrN.textContent  = n;
+        } else {
+            $corr.style.display = 'none';
+        }
+    }
+
+    function isCurrentMonth() {
+        var picked = ($month && $month.value) || '';
+        if (!picked) return false;
+        // Existing dropdown values are month names; current year is implicit.
+        // Also accept "Month YYYY" labels.
+        var nowMonth = new Date().toLocaleString('en-US', { month: 'long' });
+        return picked === nowMonth || picked === TODAY_MONTH;
+    }
+
+    function refresh() {
+        var c = $cls.value, s = $sec.value;
+        if (!c || !s) {
+            $strip.className = 'sa-stage-strip unknown visible';
+            $pill.textContent = '—';
+            $msg.textContent  = 'Pick a class and section to see today\'s status.';
+            setCorrCount(0);
+            return;
+        }
+        if (!isCurrentMonth()) {
+            // Past/future month — strip stays minimal; today's lock isn't relevant
+            $strip.className = 'sa-stage-strip unknown visible';
+            $pill.textContent = 'Past view';
+            $msg.textContent  = 'Stage gate applies only to today. Past corrections go through Control Panel.';
+            setCorrCount(0);
+            return;
+        }
+        // Fetch lock + stage for today
+        fetch(BASE + 'attendance/lock?class=' + encodeURIComponent(c)
+                  + '&section=' + encodeURIComponent(s)
+                  + '&date='    + encodeURIComponent(TODAY),
+              { credentials: 'same-origin' })
+            .then(function(r){ return r.ok ? r.json() : null; })
+            .then(function(j){
+                if (!j || j.status !== 'success') return setStage(null, null);
+                setStage(j.stage, j.lock || {});
+            })
+            .catch(function(){ setStage(null, null); });
+
+        // Fetch pending correction count for this date
+        fetch(BASE + 'attendance/correction/list?status=pending&date=' + encodeURIComponent(TODAY) + '&limit=100',
+              { credentials: 'same-origin' })
+            .then(function(r){ return r.ok ? r.json() : null; })
+            .then(function(j){
+                var n = (j && j.requests) ? j.requests.length : 0;
+                setCorrCount(n);
+            })
+            .catch(function(){ setCorrCount(0); });
+    }
+
+    $cls.addEventListener('change',  refresh);
+    $sec.addEventListener('change',  refresh);
+    $month.addEventListener('change', refresh);
+    // Initial state
+    refresh();
 })();
 </script>

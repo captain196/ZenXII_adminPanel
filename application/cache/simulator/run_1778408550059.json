@@ -1,0 +1,86 @@
+[
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_5",
+        "source": "fee_payment",
+        "type": "transport",
+        "at": "2026-05-10T12:22:43+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_4",
+        "source": "fee_payment",
+        "type": "tuition",
+        "at": "2026-05-10T12:22:51+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_2",
+        "source": "fee_payment",
+        "type": "transport",
+        "at": "2026-05-10T12:22:54+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_3",
+        "source": "fee_payment",
+        "type": "mixed",
+        "at": "2026-05-10T12:22:56+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_8",
+        "source": "fee_payment",
+        "type": "transport",
+        "at": "2026-05-10T12:23:01+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_11",
+        "source": "fee_payment",
+        "type": "transport",
+        "at": "2026-05-10T12:23:17+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_14",
+        "source": "fee_payment",
+        "type": "transport",
+        "at": "2026-05-10T12:23:47+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_6",
+        "source": "fee_payment",
+        "type": "mixed",
+        "at": "2026-05-10T12:23:53+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_1",
+        "source": "fee_payment",
+        "type": "tuition",
+        "at": "2026-05-10T12:23:57+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_7",
+        "source": "fee_payment",
+        "type": "tuition",
+        "at": "2026-05-10T12:23:59+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_12",
+        "source": "fee_payment",
+        "type": "mixed",
+        "at": "2026-05-10T12:24:04+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_10",
+        "source": "fee_payment",
+        "type": "tuition",
+        "at": "2026-05-10T12:24:10+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_15",
+        "source": "fee_payment",
+        "type": "mixed",
+        "at": "2026-05-10T12:24:17+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778408550059_9",
+        "source": "fee_payment",
+        "type": "mixed",
+        "at": "2026-05-10T12:24:24+02:00"
+    }
+]

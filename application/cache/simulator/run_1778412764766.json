@@ -1,0 +1,32 @@
+[
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778412764766_4",
+        "source": "fee_payment",
+        "type": "tuition",
+        "at": "2026-05-10T13:32:59+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778412764766_1",
+        "source": "fee_payment",
+        "type": "tuition",
+        "at": "2026-05-10T13:33:03+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778412764766_2",
+        "source": "fee_payment",
+        "type": "transport",
+        "at": "2026-05-10T13:33:06+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778412764766_5",
+        "source": "fee_payment",
+        "type": "transport",
+        "at": "2026-05-10T13:33:09+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778412764766_3",
+        "source": "fee_payment",
+        "type": "mixed",
+        "at": "2026-05-10T13:33:13+02:00"
+    }
+]

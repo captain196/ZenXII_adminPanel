@@ -30,6 +30,126 @@ class Academic extends MY_Controller
     }
 
     /* ══════════════════════════════════════════════════════════════════════
+       PHASE 5 — SERVICE LAYER LOADERS
+
+       Each endpoint that has been refactored to the service layer goes
+       through one of these helpers. They lazy-init the audit log + the
+       requested service exactly once per request. Idempotent — safe to
+       call repeatedly. The audit_svc is shared across all four services
+       so only one bind per request.
+    ══════════════════════════════════════════════════════════════════════ */
+
+    private function _ensure_audit_svc(): void
+    {
+        require_once APPPATH . 'libraries/Service_exception.php';
+        $this->load->library('audit_log_service', null, 'audit_svc');
+        if (!$this->audit_svc->isReady()) {
+            $this->audit_svc->init(
+                $this->firebase, $this->school_id, $this->session_year,
+                [
+                    'uid'  => $this->admin_id   ?? '',
+                    'name' => $this->admin_name ?? '',
+                    'role' => $this->admin_role ?? '',
+                ]
+            );
+        }
+    }
+
+    private function _curriculum_svc()
+    {
+        $this->_ensure_audit_svc();
+        $this->load->library('curriculum_service', null, 'curriculum_svc');
+        if (!$this->curriculum_svc->isReady()) {
+            $this->curriculum_svc->init(
+                $this->firebase, $this->fs,
+                $this->school_id, $this->school_name, $this->session_year,
+                $this->admin_id   ?? '',
+                $this->admin_name ?? '',
+                $this->admin_role ?? '',
+                $this->audit_svc
+            );
+        }
+        return $this->curriculum_svc;
+    }
+
+    private function _calendar_svc()
+    {
+        $this->_ensure_audit_svc();
+        $this->load->library('calendar_service', null, 'calendar_svc');
+        if (!$this->calendar_svc->isReady()) {
+            $this->calendar_svc->init(
+                $this->firebase, $this->fs,
+                $this->school_id, $this->session_year,
+                $this->admin_id   ?? '',
+                $this->admin_name ?? '',
+                $this->audit_svc
+            );
+        }
+        return $this->calendar_svc;
+    }
+
+    private function _substitute_svc()
+    {
+        $this->_ensure_audit_svc();
+        $this->load->library('substitute_service', null, 'substitute_svc');
+        if (!$this->substitute_svc->isReady()) {
+            $this->substitute_svc->init(
+                $this->firebase, $this->fs,
+                $this->school_id, $this->session_year,
+                $this->admin_id   ?? '',
+                $this->admin_name ?? '',
+                $this->audit_svc
+            );
+        }
+        return $this->substitute_svc;
+    }
+
+    private function _timetable_svc()
+    {
+        $this->_ensure_audit_svc();
+        $this->load->library('timetable_service', null, 'timetable_svc');
+        if (!$this->timetable_svc->isReady()) {
+            $this->timetable_svc->init(
+                $this->firebase, $this->fs,
+                $this->school_id, $this->session_year,
+                $this->admin_id   ?? '',
+                $this->admin_name ?? '',
+                $this->audit_svc
+            );
+        }
+        return $this->timetable_svc;
+    }
+
+    private function _lesson_plan_svc()
+    {
+        $this->_ensure_audit_svc();
+        $this->load->library('lesson_plan_service', null, 'lesson_plan_svc');
+        if (!$this->lesson_plan_svc->isReady()) {
+            $this->lesson_plan_svc->init(
+                $this->firebase, $this->fs,
+                $this->school_id, $this->school_name, $this->session_year,
+                $this->admin_id   ?? '',
+                $this->admin_name ?? '',
+                $this->admin_role ?? '',
+                $this->audit_svc
+            );
+        }
+        return $this->lesson_plan_svc;
+    }
+
+    private function _analytics_svc()
+    {
+        $this->load->library('analytics_service', null, 'analytics_svc');
+        if (!$this->analytics_svc->isReady()) {
+            $this->analytics_svc->init(
+                $this->firebase, $this->fs,
+                $this->school_id, $this->session_year
+            );
+        }
+        return $this->analytics_svc;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
        PAGE LOAD
     ══════════════════════════════════════════════════════════════════════ */
 
@@ -533,169 +653,386 @@ class Academic extends MY_Controller
         return "{$this->school_id}_{$this->session_year}_{$cs}_{$sub}";
     }
 
+    /**
+     * Per-assignment authorization for curriculum writes.
+     *
+     * Admin-tier roles bypass. Teachers must have a row in `subjectAssignments`
+     * matching (class, section, subject, teacherId=current_admin_id).
+     *
+     * @param string $classSectionRaw  e.g. "Class 5/A" (un-sanitized)
+     * @param string $subjectRaw       subject name OR subject code
+     */
+    private function _can_edit_curriculum(string $classSectionRaw, string $subjectRaw): bool
+    {
+        $role = $this->admin_role ?? '';
+        $bypassRoles = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'];
+        if (in_array($role, $bypassRoles, true)) {
+            return true;
+        }
+
+        // Split on LAST '/'. Class names may contain spaces; the section is
+        // always the trailing segment ("Class 10th/A" → ["Class 10th", "A"]).
+        $className = $classSectionRaw;
+        $section   = '';
+        $slash = strrpos($classSectionRaw, '/');
+        if ($slash !== false) {
+            $className = trim(substr($classSectionRaw, 0, $slash));
+            $section   = trim(substr($classSectionRaw, $slash + 1));
+        }
+
+        try {
+            $this->load->library('subject_assignment_service', null, 'sas');
+            $this->sas->init($this->fs, $this->firebase, $this->school_id, $this->school_name, $this->session_year);
+            $assignments = $this->sas->getAssignmentsForClass($className, $section);
+        } catch (\Exception $e) {
+            log_message('error', '_can_edit_curriculum SAS lookup failed: ' . $e->getMessage());
+            return false;
+        }
+
+        $teacherId = $this->admin_id ?? '';
+        if ($teacherId === '') return false;
+
+        foreach ($assignments as $a) {
+            if (($a['teacherId'] ?? '') !== $teacherId) continue;
+            $aName = $a['subjectName'] ?? '';
+            $aCode = $a['subjectCode'] ?? '';
+            if (strcasecmp($aName, $subjectRaw) === 0 || $aCode === $subjectRaw) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /* ──────────────────────────────────────────────────────────────────
+       Phase 1 — Curriculum subcollection helpers
+
+       The curriculum collection is in transition from
+         curriculum/{parentDocId}.topics[]   (legacy embedded array)
+       to
+         curriculum/{parentDocId}/topics/{topicId}   (subcollection)
+
+       Parent doc carries `topicsModel: 'subcollection'` once migrated
+       and `topicIds: [uuid, ...]` as the source-of-truth ordering.
+       Per-topic partial updates (status flip, single delete) only touch
+       the subcollection doc + parent counters — no full-doc rewrite.
+
+       The legacy `topics[]` array on the parent is preserved untouched
+       after migration (frozen snapshot) so a rollback is possible.
+       Readers prefer subcollection when topicsModel is set; otherwise
+       fall back to the array.
+    ──────────────────────────────────────────────────────────────────── */
+
+    /** RFC 4122 v4 UUID. Stable per topic across saves. */
+    private function _curr_uuid(): string
+    {
+        if (function_exists('random_bytes')) {
+            $b = random_bytes(16);
+            $b[6] = chr((ord($b[6]) & 0x0f) | 0x40);
+            $b[8] = chr((ord($b[8]) & 0x3f) | 0x80);
+            $h = bin2hex($b);
+            return substr($h, 0, 8) . '-' . substr($h, 8, 4) . '-'
+                 . substr($h, 12, 4) . '-' . substr($h, 16, 4) . '-' . substr($h, 20);
+        }
+        return 'topic_' . uniqid('', true);
+    }
+
+    private function _curr_subcoll_path(string $parentDocId): string
+    {
+        return "curriculum/{$parentDocId}/topics";
+    }
+
+    /**
+     * Convert a subcollection topic doc (or a legacy array element) into
+     * the legacy-array shape the JS UI consumes. Adds `topicId` so
+     * forward-looking JS can use it; existing JS ignores extra keys.
+     */
+    private function _curr_topic_to_legacy(array $d, string $topicId = ''): array
+    {
+        return [
+            'topicId'        => $topicId !== '' ? $topicId : ($d['topicId'] ?? ''),
+            'title'          => $d['title']         ?? '',
+            'chapter'        => $d['chapter']       ?? '',
+            'est_periods'    => (int)  ($d['estPeriods']    ?? $d['est_periods']    ?? 0),
+            'status'         => in_array(($d['status'] ?? ''), ['not_started','in_progress','completed'], true)
+                                    ? $d['status'] : 'not_started',
+            'completed_date' => (string)($d['completedDate'] ?? $d['completed_date'] ?? ''),
+            'sort_order'     => (int)  ($d['sortOrder']     ?? $d['sort_order']     ?? 0),
+        ];
+    }
+
+    /**
+     * Dual-mode topic loader. Returns topics in legacy shape, ordered.
+     *  - subcollection mode: parent.topicIds[] → parallel-fetch each topic
+     *  - array mode (legacy): parent.topics[] (Phase-0 frozen path)
+     */
+    private function _curr_load_topics(string $parentDocId, ?array $parent): array
+    {
+        if (!is_array($parent)) return [];
+
+        $mode = $parent['topicsModel'] ?? '';
+        if ($mode === 'subcollection' && is_array($parent['topicIds'] ?? null)) {
+            $topicIds = array_values($parent['topicIds']);
+            if (empty($topicIds)) return [];
+            $coll = $this->_curr_subcoll_path($parentDocId);
+            $reqs = [];
+            foreach ($topicIds as $tid) {
+                if (!is_string($tid) || $tid === '') continue;
+                $reqs[$tid] = ['collection' => $coll, 'docId' => $tid];
+            }
+            $results = [];
+            try {
+                $rest = $this->firebase->getFirestoreDb();
+                if ($rest && method_exists($rest, 'getDocumentsParallel')) {
+                    $results = $rest->getDocumentsParallel($reqs);
+                } else {
+                    // Sequential fallback if the parallel primitive is unavailable.
+                    foreach ($reqs as $tag => $r) {
+                        $results[$tag] = $this->firebase->firestoreGet($r['collection'], $r['docId']);
+                    }
+                }
+            } catch (\Throwable $e) {
+                log_message('error', '_curr_load_topics subcoll fetch failed: ' . $e->getMessage());
+                return [];
+            }
+
+            $topics = [];
+            foreach ($topicIds as $tid) {
+                $d = $results[$tid] ?? null;
+                if (!is_array($d)) continue;
+                $topics[] = $this->_curr_topic_to_legacy($d, $tid);
+            }
+            return $topics;
+        }
+
+        // Legacy array fallback
+        if (is_array($parent['topics'] ?? null)) {
+            $topics = [];
+            foreach ($parent['topics'] as $i => $t) {
+                if (!is_array($t)) continue;
+                $t['sort_order'] = $t['sort_order'] ?? $i;
+                $topics[] = $this->_curr_topic_to_legacy($t);
+            }
+            return $topics;
+        }
+
+        return [];
+    }
+
+    /** Compute aggregate progress counters from a topics list (legacy shape). */
+    private function _curr_compute_counters(array $topics): array
+    {
+        $total = count($topics);
+        $completed = 0;
+        foreach ($topics as $t) {
+            if (($t['status'] ?? '') === 'completed') $completed++;
+        }
+        $pct = $total > 0 ? round(($completed / $total) * 1000) / 10 : 0;
+        return [
+            'totalTopics'     => $total,
+            'completedTopics' => $completed,
+            'percentComplete' => $pct,
+        ];
+    }
+
     public function get_curriculum()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_curriculum');
-
-        $classSection = trim($this->input->post('class_section') ?? '');
-        $subject      = trim($this->input->post('subject') ?? '');
-
-        if (empty($classSection) || empty($subject)) {
-            return $this->json_error('Class and subject required');
-        }
-
-        $classSection = $this->safe_path_segment($classSection, 'class_section');
-        $subject      = $this->safe_path_segment($subject, 'subject');
-
-        // Firestore-only
-        $topics = [];
         try {
-            $fsDoc = $this->firebase->firestoreGet('curriculum', $this->_currDocId($classSection, $subject));
-            if (is_array($fsDoc) && isset($fsDoc['topics'])) {
-                $topics = array_values($fsDoc['topics']);
-            }
-        } catch (\Exception $e) {
-            log_message('error', "get_curriculum Firestore read failed: " . $e->getMessage());
+            return $this->json_success($this->_curriculum_svc()->getCurriculum(
+                (string)($this->input->post('class_section') ?? ''),
+                (string)($this->input->post('subject') ?? '')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
-
-        return $this->json_success([
-            'topics'        => $topics,
-            'class_section' => $classSection,
-            'subject'       => $subject,
-        ]);
     }
 
     public function save_curriculum()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'save_curriculum');
-
-        $classSection = trim($this->input->post('class_section') ?? '');
-        $subject      = trim($this->input->post('subject') ?? '');
-        $topicsRaw    = $this->input->post('topics');
-
-        if (empty($classSection) || empty($subject)) {
-            return $this->json_error('Class and subject required');
+        try {
+            return $this->json_success($this->_curriculum_svc()->saveCurriculum(
+                (string)($this->input->post('class_section') ?? ''),
+                (string)($this->input->post('subject') ?? ''),
+                $this->input->post('topics'),
+                $this->input->post('expected_version')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
-
-        $classSection = $this->safe_path_segment($classSection, 'class_section');
-        $subject      = $this->safe_path_segment($subject, 'subject');
-
-        $topics = is_string($topicsRaw) ? json_decode($topicsRaw, true) : $topicsRaw;
-        if (!is_array($topics)) $topics = [];
-
-        $clean = [];
-        foreach ($topics as $i => $t) {
-            if (!is_array($t) || empty(trim($t['title'] ?? ''))) continue;
-            $clean[] = [
-                'title'          => trim($t['title']),
-                'chapter'        => trim($t['chapter'] ?? ''),
-                'est_periods'    => max(0, (int)($t['est_periods'] ?? 0)),
-                'status'         => in_array($t['status'] ?? '', ['not_started', 'in_progress', 'completed'])
-                                        ? $t['status'] : 'not_started',
-                'completed_date' => ($t['status'] ?? '') === 'completed' ? ($t['completed_date'] ?? date('Y-m-d')) : '',
-                'sort_order'     => $i,
-            ];
-        }
-
-        // Firestore-only write
-        $fsDocId = $this->_currDocId($classSection, $subject);
-        $this->firebase->firestoreSet('curriculum', $fsDocId, [
-            'schoolId'      => $this->school_id,
-            'session'       => $this->session_year,
-            'classSection'  => $classSection,
-            'subject'       => $subject,
-            'topics'        => $clean,
-            'updatedAt'     => date('c'),
-        ]);
-
-        return $this->json_success(['topics' => $clean]);
     }
 
     public function update_topic_status()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'update_curriculum');
-        $classSection = $this->safe_path_segment(trim($this->input->post('class_section') ?? ''), 'class_section');
-        $subject      = $this->safe_path_segment(trim($this->input->post('subject') ?? ''), 'subject');
-        $index        = (int)($this->input->post('index') ?? -1);
-        $status       = trim($this->input->post('status') ?? '');
-
-        if (empty($classSection) || empty($subject) || $index < 0) {
-            return $this->json_error('Invalid parameters');
+        try {
+            return $this->json_success($this->_curriculum_svc()->updateTopicStatus(
+                (string)($this->input->post('class_section') ?? ''),
+                (string)($this->input->post('subject') ?? ''),
+                $this->input->post('topicId'),
+                $this->input->post('index'),
+                trim($this->input->post('status') ?? ''),
+                $this->input->post('expected_version')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
-        if (!in_array($status, ['not_started', 'in_progress', 'completed'])) {
-            return $this->json_error('Invalid status');
-        }
-
-        // Read from Firestore, update topic, write back
-        $fsDocId = $this->_currDocId($classSection, $subject);
-        $fsDoc = null;
-        try { $fsDoc = $this->firebase->firestoreGet('curriculum', $fsDocId); } catch (\Exception $e) {}
-
-        $topics = [];
-        if (is_array($fsDoc) && isset($fsDoc['topics'])) {
-            $topics = array_values($fsDoc['topics']);
-        }
-
-        if (!isset($topics[$index])) {
-            return $this->json_error('Topic not found');
-        }
-
-        $topics[$index]['status'] = $status;
-        $topics[$index]['completed_date'] = ($status === 'completed') ? date('Y-m-d') : '';
-
-        // Write back to Firestore
-        $this->firebase->firestoreSet('curriculum', $fsDocId, [
-            'schoolId'     => $this->school_id,
-            'session'      => $this->session_year,
-            'classSection' => $classSection,
-            'subject'      => $subject,
-            'topics'       => $topics,
-            'updatedAt'    => date('c'),
-        ]);
-
-        return $this->json_success(['index' => $index, 'status' => $status]);
     }
 
     public function delete_topic()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'delete_curriculum');
-        $classSection = $this->safe_path_segment(trim($this->input->post('class_section') ?? ''), 'class_section');
-        $subject      = $this->safe_path_segment(trim($this->input->post('subject') ?? ''), 'subject');
-        $index        = (int)($this->input->post('index') ?? -1);
-
-        if (empty($classSection) || empty($subject) || $index < 0) {
-            return $this->json_error('Invalid parameters');
+        try {
+            return $this->json_success($this->_curriculum_svc()->deleteTopic(
+                (string)($this->input->post('class_section') ?? ''),
+                (string)($this->input->post('subject') ?? ''),
+                $this->input->post('topicId'),
+                $this->input->post('index'),
+                $this->input->post('expected_version')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
+    }
 
-        // Read from Firestore
-        $fsDocId = $this->_currDocId($classSection, $subject);
-        $fsDoc = null;
-        try { $fsDoc = $this->firebase->firestoreGet('curriculum', $fsDocId); } catch (\Exception $e) {}
+    /* ══════════════════════════════════════════════════════════════════════
+       LESSON PLANS  (Phase 6 — Daily/Monthly Lesson Planner)
+    ══════════════════════════════════════════════════════════════════════ */
 
-        $topics = [];
-        if (is_array($fsDoc) && isset($fsDoc['topics'])) {
-            $topics = array_values($fsDoc['topics']);
+    public function get_lesson_plan()
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_lesson_plan');
+        try {
+            $plan = $this->_lesson_plan_svc()->getLessonPlan(
+                trim((string)($this->input->post('teacher_id') ?: $this->admin_id)),
+                trim((string)($this->input->post('date') ?? '')),
+                (int)($this->input->post('period_index') ?? -1)
+            );
+            return $this->json_success(['plan' => $plan]);  // null when no plan exists
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
+    }
 
-        if (!isset($topics[$index])) {
-            return $this->json_error('Topic not found');
+    public function get_daily_plan()
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_lesson_plan');
+        try {
+            // Envelope under `daily` because json_success merges the payload
+            // into the top-level object — numeric-keyed arrays would
+            // otherwise serialize as { "0": {...}, "1": {...} }.
+            return $this->json_success(['daily' => $this->_lesson_plan_svc()->getDailyPlan(
+                trim((string)($this->input->post('teacher_id') ?: $this->admin_id)),
+                trim((string)($this->input->post('date') ?? ''))
+            )]);
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
+    }
 
-        array_splice($topics, $index, 1);
-        foreach ($topics as $i => &$t) { $t['sort_order'] = $i; }
-        unset($t);
+    public function save_lesson_plan()
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'edit_lesson_plan');
+        try {
+            return $this->json_success($this->_lesson_plan_svc()->saveLessonPlan([
+                'class_name'       => (string)($this->input->post('class_name')     ?? ''),
+                'section_name'     => (string)($this->input->post('section_name')   ?? ''),
+                'subject'          => (string)($this->input->post('subject')        ?? ''),
+                'teacher_id'       => (string)($this->input->post('teacher_id')     ?: $this->admin_id),
+                'teacher_name'     => (string)($this->input->post('teacher_name')   ?? ''),
+                'date'             => (string)($this->input->post('date')           ?? ''),
+                'period_index'     => $this->input->post('period_index'),
+                'topic_id'         => (string)($this->input->post('topic_id')       ?? ''),
+                'notes'            => (string)($this->input->post('notes')          ?? ''),
+                'status'           => (string)($this->input->post('status')         ?? 'planned'),
+                'rescheduled_to'   => (string)($this->input->post('rescheduled_to') ?? ''),
+                'expected_version' => $this->input->post('expected_version'),
+            ]));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
+        }
+    }
 
-        // Write back to Firestore
-        $this->firebase->firestoreSet('curriculum', $fsDocId, [
-            'schoolId'     => $this->school_id,
-            'session'      => $this->session_year,
-            'classSection' => $classSection,
-            'subject'      => $subject,
-            'topics'       => $topics,
-            'updatedAt'    => date('c'),
-        ]);
+    public function get_monthly_plan()
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_lesson_plan');
+        try {
+            return $this->json_success($this->_lesson_plan_svc()->getMonthlyPlan(
+                trim((string)($this->input->post('teacher_id') ?: $this->admin_id)),
+                (int)($this->input->post('year')  ?? 0),
+                (int)($this->input->post('month') ?? 0)
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
+        }
+    }
 
-        return $this->json_success(['topics' => $topics]);
+    /* ══════════════════════════════════════════════════════════════════════
+       ANALYTICS  (Phase 8A — admin)  +  PARENT VIEW  (Phase 8B)
+    ══════════════════════════════════════════════════════════════════════ */
+
+    private const ANALYTICS_ADMIN_ROLES = [
+        'Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'
+    ];
+    private const ANALYTICS_PARENT_ROLES = [
+        'Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher', 'Parent'
+    ];
+
+    public function analytics_syllabus_progress()
+    {
+        $this->_require_role(self::ANALYTICS_ADMIN_ROLES, 'view_analytics');
+        try {
+            return $this->json_success(['rows' => $this->_analytics_svc()->getSyllabusProgress()]);
+        } catch (Service_exception $e) { return $this->json_error($e->getMessage()); }
+    }
+
+    public function analytics_daily_monitoring()
+    {
+        $this->_require_role(self::ANALYTICS_ADMIN_ROLES, 'view_analytics');
+        try {
+            return $this->json_success($this->_analytics_svc()->getDailyMonitoring(
+                trim((string)($this->input->post('date') ?: date('Y-m-d')))
+            ));
+        } catch (Service_exception $e) { return $this->json_error($e->getMessage()); }
+    }
+
+    public function analytics_delays()
+    {
+        $this->_require_role(self::ANALYTICS_ADMIN_ROLES, 'view_analytics');
+        try {
+            return $this->json_success($this->_analytics_svc()->getDelays());
+        } catch (Service_exception $e) { return $this->json_error($e->getMessage()); }
+    }
+
+    public function analytics_subject_progress()
+    {
+        $this->_require_role(self::ANALYTICS_ADMIN_ROLES, 'view_analytics');
+        try {
+            return $this->json_success(['rows' => $this->_analytics_svc()->getSubjectProgress(
+                trim((string)($this->input->post('class_section') ?? ''))
+            )]);
+        } catch (Service_exception $e) { return $this->json_error($e->getMessage()); }
+    }
+
+    public function parent_daily_lessons()
+    {
+        $this->_require_role(self::ANALYTICS_PARENT_ROLES, 'view_parent_planner');
+        try {
+            return $this->json_success($this->_analytics_svc()->getParentDailyLessons(
+                trim((string)($this->input->post('class_section') ?? '')),
+                trim((string)($this->input->post('date')          ?: date('Y-m-d')))
+            ));
+        } catch (Service_exception $e) { return $this->json_error($e->getMessage()); }
+    }
+
+    public function parent_subject_progress()
+    {
+        $this->_require_role(self::ANALYTICS_PARENT_ROLES, 'view_parent_planner');
+        try {
+            return $this->json_success($this->_analytics_svc()->getParentSubjectProgress(
+                trim((string)($this->input->post('class_section') ?? ''))
+            ));
+        } catch (Service_exception $e) { return $this->json_error($e->getMessage()); }
     }
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -705,94 +1042,43 @@ class Academic extends MY_Controller
     public function get_calendar_events()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_calendar');
-        $month = trim($this->input->post('month') ?? '');
-
-        // Firestore-first
-        $events = [];
         try {
-            $fsDocs = $this->fs->sessionWhere('calendarEvents', []);
-            if (is_array($fsDocs) && !empty($fsDocs)) {
-                foreach ($fsDocs as $doc) {
-                    $d = $doc['data'] ?? $doc;
-                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $d['id'] = $d['id'] ?? '';
-                    if ($month !== '') {
-                        $evStart = $d['start_date'] ?? '';
-                        $evEnd   = $d['end_date'] ?? $evStart;
-                        $monthStart = $month . '-01';
-                        $monthEnd   = date('Y-m-t', strtotime($monthStart));
-                        if ($evEnd < $monthStart || $evStart > $monthEnd) continue;
-                    }
-                    $events[] = $d;
-                }
-            }
-        } catch (\Exception $e) {}
-
-        usort($events, fn($a, $b) => strcmp($a['start_date'] ?? '', $b['start_date'] ?? ''));
-        return $this->json_success(['events' => $events]);
+            return $this->json_success($this->_calendar_svc()->getEvents(
+                trim($this->input->post('month') ?? '')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
+        }
     }
 
     public function save_event()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_calendar');
-        $id         = trim($this->input->post('id') ?? '');
-        $title      = trim($this->input->post('title') ?? '');
-        $type       = trim($this->input->post('type') ?? 'event');
-        $startDate  = trim($this->input->post('start_date') ?? '');
-        $endDate    = trim($this->input->post('end_date') ?? '') ?: $startDate;
-        $desc       = trim($this->input->post('description') ?? '');
-
-        if (empty($title) || empty($startDate)) {
-            return $this->json_error('Title and start date are required');
+        try {
+            return $this->json_success($this->_calendar_svc()->saveEvent(
+                trim($this->input->post('id')          ?? ''),
+                trim($this->input->post('title')       ?? ''),
+                trim($this->input->post('type')        ?? 'event'),
+                trim($this->input->post('startDate')   ?? $this->input->post('start_date') ?? ''),
+                trim($this->input->post('endDate')     ?? $this->input->post('end_date')   ?? ''),
+                trim($this->input->post('description') ?? ''),
+                $this->input->post('visibleTo')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $startDate) || !strtotime($startDate)) {
-            return $this->json_error('Invalid start date format');
-        }
-        if ($endDate !== $startDate && (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $endDate) || !strtotime($endDate))) {
-            return $this->json_error('Invalid end date format');
-        }
-        if ($endDate < $startDate) {
-            return $this->json_error('End date cannot be before start date');
-        }
-
-        $validTypes = ['holiday', 'exam', 'meeting', 'event', 'activity'];
-        if (!in_array($type, $validTypes)) $type = 'event';
-
-        $data = [
-            'title'       => $title,
-            'type'        => $type,
-            'start_date'  => $startDate,
-            'end_date'    => $endDate,
-            'description' => $desc,
-            'updatedAt'   => date('c'),
-        ];
-
-        // Firestore-first write
-        if ($id === '') {
-            $id = 'EVT_' . uniqid();
-            $data['createdAt'] = date('c');
-        }
-        $fsDocId = "{$this->school_id}_{$id}";
-        $fsData = array_merge($data, [
-            'schoolId' => $this->school_id,
-            'session'  => $this->session_year,
-        ]);
-        $this->firebase->firestoreSet('calendarEvents', $fsDocId, $fsData, true);
-
-        return $this->json_success(['id' => $id, 'event' => $data]);
     }
 
     public function delete_event()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_calendar');
-        $id = trim($this->input->post('id') ?? '');
-        if (empty($id)) return $this->json_error('Event ID required');
-
-        // Firestore-only delete
-        $fsDocId = "{$this->school_id}_{$id}";
-        try { $this->firebase->firestoreDelete('calendarEvents', $fsDocId); } catch (\Exception $e) {}
-
-        return $this->json_success([]);
+        try {
+            return $this->json_success($this->_calendar_svc()->deleteEvent(
+                trim($this->input->post('id') ?? '')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
+        }
     }
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -802,394 +1088,31 @@ class Academic extends MY_Controller
     public function get_master_timetable()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_timetable');
-        $school  = $this->school_name;
-        $session = $this->session_year;
-
-        // 1. Timetable settings — Firestore-only
-        $settings = [];
         try {
-            $fsSettings = $this->firebase->firestoreGet('timetableSettings', "{$this->school_id}_{$session}");
-            if (is_array($fsSettings)) $settings = $fsSettings;
-        } catch (\Exception $e) {}
-        if (!is_array($settings)) $settings = [];
-
-        // Normalize recesses
-        $recesses = [];
-        if (isset($settings['Recesses']) && is_array($settings['Recesses'])) {
-            foreach ($settings['Recesses'] as $r) {
-                if (is_array($r) && isset($r['after_period'], $r['duration'])) {
-                    $recesses[] = ['after_period' => (int)$r['after_period'], 'duration' => (int)$r['duration']];
-                }
-            }
+            return $this->json_success($this->_timetable_svc()->getMasterTimetable(
+                $this->_get_session_classes()
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
-
-        // Working days for conflict scanning scope
-        $defaultDays = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-        $workingDays = isset($settings['Working_days']) && is_array($settings['Working_days'])
-            ? $settings['Working_days'] : $defaultDays;
-
-        $settingsClean = [
-            'start_time'       => $settings['Start_time'] ?? '9:00AM',
-            'end_time'         => $settings['End_time'] ?? '3:00PM',
-            'no_of_periods'    => (int)($settings['No_of_periods'] ?? 6),
-            'length_of_period' => (float)($settings['Length_of_period'] ?? 45),
-            'recesses'         => $recesses,
-            'working_days'     => $workingDays,
-        ];
-
-        // 2. All class-section timetables — Firestore-first
-        $classes = $this->_get_session_classes();
-        $timetables = [];
-        $firestoreQueryOk = false;
-
-        try {
-            $fsDocs = $this->firebase->firestoreQuery('timetables', [
-                ['schoolId', '==', $school],
-                ['session', '==', $session],
-            ], null, 'ASC', 500);
-
-            $firestoreQueryOk = true; // Query succeeded (even if 0 results)
-
-            // Group by label → day → periods
-            foreach ($fsDocs as $doc) {
-                $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                $cn  = $d['className'] ?? '';
-                $sec = $d['section'] ?? '';
-                $day = $d['day'] ?? '';
-                if ($cn === '' || $sec === '' || $day === '') continue;
-                $label = "{$cn} ({$sec})";
-                if (!isset($timetables[$label])) $timetables[$label] = [];
-                $periods = $d['periods'] ?? [];
-                $dayData = [];
-                foreach ($periods as $p) {
-                    $pi = ($p['periodNumber'] ?? 1) - 1;
-                    $dayData[$pi] = [
-                        'subject'    => $p['subject'] ?? '',
-                        'teacher'    => $p['teacher'] ?? '',
-                        'teacher_id' => $p['teacherId'] ?? '',
-                        'teacherId'  => $p['teacherId'] ?? '',
-                        'startTime'  => $p['startTime'] ?? '',
-                        'endTime'    => $p['endTime'] ?? '',
-                        'type'       => $p['type'] ?? 'class',
-                    ];
-                }
-                $timetables[$label][$day] = $dayData;
-            }
-        } catch (\Exception $e) {
-            $firestoreQueryOk = false;
-        }
-
-        // 3. Subject assignments — Firestore-only via service
-        $assignments = [];
-        try {
-            $this->load->library('subject_assignment_service', null, 'sas');
-            $this->sas->init($this->fs, $this->firebase, $this->school_id, $this->school_name, $this->session_year);
-            $allByClass = $this->sas->getAllForSession();
-            foreach ($allByClass as $className => $docs) {
-                $fbKey = $this->_class_to_firebase_key($className);
-                $assignments[$fbKey] = [];
-                foreach ($docs as $info) {
-                    $code = $info['subjectCode'] ?? '';
-                    $assignments[$fbKey][$code] = [
-                        'teacher_id'   => $info['teacherId'] ?? '',
-                        'teacher_name' => $info['teacherName'] ?? '',
-                        'periods_week' => (int)($info['periodsPerWeek'] ?? 0),
-                        'subject_name' => $info['subjectName'] ?? '',
-                    ];
-                }
-            }
-        } catch (\Exception $e) {
-            log_message('error', "get_master_timetable: subject assignments Firestore query failed: " . $e->getMessage());
-        }
-
-        return $this->json_success([
-            'settings'            => $settingsClean,
-            'timetables'          => $timetables,
-            'classes'             => $classes,
-            'subject_assignments' => $assignments,
-        ]);
     }
 
     public function save_period()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'edit_timetable');
-        $classKey   = $this->safe_path_segment(trim($this->input->post('class_key') ?? ''), 'class_key');
-        $section    = $this->safe_path_segment(trim($this->input->post('section') ?? ''), 'section');
-        $day        = trim($this->input->post('day') ?? '');
-        $periodIdx  = (int)($this->input->post('period_index') ?? -1);
-        $subject    = trim($this->input->post('subject') ?? '');
-        $teacherId  = trim($this->input->post('teacher_id') ?? '');
-        $teacherName = trim($this->input->post('teacher_name') ?? '');
-
-        $validDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-        if (empty($classKey) || empty($section) || !in_array($day, $validDays) || $periodIdx < 0) {
-            return $this->json_error('Missing or invalid parameters');
-        }
-
-        $school  = $this->school_name;
-        $session = $this->session_year;
-
-        // ── CONFLICT CHECKS (before any write) — Firestore-only ──
-
-        $warnings = [];
-
-        // Pre-fetch all timetable docs for this day from Firestore (single query, used for all checks)
-        $allDayDocs = [];
         try {
-            $allDayDocs = $this->firebase->firestoreQuery('timetables', [
-                ['schoolId', '==', $school],
-                ['session', '==', $session],
-                ['day', '==', $day],
-            ], null, 'ASC', 200);
-        } catch (\Exception $e) {}
-
-        // Build a lookup: [sectionKey] => [periodIdx => {subject, teacherId, ...}]
-        $dayTimetables = [];
-        foreach ($allDayDocs as $doc) {
-            $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-            $cn  = $d['className'] ?? '';
-            $sec2 = $d['section'] ?? '';
-            $sk = "{$cn}|{$sec2}";
-            $dayTimetables[$sk] = [];
-            foreach (($d['periods'] ?? []) as $p) {
-                $pi = ($p['periodNumber'] ?? 1) - 1;
-                $dayTimetables[$sk][$pi] = [
-                    'subject'    => $p['subject'] ?? '',
-                    'teacher_id' => $p['teacherId'] ?? '',
-                    'teacher_name' => $p['teacher'] ?? '',
-                ];
-            }
+            return $this->json_success($this->_timetable_svc()->savePeriod(
+                $this->safe_path_segment(trim($this->input->post('class_key') ?? ''), 'class_key'),
+                $this->safe_path_segment(trim($this->input->post('section')   ?? ''), 'section'),
+                trim($this->input->post('day') ?? ''),
+                (int)($this->input->post('period_index') ?? -1),
+                trim($this->input->post('subject')      ?? ''),
+                trim($this->input->post('teacher_id')   ?? ''),
+                trim($this->input->post('teacher_name') ?? '')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
-
-        // Also pre-fetch all timetable docs for this section across ALL days (for weekly period-limit)
-        $allSectionDocs = [];
-        try {
-            require_once APPPATH . 'libraries/Entity_firestore_sync.php';
-            $csNorm = Entity_firestore_sync::normalizeClassSection($classKey, "Section {$section}");
-            $normSectionKey = ($csNorm['className'] ?: $classKey) . '/' . ($csNorm['section'] ?: "Section {$section}");
-            $allSectionDocs = $this->firebase->firestoreQuery('timetables', [
-                ['schoolId', '==', $school],
-                ['session', '==', $session],
-                ['sectionKey', '==', $normSectionKey],
-            ], null, 'ASC', 7);
-        } catch (\Exception $e) {}
-
-        if ($subject !== '') {
-            // 1. Teacher conflict: same teacher in same day+period in another class (HARD BLOCK)
-            if ($teacherId !== '') {
-                foreach ($dayTimetables as $sk => $periods) {
-                    // Skip own section
-                    $parts = explode('|', $sk);
-                    $skClass = $parts[0] ?? '';
-                    $skSec   = $parts[1] ?? '';
-                    // Match by checking if this is the same section being edited
-                    if ($this->_class_to_firebase_key($skClass) === $this->_class_to_firebase_key($classKey)
-                        && (str_replace('Section ', '', $skSec) === $section || $skSec === "Section {$section}")) continue;
-
-                    $otherCell = $periods[$periodIdx] ?? [];
-                    $otherTeacherId = $otherCell['teacher_id'] ?? '';
-                    if ($otherTeacherId !== '' && $otherTeacherId === $teacherId) {
-                        $label = "{$skClass} ({$skSec})";
-                        return $this->json_error(
-                            "Teacher conflict: {$teacherName} is already assigned to {$label} on {$day} period " . ($periodIdx + 1) . ". Remove that assignment first."
-                        );
-                    }
-                }
-            }
-
-            // 2. Duplicate subject in same class on same day (WARNING only — double periods are valid)
-            // Find this section's day data from the pre-fetched docs
-            $dayTt = [];
-            foreach ($dayTimetables as $sk => $periods) {
-                $parts = explode('|', $sk);
-                $skClass = $parts[0] ?? '';
-                $skSec   = $parts[1] ?? '';
-                if ($this->_class_to_firebase_key($skClass) === $this->_class_to_firebase_key($classKey)
-                    && (str_replace('Section ', '', $skSec) === $section || $skSec === "Section {$section}")) {
-                    $dayTt = $periods;
-                    break;
-                }
-            }
-
-            $subjectCountToday = 0;
-            foreach ($dayTt as $i => $cell) {
-                if ((int)$i === $periodIdx) continue; // skip the cell being edited
-                $cellSub = is_array($cell) ? ($cell['subject'] ?? '') : (string)$cell;
-                if ($cellSub !== '' && strcasecmp($cellSub, $subject) === 0) {
-                    $subjectCountToday++;
-                }
-            }
-            if ($subjectCountToday > 0) {
-                $warnings[] = "{$subject} already appears {$subjectCountToday} other time(s) on {$day}";
-            }
-
-            // ── 2.5 NEW (Phase 4): Validate teacher-subject assignment exists ──
-            // The teacher MUST have an assignment for this subject in this class
-            // (either at section level or class-wide). This is the source-of-truth check.
-            if ($teacherId !== '') {
-                try {
-                    $this->load->library('subject_assignment_service', null, 'sas');
-                    $this->sas->init(
-                        $this->fs,
-                        $this->firebase,
-                        $this->school_id,
-                        $this->school_name,
-                        $this->session_year
-                    );
-
-                    $fbClassKeyForSas = $this->_class_to_firebase_key($classKey);
-                    $sectionKeyForSas = 'Section ' . $section;
-
-                    // Look up assignments for this section first, then fall back to class-wide
-                    $sectionAssignments = $this->sas->getAssignmentsForClass($fbClassKeyForSas, $sectionKeyForSas);
-                    $classWideAssignments = $this->sas->getAssignmentsForClass($fbClassKeyForSas, '');
-
-                    $merged = array_merge($sectionAssignments, $classWideAssignments);
-                    $matchFound = false;
-                    foreach ($merged as $a) {
-                        $aSubject = $a['subjectName'] ?? '';
-                        $aCode    = $a['subjectCode'] ?? '';
-                        $aTeacher = $a['teacherId'] ?? '';
-                        if ($aTeacher === $teacherId &&
-                            (strcasecmp($aSubject, $subject) === 0 || strcasecmp($aCode, $subject) === 0)) {
-                            $matchFound = true;
-                            break;
-                        }
-                    }
-                    if (!$matchFound) {
-                        $warnings[] = "No subject assignment found for {$teacherName} → {$subject} in {$classKey}. Add it in Academic Planner → Subject Assignments first.";
-                    }
-                } catch (\Exception $e) {
-                    log_message('error', "save_period subjectAssignments check failed: " . $e->getMessage());
-                }
-            }
-
-            // 3. Weekly period-limit check from Subject_Assignments (Firestore-only)
-            $limit = 0;
-            try {
-                if (!isset($this->sas)) {
-                    $this->load->library('subject_assignment_service', null, 'sas');
-                    $this->sas->init($this->fs, $this->firebase, $this->school_id, $this->school_name, $this->session_year);
-                }
-                $fbClassKey = $this->_class_to_firebase_key($classKey);
-                $sectionKeyForSas = 'Section ' . $section;
-                $sectionAssigns = $this->sas->getAssignmentsForClass($fbClassKey, $sectionKeyForSas);
-                $classWideAssigns = $this->sas->getAssignmentsForClass($fbClassKey, '');
-                $mergedAssigns = array_merge($sectionAssigns, $classWideAssigns);
-                foreach ($mergedAssigns as $a) {
-                    $aName = $a['subjectName'] ?? '';
-                    $aCode = $a['subjectCode'] ?? '';
-                    if (strcasecmp($aName, $subject) === 0 || strcasecmp($aCode, $subject) === 0) {
-                        $limit = (int)($a['periodsPerWeek'] ?? 0);
-                        break;
-                    }
-                }
-            } catch (\Exception $e) {}
-
-            if ($limit > 0) {
-                // Count this subject across all days for this class-section (Firestore)
-                $weekCount = 0;
-                foreach ($allSectionDocs as $doc) {
-                    $d2 = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $docDay = $d2['day'] ?? '';
-                    foreach (($d2['periods'] ?? []) as $p) {
-                        $pi2 = ($p['periodNumber'] ?? 1) - 1;
-                        // Skip the cell being edited (it will be replaced)
-                        if ($docDay === $day && $pi2 === $periodIdx) continue;
-                        $cellSub = $p['subject'] ?? '';
-                        if ($cellSub !== '' && strcasecmp($cellSub, $subject) === 0) {
-                            $weekCount++;
-                        }
-                    }
-                }
-                $newTotal = $weekCount + 1; // +1 for the period being saved
-                if ($newTotal > $limit) {
-                    $warnings[] = "{$subject} will have {$newTotal} periods/week (limit: {$limit})";
-                }
-            }
-        }
-
-        // ── WRITE — Firestore-only ──
-
-        // Use normalizeClassSection (already done above in pre-fetch, reuse if available)
-        if (!isset($csNorm)) {
-            require_once APPPATH . 'libraries/Entity_firestore_sync.php';
-            $csNorm = Entity_firestore_sync::normalizeClassSection($classKey, "Section {$section}");
-        }
-        $canonClass   = $csNorm['className'] ?: $classKey;
-        $canonSection = $csNorm['section'] ?: "Section {$section}";
-        $sectionKeyWrite = "{$canonClass}/{$canonSection}";
-        $safeKey = str_replace('/', '_', $sectionKeyWrite);
-        $fsDocId = "{$school}_{$session}_{$safeKey}_{$day}";
-
-        // Read existing Firestore doc to get current periods for this day
-        $existingPeriods = [];
-        try {
-            $existingDoc = $this->firebase->firestoreGet('timetables', $fsDocId);
-            if (is_array($existingDoc) && isset($existingDoc['periods'])) {
-                foreach ($existingDoc['periods'] as $p) {
-                    $pi2 = ($p['periodNumber'] ?? 1) - 1;
-                    $existingPeriods[$pi2] = $p;
-                }
-            }
-        } catch (\Exception $e) {}
-
-        $fsSettings = [];
-        try { $fsSettings = $this->firebase->firestoreGet('timetableSettings', "{$this->school_id}_{$session}") ?? []; } catch (\Exception $e) {}
-        $maxP = (int) ($fsSettings['No_of_periods'] ?? 8);
-
-        // Build full period array
-        $periodDocs = [];
-        for ($p = 0; $p < max($maxP, $periodIdx + 1); $p++) {
-            if ($p === $periodIdx) {
-                // The cell we just edited
-                $periodDocs[] = [
-                    'periodNumber' => $p + 1,
-                    'subject'      => $subject,
-                    'teacher'      => $teacherName,
-                    'teacherId'    => $teacherId,
-                    'startTime'    => $existingPeriods[$p]['startTime'] ?? '',
-                    'endTime'      => $existingPeriods[$p]['endTime'] ?? '',
-                    'room'         => '',
-                    'type'         => 'class',
-                ];
-            } elseif (isset($existingPeriods[$p])) {
-                $periodDocs[] = $existingPeriods[$p];
-            } else {
-                $periodDocs[] = [
-                    'periodNumber' => $p + 1,
-                    'subject'      => '',
-                    'teacher'      => '',
-                    'teacherId'    => '',
-                    'startTime'    => '',
-                    'endTime'      => '',
-                    'room'         => '',
-                    'type'         => 'class',
-                ];
-            }
-        }
-
-        $this->firebase->firestoreSet('timetables', $fsDocId, [
-            'schoolId'    => $school,
-            'session'     => $session,
-            'className'   => $canonClass,
-            'section'     => $canonSection,
-            'classOrder'  => $csNorm['classOrder'],
-            'sectionCode' => $csNorm['sectionCode'],
-            'sectionKey'  => $sectionKeyWrite,
-            'day'         => $day,
-            'periods'     => $periodDocs,
-            'updatedAt'   => date('c'),
-        ]);
-
-        return $this->json_success([
-            'day'          => $day,
-            'period_index' => $periodIdx,
-            'subject'      => $subject,
-            'teacher_id'   => $teacherId,
-            'teacher_name' => $teacherName,
-            'warnings'     => $warnings,
-        ]);
     }
 
     /**
@@ -1203,137 +1126,18 @@ class Academic extends MY_Controller
     public function detect_conflicts()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_timetable');
-        $subject   = trim($this->input->post('subject') ?? '');
-        $teacherId = trim($this->input->post('teacher_id') ?? '');
-        $day       = trim($this->input->post('day') ?? '');
-        $periodIdx = (int)($this->input->post('period_index') ?? -1);
-        $excludeClass   = trim($this->input->post('exclude_class') ?? '');
-        $excludeSection = trim($this->input->post('exclude_section') ?? '');
-
-        if ((empty($subject) && empty($teacherId)) || empty($day) || $periodIdx < 0) {
-            return $this->json_success(['conflict' => false, 'warnings' => []]);
-        }
-
-        $school  = $this->school_name;
-        $session = $this->session_year;
-        $warnings = [];
-
-        // Pre-fetch all timetable docs for this day from Firestore (single query)
-        $allDayDocs = [];
         try {
-            $allDayDocs = $this->firebase->firestoreQuery('timetables', [
-                ['schoolId', '==', $school],
-                ['session', '==', $session],
-                ['day', '==', $day],
-            ], null, 'ASC', 200);
-        } catch (\Exception $e) {}
-
-        // ── 1. Teacher conflict (HARD — blocks save) ──
-        if ($teacherId !== '') {
-            foreach ($allDayDocs as $doc) {
-                $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                $cn  = $d['className'] ?? '';
-                $sec = $d['section'] ?? '';
-                // Skip the section being edited
-                if ($this->_class_to_firebase_key($cn) === $this->_class_to_firebase_key($excludeClass)
-                    && (str_replace('Section ', '', $sec) === $excludeSection || $sec === "Section {$excludeSection}" || $sec === $excludeSection)) continue;
-
-                foreach (($d['periods'] ?? []) as $p) {
-                    $pi = ($p['periodNumber'] ?? 1) - 1;
-                    if ($pi !== $periodIdx) continue;
-                    $cellTeacherId = $p['teacherId'] ?? '';
-                    if ($cellTeacherId !== '' && $cellTeacherId === $teacherId) {
-                        $label = "{$cn} ({$sec})";
-                        return $this->json_success([
-                            'conflict' => true,
-                            'type'     => 'teacher',
-                            'severity' => 'error',
-                            'message'  => "Teacher conflict: already assigned to {$label} on {$day} P" . ($periodIdx + 1),
-                        ]);
-                    }
-                }
-            }
+            return $this->json_success($this->_timetable_svc()->detectConflicts(
+                trim($this->input->post('subject')         ?? ''),
+                trim($this->input->post('teacher_id')      ?? ''),
+                trim($this->input->post('day')             ?? ''),
+                (int)($this->input->post('period_index') ?? -1),
+                trim($this->input->post('exclude_class')   ?? ''),
+                trim($this->input->post('exclude_section') ?? '')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
-
-        // ── 2. Duplicate subject same day (SOFT warning) ──
-        if ($excludeClass !== '' && $subject !== '') {
-            foreach ($allDayDocs as $doc) {
-                $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                $cn  = $d['className'] ?? '';
-                $sec = $d['section'] ?? '';
-                if ($this->_class_to_firebase_key($cn) !== $this->_class_to_firebase_key($excludeClass)) continue;
-                if (str_replace('Section ', '', $sec) !== $excludeSection && $sec !== "Section {$excludeSection}" && $sec !== $excludeSection) continue;
-
-                $dupCount = 0;
-                foreach (($d['periods'] ?? []) as $p) {
-                    $pi = ($p['periodNumber'] ?? 1) - 1;
-                    if ($pi === $periodIdx) continue;
-                    $cellSub = $p['subject'] ?? '';
-                    if ($cellSub !== '' && strcasecmp($cellSub, $subject) === 0) $dupCount++;
-                }
-                if ($dupCount > 0) {
-                    $warnings[] = [
-                        'type'    => 'duplicate',
-                        'message' => "{$subject} already has {$dupCount} other period(s) on {$day}",
-                    ];
-                }
-                break;
-            }
-        }
-
-        // ── 3. Weekly period-limit from Subject_Assignments (Firestore-only) ──
-        if ($excludeClass !== '' && $subject !== '') {
-            $limit = 0;
-            try {
-                $this->load->library('subject_assignment_service', null, 'sas');
-                $this->sas->init($this->fs, $this->firebase, $this->school_id, $this->school_name, $this->session_year);
-                $fbKey = $this->_class_to_firebase_key($excludeClass);
-                $secAssigns = $this->sas->getAssignmentsForClass($fbKey, "Section {$excludeSection}");
-                $clsAssigns = $this->sas->getAssignmentsForClass($fbKey, '');
-                foreach (array_merge($secAssigns, $clsAssigns) as $a) {
-                    $aName = $a['subjectName'] ?? '';
-                    $aCode = $a['subjectCode'] ?? '';
-                    if (strcasecmp($aName, $subject) === 0 || strcasecmp($aCode, $subject) === 0) {
-                        $limit = (int)($a['periodsPerWeek'] ?? 0);
-                        break;
-                    }
-                }
-            } catch (\Exception $e) {}
-
-            if ($limit > 0) {
-                // Query all days for this section from Firestore
-                $weekCount = 0;
-                try {
-                    require_once APPPATH . 'libraries/Entity_firestore_sync.php';
-                    $csN = Entity_firestore_sync::normalizeClassSection($excludeClass, "Section {$excludeSection}");
-                    $normSK = ($csN['className'] ?: $excludeClass) . '/' . ($csN['section'] ?: "Section {$excludeSection}");
-                    $weekDocs = $this->firebase->firestoreQuery('timetables', [
-                        ['schoolId', '==', $school],
-                        ['session', '==', $session],
-                        ['sectionKey', '==', $normSK],
-                    ], null, 'ASC', 7);
-                    foreach ($weekDocs as $doc) {
-                        $d2 = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                        $docDay = $d2['day'] ?? '';
-                        foreach (($d2['periods'] ?? []) as $p) {
-                            $pi2 = ($p['periodNumber'] ?? 1) - 1;
-                            if ($docDay === $day && $pi2 === $periodIdx) continue;
-                            $cellSub = $p['subject'] ?? '';
-                            if ($cellSub !== '' && strcasecmp($cellSub, $subject) === 0) $weekCount++;
-                        }
-                    }
-                } catch (\Exception $e) {}
-                $newTotal = $weekCount + 1;
-                if ($newTotal > $limit) {
-                    $warnings[] = [
-                        'type'    => 'period_limit',
-                        'message' => "{$subject}: {$newTotal} periods/week exceeds limit of {$limit}",
-                    ];
-                }
-            }
-        }
-
-        return $this->json_success(['conflict' => false, 'warnings' => $warnings]);
     }
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -1343,290 +1147,106 @@ class Academic extends MY_Controller
     public function get_substitutes()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_substitutes');
-        $date     = trim($this->input->post('date') ?? '');
-        $dateFrom = trim($this->input->post('date_from') ?? '');
-        $dateTo   = trim($this->input->post('date_to') ?? '');
-
-        // Firestore-first
-        $records = [];
         try {
-            $conditions = [];
-            if ($date !== '') $conditions[] = ['date', '==', $date];
-            $fsDocs = $this->fs->sessionWhere('substitutes', $conditions, null, 'ASC', 100);
-            if (is_array($fsDocs) && !empty($fsDocs)) {
-                foreach ($fsDocs as $doc) {
-                    $d = $doc['data'] ?? $doc;
-                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $d['id'] = $d['id'] ?? '';
-                    $recDate = $d['date'] ?? '';
-                    if ($dateFrom !== '' && $recDate < $dateFrom) continue;
-                    if ($dateTo !== '' && $recDate > $dateTo) continue;
-                    $records[] = $d;
-                }
-            }
-        } catch (\Exception $e) {}
+            return $this->json_success($this->_substitute_svc()->getSubstitutes(
+                trim($this->input->post('date')      ?? ''),
+                trim($this->input->post('date_from') ?? ''),
+                trim($this->input->post('date_to')   ?? '')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
+        }
+    }
 
-        usort($records, fn($a, $b) => strcmp($b['date'] ?? '', $a['date'] ?? ''));
-        if ($date === '' && $dateFrom === '' && $dateTo === '') {
-            $records = array_slice($records, 0, 100);
+    /**
+     * Normalize a substitute doc for API response — emit BOTH camelCase
+     * (canonical) and snake_case (legacy) keys so existing JS clients keep
+     * working through the migration window.
+     */
+    private function _substitute_response_shape(array $d): array
+    {
+        // Top-level identity fields
+        $absentId   = $d['absentTeacherId']   ?? $d['absent_teacher_id']   ?? '';
+        $absentName = $d['absentTeacherName'] ?? $d['absent_teacher_name'] ?? '';
+        $createdBy  = $d['createdByName']     ?? $d['created_by']          ?? '';
+        $updatedBy  = $d['updatedByName']     ?? $d['updated_by']          ?? '';
+
+        $d['absentTeacherId']     = $absentId;
+        $d['absent_teacher_id']   = $absentId;
+        $d['absentTeacherName']   = $absentName;
+        $d['absent_teacher_name'] = $absentName;
+        $d['createdByName']       = $createdBy;
+        $d['created_by']          = $createdBy;
+        $d['updatedByName']       = $updatedBy;
+        $d['updated_by']          = $updatedBy;
+
+        // Per-assignment fields inside `assignments[]`
+        if (isset($d['assignments']) && is_array($d['assignments'])) {
+            $d['assignments'] = array_map(function ($a) {
+                if (!is_array($a)) return $a;
+                $sid = $a['substituteTeacherId']   ?? $a['substitute_teacher_id']   ?? '';
+                $snm = $a['substituteTeacherName'] ?? $a['substitute_teacher_name'] ?? '';
+                $a['substituteTeacherId']     = $sid;
+                $a['substitute_teacher_id']   = $sid;
+                $a['substituteTeacherName']   = $snm;
+                $a['substitute_teacher_name'] = $snm;
+                return $a;
+            }, $d['assignments']);
         }
 
-        // Auto-complete: mark past-date "assigned" records as "completed"
-        $today = date('Y-m-d');
-        foreach ($records as &$rec) {
-            if (($rec['status'] ?? '') === 'assigned' && ($rec['date'] ?? '') < $today) {
-                $rec['status'] = 'completed';
-                // Async update in Firestore
-                $recId = $rec['id'] ?? '';
-                if ($recId !== '') {
-                    try {
-                        $fsDocId = "{$this->school_id}_{$recId}";
-                        $this->firebase->firestoreSet('substitutes', $fsDocId, [
-                            'status' => 'completed', 'updatedAt' => date('c'), 'updated_by' => 'system'
-                        ], true);
-                    } catch (\Exception $e) {}
-                }
-            }
-        }
-        unset($rec);
-
-        return $this->json_success(['substitutes' => $records]);
+        return $d;
     }
 
     public function save_substitute()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes');
-
-        $id         = trim($this->input->post('id') ?? '');
-        $dateStr    = trim($this->input->post('date') ?? '');
-        $absentId   = trim($this->input->post('absent_teacher_id') ?? '');
-        $absentName = trim($this->input->post('absent_teacher_name') ?? '');
-        $reason     = trim($this->input->post('reason') ?? '');
-
-        if (empty($dateStr) || empty($absentId)) {
-            return $this->json_error('Date and absent teacher are required');
-        }
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateStr) || !strtotime($dateStr)) {
-            return $this->json_error('Invalid date format');
-        }
-
-        // Parse assignments array (new per-period format)
-        $assignmentsRaw = $this->input->post('assignments');
-        $assignments = is_string($assignmentsRaw) ? json_decode($assignmentsRaw, true) : $assignmentsRaw;
-
-        // Legacy flat format fallback
-        if (!is_array($assignments) || empty($assignments)) {
-            $substituteId   = trim($this->input->post('substitute_teacher_id') ?? '');
-            $substituteName = trim($this->input->post('substitute_teacher_name') ?? '');
-            $classSection   = $this->safe_path_segment(trim($this->input->post('class_section') ?? ''), 'class_section');
-            $subject        = trim($this->input->post('subject') ?? '');
-            $periodsRaw     = $this->input->post('periods');
-            $periods = is_string($periodsRaw) ? json_decode($periodsRaw, true) : $periodsRaw;
-            if (!is_array($periods)) $periods = [];
-            $periods = array_values(array_unique(array_filter(array_map('intval', $periods), fn($p) => $p >= 1)));
-
-            if (empty($substituteId) || empty($classSection) || empty($periods)) {
-                return $this->json_error('Assignments data or legacy fields (substitute, class, periods) required');
-            }
-            if ($absentId === $substituteId) {
-                return $this->json_error('Absent teacher and substitute cannot be the same person');
-            }
-
-            // Convert legacy format to assignments array
-            $assignments = [];
-            foreach ($periods as $pn) {
-                $assignments[] = [
-                    'periodNumber'            => $pn,
-                    'subject'                 => $subject,
-                    'className'               => $classSection,
-                    'section'                 => '',
-                    'substitute_teacher_id'   => $substituteId,
-                    'substitute_teacher_name' => $substituteName,
-                ];
-            }
-        }
-
-        // Validate each assignment
-        $dt = new \DateTime($dateStr);
-        $dayOfWeek = $dt->format('l');
-
-        // Load timetable data for conflict checking
-        $ttDocs = [];
-        $busyMap = []; // [teacherId][periodNum] => true
         try {
-            $ttDocs = $this->firebase->firestoreQuery('timetables', [
-                ['schoolId', '==', $this->school_name],
-                ['session', '==', $this->session_year],
-                ['day', '==', $dayOfWeek],
-            ], null, 'ASC', 100);
-            foreach ($ttDocs as $doc) {
-                $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                foreach (($d['periods'] ?? []) as $p) {
-                    $tid = $p['teacherId'] ?? '';
-                    $pn  = (int) ($p['periodNumber'] ?? 0);
-                    if ($tid !== '' && ($p['subject'] ?? '') !== '') {
-                        $busyMap[$tid][$pn] = true;
-                    }
-                }
-            }
-        } catch (\Exception $e) {}
-
-        // Load existing substitutes for duplicate/conflict detection (Firestore-first)
-        $existingSubs = [];
-        try {
-            $fsDocs = $this->fs->sessionWhere('substitutes', [['date', '==', $dateStr]], null, 'ASC', 200);
-            foreach ($fsDocs as $doc) {
-                $d = $doc['data'] ?? $doc;
-                $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                $d['id'] = $d['id'] ?? '';
-                if (($d['status'] ?? '') === 'cancelled') continue;
-                if ($id !== '' && ($d['id'] ?? '') === $id) continue;
-                $existingSubs[] = $d;
-            }
-        } catch (\Exception $e) {}
-
-        // Validate each assignment
-        $cleanAssignments = [];
-        foreach ($assignments as $a) {
-            $pn    = (int) ($a['periodNumber'] ?? 0);
-            $subId = trim($a['substitute_teacher_id'] ?? '');
-            $subNm = trim($a['substitute_teacher_name'] ?? '');
-            if ($pn < 1 || empty($subId)) continue;
-
-            if ($subId === $absentId) {
-                return $this->json_error("Cannot assign absent teacher as substitute for Period {$pn}");
-            }
-
-            // Check: substitute teacher's own timetable conflict
-            if (isset($busyMap[$subId][$pn])) {
-                return $this->json_error("{$subNm} already teaches their own class during Period {$pn} on {$dayOfWeek}");
-            }
-
-            // Check: substitute teacher already covering another substitute at same period
-            foreach ($existingSubs as $ex) {
-                $exAssigns = $ex['assignments'] ?? [];
-                if (!empty($exAssigns)) {
-                    foreach ($exAssigns as $ea) {
-                        if ((int)($ea['periodNumber'] ?? 0) === $pn && ($ea['substitute_teacher_id'] ?? '') === $subId) {
-                            return $this->json_error("{$subNm} is already covering another substitution at Period {$pn} on this date");
-                        }
-                    }
-                }
-                // Legacy format: check flat substitute_teacher_id + periods array
-                if (($ex['substitute_teacher_id'] ?? '') === $subId) {
-                    $exPeriods = $ex['periods'] ?? [];
-                    if (is_array($exPeriods) && in_array($pn, $exPeriods)) {
-                        return $this->json_error("{$subNm} is already covering another substitution at Period {$pn} on this date");
-                    }
-                }
-            }
-
-            // Check: same absent teacher already has this period covered
-            foreach ($existingSubs as $ex) {
-                if (($ex['absent_teacher_id'] ?? '') !== $absentId) continue;
-                $exAssigns = $ex['assignments'] ?? [];
-                if (!empty($exAssigns)) {
-                    foreach ($exAssigns as $ea) {
-                        if ((int)($ea['periodNumber'] ?? 0) === $pn) {
-                            return $this->json_error("Period {$pn} for this teacher is already covered by another substitute record");
-                        }
-                    }
-                }
-                $exPeriods = $ex['periods'] ?? [];
-                if (is_array($exPeriods) && in_array($pn, $exPeriods)) {
-                    return $this->json_error("Period {$pn} for this teacher is already covered by another substitute record");
-                }
-            }
-
-            $cleanAssignments[] = [
-                'periodNumber'            => $pn,
-                'subject'                 => trim($a['subject'] ?? ''),
-                'className'               => trim($a['className'] ?? ''),
-                'section'                 => trim($a['section'] ?? ''),
-                'substitute_teacher_id'   => $subId,
-                'substitute_teacher_name' => $subNm,
-            ];
+            // NOTE: class_section + subject are LEGACY-FALLBACK fields only —
+            // used when the new `assignments[]` array is empty. Pass raw (do NOT
+            // call safe_path_segment unconditionally; it 400s on empty input
+            // and would block the modern path where assignments[] is supplied).
+            // The service runs sanitization only when actually using the legacy path.
+            return $this->json_success($this->_substitute_svc()->saveSubstitute(
+                trim($this->input->post('id')   ?? ''),
+                trim($this->input->post('date') ?? ''),
+                trim($this->input->post('absentTeacherId')   ?? $this->input->post('absent_teacher_id')   ?? ''),
+                trim($this->input->post('absentTeacherName') ?? $this->input->post('absent_teacher_name') ?? ''),
+                $this->input->post('assignments'),
+                trim($this->input->post('reason') ?? ''),
+                trim($this->input->post('substituteTeacherId')   ?? $this->input->post('substitute_teacher_id')   ?? ''),
+                trim($this->input->post('substituteTeacherName') ?? $this->input->post('substitute_teacher_name') ?? ''),
+                trim($this->input->post('class_section') ?? ''),
+                trim($this->input->post('subject') ?? ''),
+                $this->input->post('periods')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
-
-        if (empty($cleanAssignments)) {
-            return $this->json_error('No valid period assignments found');
-        }
-
-        usort($cleanAssignments, fn($a, $b) => $a['periodNumber'] - $b['periodNumber']);
-        $adminName = $this->session->userdata('admin_name') ?? 'Admin';
-
-        $data = [
-            'date'                => $dateStr,
-            'absent_teacher_id'   => $absentId,
-            'absent_teacher_name' => $absentName,
-            'assignments'         => $cleanAssignments,
-            'reason'              => $reason,
-            'updated_at'          => date('Y-m-d H:i:s'),
-            'updated_by'          => $adminName,
-        ];
-
-        if ($id !== '') {
-            $fsDocId = "{$this->school_id}_{$id}";
-            $current = null;
-            try { $current = $this->firebase->firestoreGet('substitutes', $fsDocId); } catch (\Exception $e) {}
-            $data['status']     = is_array($current) ? ($current['status'] ?? 'assigned') : 'assigned';
-            $data['createdAt']  = is_array($current) ? ($current['createdAt'] ?? $current['created_at'] ?? date('c')) : date('c');
-            $data['created_by'] = is_array($current) ? ($current['created_by'] ?? $adminName) : $adminName;
-        } else {
-            $id = 'SUB_' . uniqid();
-            $data['status']     = 'assigned';
-            $data['createdAt']  = date('c');
-            $data['created_by'] = $adminName;
-        }
-
-        // Firestore-first write
-        $fsDocId = "{$this->school_id}_{$id}";
-        $fsData = array_merge($data, [
-            'schoolId'  => $this->school_id,
-            'session'   => $this->session_year,
-            'updatedAt' => date('c'),
-        ]);
-        $this->firebase->firestoreSet('substitutes', $fsDocId, $fsData, true);
-
-        return $this->json_success(['id' => $id, 'assignments_count' => count($cleanAssignments)]);
     }
 
     public function update_substitute()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes');
-        $id     = trim($this->input->post('id') ?? '');
-        $status = trim($this->input->post('status') ?? '');
-
-        if (empty($id)) return $this->json_error('Substitute ID required');
-        if (!in_array($status, ['assigned', 'completed', 'cancelled'])) {
-            return $this->json_error('Invalid status');
+        try {
+            return $this->json_success($this->_substitute_svc()->updateSubstituteStatus(
+                trim($this->input->post('id')     ?? ''),
+                trim($this->input->post('status') ?? '')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
-
-        $adminName = $this->session->userdata('admin_name') ?? 'Admin';
-        $updateData = [
-            'status'     => $status,
-            'updatedAt'  => date('c'),
-            'updated_by' => $adminName,
-        ];
-
-        // Firestore-only
-        $fsDocId = "{$this->school_id}_{$id}";
-        $this->firebase->firestoreSet('substitutes', $fsDocId, $updateData, true);
-
-        return $this->json_success(['id' => $id, 'status' => $status]);
     }
 
     public function delete_substitute()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'manage_substitutes');
-        $id = trim($this->input->post('id') ?? '');
-        if (empty($id)) return $this->json_error('Substitute ID required');
-
-        // Firestore-only delete
-        $fsDocId = "{$this->school_id}_{$id}";
-        try { $this->firebase->firestoreDelete('substitutes', $fsDocId); } catch (\Exception $e) {}
-
-        return $this->json_success([]);
+        try {
+            return $this->json_success($this->_substitute_svc()->deleteSubstitute(
+                trim($this->input->post('id') ?? '')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
+        }
     }
 
     /**
@@ -1699,52 +1319,11 @@ class Academic extends MY_Controller
     public function get_timetable_settings()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_tt_settings');
-
-        // Firestore-only
-        $fsDocId = "{$this->school_id}_{$this->session_year}";
-        $settings = [];
         try {
-            $fsDoc = $this->firebase->firestoreGet('timetableSettings', $fsDocId);
-            if (is_array($fsDoc) && !empty($fsDoc)) $settings = $fsDoc;
-        } catch (\Exception $e) {
-            log_message('error', "get_timetable_settings Firestore read failed: " . $e->getMessage());
+            return $this->json_success($this->_timetable_svc()->getSettings());
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
-        if (!is_array($settings)) $settings = [];
-
-        // Normalize recesses (handle both new and legacy format)
-        $recesses = [];
-        if (isset($settings['Recesses']) && is_array($settings['Recesses'])) {
-            foreach ($settings['Recesses'] as $r) {
-                if (is_array($r) && isset($r['after_period'], $r['duration'])) {
-                    $recesses[] = ['after_period' => (int)$r['after_period'], 'duration' => (int)$r['duration']];
-                }
-            }
-        } elseif (isset($settings['Recess_breaks']) && is_array($settings['Recess_breaks'])) {
-            // Legacy backward compat
-            foreach ($settings['Recess_breaks'] as $range) {
-                if (!is_string($range) || strpos($range, '-') === false) continue;
-                $parts = array_map('trim', explode('-', $range));
-                $fromMin = $this->_time_to_minutes($parts[0]);
-                $toMin   = $this->_time_to_minutes($parts[1]);
-                if ($toMin > $fromMin) {
-                    $recesses[] = ['after_period' => null, 'duration' => $toMin - $fromMin];
-                }
-            }
-        }
-
-        // Working days (default Mon-Sat)
-        $defaultDays = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-        $workingDays = isset($settings['Working_days']) && is_array($settings['Working_days'])
-            ? $settings['Working_days'] : $defaultDays;
-
-        return $this->json_success([
-            'start_time'       => $settings['Start_time'] ?? '9:00AM',
-            'end_time'         => $settings['End_time'] ?? '3:00PM',
-            'no_of_periods'    => (int)($settings['No_of_periods'] ?? 6),
-            'length_of_period' => (float)($settings['Length_of_period'] ?? 45),
-            'recesses'         => $recesses,
-            'working_days'     => $workingDays,
-        ]);
     }
 
     /**
@@ -1753,107 +1332,17 @@ class Academic extends MY_Controller
     public function save_timetable_settings()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'save_tt_settings');
-
-        $startRaw = trim($this->input->post('start_time') ?? ''); // HH:mm (24h)
-        $endRaw   = trim($this->input->post('end_time') ?? '');   // HH:mm (24h)
-        $periods  = (int)($this->input->post('no_of_periods') ?? 0);
-        $recessRaw = $this->input->post('recesses') ?? '[]';
-        $recesses  = is_string($recessRaw) ? json_decode($recessRaw, true) : $recessRaw;
-        if (!is_array($recesses)) $recesses = [];
-
-        // Working days
-        $daysRaw     = $this->input->post('working_days') ?? '[]';
-        $workingDays = is_string($daysRaw) ? json_decode($daysRaw, true) : $daysRaw;
-        $allDays     = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
-        if (!is_array($workingDays) || empty($workingDays)) {
-            $workingDays = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+        try {
+            return $this->json_success($this->_timetable_svc()->saveSettings(
+                trim($this->input->post('start_time')    ?? ''),
+                trim($this->input->post('end_time')      ?? ''),
+                (int)($this->input->post('no_of_periods') ?? 0),
+                $this->input->post('recesses')     ?? '[]',
+                $this->input->post('working_days') ?? '[]'
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
-        $workingDays = array_values(array_intersect($workingDays, $allDays));
-
-        if (empty($startRaw) || empty($endRaw) || $periods <= 0) {
-            return $this->json_error('Start time, end time, and number of periods are required');
-        }
-
-        $startMin = $this->_time_to_minutes($startRaw);
-        $endMin   = $this->_time_to_minutes($endRaw);
-
-        if ($endMin <= $startMin) {
-            return $this->json_error('End time must be after start time');
-        }
-
-        // Validate and total recess minutes
-        $cleanRecesses = [];
-        $recessMinutes = 0;
-        foreach ($recesses as $r) {
-            if (!is_array($r)) continue;
-            $dur   = (int)($r['duration'] ?? 0);
-            $after = (int)($r['after_period'] ?? 0);
-            if ($dur > 0 && $after > 0 && $after < $periods) {
-                $cleanRecesses[] = ['after_period' => $after, 'duration' => $dur];
-                $recessMinutes += $dur;
-            }
-        }
-
-        $available = $endMin - $startMin - $recessMinutes;
-        if ($available <= 0) {
-            return $this->json_error('Recess duration exceeds available time');
-        }
-
-        $periodLength = round($available / $periods, 1);
-
-        // Convert 24h to AM/PM for Firebase storage (matches existing format)
-        $startAmPm = $this->_to_ampm($startRaw);
-        $endAmPm   = $this->_to_ampm($endRaw);
-
-        $data = [
-            'Start_time'       => $startAmPm,
-            'End_time'         => $endAmPm,
-            'No_of_periods'    => $periods,
-            'Length_of_period'  => $periodLength,
-            'Recesses'         => array_values($cleanRecesses),
-            'Working_days'     => $workingDays,
-        ];
-
-        // Firestore-first write
-        $fsDocId = "{$this->school_id}_{$this->session_year}";
-        $fsData = array_merge($data, [
-            'schoolId'  => $this->school_id,
-            'session'   => $this->session_year,
-            'updatedAt' => date('c'),
-        ]);
-        $this->firebase->firestoreSet('timetableSettings', $fsDocId, $fsData);
-
-        return $this->json_success(['length_of_period' => $periodLength, 'settings' => $data]);
-    }
-
-    /* ══════════════════════════════════════════════════════════════════════
-       PRIVATE HELPERS
-    ══════════════════════════════════════════════════════════════════════ */
-
-    private function _time_to_minutes(string $time): int
-    {
-        // Accept both "HH:mm" (24h) and "h:mmAM/PM" formats
-        $time = strtoupper(trim($time));
-        // Try AM/PM first
-        if (preg_match('/^(\d{1,2}):(\d{2})\s*(AM|PM)$/', $time, $m)) {
-            $h = (int)$m[1];
-            $min = (int)$m[2];
-            if ($m[3] === 'PM' && $h !== 12) $h += 12;
-            if ($m[3] === 'AM' && $h === 12) $h = 0;
-            return $h * 60 + $min;
-        }
-        // 24h format
-        if (strpos($time, ':') !== false) {
-            $parts = explode(':', $time);
-            return ((int)$parts[0] * 60) + (int)$parts[1];
-        }
-        return 0;
-    }
-
-    private function _to_ampm(string $time24): string
-    {
-        $dt = \DateTime::createFromFormat('H:i', trim($time24));
-        return $dt ? $dt->format('g:iA') : $time24;
     }
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -1928,89 +1417,15 @@ class Academic extends MY_Controller
     public function save_section_timetable()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'edit_timetable');
-
-        $class   = $this->safe_path_segment(trim($this->input->post('class_name') ?? ''), 'class_name');
-        $section = $this->safe_path_segment(trim($this->input->post('section_name') ?? ''), 'section_name');
-        $raw     = $this->input->post('timetable');
-
-        if (empty($class) || empty($section)) {
-            return $this->json_error('Class and section are required');
-        }
-
-        $timetable = is_string($raw) ? json_decode($raw, true) : $raw;
-        if (!is_array($timetable)) {
-            return $this->json_error('Invalid timetable data');
-        }
-
-        // Validate day keys
-        $validDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-        $clean = [];
-        foreach ($timetable as $day => $periods) {
-            if (!in_array($day, $validDays)) continue;
-            $clean[$day] = is_array($periods) ? $periods : [];
-        }
-
-        // ── Write to Firestore 'timetables' collection (Firestore-only) ──
-        // Phase 3 (2026-04-08): normalize class/section into the canonical
-        // shape (matches students/sections/subjectAssignments) so the Teacher
-        // app's `where('sectionKey','==', "Class 8th/Section A")` query
-        // actually matches. Previously this wrote raw POST values like
-        // "Class 8" / "A" which never matched canonical reads.
         try {
-            require_once APPPATH . 'libraries/Entity_firestore_sync.php';
-            $cs = Entity_firestore_sync::normalizeClassSection($class, $section);
-            $canonicalClass   = $cs['className'] !== '' ? $cs['className'] : $class;
-            $canonicalSection = $cs['section']   !== '' ? $cs['section']   : $section;
-            $sectionKey = ($canonicalClass !== '' && $canonicalSection !== '')
-                ? "{$canonicalClass}/{$canonicalSection}"
-                : "{$class}/{$section}";
-
-            $sn = $this->school_name;
-            $sy = $this->session_year;
-
-            foreach ($clean as $day => $periods) {
-                $safeKey = str_replace('/', '_', $sectionKey);
-                $docId = "{$sn}_{$sy}_{$safeKey}_{$day}";
-                $periodDocs = [];
-                $periodNum = 1;
-
-                foreach ($periods as $key => $entry) {
-                    if (!is_array($entry)) continue;
-                    $type = strtolower(trim($entry['type'] ?? 'class'));
-                    $isBreak = ($type === 'break' || $type === 'lunch'
-                        || stripos($key, 'Break') === 0 || strcasecmp($key, 'Lunch') === 0);
-
-                    $periodDocs[] = [
-                        'periodNumber' => is_numeric($key) ? intval($key) : $periodNum,
-                        'subject'      => $isBreak ? '' : ($entry['subject'] ?? $entry['Subject'] ?? ''),
-                        'teacher'      => $isBreak ? '' : ($entry['teacher'] ?? $entry['Teacher'] ?? ''),
-                        'teacherId'    => $entry['teacherId'] ?? $entry['teacher_id'] ?? '',
-                        'startTime'    => $entry['startTime'] ?? $entry['start_time'] ?? '',
-                        'endTime'      => $entry['endTime'] ?? $entry['end_time'] ?? '',
-                        'room'         => $entry['room'] ?? $entry['Room'] ?? '',
-                        'type'         => $isBreak ? ($type === 'lunch' ? 'lunch' : 'break') : 'class',
-                    ];
-                    $periodNum++;
-                }
-
-                $this->firebase->firestoreSet('timetables', $docId, [
-                    'schoolId'    => $sn,
-                    'session'     => $sy,
-                    'className'   => $canonicalClass,
-                    'section'     => $canonicalSection,
-                    'classOrder'  => $cs['classOrder'],
-                    'sectionCode' => $cs['sectionCode'],
-                    'sectionKey'  => $sectionKey,
-                    'day'         => $day,
-                    'periods'     => $periodDocs,
-                    'updatedAt'   => date('c'),
-                ]);
-            }
-        } catch (\Exception $e) {
-            log_message('error', "save_section_timetable: Firestore sync failed: " . $e->getMessage());
+            return $this->json_success($this->_timetable_svc()->saveSectionTimetable(
+                $this->safe_path_segment(trim($this->input->post('class_name')   ?? ''), 'class_name'),
+                $this->safe_path_segment(trim($this->input->post('section_name') ?? ''), 'section_name'),
+                $this->input->post('timetable')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
-
-        return $this->json_success(['message' => 'Timetable saved successfully']);
     }
 
     /**
@@ -2233,292 +1648,15 @@ class Academic extends MY_Controller
     public function auto_generate_timetable()
     {
         $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'edit_timetable');
-
-        // Allow up to 5 minutes for large schools
-        set_time_limit(300);
-
-        $confirm    = ($this->input->post('confirm') === '1');
-        $scopeClass = trim($this->input->post('class_key') ?? '');
-        $school     = $this->school_name;
-        $session    = $this->session_year;
-
-        // ── 1. Read period settings — Firestore-only ──
-        $settings = null;
         try {
-            $settings = $this->firebase->firestoreGet('timetableSettings', "{$this->school_id}_{$session}");
-        } catch (\Exception $e) {}
-        if (!is_array($settings)) $settings = [];
-        $periodsPerDay = (int) ($settings['No_of_periods'] ?? 0);
-        if ($periodsPerDay <= 0) {
-            return $this->json_error('Period Scheduling not configured. Set periods per day first.');
+            return $this->json_success($this->_timetable_svc()->autoGenerate(
+                ($this->input->post('confirm') === '1'),
+                ($this->input->post('force_overwrite') === '1'),
+                trim($this->input->post('class_key') ?? '')
+            ));
+        } catch (Service_exception $e) {
+            return $this->json_error($e->getMessage());
         }
-        $workingDays = isset($settings['Working_days']) && is_array($settings['Working_days'])
-            ? $settings['Working_days']
-            : ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-        $numDays = count($workingDays);
-        $startTime  = $settings['Start_time'] ?? '09:00AM';
-        $periodLen  = (float) ($settings['Length_of_period'] ?? 45);
-        $recesses   = isset($settings['Recesses']) && is_array($settings['Recesses'])
-            ? $settings['Recesses'] : [];
-
-        // Compute period start/end times
-        $periodTimes = $this->_compute_period_times($startTime, $periodsPerDay, $periodLen, $recesses);
-
-        // ── 2. Read all subject assignments from Firestore ──
-        $this->load->library('subject_assignment_service', null, 'sas');
-        $this->sas->init($this->fs, $this->firebase, $this->school_id, $this->school_name, $session);
-
-        // Get all sections
-        $sectionDocs = $this->fs->schoolWhere('sections', [['session', '==', $session]]);
-        $sections = [];
-        foreach ($sectionDocs as $doc) {
-            $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-            $cn = $d['className'] ?? '';
-            $sc = $d['section'] ?? '';
-            if ($cn === '' || $sc === '') continue;
-            if ($scopeClass !== '' && $cn !== $this->_normalize_class_label($scopeClass)) continue;
-            $sections[] = ['className' => $cn, 'section' => $sc, 'key' => "{$cn}/{$sc}"];
-        }
-
-        if (empty($sections)) {
-            return $this->json_error('No sections found. Create classes and sections in School Config first.');
-        }
-
-        // Load ALL assignments in ONE bulk query (not per-section — saves 19 Firestore calls)
-        $allByClass = $this->sas->getAllForSession();
-        $sectionAssignments = []; // [sectionKey] => [{subject, teacherId, teacherName, periodsPerWeek}]
-        foreach ($sections as $sec) {
-            $cn = $sec['className'];
-            $sc = $sec['section'];
-            $sk = $sec['key'];
-            // Match assignments: exact section OR class-wide (empty section)
-            $matched = [];
-            foreach (($allByClass[$cn] ?? []) as $a) {
-                $aSec = $a['section'] ?? '';
-                if ($aSec === $sc || $aSec === '') {
-                    $pw = (int) ($a['periodsPerWeek'] ?? 0);
-                    if ($pw <= 0) continue;
-                    $matched[] = [
-                        'subject'     => ($a['subjectName'] ?? '') ?: ($a['subjectCode'] ?? ''),
-                        'code'        => $a['subjectCode'] ?? '',
-                        'teacherId'   => $a['teacherId'] ?? '',
-                        'teacherName' => $a['teacherName'] ?? '',
-                        'periodsPerWeek' => $pw,
-                    ];
-                }
-            }
-            $sectionAssignments[$sk] = $matched;
-        }
-
-        // ── 3. Run the algorithm ──
-        $hardSubjects = ['Mathematics', 'Math', 'Science', 'Physics', 'Chemistry', 'Biology', 'English'];
-        $grid = [];         // [sectionKey][day] => [periodIdx => {subject, teacherId, teacherName, type}]
-        $teacherBusy = [];  // [teacherId][day][periodIdx] => sectionKey (tracks conflicts)
-
-        foreach ($sections as $sec) {
-            $sk = $sec['key'];
-            $items = $sectionAssignments[$sk] ?? [];
-            if (empty($items)) continue;
-
-            // Calculate per-day distribution for each subject
-            // E.g. 5 periods over 6 days → [1,1,1,1,1,0] spread evenly
-            $subjectSlots = []; // [{subject, teacherId, ...}] flat list — one entry per needed period
-            foreach ($items as $item) {
-                for ($i = 0; $i < $item['periodsPerWeek']; $i++) {
-                    $subjectSlots[] = $item;
-                }
-            }
-
-            // Sort: hard subjects first (get morning slots), then by periods descending
-            usort($subjectSlots, function ($a, $b) use ($hardSubjects) {
-                $aHard = in_array($a['subject'], $hardSubjects) ? 0 : 1;
-                $bHard = in_array($b['subject'], $hardSubjects) ? 0 : 1;
-                if ($aHard !== $bHard) return $aHard - $bHard;
-                return $b['periodsPerWeek'] - $a['periodsPerWeek'];
-            });
-
-            // Initialize grid for this section
-            foreach ($workingDays as $day) {
-                $grid[$sk][$day] = array_fill(0, $periodsPerDay, null);
-            }
-
-            // Track subjects placed per day for spread constraint
-            $daySubjectCount = []; // [day][subject] => count
-            foreach ($workingDays as $day) $daySubjectCount[$day] = [];
-
-            // Place each subject slot
-            foreach ($subjectSlots as $slot) {
-                $placed = false;
-                $subj = $slot['subject'];
-                $tid  = $slot['teacherId'];
-
-                // Find the best (day, period) for this slot
-                // Priority: day with fewest of this subject, then earliest free period
-                // Also ensure teacher not double-booked
-                $candidates = [];
-                foreach ($workingDays as $di => $day) {
-                    $dayCount = $daySubjectCount[$day][$subj] ?? 0;
-                    for ($p = 0; $p < $periodsPerDay; $p++) {
-                        if ($grid[$sk][$day][$p] !== null) continue; // slot taken
-                        if ($tid !== '' && isset($teacherBusy[$tid][$day][$p])) continue; // teacher busy
-                        $candidates[] = [
-                            'day' => $day, 'dayIdx' => $di, 'period' => $p,
-                            'dayCount' => $dayCount, 'score' => $dayCount * 100 + $p,
-                        ];
-                    }
-                }
-
-                // Sort candidates by score (fewest same-subject on that day, then earliest period)
-                usort($candidates, function ($a, $b) { return $a['score'] - $b['score']; });
-
-                if (!empty($candidates)) {
-                    $best = $candidates[0];
-                    $grid[$sk][$best['day']][$best['period']] = [
-                        'subject'     => $subj,
-                        'teacherId'   => $tid,
-                        'teacherName' => $slot['teacherName'],
-                        'type'        => 'class',
-                    ];
-                    if ($tid !== '') {
-                        $teacherBusy[$tid][$best['day']][$best['period']] = $sk;
-                    }
-                    $daySubjectCount[$best['day']][$subj] = ($daySubjectCount[$best['day']][$subj] ?? 0) + 1;
-                }
-                // If no valid slot found, the period is simply unallocated (section has too many periods)
-            }
-        }
-
-        // ── 4. Build response / write ──
-        $result = [
-            'sections_generated' => 0,
-            'conflicts'          => 0,
-            'unallocated'        => 0,
-            'timetable'          => [],
-        ];
-
-        require_once APPPATH . 'libraries/Entity_firestore_sync.php';
-
-        foreach ($grid as $sk => $days) {
-            $parts = explode('/', $sk);
-            $className = $parts[0] ?? '';
-            $sectionName = $parts[1] ?? '';
-            $cs = Entity_firestore_sync::normalizeClassSection($className, $sectionName);
-            $canonClass = $cs['className'] ?: $className;
-            $canonSection = $cs['section'] ?: $sectionName;
-            $sectionKey = "{$canonClass}/{$canonSection}";
-
-            $sectionData = [];
-            foreach ($days as $day => $periods) {
-                $periodDocs = [];
-                $freeCount = 0;
-                foreach ($periods as $pi => $cell) {
-                    $time = $periodTimes[$pi] ?? ['start' => '', 'end' => ''];
-                    if ($cell === null) {
-                        $freeCount++;
-                        $periodDocs[] = [
-                            'periodNumber' => $pi + 1,
-                            'subject'      => '',
-                            'teacher'      => '',
-                            'teacherId'    => '',
-                            'startTime'    => $time['start'],
-                            'endTime'      => $time['end'],
-                            'room'         => '',
-                            'type'         => 'class', // empty class period
-                        ];
-                    } else {
-                        $periodDocs[] = [
-                            'periodNumber' => $pi + 1,
-                            'subject'      => $cell['subject'],
-                            'teacher'      => $cell['teacherName'],
-                            'teacherId'    => $cell['teacherId'],
-                            'startTime'    => $time['start'],
-                            'endTime'      => $time['end'],
-                            'room'         => '',
-                            'type'         => $cell['type'],
-                        ];
-                    }
-                }
-                $result['unallocated'] += $freeCount;
-                $sectionData[$day] = $periodDocs;
-
-                if ($confirm) {
-                    // Write to Firestore — replace / with _ in doc ID (Firestore rejects /)
-                    $safeKey = str_replace('/', '_', $sectionKey);
-                    $docId = "{$this->school_name}_{$session}_{$safeKey}_{$day}";
-                    try {
-                        $this->firebase->firestoreSet('timetables', $docId, [
-                            'schoolId'    => $this->school_name,
-                            'session'     => $session,
-                            'className'   => $canonClass,
-                            'section'     => $canonSection,
-                            'classOrder'  => $cs['classOrder'],
-                            'sectionCode' => $cs['sectionCode'],
-                            'sectionKey'  => $sectionKey,
-                            'day'         => $day,
-                            'periods'     => $periodDocs,
-                            'updatedAt'   => date('c'),
-                        ]);
-                    } catch (\Exception $e) {
-                        log_message('error', "auto_generate: Firestore write failed [{$sectionKey}/{$day}]: " . $e->getMessage());
-                        $result['conflicts']++;
-                    }
-                }
-            }
-
-            $result['sections_generated']++;
-            $result['timetable'][$sk] = $sectionData;
-        }
-
-        $result['mode'] = $confirm ? 'saved' : 'preview';
-        return $this->json_success($result);
-    }
-
-    /**
-     * Compute start/end times for each period based on settings.
-     */
-    private function _compute_period_times(string $startTime, int $numPeriods, float $periodLen, array $recesses): array
-    {
-        $times = [];
-        // Parse start time
-        $startMin = $this->_time_to_minutes($startTime);
-        $currentMin = $startMin;
-
-        // Build recess lookup: after_period => duration_minutes
-        $recessAfter = [];
-        foreach ($recesses as $r) {
-            $ap = $r['after_period'] ?? null;
-            $dur = (int) ($r['duration'] ?? 0);
-            if ($ap !== null && $dur > 0) {
-                $recessAfter[(int) $ap] = $dur;
-            }
-        }
-
-        for ($i = 0; $i < $numPeriods; $i++) {
-            $start = $currentMin;
-            $end   = $currentMin + (int) $periodLen;
-            $times[] = [
-                'start' => $this->_minutes_to_time($start),
-                'end'   => $this->_minutes_to_time($end),
-            ];
-            $currentMin = $end;
-
-            // Add recess after this period if configured
-            $periodNum = $i + 1;
-            if (isset($recessAfter[$periodNum])) {
-                $currentMin += $recessAfter[$periodNum];
-            }
-        }
-
-        return $times;
-    }
-
-    private function _minutes_to_time(int $minutes): string
-    {
-        $h = intdiv($minutes, 60);
-        $m = $minutes % 60;
-        $ampm = $h >= 12 ? 'PM' : 'AM';
-        $h12 = $h % 12 ?: 12;
-        return sprintf('%d:%02d%s', $h12, $m, $ampm);
     }
 
     // ══════════════════════════════════════════════════════════════════════

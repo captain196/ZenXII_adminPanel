@@ -192,18 +192,43 @@ class Accounting extends MY_Controller
         $this->_fs_ledger_update($entryId, ['status' => 'deleted', 'deleted_at' => date('c')]);
     }
 
-    /** Set a ledger index entry. */
+    /**
+     * Set a ledger index entry.
+     *
+     * Phase 2 (R-P4) — empty catch replaced with structured logging
+     * 2026-05-10. Index writes used to silently swallow exceptions,
+     * leaving "ledger exists, index missing" drift undetectable.
+     * Failures now emit ACC_IDX_SET_FAILED so the index-drift sweep
+     * (AccountingReconciler::_sweepIndexDrift) and the operator log
+     * scan can both surface stuck entries.
+     */
     private function _fs_idx_set(string $indexKey, $value = true): void
     {
-        try { $this->firebase->firestoreSet('accounting', $this->fs->docId($indexKey), ['schoolId' => $this->school_id, 'session' => $this->session_year, 'type' => 'index', 'value' => $value], true); }
-        catch (\Exception $e) {}
+        try {
+            $this->firebase->firestoreSet('accounting', $this->fs->docId($indexKey),
+                ['schoolId' => $this->school_id, 'session' => $this->session_year,
+                 'type' => 'index', 'value' => $value], true);
+        } catch (\Exception $e) {
+            log_message('error',
+                "ACC_IDX_SET_FAILED indexKey={$indexKey} schoolId={$this->school_id} "
+                . "session={$this->session_year} error=" . $e->getMessage());
+        }
     }
 
-    /** Delete a ledger index entry. */
+    /**
+     * Delete a ledger index entry. Same R-P4 treatment — failures are
+     * now logged structurally so the sweep can detect orphan indexes
+     * (entry deleted, index lingering).
+     */
     private function _fs_idx_delete(string $indexKey): void
     {
-        try { $this->firebase->firestoreDelete('accounting', $this->fs->docId($indexKey)); }
-        catch (\Exception $e) {}
+        try {
+            $this->firebase->firestoreDelete('accounting', $this->fs->docId($indexKey));
+        } catch (\Exception $e) {
+            log_message('error',
+                "ACC_IDX_DELETE_FAILED indexKey={$indexKey} schoolId={$this->school_id} "
+                . "session={$this->session_year} error=" . $e->getMessage());
+        }
     }
 
     /** Get/set closing balance. */
@@ -274,6 +299,164 @@ class Accounting extends MY_Controller
     private function _fs_lock_set(array $data): void
     {
         try { $this->fs->setEntity('accountingConfig', 'period_lock', $data); } catch (\Exception $e) {}
+    }
+
+    // =========================================================================
+    //  L2 — DUAL-WRITE TO CANONICAL SESSION-SCOPED PERIOD-LOCK DOC
+    //  Added 2026-05-10. Pairs with the L1.0 entry gate and the L1.1
+    //  backfill. Both lock_period() and reopen_period() now write the
+    //  canonical doc (`accountingConfig/{schoolId}_{session}_periodLock`,
+    //  camelCase, session-scoped) in addition to the legacy controller
+    //  doc, and invalidate the APCU cache so in-flight requests see
+    //  the new state without waiting for the 60 s TTL.
+    //
+    //  Why both writes are kept:
+    //    Controller doc remains authoritative for legacy readers
+    //    (manual entry / finalize / delete via _check_period_lock).
+    //    Canonical doc is required by Operations_accounting paths
+    //    (fee, refund, hostel, inventory journal posts) which were
+    //    previously decorative because no writer existed. L4 will
+    //    eventually deprecate the controller doc; until then both
+    //    must stay in sync for cross-tier coherence.
+    // =========================================================================
+
+    /**
+     * Map a YYYY-MM-DD date to its India-FY academic session string.
+     *   2026-04-01 → "2026-27"
+     *   2026-03-31 → "2025-26"
+     * Returns "" for malformed input — caller should fall back to the
+     * active session_year.
+     */
+    private function _session_for_date(string $yyyymmdd): string
+    {
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $yyyymmdd)) return '';
+        $parts = explode('-', $yyyymmdd);
+        $y = (int) $parts[0];
+        $m = (int) $parts[1];
+        if ($m >= 4) {
+            return $y . '-' . str_pad((string) (($y + 1) % 100), 2, '0', STR_PAD_LEFT);
+        }
+        return ($y - 1) . '-' . str_pad((string) ($y % 100), 2, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * Lazy-load + init the Accounting_period_lock library on $this so
+     * we can call invalidateCache() after a dual-write. Mirrors the
+     * pattern Operations_accounting uses for its own lock validation
+     * but lives on the controller surface where lock_period and
+     * reopen_period need it.
+     */
+    private function _ensureAcctLockLoaded(): void
+    {
+        if (isset($this->acctLock)) return;
+        try {
+            $this->load->library('Accounting_cache',       null, 'acctCache');
+            $this->load->library('Accounting_period_lock', null, 'acctLock');
+            $this->acctCache->init($this->school_name, $this->session_year);
+            $schoolFs = '';
+            try { $schoolFs = $this->fs->schoolId(); } catch (\Throwable $_) {}
+            $this->acctLock->init(
+                $this->firebase,
+                $this->acctCache,
+                $schoolFs !== '' ? $schoolFs : $this->school_name,
+                $this->session_year
+            );
+        } catch (\Throwable $e) {
+            log_message('warning', '_ensureAcctLockLoaded failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Write the canonical session-scoped period-lock doc (camelCase
+     * schema, session-suffixed doc ID) and invalidate the APCU cache.
+     *
+     * Idempotent: safe to call on every lock_period / reopen_period.
+     * Best-effort: failures are logged but do NOT throw, because the
+     * controller doc has already been written by the caller and the
+     * dual-write should not break legacy compatibility if the
+     * canonical write transiently fails. Reconciler-style detection
+     * of dual-write drift is a future enhancement.
+     *
+     * @param array       $controllerPayload  the snake_case payload
+     *                                        just written via _fs_lock_set
+     * @param string|null $sessionOverride    used by reopen_period to
+     *                                        ensure the canonical doc
+     *                                        for the SAME session being
+     *                                        reopened is the one updated
+     *                                        (when locked_until is empty
+     *                                        because of a full unlock)
+     */
+    private function _fs_canonical_lock_set(array $controllerPayload, ?string $sessionOverride = null): void
+    {
+        $lockedUntil = trim((string) ($controllerPayload['locked_until'] ?? ''));
+
+        // Resolve the session for the canonical doc ID.
+        $session = $sessionOverride ?? '';
+        if ($session === '' && $lockedUntil !== '') {
+            $session = $this->_session_for_date($lockedUntil);
+        }
+        if ($session === '') $session = (string) $this->session_year;
+        if ($session === '') {
+            log_message('warning', '_fs_canonical_lock_set: no session resolvable; skipping canonical write');
+            return;
+        }
+
+        $schoolFs = '';
+        try { $schoolFs = $this->fs->schoolId(); } catch (\Throwable $_) {}
+        if ($schoolFs === '') {
+            log_message('warning', '_fs_canonical_lock_set: no schoolFs; skipping canonical write');
+            return;
+        }
+
+        $docId   = "{$schoolFs}_{$session}_periodLock";
+        $payload = [
+            'schoolId'    => $schoolFs,
+            'session'     => $session,
+            // lockedUntil = '' means "fully unlocked" per the library's
+            // validate() short-circuit (see Accounting_period_lock.php:101).
+            // We still write the doc so the audit-history fields persist.
+            'lockedUntil' => $lockedUntil,
+            'lockedBy'    => (string) ($controllerPayload['locked_by']    ?? ''),
+            'lockedAt'    => (string) ($controllerPayload['locked_at']    ?? ''),
+            'reopenedBy'  => (string) ($controllerPayload['reopened_by']  ?? ''),
+            'reopenedAt'  => (string) ($controllerPayload['reopened_at']  ?? ''),
+            // close_reason for lock, reopen_reason for reopen — both fold
+            // into the canonical `reason` field for unified read shape.
+            'reason'      => (string) (
+                $controllerPayload['close_reason']  ??
+                $controllerPayload['reopen_reason'] ??
+                ''
+            ),
+        ];
+
+        try {
+            $this->firebase->firestoreSet('accountingConfig', $docId, $payload, /* merge */ false);
+            log_message('info',
+                "[ACC_CANONICAL_LOCK_WRITE] doc={$docId} lockedUntil={$lockedUntil} "
+                . "lockedBy=" . $payload['lockedBy']);
+        } catch (\Throwable $e) {
+            // Dual-write failure does NOT break the request — controller
+            // doc is already authoritative for legacy paths. Log loud
+            // so reconciler / operator can detect drift between the two
+            // docs and replay the canonical write.
+            log_message('error',
+                "[ACC_CANONICAL_LOCK_WRITE_FAILED] doc={$docId} error=" . $e->getMessage());
+            return;
+        }
+
+        // APCU cache invalidation — must follow EVERY canonical write
+        // per the M1A.6 docblock contract. Without this, in-flight
+        // requests see stale lock state for up to 60 s after a
+        // lock/reopen action.
+        try {
+            $this->_ensureAcctLockLoaded();
+            if (isset($this->acctLock)) {
+                $this->acctLock->invalidateCache();
+            }
+        } catch (\Throwable $e) {
+            log_message('warning',
+                "[ACC_CANONICAL_LOCK_CACHE_INVALIDATE_FAILED] error=" . $e->getMessage());
+        }
     }
 
     /** Income/Expense record helpers. */
@@ -844,7 +1027,11 @@ class Accounting extends MY_Controller
         $safeType = $this->safe_path_segment($type, 'type');
         $prefix = $this->_voucher_prefix($type);
         $counterPath = $this->_bp() . "/Accounts/Voucher_counters/{$safeType}";
-        $current = $this->_fs_counter_get($voucherType ?? 'Journal');
+        // 2026-05-10 fix — was `$voucherType ?? 'Journal'` referencing an
+        // undefined variable, so this preview endpoint always read the
+        // 'Journal' counter regardless of the requested type, breaking
+        // per-type voucher numbering preview. The local variable is $type.
+        $current = $this->_fs_counter_get($type);
 
         $next = $current + 1;
         $voucherNo = $prefix . str_pad($next, 6, '0', STR_PAD_LEFT);
@@ -852,7 +1039,39 @@ class Accounting extends MY_Controller
         $this->json_success(['voucher_no' => $voucherNo, 'seq' => $next]);
     }
 
-    /** POST: Create a journal entry (double-entry) */
+    /**
+     * POST: Create a journal entry (double-entry).
+     *
+     * Phase 2 (R-NEW) — 2026-05-10. Migrated from direct
+     * _fs_ledger_set / _fs_idx_set / _fs_bal_set writes to the canonical
+     * Operations_accounting::create_journal pipeline. The manual UI path
+     * now inherits the same period-lock + idempotency + CAS guarantees
+     * that fee receipts, refunds, and other module postings already enjoy:
+     *
+     *   • period-lock check via Accounting_period_lock::forceValidate
+     *     (replaces the local _check_period_lock — same source of truth,
+     *      cache-bypassing on the write path)
+     *   • idempotency claim with deterministic JE_MAN_{md5} key
+     *     (double-submit within 120 s collapses to one ledger entry)
+     *   • atomic ledger + per-account closing-balance commit batch
+     *   • per-account closing-balance CAS (__updateTime preconditions)
+     *
+     * Preserved:
+     *   • UI contract — same POST fields, same response shape
+     *     ({entry_id, voucher_no, message})
+     *   • voucher numbering — JV-/RV-/PV-/CV-/FV- prefix follows the
+     *     user-chosen voucher type, sequence shares the 'Journal' counter
+     *     (matches the prior effective behaviour caused by an undefined-
+     *     variable bug at line 947 — see _voucherPrefixFor in
+     *     Operations_accounting for the prefix map)
+     *   • permissions — _require_role(FINANCE_ROLES) unchanged
+     *   • audit trail — _audit('create', 'journal_entry', …) still writes
+     *     to accountingAudit per entry
+     *   • report compatibility — entry doc shape on the `accounting`
+     *     collection is unchanged (date, voucher_no, voucher_type,
+     *     narration, lines[], total_dr, total_cr, source, source_ref,
+     *     is_finalized, status, created_by, created_at)
+     */
     public function save_journal_entry()
     {
         $this->_require_role(self::FINANCE_ROLES);
@@ -867,140 +1086,109 @@ class Accounting extends MY_Controller
         if (!$date || !$vType || !$linesJson) {
             return $this->json_error('Date, voucher type, and line items are required.');
         }
-
-        // Validate date format
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
             return $this->json_error('Invalid date format. Use YYYY-MM-DD.');
         }
-
-        // Check period lock
-        $this->_check_period_lock($date);
+        // Phase 4.5 (V-LOW-6) — reject future-dated manual journals.
+        // Engine-level callers (Library / Inventory / Assets / Refund /
+        // FeeWorker) pass empty $entryDate and inherit today's date;
+        // only manual UI submissions provide an arbitrary date, so the
+        // check lives at this caller boundary rather than inside
+        // Operations_accounting (where legitimate future-dated callers
+        // — recurring journal scheduling, accrual provisions — would
+        // need to bypass it). Comparison is string-lexicographic on
+        // ISO-8601 dates which is correct for YYYY-MM-DD format.
+        $today = date('Y-m-d');
+        if ($date > $today) {
+            log_message('error',
+                "ACC_FUTURE_DATE_REJECTED admin={$this->admin_id} "
+                . "schoolId={$this->school_id} requested={$date} today={$today}");
+            return $this->json_error(
+                "Cannot post a journal dated in the future. Today is {$today}; "
+                . "you requested {$date}."
+            );
+        }
 
         $lines = is_string($linesJson) ? json_decode($linesJson, true) : $linesJson;
         if (!is_array($lines) || count($lines) < 2) {
             return $this->json_error('At least 2 line items required for double-entry.');
         }
 
-        // Validate and sum
-        $totalDr = 0;
-        $totalCr = 0;
+        // Structural cleanup — drop empty/zero rows, reject lines that
+        // try to debit AND credit the same account in one entry. The
+        // deeper validation (account active, not group, DR=CR within
+        // 0.01) lives inside Operations_accounting::create_journal so
+        // both the UI path and every module path share one rule set.
         $cleanLines = [];
-        $affectedAccounts = [];
-
         foreach ($lines as $line) {
             $acCode = trim((string) ($line['account_code'] ?? ''));
-            $acName = trim((string) ($line['account_name'] ?? ''));
             $dr     = round((float) ($line['dr'] ?? 0), 2);
             $cr     = round((float) ($line['cr'] ?? 0), 2);
-
             if (!$acCode) continue;
             if ($dr == 0 && $cr == 0) continue;
             if ($dr > 0 && $cr > 0) {
                 return $this->json_error("Line for {$acCode}: cannot have both debit and credit.");
             }
-
-            $totalDr += $dr;
-            $totalCr += $cr;
             $cleanLines[] = [
                 'account_code' => $acCode,
-                'account_name' => $acName,
+                'account_name' => trim((string) ($line['account_name'] ?? '')),
                 'dr'           => $dr,
                 'cr'           => $cr,
                 'narration'    => trim((string) ($line['narration'] ?? '')),
             ];
-
-            $affectedAccounts[$acCode] = [
-                'dr' => ($affectedAccounts[$acCode]['dr'] ?? 0) + $dr,
-                'cr' => ($affectedAccounts[$acCode]['cr'] ?? 0) + $cr,
-            ];
         }
-
         if (empty($cleanLines)) {
             return $this->json_error('No valid line items provided.');
         }
 
-        // Double-entry check: total debit must equal total credit
-        if (abs($totalDr - $totalCr) > 0.01) {
-            return $this->json_error("Debit ({$totalDr}) does not equal Credit ({$totalCr}).");
-        }
+        // Wire Operations_accounting with this controller's context.
+        // Init is idempotent: re-loading the library returns CI's
+        // cached instance, init just re-stamps the same fields.
+        $this->load->library('Operations_accounting', null, 'opsAcct');
+        $this->opsAcct->init(
+            $this->firebase, $this->school_name, $this->session_year,
+            $this->admin_id, $this
+        );
 
-        // Validate each account exists and is active in CoA
-        $coa = $this->_fs_coa_all();
-        if (!is_array($coa)) $coa = [];
-        foreach ($cleanLines as $line) {
-            $ac = $line['account_code'];
-            if (!isset($coa[$ac]) || ($coa[$ac]['status'] ?? '') !== 'active') {
-                return $this->json_error("Account {$ac} does not exist or is inactive.");
-            }
-            if (!empty($coa[$ac]['is_group'])) {
-                return $this->json_error("Account {$ac} is a group account — cannot post directly.");
-            }
-        }
+        // Up-front account-existence + status check. Mirrors the rule
+        // the old direct path enforced ("does not exist or is inactive")
+        // and produces the same user-facing error message via
+        // $this->json_error → halts request. validate_accounts iterates
+        // CoA once instead of N times.
+        $this->opsAcct->validate_accounts(
+            array_values(array_unique(array_column($cleanLines, 'account_code')))
+        );
 
-        // H-04 FIX: Wrap all financial writes in try/catch to prevent partial
-        //    writes and provide clear error feedback for ledger operations.
-        try {
-            // Generate voucher number (read counter but DON'T write yet)
-            $safeVType = $this->safe_path_segment($vType, 'voucher_type');
-            $prefix = $this->_voucher_prefix($vType);
-            $counterPath = $this->_bp() . "/Accounts/Voucher_counters/{$safeVType}";
-            $currentSeq = $this->_fs_counter_get($voucherType ?? 'Journal');
-            $newSeq = $currentSeq + 1;
-            $voucherNo = $prefix . str_pad($newSeq, 6, '0', STR_PAD_LEFT);
+        // Post via the canonical pipeline. create_journal will halt
+        // (json_error) on:
+        //   • DR != CR (within 0.01 tolerance)
+        //   • posting to a group account
+        //   • period-locked date
+        //   • idempotency-service unavailable / claim race in progress
+        //   • CAS-storm exhaustion
+        // Returns the entryId on success.
+        $entryId = $this->opsAcct->create_journal(
+            $narration, $cleanLines, $source, $sourceRef, $vType, $date
+        );
 
-            // Build entry
-            $entryId = $this->_generate_entry_id('JE');
-            $entry = [
-                'date'         => $date,
-                'voucher_no'   => $voucherNo,
-                'voucher_type' => $vType,
-                'narration'    => $narration,
-                'lines'        => $cleanLines,
-                'total_dr'     => round($totalDr, 2),
-                'total_cr'     => round($totalCr, 2),
-                'source'       => $source,
-                'source_ref'   => $sourceRef ?: null,
-                'is_finalized' => false,
-                'status'       => 'active',
-                'created_by'   => $this->admin_id,
-                'created_at'   => date('c'),
-            ];
+        // Read back the just-written ledger doc to extract voucher_no
+        // for the UI response. The doc is hot (just committed), single
+        // firestoreGet, deterministic doc id.
+        $entry = $this->_fs_ledger_get($entryId);
+        $voucherNo = is_array($entry) ? (string) ($entry['voucher_no'] ?? '') : '';
 
-            // Write entry FIRST — if this fails, counter stays unchanged (no orphan)
-            $this->_fs_ledger_set($entryId, $entry);
+        // Preserve the durable Firestore audit trail per entry.
+        // Operations_accounting only emits application-log lines
+        // (ACC_JOURNAL_COMMITTED); _audit writes to accountingAudit
+        // collection so the Settings → Audit Log UI tab keeps showing
+        // who created what.
+        $this->_audit('create', 'journal_entry', $entryId, null, $entry);
 
-            // Entry saved successfully — now commit the counter increment
-            $this->_fs_counter_set($voucherType ?? 'Journal', $newSeq);
-
-            // Write index entries
-            $safeDateSeg = $this->safe_path_segment($date, 'date');
-            $this->_fs_idx_set("IDX_DATE_{$safeDateSeg}_{$entryId}");
-            foreach (array_keys($affectedAccounts) as $acCode) {
-                $safeAc = $this->safe_path_segment($acCode, 'account_code');
-                $this->_fs_idx_set("IDX_ACCT_{$safeAc}_{$entryId}");
-            }
-
-            // Update closing balances cache
-            $this->_update_balances($affectedAccounts, 'add');
-
-            $this->_audit('create', 'journal_entry', $entryId, null, $entry);
-
-            // Firestore mirror — entry + counter. Closing-balance mirrors are
-            // applied inside _update_balances (see that helper).
-            try {
-                $this->acctFsSync->syncLedgerEntry($entryId, $entry);
-                $this->acctFsSync->syncVoucherCounter($safeVType, $newSeq);
-            } catch (\Exception $_) {}
-
-            $this->json_success([
-                'message'    => 'Journal entry saved.',
-                'entry_id'   => $entryId,
-                'voucher_no' => $voucherNo,
-            ]);
-        } catch (\Exception $e) {
-            log_message('error', 'save_journal_entry failed: ' . $e->getMessage());
-            return $this->json_error('Failed to save journal entry. Please try again.');
-        }
+        $this->json_success([
+            'message'    => 'Journal entry saved.',
+            'entry_id'   => $entryId,
+            'voucher_no' => $voucherNo,
+        ]);
     }
 
     /** POST: Soft-delete a non-finalized journal entry */
@@ -1045,15 +1233,56 @@ class Accounting extends MY_Controller
             }
             $this->_update_balances($affectedAccounts, 'subtract');
 
-            // Remove indices
+            // Phase 2 (R-B5) — canonical recompute for the affected
+            // accounts. The incremental subtract above will be correct
+            // when the projection was already aligned; the recompute
+            // here is the self-healing layer for cases where it wasn't
+            // (e.g. the entry being deleted was double-counted by an
+            // earlier broken _update_balances call, or the projection
+            // was last touched by a different writer that added but
+            // didn't subtract). Cheap: one ledger scan, per-line filter.
+            $this->_recompute_account_balances(array_keys($affectedAccounts));
+
+            // Remove indices — both the legacy in-collection IDX_*
+            // docs (Phase 1 era) and the canonical separate-collection
+            // accountingIndexByDate / accountingIndexByAccount (Phase 2
+            // era).
+            //
+            // Phase 4.5 (V-LOW-2) added the canonical-index cleanup —
+            // pre-Phase-4.5 the soft-delete left those docs lingering,
+            // accumulating storage and degrading reconciliation hygiene
+            // even though correctness wasn't affected (reports scan
+            // ledger directly, not via index). Failures here log but
+            // don't fail the delete; reconciler's stale-index sweep
+            // (cleanup_stale_indexes CLI) catches any historical drift.
             $date = $entry['date'] ?? '';
             if ($date) {
                 $safeDateSeg = $this->safe_path_segment($date, 'date');
                 $this->_fs_idx_delete("IDX_DATE_{$safeDateSeg}_{$entryId}");
+                // Canonical date index — separate collection.
+                try {
+                    $this->firebase->firestoreDelete('accountingIndexByDate',
+                        "{$this->school_id}_{$this->session_year}_{$date}_{$entryId}");
+                } catch (\Exception $e) {
+                    log_message('error',
+                        "ACC_IDX_CLEANUP_FAILED kind=date entryId={$entryId} "
+                        . "date={$date} schoolId={$this->school_id} "
+                        . "session={$this->session_year} error=" . $e->getMessage());
+                }
             }
             foreach (array_keys($affectedAccounts) as $acCode) {
                 $safeAc = $this->safe_path_segment($acCode, 'account_code');
                 $this->_fs_idx_delete("IDX_ACCT_{$safeAc}_{$entryId}");
+                // Canonical per-account index — separate collection.
+                try {
+                    $this->firebase->firestoreDelete('accountingIndexByAccount',
+                        "{$this->school_id}_{$this->session_year}_{$acCode}_{$entryId}");
+                } catch (\Exception $e) {
+                    log_message('error',
+                        "ACC_IDX_CLEANUP_FAILED kind=account entryId={$entryId} "
+                        . "accountCode={$acCode} schoolId={$this->school_id} "
+                        . "session={$this->session_year} error=" . $e->getMessage());
+                }
             }
 
             $this->_audit('delete', 'journal_entry', $entryId, $entry, null);
@@ -1062,6 +1291,39 @@ class Accounting extends MY_Controller
             // handled by _update_balances above).
             try { $this->acctFsSync->syncLedgerDelete($entryId, ['deleted_by' => $this->admin_id]); }
             catch (\Exception $_) {}
+
+            // Phase G1 — append forensic reversal event. Best-effort:
+            // failures log via ACC_FORENSIC_HOOK_FAILED but never block
+            // the user-visible delete response. Captures the actor,
+            // their role, and the affected accounts for audit traceability.
+            try {
+                $CI =& get_instance();
+                if (!isset($CI->acctForensics)) {
+                    $this->load->library('Accounting_forensics', null, 'acctForensics');
+                    $this->acctForensics->init(
+                        $this->firebase, $this->school_id, $this->session_year
+                    );
+                }
+                $reversalReason = trim((string) $this->input->post('reason'));
+                if ($reversalReason === '') $reversalReason = 'admin_soft_delete';
+                $this->acctForensics->recordReversal(
+                    $entryId,
+                    $reversalReason,
+                    (string) $this->admin_id,
+                    (string) ($this->admin_role ?? ''),
+                    'manual',
+                    [
+                        'voucher_no'        => (string) ($entry['voucher_no'] ?? ''),
+                        'voucher_type'      => (string) ($entry['voucher_type'] ?? ''),
+                        'affected_accounts' => array_keys($affectedAccounts),
+                        'original_total'    => (float) ($entry['total_dr'] ?? 0),
+                    ]
+                );
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "ACC_FORENSIC_HOOK_FAILED entryId={$entryId} stage=reverse "
+                    . "error=" . $e->getMessage());
+            }
 
             $this->json_success(['message' => 'Entry deleted.']);
         } catch (\Exception $e) {
@@ -1078,13 +1340,33 @@ class Accounting extends MY_Controller
         $entryId = trim((string) $this->input->post('entry_id'));
         if (!$entryId) return $this->json_error('Entry ID required.');
 
-        $path = $this->_ledger() . "/{$entryId}";
-        $entry = null /* RTDB path removed — use Firestore helper */;
+        // Stage M1A.1 (2026-05-10) — pair of fixes in this one function:
+        //
+        // (a) The RTDB→Firestore migration left this method with
+        //     `$entry = null /* RTDB path removed — use Firestore helper */;`
+        //     which made `is_array($entry)` always false → endpoint
+        //     unconditionally returned "Entry not found." Loading via
+        //     the canonical helper restores it, mirroring the other
+        //     ledger consumers (lines ~1015, 1040, 1380, 1416, 1797).
+        //
+        // (b) Period-lock check added before the finalize write.
+        //     finalize_entry sets is_finalized=true which is a
+        //     write-once flag — once finalized, the entry can no
+        //     longer be reversed via delete_journal_entry (see line
+        //     ~1044). Allowing finalize on an entry dated in a locked
+        //     period would retroactively make a closed-period row
+        //     immutable, violating period-close semantics.
+        $entry = $this->_fs_ledger_get($entryId);
         if (!is_array($entry)) return $this->json_error('Entry not found.');
         if (($entry['status'] ?? '') === 'deleted') return $this->json_error('Cannot finalize a deleted entry.');
+        if (!empty($entry['is_finalized'])) return $this->json_error('Entry is already finalized.');
 
-        // RTDB update removed — use Firestore helper
-$this->_fs_ledger_update($entryId ?? '', [
+        // Period-lock enforcement — see (b) above. Uses the same
+        // direct-Firestore lock read as delete_journal_entry (which
+        // already gates against locked periods at line ~1049).
+        $this->_check_period_lock((string) ($entry['date'] ?? ''));
+
+        $this->_fs_ledger_update($entryId, [
             'is_finalized' => true,
             'finalized_at' => date('c'),
         ]);
@@ -1204,7 +1486,11 @@ $this->_fs_ledger_update($entryId ?? '', [
             $safeVType = $this->safe_path_segment($vType, 'voucher_type');
             $prefix = $this->_voucher_prefix($vType);
             $counterPath = $this->_bp() . "/Accounts/Voucher_counters/{$safeVType}";
-            $seq = $this->_fs_counter_get($voucherType ?? 'Journal') + 1;
+            // 2026-05-10 fix — was `$voucherType ?? 'Journal'` referencing
+            // an undefined variable, causing every income/expense entry to
+            // read & write the 'Journal' counter regardless of $vType. The
+            // local variable is $vType (Receipt|Payment|Contra|Journal).
+            $seq = $this->_fs_counter_get($vType) + 1;
             $voucherNo = $prefix . str_pad($seq, 6, '0', STR_PAD_LEFT);
 
             $entryId = $this->_generate_entry_id('IE');
@@ -1228,7 +1514,10 @@ $this->_fs_ledger_update($entryId ?? '', [
             $this->_fs_ledger_set($entryId, $ledgerEntry);
 
             // Entry saved successfully — now commit the counter
-            $this->_fs_counter_set($voucherType ?? 'Journal', $seq);
+            // 2026-05-10 fix — see preceding `_fs_counter_get` repair. The
+            // counter must be persisted under the same $vType key as the
+            // read above, otherwise reads and writes diverge.
+            $this->_fs_counter_set($vType, $seq);
 
             // Indices
             $safeDateSeg = $this->safe_path_segment($date, 'date');
@@ -1430,13 +1719,19 @@ $this->_fs_ledger_update($entryId ?? '', [
         $openBal = (float) ($acct['opening_balance'] ?? 0);
         $normalSide = $acct['normal_side'] ?? 'Dr';
 
-        // Get all entry IDs for this account
-        $ids = [] /* index query removed — use Firestore accounting where queries */;
-        if (!is_array($ids)) $ids = [];
-
         // Fetch FULL ledger once (fix N+1)
         $allLedger = $this->_fs_ledger_all();
         if (!is_array($allLedger)) $allLedger = [];
+
+        // 2026-05-10 fix — RTDB→Firestore migration left `$ids = []` as a
+        // placeholder, which made every cash book / ledger report empty
+        // (foreach over an empty array). The replacement traversal is to
+        // iterate $allLedger directly and select entries whose lines
+        // include the requested account_code. This matches the legacy
+        // by-account index semantics without re-introducing a separate
+        // index collection — the per-entry filter happens below at line
+        // ~1735 (account-presence + dr/cr extraction).
+        $ids = array_keys($allLedger);
 
         // First pass: collect all entries, splitting pre-filter vs in-range
         $allTxns = [];
@@ -2615,16 +2910,46 @@ $this->_fs_ledger_update($entryId ?? '', [
             }
         }
 
-        // Bulk write closing balances to Firestore
-foreach ($balances as $bc => $bv) { if (is_array($bv)) $this->_fs_bal_set((string)$bc, $bv); }
+        // Bulk write closing balances to BOTH projections.
+        //
+        // Phase 2 (R-B5) — 2026-05-10. The legacy projection
+        // (`accounting/BAL_*`) was the only target; the canonical
+        // projection (`accountingClosingBalances`, written by the v2
+        // journal path) was untouched, leaving the two projections
+        // diverging until the next v2 post for that account. Now we
+        // sync both atomically per code so an admin "Recompute
+        // Balances" click brings the entire system into alignment.
+        // Sync errors are logged structurally, never silently swallowed,
+        // so the index-/balance-drift sweeps can correlate them.
+        $syncFailures = [];
+        foreach ($balances as $bc => $bv) {
+            if (!is_array($bv)) continue;
+            $code = (string) $bc;
+            $this->_fs_bal_set($code, $bv);
+            try {
+                $this->acctFsSync->syncClosingBalance(
+                    $code,
+                    (float) $bv['period_dr'],
+                    (float) $bv['period_cr']
+                );
+            } catch (\Exception $e) {
+                $syncFailures[] = $code;
+                log_message('error',
+                    "ACC_BAL_SYNC_FAILED code={$code} stage=admin_recompute "
+                    . "schoolId={$this->school_id} session={$this->session_year} "
+                    . "error=" . $e->getMessage());
+            }
+        }
         $this->_audit('recompute_balances', 'closing_balances', 'all', null, [
             'accounts'      => count($balances),
             'discrepancies' => count($discrepancies),
+            'sync_failures' => count($syncFailures),
         ]);
         $this->json_success([
             'message'       => 'Balances recomputed.',
             'accounts'      => count($balances),
             'discrepancies' => $discrepancies,
+            'sync_failures' => $syncFailures,
         ]);
     }
 
@@ -2646,6 +2971,72 @@ foreach ($balances as $bc => $bv) { if (is_array($bv)) $this->_fs_bal_set((strin
         ]);
     }
 
+    /**
+     * GET: Health snapshot JSON for the dashboard.
+     *
+     * 2026-05-10 — endpoint added. The health_dashboard view (lines ~158)
+     * polls this endpoint every few seconds; previously it 404'd because
+     * the route + controller method were missing. Returns the same shape
+     * Accounting_health::snapshot() emits, wrapped in the standard
+     * json_success envelope.
+     */
+    public function health_json()
+    {
+        $this->_require_role(self::FINANCE_ROLES);
+
+        $this->load->library('Accounting_health', null, 'acctHealth');
+        $this->acctHealth->init(
+            $this->firebase, $this->school_id, $this->session_year, $this->school_name
+        );
+        try {
+            $snapshot = $this->acctHealth->snapshot();
+        } catch (\Throwable $e) {
+            log_message('error', 'Accounting::health_json snapshot failed: ' . $e->getMessage());
+            return $this->json_error('Failed to build health snapshot.', 500);
+        }
+        $this->json_success($snapshot);
+    }
+
+    /**
+     * POST: Acknowledge an alert.
+     *
+     * 2026-05-10 — endpoint added. The health_dashboard view (line ~143)
+     * posts here when an operator clicks "Acknowledge" on an open alert;
+     * previously the route + controller method were missing. Marks the
+     * alert doc with acknowledgedAt / acknowledgedBy. Mirrors the
+     * AccountingWatchdog::_autoAcknowledge shape so the snapshot's
+     * open-alerts list shrinks on next refresh.
+     */
+    public function acknowledge_alert()
+    {
+        $this->_require_role(self::FINANCE_ROLES);
+
+        $alertId = trim((string) $this->input->post('alertId'));
+        if ($alertId === '') return $this->json_error('alertId is required.');
+
+        try {
+            $existing = $this->firebase->firestoreGet('accountingAlerts', $alertId);
+            if (!is_array($existing)) {
+                return $this->json_error('Alert not found.', 404);
+            }
+            $ok = (bool) $this->firebase->firestoreSet('accountingAlerts', $alertId, [
+                'acknowledged'   => true,
+                'acknowledgedAt' => date('c'),
+                'acknowledgedBy' => $this->admin_id ?: 'manual:operator',
+                'updatedAt'      => date('c'),
+            ], /* merge */ true);
+            if (!$ok) {
+                return $this->json_error('Failed to write acknowledgement.', 500);
+            }
+            $this->_audit('acknowledge_alert', 'alert', $alertId, null, []);
+            log_message('error', "ACC_ALERT_MANUAL_ACK alertId={$alertId} actor={$this->admin_id}");
+            $this->json_success(['message' => 'Alert acknowledged.', 'alertId' => $alertId]);
+        } catch (\Throwable $e) {
+            log_message('error', "Accounting::acknowledge_alert failed alertId={$alertId} err=" . $e->getMessage());
+            $this->json_error('Acknowledge failed: ' . $e->getMessage(), 500);
+        }
+    }
+
     /** POST: Lock accounting period (multi-path update for finalization) */
     public function lock_period()
     {
@@ -2656,11 +3047,43 @@ foreach ($balances as $bc => $bv) { if (is_array($bv)) $this->_fs_bal_set((strin
             return $this->json_error('Valid date required (YYYY-MM-DD).');
         }
 
-        $this->_fs_lock_set([
-            'locked_until' => $date,
-            'locked_by'    => $this->admin_id,
-            'locked_at'    => date('c'),
-        ]);
+        // L2 future-date validation 2026-05-10. Closing today's books is
+        // allowed (admins do this in real-time); closing a future date
+        // would silently freeze legitimate transactions yet to occur.
+        // Standard ERP convention: lockedUntil must be on or before today.
+        $today = date('Y-m-d');
+        if ($date > $today) {
+            return $this->json_error(
+                "Cannot lock to {$date} — that date is in the future. "
+                . "lockedUntil must be on or before today ({$today})."
+            );
+        }
+
+        // Phase G1 — capture pre-lock state so the close-event audit
+        // history records who/when/from-what-state. Read existing lock
+        // before overwriting; useful for governance dashboards that
+        // need to show "lock advanced from X to Y by admin Z".
+        $priorLock = $this->_fs_lock_get();
+
+        $controllerPayload = [
+            'locked_until'     => $date,
+            'locked_by'        => $this->admin_id,
+            'locked_at'        => date('c'),
+            // G1: explicit close-event metadata (additive — old readers
+            // ignore unknown fields).
+            'close_reason'     => trim((string) $this->input->post('reason')),
+            'prior_locked_until' => is_array($priorLock) ? (string) ($priorLock['locked_until'] ?? '') : '',
+            'prior_locked_by'  => is_array($priorLock) ? (string) ($priorLock['locked_by'] ?? '') : '',
+        ];
+        $this->_fs_lock_set($controllerPayload);
+
+        // L2 dual-write — also write the canonical session-scoped doc
+        // and invalidate the APCU cache. This is what makes period-lock
+        // enforcement actually fire on automated journal posts (fees,
+        // refunds, hostel, inventory) which read the canonical doc via
+        // Accounting_period_lock::forceValidate. Pre-L2 the canonical
+        // doc had no writer, rendering the library's lock check inert.
+        $this->_fs_canonical_lock_set($controllerPayload);
 
         // Finalize all entries on or before this date using multi-path update
         $dateIdx = [] /* RTDB index removed — Firestore accounting used directly */;
@@ -2688,8 +3111,161 @@ foreach ($balances as $bc => $bv) { if (is_array($bv)) $this->_fs_bal_set((strin
             $finalized = (int) (count($updates) / 2);
         }
 
-        $this->_audit('lock_period', 'period_lock', $date, null, ['finalized' => $finalized]);
+        $this->_audit('lock_period', 'period_lock', $date, $priorLock, [
+            'finalized'        => $finalized,
+            'reason'           => trim((string) $this->input->post('reason')),
+            'prior_locked_until' => is_array($priorLock) ? (string) ($priorLock['locked_until'] ?? '') : '',
+        ]);
         $this->json_success(['message' => "Period locked until {$date}. {$finalized} entries finalized."]);
+    }
+
+    /**
+     * POST: Reopen a previously locked period for governance-controlled
+     * back-dated journal posting. Phase G1 governance addition.
+     *
+     * This does NOT redesign period-lock semantics — it shifts the
+     * `locked_until` cutoff backward (or clears it) and records WHY
+     * + WHO + DURATION metadata for audit. Journals posted while the
+     * period is reopened are tagged via the forensic timeline so
+     * auditors can reconstruct exactly what was back-dated and by whom.
+     *
+     * Required POST params:
+     *   new_locked_until — new cutoff (YYYY-MM-DD or empty to clear lock)
+     *   reason           — operator justification (mandatory)
+     *   expected_close_until — date the operator commits to re-locking by
+     *
+     * Authorization: ADMIN_ROLES only (same as lock_period).
+     */
+    public function reopen_period()
+    {
+        $this->_require_role(self::ADMIN_ROLES);
+
+        $newLockedUntil      = trim((string) $this->input->post('new_locked_until'));
+        $reason              = trim((string) $this->input->post('reason'));
+        $expectedCloseUntil  = trim((string) $this->input->post('expected_close_until'));
+
+        if ($reason === '') {
+            return $this->json_error('Reopen reason is mandatory for governance audit trail.');
+        }
+        if ($newLockedUntil !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $newLockedUntil)) {
+            return $this->json_error('Invalid new_locked_until format. Use YYYY-MM-DD or empty to fully unlock.');
+        }
+        if ($expectedCloseUntil !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $expectedCloseUntil)) {
+            return $this->json_error('Invalid expected_close_until format. Use YYYY-MM-DD.');
+        }
+
+        $priorLock = $this->_fs_lock_get();
+        if (!is_array($priorLock) || empty($priorLock['locked_until'])) {
+            return $this->json_error('Period is not currently locked. Nothing to reopen.');
+        }
+
+        // Validate reopen direction: new lock must be EARLIER than (or empty)
+        // the prior lock — reopen widens the open window. Moving lock
+        // forward is what lock_period() does, not this endpoint.
+        if ($newLockedUntil !== '' && $newLockedUntil >= $priorLock['locked_until']) {
+            return $this->json_error(
+                'New lock date must be earlier than current lock ('
+                . $priorLock['locked_until']
+                . ') to constitute a reopen. Use lock_period to advance the cutoff instead.'
+            );
+        }
+
+        // Append a reopen-event doc to accountingPeriodReopens for the
+        // governance dashboard. Ordered chronologically; doc id includes
+        // a millisecond timestamp so consecutive reopens don't collide.
+        $now    = date('c');
+        $micros = (int) (microtime(true) * 1000);
+        try {
+            $this->firebase->firestoreSet('accountingPeriodReopens',
+                "{$this->school_id}_{$this->session_year}_{$micros}", [
+                    'schoolId'             => $this->school_id,
+                    'session'              => $this->session_year,
+                    'reopened_at'          => $now,
+                    'reopened_by'          => (string) $this->admin_id,
+                    'reopened_by_name'     => (string) ($this->admin_name ?? ''),
+                    'reopened_by_role'     => (string) ($this->admin_role ?? ''),
+                    'prior_locked_until'   => (string) ($priorLock['locked_until'] ?? ''),
+                    'new_locked_until'     => $newLockedUntil,
+                    'expected_close_until' => $expectedCloseUntil,
+                    'reason'               => $reason,
+                    'ip'                   => (string) $this->input->ip_address(),
+                    'closed_at'            => '',  // populated when admin re-closes
+                ]);
+        } catch (\Exception $e) {
+            log_message('error',
+                "ACC_PERIOD_REOPEN_AUDIT_FAILED schoolId={$this->school_id} "
+                . "session={$this->session_year} error=" . $e->getMessage());
+            return $this->json_error('Failed to record reopen audit. Period not modified.');
+        }
+
+        // Update the period_lock doc itself. New cutoff date + reopen
+        // markers so the get_settings response shows the reopened state.
+        $controllerPayload = [
+            'locked_until'         => $newLockedUntil,   // empty = fully unlocked
+            'locked_by'            => $this->admin_id,
+            'locked_at'            => $now,
+            'reopened_at'          => $now,
+            'reopened_by'          => (string) $this->admin_id,
+            'reopen_reason'        => $reason,
+            'expected_close_until' => $expectedCloseUntil,
+            'prior_locked_until'   => (string) ($priorLock['locked_until'] ?? ''),
+            'state'                => 'reopened',
+        ];
+        $this->_fs_lock_set($controllerPayload);
+
+        // L2 dual-write — propagate the reopen to the canonical doc.
+        // Critical: the canonical doc to update is the one for the
+        // session that was ORIGINALLY locked, not necessarily the
+        // active session. If admin locked 2025-26 (March date) and is
+        // now reopening from active session 2026-27, the 2025-26
+        // canonical doc must be the one cleared/updated. Compute the
+        // session from the prior lock date so this is always right.
+        $priorSession = '';
+        if (!empty($priorLock['locked_until'])) {
+            $priorSession = $this->_session_for_date((string) $priorLock['locked_until']);
+        }
+        $this->_fs_canonical_lock_set($controllerPayload, $priorSession ?: null);
+
+        $this->_audit('reopen_period', 'period_lock', $newLockedUntil, $priorLock, [
+            'reason'               => $reason,
+            'expected_close_until' => $expectedCloseUntil,
+            'prior_locked_until'   => (string) ($priorLock['locked_until'] ?? ''),
+            'new_locked_until'     => $newLockedUntil,
+        ]);
+
+        $msg = $newLockedUntil === ''
+            ? "Period fully reopened (lock cleared). Expected close by {$expectedCloseUntil}."
+            : "Period reopened: lock moved from "
+              . ($priorLock['locked_until'] ?? '?') . " back to {$newLockedUntil}. "
+              . "Expected close by {$expectedCloseUntil}.";
+        $this->json_success(['message' => $msg]);
+    }
+
+    /**
+     * GET: List recent period reopen events for the governance dashboard.
+     * Phase G1 read-only inventory.
+     */
+    public function get_period_reopens()
+    {
+        $this->_require_role(self::FINANCE_ROLES);
+        $limit = max(1, min(100, (int) ($this->input->get('limit') ?: 20)));
+        try {
+            $rows = (array) $this->firebase->firestoreQuery('accountingPeriodReopens', [
+                ['schoolId', '==', $this->school_id],
+                ['session',  '==', $this->session_year],
+            ], 'reopened_at', 'DESC', $limit);
+
+            $events = [];
+            foreach ($rows as $r) {
+                $d = is_array($r['data'] ?? null) ? $r['data'] : [];
+                $d['id'] = (string) ($r['id'] ?? '');
+                $events[] = $d;
+            }
+            $this->json_success(['events' => $events, 'count' => count($events)]);
+        } catch (\Exception $e) {
+            log_message('error', 'get_period_reopens failed: ' . $e->getMessage());
+            return $this->json_error('Failed to load reopen history.');
+        }
     }
 
     /** GET: Check if migration has been done */
@@ -2777,36 +3353,123 @@ foreach ($balances as $bc => $bv) { if (is_array($bv)) $this->_fs_bal_set((strin
     //  PRIVATE HELPERS
     // =========================================================================
 
-    /** Incrementally update closing balances cache */
+    /**
+     * Incrementally update closing balances cache.
+     *
+     * Phase 2 (R-B5) — 2026-05-10. Fixed silent corruption bug. The
+     * prior code stubbed `$current = null` after the RTDB read was
+     * removed, which meant every call started $pDr/$pCr at zero and
+     * then added the delta — effectively resetting the projection to
+     * just the latest delta on every write. Now reads the current
+     * projection via _fs_bal_get and applies the delta cumulatively,
+     * matching the pre-RTDB-removal behaviour.
+     *
+     * Callers that mutate a journal entry destructively (delete,
+     * reverse) should additionally call _recompute_account_balances
+     * after this — that recompute is canonical (sums active ledger
+     * from scratch) and self-heals any drift this incremental path
+     * may have accumulated.
+     */
     private function _update_balances(array $affectedAccounts, string $op): void
     {
         foreach ($affectedAccounts as $code => $amounts) {
-            $safeCode = $this->safe_path_segment($code, 'code');
-            $path = $this->_bal() . "/{$safeCode}";
-            $current = null /* RTDB path removed — use Firestore helper */;
+            $current = $this->_fs_bal_get((string) $code);
 
-            $pDr = (float) ($current['period_dr'] ?? 0);
-            $pCr = (float) ($current['period_cr'] ?? 0);
+            $pDr = (float) (is_array($current) ? ($current['period_dr'] ?? 0) : 0);
+            $pCr = (float) (is_array($current) ? ($current['period_cr'] ?? 0) : 0);
 
             if ($op === 'add') {
-                $pDr += $amounts['dr'];
-                $pCr += $amounts['cr'];
+                $pDr += (float) ($amounts['dr'] ?? 0);
+                $pCr += (float) ($amounts['cr'] ?? 0);
             } else {
-                $pDr -= $amounts['dr'];
-                $pCr -= $amounts['cr'];
+                $pDr -= (float) ($amounts['dr'] ?? 0);
+                $pCr -= (float) ($amounts['cr'] ?? 0);
             }
 
-            // RTDB set removed — use Firestore
-$this->_fs_bal_set($code ?? '', [
+            $this->_fs_bal_set((string) $code, [
                 'period_dr'     => round($pDr, 2),
                 'period_cr'     => round($pCr, 2),
                 'last_computed' => date('c'),
             ]);
 
             // Firestore mirror of the updated balance.
-            try { $this->acctFsSync->syncClosingBalance((string) $code, $pDr, $pCr); }
-            catch (\Exception $_) {}
+            try { $this->acctFsSync->syncClosingBalance((string) $code, round($pDr, 2), round($pCr, 2)); }
+            catch (\Exception $e) {
+                log_message('error',
+                    "ACC_BAL_SYNC_FAILED code={$code} schoolId={$this->school_id} "
+                    . "session={$this->session_year} error=" . $e->getMessage());
+            }
         }
+    }
+
+    /**
+     * Phase 2 (R-B5) — focused per-account canonical recompute.
+     *
+     * Aggregates `accounting where status='active'` for the given codes
+     * and overwrites both projections (legacy `accounting/BAL_*` AND
+     * canonical `accountingClosingBalances`). Idempotent: re-running
+     * produces identical state. Used after destructive ledger mutations
+     * (soft-delete, reversal, restoration) to self-heal drift introduced
+     * by the incremental _update_balances path.
+     *
+     * Doing one ledger scan per call regardless of code count — the cost
+     * is dominated by the schoolWhere read; the per-line filter is cheap.
+     *
+     * @param array $codes List of account codes to recompute (strings).
+     * @return array  ['code' => ['period_dr' => float, 'period_cr' => float], …]
+     */
+    private function _recompute_account_balances(array $codes): array
+    {
+        if (empty($codes)) return [];
+        $codeSet = [];
+        foreach ($codes as $c) {
+            $cs = (string) $c;
+            if ($cs !== '') $codeSet[$cs] = true;
+        }
+        if (empty($codeSet)) return [];
+
+        $allEntries = $this->_fs_ledger_all();
+        $perCode = [];
+        foreach ($allEntries as $entry) {
+            if (!is_array($entry)) continue;
+            if (($entry['status'] ?? '') === 'deleted') continue;
+            if (empty($entry['entryId'])) continue;   // skip BAL_/IDX_ docs
+            foreach ($entry['lines'] ?? [] as $line) {
+                $ac = (string) ($line['account_code'] ?? '');
+                if ($ac === '' || !isset($codeSet[$ac])) continue;
+                if (!isset($perCode[$ac])) {
+                    $perCode[$ac] = ['period_dr' => 0.0, 'period_cr' => 0.0];
+                }
+                $perCode[$ac]['period_dr'] += (float) ($line['dr'] ?? 0);
+                $perCode[$ac]['period_cr'] += (float) ($line['cr'] ?? 0);
+            }
+        }
+
+        // Write recomputed values for every requested code, including
+        // codes whose recomputed total is zero — that means every
+        // ledger reference to the code is in deleted entries, and the
+        // projection must reflect that.
+        $result = [];
+        foreach (array_keys($codeSet) as $code) {
+            $dr = round($perCode[$code]['period_dr'] ?? 0.0, 2);
+            $cr = round($perCode[$code]['period_cr'] ?? 0.0, 2);
+            $this->_fs_bal_set($code, [
+                'period_dr'     => $dr,
+                'period_cr'     => $cr,
+                'last_computed' => date('c'),
+            ]);
+            try { $this->acctFsSync->syncClosingBalance($code, $dr, $cr); }
+            catch (\Exception $e) {
+                log_message('error',
+                    "ACC_BAL_SYNC_FAILED code={$code} stage=recompute schoolId={$this->school_id} "
+                    . "session={$this->session_year} error=" . $e->getMessage());
+            }
+            $result[$code] = ['period_dr' => $dr, 'period_cr' => $cr];
+        }
+        log_message('error',
+            "ACC_BAL_RECOMPUTED schoolId={$this->school_id} session={$this->session_year} "
+            . "codes=" . implode(',', array_keys($codeSet)));
+        return $result;
     }
 
     /** Get voucher number prefix for a type */

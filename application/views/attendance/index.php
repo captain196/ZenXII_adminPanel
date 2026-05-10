@@ -50,7 +50,7 @@
 
 /* ── Stat Cards ──────────────────────────────────────────── */
 .att-stats {
-    display: grid; grid-template-columns: repeat(4, 1fr);
+    display: grid; grid-template-columns: repeat(5, 1fr);
     gap: 16px; margin-bottom: 28px;
 }
 .att-stat-card {
@@ -68,10 +68,12 @@
     content: ''; position: absolute; top: 0; left: 0; right: 0;
     height: 3px; border-radius: var(--att-radius) var(--att-radius) 0 0;
 }
-.att-stat-card.present::before { background: var(--att-green); }
-.att-stat-card.absent::before  { background: var(--att-red); }
-.att-stat-card.late::before    { background: var(--att-amber); }
-.att-stat-card.staff::before   { background: var(--att-blue); }
+.att-stat-card.present::before    { background: var(--att-green); }
+.att-stat-card.absent::before     { background: var(--att-red); }
+.att-stat-card.late::before       { background: var(--att-amber); }
+.att-stat-card.staff::before      { background: var(--att-blue); }
+.att-stat-card.corrections::before{ background: #7c3aed; }
+.att-stat-card.corrections.has-pending::before { background: var(--att-amber); }
 
 .att-stat-icon {
     width: 40px; height: 40px; border-radius: 10px;
@@ -82,6 +84,9 @@
 .att-stat-card.absent  .att-stat-icon { background: rgba(220,38,38,0.1); color: var(--att-red); }
 .att-stat-card.late    .att-stat-icon { background: rgba(217,119,6,0.1); color: var(--att-amber); }
 .att-stat-card.staff   .att-stat-icon { background: rgba(37,99,235,0.1); color: var(--att-blue); }
+.att-stat-card.corrections .att-stat-icon { background: rgba(124,58,237,0.1); color: #7c3aed; }
+.att-stat-card.corrections.has-pending .att-stat-icon { background: rgba(217,119,6,0.1); color: var(--att-amber); }
+.att-stat-card.corrections.clickable { cursor: pointer; }
 
 .att-stat-value {
     font-size: 28px; font-weight: 800; color: var(--att-t1);
@@ -172,6 +177,9 @@
 .att-empty i { font-size: 32px; margin-bottom: 10px; display: block; opacity: 0.5; }
 
 /* ── Responsive ──────────────────────────────────────────── */
+@media (max-width: 1280px) {
+    .att-stats { grid-template-columns: repeat(3, 1fr); }
+}
 @media (max-width: 1024px) {
     .att-stats { grid-template-columns: repeat(2, 1fr); }
 }
@@ -232,11 +240,21 @@
             <div class="att-stat-value" id="attStatStaff"><div class="att-stat-loading"></div></div>
             <div class="att-stat-label">Staff Present Today</div>
         </div>
+        <div class="att-stat-card corrections clickable" id="attCorrectionsCard"
+             onclick="window.location='<?= base_url('attendance/control') ?>#corrections'"
+             title="Open Control Panel — Corrections tab">
+            <div class="att-stat-icon"><i class="fa fa-flag-checkered"></i></div>
+            <div class="att-stat-value" id="attStatCorrections"><div class="att-stat-loading"></div></div>
+            <div class="att-stat-label">Pending Corrections</div>
+        </div>
     </div>
 
     <!-- Quick Actions -->
     <div class="att-actions">
-        <a href="<?= base_url('attendance/student') ?>" class="att-action-btn primary">
+        <a href="<?= base_url('attendance/control') ?>" class="att-action-btn primary">
+            <i class="fa fa-shield"></i> Attendance Control Panel
+        </a>
+        <a href="<?= base_url('attendance/student') ?>" class="att-action-btn outline">
             <i class="fa fa-users"></i> Mark Student Attendance
         </a>
         <a href="<?= base_url('attendance/staff') ?>" class="att-action-btn outline">
@@ -375,7 +393,33 @@
             });
     }
 
+    /* ── Pending corrections count ──────────────────────── */
+    function loadCorrectionsCount() {
+        // Use GET — correction_list is a GET endpoint and credentials carry the session.
+        fetch(BASE + 'attendance/correction/list?status=pending&limit=100', {
+            credentials: 'same-origin'
+        })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(j) {
+            if (!j || j.status !== 'success') {
+                setText('attStatCorrections', '--');
+                return;
+            }
+            var n = (j.requests && j.requests.length) || 0;
+            setText('attStatCorrections', String(n));
+            var card = document.getElementById('attCorrectionsCard');
+            if (card) {
+                if (n > 0) card.classList.add('has-pending');
+                else       card.classList.remove('has-pending');
+            }
+        })
+        .catch(function() { setText('attStatCorrections', '--'); });
+    }
+
     /* ── Init (chained to avoid CSRF token race condition) ── */
-    loadStats().then(function() { loadPunchLog(); });
+    loadStats().then(function() {
+        loadPunchLog();
+        loadCorrectionsCount();
+    });
 })();
 </script>

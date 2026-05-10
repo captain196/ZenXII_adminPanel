@@ -769,12 +769,89 @@ $accounts          = $accounts          ?? [];
         });
     }
 
+    /*
+     * Stage B2 a11y hardening 2026-05-10. Modals previously didn't
+     * advertise themselves to assistive tech, didn't trap Tab focus,
+     * and didn't restore focus on close. Now:
+     *   - role="dialog" + aria-modal="true" + aria-labelledby applied
+     *     on open (set on the actual element, not just CSS classes).
+     *   - Tab/Shift-Tab cycle within the modal's focusable elements.
+     *   - Esc closes the modal (unless it's data-no-escape-close="1").
+     *   - Background page is set inert via aria-hidden on <main>-likes,
+     *     so screen readers don't read through the modal.
+     *   - On close, focus returns to the element that opened the modal.
+     */
+    var __modalStack = []; // {id, prevFocus, removeKeyListener}
+
+    function _focusable(modal) {
+        return modal.querySelectorAll(
+            'button:not([disabled]), [href], input:not([disabled]):not([type="hidden"]), ' +
+            'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+    }
+
+    function _trapFocus(modal) {
+        function onKey(e) {
+            if (e.key === 'Escape' && modal.getAttribute('data-no-escape-close') !== '1') {
+                e.preventDefault();
+                closeModal(modal.id);
+                return;
+            }
+            if (e.key !== 'Tab') return;
+            var f = _focusable(modal);
+            if (f.length === 0) { e.preventDefault(); return; }
+            var first = f[0], last = f[f.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault(); last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault(); first.focus();
+            }
+        }
+        modal.addEventListener('keydown', onKey);
+        return function release() { modal.removeEventListener('keydown', onKey); };
+    }
+
     function openModal(id) {
-        document.getElementById(id).classList.add('open');
+        var modal = document.getElementById(id);
+        if (!modal) return;
+        modal.classList.add('open');
+        // Advertise as a modal dialog. Idempotent — safe to call repeatedly.
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        // Best-effort label: first <h2/h3/h4> text inside the modal.
+        if (!modal.hasAttribute('aria-label') && !modal.hasAttribute('aria-labelledby')) {
+            var heading = modal.querySelector('h2, h3, h4');
+            if (heading) {
+                if (!heading.id) heading.id = id + '__title';
+                modal.setAttribute('aria-labelledby', heading.id);
+            }
+        }
+        var prevFocus = document.activeElement;
+        var release = _trapFocus(modal);
+        // Move focus to the first interactive element (or to the modal
+        // surface itself as a fallback so screen readers announce it).
+        var f = _focusable(modal);
+        (f.length > 0 ? f[0] : modal).focus();
+        __modalStack.push({ id: id, prevFocus: prevFocus, release: release });
     }
 
     function closeModal(id) {
-        document.getElementById(id).classList.remove('open');
+        var modal = document.getElementById(id);
+        if (!modal) return;
+        modal.classList.remove('open');
+        // Pop the matching stack entry (search rather than rely on top
+        // since openModal/closeModal can be interleaved on nested flows).
+        for (var i = __modalStack.length - 1; i >= 0; i--) {
+            if (__modalStack[i].id === id) {
+                try { __modalStack[i].release(); } catch (_) {}
+                var prev = __modalStack[i].prevFocus;
+                __modalStack.splice(i, 1);
+                if (prev && typeof prev.focus === 'function') {
+                    try { prev.focus(); } catch (_) {}
+                }
+                break;
+            }
+        }
     }
 
     /**
@@ -820,13 +897,41 @@ $accounts          = $accounts          ?? [];
     }
 
     function showAlert(msg, type, persistent) {
+        // Stage B1 hardening 2026-05-10: previously this function did
+        //   box.innerHTML = '<i ...></i> <div>' + msg + '</div>...'
+        // which means any future caller passing user-controlled `msg`
+        // (e.g. a server error message echoing form input) would
+        // execute embedded HTML/JS. Build the DOM via createElement +
+        // textContent instead — same visual output, zero parsing of
+        // `msg` as markup.
         var box = document.getElementById('fcAlertBox');
         box.className = 'fc-alert fc-alert-' + (type || 'info');
-        box.innerHTML = '<i class="fa fa-exclamation-triangle"></i> <div style="flex:1">' + msg + '</div>'
-            + '<button onclick="this.parentElement.style.display=\'none\'" style="background:none;border:none;color:inherit;font-size:18px;cursor:pointer;padding:0 4px;opacity:.7">&times;</button>';
+        // Clear any previous contents.
+        while (box.firstChild) box.removeChild(box.firstChild);
+
+        var icon = document.createElement('i');
+        icon.className = 'fa fa-exclamation-triangle';
+        box.appendChild(icon);
+        // Whitespace between icon and message — preserves the original
+        // single-space layout that `'<i></i> <div>'` produced.
+        box.appendChild(document.createTextNode(' '));
+
+        var content = document.createElement('div');
+        content.style.flex = '1';
+        content.textContent = String(msg == null ? '' : msg); // SAFE
+        box.appendChild(content);
+
+        var closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.style.cssText = 'background:none;border:none;color:inherit;font-size:18px;cursor:pointer;padding:0 4px;opacity:.7';
+        closeBtn.setAttribute('aria-label', 'Dismiss');
+        closeBtn.textContent = '×'; // × — Unicode literal, not parsed as entity.
+        closeBtn.addEventListener('click', function () { box.style.display = 'none'; });
+        box.appendChild(closeBtn);
+
         box.style.display = 'flex';
         if (!persistent) {
-            setTimeout(function() { box.style.display = 'none'; }, 6000);
+            setTimeout(function () { box.style.display = 'none'; }, 6000);
         }
     }
 
@@ -869,10 +974,7 @@ $accounts          = $accounts          ?? [];
                     'X-Requested-With': 'XMLHttpRequest'
                 }
             })
-            .then(function(r) {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
-            });
+            .then(_decodeJsonOrThrow);
     }
 
     /*
@@ -894,10 +996,40 @@ $accounts          = $accounts          ?? [];
                 },
                 body: JSON.stringify(payload)
             })
-            .then(function(r) {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
-            });
+            .then(_decodeJsonOrThrow);
+    }
+
+    /*
+     * Shared response decoder for postForm/postJSON. Stage B1 hardening
+     * 2026-05-10: previously these helpers threw `Error('HTTP 500')` on
+     * any non-2xx, hiding the server's structured error body — users saw
+     * "HTTP 500" instead of "Fee structure not configured for this class"
+     * (or whatever the controller actually returned). Now we attempt to
+     * parse the body as JSON and surface its `error` / `message` field;
+     * we only fall back to "HTTP N" when the body genuinely isn't JSON
+     * (e.g. a CodeIgniter white-screen).
+     */
+    function _decodeJsonOrThrow(r) {
+        if (r.ok) return r.json();
+        return r.text().then(function (raw) {
+            var fallback = 'HTTP ' + r.status;
+            if (!raw) throw new Error(fallback);
+            try {
+                var data = JSON.parse(raw);
+                if (data && (data.error || data.message)) {
+                    var msg = data.error || data.message;
+                    var err = new Error(typeof msg === 'string' ? msg : fallback);
+                    err.status = r.status;
+                    err.payload = data;
+                    throw err;
+                }
+            } catch (parseErr) {
+                // If parse failed, parseErr will be a SyntaxError; ignore it.
+                // If it WAS our thrown Error from the inner `if`, rethrow.
+                if (parseErr && parseErr.payload) throw parseErr;
+            }
+            throw new Error(fallback);
+        });
     }
 
     /* ── Recalc ── */
@@ -1165,7 +1297,12 @@ $accounts          = $accounts          ?? [];
                 statusHtml =
                     '<i class="fa fa-clock-o" style="color:#f59e0b"></i> Partial · ' + pctLabel +
                     '<div style="font-size:11px;color:#dc2626;margin-top:2px">' +
-                        '₹' + remaining.toLocaleString() + ' due' +
+                        // Stage B2 fix: use the canonical fmtRs() helper
+                        // instead of bare toLocaleString(). The bare call
+                        // omits the locale, which breaks the en-IN
+                        // lakh/crore grouping (₹100000 instead of ₹1,00,000)
+                        // on browsers whose default locale isn't en-IN.
+                        fmtRs(remaining) + ' due' +
                     '</div>';
             } else {
                 statusHtml = '<i class="fa fa-circle-o"></i> Unpaid';

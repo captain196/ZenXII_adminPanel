@@ -403,6 +403,28 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 }
 
+/*
+ * Stage B2 (2026-05-10) — narrow-viewport survivability for the
+ * receipts table. Below 768px the wrapper enforces horizontal scroll
+ * and the cell min-widths are relaxed so the table doesn't force the
+ * stat cards or topbar to overflow horizontally.
+ */
+@media(max-width: 768px) {
+    .fr-table-wrap, .fr-card-table-wrap, .cf-table-wrap {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .fr-table th, .fr-table td {
+        min-width: 80px !important;
+        font-size: 12px;
+        padding: 8px 6px;
+    }
+    .fr-table th[style*="min-width:155px"],
+    .fr-table th[style*="min-width:108px"] {
+        min-width: 90px !important;
+    }
+}
+
 .fr-stat {
     background: var(--fc-white);
     border-radius: var(--fc-radius);

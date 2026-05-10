@@ -63,6 +63,45 @@
       ]
     },
     {
+      "_comment": "Pre-existing prod index reconciled into JSON 2026-05-06 — was prompting the deploy on every run.",
+      "collectionGroup": "feeReceipts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",         "order": "ASCENDING" },
+        { "fieldPath": "session",          "order": "ASCENDING" },
+        { "fieldPath": "allocated_amount", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Phase 2A — Parent observePaymentHistory session-filter index.",
+      "collectionGroup": "feeReceipts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "studentId", "order": "ASCENDING" },
+        { "fieldPath": "session",   "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Phase 2A — Parent observeRefundVouchers session-filter index.",
+      "collectionGroup": "feeRefundVouchers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "studentId", "order": "ASCENDING" },
+        { "fieldPath": "session",   "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Phase 3A — feeOpsSweep auto-resolve query (category + status).",
+      "collectionGroup": "feeOpsAlerts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "category", "order": "ASCENDING" },
+        { "fieldPath": "status",   "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "fee_generation_jobs",
       "queryScope": "COLLECTION",
       "fields": [
@@ -150,6 +189,14 @@
         { "fieldPath": "schoolId", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "sentAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "notices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "sentAt",   "order": "DESCENDING" }
       ]
     },
     {
@@ -330,6 +377,15 @@
       "fields": [
         { "fieldPath": "schoolId", "order": "ASCENDING" },
         { "fieldPath": "month",    "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "attendanceSummary",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",   "order": "ASCENDING" },
+        { "fieldPath": "sectionKey", "order": "ASCENDING" },
+        { "fieldPath": "month",      "order": "ASCENDING" }
       ]
     },
     {
@@ -657,6 +713,24 @@
       ]
     },
     {
+      "_comment": "Teacher app's observeFlagsForClass — class-wide live listener filtered by schoolId, ordered by createdAtMs.",
+      "collectionGroup": "studentFlags",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",    "order": "ASCENDING" },
+        { "fieldPath": "createdAtMs", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "Admin schoolCode fallback (legacy flags that only carry schoolCode) with the 60-day time window.",
+      "collectionGroup": "studentFlags",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolCode",  "order": "ASCENDING" },
+        { "fieldPath": "createdAtMs", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "studentFlags",
       "queryScope": "COLLECTION",
       "fields": [
@@ -730,6 +804,186 @@
         { "fieldPath": "albumId",    "order": "ASCENDING" },
         { "fieldPath": "isArchived", "order": "ASCENDING" },
         { "fieldPath": "uploadedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "Audit log: project-wide log_audit() helper writes here, sorted newest-first per school.",
+      "collectionGroup": "auditLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",    "order": "ASCENDING" },
+        { "fieldPath": "timestampMs", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "Audit archive: oldest-first scan for the next archival batch.",
+      "collectionGroup": "auditLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",    "order": "ASCENDING" },
+        { "fieldPath": "timestampMs", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "academicAuditLog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "ts",       "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "academicAuditLog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "entityId",  "order": "ASCENDING" },
+        { "fieldPath": "ts",        "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "academicAuditLog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",   "order": "ASCENDING" },
+        { "fieldPath": "entityType", "order": "ASCENDING" },
+        { "fieldPath": "ts",         "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "academicAuditLog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "actor.uid", "order": "ASCENDING" },
+        { "fieldPath": "ts",        "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "academicAuditLog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "action",   "order": "ASCENDING" },
+        { "fieldPath": "ts",       "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "teacherMarks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "studentId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "submissions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "studentId",   "order": "ASCENDING" },
+        { "fieldPath": "submittedAt", "order": "DESCENDING" }
+      ]
+    },
+
+    {
+      "_comment": "Phase 3 — Correction request: duplicate-pending check (correction_submit)",
+      "collectionGroup": "attendanceCorrectionRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "studentId", "order": "ASCENDING" },
+        { "fieldPath": "date",      "order": "ASCENDING" },
+        { "fieldPath": "status",    "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Phase 3 — Correction list: paginated by status",
+      "collectionGroup": "attendanceCorrectionRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",      "order": "ASCENDING" },
+        { "fieldPath": "status",        "order": "ASCENDING" },
+        { "fieldPath": "requestedAtTs", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "Phase 3 — Correction list: filtered by date",
+      "collectionGroup": "attendanceCorrectionRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",      "order": "ASCENDING" },
+        { "fieldPath": "status",        "order": "ASCENDING" },
+        { "fieldPath": "date",          "order": "ASCENDING" },
+        { "fieldPath": "requestedAtTs", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "Phase 3 — Correction list: teacher's own requests",
+      "collectionGroup": "attendanceCorrectionRequests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",      "order": "ASCENDING" },
+        { "fieldPath": "requestedBy",   "order": "ASCENDING" },
+        { "fieldPath": "status",        "order": "ASCENDING" },
+        { "fieldPath": "requestedAtTs", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "Phase 3 — Audit log: unlock frequency check (lock_set)",
+      "collectionGroup": "attendanceAuditLog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "action",   "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Homework audit Phase 2 — teacherMarks lookup by homework (admin get_submissions/get_homework_detail merge, Teacher getTeacherMarksForHomework)",
+      "collectionGroup": "teacherMarks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",   "order": "ASCENDING" },
+        { "fieldPath": "homeworkId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Homework audit Phase 2 — Parent observeSubmissionsForStudent / getSubmissionsForStudent (canonical schoolId, replaces legacy schoolCode index)",
+      "collectionGroup": "submissions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "studentId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Homework audit Phase 2 — Teacher getHomeworkDueTodayCount (schoolId + sectionKey + status + dueDate equality)",
+      "collectionGroup": "homework",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",   "order": "ASCENDING" },
+        { "fieldPath": "sectionKey", "order": "ASCENDING" },
+        { "fieldPath": "status",     "order": "ASCENDING" },
+        { "fieldPath": "dueDate",    "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Homework audit Phase 2 — students roster lookup by sectionKey (admin Homework get_submissions/create_homework/get_students_for_class)",
+      "collectionGroup": "students",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",   "order": "ASCENDING" },
+        { "fieldPath": "sectionKey", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "Phase G1 — accounting forensics aggregate-count queries (countRecentEvents). Used by AccountingReconciler::status governance section + anomaly aggregation. Restored 2026-05-10 during stabilization hardening.",
+      "collectionGroup": "accountingForensics",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",   "order": "ASCENDING" },
+        { "fieldPath": "session",    "order": "ASCENDING" },
+        { "fieldPath": "eventType",  "order": "ASCENDING" },
+        { "fieldPath": "occurredAt", "order": "DESCENDING" }
       ]
     }
   ],

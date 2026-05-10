@@ -1167,6 +1167,25 @@ a.ac-tab.active { color: var(--ac-primary); }
             });
         });
 
+        // 2026-05-10 — fail-fast client validation. The engine rejects
+        // empty/unbalanced/single-line journals via Operations_accounting,
+        // but doing the check here avoids a pointless POST + spinner on
+        // obviously-bad inputs.
+        if (lines.length < 2) {
+            return toast('Journal entry needs at least 2 line items.', 'error');
+        }
+        var totalDr = 0, totalCr = 0;
+        lines.forEach(function(l) { totalDr += (l.dr || 0); totalCr += (l.cr || 0); });
+        if (Math.abs(totalDr - totalCr) > 0.01) {
+            return toast('Debit (' + fmt(totalDr) + ') does not equal Credit (' + fmt(totalCr) + ').', 'error');
+        }
+        if (totalDr <= 0) {
+            return toast('Journal entry total must be greater than zero.', 'error');
+        }
+        if (!document.getElementById('jeDate').value) {
+            return toast('Date is required.', 'error');
+        }
+
         var btn = document.getElementById('btnSaveJournal');
         btn.disabled = true; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Saving...';
         post('accounting/save_journal_entry', {

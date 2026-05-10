@@ -403,6 +403,9 @@
     <!-- ── Page Header ────────────────────────────────────────────── -->
     <div class="hw-page-header">
         <h2><i class="fa fa-book"></i> Homework Tracking <span class="hw-page-sub">| <?= htmlspecialchars($session_year) ?></span></h2>
+        <button class="hw-btn hw-btn-primary" id="btnCreateHwHeader" onclick="HW.create.openTab()" style="font-weight:600;">
+            <i class="fa fa-plus-circle"></i> Create Homework
+        </button>
     </div>
 
     <!-- ── Tab Navigation ─────────────────────────────────────────── -->
@@ -411,7 +414,6 @@
         <button class="hw-tab" data-tab="list"><i class="fa fa-list"></i> Homework List</button>
         <button class="hw-tab" data-tab="submissions"><i class="fa fa-check-square-o"></i> Submissions</button>
         <button class="hw-tab" data-tab="analytics"><i class="fa fa-bar-chart"></i> Analytics</button>
-        <button class="hw-tab" data-tab="create"><i class="fa fa-plus-circle"></i> Create</button>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════
@@ -464,6 +466,7 @@
             <div class="hw-card">
                 <div class="hw-card-head">
                     <h3><i class="fa fa-clock-o"></i> Recent Homework</h3>
+                    <button class="hw-btn hw-btn-outline hw-btn-sm" onclick="HW.dash.init()" title="Refresh dashboard"><i class="fa fa-refresh"></i> Refresh</button>
                 </div>
                 <div class="hw-card-body">
                     <div class="hw-alert-list" id="recentHwList">
@@ -473,7 +476,7 @@
             </div>
             <div class="hw-card">
                 <div class="hw-card-head">
-                    <h3><i class="fa fa-exclamation-circle"></i> Overdue Alerts</h3>
+                    <h3><i class="fa fa-exclamation-circle"></i> Overdue Alerts <span id="overdueCount" style="color:var(--hw-red);font-size:0.85em;font-weight:600;margin-left:6px;"></span></h3>
                 </div>
                 <div class="hw-card-body">
                     <div class="hw-alert-list" id="overdueAlertList">
@@ -690,7 +693,9 @@
                     <div class="hw-fg-row">
                         <div class="hw-fg">
                             <label>Subject *</label>
-                            <input type="text" id="createSubject" placeholder="e.g. Mathematics" required>
+                            <select id="createSubject" required>
+                                <option value="">Select class first…</option>
+                            </select>
                         </div>
                         <div class="hw-fg">
                             <label>Due Date *</label>
@@ -768,7 +773,9 @@
                 <div class="hw-fg-row">
                     <div class="hw-fg">
                         <label>Subject</label>
-                        <input type="text" id="editSubject">
+                        <select id="editSubject">
+                            <option value="">Select subject…</option>
+                        </select>
                     </div>
                     <div class="hw-fg">
                         <label>Due Date</label>
@@ -786,8 +793,8 @@
             </form>
         </div>
         <div class="hw-modal-foot">
-            <button class="hw-btn hw-btn-outline" onclick="HW.edit.close()">Cancel</button>
-            <button class="hw-btn hw-btn-primary" onclick="HW.edit.save()"><i class="fa fa-save"></i> Save Changes</button>
+            <button class="hw-btn hw-btn-outline" id="editCancelBtn" onclick="HW.edit.close()">Cancel</button>
+            <button class="hw-btn hw-btn-primary" id="editSaveBtn" onclick="HW.edit.save()"><i class="fa fa-save"></i> Save Changes</button>
         </div>
     </div>
 </div>
@@ -1170,7 +1177,11 @@ HW.dash = {
                     '<div class="hw-alert-dot ' + (h.status.toLowerCase() === 'overdue' ? 'red' : (h.status.toLowerCase() === 'active' ? 'amber' : '')) + '"></div>' +
                     '<div class="hw-alert-info"><div class="hw-alert-title">' + esc(h.title) + '</div>' +
                     '<div class="hw-alert-meta">' + esc(h.subject) + ' &middot; ' + esc(h.class) + ' / ' + esc(h.section) + ' &middot; Due: ' + formatDate(h.dueDate) + '</div></div>' +
-                    statusBadge(h.status) + '</div>';
+                    // Show submission progress alongside the status badge so
+                    // the dashboard's Recent column matches the Overdue column
+                    // (which already shows a progress bar). Helps the admin
+                    // spot under-submitted homework at a glance.
+                    progressBar(h.rate) + statusBadge(h.status) + '</div>';
             });
             setHtml('recentHwList', html);
         });
@@ -1180,24 +1191,56 @@ HW.dash = {
         ajaxPost('homework/get_overdue_report', {}, function(r) {
             if (r.status !== 'success') {
                 setHtml('overdueAlertList', '<div class="hw-empty"><i class="fa fa-exclamation-circle"></i> Failed to load</div>');
+                setText('overdueCount', '');
                 return;
             }
             var list = r.overdue || [];
+            // Surface the count in the header so the admin sees the size of
+            // the backlog without scrolling.
+            setText('overdueCount', list.length ? '(' + list.length + ')' : '');
             if (!list.length) {
                 setHtml('overdueAlertList', '<div class="hw-empty"><i class="fa fa-check-circle" style="color:var(--hw-green);opacity:.6;"></i> No overdue homework</div>');
                 return;
             }
             var html = '';
             list.forEach(function(h) {
+                // Colour-pin the rate bar to red in this list so 100% doesn't
+                // look "good" (green) when the homework is actually overdue.
+                // Submission % stays informative as a number; the bar's
+                // colour is purely a context cue.
+                var rate = (typeof h.rate === 'number') ? h.rate : 0;
+                var ratePill = '<div class="hw-progress-wrap">' +
+                    '<div class="hw-progress"><div class="hw-progress-bar red" style="width:' + rate + '%"></div></div>' +
+                    '<span class="hw-progress-label">' + rate + '%</span></div>';
+                // Inline Close action — fastest path to clearing a backlog
+                // entry. Stops propagation so it doesn't also open the
+                // detail modal. After close, we re-load the panel to drop
+                // the row.
+                var closeBtn = '<button class="hw-btn hw-btn-sm hw-btn-success" title="Close homework" onclick="event.stopPropagation();HW.dash._closeOverdue(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-check"></i></button>';
                 html += '<div class="hw-alert-item" onclick="HW.detail.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')">' +
                     '<div class="hw-alert-dot red"></div>' +
                     '<div class="hw-alert-info"><div class="hw-alert-title">' + esc(h.title) + '</div>' +
                     '<div class="hw-alert-meta">' + esc(h.subject) + ' &middot; ' + esc(h.class) + ' / ' + esc(h.section) +
                     ' &middot; <strong style="color:var(--hw-red);">' + h.days_past + ' days overdue</strong> &middot; ' +
                     esc(h.teacherName) + '</div></div>' +
-                    progressBar(h.rate) + '</div>';
+                    ratePill + '<div style="margin-left:8px;display:flex;gap:6px;" onclick="event.stopPropagation();">' + closeBtn + '</div></div>';
             });
             setHtml('overdueAlertList', html);
+        });
+    },
+
+    // Close one overdue homework inline from the dashboard panel — saves a
+    // round-trip through the list tab. Reloads both Overdue and Recent
+    // panels on success since closing flips a row from active → closed.
+    _closeOverdue: function(cls, sec, hwId) {
+        if (!confirm('Close this homework? Students will no longer be able to submit.')) return;
+        ajaxPost('homework/close_homework', { class: cls, section: sec, hw_id: hwId }, function(r) {
+            if (r.status !== 'success') { toast(r.message || 'Failed to close', 'error'); return; }
+            toast('Homework closed');
+            HW.dash.loadOverdue();
+            HW.dash.loadRecent();
+            HW.dash.loadOverview();
+            if (HW.list._loaded) HW.list.refresh();
         });
     },
 };
@@ -1342,12 +1385,17 @@ HW.detail = {
 
             setHtml('detailModalBody', html);
 
-            // Footer actions
+            // Footer actions — Close (modal) + Edit + Close-homework (if open) + Delete.
+            // Was previously just the modal Close button + a conditional
+            // Close-Homework, forcing the user to dismiss and find the row
+            // again to edit/delete.
             var foot = '<button class="hw-btn hw-btn-outline" onclick="HW.detail.close()">Close</button>';
+            foot += ' <button class="hw-btn hw-btn-outline" onclick="HW.detail.close();HW.edit.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-pencil"></i> Edit</button>';
             var hsl = (h.status || '').toLowerCase();
             if (hsl === 'active' || hsl === 'overdue') {
                 foot += ' <button class="hw-btn hw-btn-success" onclick="HW.actions.close(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\');HW.detail.close();"><i class="fa fa-check"></i> Close Homework</button>';
             }
+            foot += ' <button class="hw-btn hw-btn-danger" onclick="HW.actions.remove(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\');HW.detail.close();"><i class="fa fa-trash"></i> Delete</button>';
             setHtml('detailModalFoot', foot);
         });
     },
@@ -1359,6 +1407,39 @@ HW.detail = {
 
 /* ── EDIT MODAL ───────────────────────────────────────────── */
 HW.edit = {
+    // Populate the edit form's Subject dropdown from subjectAssignments for
+    // the homework's class. Selects the homework's current subject (or shows
+    // it as a fallback option if it's no longer in the assignments list).
+    _loadSubjectOptions: function(cls, current) {
+        var sel = document.getElementById('editSubject');
+        sel.innerHTML = '<option value="">Loading…</option>';
+        ajaxPost('homework/get_subjects_for_class', { class: cls || '' }, function(r) {
+            sel.innerHTML = '';
+            // json_success() returns payload at the top level, not under a
+            // `data` envelope — so it's r.subjects, not r.data.subjects.
+            var subjects = ((r && r.subjects) || []).slice();
+            // If the current subject isn't in the assignments list (e.g.
+            // legacy free-text "Maths"), keep it as an option so saving
+            // doesn't silently reset it.
+            if (current && subjects.indexOf(current) === -1) {
+                subjects.unshift(current);
+            }
+            if (!subjects.length) {
+                sel.innerHTML = '<option value="">No subjects assigned to this class</option>';
+                return;
+            }
+            var ph = document.createElement('option');
+            ph.value = ''; ph.textContent = 'Select subject…';
+            sel.appendChild(ph);
+            subjects.forEach(function(s) {
+                var opt = document.createElement('option');
+                opt.value = s; opt.textContent = s;
+                if (s === current) opt.selected = true;
+                sel.appendChild(opt);
+            });
+        });
+    },
+
     open: function(cls, sec, hwId) {
         document.getElementById('hwEditModal').classList.add('show');
         document.getElementById('editClass').value = cls;
@@ -1371,8 +1452,13 @@ HW.edit = {
             var h = r.homework;
             document.getElementById('editTitle').value = h.title || '';
             document.getElementById('editDesc').value = h.description || '';
-            document.getElementById('editSubject').value = h.subject || '';
-            document.getElementById('editDueDate').value = h.dueDate || '';
+            // dueDate is stored as ISO-with-TZ ("2026-05-15T23:59:59+05:30")
+            // but <input type="date"> only accepts "YYYY-MM-DD" — assigning
+            // the full ISO silently leaves the field blank.
+            document.getElementById('editDueDate').value = (h.dueDate || '').substring(0, 10);
+            // Populate subject dropdown from the same source the create form
+            // uses, then select the homework's current subject.
+            HW.edit._loadSubjectOptions(h.class, h.subject || '');
             var rawStatus = h.status === 'Overdue' ? 'Active' : h.status;
             document.getElementById('editStatus').value = rawStatus || 'Active';
         });
@@ -1383,6 +1469,10 @@ HW.edit = {
     },
 
     save: function() {
+        var saveBtn = document.getElementById('editSaveBtn');
+        var cancelBtn = document.getElementById('editCancelBtn');
+        var originalHtml = saveBtn ? saveBtn.innerHTML : '';
+
         var data = {
             class:       document.getElementById('editClass').value,
             section:     document.getElementById('editSection').value,
@@ -1393,11 +1483,31 @@ HW.edit = {
             due_date:    document.getElementById('editDueDate').value,
             status:      document.getElementById('editStatus').value,
         };
+
+        // Lock the button + show spinner while the request is in flight.
+        // Was firing-and-forgetting which gave no UX hint that the click
+        // had registered, prompting users to spam-click and double-submit.
+        if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Saving…';
+        }
+        if (cancelBtn) cancelBtn.disabled = true;
+
+        var restore = function() {
+            if (saveBtn) {
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = originalHtml;
+            }
+            if (cancelBtn) cancelBtn.disabled = false;
+        };
+
         ajaxPost('homework/update_homework', data, function(r) {
+            restore();
             if (r.status !== 'success') { toast(r.message || 'Update failed', 'error'); return; }
             toast('Homework updated successfully');
             HW.edit.close();
             if (HW.list._loaded) HW.list.refresh();
+            HW.dash.init();   // Refresh dashboard tiles + Recent / Overdue panels
         });
     }
 };
@@ -1719,6 +1829,21 @@ HW.analytics = {
 HW.create = {
     _loaded: false,
 
+    // Open the Create panel from anywhere (the header-right button) since
+    // there's no longer a Create tab in the strip. Hides every other panel,
+    // clears any "active" tab highlight, lazy-inits the form, and scrolls
+    // the panel into view so the user immediately sees the form.
+    openTab: function() {
+        var allTabs = document.querySelectorAll('.hw-tab');
+        for (var i = 0; i < allTabs.length; i++) allTabs[i].classList.remove('active');
+        var allPanels = document.querySelectorAll('.hw-panel');
+        for (var j = 0; j < allPanels.length; j++) allPanels[j].classList.remove('active');
+        var panel = document.getElementById('panel-create');
+        if (panel) panel.classList.add('active');
+        if (!this._loaded) this.init();
+        if (panel && panel.scrollIntoView) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    },
+
     init: function() {
         this._loaded = true;
         var self = this;
@@ -1734,8 +1859,10 @@ HW.create = {
     onClassChange: function() {
         var cls = document.getElementById('createClass').value;
         var listEl = document.getElementById('createSectionsList');
+        var subjSel = document.getElementById('createSubject');
         if (!cls || !_classSections || !_classSections.classMap[cls]) {
             listEl.innerHTML = '<div class="hw-check-empty">Select a class first</div>';
+            subjSel.innerHTML = '<option value="">Select class first…</option>';
             return;
         }
         var sections = Object.keys(_classSections.classMap[cls]).sort();
@@ -1744,6 +1871,31 @@ HW.create = {
             html += '<label class="hw-check-item"><input type="checkbox" name="createSection" value="' + esc(s) + '"><span>' + esc(s) + '</span></label>';
         });
         listEl.innerHTML = html;
+
+        // Load the subjects taught in this class from subjectAssignments.
+        // Free-text was a footgun: "Maths" / "Mathematics" / "MATH" all
+        // ended up as separate subjects in the homework collection.
+        subjSel.innerHTML = '<option value="">Loading…</option>';
+        ajaxPost('homework/get_subjects_for_class', { class: cls }, function(r) {
+            subjSel.innerHTML = '';
+            // json_success() puts payload fields at the top level, not under
+            // a `data` envelope — so it's r.subjects, not r.data.subjects.
+            var subjects = (r && r.subjects) || [];
+            if (!subjects.length) {
+                subjSel.innerHTML = '<option value="">No subjects assigned to this class</option>';
+                return;
+            }
+            var ph = document.createElement('option');
+            ph.value = '';
+            ph.textContent = 'Select subject…';
+            subjSel.appendChild(ph);
+            subjects.forEach(function(s) {
+                var opt = document.createElement('option');
+                opt.value = s;
+                opt.textContent = s;
+                subjSel.appendChild(opt);
+            });
+        });
     },
 
     toggleAll: function(el) {
@@ -1814,6 +1966,7 @@ HW.create = {
             // Reset form
             document.getElementById('createHwForm').reset();
             document.getElementById('createSectionsList').innerHTML = '<div class="hw-check-empty">Select a class first</div>';
+            document.getElementById('createSubject').innerHTML = '<option value="">Select class first…</option>';
             document.getElementById('createPreview').style.display = 'none';
 
             // Reset default due date
@@ -1821,10 +1974,14 @@ HW.create = {
             tomorrow.setDate(tomorrow.getDate() + 1);
             document.getElementById('createDueDate').value = tomorrow.toISOString().split('T')[0];
 
-            // Invalidate caches
+            // Invalidate caches and force-refresh the visible list + dashboard
+            // tiles. Without this, the just-created homework wouldn't appear
+            // until the user manually clicked Refresh / changed a filter.
             _classSections = null;
             _hwCache = null;
-            if (HW.list._loaded) { HW.list._loaded = false; }
+            HW.list._loaded = false;
+            HW.list.refresh();
+            HW.dash.init();
         });
     }
 };

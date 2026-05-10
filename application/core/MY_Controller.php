@@ -688,61 +688,323 @@ class MY_Controller extends CI_Controller
         redirect('admin/index');
     }
 
+    // =========================================================================
+    //  R1.1 — YEAR-ROLLOVER FREEZE ENFORCEMENT
+    //  Added 2026-05-10. Pairs with Fees::year_rollover_execute, which
+    //  writes a feeSettings/{schoolId}_{session}_rollover doc with
+    //  status='frozen'. Without this enforcement, the freeze flag was
+    //  decorative — payments could still land on a session that was
+    //  supposedly closed for year-end. These two helpers make the flag
+    //  authoritative for any payment-mutating endpoint that calls them.
+    // =========================================================================
+
     /**
-     * Load the current teacher's class/subject assignments from Duties.
+     * Read the rollover-state doc for a session and return true iff it
+     * is currently frozen. Best-effort — a missing doc / read error
+     * returns false (fail-open) rather than blocking legitimate
+     * payments on transient infra hiccups. The freeze is enforced at
+     * `_abort_if_session_frozen()`; this method is the inspection
+     * primitive that other callers (UI status badges, dashboards) can
+     * also reuse.
      *
-     * Firebase path: Schools/{school}/{year}/Teachers/{adminId}/Duties
-     * Structure:     {DutyType}/{classSection}/{subject}: time
-     *   e.g.  SubjectTeacher / Class 9th 'A' / Mathematics : "09:00-10:00"
+     * @param string|null $session  Defaults to the active session_year.
+     */
+    protected function _is_session_frozen(?string $session = null): bool
+    {
+        $session = $session ?: ($this->session_year ?? '');
+        if ($session === '' || empty($this->fs) || empty($this->firebase)) {
+            return false;
+        }
+        try {
+            $schoolFs = $this->fs->schoolId();
+            if ($schoolFs === '') return false;
+            $doc = $this->firebase->firestoreGet('feeSettings', "{$schoolFs}_{$session}_rollover");
+            if (!is_array($doc)) return false;
+            return (string) ($doc['status'] ?? '') === 'frozen';
+        } catch (\Throwable $e) {
+            log_message('error', "_is_session_frozen({$session}) read failed: " . $e->getMessage());
+            return false; // fail-open
+        }
+    }
+
+    /**
+     * Abort the current request with HTTP 423 (Locked) if the session
+     * is frozen for year-end rollover. Caller should invoke this at the
+     * top of any endpoint that creates a fee order, captures money, or
+     * mutates demand state. The error body is structured JSON with a
+     * machine-readable `code='SESSION_FROZEN'` so clients (Parent app,
+     * admin UI) can recognise the condition and surface a calm message.
+     *
+     * IMPORTANT: do NOT call this from `parent_verify_payment` — once
+     * Razorpay has captured the money, blocking verification would
+     * orphan the payment. Verification and journal-completion paths
+     * must remain unblocked even when the session is frozen, so a
+     * payment captured one minute before freeze still lands cleanly.
+     *
+     * @param string|null $session  Session being mutated (defaults to active).
+     */
+    protected function _abort_if_session_frozen(?string $session = null): void
+    {
+        $session = $session ?: ($this->session_year ?? '');
+        if (!$this->_is_session_frozen($session)) return;
+
+        $message = "Session {$session} is closed for year-end rollover. New payments are temporarily blocked. Please contact the school admin or wait for the rollover to complete.";
+        log_message('warning',
+            "[FREEZE BLOCKED] endpoint=" . ($this->router->fetch_class() . '/' . $this->router->fetch_method())
+            . " session={$session} admin_id=" . ($this->admin_id ?? '-'));
+
+        // Use raw header+echo+exit rather than $this->json_error — that
+        // helper hard-codes Content-Type but some callers (parent_*)
+        // already set headers before reaching here. Mirroring its
+        // structure ensures consistent client-side handling.
+        if (!headers_sent()) {
+            http_response_code(423);
+            header('Content-Type: application/json');
+        }
+        echo json_encode([
+            'status'  => 'error',
+            'success' => false,
+            'code'    => 'SESSION_FROZEN',
+            'session' => $session,
+            'message' => $message,
+            'error'   => $message, // alias for clients that read `error`
+        ]);
+        exit;
+    }
+
+    // =========================================================================
+    //  L1.0 — ACCOUNTING PERIOD-LOCK ENTRY GATE
+    //  Added 2026-05-10. Pairs with the upcoming canonical lock-doc
+    //  migration (L1.1+). Currently the system has TWO unconnected
+    //  period-lock docs:
+    //    • controller-doc: `accountingConfig/{schoolId}_period_lock`
+    //      (snake_case schema, written by `Accounting::lock_period`,
+    //       read by `Accounting::_check_period_lock` for manual entry)
+    //    • canonical-doc:  `accountingConfig/{schoolId}_{session}_periodLock`
+    //      (camelCase schema, read by `Accounting_period_lock::validate`
+    //       inside Operations_accounting — currently has NO writer, so
+    //       all reads return null and automated journal writes ignore
+    //       the lock entirely)
+    //
+    //  Pre-L1.0, the only entry path that respected ANY lock was the
+    //  manual journal-entry tier inside Accounting controller. Fee /
+    //  refund / hostel / inventory writes all bypassed lock enforcement
+    //  silently, which is a financially material control weakness.
+    //
+    //  These helpers do dual-read on both docs and treat either-locked
+    //  as locked. Once the L1.1 canonical backfill ships, both readers
+    //  see the same data; once L4 cleanup completes, only the canonical
+    //  doc remains. Until then this dual-read keeps the gate authoritative
+    //  during the migration window.
+    //
+    //  IN-FLIGHT VERIFICATION POLICY (R1.1 precedent):
+    //  parent_verify_payment intentionally does NOT call this gate. A
+    //  payment captured by Razorpay before a period close must always
+    //  reconcile successfully — blocking verification mid-flight would
+    //  orphan the captured money. The gate applies to NEW entry paths
+    //  only (create-order / counter / refund-process).
+    // =========================================================================
+
+    /**
+     * Inspect the period-lock state for a given (date, session) pair.
+     * Reads both the canonical session-scoped doc and the legacy
+     * controller-global doc; either-locked → locked. Best-effort —
+     * infra read failures default to "not locked" with a warning log
+     * (fail-open, same posture as `_is_session_frozen`).
+     *
+     * @param string      $entryDate   YYYY-MM-DD; the date the new ledger entry would carry.
+     * @param string|null $session     Active session; defaults to $this->session_year.
+     * @return array  ['locked' => bool, 'lockedUntil' => string, 'lockedBy' => string,
+     *                 'reason' => string, 'session' => string, 'source' => string]
+     */
+    protected function _is_period_locked(string $entryDate, ?string $session = null): array
+    {
+        $session = $session ?: ($this->session_year ?? '');
+        if ($entryDate === '' || empty($this->fs) || empty($this->firebase)) {
+            return ['locked' => false, 'reason' => 'preconditions_missing'];
+        }
+        try {
+            $schoolId = $this->fs->schoolId();
+        } catch (\Throwable $_) {
+            return ['locked' => false, 'reason' => 'no_school_id'];
+        }
+        if ($schoolId === '') return ['locked' => false, 'reason' => 'no_school_id'];
+
+        // Canonical (session-scoped, camelCase). Future single source.
+        $canonical = null;
+        try {
+            $canonical = $this->firebase->firestoreGet(
+                'accountingConfig',
+                "{$schoolId}_{$session}_periodLock"
+            );
+        } catch (\Throwable $e) {
+            log_message('warning',
+                "_is_period_locked: canonical read failed (continuing with controller-doc): "
+                . $e->getMessage());
+        }
+
+        // Controller (global, snake_case). Legacy migration-era source.
+        $controller = null;
+        try {
+            $controller = $this->firebase->firestoreGet(
+                'accountingConfig',
+                "{$schoolId}_period_lock"
+            );
+        } catch (\Throwable $_) { /* fail-open per policy */ }
+
+        // Canonical wins when present (session-scoped is more accurate).
+        if (is_array($canonical)) {
+            $lockedUntil = trim((string) ($canonical['lockedUntil'] ?? ''));
+            if ($lockedUntil !== '' && $entryDate <= $lockedUntil) {
+                return [
+                    'locked'      => true,
+                    'lockedUntil' => $lockedUntil,
+                    'lockedBy'    => (string) ($canonical['lockedBy'] ?? ''),
+                    'reason'      => (string) ($canonical['reason']   ?? ''),
+                    'session'     => $session,
+                    'source'      => 'canonical',
+                ];
+            }
+        }
+        // Fall back to the controller doc (legacy global lock).
+        if (is_array($controller)) {
+            $lockedUntil = trim((string) ($controller['locked_until'] ?? ''));
+            if ($lockedUntil !== '' && $entryDate <= $lockedUntil) {
+                return [
+                    'locked'      => true,
+                    'lockedUntil' => $lockedUntil,
+                    'lockedBy'    => (string) ($controller['locked_by'] ?? ''),
+                    'reason'      => (string) ($controller['close_reason'] ?? ''),
+                    'session'     => $session,
+                    'source'      => 'controller',
+                ];
+            }
+        }
+        return ['locked' => false];
+    }
+
+    /**
+     * Abort the current request with HTTP 423 (Locked) if the entry
+     * date falls within a closed accounting period. Caller invokes at
+     * the top of any endpoint that creates a NEW ledger-bound entry
+     * (fee receipt, refund, journal). Already-captured payment
+     * verification (parent_verify_payment) must NOT call this — see
+     * the policy block at the top of this section.
+     *
+     * Emits structured telemetry (`[PERIOD_LOCK BLOCKED] ...`) so
+     * operators can see how often the gate is firing during the
+     * migration activation window. Response body matches the
+     * `_abort_if_session_frozen` shape with `code='PERIOD_LOCKED'`,
+     * letting clients (Parent app, admin UI) recognise both freeze
+     * conditions through a single 423 mapping.
+     *
+     * @param string|null $entryDate  Defaults to today (YYYY-MM-DD).
+     * @param string|null $session    Defaults to $this->session_year.
+     */
+    protected function _abort_if_period_locked(?string $entryDate = null, ?string $session = null): void
+    {
+        $entryDate = $entryDate ?: date('Y-m-d');
+        $r = $this->_is_period_locked($entryDate, $session);
+        if (empty($r['locked'])) return;
+
+        $endpoint = '';
+        if (isset($this->router) && method_exists($this->router, 'fetch_class')) {
+            $endpoint = $this->router->fetch_class() . '/' . $this->router->fetch_method();
+        }
+        $admin   = $this->admin_id ?? '-';
+        $student = '';
+        if (!empty($this->_parent_claims) && is_array($this->_parent_claims)) {
+            $student = (string) ($this->_parent_claims['uid'] ?? '');
+        }
+
+        // Structured operational telemetry — consumable by future
+        // monitoring/alerting that wants to track blocked-attempt
+        // frequency during the activation window.
+        log_message('warning',
+            "[PERIOD_LOCK BLOCKED] endpoint={$endpoint} entryDate={$entryDate} "
+            . "lockedUntil={$r['lockedUntil']} lockedBy={$r['lockedBy']} "
+            . "session={$r['session']} source={$r['source']} "
+            . "admin={$admin} student={$student}");
+
+        $msg = "Accounting period is closed up to {$r['lockedUntil']}. "
+             . "New entries on or before that date are not accepted. "
+             . "Contact the school admin if you believe this is in error.";
+
+        if (!headers_sent()) {
+            http_response_code(423);
+            header('Content-Type: application/json');
+        }
+        echo json_encode([
+            'status'      => 'error',
+            'success'     => false,
+            'code'        => 'PERIOD_LOCKED',
+            'lockedUntil' => $r['lockedUntil'],
+            'lockedBy'    => $r['lockedBy'],
+            'reason'      => $r['reason'],
+            'session'     => $r['session'],
+            'message'     => $msg,
+            'error'       => $msg, // alias
+        ]);
+        exit;
+    }
+
+    /**
+     * Load the current teacher's class/subject assignments from the
+     * canonical Firestore `subjectAssignments` collection.
      *
      * Returns a flat set of normalised keys the teacher is assigned to:
-     *   ['Class 9th|Section A'            => true,   // class+section access
+     *   ['Class 9th|Section A'             => true,   // class+section access
      *    'Class 9th|Section A|Mathematics' => true ]  // class+section+subject access
      *
-     * Result is cached on the instance so repeated calls within one request are free.
+     * Both `subjectName` and `subjectCode` are emitted as separate subject
+     * keys so callers can match either form (e.g. "Mathematics" or "MATH").
+     *
+     * Result is cached on the instance so repeated calls within one request
+     * are free. Replaces the legacy RTDB read at
+     * `Schools/{school}/{year}/Teachers/{adminId}/Duties`, which is no
+     * longer maintained under the Firestore-only policy.
      *
      * @return array  Associative [key => true] for fast isset() lookups
      */
     protected function _get_teacher_assignments(): array
     {
-        // Instance cache
         if (isset($this->_teacher_assign_cache)) {
             return $this->_teacher_assign_cache;
         }
 
-        $school = $this->school_name;
-        $year   = $this->session_year;
-        $tid    = $this->admin_id;
-        $map    = [];
+        $tid = (string) $this->admin_id;
+        $map = [];
 
-        $duties = $this->firebase->get("Schools/{$school}/{$year}/Teachers/{$tid}/Duties");
-        if (!is_array($duties)) {
+        if ($tid === '' || empty($this->school_id) || empty($this->fs)) {
             $this->_teacher_assign_cache = $map;
             return $map;
         }
 
-        foreach ($duties as $dutyType => $classes) {
-            if (!is_array($classes)) continue;
-            foreach ($classes as $classSection => $subjects) {
-                // classSection = "Class 9th 'A'"
-                // Parse → classKey="Class 9th", sectionLetter="A"
-                if (preg_match("/^(.+?)\\s*'([^']*)'\\s*$/", $classSection, $m)) {
-                    $classKey      = trim($m[1]);  // "Class 9th"
-                    $sectionLetter = trim($m[2]);  // "A"
-                } else {
-                    $classKey      = $classSection;
-                    $sectionLetter = '';
-                }
-                $sectionKey = $sectionLetter ? "Section {$sectionLetter}" : '';
-                $csKey      = "{$classKey}|{$sectionKey}";
+        try {
+            $this->load->library('subject_assignment_service', null, 'sas');
+            $this->sas->init($this->fs, $this->school_id, $this->session_year);
+            $assignments = $this->sas->getAssignmentsForTeacher($tid);
+        } catch (\Exception $e) {
+            log_message('error', '_get_teacher_assignments: ' . $e->getMessage());
+            $this->_teacher_assign_cache = $map;
+            return $map;
+        }
 
-                $map[$csKey] = true;
+        foreach ($assignments as $a) {
+            $className = (string) ($a['className'] ?? '');
+            $section   = (string) ($a['section']   ?? '');
+            if ($className === '' || $section === '') continue;
 
-                if (is_array($subjects)) {
-                    foreach (array_keys($subjects) as $subject) {
-                        $map["{$csKey}|{$subject}"] = true;
-                    }
-                }
+            $csKey = "{$className}|{$section}";
+            $map[$csKey] = true;
+
+            $subjectName = (string) ($a['subjectName'] ?? '');
+            $subjectCode = (string) ($a['subjectCode'] ?? '');
+            if ($subjectName !== '') {
+                $map["{$csKey}|{$subjectName}"] = true;
+            }
+            if ($subjectCode !== '' && $subjectCode !== $subjectName) {
+                $map["{$csKey}|{$subjectCode}"] = true;
             }
         }
 

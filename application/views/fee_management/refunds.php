@@ -168,7 +168,7 @@
                 <th width="50">S.No</th>
                 <th>Date</th>
                 <th>Student Name</th>
-                <th>Class</th>
+                <th>Class / Section</th>
                 <th>Fee Title</th>
                 <th>Receipt No</th>
                 <th class="text-right">Amount (&#8377;)</th>
@@ -214,7 +214,7 @@
             <span class="fm-detail-value" id="pmStudentName">--</span>
           </div>
           <div class="fm-detail-item">
-            <span class="fm-detail-label">Class</span>
+            <span class="fm-detail-label">Class / Section</span>
             <span class="fm-detail-value" id="pmClass">--</span>
           </div>
           <div class="fm-detail-item">
@@ -275,7 +275,7 @@
             <span class="fm-detail-value" id="dmStudentName">--</span>
           </div>
           <div class="fm-detail-item">
-            <span class="fm-detail-label">Class</span>
+            <span class="fm-detail-label">Class / Section</span>
             <span class="fm-detail-value" id="dmClass">--</span>
           </div>
           <div class="fm-detail-item">
@@ -335,6 +335,143 @@ document.addEventListener('DOMContentLoaded', function() {
   var csrfHash  = document.querySelector('meta[name="csrf-token"]').content;
   var BASE      = '<?= base_url() ?>';
   var activeFilter = 'all';
+
+  /* ───────────────────────────────────────────────────────────────
+   * Stage B2 (2026-05-10) — Custom confirmation dialog.
+   * Replaces native confirm() for irreversible refund actions.
+   *
+   * Why:
+   *   - confirm() can be auto-clicked by accessibility tools, browser
+   *     extensions, or accidental Enter-key presses on focused
+   *     elements. Refund approvals/rejections are irreversible from
+   *     the UI; we need an explicit, focus-managed dialog.
+   *   - confirm() text doesn't render line breaks consistently
+   *     across browsers; long messages got squashed.
+   *
+   * Behaviour:
+   *   - Backdrop blocks page interaction.
+   *   - Esc key resolves false (cancel).
+   *   - Backdrop click does NOT dismiss (must explicitly click a button).
+   *   - Tab/Shift-Tab cycle between Cancel and Confirm.
+   *   - Default focus lands on Cancel — the safer choice for
+   *     irreversible actions; user must explicitly Tab to Confirm.
+   *   - On close, focus returns to the element that triggered the dialog.
+   *   - role="dialog" + aria-modal="true" + aria-labelledby for SR.
+   *   - Returns Promise<boolean>: true=Confirm, false=Cancel/Esc.
+   * ─────────────────────────────────────────────────────────────── */
+  function confirmDialog(opts) {
+    return new Promise(function(resolve) {
+      var prevFocus = document.activeElement;
+
+      var backdrop = document.createElement('div');
+      backdrop.setAttribute('role', 'dialog');
+      backdrop.setAttribute('aria-modal', 'true');
+      backdrop.style.cssText =
+        'position:fixed;inset:0;background:rgba(15,23,42,.55);' +
+        'z-index:10050;display:flex;align-items:center;justify-content:center;' +
+        'padding:16px;animation:rfDialogFadeIn 120ms ease-out;';
+
+      var card = document.createElement('div');
+      card.style.cssText =
+        'background:#fff;border-radius:14px;max-width:480px;width:100%;' +
+        'box-shadow:0 20px 60px rgba(0,0,0,.25);overflow:hidden;' +
+        'display:flex;flex-direction:column;';
+
+      var header = document.createElement('div');
+      header.style.cssText =
+        'padding:16px 20px;border-bottom:1px solid #e5e7eb;' +
+        'display:flex;align-items:center;gap:10px;' +
+        (opts.dangerous ? 'background:#fef2f2;' : 'background:#f8fafc;');
+
+      var icon = document.createElement('i');
+      icon.className = 'fa ' + (opts.dangerous ? 'fa-exclamation-triangle' : 'fa-question-circle');
+      icon.style.cssText = 'font-size:20px;color:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+      header.appendChild(icon);
+
+      var title = document.createElement('h4');
+      title.id = 'rfConfirmTitle' + Date.now();
+      title.style.cssText = 'margin:0;font-size:16px;font-weight:600;color:#0f172a;';
+      title.textContent = opts.title || 'Please confirm';
+      backdrop.setAttribute('aria-labelledby', title.id);
+      header.appendChild(title);
+
+      var body = document.createElement('div');
+      body.style.cssText = 'padding:18px 20px;color:#334155;font-size:14px;line-height:1.55;white-space:pre-wrap;';
+      body.textContent = opts.body || ''; // textContent — no HTML parsing.
+
+      var footer = document.createElement('div');
+      footer.style.cssText =
+        'padding:12px 16px;border-top:1px solid #e5e7eb;background:#f8fafc;' +
+        'display:flex;gap:8px;justify-content:flex-end;';
+
+      var btnCancel = document.createElement('button');
+      btnCancel.type = 'button';
+      btnCancel.textContent = opts.cancelText || 'Cancel';
+      btnCancel.style.cssText =
+        'padding:8px 16px;border-radius:8px;border:1px solid #cbd5e1;' +
+        'background:#fff;color:#475569;font-weight:500;cursor:pointer;font-size:14px;';
+
+      var btnConfirm = document.createElement('button');
+      btnConfirm.type = 'button';
+      btnConfirm.textContent = opts.confirmText || 'Confirm';
+      btnConfirm.style.cssText =
+        'padding:8px 16px;border-radius:8px;border:none;' +
+        'color:#fff;font-weight:600;cursor:pointer;font-size:14px;' +
+        'background:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+
+      // `infoOnly: true` hides Cancel and turns the dialog into a
+      // non-actionable explanation surface (used when the admin can't
+      // take any action from this dialog — e.g. the stale-allocation
+      // branch where wallet-credit was the old fallback but is gone
+      // post-Phase-9). Only the Confirm/OK button is rendered.
+      if (!opts.infoOnly) footer.appendChild(btnCancel);
+      footer.appendChild(btnConfirm);
+      card.appendChild(header);
+      card.appendChild(body);
+      card.appendChild(footer);
+      backdrop.appendChild(card);
+      document.body.appendChild(backdrop);
+
+      function cleanup() {
+        document.removeEventListener('keydown', onKey, true);
+        if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
+        if (prevFocus && typeof prevFocus.focus === 'function') {
+          try { prevFocus.focus(); } catch (_) {}
+        }
+      }
+      function done(value) { cleanup(); resolve(value); }
+
+      function onKey(e) {
+        if (e.key === 'Escape') {
+          e.preventDefault(); e.stopPropagation();
+          done(false);
+          return;
+        }
+        if (e.key === 'Tab') {
+          // In info-only mode there's only one button — short-circuit
+          // tab so focus stays on it. Otherwise cycle Cancel ↔ Confirm.
+          if (opts.infoOnly) {
+            e.preventDefault(); btnConfirm.focus();
+            return;
+          }
+          if (e.shiftKey && document.activeElement === btnCancel) {
+            e.preventDefault(); btnConfirm.focus();
+          } else if (!e.shiftKey && document.activeElement === btnConfirm) {
+            e.preventDefault(); btnCancel.focus();
+          }
+        }
+      }
+      document.addEventListener('keydown', onKey, true);
+
+      btnCancel.addEventListener('click', function () { done(false); });
+      btnConfirm.addEventListener('click', function () { done(true); });
+
+      // Default focus: Cancel for actionable confirms (safer for
+      // irreversible refunds), Confirm/OK for info-only dialogs (so
+      // Enter dismisses immediately).
+      (opts.infoOnly ? btnConfirm : btnCancel).focus();
+    });
+  }
   var refundsCache = [];
 
   /* ── Helpers ── */
@@ -368,11 +505,16 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
+  // Phase 1.X (2026-05-09) — IST conversion enforced. Refunds are
+  // accounting-sensitive; bank reconciliation + audit trails require
+  // a deterministic date irrespective of the admin's browser timezone.
+  // requestedDate is stored as 'Y-m-d H:i:s' (server-local, no offset)
+  // so this also pins interpretation to IST regardless of source tz.
   function fmtDate(d) {
     if (!d) return '--';
     var dt = new Date(d);
     if (isNaN(dt)) return d;
-    return dt.toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' });
+    return dt.toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric', timeZone:'Asia/Kolkata' });
   }
 
   function fmtAmount(n) {
@@ -411,11 +553,17 @@ document.addEventListener('DOMContentLoaded', function() {
       // The controller enforces the 5-min TTL so misclicks on a still-active
       // refund are rejected server-side.
       btns += '<button class="fm-btn-xs fm-btn-unstick" data-action="unstick" data-id="' + id + '" title="Unstick (rescue stuck refund)"><i class="fa fa-unlock"></i> Unstick</button>';
-    } else if (s === 'processed' && item.journalPosted === false) {
+    } else if (s === 'processed' && (item.journalPosted === false || (item.journalPosted == null && !item.journalEntryId))) {
       // R.5: refund went through but the accounting journal post failed.
       // The demands are already reversed and the voucher is written — only
       // the ledger entry is missing. Clicking Retry Journal hits the
       // idempotent poster; on success the warning icon disappears.
+      //
+      // Phase 1.X (2026-05-09) — relaxed strict `=== false` check to also
+      // catch legacy/manual refunds where journalPosted is undefined AND
+      // no journalEntryId exists. Without this, a processed refund whose
+      // journal write was never attempted would never surface the retry
+      // option to admin.
       btns += '<button class="fm-btn-xs fm-btn-retry-journal" data-action="retry-journal" data-id="' + id + '" title="Journal post failed — click to retry"><i class="fa fa-exclamation-triangle"></i> Retry Journal</button>';
     }
     btns += '<button class="fm-btn-xs fm-btn-view" data-action="view" data-id="' + id + '" title="View"><i class="fa fa-eye"></i></button>';
@@ -593,36 +741,54 @@ document.addEventListener('DOMContentLoaded', function() {
   //   3. Hits the endpoint
   //   4. Toasts the result and refreshes the list on success
   function doLifecycleAction(opts) {
-    if (opts.confirmMsg && !confirm(opts.confirmMsg)) return;
-    var $btn = opts.button;
-    if ($btn && $btn.length) {
-      if ($btn.data('pending')) return; // already in flight
-      $btn.data('pending', true);
-      $btn.data('original-html', $btn.html());
-      $btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i>');
-    }
-    ajaxPost(opts.url, opts.payload, function(err, res) {
+    // Stage B2: replaced native confirm() with custom dialog. Continuation
+    // closure keeps the original behaviour identical post-confirmation;
+    // only the prompt itself is replaced.
+    var continueAction = function() {
+      var $btn = opts.button;
       if ($btn && $btn.length) {
-        $btn.prop('disabled', false).html($btn.data('original-html') || $btn.html());
-        $btn.data('pending', false);
+        if ($btn.data('pending')) return; // already in flight
+        $btn.data('pending', true);
+        $btn.data('original-html', $btn.html());
+        $btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i>');
       }
-      if (err || !res || (res.status !== 'success' && res.success !== true)) {
-        showToast(err || (res && res.message) || opts.failMsg || 'Action failed', 'error');
-        return;
-      }
-      showToast(opts.successMsg || 'Done', 'success');
-      // Defensive: clear the list-load guard before refresh so any in-flight
-      // or stuck fetch doesn't silently drop the reload.
-      loadingRefunds = false;
-      loadRefunds(activeFilter);
-    });
+      ajaxPost(opts.url, opts.payload, function(err, res) {
+        if ($btn && $btn.length) {
+          $btn.prop('disabled', false).html($btn.data('original-html') || $btn.html());
+          $btn.data('pending', false);
+        }
+        if (err || !res || (res.status !== 'success' && res.success !== true)) {
+          showToast(err || (res && res.message) || opts.failMsg || 'Action failed', 'error');
+          return;
+        }
+        showToast(opts.successMsg || 'Done', 'success');
+        // Defensive: clear the list-load guard before refresh so any in-flight
+        // or stuck fetch doesn't silently drop the reload.
+        loadingRefunds = false;
+        loadRefunds(activeFilter);
+      });
+    };
+
+    if (opts.confirmMsg) {
+      confirmDialog({
+        title: opts.confirmTitle || 'Confirm action',
+        body: opts.confirmMsg,
+        confirmText: opts.confirmText || 'Confirm',
+        cancelText: 'Cancel',
+        dangerous: !!opts.dangerous
+      }).then(function(ok) { if (ok) continueAction(); });
+    } else {
+      continueAction();
+    }
   }
 
   window.approveRefund = function(id, $btn) {
     doLifecycleAction({
       url: 'fee_management/approve_refund',
       payload: { refund_id: id },
-      confirmMsg: 'Approve this refund request? The refund will then be ready for processing.',
+      confirmTitle: 'Approve refund?',
+      confirmMsg: 'The refund will be marked approved and queued for processing. You can still cancel before payment is released.',
+      confirmText: 'Approve',
       successMsg: 'Refund approved.',
       failMsg: 'Approval failed.',
       button: $btn,
@@ -633,7 +799,10 @@ document.addEventListener('DOMContentLoaded', function() {
     doLifecycleAction({
       url: 'fee_management/reject_refund',
       payload: { refund_id: id },
-      confirmMsg: 'Reject this refund request? The refund will be marked rejected and cannot be processed.',
+      confirmTitle: 'Reject refund?',
+      confirmMsg: 'This refund will be marked rejected and cannot be processed afterwards.',
+      confirmText: 'Reject',
+      dangerous: true,
       successMsg: 'Refund rejected.',
       failMsg: 'Rejection failed.',
       button: $btn,
@@ -644,11 +813,11 @@ document.addEventListener('DOMContentLoaded', function() {
     doLifecycleAction({
       url: 'fee_management/retry_refund_journal',
       payload: { refund_id: id },
+      confirmTitle: 'Retry accounting journal?',
       confirmMsg:
-        'Retry the accounting journal post for this refund?\n\n' +
-        'The refund itself is already complete (demands reversed, voucher issued). ' +
-        'This only re-attempts the ledger entry. Safe to click repeatedly — the poster ' +
-        'is idempotent and will not create a duplicate journal.',
+        'The refund itself is already complete (demands reversed, voucher issued). This only re-attempts the ledger entry.\n\n' +
+        'Safe to click repeatedly — the poster is idempotent and will not create a duplicate journal.',
+      confirmText: 'Retry journal',
       successMsg: 'Journal posted.',
       failMsg: 'Journal retry failed.',
       button: $btn,
@@ -659,11 +828,12 @@ document.addEventListener('DOMContentLoaded', function() {
     doLifecycleAction({
       url: 'fee_management/unstick_refund',
       payload: { refund_id: id },
+      confirmTitle: 'Rescue stuck refund?',
       confirmMsg:
-        'Rescue this stuck refund?\n\n' +
-        'Use ONLY if a prior processing attempt crashed and this refund has been stuck in "processing" for more than 5 minutes. ' +
-        'The refund will be reset to "approved" so you can click Process again. ' +
-        'Server will refuse if the refund is still actively being processed.',
+        'Use ONLY if a prior processing attempt crashed and this refund has been stuck in "processing" for more than 5 minutes.\n\n' +
+        'The refund will be reset to "approved" so you can click Process again. The server will refuse if the refund is still actively being processed.',
+      confirmText: 'Reset to approved',
+      dangerous: true,
       successMsg: 'Refund reset to approved. Click Process to retry.',
       failMsg: 'Could not unstick refund.',
       button: $btn,
@@ -702,45 +872,58 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!mode) { showToast('Please select a refund mode', 'error'); return; }
 
     // Destructive: explicit confirmation before money is moved.
+    // Stage B2: replaced native confirm() with the focus-managed dialog.
     var item   = refundsCache.find(function(r){ return r.id === id; });
     var amount = item ? fmtAmount(item.amount) : '';
     var name   = item ? (item.student_name || '') : '';
-    if (!confirm(
-        'Process this refund?\n\n' +
-        'Student: ' + name + '\n' +
-        'Amount:  ' + amount + '\n' +
-        'Mode:    ' + mode + '\n\n' +
-        'This will reverse the original allocations and post an accounting journal. ' +
-        'It cannot be undone from the UI.')) {
-      return;
-    }
-
-    $btn.data('pending', true)
-        .prop('disabled', true)
-        .html('<i class="fa fa-spinner fa-spin"></i> Processing...');
-
-    submitProcessRefund(id, mode, false);
+    confirmDialog({
+      title: 'Process refund?',
+      body: 'Student: ' + name + '\n' +
+            'Amount:  ' + amount + '\n' +
+            'Mode:    ' + mode + '\n\n' +
+            'This will reverse the original allocations and post an accounting journal. It cannot be undone from the UI.',
+      confirmText: 'Process refund',
+      dangerous: true
+    }).then(function(ok) {
+      if (!ok) return;
+      $btn.data('pending', true)
+          .prop('disabled', true)
+          .html('<i class="fa fa-spinner fa-spin"></i> Processing...');
+      submitProcessRefund(id, mode);
+    });
   }
 
-  // R.6: split out the actual POST so the stale-allocation override path
-  // can retry with acknowledge_stale=1 without repeating the whole modal
-  // setup. Called twice: first without ack, then if server returns
-  // STALE_ALLOCATION, admin confirms and we resubmit with ack=true.
-  function submitProcessRefund(id, mode, ackStale) {
+  // The actual POST. Originally split out so the stale-allocation
+  // override path (R.6) could retry with `acknowledge_stale=1`. C6
+  // cleanup 2026-05-10: that override is gone post-Phase-9 — the
+  // server ignores the flag, the wallet-credit fallback dialog has
+  // been replaced with a non-actionable info dialog (Stage B2), and
+  // `submitProcessRefund` is now only ever called once per refund.
+  // The function is still split out so future test hooks can stub it.
+  function submitProcessRefund(id, mode) {
     var $btn = $('#btnProcessRefund');
     ajaxPost('fee_management/process_refund', {
-      refund_id:         id,
-      refund_mode:       mode,
-      remarks:           $('#pmRemarks').val().trim(),
-      acknowledge_stale: ackStale ? '1' : '0'
+      refund_id:   id,
+      refund_mode: mode,
+      remarks:     $('#pmRemarks').val().trim()
     }, function(err, res) {
       $btn.data('pending', false)
           .prop('disabled', false)
           .html('<i class="fa fa-check"></i> Process Refund');
 
-      // R.6: stale-allocation branch. The server refused because another
-      // receipt now owns one or more of this receipt's demands. Offer a
-      // wallet-route override instead of silently corrupting newer state.
+      // R.6 (REWRITTEN 2026-05-10): stale-allocation branch.
+      //
+      // Pre-Phase-9 this offered a "wallet credit" override that
+      // routed the refund into studentAdvanceBalances instead of
+      // reducing the demand. Phase 9 removed the wallet subsystem
+      // entirely, so that override no longer has a valid backend
+      // landing — calling submitProcessRefund(id, mode, true) would
+      // either fail or write into a dead path.
+      //
+      // New behaviour: surface a non-actionable info dialog explaining
+      // the conflict and the only safe remediation (reverse the newer
+      // receipts first, then retry). NO second-chance "proceed"
+      // option, since the system can't fulfil it.
       if (res && res.status === 'error' && res.code === 'STALE_ALLOCATION') {
         var conflicts = Array.isArray(res.conflicts) ? res.conflicts : [];
         var supers    = Array.isArray(res.superseded_by) ? res.superseded_by : [];
@@ -749,21 +932,17 @@ document.addEventListener('DOMContentLoaded', function() {
                  '  (superseded by: #' + (c.superseded_by || []).join(', #') + ')';
         }).join('\n') || '  (see server log)';
         var msg =
-          'Cannot refund this receipt normally — some of its demands have been re-paid ' +
-          'by newer receipt(s): #' + supers.join(', #') + '.\n\n' +
+          'This receipt cannot be refunded directly — some of its demands have been re-paid by newer receipt(s): #' + supers.join(', #') + '.\n\n' +
           'Conflicting demands:\n' + detail + '\n\n' +
-          'If you proceed, the refund amount will be CREDITED to the student\'s advance ' +
-          'balance (wallet) instead of reducing the demand balance. The newer receipt(s) ' +
-          'stay intact, and the student can draw this credit against future fees. No cash ' +
-          'leaves the school.\n\n' +
-          'Proceed with wallet-credit refund?';
-        if (confirm(msg)) {
-          $btn.data('pending', true).prop('disabled', true)
-              .html('<i class="fa fa-spinner fa-spin"></i> Processing...');
-          submitProcessRefund(id, mode, true);
-        } else {
-          showToast('Refund cancelled. Reverse the newer receipt(s) first if you need a normal refund.', 'error');
-        }
+          'To refund this receipt, first reverse the newer receipt(s) above, then return here and click Process again.';
+        confirmDialog({
+          title: 'Cannot refund — conflicting newer receipts',
+          body: msg,
+          confirmText: 'Got it',
+          infoOnly: true,
+          dangerous: true
+        });
+        showToast('Refund blocked by stale allocation. Reverse the newer receipt(s) first.', 'error');
         return;
       }
 
@@ -777,9 +956,7 @@ document.addEventListener('DOMContentLoaded', function() {
       if (res.journal_posted === false) {
         showToast(res.message || 'Refund processed — journal post failed.', 'error');
       } else {
-        showToast(ackStale
-          ? 'Refund processed — amount credited to student wallet (stale allocations detected).'
-          : 'Refund processed successfully', 'success');
+        showToast('Refund processed successfully', 'success');
       }
       $('#processModal').modal('hide');
 

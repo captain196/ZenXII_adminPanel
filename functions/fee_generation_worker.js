@@ -293,14 +293,55 @@ exports.processFeeGenerationJob = onDocumentCreated(
   },
   async (event) => {
     const jobRef = event.data.ref;
-    const job = event.data.data();
-    if (!job || job.status !== 'pending') {
-      logger.info('job skipped — not pending', { jobId: event.params.jobId, status: job?.status });
+    const startedAt = new Date().toISOString();
+
+    // Phase 3B (deploy-deferred until Blaze activation) — atomic claim.
+    // Pre-3B: if/update was non-atomic; two cold-start instances could
+    // both pass the pending check and proceed to do duplicate work
+    // (concurrency=1 only protects within a single instance, not across).
+    // The transaction below ensures exactly-one winner under contention:
+    // the loser's TX aborts when it sees status!='pending', and we exit
+    // cleanly with a structured log entry.
+    let claim;
+    try {
+      claim = await admin.firestore().runTransaction(async (tx) => {
+        const snap = await tx.get(jobRef);
+        if (!snap.exists) {
+          return { ok: false, reason: 'not_found' };
+        }
+        const data = snap.data();
+        if (!data || data.status !== 'pending') {
+          return { ok: false, reason: 'not_pending', currentStatus: data?.status || null };
+        }
+        tx.update(jobRef, {
+          status: 'running',
+          startedAt,
+          claimedBy: process.env.K_REVISION || 'unknown',
+        });
+        return { ok: true, job: data };
+      });
+    } catch (e) {
+      // Transaction abort or commit failure — let CF retry semantics
+      // handle it. Next attempt will see status='running' (if winner
+      // already proceeded) or status='pending' again (if winner crashed
+      // pre-commit), and the same atomic claim will resolve correctly.
+      logger.error('atomic claim transaction failed', {
+        error: e.message,
+        jobId: event.params.jobId,
+      });
+      throw e;
+    }
+
+    if (!claim.ok) {
+      logger.info('job skipped — claim failed', {
+        jobId: event.params.jobId,
+        reason: claim.reason,
+        currentStatus: claim.currentStatus,
+      });
       return;
     }
 
-    const startedAt = new Date().toISOString();
-    await jobRef.update({ status: 'running', startedAt });
+    const job = claim.job;
 
     const totals = {
       totalStudents: 0,

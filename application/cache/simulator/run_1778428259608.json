@@ -1,0 +1,20 @@
+[
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778428259608_D1",
+        "source": "fee_payment",
+        "type": "tuition+concession",
+        "at": "2026-05-10T17:51:14+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778428259608_D2",
+        "source": "fee_payment",
+        "type": "transport+concession",
+        "at": "2026-05-10T17:51:34+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778428259608_D4",
+        "source": "fee_payment",
+        "type": "mixed_no_concession",
+        "at": "2026-05-10T17:53:19+02:00"
+    }
+]

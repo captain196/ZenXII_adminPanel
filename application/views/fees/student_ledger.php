@@ -26,7 +26,11 @@
     </div>
 
     <!-- ── Search Card ── -->
-    <div class="fm-card">
+    <!-- overflow:visible inline override — the global .fm-card rule sets
+         overflow:hidden which clips the absolutely-positioned typeahead
+         dropdown below the input. Without this, the dropdown renders
+         correctly but is invisible to the user. -->
+    <div class="fm-card" style="overflow:visible">
         <div class="fm-card-hdr">
             <h2 class="fm-card-title"><i class="fa fa-search"></i> Find Student</h2>
             <span class="fm-card-hint">Type at least 2 characters of the name or ID.</span>
@@ -174,39 +178,142 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function(){
+    if (typeof window.jQuery === 'undefined') {
+        var box = document.getElementById('ledgerSearchResults');
+        if (box) box.innerHTML = '<div class="sl-dd-empty" style="color:#dc2626">Page error: jQuery missing. Reload page.</div>';
+        return;
+    }
     var BASE = '<?= base_url() ?>';
     var selectedStudent = null;
     var demandsCache = [];
     var csrfName = '<?= $this->security->get_csrf_token_name() ?>';
     var csrfHash = '<?= $this->security->get_csrf_hash() ?>';
 
-    function fmt(n){ return Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:0,maximumFractionDigits:0}); }
+    // Currency formatting — 2 decimal places (Indian numbering). Used for
+    // every ₹ value on the page (banner stats, demand amounts, allocations,
+    // CSV export). Avoids silent rounding of paise on concessions, refunds,
+    // and gateway settlements that may carry sub-rupee precision.
+    function fmt(n){ return Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}); }
     function esc(s){ var d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
 
-    // ── Student search (typeahead) ──
-    var searchTimer = null;
+    // ── Student search (typeahead) ─────────────────────────────────
+    // Phase 1.X (2026-05-09) — pre-fetch + client-side filter.
+    // Was: per-keystroke AJAX (with 280ms debounce) hitting
+    // fees/search_student which scans the full students collection on
+    // every call. Real-world impact: noticeable lag, plus silent
+    // failure when any single request tripped a network/CSRF blip
+    // (the .post() callback simply doesn't fire and the user sees no
+    // dropdown at all). Now: ONE bulk fetch on page load (server caps
+    // at 200), then instant in-memory filtering — sub-millisecond, no
+    // network on input, no CSRF risk per keystroke.
+    var allStudents     = [];
+    var studentsLoaded  = false;
+    var studentsLoading = false;
+    var studentsErr     = '';
+
+    // Helper: PHP's _json_out adds a csrf_token field, which converts
+    // numeric-keyed arrays to mixed-key objects. json_encode then emits
+    // {"0": stu1, "1": stu2, ..., "csrf_token": "..."} instead of an
+    // array. Recover the student rows by collecting numeric-keyed
+    // entries; fall back to common wrapper keys (data/results/students)
+    // if the endpoint shape changes upstream.
+    function extractRoster(r){
+        var res = r;
+        if (typeof r === 'string') {
+            try { res = JSON.parse(r); } catch(e) { return []; }
+        }
+        if (Array.isArray(res)) return res;
+        if (!res || typeof res !== 'object') return [];
+        // Common wrapper keys
+        if (Array.isArray(res.data))     return res.data;
+        if (Array.isArray(res.results))  return res.results;
+        if (Array.isArray(res.students)) return res.students;
+        // Last resort: pick numeric-keyed entries (PHP-mangled array)
+        var arr = [];
+        Object.keys(res).forEach(function(k){
+            if (/^\d+$/.test(k) && res[k] && typeof res[k] === 'object') arr.push(res[k]);
+        });
+        return arr;
+    }
+
+    function loadAllStudents(){
+        if (studentsLoading) return;
+        studentsLoading = true;
+        var body = {}; body.search_name = ''; body[csrfName] = csrfHash;
+        $.post(BASE+'fees/search_student', body, function(r){
+            allStudents     = extractRoster(r);
+            studentsLoaded  = true;
+            studentsLoading = false;
+            studentsErr     = allStudents.length === 0 ? 'No active students returned by the server.' : '';
+        }).fail(function(xhr){
+            studentsLoaded  = true;
+            studentsLoading = false;
+            studentsErr     = 'Could not load student list (HTTP ' + (xhr ? xhr.status : '?') + '). Refresh the page.';
+        });
+    }
+    loadAllStudents();
+
+    function filterStudents(q){
+        q = (q || '').trim().toLowerCase();
+        if (!q) return [];
+        var tokens = q.split(/\s+/).filter(Boolean);
+        var out = [];
+        for (var i = 0; i < allStudents.length && out.length < 50; i++) {
+            var s = allStudents[i];
+            var hay = ((s.name||'') + ' ' + (s.user_id||'') + ' ' +
+                       (s.father_name||'') + ' ' + (s.class||'') + ' ' +
+                       (s.section||'')).toLowerCase();
+            var allMatch = true;
+            for (var j = 0; j < tokens.length; j++) {
+                if (hay.indexOf(tokens[j]) === -1) { allMatch = false; break; }
+            }
+            if (allMatch) out.push(s);
+        }
+        return out;
+    }
+
+    function renderStudentDropdown(matches){
+        var $box = $('#ledgerSearchResults');
+        if (!matches.length) {
+            $box.html('<div class="sl-dd-empty">No matches</div>').show();
+            return;
+        }
+        var h = '';
+        matches.forEach(function(s){
+            h += '<div class="sl-dd-item"' +
+                 ' data-uid="'    + esc(s.user_id)        + '"' +
+                 ' data-name="'   + esc(s.name)           + '"' +
+                 ' data-class="'  + esc(s.class||'')      + '"' +
+                 ' data-section="'+ esc(s.section||'')    + '"' +
+                 ' data-father="' + esc(s.father_name||'')+ '">';
+            h +=   '<div class="sl-dd-name">' + esc(s.name) + '</div>';
+            h +=   '<div class="sl-dd-meta">' + esc(s.user_id) + ' &middot; ' +
+                                                esc(s.class||'') + ' ' + esc(s.section||'') + '</div>';
+            h += '</div>';
+        });
+        $box.html(h).show();
+    }
+
     $('#ledgerSearch').on('input', function(){
-        clearTimeout(searchTimer);
         var q = $(this).val().trim();
-        if(q.length < 2){ $('#ledgerSearchResults').html('').hide(); return; }
-        searchTimer = setTimeout(function(){
-            var body = {}; body.search_name = q; body[csrfName] = csrfHash;
-            $.post(BASE+'fees/search_student', body, function(r){
-                var res = typeof r==='string'?JSON.parse(r):r;
-                if(!Array.isArray(res)||!res.length){
-                    $('#ledgerSearchResults').html('<div class="sl-dd-empty">No matches</div>').show();
-                    return;
+        var $box = $('#ledgerSearchResults');
+        if (q.length < 2) { $box.html('').hide(); return; }
+        if (studentsErr) {
+            $box.html('<div class="sl-dd-empty">' + esc(studentsErr) + '</div>').show();
+            return;
+        }
+        if (!studentsLoaded) {
+            $box.html('<div class="sl-dd-empty"><i class="fa fa-spinner fa-spin"></i> Loading student list…</div>').show();
+            var $self = $(this);
+            var poll = setInterval(function(){
+                if (studentsLoaded) {
+                    clearInterval(poll);
+                    if ($self.val().trim() === q) renderStudentDropdown(filterStudents(q));
                 }
-                var h='';
-                res.forEach(function(s){
-                    h+='<div class="sl-dd-item" data-uid="'+esc(s.user_id)+'" data-name="'+esc(s.name)+'" data-class="'+esc(s.class||'')+'" data-section="'+esc(s.section||'')+'" data-father="'+esc(s.father_name||'')+'">';
-                    h+='<div class="sl-dd-name">'+esc(s.name)+'</div>';
-                    h+='<div class="sl-dd-meta">'+esc(s.user_id)+' &middot; '+esc(s.class||'')+' '+esc(s.section||'')+'</div>';
-                    h+='</div>';
-                });
-                $('#ledgerSearchResults').html(h).show();
-            });
-        }, 280);
+            }, 100);
+            return;
+        }
+        renderStudentDropdown(filterStudents(q));
     });
 
     $(document).on('click','.sl-dd-item', function(){

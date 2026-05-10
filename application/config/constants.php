@@ -97,3 +97,21 @@ defined('EXIT_USER_INPUT')     OR define('EXIT_USER_INPUT', 7); // invalid user 
 defined('EXIT_DATABASE')       OR define('EXIT_DATABASE', 8); // database error
 defined('EXIT__AUTO_MIN')      OR define('EXIT__AUTO_MIN', 9); // lowest automatically-assigned error code
 defined('EXIT__AUTO_MAX')      OR define('EXIT__AUTO_MAX', 125); // highest automatically-assigned error code
+
+/*
+|--------------------------------------------------------------------------
+| Analytics writer flag (Phase 8 → Stage 2 migration kill-switch)
+|--------------------------------------------------------------------------
+|
+| When false (current default), Lesson_plan_service updates the analytics
+| summary collections inline via _updateAnalyticsSummariesBestEffort.
+|
+| When true (set after Cloud Functions are deployed and verified in
+| shadow mode), the PHP hook early-returns and the Cloud Function on
+| `lessonPlans/{docId}` writes becomes the single source of truth.
+|
+| Toggle by editing this constant — no schema or API change required.
+| Rollback at any time by flipping back to false; rebuild script
+| absorbs any short-lived divergence.
+*/
+defined('ANALYTICS_VIA_FUNCTION') OR define('ANALYTICS_VIA_FUNCTION', false);

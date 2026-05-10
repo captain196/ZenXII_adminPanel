@@ -35,6 +35,7 @@ const MARKS_HANDLED = new Set([
   'CIRCULAR_CREATED',
   'MESSAGE_RECEIVED',
   'PTM_CLASS_TEACHER',
+  'FLAG_CREATED',         // Red Flag raised by teacher → notify parent
 ]);
 
 /**
@@ -188,6 +189,44 @@ exports.dispatchNoticeAndCircularPushes = onDocumentCreated(
         schoolId,
       };
       logger.info(`[${mark}] conv=${convId} recipients=${recipientIds.length} tokens=${tokens.length}`);
+    } else if (mark === 'FLAG_CREATED') {
+      // Red Flag raised on a specific student. Parents authenticate with
+      // their child's studentId as the Firebase Auth UID, so targeting
+      // the parent is the same as targeting the studentId.
+      const studentId   = String(doc.studentId   || '');
+      const studentName = String(doc.studentName || '').slice(0, 80);
+      const flagId      = String(doc.flagId      || '');
+      const severity    = String(doc.severity    || 'low').toLowerCase();
+      const flagType    = String(doc.flagType    || doc.type || '').toLowerCase();
+      const message     = String(doc.message     || '').slice(0, 180);
+      const teacherName = String(doc.teacherName || '').slice(0, 80);
+
+      if (!studentId || !flagId) {
+        logger.warn(`[${mark}] missing studentId/flagId — dropping`, { id: snap.id });
+        await snap.ref.set({ status: 'error', error: 'missing studentId/flagId', processedAt: new Date().toISOString() }, { merge: true });
+        return;
+      }
+      tokens = await tokensForUsers(schoolId, [studentId]);
+
+      // Title varies by severity; body shows teacher + first line of message.
+      const sevLabel = severity === 'high'   ? '🔴 Red Flag'
+                     : severity === 'medium' ? '🟠 Concern'
+                     :                         'ℹ️  Note';
+      const subjectStr = String(doc.subject || '').slice(0, 40);
+      const titlePieces = [sevLabel, studentName].filter(Boolean);
+      notification = {
+        title: titlePieces.join(' · ') || 'New flag from school',
+        body:  (subjectStr ? `${subjectStr}: ` : '') + (message || `${teacherName} raised a ${flagType || 'flag'}`),
+      };
+      dataPayload = {
+        type:        'red_flag',
+        flagId,
+        studentId,
+        severity,
+        flagType,
+        schoolId,
+      };
+      logger.info(`[${mark}] school=${schoolId} student=${studentId} sev=${severity} tokens=${tokens.length}`);
     } else if (mark === 'PTM_CLASS_TEACHER') {
       // Per-staffId targeting for the section's class teachers. Replaces
       // the legacy "All Teachers" overshoot — only the specific teachers
@@ -369,4 +408,12 @@ exports.onPtmCreated = onDocumentCreated(
 // bounded concurrency. See ./fee_generation_worker.js.
 const feeWorker = require("./fee_generation_worker");
 exports.processFeeGenerationJob = feeWorker.processFeeGenerationJob;
+
+// ─── Phase 3A — Operational sweep (detect-only) ─────────────────────
+// feeOpsSweep — scheduled every 10 min. Detects stuck refunds, stuck
+// CF jobs, orphan pending-write markers, and stuck online orders;
+// writes deduplicated alerts to feeOpsAlerts. Hard cap of 100 alert
+// upserts per sweep to prevent storm scenarios. NO auto-remediation.
+const opsSweep = require("./ops_sweep_worker");
+exports.feeOpsSweep = opsSweep.feeOpsSweep;
 

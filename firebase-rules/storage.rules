@@ -1,0 +1,53 @@
+rules_version = '2';
+
+// Firebase Storage Security Rules — SchoolSync
+//
+// Goal: prevent unauthorized read/write/overwrite on homework attachments.
+// Other storage paths are intentionally NOT covered here — they follow the
+// project default (deny-all when this file is present and no rule matches).
+// Add additional `match` blocks below this one as new features ship.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ── Homework attachments ─────────────────────────────────────
+    // Path:  homework/{schoolId}/{homeworkId}/{file=**}
+    //
+    // Read   — any authenticated user whose Firebase Auth custom claim
+    //          `school_id` matches the {schoolId} segment in the path.
+    //          Cross-school access is rejected by the path-claim mismatch.
+    //
+    // Write  — same school, AND the caller is either:
+    //            (a) staff (admin / teacher / principal / etc.), or
+    //            (b) the original uploader, identified by the
+    //                `uploadedBy` custom metadata key on the object.
+    //          For NEW uploads (resource == null) the metadata is taken
+    //          from the incoming request; for OVERWRITES / DELETES it is
+    //          taken from the existing object so a parent can only edit
+    //          their own attachment.
+    match /homework/{schoolId}/{homeworkId}/{file=**} {
+
+      allow read: if request.auth != null
+        && request.auth.token.school_id == schoolId;
+
+      allow write: if request.auth != null
+        && request.auth.token.school_id == schoolId
+        && (
+             // (a) Same-school staff — full write across the homework folder.
+             request.auth.token.role in [
+               'Admin', 'admin',
+               'Teacher', 'teacher',
+               'Principal', 'Vice Principal',
+               'School Super Admin', 'school_super_admin',
+               'Super Admin', 'super_admin',
+               'Academic Coordinator'
+             ]
+             // (b) Original uploader — can overwrite/delete their own object.
+             || (resource != null
+                  && resource.metadata.uploadedBy == request.auth.uid)
+             // (b') New upload tagging itself with the caller's UID.
+             || (resource == null
+                  && request.resource.metadata.uploadedBy == request.auth.uid)
+           );
+    }
+  }
+}

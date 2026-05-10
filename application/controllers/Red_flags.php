@@ -28,8 +28,8 @@ class Red_flags extends MY_Controller
     /** Valid severity levels */
     private const ALLOWED_SEVERITIES = ['Low', 'Medium', 'High'];
 
-    /** Valid statuses */
-    private const ALLOWED_STATUSES = ['Active', 'Resolved'];
+    /** Valid statuses (Deleted only surfaces when include_deleted is set) */
+    private const ALLOWED_STATUSES = ['Active', 'Resolved', 'Deleted'];
 
     /** Max text length for flag messages */
     private const MAX_MESSAGE_LENGTH = 1000;
@@ -137,26 +137,42 @@ class Red_flags extends MY_Controller
      *                                      log endpoint passes true.
      * @return array
      */
-    private function _collect_all_flags(?array $classFilter = null, bool $includeDeleted = false): array
-    {
+    /** Default rolling window for cross-system reads: 60 days */
+    private const DEFAULT_WINDOW_DAYS = 60;
+
+    private function _collect_all_flags(
+        ?array $classFilter = null,
+        bool $includeDeleted = false,
+        ?int $sinceMs = null
+    ): array {
         if (!isset($this->fs) || !$this->school_id) return [];
 
-        $sessionFilter = !empty($this->session_year)
-            ? [['session', '==', $this->session_year]]
-            : [];
+        // Time-window filter pushed down to Firestore (per retention
+        // strategy: dashboards default to last 60 days, full history
+        // only on explicit override). Caller can pass any sinceMs (e.g.
+        // user-picked date_from) or 0 to disable the window entirely.
+        if ($sinceMs === null) {
+            $sinceMs = (int) (time() * 1000) - (self::DEFAULT_WINDOW_DAYS * 86400 * 1000);
+        }
+        $timeFilter = $sinceMs > 0 ? [['createdAtMs', '>=', $sinceMs]] : [];
 
         // Two-query OR: Firestore composite queries don't support OR on
         // different fields, so we run both and dedupe by document id.
+        // Session is intentionally NOT included in the Firestore query
+        // — pushing it down would require an extra composite index, and
+        // the 60-day window already captures the practical session
+        // boundary. Session-level filtering happens client-side below
+        // when explicitly needed.
         $bySchoolId = (array) $this->fs->where(
             'studentFlags',
-            array_merge([['schoolId', '==', $this->school_id]], $sessionFilter),
+            array_merge([['schoolId', '==', $this->school_id]], $timeFilter),
             'createdAtMs',
             'DESC',
             500
         );
         $bySchoolCode = (array) $this->fs->where(
             'studentFlags',
-            array_merge([['schoolCode', '==', $this->school_id]], $sessionFilter),
+            array_merge([['schoolCode', '==', $this->school_id]], $timeFilter),
             'createdAtMs',
             'DESC',
             500
@@ -215,8 +231,23 @@ class Red_flags extends MY_Controller
                 continue;
             }
 
+            // Resolve a clean flagId for the JSON response: prefer the
+            // explicit field on the doc, otherwise strip the
+            // `{schoolId}_` doc-id prefix. Returning the raw doc id
+            // here would round-trip back as `flag_id` to resolve/delete,
+            // where `fs->docId()` re-prepends the school id and the
+            // lookup misses with "Flag not found".
+            $resolvedFlagId = (string) ($f['flagId'] ?? '');
+            if ($resolvedFlagId === '') {
+                $rawId  = (string) ($row['id'] ?? '');
+                $prefix = $this->school_id . '_';
+                $resolvedFlagId = (str_starts_with($rawId, $prefix))
+                    ? substr($rawId, strlen($prefix))
+                    : $rawId;
+            }
+
             $allFlags[] = [
-                'flagId'      => $f['flagId']      ?? $row['id'],
+                'flagId'      => $resolvedFlagId,
                 'studentId'   => $f['studentId']   ?? '',
                 'studentName' => $f['studentName'] ?? ($f['studentId'] ?? ''),
                 'rollNo'      => $f['rollNo']      ?? '',
@@ -394,7 +425,27 @@ class Red_flags extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'red_flags_list');
 
-        $allFlags = $this->_collect_all_flags();
+        // include_deleted=1 surfaces soft-deleted flags so admins can audit
+        // and (via restore_flag) bring back accidental deletions.
+        $includeDeleted = (string)($this->input->post('include_deleted') ?? '') === '1';
+
+        // full_history=1 disables the default 60-day window so admins can
+        // audit the entire archive. Otherwise, if the user picks a custom
+        // date_from earlier than the default window, that date wins.
+        $fullHistory = (string)($this->input->post('full_history') ?? '') === '1';
+        $fDateFromRaw = trim($this->input->post('date_from') ?? '');
+        $sinceMs = null;
+        if ($fullHistory) {
+            $sinceMs = 0; // no time floor
+        } elseif ($fDateFromRaw !== '') {
+            $userFromTs = strtotime($fDateFromRaw . ' 00:00:00');
+            if ($userFromTs !== false) {
+                $sinceMs = $userFromTs * 1000;
+            }
+        }
+        // (sinceMs left null → _collect_all_flags applies the 60-day default)
+
+        $allFlags = $this->_collect_all_flags(null, $includeDeleted, $sinceMs);
 
         // Apply filters from POST
         $fClassKey  = trim($this->input->post('class_key') ?? '');
@@ -559,6 +610,13 @@ class Red_flags extends MY_Controller
         if (!is_array($existing)) {
             $this->json_error('Flag not found.', 404);
         }
+        // Same-school guard — pass if EITHER schoolId or schoolCode matches.
+        // Mirrors the Firestore rule (firestore.rules studentFlags read), and
+        // the existing get_flag_detail check at the bottom of this file.
+        if (($existing['schoolId']   ?? '') !== $this->school_id
+            && ($existing['schoolCode'] ?? '') !== $this->school_id) {
+            $this->json_error('Unauthorized', 403);
+        }
 
         if (strtolower((string)($existing['status'] ?? '')) === 'resolved') {
             $this->json_error('Flag is already resolved.', 400);
@@ -569,9 +627,7 @@ class Red_flags extends MY_Controller
         $ok = $this->fs->update('studentFlags', $docId, [
             'status'       => 'resolved',
             'resolvedAtMs' => $nowMs,
-            'resolvedAt'   => date('c', (int) ($nowMs / 1000)),
             'resolvedBy'   => $this->admin_id,
-            'updatedAt'    => date('c'),
         ]);
 
         if (!$ok) {
@@ -619,35 +675,29 @@ class Red_flags extends MY_Controller
             $this->json_error('Message exceeds maximum length of ' . self::MAX_MESSAGE_LENGTH . ' characters.');
         }
 
-        // Resolve student denorm (Firestore canonical; RTDB fallback for legacy
-        // students not yet mirrored). Reading the students collection is not a
-        // module change — we're only consuming existing data.
-        $studentName = '';
-        $rollNo      = '';
-        $fatherName  = '';
-
+        // Firestore is the single source of truth for student records.
+        // RTDB fallback removed per the no-RTDB-anywhere policy. Any
+        // student must exist in the `students` collection or flag creation
+        // is rejected — admin tools backfill missing students elsewhere.
         $stuFs = $this->fs->getEntity('students', $studentId);
-        if (is_array($stuFs)) {
-            $studentName = (string)($stuFs['name']       ?? $stuFs['Name']       ?? '');
-            $rollNo      = (string)($stuFs['rollNo']     ?? $stuFs['RollNo']     ?? '');
-            $fatherName  = (string)($stuFs['fatherName'] ?? $stuFs['FatherName'] ?? '');
-        } else {
-            $studentPath = $this->_class_path($classKey, $sectionKey) . "/Students/{$studentId}";
-            $stuRtdb = $this->firebase->get($studentPath);
-            if (is_array($stuRtdb)) {
-                $studentName = (string)($stuRtdb['Name']       ?? '');
-                $rollNo      = (string)($stuRtdb['RollNo']     ?? '');
-                $fatherName  = (string)($stuRtdb['FatherName'] ?? '');
-            }
-        }
-        if ($studentName === '') {
+        if (!is_array($stuFs)) {
             $this->json_error('Student not found.', 404);
+        }
+        $studentName = (string)($stuFs['name']       ?? $stuFs['Name']       ?? '');
+        $rollNo      = (string)($stuFs['rollNo']     ?? $stuFs['RollNo']     ?? '');
+        $fatherName  = (string)($stuFs['fatherName'] ?? $stuFs['FatherName'] ?? '');
+        if ($studentName === '') {
+            $this->json_error('Student record incomplete (missing name).', 422);
         }
 
         $flagId = $this->_generate_flag_id();
         $nowMs  = (int) round(microtime(true) * 1000);
-        $nowIso = date('c', (int) ($nowMs / 1000));
 
+        // Timestamps are stored as millis-since-epoch only (createdAtMs /
+        // resolvedAtMs / deletedAtMs). The Teacher app reads `createdAtMs`
+        // for ordering and the Parent app reads `resolvedAtMs`; writing
+        // additional ISO/string variants causes type drift on Kotlin
+        // deserialization and downstream sort bugs, so they're omitted.
         $flagData = [
             'flagId'        => $flagId,
             'schoolId'      => $this->school_id,
@@ -667,21 +717,28 @@ class Red_flags extends MY_Controller
             'teacherId'     => $this->admin_id,
             'teacherName'   => $this->admin_name ?? $this->admin_id,
             'createdAtMs'   => $nowMs,
-            'createdAt'     => $nowIso,
-            'updatedAt'     => $nowIso,
             'createdByRole' => 'admin',
-            'resolvedAt'    => null,
             'resolvedAtMs'  => null,
             'resolvedBy'    => null,
             'deletedAtMs'   => null,
             'deletedBy'     => null,
             'hwId'          => null,
+            // Schema readiness for a future archive workflow. No code
+            // path consumes this yet; defaults to false so existing
+            // queries see fresh flags as non-archived.
+            'isArchived'    => false,
         ];
 
         $ok = $this->fs->set('studentFlags', $this->fs->docId($flagId), $flagData);
         if (!$ok) {
             $this->json_error('Failed to create flag.', 500);
         }
+
+        // pushRequests writer is intentionally NOT invoked from the admin
+        // flow today — the Cloud Function that consumes it is Spark-blocked,
+        // so the doc would be inert and only adds latency to the user's
+        // request. When Blaze is enabled, restore the write here and in
+        // `bulk_resolve` if status changes need to dispatch FCM.
 
         log_audit('Red Flags', 'create_flag', $flagId,
             "Created {$severity} {$type} flag for student {$studentId}");
@@ -714,19 +771,22 @@ class Red_flags extends MY_Controller
         if (!is_array($existing)) {
             $this->json_error('Flag not found.', 404);
         }
+        // Same-school guard — pass if EITHER schoolId or schoolCode matches.
+        if (($existing['schoolId']   ?? '') !== $this->school_id
+            && ($existing['schoolCode'] ?? '') !== $this->school_id) {
+            $this->json_error('Unauthorized', 403);
+        }
 
         if (strtolower((string)($existing['status'] ?? '')) === 'deleted') {
             $this->json_error('Flag is already deleted.', 400);
         }
 
-        $nowMs  = (int) round(microtime(true) * 1000);
-        $nowIso = date('c', (int) ($nowMs / 1000));
+        $nowMs = (int) round(microtime(true) * 1000);
 
         $ok = $this->fs->update('studentFlags', $docId, [
             'status'      => 'deleted',
             'deletedAtMs' => $nowMs,
             'deletedBy'   => $this->admin_id,
-            'updatedAt'   => $nowIso,
         ]);
         if (!$ok) {
             $this->json_error('Failed to delete flag.', 500);
@@ -736,6 +796,54 @@ class Red_flags extends MY_Controller
             "Soft-deleted flag for student " . ($studentId ?: ($existing['studentId'] ?? '?')));
 
         $this->json_success(['message' => 'Flag deleted successfully.']);
+    }
+
+    /**
+     * POST — Restore a soft-deleted flag (status='deleted' → 'active').
+     *
+     * Inputs: flag_id (required).
+     *
+     * Admin-only — the assumption is that recovery from accidental
+     * deletion is an admin call; teachers shouldn't reverse another
+     * teacher's intentional retraction without escalation.
+     */
+    public function restore_flag()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'red_flags_restore');
+
+        $flagId = $this->safe_path_segment($this->input->post('flag_id') ?? '', 'flag_id');
+        $docId  = $this->fs->docId($flagId);
+
+        $existing = $this->fs->get('studentFlags', $docId);
+        if (!is_array($existing)) {
+            $this->json_error('Flag not found.', 404);
+        }
+        // Same-school guard (mirror of resolve/delete).
+        if (($existing['schoolId']   ?? '') !== $this->school_id
+            && ($existing['schoolCode'] ?? '') !== $this->school_id) {
+            $this->json_error('Unauthorized', 403);
+        }
+
+        if (strtolower((string)($existing['status'] ?? '')) !== 'deleted') {
+            $this->json_error('Flag is not deleted, nothing to restore.', 400);
+        }
+
+        // Restore to 'active' and clear delete metadata. The Firestore
+        // immutability rules on severity/type/message/subject still
+        // apply, so we only touch the status + delete fields.
+        $ok = $this->fs->update('studentFlags', $docId, [
+            'status'      => 'active',
+            'deletedAtMs' => null,
+            'deletedBy'   => null,
+        ]);
+        if (!$ok) {
+            $this->json_error('Failed to restore flag.', 500);
+        }
+
+        log_audit('Red Flags', 'restore_flag', $flagId,
+            "Restored flag for student " . ($existing['studentId'] ?? '?'));
+
+        $this->json_success(['message' => 'Flag restored successfully.']);
     }
 
     /**
@@ -758,7 +866,6 @@ class Red_flags extends MY_Controller
         }
 
         $nowMs    = (int) round(microtime(true) * 1000);
-        $nowIso   = date('c', (int) ($nowMs / 1000));
         $resolved = 0;
         $errors   = [];
 
@@ -783,6 +890,11 @@ class Red_flags extends MY_Controller
                 $errors[] = "Item {$i}: flag not found.";
                 continue;
             }
+            if (($existing['schoolId']   ?? '') !== $this->school_id
+                && ($existing['schoolCode'] ?? '') !== $this->school_id) {
+                $errors[] = "Item {$i}: unauthorized (cross-school).";
+                continue;
+            }
             if (strtolower((string)($existing['status'] ?? '')) === 'resolved') {
                 continue; // already resolved, skip silently
             }
@@ -790,18 +902,33 @@ class Red_flags extends MY_Controller
             $ok = $this->fs->update('studentFlags', $docId, [
                 'status'       => 'resolved',
                 'resolvedAtMs' => $nowMs,
-                'resolvedAt'   => $nowIso,
                 'resolvedBy'   => $this->admin_id,
-                'updatedAt'    => $nowIso,
             ]);
             if ($ok) $resolved++;
         }
 
         log_audit('Red Flags', 'bulk_resolve', '', "Bulk resolved {$resolved} flags");
 
+        // If nothing was resolved AND every item failed, surface that
+        // as an error so the client renders a red toast instead of the
+        // misleading "0 flag(s) resolved successfully." green toast.
+        if ($resolved === 0 && !empty($errors)) {
+            $first = $errors[0] ?? 'Bulk resolve failed.';
+            $extra = count($errors) > 1 ? ' (+' . (count($errors) - 1) . ' more)' : '';
+            $this->json_error($first . $extra, 400);
+        }
+
+        // Partial success path — return success with a message that
+        // names the failure count so the caller can decide how loud to
+        // be. Existing JS reads `r.message` directly.
+        $message = "{$resolved} flag(s) resolved successfully.";
+        if (!empty($errors)) {
+            $message .= ' ' . count($errors) . ' failed.';
+        }
         $this->json_success([
-            'message'  => "{$resolved} flag(s) resolved successfully.",
+            'message'  => $message,
             'resolved' => $resolved,
+            'failed'   => count($errors),
             'errors'   => $errors,
         ]);
     }
@@ -816,13 +943,21 @@ class Red_flags extends MY_Controller
         $allFlags = $this->_collect_all_flags();
 
         // ── Weekly trend (last 12 weeks) ──
+        // We keep two parallel structures so the response shape stays
+        // identical to the legacy contract (label-keyed map for the JS
+        // chart) while the loop below uses the unambiguous epoch range.
+        // Reconstructing the week from a "M d" label + current year
+        // breaks across the Dec/Jan boundary — reading the epoch
+        // directly fixes that.
         $weeklyTrend  = [];
+        $weekRanges   = []; // label => ['start' => int, 'end' => int]
         $now          = time();
         for ($w = 11; $w >= 0; $w--) {
             $weekStart = strtotime("-{$w} weeks", strtotime('monday this week', $now));
             $weekEnd   = $weekStart + (7 * 86400) - 1;
             $label     = date('M d', $weekStart);
             $weeklyTrend[$label] = ['created' => 0, 'resolved' => 0];
+            $weekRanges[$label]  = ['start' => $weekStart, 'end' => $weekEnd];
         }
 
         // ── Month comparison ──
@@ -845,21 +980,17 @@ class Red_flags extends MY_Controller
             $ts = is_numeric($f['createdAt']) ? (int) $f['createdAt'] : 0;
             if ($ts > 9999999999) $ts = (int) ($ts / 1000);
 
-            // Weekly trend
-            foreach ($weeklyTrend as $label => &$wk) {
-                // Reconstruct week start from label
-                $wStart = strtotime($label . ' ' . date('Y'));
-                if ($wStart === false) continue;
-                $wEnd = $wStart + (7 * 86400) - 1;
-                if ($ts >= $wStart && $ts <= $wEnd) {
-                    $wk['created']++;
+            // Weekly trend — match against the epoch ranges we built
+            // above. No string parsing, so no year-boundary bug.
+            foreach ($weekRanges as $label => $range) {
+                if ($ts >= $range['start'] && $ts <= $range['end']) {
+                    $weeklyTrend[$label]['created']++;
                     if (($f['status'] ?? 'Active') === 'Resolved') {
-                        $wk['resolved']++;
+                        $weeklyTrend[$label]['resolved']++;
                     }
                     break;
                 }
             }
-            unset($wk);
 
             // Month comparison
             if ($ts >= $thisMonthStart) {

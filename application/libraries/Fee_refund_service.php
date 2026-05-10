@@ -44,16 +44,25 @@ class Fee_refund_service
      *
      * @param string $refId        Refund doc ID (ref_xxx)
      * @param string $refundMode   cash | bank_transfer | cheque | online
-     * @param array  $options
-     *     acknowledge_stale (bool): Phase 9 — no longer honoured. Stale
-     *     allocations are always rejected with STALE_ALLOCATION because
-     *     the wallet-routing override has been removed.
+     * @param array  $options      Reserved for future flags. Phase 9 (wallet
+     *                             removal) eliminated the only previously-
+     *                             supported option (`acknowledge_stale`);
+     *                             stale allocations now always reject with
+     *                             STALE_ALLOCATION. Kept as a dict to avoid
+     *                             a breaking signature change for callers.
      *
      * @return array ['ok' => bool, 'data' => [...], 'error' => '...']
      */
     public function process(string $refId, string $refundMode, array $options = []): array
     {
-        $ackStale = false; // acknowledge_stale ignored post-Phase-9
+        // C6 cleanup 2026-05-10: removed the dead `$ackStale = false`
+        // local. The override path it gated (wallet-credit routing for
+        // stale allocations) was deleted in Phase 9; threading the flag
+        // through three layers added cognitive load without changing
+        // any code path. $options is still accepted so callers don't
+        // break — its keys are simply ignored today.
+        unset($options); // explicit: every key currently a no-op.
+
         // ── 1. Validate (existing doc-status + processLock checks) ───
         // These remain an independent first line of defense. The NEW
         // request-hash + per-student lock below are additive layers.
@@ -158,8 +167,7 @@ class Fee_refund_service
             $allocations  = [];
             if ($studentId !== '' && $origReceiptKey !== '') {
                 $demandResult = $this->_reverseAllocations(
-                    $studentId, $origReceiptKey, $amount, $refId, $refundReceiptKey, $allocations,
-                    $ackStale
+                    $studentId, $origReceiptKey, $amount, $refId, $refundReceiptKey, $allocations
                 );
             }
 
@@ -264,8 +272,20 @@ class Fee_refund_service
             // in accountingLedger separately.
             try {
                 require_once APPPATH . 'libraries/Fee_audit_logger.php';
+                // Phase 1 (2026-05-07) — Fee_refund_service has no
+                // $firebase property; pre-fix code referenced
+                // $this->firebase which was always null, the audit
+                // write threw, and the catch silently swallowed it,
+                // so every refund landed unlogged. Pull the wrapper
+                // from the CI superobject the same way the summary-
+                // refresh hook below does.
+                $CI =& get_instance();
+                if (!is_object($CI) || !isset($CI->firebase)) {
+                    log_message('error', "Fee_refund_service: audit skipped for {$refId} — CI->firebase unavailable");
+                    throw new \RuntimeException('CI->firebase unavailable');
+                }
                 $auditLogger = new Fee_audit_logger(
-                    $this->firebase,
+                    $CI->firebase,
                     $this->fsTxn->getSchoolId(),
                     $this->fsTxn->getSession()
                 );
@@ -286,7 +306,12 @@ class Fee_refund_service
                     (string) ($controller_admin_id ?? $refund['approvedBy'] ?? 'admin'),
                     ['source' => 'refund_process', 'reason' => (string) ($refund['reason'] ?? '')]
                 );
-            } catch (\Throwable $_) { /* never fail the refund on audit */ }
+            } catch (\Throwable $e) {
+                // Never fail the refund on audit — but DO surface the failure.
+                // Pre-Phase-1 this catch was empty and hid the broken
+                // $this->firebase reference for months.
+                log_message('error', "Fee_refund_service: audit log failed for refund {$refId}: " . $e->getMessage());
+            }
 
             // ── 7. Cross-system defaulter recompute (Firestore-only) ─────
             // A refund can flip a 'paid' demand back to 'partial'/'unpaid',
@@ -385,21 +410,30 @@ class Fee_refund_service
      *
      * Reads the receipt's allocation record from Firestore, walks the
      * allocation lines in reverse (newest first), and reduces each
-     * matching demand's paid_amount. Any excess (refund amount > sum of
-     * allocations) reduces the student's advance balance.
+     * matching demand's paid_amount.
      *
-     * @param bool $ackStale  R.6: when true, skip demand-reduction for any
-     *                        demand superseded by a newer non-reversed
-     *                        allocation, routing the full amount to wallet
-     *                        instead of corrupting the newer receipt's
-     *                        ownership of the demand balance. Default false
-     *                        → return STALE_ALLOCATION failure and let
-     *                        process() roll back.
+     * Failure modes (returned as ['failed' => true, 'failure_code' => ...]):
+     *   - STALE_ALLOCATION: one or more demands this receipt allocated
+     *     against are now owned by a newer non-reversed receipt. We refuse
+     *     rather than corrupt the newer receipt's state; admin must
+     *     reverse the newer receipt(s) first.
+     *   - REFUND_OVERFLOW: refund amount exceeds the sum of reversible
+     *     allocations. Pre-Phase-9 the overflow was credited to the
+     *     student's wallet; that subsystem is gone, so overflow is now
+     *     rejected outright.
+     *
+     * Both failures are detected BEFORE any write lands, so process()
+     * can safely roll the refund doc back to 'approved' and let the
+     * admin retry with corrected inputs.
+     *
+     * C6 cleanup 2026-05-10: removed the `$ackStale` parameter — its
+     * "true" branch (wallet-credit override) was deleted in Phase 9 and
+     * the only callsite always passed false. See git history if you
+     * need to reconstruct the old override semantics.
      */
     private function _reverseAllocations(
         string $studentId, string $origReceiptKey, float $amount,
-        string $refId, string $refundReceiptKey, array &$allocationsOut,
-        bool $ackStale = false
+        string $refId, string $refundReceiptKey, array &$allocationsOut
     ): ?array {
         $alloc       = $this->fsTxn->getReceiptAllocation($origReceiptKey);
         $allocLines  = (is_array($alloc) && is_array($alloc['allocations'] ?? null)) ? $alloc['allocations'] : [];
@@ -445,7 +479,7 @@ class Fee_refund_service
                 }
             }
 
-            if (!empty($staleDemandIds) && !$ackStale) {
+            if (!empty($staleDemandIds)) {
                 // Build a human-readable conflict list for the UI + API.
                 $conflicts = [];
                 foreach ($staleDemandIds as $did => $supers) {
@@ -488,9 +522,9 @@ class Fee_refund_service
                 if ($did === '' || $allocAmt <= 0) continue;
                 if (!isset($demands[$did])) continue;
 
-                // R.6 override path removed in Phase 9 — ackStale is
-                // always false here, so this branch is dead and stale
-                // allocations are rejected upstream.
+                // C6 cleanup 2026-05-10: removed the dead R.6
+                // ackStale-override branch. Stale allocations are now
+                // rejected upstream (line ~470) before this loop runs.
 
                 $reverseAmt = min($remaining, $allocAmt);
                 $d          = $demands[$did];

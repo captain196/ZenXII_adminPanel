@@ -39,6 +39,11 @@ const SESSION = '2026-27';
     const unpaidMonths = new Set();
     const overdueMonths = new Set();
     demands.forEach(d => {
+      // Phase 3D (2026-05-09) — TC-3 alignment: exclude Hostel/Transport so
+      // the projection's totalDues stays partition-correct with the
+      // dedicated hostel/transport sub-checks downstream.
+      const cat = String(d.category || '');
+      if (cat === 'Hostel' || cat === 'Transport') return;
       const bal = Number(d.balance || 0);
       const status = String(d.status || '').toLowerCase();
       if (bal > 0.005 && status !== 'paid') {

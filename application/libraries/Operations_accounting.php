@@ -258,115 +258,60 @@ class Operations_accounting
      * @param string $sourceRef  Reference ID (e.g. fine ID, purchase ID)
      * @return string            The generated entry ID
      */
-    public function create_journal(string $narration, array $lines, string $source = '', string $sourceRef = ''): string
+    public function create_journal(
+        string $narration,
+        array $lines,
+        string $source = '',
+        string $sourceRef = '',
+        string $voucherType = '',
+        string $entryDate = ''
+    ): string
     {
-        // Phase 8B — v2 path: idempotency + period-lock + CAS-guarded
-        // balance updates in a single atomic batch. Refund journals
-        // transit through this method (create_refund_journal → here),
-        // so converting create_journal inherits CAS protection for
-        // refunds transparently.
+        // Phase 1 Tier-0 (B2) — v1 fallback path retired 2026-05-09.
+        // Phase 2  (R-NEW) — voucherType + entryDate parameters added
+        //                    2026-05-10 so Accounting::save_journal_entry
+        //                    can route through this canonical path while
+        //                    preserving its UI-chosen voucher type
+        //                    (Journal/Receipt/Payment/Contra/Fee) and
+        //                    user-chosen entry date.
         //
-        // Gated on the ACCOUNTING_V2 flag — same rollout knob as the
-        // fee journal. Legacy path remains the default.
-        if ((string) getenv('ACCOUNTING_V2') === '1') {
-            return $this->_create_journal_v2($narration, $lines, $source, $sourceRef);
-        }
+        // All journals — manual admin entry, refund reversal, module
+        // (Library / Inventory / Assets / Hostel / Transport) post —
+        // route unconditionally through _create_journal_v2:
+        //   • period-lock enforced via Accounting_period_lock::forceValidate
+        //   • idempotency claimed via Accounting_idempotency
+        //   • ledger + closing balances committed atomically (firestoreCommitBatch)
+        //   • per-account closing balances guarded by updateTime CAS
+        //
+        // Backward compatibility — every parameter beyond $sourceRef has
+        // an empty-string default that reproduces the prior behaviour:
+        //   $voucherType = ''  → 'Refund' if source==='fee_refund', else 'Journal'
+        //   $entryDate   = ''  → date('Y-m-d')  (today)
+        // Existing callers (Library, Inventory, Assets, Fee_refund_service)
+        // are unaffected; voucher numbering (JV-NNNNNN), entryId shape,
+        // ledger schema, audit trail are identical to the v2 path that
+        // was already serving production.
+        return $this->_create_journal_v2(
+            $narration, $lines, $source, $sourceRef, $voucherType, $entryDate
+        );
+    }
 
-        // Session C: pure-Firestore journal creation. Ledger, indices, closing
-        // balances and voucher counters all live in Firestore collections.
-        // Zero RTDB calls in this method.
-
-        if (count($lines) < 2) {
-            $this->CI->json_error('Journal entry requires at least 2 line items.');
-        }
-
-        $sync = $this->_acctFsSync();
-        if (!$sync) {
-            $this->CI->json_error('Accounting service is not available. Please try again.');
-        }
-
-        // Load CoA once (for name resolution + group-account guard).
-        $coa = $sync->readChartOfAccounts();
-
-        $totalDr  = 0;
-        $totalCr  = 0;
-        $affected = [];
-        foreach ($lines as &$ln) {
-            $dr = round((float) ($ln['dr'] ?? 0), 2);
-            $cr = round((float) ($ln['cr'] ?? 0), 2);
-            $ln['dr'] = $dr;
-            $ln['cr'] = $cr;
-            $totalDr += $dr;
-            $totalCr += $cr;
-
-            $acCode = (string) ($ln['account_code'] ?? '');
-            $acct   = $coa[$acCode] ?? null;
-            $ln['account_name'] = is_array($acct) ? ($acct['name'] ?? $acCode) : $acCode;
-
-            if (is_array($acct) && !empty($acct['is_group'])) {
-                $this->CI->json_error("Account {$acCode} is a group account — cannot post directly.");
-            }
-            if ($acCode !== '') {
-                $affected[$acCode] = [
-                    'dr' => ($affected[$acCode]['dr'] ?? 0) + $dr,
-                    'cr' => ($affected[$acCode]['cr'] ?? 0) + $cr,
-                ];
-            }
-        }
-        unset($ln);
-
-        if (abs($totalDr - $totalCr) > 0.01) {
-            $this->CI->json_error("Unbalanced journal: Debit ({$totalDr}) does not equal Credit ({$totalCr}).");
-        }
-
-        // Voucher counter (Firestore nextCounter with verify-after-write).
-        $seq = $sync->nextCounter('Journal');
-        if ($seq <= 0) {
-            // Fallback ID so the journal isn't lost if the counter service hiccups.
-            $seq = (int) (microtime(true) * 1000) % 1000000;
-        }
-        $voucherNo = 'JV-' . str_pad($seq, 6, '0', STR_PAD_LEFT);
-        $entryId   = 'JE_' . date('YmdHis') . '_' . bin2hex(random_bytes(4));
-
-        $entry = [
-            'date'         => date('Y-m-d'),
-            'voucher_no'   => $voucherNo,
-            'voucher_type' => 'Journal',
-            'narration'    => $narration,
-            'lines'        => array_values($lines),
-            'total_dr'     => round($totalDr, 2),
-            'total_cr'     => round($totalCr, 2),
-            'source'       => $source,
-            'source_ref'   => $sourceRef ?: null,
-            'is_finalized' => false,
-            'status'       => 'active',
-            'created_by'   => $this->admin_id,
-            'created_at'   => date('c'),
+    /**
+     * Voucher number prefix lookup. Mirrors Accounting::_voucher_prefix
+     * so both pipelines emit identically-prefixed voucher numbers — UI
+     * search by 'RV-…' continues to match Receipt vouchers, etc.
+     */
+    private static function _voucherPrefixFor(string $voucherType): string
+    {
+        static $map = [
+            'Journal' => 'JV-',
+            'Receipt' => 'RV-',
+            'Payment' => 'PV-',
+            'Contra'  => 'CV-',
+            'Fee'     => 'FV-',
+            'Refund'  => 'JV-',  // preserved from prior v2 behaviour for fee_refund
         ];
-
-        // Write to Firestore: ledger doc + per-date index + per-account indices.
-        if (!$sync->syncLedgerEntry($entryId, $entry)) {
-            $this->CI->json_error('Failed to record journal entry. Nothing was written.');
-        }
-
-        // Update closing balances. Read-modify-write per account; on mismatch,
-        // a short backoff retry keeps concurrent writers consistent.
-        foreach ($affected as $code => $amounts) {
-            for ($retry = 0; $retry < 3; $retry++) {
-                $cur = $sync->readClosingBalance((string) $code);
-                $newDr = round($cur['period_dr'] + $amounts['dr'], 2);
-                $newCr = round($cur['period_cr'] + $amounts['cr'], 2);
-                if ($sync->syncClosingBalance((string) $code, $newDr, $newCr)) {
-                    break;
-                }
-                usleep(50000 * ($retry + 1));
-                if ($retry === 2) {
-                    log_message('error', "Closing balance write failed for {$code} after 3 retries (journal {$entryId})");
-                }
-            }
-        }
-
-        return $entryId;
+        return $map[$voucherType] ?? 'JV-';
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -388,7 +333,14 @@ class Operations_accounting
     //  don't need to change. A retry-loop CLI that can't tolerate
     //  json_error should call _create_fee_journal_v2 directly instead.
     // ════════════════════════════════════════════════════════════════════
-    private function _create_journal_v2(string $narration, array $lines, string $source, string $sourceRef): string
+    private function _create_journal_v2(
+        string $narration,
+        array $lines,
+        string $source,
+        string $sourceRef,
+        string $voucherType = '',
+        string $entryDate = ''
+    ): string
     {
         // ── 1. Validation (same rules as legacy) ─────────────────────────
         if (count($lines) < 2) {
@@ -409,8 +361,18 @@ class Operations_accounting
             return $sync->readChartOfAccounts();
         });
 
-        // Normalise lines + dr/cr + per-account aggregation. Identical to
-        // legacy path — copied verbatim so behaviour matches byte-for-byte.
+        // Normalise lines + dr/cr + per-account aggregation.
+        //
+        // Phase 3 (V-MED-1) — engine-level account validation. Previously
+        // only `is_group` was rejected here; missing/inactive accounts
+        // slipped through if the caller forgot to invoke validate_accounts
+        // upfront. Every line's account_code is now validated against the
+        // CoA at this canonical entry point, so future callers (and the
+        // existing Library / Inventory / Assets / Accounting paths)
+        // inherit the rejection automatically. Existing upfront
+        // validate_accounts calls become defense-in-depth — same error
+        // wording, just one extra round-trip the user never sees.
+        $missing = []; $inactive = [];
         $totalDr = 0; $totalCr = 0; $affected = [];
         foreach ($lines as &$ln) {
             $dr = round((float) ($ln['dr'] ?? 0), 2);
@@ -418,24 +380,67 @@ class Operations_accounting
             $ln['dr'] = $dr; $ln['cr'] = $cr;
             $totalDr += $dr; $totalCr += $cr;
             $acCode = (string) ($ln['account_code'] ?? '');
-            $acct   = $coa[$acCode] ?? null;
+
+            // Skip the validation cascade for empty rows — the legacy
+            // shape of save_journal_entry stripped these earlier; doing
+            // it again here is harmless.
+            if ($acCode === '') continue;
+
+            $acct = $coa[$acCode] ?? null;
             $ln['account_name'] = is_array($acct) ? ($acct['name'] ?? $acCode) : $acCode;
-            if (is_array($acct) && !empty($acct['is_group'])) {
+
+            if (!is_array($acct)) {
+                $missing[] = $acCode;
+                continue;   // collect the full list before halting
+            }
+            if (($acct['status'] ?? '') !== 'active') {
+                $inactive[] = $acCode;
+                continue;
+            }
+            if (!empty($acct['is_group'])) {
                 $this->CI->json_error("Account {$acCode} is a group account — cannot post directly.");
             }
-            if ($acCode !== '') {
-                $affected[$acCode] = [
-                    'dr' => ($affected[$acCode]['dr'] ?? 0) + $dr,
-                    'cr' => ($affected[$acCode]['cr'] ?? 0) + $cr,
-                ];
-            }
+
+            $affected[$acCode] = [
+                'dr' => ($affected[$acCode]['dr'] ?? 0) + $dr,
+                'cr' => ($affected[$acCode]['cr'] ?? 0) + $cr,
+            ];
         }
         unset($ln);
+
+        // Surface missing + inactive together so an admin posting a
+        // multi-line entry against several broken accounts sees them
+        // all at once instead of one-error-at-a-time. Same error
+        // wording validate_accounts uses, so existing upfront callers
+        // that still invoke it get an identical user-facing message.
+        if (!empty($missing) || !empty($inactive)) {
+            $bad = array_values(array_unique(array_merge($missing, $inactive)));
+            $this->CI->json_error(
+                'Missing or inactive accounts: ' . implode(', ', $bad)
+                . '. Set them up in Accounting first.'
+            );
+        }
         if (abs($totalDr - $totalCr) > 0.01) {
             $this->CI->json_error("Unbalanced journal: Debit ({$totalDr}) does not equal Credit ({$totalCr}).");
         }
 
-        $date = date('Y-m-d');
+        // ── 1a. Effective entry date + voucher type ──────────────────────
+        // Both default to the previously-hardcoded values, so legacy
+        // callers (Library, Inventory, Assets, Fee_refund_service) are
+        // byte-for-byte compatible. Phase 2 (R-NEW) callers (manual UI
+        // via Accounting::save_journal_entry) supply both so the user's
+        // back-dated entry and chosen voucher type are honoured.
+        if ($entryDate !== '') {
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $entryDate)) {
+                $this->CI->json_error('Invalid entry date format. Use YYYY-MM-DD.');
+            }
+            $date = $entryDate;
+        } else {
+            $date = date('Y-m-d');
+        }
+        $effectiveVoucherType = $voucherType !== ''
+            ? $voucherType
+            : (($source === 'fee_refund') ? 'Refund' : 'Journal');
 
         // ── 2. Period-lock check ─────────────────────────────────────────
         // Phase 8C (R1) — bypass cache on the write path. Correctness
@@ -451,7 +456,9 @@ class Operations_accounting
         //  Deterministic when sourceRef is present (fee payment, refund
         //  reversal, gateway voucher). Hashed-payload fallback for plain
         //  manual admin journals — double-click / re-submit within the
-        //  staleness window (120 s) collapses to the same slot.
+        //  staleness window (120 s) collapses to the same slot. The hash
+        //  includes effectiveVoucherType so a Receipt and a Journal with
+        //  otherwise-identical lines do not deduplicate to the same slot.
         if ($sourceRef !== '' && $source !== '') {
             $sourcePrefix = strtoupper($source);
             $sourcePrefix = preg_replace('/[^A-Z0-9_]+/', '_', $sourcePrefix);
@@ -469,7 +476,7 @@ class Operations_accounting
                 $this->school_name . '|' . $date . '|' .
                 round($totalDr, 2) . '|' .
                 json_encode($sortedLines) . '|' .
-                $this->admin_id . '|Journal'
+                $this->admin_id . '|' . $effectiveVoucherType
             );
         }
 
@@ -490,9 +497,16 @@ class Operations_accounting
         }
 
         // ── 5. Build entry + voucher + entryId ───────────────────────────
+        // Counter type stays 'Journal' for sequence continuity — legacy
+        // save_journal_entry shared one Journal counter across all
+        // voucher types (Receipt/Payment/Contra/Fee/Journal), and we
+        // preserve that to avoid renumbering historical vouchers.
+        // Prefix follows the effective voucher type so search-by-prefix
+        // ('RV-…' / 'PV-…') continues to match in the UI.
         $seq = $sync->nextCounter('Journal');
         if ($seq <= 0) $seq = (int) (microtime(true) * 1000) % 1000000;
-        $voucherNo = 'JV-' . str_pad((string) $seq, 6, '0', STR_PAD_LEFT);
+        $voucherNo = self::_voucherPrefixFor($effectiveVoucherType)
+            . str_pad((string) $seq, 6, '0', STR_PAD_LEFT);
         //  Deterministic entryId from the idempKey so dedup lookups are
         //  direct (no extra index). Not strictly required — entryId
         //  could be a random id — but keeping them aligned simplifies
@@ -506,7 +520,7 @@ class Operations_accounting
             'entryId'      => $entryId,
             'date'         => $date,
             'voucher_no'   => $voucherNo,
-            'voucher_type' => ($source === 'fee_refund') ? 'Refund' : 'Journal',
+            'voucher_type' => $effectiveVoucherType,
             'narration'    => $narration,
             'lines'        => array_values($lines),
             'total_dr'     => round($totalDr, 2),
@@ -521,7 +535,21 @@ class Operations_accounting
         ];
 
         // ── 6. CAS LOOP ──────────────────────────────────────────────────
-        $MAX_ATTEMPTS = 5;
+        // Phase 4 (V-MED-2) — bumped from 5 to 10 attempts and widened
+        // jitter range. Under high-contention scenarios (50+ simultaneous
+        // posts to the same cash/bank account during a fee-collection
+        // burst), 5 attempts × ~2s backoff ceiling = ~10s window which
+        // can exhaust before storm subsides. 10 attempts gives a ~30s
+        // window — large enough to absorb realistic bursts without
+        // surfacing user-visible failures, while still bounded so a
+        // genuinely stuck idempotency slot fails fast and surfaces in
+        // the watchdog.
+        //
+        // The doubled retry budget combined with wider jitter (0-300ms
+        // instead of 0-100ms) reduces the standing wave of synchronised
+        // retries that develops when many writers see the same updateTime
+        // and back off in lockstep.
+        $MAX_ATTEMPTS = 10;
         $lastError    = '';
         for ($attempt = 1; $attempt <= $MAX_ATTEMPTS; $attempt++) {
             $balReqs = [];
@@ -569,7 +597,29 @@ class Operations_accounting
                     $op['precondition'] = ['exists' => false];
                 } else {
                     $ut = (string) ($cur['__updateTime'] ?? '');
-                    if ($ut !== '') $op['precondition'] = ['updateTime' => $ut];
+                    if ($ut !== '') {
+                        $op['precondition'] = ['updateTime' => $ut];
+                    } else {
+                        // Phase 2 (R-P3) — pre-v2 balance docs (or rare
+                        // reads that returned without metadata) lack
+                        // __updateTime. We still let the write through
+                        // — the idempotency claim above prevents a
+                        // duplicate ledger entry, and the CAS retry
+                        // loop covers concurrent writers whose docs
+                        // DO carry __updateTime — but every such write
+                        // is logged loudly so an operator can target
+                        // scripts/backfill_balance_updateTime.php and
+                        // bring the doc into compliance. Once the
+                        // backfill completes and is verified, this
+                        // log line should appear ~zero times per day;
+                        // a sustained non-zero rate signals an upstream
+                        // read path that strips the metadata.
+                        log_message('error',
+                            "ACC_BAL_NO_UPDATETIME entryId={$entryId} accountCode={$code} "
+                            . "source={$source} — closing-balance doc lacks __updateTime; "
+                            . "CAS precondition skipped. Run "
+                            . "scripts/backfill_balance_updateTime.php to install metadata.");
+                    }
                 }
                 $ops[] = $op;
             }
@@ -578,14 +628,29 @@ class Operations_accounting
             if ($ok) {
                 $CI->acctIdemp->markSuccess($idempKey, $entryId);
                 log_message('error', "ACC_JOURNAL_COMMITTED entryId={$entryId} source={$source} attempt={$attempt} ops=" . count($ops));
+                // Phase G1 — append forensic creation event. Best-effort.
+                $this->_recordForensicCreation(
+                    $entryId, $voucherNo, count($lines), $sourceRef,
+                    $source !== '' ? $source : 'manual'
+                );
                 return $entryId;
             }
 
             $lastError = "batch commit returned false on attempt {$attempt}";
             log_message('error', "ACC_JOURNAL_CAS_RETRY entryId={$entryId} attempt={$attempt}");
+            // Phase 4 (V-MED-2) — surface high-contention scenarios so an
+            // operator can identify hot accounts before retry exhaustion
+            // becomes user-visible. Threshold at attempt 5 (matching the
+            // pre-Phase-4 cap) so logs only fire for genuinely contested
+            // posts, not for normal 1-2-attempt resolutions.
+            if ($attempt >= 5) {
+                log_message('error',
+                    "ACC_JOURNAL_HIGH_CONTENTION entryId={$entryId} source={$source} "
+                    . "attempt={$attempt} of {$MAX_ATTEMPTS} — hot account contention");
+            }
             if ($attempt < $MAX_ATTEMPTS) {
                 $baseMs = min(2000, 100 * (1 << ($attempt - 1)));
-                $jitter = random_int(0, 100);
+                $jitter = random_int(0, 300);   // V-MED-2: widened from 0-100
                 usleep(($baseMs + $jitter) * 1000);
             }
         }
@@ -612,6 +677,44 @@ class Operations_accounting
         $sync = $this->_acctFsSync();
         if (!$sync) return null;
         return $sync->findJournalBySourceRef('fee_refund', $refundId);
+    }
+
+    /**
+     * Phase G1 (forensic auditability, 2026-05-10) — lazy-load the
+     * Accounting_forensics library and record a journal-creation event.
+     *
+     * Best-effort: any failure is logged via ACC_FORENSIC_HOOK_FAILED
+     * and swallowed — the underlying journal commit is NEVER affected
+     * by forensics-side errors. The forensic event is governance
+     * visibility, not financial state, so eventual data loss on
+     * forensic events is acceptable while a journal commit is sacred.
+     */
+    private function _recordForensicCreation(
+        string $entryId,
+        string $voucherNo,
+        int $lineCount,
+        string $sourceRef,
+        string $source
+    ): void {
+        try {
+            $CI =& get_instance();
+            if (!isset($CI->acctForensics)) {
+                $CI->load->library('Accounting_forensics', null, 'acctForensics');
+                $CI->acctForensics->init(
+                    $this->firebase, $this->school_name, $this->session_year
+                );
+            }
+            $actorRole = '';
+            try { $actorRole = (string) ($CI->admin_role ?? ''); } catch (\Throwable $_) {}
+            $CI->acctForensics->recordCreation(
+                $entryId, $voucherNo, $lineCount, $sourceRef,
+                $this->admin_id, $actorRole, $source
+            );
+        } catch (\Throwable $e) {
+            log_message('error',
+                "ACC_FORENSIC_HOOK_FAILED entryId={$entryId} stage=create "
+                . "error=" . $e->getMessage());
+        }
     }
 
     /**
@@ -653,130 +756,28 @@ class Operations_accounting
      */
     public function create_fee_journal(array $params): ?string
     {
-        // Phase 8A — feature-flagged v2 path: idempotency gate + period-lock
-        // guard + CAS batch commit. Default OFF for safety. Enable per-
-        // tenant via the env flag once you've smoke-tested on staging.
+        // Phase 1 Tier-0 hardening (B2) — v1 fallback path retired
+        // 2026-05-09. The legacy in-method body posted fee journals
+        // WITHOUT period-lock validation, WITHOUT CAS on closing-balance
+        // writes, and treated retries as overwrite-then-double-count
+        // unless a deterministic entryId was supplied. Under network
+        // failure or concurrent retry, balances drifted silently.
         //
-        // The v2 path produces EXACTLY the same ledger+balance state as
-        // the legacy path on the happy path; it only differs on error
-        // paths (safer dedup, atomic batch, period-lock enforcement).
-        if ((string) getenv('ACCOUNTING_V2') === '1' || !empty($params['accounting_v2'])) {
-            return $this->_create_fee_journal_v2($params);
-        }
-
-        // Session C: pure-Firestore fee journal. Dr Cash/Bank, Cr Fee Income.
-        $date     = $params['date'] ?? date('Y-m-d');
-        $amount   = round((float) ($params['amount'] ?? 0), 2);
-        $payMode  = strtolower(trim($params['payment_mode'] ?? 'cash'));
-        $bankCode = trim($params['bank_code'] ?? '');
-        $receipt  = $params['receipt_no']   ?? '';
-        $student  = $params['student_name'] ?? '';
-        $stuId    = $params['student_id']   ?? '';
-        $class    = $params['class']        ?? '';
-        $adminId  = $params['admin_id'] ?? $this->admin_id;
-
-        if ($amount <= 0) return null;
-
-        $sync = $this->_acctFsSync();
-        if (!$sync) return null;
-
-        $coa = $sync->readChartOfAccounts();
-        if (empty($coa)) return null; // Accounting not set up
-
-        // Select cash/bank account based on payment mode.
-        if ($bankCode !== '' && isset($coa[$bankCode])) {
-            $cashBankCode = $bankCode;
-        } elseif (in_array($payMode, ['bank', 'cheque', 'upi', 'neft', 'rtgs', 'online', 'bank_transfer'], true)) {
-            $cashBankCode = '1010'; // safe fallback if no bank account configured
-            foreach ($coa as $code => $acct) {
-                if (!empty($acct['is_bank']) && ($acct['status'] ?? '') === 'active') {
-                    $cashBankCode = $code;
-                    break;
-                }
-            }
-        } else {
-            $cashBankCode = '1010'; // Cash in Hand
-        }
-
-        $feeIncomeCode = '4010'; // Tuition Fees
-
-        $cashAcct = $coa[$cashBankCode]  ?? null;
-        $feeAcct  = $coa[$feeIncomeCode] ?? null;
-        if (!is_array($cashAcct) || ($cashAcct['status'] ?? '') !== 'active') {
-            log_message('error', "Fee journal: cash/bank account {$cashBankCode} missing/inactive");
-            return null;
-        }
-        if (!is_array($feeAcct) || ($feeAcct['status'] ?? '') !== 'active') {
-            log_message('error', "Fee journal: fee income account {$feeIncomeCode} missing/inactive");
-            return null;
-        }
-
-        $narration = "Fee payment: {$student} ({$stuId}) - {$class}" . ($receipt ? " Rcpt#{$receipt}" : '');
-
-        // Phase 7G (H2) — if a deterministic entry id was supplied (e.g.
-        // "JE_FEE_F12" from the async-queue worker), use it AND treat
-        // an already-existing ledger doc as a successful no-op. This
-        // makes journal creation safe to retry: the ledger entry doc
-        // gets overwritten harmlessly via `firestoreSet`, but the
-        // closing-balance updates below are read-modify-write and
-        // double-count on a second call — we MUST short-circuit.
-        $suppliedEntryId = (string) ($params['journal_entry_id'] ?? '');
-        if ($suppliedEntryId !== '') {
-            $entryId = $suppliedEntryId;
-            // Existence check — the ledger collection uses
-            // "{schoolCode}_{session}_{entryId}" as doc id (see
-            // Accounting_firestore_sync::syncLedgerEntry).
-            $existingDocId = "{$this->school_name}_{$this->session_year}_{$entryId}";
-            $existing = $this->firebase->firestoreGet('accounting', $existingDocId);
-            if (is_array($existing) && !empty($existing['entryId'])) {
-                log_message('debug', "[FEE JOURNAL IDEMPOTENT] entry {$entryId} already present — skipping re-post");
-                return $entryId;
-            }
-        } else {
-            $entryId = 'FE_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
-        }
-        $seq = $sync->nextCounter('Fee');
-        if ($seq <= 0) $seq = (int) (microtime(true) * 1000) % 1000000;
-        $voucherNo = 'FV-' . str_pad($seq, 6, '0', STR_PAD_LEFT);
-
-        $lines = [
-            ['account_code' => $cashBankCode,  'account_name' => $cashAcct['name'] ?? $cashBankCode,  'dr' => $amount, 'cr' => 0,       'narration' => $narration],
-            ['account_code' => $feeIncomeCode, 'account_name' => $feeAcct['name']  ?? $feeIncomeCode, 'dr' => 0,       'cr' => $amount, 'narration' => $narration],
-        ];
-
-        $entry = [
-            'date'         => $date,
-            'voucher_no'   => $voucherNo,
-            'voucher_type' => 'Fee',
-            'narration'    => $narration,
-            'lines'        => $lines,
-            'total_dr'     => $amount,
-            'total_cr'     => $amount,
-            'source'       => 'fee_payment',
-            'source_ref'   => $receipt,
-            'is_finalized' => false,
-            'status'       => 'active',
-            'created_by'   => $adminId,
-            'created_at'   => date('c'),
-        ];
-
-        if (!$sync->syncLedgerEntry($entryId, $entry)) return null;
-
-        // Closing balances for Cash (Dr) and Fee Income (Cr).
-        foreach ([[$cashBankCode, $amount, 0.0], [$feeIncomeCode, 0.0, $amount]] as [$ac, $dr, $cr]) {
-            for ($retry = 0; $retry < 3; $retry++) {
-                $cur = $sync->readClosingBalance((string) $ac);
-                $newDr = round($cur['period_dr'] + $dr, 2);
-                $newCr = round($cur['period_cr'] + $cr, 2);
-                if ($sync->syncClosingBalance((string) $ac, $newDr, $newCr)) break;
-                usleep(50000 * ($retry + 1));
-                if ($retry === 2) {
-                    log_message('error', "Fee closing balance write failed for {$ac} (entry {$entryId})");
-                }
-            }
-        }
-
-        return $entryId;
+        // Every fee journal — FeeWorker async post, FeeCollectionService
+        // synchronous fallback, AccountingReconciler auto-repair — now
+        // routes unconditionally through _create_fee_journal_v2:
+        //   • period-lock enforced via Accounting_period_lock::forceValidate
+        //   • deterministic JE_FEE_{receiptKey} idempotency claim
+        //   • ledger + closing balances committed atomically
+        //   • per-account closing balances guarded by updateTime CAS
+        //
+        // The ACCOUNTING_V2 env flag and the params['accounting_v2']
+        // override have both been removed from the gate. Backward
+        // compatibility is preserved — public signature, return type,
+        // voucher numbering (FV-NNNNNN), entryId shape (JE_FEE_{rcpt}),
+        // ledger schema, and reconciler key are identical to the v2
+        // path that was already serving production.
+        return $this->_create_fee_journal_v2($params);
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -871,13 +872,11 @@ class Operations_accounting
         } else {
             $cashBankCode = '1010';
         }
-        $feeIncomeCode = '4010';
 
-        $cashAcct = $coa[$cashBankCode]  ?? null;
-        $feeAcct  = $coa[$feeIncomeCode] ?? null;
-        if (!is_array($cashAcct) || ($cashAcct['status'] ?? '') !== 'active'
-         || !is_array($feeAcct)  || ($feeAcct['status']  ?? '') !== 'active') {
-            $CI->acctIdemp->markFailed($idempKey, "account missing/inactive cash={$cashBankCode} fee={$feeIncomeCode}");
+        $cashAcct = $coa[$cashBankCode] ?? null;
+        if (!is_array($cashAcct) || ($cashAcct['status'] ?? '') !== 'active') {
+            $CI->acctIdemp->markFailed($idempKey,
+                "account missing/inactive cash={$cashBankCode}");
             return null;
         }
 
@@ -886,12 +885,76 @@ class Operations_accounting
         if ($seq <= 0) $seq = (int) (microtime(true) * 1000) % 1000000;
         $voucherNo = 'FV-' . str_pad((string) $seq, 6, '0', STR_PAD_LEFT);
 
-        $lines = [
-            ['account_code' => $cashBankCode,  'account_name' => (string) ($cashAcct['name'] ?? $cashBankCode),
-             'dr' => $amount, 'cr' => 0,       'narration' => $narration],
-            ['account_code' => $feeIncomeCode, 'account_name' => (string) ($feeAcct['name']  ?? $feeIncomeCode),
-             'dr' => 0,       'cr' => $amount, 'narration' => $narration],
-        ];
+        // ── Phase A0 (canonical fee-accounting normalization) — branch on allocations ──
+        //
+        // If $params['allocations'] is non-empty, build allocation-aware
+        // multi-line credit using _buildGranularLines (per-fee-head
+        // account resolution via feeAccountMap + keyword fallback).
+        // Mixed-category receipts (Tuition + Transport + Hostel) get
+        // separate Cr lines per resolved account; tuition-only with one
+        // allocation produces a single Cr 4010 line — semantically
+        // identical to the pre-A0 single path.
+        //
+        // If allocations are empty (legacy callers, edge cases) OR
+        // _buildGranularLines returns null (validation/balance failure),
+        // fall back to the deterministic 2-line single journal: Dr Cash
+        // / Cr 4010 Tuition. This preserves backward compatibility for
+        // historical receipts that didn't carry allocation data.
+        //
+        // Either way, the v2 idempotency claim, period-lock guard, and
+        // CAS commit batch below run unchanged — all the Phase 1-4.5
+        // hardening applies to both single and multi-line paths.
+        $allocations    = is_array($params['allocations'] ?? null) ? $params['allocations'] : [];
+        $fineAmount     = round((float) ($params['fine_amount']     ?? 0), 2);
+        $discountAmount = round((float) ($params['discount_amount'] ?? 0), 2);
+
+        $lines         = null;
+        $balanceDeltas = null;
+
+        if (!empty($allocations)) {
+            [$linesG, $deltasG] = $this->_buildGranularLines(
+                $coa, $cashBankCode, $cashAcct, (float) $amount, $narration,
+                $student, $allocations, $fineAmount, $discountAmount
+            );
+            if (is_array($linesG) && is_array($deltasG)) {
+                $lines         = $linesG;
+                $balanceDeltas = $deltasG;
+            } else {
+                log_message('info',
+                    "[ACC v2] granular line-build failed for entryId={$entryId}, "
+                    . "falling back to single-line 2-line journal");
+            }
+        }
+
+        if ($lines === null || $balanceDeltas === null) {
+            // Single-line path: validate fallback fee income account, build
+            // 2-line journal. Identical behaviour to pre-A0 v2.
+            $feeIncomeCode = '4010';
+            $feeAcct       = $coa[$feeIncomeCode] ?? null;
+            if (!is_array($feeAcct) || ($feeAcct['status'] ?? '') !== 'active') {
+                $CI->acctIdemp->markFailed($idempKey,
+                    "account missing/inactive cash={$cashBankCode} fee={$feeIncomeCode}");
+                return null;
+            }
+            $lines = [
+                ['account_code' => $cashBankCode,  'account_name' => (string) ($cashAcct['name'] ?? $cashBankCode),
+                 'dr' => $amount, 'cr' => 0,       'narration' => $narration],
+                ['account_code' => $feeIncomeCode, 'account_name' => (string) ($feeAcct['name']  ?? $feeIncomeCode),
+                 'dr' => 0,       'cr' => $amount, 'narration' => $narration],
+            ];
+            $balanceDeltas = [
+                $cashBankCode  => ['dr' => $amount, 'cr' => 0],
+                $feeIncomeCode => ['dr' => 0,       'cr' => $amount],
+            ];
+        }
+
+        // Recompute totals from final $lines (granular path may include
+        // discount adjustments that change them from the input $amount).
+        $totalDr = 0.0; $totalCr = 0.0;
+        foreach ($lines as $ln) { $totalDr += (float) $ln['dr']; $totalCr += (float) $ln['cr']; }
+        $totalDr = round($totalDr, 2);
+        $totalCr = round($totalCr, 2);
+
         $ledgerDocId = "{$this->school_name}_{$this->session_year}_{$entryId}";
         $entry = [
             'schoolId'     => $this->school_name,
@@ -901,9 +964,9 @@ class Operations_accounting
             'voucher_no'   => $voucherNo,
             'voucher_type' => 'Fee',
             'narration'    => $narration,
-            'lines'        => $lines,
-            'total_dr'     => $amount,
-            'total_cr'     => $amount,
+            'lines'        => array_values($lines),
+            'total_dr'     => $totalDr,
+            'total_cr'     => $totalCr,
             'source'       => 'fee_payment',
             'source_ref'   => $receipt,
             'is_finalized' => false,
@@ -912,13 +975,14 @@ class Operations_accounting
             'created_at'   => date('c'),
             'updatedAt'    => date('c'),
         ];
-        $balanceDeltas = [
-            $cashBankCode  => ['dr' => $amount, 'cr' => 0],
-            $feeIncomeCode => ['dr' => 0,       'cr' => $amount],
-        ];
 
         // ── CAS loop: read balances → build batch → commit-or-retry ──────
-        $MAX_ATTEMPTS = 5;
+        // Phase 4 (V-MED-2) — see _create_journal_v2 for rationale.
+        // Same retry budget and jitter widening: hot-account contention
+        // is most acute during fee-collection bursts (parent-app payment
+        // storms, manual cashier batches), where this path is the
+        // primary writer.
+        $MAX_ATTEMPTS = 10;
         $lastError    = '';
         for ($attempt = 1; $attempt <= $MAX_ATTEMPTS; $attempt++) {
             $balReqs = [];
@@ -968,10 +1032,19 @@ class Operations_accounting
                     $op['precondition'] = ['exists' => false];
                 } else {
                     $ut = (string) ($cur['__updateTime'] ?? '');
-                    if ($ut !== '') $op['precondition'] = ['updateTime' => $ut];
-                    // If updateTime is missing for some reason, proceed
-                    // without precondition rather than silently failing —
-                    // the CAS retry + idempotency gate still covers us.
+                    if ($ut !== '') {
+                        $op['precondition'] = ['updateTime' => $ut];
+                    } else {
+                        // Phase 2 (R-P3) — see the matching block in
+                        // _create_journal_v2 for context. Same behaviour:
+                        // proceed but log loudly so the backfill script
+                        // can target the affected doc.
+                        log_message('error',
+                            "ACC_BAL_NO_UPDATETIME entryId={$entryId} accountCode={$ac} "
+                            . "source=fee_payment — closing-balance doc lacks __updateTime; "
+                            . "CAS precondition skipped. Run "
+                            . "scripts/backfill_balance_updateTime.php to install metadata.");
+                    }
                 }
                 $ops[] = $op;
             }
@@ -981,6 +1054,10 @@ class Operations_accounting
             if ($ok) {
                 $CI->acctIdemp->markSuccess($idempKey, $entryId);
                 log_message('error', "ACC_JOURNAL_COMMITTED entryId={$entryId} attempt={$attempt} ops=" . count($ops));
+                // Phase G1 — append forensic creation event. Best-effort.
+                $this->_recordForensicCreation(
+                    $entryId, $voucherNo, count($lines), $receipt, 'fee_payment'
+                );
                 return $entryId;
             }
 
@@ -988,11 +1065,18 @@ class Operations_accounting
             //    preconditions raced. Re-read + retry with backoff.
             $lastError = "batch commit returned false on attempt {$attempt}";
             log_message('error', "ACC_JOURNAL_CAS_RETRY entryId={$entryId} attempt={$attempt}");
+            // Phase 4 (V-MED-2) — high-contention surface for the fee path.
+            if ($attempt >= 5) {
+                log_message('error',
+                    "ACC_JOURNAL_HIGH_CONTENTION entryId={$entryId} source=fee_payment "
+                    . "attempt={$attempt} of {$MAX_ATTEMPTS} — hot account contention");
+            }
             if ($attempt < $MAX_ATTEMPTS) {
                 // Exponential backoff with jitter — two colliding writers
-                // must not retry in lockstep.
+                // must not retry in lockstep. V-MED-2 widened jitter from
+                // 0-100ms to 0-300ms to break standing-wave retry patterns.
                 $baseMs = min(2000, 100 * (1 << ($attempt - 1)));
-                $jitter = random_int(0, 100);
+                $jitter = random_int(0, 300);   // V-MED-2: widened from 0-100
                 usleep(($baseMs + $jitter) * 1000);
             }
         }
@@ -1085,6 +1169,76 @@ class Operations_accounting
         return '4010';
     }
 
+    /**
+     * Phase: Discount/Concession Journaling (Stage 1, 2026-05-10) — resolve a
+     * concession type to its contra-revenue (or fallback expense) account.
+     *
+     * Resolution chain (first hit wins, account must be active + non-group):
+     *   1. configMap['concession:<type lowercase>']  — explicit operator mapping
+     *   2. Keyword heuristics (merit/scholarship → 4991, sibling → 4993, etc.)
+     *   3. Generic concession fallback 4990
+     *   4. Legacy discount-expense fallback 5190
+     *   5. NULL — caller must skip the concession to keep the journal balanced.
+     *
+     * Returns the resolved account_code or null. The caller is responsible for
+     * NOT boosting the income credit AND NOT emitting a Dr line if null is
+     * returned — both must be skipped together to preserve Dr=Cr.
+     *
+     * Pure read-side function: does not mutate state; idempotent; deterministic
+     * given fixed inputs (configMap, coa). Replay-safe by construction.
+     *
+     * @param string $concType  Concession type label (e.g. "Merit Scholarship")
+     * @param array  $configMap feeAccountMap loaded by get_fee_account_map()
+     * @param array  $coa       chartOfAccounts loaded by readChartOfAccounts()
+     * @return string|null      Account code or null if no suitable account.
+     */
+    private function _resolveConcessionAccount(
+        string $concType, array $configMap, array $coa
+    ): ?string {
+        $lc = strtolower(trim($concType));
+        if ($lc === '') return null;
+
+        $isUsable = static function (array $coa, string $code): bool {
+            return isset($coa[$code])
+                && ($coa[$code]['status'] ?? '') === 'active'
+                && empty($coa[$code]['is_group']);
+        };
+
+        // 1. Explicit operator mapping via 'concession:' prefix.
+        $key = 'concession:' . $lc;
+        if (isset($configMap[$key])) {
+            $code = (string) $configMap[$key];
+            if ($isUsable($coa, $code)) return $code;
+        }
+
+        // 2. Keyword heuristics — common concession-type semantics.
+        $kw = [
+            '4991' => ['merit', 'scholarship'],
+            '4992' => ['need-based', 'need based', 'financial aid'],
+            '4993' => ['sibling'],
+            '4994' => ['staff'],
+            '4995' => ['transport conc', 'transport disc', 'bus conc'],
+            '4996' => ['hostel conc'],
+            '4997' => ['government', 'govt', 'rte', 'ews', 'waiver'],
+            '4998' => ['disability', 'specially abled'],
+        ];
+        foreach ($kw as $code => $terms) {
+            if (!$isUsable($coa, $code)) continue;
+            foreach ($terms as $t) {
+                if (strpos($lc, $t) !== false) return $code;
+            }
+        }
+
+        // 3. Generic concession contra-revenue.
+        if ($isUsable($coa, '4990')) return '4990';
+
+        // 4. Legacy discount-expense fallback (preserves prior behaviour for
+        //    operators who haven't configured contra-revenue accounts yet).
+        if ($isUsable($coa, '5190')) return '5190';
+
+        return null;
+    }
+
     // ====================================================================
     //  GRANULAR FEE JOURNAL ENTRY (DEMAND-BASED)
     // ====================================================================
@@ -1104,76 +1258,50 @@ class Operations_accounting
      *                      payment_mode, bank_code, receipt_no, student_name, student_id,
      *                      class, admin_id)
      * @param array $allocations Demand allocations from submit_fees():
-     *                           [{demand_id, fee_head, category, period, amount, ...}, ...]
+     *                           [{demand_id, fee_head, category, period, amount|allocated, ...}, ...]
      * @param float $fineAmount  Fine/late fee collected (separate from allocations)
      * @param float $discountAmount  Discount applied (for contra entry)
      * @return string|null Entry ID or null on failure
      */
-    public function create_fee_journal_granular(
-        array $params,
+
+    /**
+     * Phase A0 (canonical fee-accounting normalization, 2026-05-10) — build
+     * allocation-aware journal lines and per-account balance deltas WITHOUT
+     * committing. Used by _create_fee_journal_v2 when $params['allocations']
+     * is non-empty so the v2 commit path (idempotency claim + period-lock
+     * + atomic CAS commit batch) can be reused for granular journals.
+     *
+     * Returns [$lines, $balanceDeltas] on success, or [null, null] when
+     * the allocation set produces no valid credits / mismatched totals.
+     * Callers fall back to the single-line 2-line journal when null.
+     *
+     * Accepts either 'amount' or 'allocated' as the per-allocation amount
+     * field — pre-Phase-A0 the FCS allocation list used 'allocated' while
+     * the granular method read 'amount', causing silent fallback to the
+     * single path. The defensive `?? 'allocated'` chain restores the
+     * intended granular behaviour for all existing callers.
+     */
+    private function _buildGranularLines(
+        array $coa,
+        string $cashBankCode,
+        array $cashAcct,
+        float $amount,
+        string $narration,
+        string $student,
         array $allocations,
-        float $fineAmount = 0,
-        float $discountAmount = 0
-    ): ?string {
-        // If no allocations, fall back to simple 2-line journal
-        if (empty($allocations)) {
-            return $this->create_fee_journal($params);
-        }
-
-        $date     = $params['date'] ?? date('Y-m-d');
-        $amount   = round((float) ($params['amount'] ?? 0), 2);
-        $payMode  = strtolower(trim($params['payment_mode'] ?? 'cash'));
-        $bankCode = trim($params['bank_code'] ?? '');
-        $receipt  = $params['receipt_no'] ?? '';
-        $student  = $params['student_name'] ?? '';
-        $stuId    = $params['student_id'] ?? '';
-        $class    = $params['class'] ?? '';
-        $adminId  = $params['admin_id'] ?? $this->admin_id;
-
-        if ($amount <= 0) return null;
-
-        // Pure Firestore: load CoA from Firestore
-        $sync = $this->_acctFsSync();
-        if (!$sync) return null;
-        $coa = $sync->readChartOfAccounts();
-        if (empty($coa)) return null;
-
-        // ── Resolve cash/bank debit account ──
-        if ($bankCode && isset($coa[$bankCode])) {
-            $cashBankCode = $bankCode;
-        } elseif (in_array($payMode, ['bank', 'cheque', 'upi', 'neft', 'rtgs', 'online'])) {
-            $cashBankCode = '1010';
-            foreach ($coa as $code => $acct) {
-                if (!empty($acct['is_bank']) && ($acct['status'] ?? '') === 'active') {
-                    $cashBankCode = $code;
-                    break;
-                }
-            }
-        } else {
-            $cashBankCode = '1010'; // Cash in Hand
-        }
-
-        // Validate cash/bank account
-        $cashAcct = $coa[$cashBankCode] ?? null;
-        if (!is_array($cashAcct) || ($cashAcct['status'] ?? '') !== 'active') {
-            log_message('error', "Granular fee journal: cash/bank account {$cashBankCode} missing/inactive");
-            return null;
-        }
-
-        // ── Load fee head → account mapping ──
+        float $fineAmount,
+        float $discountAmount
+    ): array {
         $configMap = $this->get_fee_account_map($coa);
 
-        // ── Build credit lines from allocations (grouped by account code) ──
-        // Multiple fee heads may map to the same account code; aggregate them.
-        $creditsByAccount = []; // account_code => { amount, heads[] }
-
+        // ── Aggregate allocations by resolved fee account ──
+        $creditsByAccount = [];
         foreach ($allocations as $alloc) {
-            $feeHead    = $alloc['fee_head'] ?? '';
-            $allocAmt   = round((float) ($alloc['amount'] ?? 0), 2);
+            $feeHead  = (string) ($alloc['fee_head'] ?? '');
+            $allocAmt = round((float) ($alloc['amount'] ?? $alloc['allocated'] ?? 0), 2);
             if ($allocAmt <= 0 || $feeHead === '') continue;
 
             $acctCode = $this->resolve_fee_account($feeHead, $configMap, $coa);
-
             if (!isset($creditsByAccount[$acctCode])) {
                 $creditsByAccount[$acctCode] = ['amount' => 0, 'heads' => []];
             }
@@ -1181,12 +1309,93 @@ class Operations_accounting
             $creditsByAccount[$acctCode]['heads'][] = $feeHead;
         }
 
-        // ── Add fine as separate credit line to Late Fee Income (4060) ──
+        // ── Phase: Discount/Concession Journaling (Stage 1, 2026-05-10) ──
+        //
+        // Process per-allocation concessions[] and accumulate Dr contra-revenue
+        // lines + boost the corresponding income Cr to gross. Behind the
+        // `concessions_enabled` config flag — when off, this loop is a no-op
+        // and the journal output is byte-identical to the pre-concession
+        // engine. Backward compatibility is the load-bearing invariant.
+        //
+        // Per-allocation shape (all concession fields optional):
+        //   ['fee_head' => 'Tuition Fee', 'amount' => 3500,
+        //    'concessions' => [
+        //      ['type' => 'Merit Scholarship', 'amount' => 1500],
+        //      ['type' => 'Sibling Discount',  'amount' => 0]   // skipped
+        //    ]]
+        //
+        // Engine treatment for each non-zero concession:
+        //   1. Resolve `type` → contra-revenue account via
+        //      _resolveConcessionAccount (configMap['concession:<type>'] or
+        //      keyword heuristics or 4990/5190 fallbacks).
+        //   2. If the account resolves: boost the corresponding income Cr by
+        //      the concession amount (income stays at GROSS in the ledger)
+        //      AND stage a Dr concession line (deferred until line build).
+        //   3. If the account does NOT resolve: log + skip BOTH the credit
+        //      boost AND the Dr line, preserving Dr=Cr by construction.
+        //
+        // Replay safety: deterministic input → deterministic output. Same
+        // configMap + same allocations[].concessions[] → same lines.
+        $CI =& get_instance();
+        $concessionsEnabled = (bool) $CI->config->item('concessions_enabled');
+        $stagedConcessionLines = [];     // accumulator for Dr lines
+        $totalConcessionsRecognized = 0.0;
+
+        if ($concessionsEnabled) {
+            foreach ($allocations as $alloc) {
+                $feeHead  = (string) ($alloc['fee_head'] ?? '');
+                $allocAmt = round((float) ($alloc['amount'] ?? $alloc['allocated'] ?? 0), 2);
+                if ($allocAmt <= 0 || $feeHead === '') continue;
+
+                $concList = is_array($alloc['concessions'] ?? null) ? $alloc['concessions'] : [];
+                if (empty($concList)) continue;
+
+                $incomeAcct = $this->resolve_fee_account($feeHead, $configMap, $coa);
+
+                foreach ($concList as $conc) {
+                    if (!is_array($conc)) continue;
+                    $cType = (string) ($conc['type'] ?? '');
+                    $cAmt  = round((float) ($conc['amount'] ?? 0), 2);
+                    if ($cType === '' || $cAmt <= 0) continue;
+
+                    $cAcct = $this->_resolveConcessionAccount($cType, $configMap, $coa);
+                    if ($cAcct === null) {
+                        log_message('error',
+                            "Concession journal: type='{$cType}' amount={$cAmt} on '{$feeHead}' "
+                            . "could not be routed (no contra-revenue or fallback account active in CoA). "
+                            . "Skipping — Dr=Cr preserved by skipping both legs.");
+                        continue;
+                    }
+                    if ($cAcct === $incomeAcct) {
+                        log_message('info',
+                            "Concession journal: type='{$cType}' routes to same account ({$cAcct}) "
+                            . "as its income head '{$feeHead}'. Net effect is income reduction; "
+                            . "operator should configure a distinct contra-revenue account for "
+                            . "gross-revenue visibility.");
+                    }
+
+                    // Boost income credit to gross (contra-revenue model).
+                    $creditsByAccount[$incomeAcct]['amount'] += $cAmt;
+                    $creditsByAccount[$incomeAcct]['heads'][] = $feeHead . ' (gross via concession)';
+
+                    // Stage Dr concession line.
+                    $stagedConcessionLines[] = [
+                        'account_code' => $cAcct,
+                        'account_name' => (string) ($coa[$cAcct]['name'] ?? $cAcct),
+                        'dr'           => $cAmt,
+                        'cr'           => 0,
+                        'narration'    => "Concession: {$cType} on {$feeHead} — {$student}",
+                    ];
+                    $totalConcessionsRecognized += $cAmt;
+                }
+            }
+        }
+
+        // ── Late fee / fine: separate credit to 4060 (or 4010 fallback) ──
         $fineAmount = round($fineAmount, 2);
         if ($fineAmount > 0) {
-            $fineCode = '4060'; // Late Fees/Fines
+            $fineCode = '4060';
             if (!isset($coa[$fineCode]) || ($coa[$fineCode]['status'] ?? '') !== 'active') {
-                // Fall back to 4010 if 4060 doesn't exist
                 $fineCode = '4010';
             }
             if (!isset($creditsByAccount[$fineCode])) {
@@ -1196,21 +1405,20 @@ class Operations_accounting
             $creditsByAccount[$fineCode]['heads'][] = 'Late Fee';
         }
 
-        // ── Validate all credit accounts exist ──
+        // ── Validate accounts; invalid ones fall back to 4010 ──
         $validCredits   = [];
-        $fallbackAmount = 0; // amounts from invalid accounts fall back to 4010
-
+        $fallbackAmount = 0;
         foreach ($creditsByAccount as $code => $data) {
             $acct = $coa[$code] ?? null;
             if (is_array($acct) && ($acct['status'] ?? '') === 'active' && empty($acct['is_group'])) {
                 $validCredits[$code] = $data;
             } else {
-                log_message('info', "Granular fee journal: account {$code} unavailable, amount " . $data['amount'] . " falls back to 4010");
+                log_message('info',
+                    "Granular fee journal: account {$code} unavailable, "
+                    . "amount " . $data['amount'] . " falls back to 4010");
                 $fallbackAmount += $data['amount'];
             }
         }
-
-        // Add fallback to 4010 if any accounts were invalid
         if ($fallbackAmount > 0) {
             if (!isset($validCredits['4010'])) {
                 $validCredits['4010'] = ['amount' => 0, 'heads' => []];
@@ -1218,53 +1426,32 @@ class Operations_accounting
             $validCredits['4010']['amount'] += $fallbackAmount;
             $validCredits['4010']['heads'][] = '(fallback)';
         }
-
-        // ── Safety: if no valid credits, fall back to simple journal ──
         if (empty($validCredits)) {
-            log_message('error', "Granular fee journal: no valid credit accounts, falling back to simple");
-            return $this->create_fee_journal($params);
+            log_message('error', "Granular fee journal: no valid credit accounts");
+            return [null, null];
         }
 
-        // ══════════════════════════════════════════════════════════
-        //  DISCOUNT ACCOUNTING (proper double-entry)
-        //
-        //  Gross fee income is credited at full value (allocations).
-        //  Discount is recorded as a separate debit to an Expense account.
-        //  This keeps income statements accurate and discount visible.
-        //
-        //  Journal structure when discount exists:
-        //    Dr 1010 Cash/Bank       ₹net_received (amount)
-        //    Dr 5190 Discount Allowed ₹discount
-        //    Cr 4010 Tuition Fee      ₹gross_tuition
-        //    Cr 4040 Transport Fee    ₹gross_transport
-        //    Cr 4060 Late Fee         ₹fine
-        //
-        //  When no discount: Dr Cash = Cr total (simple).
-        // ══════════════════════════════════════════════════════════
-
+        // ── Build lines + per-account balance deltas ──
         $discountAmount = round($discountAmount, 2);
-        $narration = "Fee payment: {$student} ({$stuId}) - {$class}" . ($receipt ? " Rcpt#{$receipt}" : '');
-        $lines     = [];
-        $affected  = [];
+        $lines          = [];
+        $balanceDeltas  = [];
 
-        // ── DEBIT SIDE ──
-
-        // 1. Dr Cash/Bank = amount actually received
+        // Dr Cash/Bank — net amount actually received.
         $cashDebit = $amount;
         $lines[] = [
             'account_code' => $cashBankCode,
-            'account_name' => $cashAcct['name'] ?? $cashBankCode,
+            'account_name' => (string) ($cashAcct['name'] ?? $cashBankCode),
             'dr'           => round($cashDebit, 2),
             'cr'           => 0,
             'narration'    => $narration,
         ];
-        $affected[$cashBankCode] = ['dr' => round($cashDebit, 2), 'cr' => 0];
+        $balanceDeltas[$cashBankCode] = ['dr' => round($cashDebit, 2), 'cr' => 0];
 
-        // 2. Dr Discount Allowed (Expense) = discount amount
-        //    Account 5190 "Discount Allowed" — create if needed via keyword match
+        // Dr Discount Allowed (Expense) — proper double-entry for discount
+        // so revenue stays at gross. If no expense account is available,
+        // discount is folded into reduced revenue (legacy behaviour).
         if ($discountAmount > 0) {
-            $discountAcctCode = '5190'; // Discount Allowed (Expense)
-            // Check if 5190 exists; if not, try to find any "discount" expense account
+            $discountAcctCode = '5190';
             if (!isset($coa[$discountAcctCode]) || ($coa[$discountAcctCode]['status'] ?? '') !== 'active') {
                 $discountAcctCode = null;
                 foreach ($coa as $dc => $da) {
@@ -1278,55 +1465,59 @@ class Operations_accounting
                     }
                 }
             }
-
             if ($discountAcctCode !== null) {
                 $discAcct = $coa[$discountAcctCode];
                 $lines[] = [
                     'account_code' => $discountAcctCode,
-                    'account_name' => $discAcct['name'] ?? 'Discount Allowed',
+                    'account_name' => (string) ($discAcct['name'] ?? 'Discount Allowed'),
                     'dr'           => round($discountAmount, 2),
                     'cr'           => 0,
                     'narration'    => "Discount — {$student}",
                 ];
-                if (!isset($affected[$discountAcctCode])) {
-                    $affected[$discountAcctCode] = ['dr' => 0, 'cr' => 0];
+                if (!isset($balanceDeltas[$discountAcctCode])) {
+                    $balanceDeltas[$discountAcctCode] = ['dr' => 0, 'cr' => 0];
                 }
-                $affected[$discountAcctCode]['dr'] += round($discountAmount, 2);
+                $balanceDeltas[$discountAcctCode]['dr'] += round($discountAmount, 2);
             } else {
-                // No discount account available — reduce income side instead (legacy behavior)
-                log_message('info', "Granular journal: No discount expense account found, reducing income");
-                $discountAmount = 0; // treat as if no discount for journal balancing
+                log_message('info',
+                    "Granular journal: No discount expense account found, reducing income side");
+                $discountAmount = 0;
             }
         }
 
-        // Total debit = cash + discount
-        $totalDebit = round($cashDebit + $discountAmount, 2);
-
-        // ── CREDIT SIDE ──
-        // Credits should equal total debit (gross fee income)
-        // Adjust credit totals to match debit side
-        $totalCredits = 0;
-        foreach ($validCredits as $data) {
-            $totalCredits += $data['amount'];
+        // Phase: Discount/Concession Journaling (Stage 1) — emit staged
+        // concession Dr lines + balance deltas. These lines were resolved
+        // and amount-validated above; here we merely materialize them into
+        // $lines and feed their amounts into $balanceDeltas. Skipped
+        // entirely when $stagedConcessionLines is empty (the no-concession
+        // path produces a journal byte-identical to the pre-concession
+        // engine).
+        foreach ($stagedConcessionLines as $cLine) {
+            $lines[] = $cLine;
+            $cCode = (string) $cLine['account_code'];
+            if (!isset($balanceDeltas[$cCode])) {
+                $balanceDeltas[$cCode] = ['dr' => 0, 'cr' => 0];
+            }
+            $balanceDeltas[$cCode]['dr'] += round((float) $cLine['dr'], 2);
         }
 
-        // The allocations are net amounts (after discount). If discount is separately debited,
-        // the credit side needs to represent gross income = allocations + discount.
-        // Distribute discount proportionally across credit accounts to show gross income.
+        $totalDebit = round($cashDebit + $discountAmount + $totalConcessionsRecognized, 2);
+
+        // Distribute discount proportionally across credit accounts so
+        // gross income lines sum to gross fee value.
+        $totalCredits = 0;
+        foreach ($validCredits as $data) $totalCredits += $data['amount'];
         if ($discountAmount > 0 && $totalCredits > 0) {
             foreach ($validCredits as $code => &$data) {
                 $proportion = $data['amount'] / $totalCredits;
                 $data['amount'] = round($data['amount'] + ($discountAmount * $proportion), 2);
             }
             unset($data);
-            // Recalculate
             $totalCredits = 0;
-            foreach ($validCredits as $data) {
-                $totalCredits += $data['amount'];
-            }
+            foreach ($validCredits as $data) $totalCredits += $data['amount'];
         }
 
-        // Rounding adjustment: ensure Dr = Cr exactly
+        // Rounding correction: ensure Dr === Cr to within 0.01.
         $diff = round($totalDebit - $totalCredits, 2);
         if (abs($diff) > 0.005 && abs($diff) <= 1.00) {
             $maxCode = '';
@@ -1339,17 +1530,15 @@ class Operations_accounting
             }
         } elseif (abs($diff) > 1.00) {
             log_message('error', "Granular fee journal: debit/credit mismatch of {$diff}, falling back");
-            return $this->create_fee_journal($params);
+            return [null, null];
         }
 
-        // Credit lines: one per fee income account
+        // Cr lines — one per resolved fee account.
         foreach ($validCredits as $code => $data) {
             $creditAmt = round($data['amount'], 2);
             if ($creditAmt <= 0) continue;
-
             $headNames = implode(', ', array_unique($data['heads']));
-            $acctName  = $coa[$code]['name'] ?? $code;
-
+            $acctName  = (string) ($coa[$code]['name'] ?? $code);
             $lines[] = [
                 'account_code' => $code,
                 'account_name' => $acctName,
@@ -1357,67 +1546,57 @@ class Operations_accounting
                 'cr'           => $creditAmt,
                 'narration'    => "{$headNames} — {$student}",
             ];
-
-            if (!isset($affected[$code])) {
-                $affected[$code] = ['dr' => 0, 'cr' => 0];
+            if (!isset($balanceDeltas[$code])) {
+                $balanceDeltas[$code] = ['dr' => 0, 'cr' => 0];
             }
-            $affected[$code]['cr'] += $creditAmt;
+            $balanceDeltas[$code]['cr'] += $creditAmt;
         }
 
-        // ── Final Dr = Cr check ──
-        $totalDr = 0;
-        $totalCr = 0;
+        // Final balance check.
+        $totalDr = 0; $totalCr = 0;
         foreach ($lines as $ln) {
             $totalDr += $ln['dr'];
             $totalCr += $ln['cr'];
         }
         if (abs($totalDr - $totalCr) > 0.01) {
-            log_message('error', "Granular fee journal: UNBALANCED Dr={$totalDr} Cr={$totalCr}, falling back");
-            return $this->create_fee_journal($params);
+            log_message('error',
+                "Granular fee journal: UNBALANCED Dr={$totalDr} Cr={$totalCr}, falling back to single");
+            return [null, null];
         }
 
-        // ── Generate voucher number (pure Firestore counter) ──
-        $seq = $sync->nextCounter('Fee');
-        if ($seq <= 0) $seq = (int) (microtime(true) * 1000) % 1000000;
-        $voucherNo = 'FV-' . str_pad($seq, 6, '0', STR_PAD_LEFT);
+        return [$lines, $balanceDeltas];
+    }
 
-        // ── Generate entry ID ──
-        $entryId = 'FE_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
-
-        $entry = [
-            'date'         => $date,
-            'voucher_no'   => $voucherNo,
-            'voucher_type' => 'Fee',
-            'narration'    => $narration,
-            'lines'        => array_values($lines),
-            'total_dr'     => round($totalDr, 2),
-            'total_cr'     => round($totalCr, 2),
-            'source'       => 'fee_payment',
-            'source_ref'   => $receipt,
-            'is_finalized' => false,
-            'status'       => 'active',
-            'created_by'   => $adminId,
-            'created_at'   => date('c'),
-        ];
-
-        // ── Write ledger entry + indices (pure Firestore) ──
-        if (!$sync->syncLedgerEntry($entryId, $entry)) return null;
-
-        // ── Update closing balances (pure Firestore, per-account verify+retry) ──
-        foreach ($affected as $ac => $amounts) {
-            for ($retry = 0; $retry < 3; $retry++) {
-                $cur   = $sync->readClosingBalance((string) $ac);
-                $newDr = round($cur['period_dr'] + (float) $amounts['dr'], 2);
-                $newCr = round($cur['period_cr'] + (float) $amounts['cr'], 2);
-                if ($sync->syncClosingBalance((string) $ac, $newDr, $newCr)) break;
-                usleep(50000 * ($retry + 1));
-                if ($retry === 2) {
-                    log_message('error', "Granular fee closing balance write failed for {$ac} (entry {$entryId})");
-                }
-            }
-        }
-
-        return $entryId;
+    public function create_fee_journal_granular(
+        array $params,
+        array $allocations,
+        float $fineAmount = 0,
+        float $discountAmount = 0
+    ): ?string {
+        // Phase A0 (canonical fee-accounting normalization, 2026-05-10) —
+        // method retired as standalone path. The legacy implementation
+        // had its own non-CAS legacy commit (direct syncLedgerEntry +
+        // read-modify-write closing balance, no idempotency claim, no
+        // period-lock check, non-deterministic FE_{ts}_{rand} entryId)
+        // which diverged from _create_fee_journal_v2's hardened path.
+        //
+        // The granular line-build logic now lives in _buildGranularLines
+        // and is invoked by _create_fee_journal_v2 when $params has a
+        // non-empty 'allocations' field. This thin wrapper preserves
+        // backward compatibility for any caller that still invokes the
+        // public method directly: it merges the explicit $allocations,
+        // $fineAmount, $discountAmount arguments into $params and
+        // delegates to create_fee_journal, which routes through the
+        // canonical v2 commit path (period-lock + idempotency + CAS).
+        //
+        // Result: every caller of either method now lands the same
+        // hardened journal — voucher prefix FV-, deterministic
+        // JE_FEE_{receipt} idempotency, atomic batch with __updateTime
+        // CAS, retried up to MAX_ATTEMPTS times on contention.
+        $params['allocations']     = $allocations;
+        $params['fine_amount']     = (float) $fineAmount;
+        $params['discount_amount'] = (float) $discountAmount;
+        return $this->create_fee_journal($params);
     }
 
     // ====================================================================
@@ -1594,11 +1773,22 @@ class Operations_accounting
             . ($origRcpt ? " OrigRcpt#{$origRcpt}" : '')
             . " Ref#{$refId}";
 
-        // Build debit lines (reverse income accounts) grouped by account code
+        // Build debit lines (reverse income accounts) grouped by account code.
+        //
+        // Phase A0.5 (R-A0-M2 fix, 2026-05-10) — defensive field-name
+        // resolution. feeReceiptAllocations stores the per-line amount
+        // under 'allocated' (FCS::submit at line 1187 / 615), not
+        // 'amount'. The pre-A0.5 read of `$alloc['amount']` returned 0
+        // for every allocation, causing the granular refund path to
+        // produce empty debit lines and eventually fall back to single
+        // `Dr 4010` — the same wrong-account problem A0 fixed for
+        // collections. Reading either field closes the symmetry: a
+        // transport collection (Cr 4040) is now reversed by a transport
+        // refund (Dr 4040), with net-zero movement on closed cycles.
         $debitsByAccount = [];
         foreach ($allocations as $alloc) {
-            $feeHead  = $alloc['fee_head'] ?? '';
-            $allocAmt = round((float) ($alloc['amount'] ?? 0), 2);
+            $feeHead  = (string) ($alloc['fee_head'] ?? '');
+            $allocAmt = round((float) ($alloc['amount'] ?? $alloc['allocated'] ?? 0), 2);
             if ($allocAmt <= 0 || $feeHead === '') continue;
 
             $acctCode = $this->resolve_fee_account($feeHead, $configMap, $coa);

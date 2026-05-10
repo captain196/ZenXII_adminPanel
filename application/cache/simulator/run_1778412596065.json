@@ -1,0 +1,62 @@
+[
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778412596065_A1",
+        "source": "fee_payment",
+        "type": "tuition",
+        "at": "2026-05-10T13:30:17+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778412596065_A2",
+        "source": "fee_payment",
+        "type": "transport",
+        "at": "2026-05-10T13:30:31+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778412596065_A3",
+        "source": "fee_payment",
+        "type": "mixed",
+        "at": "2026-05-10T13:30:46+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778412596065_B1_R",
+        "source": "fee_payment",
+        "type": "tuition",
+        "at": "2026-05-10T13:31:01+02:00"
+    },
+    {
+        "entryId": "JE_FEE_REFUND_TEST_RFD_1778412596065_B1",
+        "source": "fee_refund",
+        "type": "tuition",
+        "at": "2026-05-10T13:31:18+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778412596065_B2_R",
+        "source": "fee_payment",
+        "type": "transport",
+        "at": "2026-05-10T13:31:32+02:00"
+    },
+    {
+        "entryId": "JE_FEE_REFUND_TEST_RFD_1778412596065_B2",
+        "source": "fee_refund",
+        "type": "transport",
+        "at": "2026-05-10T13:31:47+02:00"
+    },
+    {
+        "entryId": "JE_FEE_TEST_RCT_1778412596065_B3_R",
+        "source": "fee_payment",
+        "type": "mixed",
+        "at": "2026-05-10T13:31:54+02:00"
+    },
+    {
+        "entryId": "JE_FEE_REFUND_TEST_RFD_1778412596065_B3",
+        "source": "fee_refund",
+        "type": "partial_mixed",
+        "at": "2026-05-10T13:32:01+02:00"
+    },
+    {
+        "entryId": "JE_MANUAL_TEST_MAN_1778412596065_C1",
+        "source": "manual",
+        "type": "C1",
+        "at": "2026-05-10T13:32:08+02:00"
+    }
+]

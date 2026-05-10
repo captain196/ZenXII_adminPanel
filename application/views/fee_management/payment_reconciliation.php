@@ -107,6 +107,32 @@ var csrfHash='<?= $this->security->get_csrf_hash() ?>';
 function esc(s){var d=document.createElement('div');d.textContent=String(s||'');return d.innerHTML;}
 function fmt(n){return parseFloat(n||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});}
 
+// Phase 1.X (2026-05-09) — IST timestamp normalization for reconciliation.
+// Server timestamps (created_at, paid_at) carry the server's timezone offset
+// — often +02:00 on the dev box, +00:00 in production. Bank-statement
+// matching and operator interpretation both depend on consistent IST
+// rendering. fmtIST converts any ISO/RFC stamp to "DD-MM-YYYY HH:MM:SS am/pm
+// IST"; fmtISTDate returns just the DD-MM-YYYY date in IST for the success
+// table column. Falls back to the original string if unparseable.
+function fmtIST(iso){
+  if (!iso) return '';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso);
+  try {
+    var dateStr = d.toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric', timeZone:'Asia/Kolkata' }).replace(/\//g, '-');
+    var timeStr = d.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true, timeZone:'Asia/Kolkata' });
+    return dateStr + ' ' + timeStr + ' IST';
+  } catch (e) { return String(iso); }
+}
+function fmtISTDate(iso){
+  if (!iso) return '';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso).substring(0,10);
+  try {
+    return d.toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric', timeZone:'Asia/Kolkata' }).replace(/\//g, '-');
+  } catch (e) { return String(iso).substring(0,10); }
+}
+
 function post(url,data){
   var fd=new FormData();fd.append(csrfName,csrfHash);
   for(var k in data)fd.append(k,data[k]);
@@ -270,7 +296,7 @@ function itemCard(it,actions){
   h+='<div class="pr-row"><span class="pr-lbl">Status</span><span class="pr-val">'+statusBadge(it.status)+'</span></div>';
   h+='<div class="pr-row"><span class="pr-lbl">Gateway</span><span class="pr-val">'+esc(it.gateway)+'</span></div>';
   h+='<div class="pr-row"><span class="pr-lbl">Source</span><span class="pr-val">'+esc(it.source||'-')+'</span></div>';
-  h+='<div class="pr-row"><span class="pr-lbl">Created</span><span class="pr-val">'+esc((it.created_at||'').substring(0,19))+'</span></div>';
+  h+='<div class="pr-row"><span class="pr-lbl">Created</span><span class="pr-val">'+esc(fmtIST(it.created_at))+'</span></div>';
   if(it.failure_reason) h+='<div class="pr-row"><span class="pr-lbl">Error</span><span class="pr-val" style="color:#dc2626;max-width:70%;text-align:right;word-break:break-word">'+esc(it.failure_reason)+'</span></div>';
   if(it.issue) h+='<div class="pr-row"><span class="pr-lbl">Issue</span><span class="pr-val" style="color:#d97706">'+esc(it.issue)+'</span></div>';
   if(it.hit_count) h+='<div class="pr-row"><span class="pr-lbl">Processing Attempts</span><span class="pr-val" style="color:#7c3aed;font-weight:700">'+it.hit_count+'</span></div>';
@@ -329,7 +355,7 @@ function renderSuccess(items){
     h+='<td style="padding:8px"><code style="font-size:11px">'+esc(it.order_id)+'</code></td>';
     h+='<td style="padding:8px;text-align:right;font-family:var(--font-m);font-weight:600;color:var(--gold)">'+fmt(it.amount)+'</td>';
     h+='<td style="padding:8px">'+esc(it.receipt_key||'-')+'</td>';
-    h+='<td style="padding:8px;font-size:11px;color:var(--t3)">'+esc((it.paid_at||it.created_at||'').substring(0,10))+'</td>';
+    h+='<td style="padding:8px;font-size:11px;color:var(--t3)">'+esc(fmtISTDate(it.paid_at||it.created_at))+'</td>';
     h+='<td style="padding:8px">'+esc(it.source||'-')+'</td>';
     h+='</tr>';
   });
