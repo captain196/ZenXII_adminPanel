@@ -3253,7 +3253,20 @@ class Fee_management extends MY_Controller
             // subsystem is gone and the service now rejects overpayment.
             'skip_duplicate_month_guard' => true,
             'defer_defaulter'            => true,
-            'defer_accounting'           => false,
+            // INVARIANT: defer_accounting MUST stay true for every
+            // fee-payment entry point. FeeCollectionService has no
+            // inline JE-post path — create_fee_journal is only invoked
+            // from the deferred shutdown handler (FeeCollectionService.php
+            // ~line 1639, inside register_shutdown_function). When
+            // defer_accounting=false the shutdown handler skips the
+            // accounting block silently and no JE is ever posted,
+            // producing a receipt with no GL entry (a true accounting
+            // orphan). Historical incident: receipt F11 on 2026-05-22.
+            // Until an inline JE-post path exists, every caller of
+            // FeeCollectionService::submit must either omit this key
+            // (default true) or pass true explicitly. Other callers
+            // already comply (admin counter, webhook, wallet/manual).
+            'defer_accounting'           => true,
             'write_response_to_output'   => false,
         ]);
 
