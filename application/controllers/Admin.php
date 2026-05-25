@@ -391,6 +391,11 @@ class Admin extends MY_Controller
                 }
                 usort($defList, fn($a, $b) => $b['totalDues'] <=> $a['totalDues']);
                 $topDefaulters = array_slice($defList, 0, 5);
+                // Canonicalise the headline tile against the same source
+                // the Top Defaulters widget reads from, so both render a
+                // consistent count. Falls back to the formula above if
+                // the feeDefaulters query throws.
+                $feeDefaulters = count($defList);
             } catch (\Exception $e) {
                 log_message('error', 'top_defaulters fetch failed: ' . $e->getMessage());
             }

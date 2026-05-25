@@ -104,7 +104,7 @@ class AccountingReconciler extends CI_Controller
 
     private string $schoolFs   = '';
     private string $schoolName = '';
-    private string $session    = '';
+    private string $sessionYear = '';
 
     public function __construct()
     {
@@ -113,18 +113,20 @@ class AccountingReconciler extends CI_Controller
             show_error('AccountingReconciler is CLI-only.', 403);
         }
         $this->load->library('firebase');
-
-        $this->schoolName = (string) (getenv('SCHOOL_NAME') ?: '');
-        $this->session    = (string) (getenv('SESSION_YEAR') ?: '');
-        if ($this->schoolName === '' || $this->session === '') {
-            echo "ERROR: Set SCHOOL_NAME and SESSION_YEAR environment variables.\n";
-            exit(1);
-        }
-        $this->firebase->initFirestore($this->schoolName, $this->session);
         $this->load->library('firestore_service');
-        $this->schoolFs = (string) $this->firebase->getSchoolId();
-        if ($this->schoolFs === '') {
-            echo "ERROR: Could not resolve schoolId for {$this->schoolName}.\n";
+
+        // BUG-A7 Framing α — direct SCHOOL_ID bootstrap. The legacy
+        // initFirestore(schoolName) + getSchoolId() round-trip was removed
+        // because Firebase library now self-initializes for the graderadmin
+        // project at construction. SCHOOL_ID env var carries the FS-style
+        // schoolId (e.g. SCH_D94FE8F7AD) directly. SCHOOL_NAME remains as
+        // an optional companion env var preserved for downstream callers
+        // (audit-log school_name field, library inits, etc.).
+        $this->schoolFs    = (string) (getenv('SCHOOL_ID')    ?: '');
+        $this->sessionYear = (string) (getenv('SESSION_YEAR') ?: '');
+        $this->schoolName  = (string) (getenv('SCHOOL_NAME')  ?: '');
+        if ($this->schoolFs === '' || $this->sessionYear === '') {
+            echo "ERROR: Set SCHOOL_ID and SESSION_YEAR environment variables.\n";
             exit(1);
         }
         // Phase 1 Tier-0 (B2): ACCOUNTING_V2 env shim removed. v1 path
@@ -139,7 +141,7 @@ class AccountingReconciler extends CI_Controller
 
     public function run(): void
     {
-        $this->_out("AccountingReconciler run @ " . date('c') . " school={$this->schoolFs} session={$this->session}");
+        $this->_out("AccountingReconciler run @ " . date('c') . " school={$this->schoolFs} session={$this->sessionYear}");
 
         // Phase 8C (R2) — soft concurrent-run guard. If another instance
         // checked in less than 120 s ago and is still in any in-progress
@@ -159,7 +161,7 @@ class AccountingReconciler extends CI_Controller
         // Takeover still triggers correctly after a TRUE crash because
         // a dead worker's heartbeat ages past 120 s without progressing.
         $hb = $this->firebase->firestoreGet(self::COL_HEARTBEAT,
-            "{$this->schoolFs}_{$this->session}");
+            "{$this->schoolFs}_{$this->sessionYear}");
         $priorStage  = is_array($hb) ? (string) ($hb['lastStage'] ?? '') : '';
         $inProgress  = ($priorStage !== '' && $priorStage !== 'run_finished');
         if (is_array($hb)
@@ -272,7 +274,7 @@ class AccountingReconciler extends CI_Controller
     public function backfill_balance_updatetime(): void
     {
         $this->_out("AccountingReconciler backfill_balance_updatetime @ " . date('c'));
-        $this->_out("  scope: schoolId={$this->schoolFs} session={$this->session}");
+        $this->_out("  scope: schoolId={$this->schoolFs} session={$this->sessionYear}");
 
         $touched = 0;
         $failed  = 0;
@@ -280,7 +282,7 @@ class AccountingReconciler extends CI_Controller
         try {
             $balances = (array) $this->firebase->firestoreQuery('accountingClosingBalances', [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
             ], null, 'ASC', self::MAX_BALANCE_DRIFT_SCAN);
 
             $this->_out("  found " . count($balances) . " balance docs");
@@ -289,7 +291,7 @@ class AccountingReconciler extends CI_Controller
                 $d    = is_array($r['data'] ?? null) ? $r['data'] : [];
                 $code = (string) ($d['accountCode'] ?? '');
                 if ($code === '') continue;
-                $docId = "{$this->schoolFs}_{$this->session}_{$code}";
+                $docId = "{$this->schoolFs}_{$this->sessionYear}_{$code}";
 
                 try {
                     $this->firebase->firestoreSet('accountingClosingBalances', $docId, [
@@ -306,7 +308,7 @@ class AccountingReconciler extends CI_Controller
             $this->_out("  done: touched={$touched} failed={$failed}");
             log_message('error',
                 "ACC_RECON_BACKFILL_COMPLETE schoolId={$this->schoolFs} "
-                . "session={$this->session} touched={$touched} failed={$failed}");
+                . "session={$this->sessionYear} touched={$touched} failed={$failed}");
         } catch (\Throwable $e) {
             $this->_out("  ERROR: " . $e->getMessage());
             log_message('error', 'ACC_RECON_BACKFILL_ERROR: ' . $e->getMessage());
@@ -332,7 +334,7 @@ class AccountingReconciler extends CI_Controller
     public function verify_balance_cas_compliance(): void
     {
         $this->_out("AccountingReconciler verify_balance_cas_compliance @ " . date('c'));
-        $this->_out("  scope: schoolId={$this->schoolFs} session={$this->session}");
+        $this->_out("  scope: schoolId={$this->schoolFs} session={$this->sessionYear}");
 
         $compliant = 0;
         $missing   = [];
@@ -342,7 +344,7 @@ class AccountingReconciler extends CI_Controller
             // Discover all balance docs for this school+session.
             $rows = (array) $this->firebase->firestoreQuery('accountingClosingBalances', [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
             ], null, 'ASC', 5000);
 
             $this->_out("  found " . count($rows) . " balance docs");
@@ -360,7 +362,7 @@ class AccountingReconciler extends CI_Controller
                 if ($code === '') continue;
                 $reqs[$code] = [
                     'collection' => 'accountingClosingBalances',
-                    'docId'      => "{$this->schoolFs}_{$this->session}_{$code}",
+                    'docId'      => "{$this->schoolFs}_{$this->sessionYear}_{$code}",
                 ];
             }
 
@@ -398,7 +400,7 @@ class AccountingReconciler extends CI_Controller
 
             log_message('error',
                 "ACC_RECON_BAL_CAS_VERIFY schoolId={$this->schoolFs} "
-                . "session={$this->session} compliant={$compliant} "
+                . "session={$this->sessionYear} compliant={$compliant} "
                 . "missing=" . count($missing) . " errors={$errors} "
                 . "result=" . ($passed ? 'PASS' : 'FAIL'));
 
@@ -431,7 +433,7 @@ class AccountingReconciler extends CI_Controller
     public function cleanup_stale_indexes(): void
     {
         $this->_out("AccountingReconciler cleanup_stale_indexes @ " . date('c'));
-        $this->_out("  scope: schoolId={$this->schoolFs} session={$this->session}");
+        $this->_out("  scope: schoolId={$this->schoolFs} session={$this->sessionYear}");
 
         $scanned = 0;
         $cleaned = 0;
@@ -442,7 +444,7 @@ class AccountingReconciler extends CI_Controller
             // (schoolId, session, status, entryId).
             $deleted = (array) $this->firebase->firestoreQuery(self::COL_LEDGER, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'deleted'],
             ], 'entryId', 'ASC', 5000);
 
@@ -460,7 +462,7 @@ class AccountingReconciler extends CI_Controller
                 if ($entryDate !== '') {
                     try {
                         $this->firebase->firestoreDelete('accountingIndexByDate',
-                            "{$this->schoolFs}_{$this->session}_{$entryDate}_{$entryId}");
+                            "{$this->schoolFs}_{$this->sessionYear}_{$entryDate}_{$entryId}");
                         $cleaned++;
                     } catch (\Throwable $e) {
                         log_message('error',
@@ -476,7 +478,7 @@ class AccountingReconciler extends CI_Controller
                     if ($ac === '') continue;
                     try {
                         $this->firebase->firestoreDelete('accountingIndexByAccount',
-                            "{$this->schoolFs}_{$this->session}_{$ac}_{$entryId}");
+                            "{$this->schoolFs}_{$this->sessionYear}_{$ac}_{$entryId}");
                         $cleaned++;
                     } catch (\Throwable $e) {
                         log_message('error',
@@ -495,7 +497,7 @@ class AccountingReconciler extends CI_Controller
             $this->_out("  done: scanned_entries={$scanned} index_docs_cleaned={$cleaned} failed={$failed}");
             log_message('error',
                 "ACC_RECON_IDX_CLEANUP_COMPLETE schoolId={$this->schoolFs} "
-                . "session={$this->session} scanned={$scanned} "
+                . "session={$this->sessionYear} scanned={$scanned} "
                 . "cleaned={$cleaned} failed={$failed}");
         } catch (\Throwable $e) {
             $this->_out("  ERROR: " . $e->getMessage());
@@ -515,7 +517,7 @@ class AccountingReconciler extends CI_Controller
         try {
             if (!isset($this->acctForensics)) {
                 $this->load->library('Accounting_forensics', null, 'acctForensics');
-                $this->acctForensics->init($this->firebase, $this->schoolFs, $this->session);
+                $this->acctForensics->init($this->firebase, $this->schoolFs, $this->sessionYear);
             }
             $this->acctForensics->recordReplay($entryId, $reason, $attemptCount, '');
         } catch (\Throwable $e) {
@@ -568,7 +570,7 @@ class AccountingReconciler extends CI_Controller
     public function anomalies(): void
     {
         $this->_out("Accounting Anomaly Scan @ " . date('c'));
-        $this->_out("  schoolId={$this->schoolFs} session={$this->session}");
+        $this->_out("  schoolId={$this->schoolFs} session={$this->sessionYear}");
         $this->_out(str_repeat('-', 64));
 
         $anomalies = [];   // each: [severity, label, evidence, suggested_action]
@@ -576,7 +578,7 @@ class AccountingReconciler extends CI_Controller
 
         try {
             $hb = $this->firebase->firestoreGet(self::COL_HEARTBEAT,
-                "{$this->schoolFs}_{$this->session}");
+                "{$this->schoolFs}_{$this->sessionYear}");
 
             // ── Reconciler liveness anomalies ────────────────────────
             if (!is_array($hb) || empty($hb['lastRunAt'])) {
@@ -660,7 +662,7 @@ class AccountingReconciler extends CI_Controller
             // ── Idempotency anomalies ────────────────────────────────
             $stuck = (array) $this->firebase->firestoreQuery(self::COL_IDEMP, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'processing'],
             ], 'startedAt', 'ASC', 100);
             $stuckCount = 0;
@@ -686,7 +688,7 @@ class AccountingReconciler extends CI_Controller
             // ── Failed idempotency volume ────────────────────────────
             $failed = (array) $this->firebase->firestoreQuery(self::COL_IDEMP, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'failed'],
             ], null, 'ASC', 100);
             $failedCount = count($failed);
@@ -701,7 +703,7 @@ class AccountingReconciler extends CI_Controller
             // ── Forensic-event-driven anomalies ──────────────────────
             try {
                 $this->load->library('Accounting_forensics', null, 'acctForensics');
-                $this->acctForensics->init($this->firebase, $this->schoolFs, $this->session);
+                $this->acctForensics->init($this->firebase, $this->schoolFs, $this->sessionYear);
 
                 $reversals24h = $this->acctForensics->countRecentEvents('reversed', 86400);
                 if ($reversals24h >= 20) {
@@ -749,7 +751,7 @@ class AccountingReconciler extends CI_Controller
             try {
                 $reopens30d = (array) $this->firebase->firestoreQuery('accountingPeriodReopens', [
                     ['schoolId', '==', $this->schoolFs],
-                    ['session',  '==', $this->session],
+                    ['session',  '==', $this->sessionYear],
                     ['reopened_at', '>=', date('c', $now - 30 * 86400)],
                 ], 'reopened_at', 'DESC', 50);
                 $reopenCount30d = count($reopens30d);
@@ -773,7 +775,7 @@ class AccountingReconciler extends CI_Controller
             $this->_out("\nNo anomalies detected.");
             $this->_out("Status: HEALTHY\n");
             log_message('error',
-                "ACC_ANOMALY_SCAN schoolId={$this->schoolFs} session={$this->session} count=0");
+                "ACC_ANOMALY_SCAN schoolId={$this->schoolFs} session={$this->sessionYear} count=0");
             return;
         }
 
@@ -793,7 +795,7 @@ class AccountingReconciler extends CI_Controller
         }
 
         log_message('error',
-            "ACC_ANOMALY_SCAN schoolId={$this->schoolFs} session={$this->session} "
+            "ACC_ANOMALY_SCAN schoolId={$this->schoolFs} session={$this->sessionYear} "
             . "count=" . count($anomalies)
             . " critical=" . count(array_filter($anomalies, fn($a) => $a[0] === 'CRITICAL'))
             . " high="     . count(array_filter($anomalies, fn($a) => $a[0] === 'HIGH'))
@@ -930,7 +932,7 @@ class AccountingReconciler extends CI_Controller
         $now = time();
         try {
             $this->load->library('Accounting_forensics', null, 'acctForensics');
-            $this->acctForensics->init($this->firebase, $this->schoolFs, $this->session);
+            $this->acctForensics->init($this->firebase, $this->schoolFs, $this->sessionYear);
             $reversals24h = $this->acctForensics->countRecentEvents('reversed', 86400);
             $replays24h   = $this->acctForensics->countRecentEvents('replayed', 86400);
             $reopened24h  = $this->acctForensics->countRecentEvents('reopened_post', 86400);
@@ -948,7 +950,7 @@ class AccountingReconciler extends CI_Controller
         try {
             $reopens = (array) $this->firebase->firestoreQuery('accountingPeriodReopens', [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['reopened_at', '>=', date('c', $now - 30 * 86400)],
             ], 'reopened_at', 'DESC', 5);
             $openReopens = 0;
@@ -1001,7 +1003,7 @@ class AccountingReconciler extends CI_Controller
     public function permissions(): void
     {
         echo "Accounting Permission Matrix @ " . date('c') . "\n";
-        echo "  schoolId={$this->schoolFs} session={$this->session}\n";
+        echo "  schoolId={$this->schoolFs} session={$this->sessionYear}\n";
         echo str_repeat('-', 64) . "\n";
 
         // Pull the role constants from the Accounting controller via
@@ -1078,7 +1080,7 @@ class AccountingReconciler extends CI_Controller
         echo "Period reopen events are also written to accountingPeriodReopens.\n";
 
         log_message('error',
-            "ACC_PERMISSIONS_VIEWED schoolId={$this->schoolFs} session={$this->session} "
+            "ACC_PERMISSIONS_VIEWED schoolId={$this->schoolFs} session={$this->sessionYear} "
             . "ops_count=" . count($ops));
     }
 
@@ -1108,7 +1110,7 @@ class AccountingReconciler extends CI_Controller
         try {
             $rows = (array) $this->firebase->firestoreQuery(self::COL_IDEMP, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'processing'],
             ], 'startedAt', 'ASC', self::MAX_IDEMP_SCAN);
 
@@ -1126,7 +1128,7 @@ class AccountingReconciler extends CI_Controller
                 $ledger = null;
                 if ($entryId !== '') {
                     $ledger = $this->firebase->firestoreGet(self::COL_LEDGER,
-                        "{$this->schoolFs}_{$this->session}_{$entryId}");
+                        "{$this->schoolFs}_{$this->sessionYear}_{$entryId}");
                 }
 
                 if (is_array($ledger) && ($ledger['status'] ?? '') === 'active'
@@ -1175,7 +1177,7 @@ class AccountingReconciler extends CI_Controller
         try {
             $receipts = (array) $this->firebase->firestoreQuery(self::COL_RECEIPTS, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'posted'],
             ], 'postedAt', 'DESC', self::MAX_DRIFT_SCAN);
 
@@ -1193,7 +1195,7 @@ class AccountingReconciler extends CI_Controller
                 // The canonical entryId for a fee receipt.
                 $idempKey = "JE_FEE_{$receiptKey}";
                 $ledger = $this->firebase->firestoreGet(self::COL_LEDGER,
-                    "{$this->schoolFs}_{$this->session}_{$idempKey}");
+                    "{$this->schoolFs}_{$this->sessionYear}_{$idempKey}");
                 if (is_array($ledger) && ($ledger['status'] ?? '') === 'active') {
                     continue;   // clean — no drift
                 }
@@ -1229,7 +1231,7 @@ class AccountingReconciler extends CI_Controller
                 if ($opsAcct === null) {
                     $this->load->library('Operations_accounting', null, 'opsAcct');
                     $this->opsAcct->init(
-                        $this->firebase, $this->schoolName, $this->session,
+                        $this->firebase, $this->schoolName, $this->sessionYear,
                         'SYSTEM_RECONCILER', $this);
                     $opsAcct = $this->opsAcct;
                 }
@@ -1297,7 +1299,7 @@ class AccountingReconciler extends CI_Controller
         $fineAmount     = 0.0;
         $discountAmount = 0.0;
         try {
-            $allocDocId = "{$this->schoolFs}_{$this->session}_{$receiptKey}";
+            $allocDocId = "{$this->schoolFs}_{$this->sessionYear}_{$receiptKey}";
             $allocDoc   = $this->firebase->firestoreGet('feeReceiptAllocations', $allocDocId);
             if (is_array($allocDoc)) {
                 if (is_array($allocDoc['allocations'] ?? null)) {
@@ -1315,7 +1317,7 @@ class AccountingReconciler extends CI_Controller
 
         return [
             'school_name'      => $this->schoolName,
-            'session_year'     => $this->session,
+            'session_year'     => $this->sessionYear,
             'date'             => (string) ($receipt['date']        ?? date('Y-m-d')),
             'amount'           => $amount,
             'payment_mode'     => strtolower((string) ($receipt['paymentMode'] ?? 'cash')),
@@ -1392,7 +1394,7 @@ class AccountingReconciler extends CI_Controller
             // primary retry lands between fetch and decision.
             $refunds = (array) $this->firebase->firestoreQuery('feeRefunds', [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'processed'],
             ], null, 'ASC', self::MAX_REFUND_DRIFT_SCAN);
 
@@ -1522,7 +1524,7 @@ class AccountingReconciler extends CI_Controller
             $this->load->library('Fee_firestore_txn', null, 'fsTxn');
             $this->fsTxn->init(
                 $this->firebase, $this->firestore_service,
-                $this->schoolFs, $this->session
+                $this->schoolFs, $this->sessionYear
             );
 
             // Operations_accounting — the journal poster. _sweepFeeAccountingDrift
@@ -1531,7 +1533,7 @@ class AccountingReconciler extends CI_Controller
             // the same fields with the same values.
             $this->load->library('Operations_accounting', null, 'opsAcct');
             $this->opsAcct->init(
-                $this->firebase, $this->schoolName, $this->session,
+                $this->firebase, $this->schoolName, $this->sessionYear,
                 'SYSTEM_RECONCILER', $this
             );
 
@@ -1608,7 +1610,7 @@ class AccountingReconciler extends CI_Controller
             // we've reached the end of the ledger ordering: pass complete,
             // cursor resets, next cycle starts fresh from the beginning.
             $hb     = $this->firebase->firestoreGet(self::COL_HEARTBEAT,
-                "{$this->schoolFs}_{$this->session}");
+                "{$this->schoolFs}_{$this->sessionYear}");
             $cursor = is_array($hb) ? (string) ($hb['idx_scan_cursor'] ?? '') : '';
 
             $startAfter = $cursor !== '' ? $cursor : null;
@@ -1618,7 +1620,7 @@ class AccountingReconciler extends CI_Controller
             // it Firestore returns INDEX_NOT_FOUND on first run.
             $entries = (array) $this->firebase->firestoreQuery(self::COL_LEDGER, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'active'],
             ], 'entryId', 'ASC', self::MAX_INDEX_DRIFT_SCAN, $startAfter);
 
@@ -1643,7 +1645,7 @@ class AccountingReconciler extends CI_Controller
                 // Build the list of expected index docs and probe each.
                 $missing = [];
 
-                $dateIdxId = "{$this->schoolFs}_{$this->session}_{$entryDate}_{$entryId}";
+                $dateIdxId = "{$this->schoolFs}_{$this->sessionYear}_{$entryDate}_{$entryId}";
                 $dateIdx   = $this->firebase->firestoreGet('accountingIndexByDate', $dateIdxId);
                 if (!is_array($dateIdx) || empty($dateIdx)) {
                     $missing[] = ['kind' => 'date', 'docId' => $dateIdxId, 'date' => $entryDate];
@@ -1652,7 +1654,7 @@ class AccountingReconciler extends CI_Controller
                 foreach (($d['lines'] ?? []) as $line) {
                     $ac = (string) ($line['account_code'] ?? '');
                     if ($ac === '') continue;
-                    $acctIdxId = "{$this->schoolFs}_{$this->session}_{$ac}_{$entryId}";
+                    $acctIdxId = "{$this->schoolFs}_{$this->sessionYear}_{$ac}_{$entryId}";
                     $acctIdx   = $this->firebase->firestoreGet('accountingIndexByAccount', $acctIdxId);
                     if (!is_array($acctIdx) || empty($acctIdx)) {
                         $missing[] = ['kind' => 'account', 'docId' => $acctIdxId, 'accountCode' => $ac];
@@ -1670,7 +1672,7 @@ class AccountingReconciler extends CI_Controller
                             if ($m['kind'] === 'date') {
                                 $this->firebase->firestoreSet('accountingIndexByDate', $m['docId'], [
                                     'schoolId'  => $this->schoolFs,
-                                    'session'   => $this->session,
+                                    'session'   => $this->sessionYear,
                                     'date'      => $m['date'],
                                     'entryId'   => $entryId,
                                     'updatedAt' => date('c'),
@@ -1678,7 +1680,7 @@ class AccountingReconciler extends CI_Controller
                             } else {
                                 $this->firebase->firestoreSet('accountingIndexByAccount', $m['docId'], [
                                     'schoolId'    => $this->schoolFs,
-                                    'session'     => $this->session,
+                                    'session'     => $this->sessionYear,
                                     'accountCode' => $m['accountCode'],
                                     'entryId'     => $entryId,
                                     'updatedAt'   => date('c'),
@@ -1717,7 +1719,7 @@ class AccountingReconciler extends CI_Controller
             if ($passComplete) {
                 log_message('error',
                     "ACC_RECON_IDX_PASS_COMPLETE schoolId={$this->schoolFs} "
-                    . "session={$this->session} scanned_this_cycle={$stats['scanned']} "
+                    . "session={$this->sessionYear} scanned_this_cycle={$stats['scanned']} "
                     . "repaired={$stats['repaired']}");
             }
         } catch (\Throwable $e) {
@@ -1735,7 +1737,7 @@ class AccountingReconciler extends CI_Controller
     {
         try {
             $this->firebase->firestoreSet(self::COL_HEARTBEAT,
-                "{$this->schoolFs}_{$this->session}",
+                "{$this->schoolFs}_{$this->sessionYear}",
                 ['idx_scan_cursor' => $cursor, 'updatedAt' => date('c')],
                 /* merge */ true);
         } catch (\Throwable $e) {
@@ -1812,7 +1814,7 @@ class AccountingReconciler extends CI_Controller
             // ledger snapshot and our repair batch, the batch fails
             // CAS and the next pass re-aggregates against fresh state.
             $hb    = $this->firebase->firestoreGet(self::COL_HEARTBEAT,
-                "{$this->schoolFs}_{$this->session}");
+                "{$this->schoolFs}_{$this->sessionYear}");
             $state = (is_array($hb) && is_array($hb['bal_scan_state'] ?? null))
                 ? $hb['bal_scan_state'] : null;
 
@@ -1824,7 +1826,7 @@ class AccountingReconciler extends CI_Controller
                 $windowsProcessed = 0;
                 log_message('error',
                     "ACC_RECON_BAL_PASS_START schoolId={$this->schoolFs} "
-                    . "session={$this->session} scan_start={$scanStart}");
+                    . "session={$this->sessionYear} scan_start={$scanStart}");
             } else {
                 $scanStart        = (string) $state['scan_start_ts'];
                 $cursor           = (string) ($state['cursor'] ?? '');
@@ -1853,7 +1855,7 @@ class AccountingReconciler extends CI_Controller
             // it Firestore returns INDEX_NOT_FOUND on first run.
             $entries = (array) $this->firebase->firestoreQuery(self::COL_LEDGER, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'active'],
             ], 'entryId', 'ASC', self::BAL_SCAN_BATCH_SIZE, $startAfter);
 
@@ -1913,7 +1915,7 @@ class AccountingReconciler extends CI_Controller
             if ($passComplete) {
                 log_message('error',
                     "ACC_RECON_BAL_PASS_COMPLETE schoolId={$this->schoolFs} "
-                    . "session={$this->session} windows={$windowsProcessed} "
+                    . "session={$this->sessionYear} windows={$windowsProcessed} "
                     . "agg_accounts=" . count($agg));
 
                 $this->_balanceDriftDetectAndRepair($agg, $stats);
@@ -1931,7 +1933,7 @@ class AccountingReconciler extends CI_Controller
                 ]);
                 log_message('error',
                     "ACC_RECON_BAL_WINDOW schoolId={$this->schoolFs} "
-                    . "session={$this->session} windows={$windowsProcessed} "
+                    . "session={$this->sessionYear} windows={$windowsProcessed} "
                     . "window_size={$rawCount} cursor_advanced_to={$lastEntryId} "
                     . "pass_pending=1");
             }
@@ -1960,7 +1962,7 @@ class AccountingReconciler extends CI_Controller
             $expectedCr = round($sum['period_cr'] ?? 0, 2);
 
             $proj = $this->firebase->firestoreGet('accountingClosingBalances',
-                "{$this->schoolFs}_{$this->session}_{$code}");
+                "{$this->schoolFs}_{$this->sessionYear}_{$code}");
             $actualDr = is_array($proj) ? round((float) ($proj['period_dr'] ?? 0), 2) : 0.0;
             $actualCr = is_array($proj) ? round((float) ($proj['period_cr'] ?? 0), 2) : 0.0;
 
@@ -1985,7 +1987,7 @@ class AccountingReconciler extends CI_Controller
             if (is_array($proj) && $ut === '') {
                 log_message('error',
                     "ACC_RECON_BAL_REPAIR_NO_CAS code={$code} "
-                    . "schoolId={$this->schoolFs} session={$this->session} — "
+                    . "schoolId={$this->schoolFs} session={$this->sessionYear} — "
                     . "projection lacks __updateTime; skipping repair. "
                     . "Run `php index.php accountingreconciler backfill_balance_updatetime` "
                     . "and re-run.");
@@ -1996,10 +1998,10 @@ class AccountingReconciler extends CI_Controller
             $canonicalOp = [
                 'op'         => 'set',
                 'collection' => 'accountingClosingBalances',
-                'docId'      => "{$this->schoolFs}_{$this->session}_{$code}",
+                'docId'      => "{$this->schoolFs}_{$this->sessionYear}_{$code}",
                 'data'       => [
                     'schoolId'      => $this->schoolFs,
-                    'session'       => $this->session,
+                    'session'       => $this->sessionYear,
                     'accountCode'   => (string) $code,
                     'period_dr'     => $expectedDr,
                     'period_cr'     => $expectedCr,
@@ -2016,10 +2018,10 @@ class AccountingReconciler extends CI_Controller
             $legacyOp = [
                 'op'         => 'set',
                 'collection' => 'accounting',
-                'docId'      => "{$this->schoolFs}_BAL_{$this->session}_{$code}",
+                'docId'      => "{$this->schoolFs}_BAL_{$this->sessionYear}_{$code}",
                 'data'       => [
                     'schoolId'    => $this->schoolFs,
-                    'session'     => $this->session,
+                    'session'     => $this->sessionYear,
                     'type'        => 'closing_balance',
                     'accountCode' => (string) $code,
                     'period_dr'   => $expectedDr,
@@ -2062,7 +2064,7 @@ class AccountingReconciler extends CI_Controller
             // scan_start_ts and starts a fresh pass.
             $patch['bal_scan_state'] = $state === null ? [] : $state;
             $this->firebase->firestoreSet(self::COL_HEARTBEAT,
-                "{$this->schoolFs}_{$this->session}", $patch, /* merge */ true);
+                "{$this->schoolFs}_{$this->sessionYear}", $patch, /* merge */ true);
         } catch (\Throwable $e) {
             log_message('error', 'ACC_RECON_BAL_STATE_FAIL: ' . $e->getMessage());
         }
@@ -2076,7 +2078,7 @@ class AccountingReconciler extends CI_Controller
     {
         $out = [
             'schoolId'                => $this->schoolFs,
-            'session'                 => $this->session,
+            'session'                 => $this->sessionYear,
             'collected_at'            => date('c'),
             'stuck_idempotency'       => 0,
             'failed_idempotency'      => 0,
@@ -2098,7 +2100,7 @@ class AccountingReconciler extends CI_Controller
         ];
         try {
             $hb = $this->firebase->firestoreGet(self::COL_HEARTBEAT,
-                "{$this->schoolFs}_{$this->session}");
+                "{$this->schoolFs}_{$this->sessionYear}");
             if (is_array($hb)) {
                 $out['heartbeat'] = [
                     'last_run_at' => (string) ($hb['lastRunAt'] ?? ''),
@@ -2145,7 +2147,7 @@ class AccountingReconciler extends CI_Controller
             }
             $stuck = (array) $this->firebase->firestoreQuery(self::COL_IDEMP, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'processing'],
             ], 'startedAt', 'ASC', 100);
             $threshold = date('c', time() - self::STUCK_IDEMP_SEC);
@@ -2155,7 +2157,7 @@ class AccountingReconciler extends CI_Controller
             }
             $failed = (array) $this->firebase->firestoreQuery(self::COL_IDEMP, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'failed'],
             ], null, 'ASC', 100);
             $out['failed_idempotency'] = count($failed);
@@ -2169,7 +2171,7 @@ class AccountingReconciler extends CI_Controller
             // sweep's own query so index coverage is identical.
             $processed = (array) $this->firebase->firestoreQuery('feeRefunds', [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'processed'],
             ], null, 'ASC', 200);
             foreach ($processed as $p) {
@@ -2195,7 +2197,7 @@ class AccountingReconciler extends CI_Controller
         try {
             $doc = array_merge([
                 'schoolId'  => $this->schoolFs,
-                'session'   => $this->session,
+                'session'   => $this->sessionYear,
                 'lastRunAt' => date('c'),
                 'lastStage' => $stage,
                 'host'      => gethostname() ?: 'unknown',
@@ -2203,7 +2205,7 @@ class AccountingReconciler extends CI_Controller
                 'updatedAt' => date('c'),
             ], $extras);
             $this->firebase->firestoreSet(self::COL_HEARTBEAT,
-                "{$this->schoolFs}_{$this->session}", $doc, /* merge */ true);
+                "{$this->schoolFs}_{$this->sessionYear}", $doc, /* merge */ true);
         } catch (\Throwable $e) {
             log_message('error', 'ACC_RECON_HEARTBEAT_FAIL: ' . $e->getMessage());
         }

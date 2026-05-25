@@ -2192,13 +2192,22 @@ function renderMatrix(classes, letters) {
             });
             html += '<td style="text-align:center;font-weight:700;font-size:13px;" class="sec-count-cell">'
                 + cur.length + '</td>';
+            // 2026-05-15 Phase 3 — inline onclick replaced by data-attribute
+            // + delegated click handler (bound once below). The previous
+            // pattern `onclick="quickSetSections('` + esc(cls.key) + `', 1)"`
+            // HTML-escaped cls.key, but the browser un-escapes HTML entities
+            // inside attribute values BEFORE the JS parser sees them — so a
+            // class key containing `'` would break out of the JS string
+            // context. The current save_classes() validation already
+            // restricts keys to /^[A-Za-z0-9_]+$/, but defense-in-depth via
+            // data-attributes is the correct fix.
             html += '<td style="text-align:center;white-space:nowrap;">'
-                + '<button class="sc-btn sc-btn-ghost" style="padding:2px 6px;font-size:10px;border-radius:4px;" '
-                + 'onclick="quickSetSections(\'' + esc(cls.key) + '\', 1)" title="Set only Section A">1</button>'
-                + '<button class="sc-btn sc-btn-ghost" style="padding:2px 6px;font-size:10px;border-radius:4px;" '
-                + 'onclick="quickSetSections(\'' + esc(cls.key) + '\', 3)" title="Set A, B, C">3</button>'
-                + '<button class="sc-btn sc-btn-ghost" style="padding:2px 6px;font-size:10px;border-radius:4px;" '
-                + 'onclick="quickSetSections(\'' + esc(cls.key) + '\', 6)" title="Set A through F">6</button>'
+                + '<button class="sc-btn sc-btn-ghost js-quick-sec" style="padding:2px 6px;font-size:10px;border-radius:4px;" '
+                + 'data-quick-class="' + esc(cls.key) + '" data-quick-count="1" title="Set only Section A">1</button>'
+                + '<button class="sc-btn sc-btn-ghost js-quick-sec" style="padding:2px 6px;font-size:10px;border-radius:4px;" '
+                + 'data-quick-class="' + esc(cls.key) + '" data-quick-count="3" title="Set A, B, C">3</button>'
+                + '<button class="sc-btn sc-btn-ghost js-quick-sec" style="padding:2px 6px;font-size:10px;border-radius:4px;" '
+                + 'data-quick-class="' + esc(cls.key) + '" data-quick-count="6" title="Set A through F">6</button>'
                 + '</td>';
             html += '</tr>';
         }
@@ -2237,7 +2246,28 @@ function renderMatrix(classes, letters) {
         + '.sec-toggle-all:hover{border-color:var(--gold);color:var(--gold);background:var(--gold-dim);}'
         + '</style>';
 
-    document.getElementById('sectionMatrix').innerHTML = html;
+    var matrixHost = document.getElementById('sectionMatrix');
+    matrixHost.innerHTML = html;
+
+    // 2026-05-15 Phase 3 — delegated click handler for the quick-set-N
+    // buttons rendered inside #sectionMatrix. Bound at render-time (so the
+    // host element is guaranteed to exist) and guarded by __quickSecBound
+    // so subsequent renders don't stack additional listeners. Replaces the
+    // prior inline `onclick="quickSetSections('+esc(cls.key)+',1)"` which
+    // interpolated cls.key into a JS string literal — a defense-in-depth
+    // hardening against malformed class keys breaking out of the string
+    // context. The buttons now carry data-quick-class + data-quick-count.
+    if (!matrixHost.__quickSecBound) {
+        matrixHost.__quickSecBound = true;
+        matrixHost.addEventListener('click', function(ev) {
+            var btn = ev.target.closest('.js-quick-sec');
+            if (!btn || !matrixHost.contains(btn)) return;
+            var classKey = btn.getAttribute('data-quick-class') || '';
+            var count    = parseInt(btn.getAttribute('data-quick-count'), 10);
+            if (!classKey || !(count > 0)) return;
+            window.quickSetSections(classKey, count);
+        });
+    }
 }
 
 window.toggleSection = function(btn) {
@@ -2412,11 +2442,57 @@ window.saveBulkSections = function() {
         btn.disabled = false;
         btn.innerHTML = '<i class="fa fa-check"></i> Save All Changes';
         toast(d.message, d.status === 'success');
+
+        // 2026-05-15 Phase 3 — surface per-row failures. Phase 2 server-side
+        // hardening packs unsuccessful section writes into d.failed[] (or
+        // d.data.failed[]) with { class_key, section, reason } records.
+        // Previously the UI only showed the top-line summary message, so a
+        // partial-success "5 of 7 saved" silently dropped the 2 failures.
+        // We render them inline below the matrix so the operator can act.
+        var failed = (d && d.failed) ? d.failed
+                    : (d && d.data && d.data.failed) ? d.data.failed : [];
+        renderBulkSectionFailures(failed);
+
         if (d.status === 'success') {
             loadAllSections(); // refresh from server
         }
     });
 };
+
+// 2026-05-15 Phase 3 — partial-failure renderer for bulk_save_sections.
+// Idempotent: re-rendering with an empty array clears the previous panel.
+function renderBulkSectionFailures(failed) {
+    var host = document.getElementById('secBulkFailures');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'secBulkFailures';
+        host.style.cssText = 'margin-top:12px;';
+        var matrix = document.getElementById('sectionMatrix');
+        if (matrix && matrix.parentNode) matrix.parentNode.insertBefore(host, matrix.nextSibling);
+    }
+    if (!failed || !failed.length) { host.innerHTML = ''; return; }
+
+    var rows = '';
+    failed.forEach(function(f) {
+        var ck  = esc(f.class_key || f.classKey || '?');
+        var sec = esc(f.section   || f.letter   || '?');
+        var why = esc(f.reason    || f.message  || 'unknown error');
+        rows += '<tr><td style="padding:4px 8px;">' + ck + '</td>'
+              + '<td style="padding:4px 8px;">' + sec + '</td>'
+              + '<td style="padding:4px 8px;color:var(--danger,#c00);">' + why + '</td></tr>';
+    });
+    host.innerHTML =
+        '<div style="border:1px solid var(--danger,#c00);border-radius:6px;padding:10px;background:rgba(192,0,0,0.06);">'
+      + '<div style="font-weight:600;margin-bottom:6px;color:var(--danger,#c00);">'
+      + '<i class="fa fa-exclamation-triangle"></i> '
+      + failed.length + ' row(s) failed to save'
+      + '</div>'
+      + '<table style="width:100%;font-size:12px;border-collapse:collapse;">'
+      + '<thead><tr style="text-align:left;color:var(--t2);">'
+      + '<th style="padding:4px 8px;">Class</th><th style="padding:4px 8px;">Section</th><th style="padding:4px 8px;">Reason</th>'
+      + '</tr></thead>'
+      + '<tbody>' + rows + '</tbody></table></div>';
+}
 
 /* Legacy single-class add (for custom section letters beyond F) */
 window.addSection = function() {
@@ -2699,6 +2775,13 @@ window.subSaveAll = function() {
         btn.disabled = false;
         btn.innerHTML = '<i class="fa fa-save"></i> Save All Subjects';
         toast(d.message, d.status === 'success');
+
+        // 2026-05-15 Phase 3 — surface per-subject failures so a
+        // "9 of 10 saved" outcome no longer silently drops the 1 row.
+        var failed = (d && d.failed) ? d.failed
+                    : (d && d.data && d.data.failed) ? d.data.failed : [];
+        renderBulkSubjectFailures(failed);
+
         if (d.status === 'success') {
             // Reload to get generated codes
             post('school_config/get_subjects', { class_key: _subClassKey }, function(r) {
@@ -2713,6 +2796,38 @@ window.subSaveAll = function() {
         }
     });
 };
+
+// 2026-05-15 Phase 3 — partial-failure renderer for save_bulk_subjects.
+function renderBulkSubjectFailures(failed) {
+    var host = document.getElementById('subBulkFailures');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'subBulkFailures';
+        host.style.cssText = 'margin-top:12px;';
+        var summary = document.getElementById('subSummary');
+        if (summary && summary.parentNode) summary.parentNode.insertBefore(host, summary.nextSibling);
+    }
+    if (!failed || !failed.length) { host.innerHTML = ''; return; }
+
+    var rows = '';
+    failed.forEach(function(f) {
+        var nm  = esc(f.name || f.subject || '?');
+        var why = esc(f.reason || f.message || 'unknown error');
+        rows += '<tr><td style="padding:4px 8px;">' + nm + '</td>'
+              + '<td style="padding:4px 8px;color:var(--danger,#c00);">' + why + '</td></tr>';
+    });
+    host.innerHTML =
+        '<div style="border:1px solid var(--danger,#c00);border-radius:6px;padding:10px;background:rgba(192,0,0,0.06);">'
+      + '<div style="font-weight:600;margin-bottom:6px;color:var(--danger,#c00);">'
+      + '<i class="fa fa-exclamation-triangle"></i> '
+      + failed.length + ' subject(s) failed to save'
+      + '</div>'
+      + '<table style="width:100%;font-size:12px;border-collapse:collapse;">'
+      + '<thead><tr style="text-align:left;color:var(--t2);">'
+      + '<th style="padding:4px 8px;">Subject</th><th style="padding:4px 8px;">Reason</th>'
+      + '</tr></thead>'
+      + '<tbody>' + rows + '</tbody></table></div>';
+}
 
 /* Keep old function names working for backward compat */
 window.loadSubjects = function() { subLoadClass(); };

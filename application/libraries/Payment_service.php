@@ -262,12 +262,71 @@ class Payment_service
         $studentId = $order['student_id'] ?? '';
         log_message('info', "PaymentService: signature VERIFIED order={$orderId} payment={$paymentId} student={$studentId}");
 
+        // ── BUG-050 / PS-3: amount-mismatch enforcement support ─────────
+        // After signature OK, fetch the captured payment from the gateway
+        // to retrieve the AUTHORITATIVE amount. Callers (Fee_management
+        // _verify_and_process + parent_verify_payment) compare this against
+        // the locally-stored order amount to detect tampering. Fail-OPEN
+        // policy: if fetch fails OR adapter doesn't support fetch, return
+        // gateway_amount=null + gateway_amount_unavailable=true so callers
+        // can opt to log + proceed rather than brick payment on Razorpay
+        // API outage. Mock adapter returns a sentinel that skips the check.
+        $gatewayAmount             = null;
+        $gatewayAmountUnavailable  = true;
+        $gatewayPaymentStatus      = '';
+        $fetched                   = $this->fetch_payment($paymentId);
+        if (is_array($fetched)) {
+            if (!empty($fetched['mock_skip_amount_check'])) {
+                // Mock gateway — leave gateway_amount=null; callers gate
+                // telemetry by gateway name so this does NOT emit warnings.
+                $gatewayAmountUnavailable = true;
+                $gatewayPaymentStatus     = (string) ($fetched['status'] ?? '');
+            } else {
+                $gatewayAmount            = isset($fetched['amount']) ? round(floatval($fetched['amount']), 2) : null;
+                $gatewayAmountUnavailable = ($gatewayAmount === null);
+                $gatewayPaymentStatus     = (string) ($fetched['status'] ?? '');
+            }
+        }
+
         return [
-            'verified'     => true,
-            'record_id'    => $docId,
-            'order'        => $patched,
-            'already_paid' => false,
+            'verified'                    => true,
+            'record_id'                   => $docId,
+            'order'                       => $patched,
+            'already_paid'                => false,
+            // BUG-050 / PS-3: amount-mismatch enforcement payload (additive).
+            'gateway_amount'              => $gatewayAmount,            // float|null, in rupees
+            'gateway_amount_unavailable'  => $gatewayAmountUnavailable, // bool
+            'gateway_payment_status'      => $gatewayPaymentStatus,     // 'captured'|'authorized'|''
+            'gateway_name'                => method_exists($this->gateway, 'get_name') ? $this->gateway->get_name() : 'unknown',
         ];
+    }
+
+    /**
+     * Fetch a payment from the gateway. Returns null if the adapter does
+     * not support fetch OR if the API call fails. Used by verify_payment
+     * for defense-in-depth amount-mismatch enforcement (BUG-050 / PS-3).
+     *
+     * Fail-open by design: a fetch failure must NOT brick a payment that
+     * has a valid signature — Razorpay has already captured the funds at
+     * this point. Callers decide whether to enforce strictness based on
+     * the gateway name and operational policy.
+     */
+    public function fetch_payment(string $paymentId): ?array
+    {
+        if ($paymentId === '') {
+            return null;
+        }
+        if (!method_exists($this->gateway, 'fetch_payment')) {
+            log_message('warning', 'PaymentService::fetch_payment — gateway adapter ' . (method_exists($this->gateway, 'get_name') ? $this->gateway->get_name() : 'unknown') . ' lacks fetch_payment; amount enforcement will fail-open.');
+            return null;
+        }
+        try {
+            $resp = $this->gateway->fetch_payment($paymentId);
+            return is_array($resp) ? $resp : null;
+        } catch (\Exception $e) {
+            log_message('warning', "PaymentService::fetch_payment failed payment={$paymentId}: " . $e->getMessage());
+            return null;
+        }
     }
 
     // ====================================================================

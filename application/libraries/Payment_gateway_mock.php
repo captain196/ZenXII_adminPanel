@@ -91,6 +91,33 @@ class Payment_gateway_mock
     }
 
     /**
+     * Fetch payment details (mock).
+     *
+     * BUG-050 / PS-3: interface parity with Payment_gateway_razorpay::fetch_payment.
+     * The mock cannot retrieve a real captured amount (no gateway round-trip), so
+     * returns a sentinel `mock_skip_amount_check => true` that signals
+     * Payment_service::verify_payment to skip amount enforcement for this gateway.
+     * Mock-mode test flows therefore behave identically to pre-PS-3 semantics
+     * (signature-only verification) while real Razorpay flows engage the guard.
+     *
+     * @return array {payment_id, amount_paise, amount, status, currency,
+     *                gateway, mock_skip_amount_check}
+     */
+    public function fetch_payment(string $paymentId): array
+    {
+        return [
+            'payment_id'              => $paymentId,
+            'amount_paise'            => 0,
+            'amount'                  => 0.0,
+            'status'                  => 'captured',
+            'currency'                => 'INR',
+            'gateway'                 => 'mock',
+            'mock_skip_amount_check'  => true,
+            'fetched_at'              => date('c'),
+        ];
+    }
+
+    /**
      * Set success rate for testing.
      *
      * @param float $rate 0.0 to 1.0

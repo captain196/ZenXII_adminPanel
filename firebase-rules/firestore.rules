@@ -20,6 +20,8 @@ service cloud.firestore {
     // Match schoolId field in document to school_id in auth token.
     // Supports both field names: schoolId (new) and schoolCode (legacy).
     // For non-existent docs (get), resource is null — allow if authenticated.
+    // Use isSameSchoolStrict() instead on collections where existence
+    // probing would leak cross-tenant information (e.g. homework module).
     function isSameSchool() {
       return isAuth() && (
         resource == null ||
@@ -28,11 +30,66 @@ service cloud.firestore {
       );
     }
 
+    // Stricter variant of isSameSchool() that fails closed when the
+    // requested document does not exist. Use ONLY for collections where
+    // a non-existent docId should NOT leak existence/non-existence to
+    // cross-tenant probers — i.e. homework-module reads where document
+    // IDs are constructed by trusted writers with collision-safe entropy:
+    //   • Admin PHP — Homework.php derives hwId as
+    //     {school_name}_{ms_timestamp}_{8-hex-random} (Finding #8).
+    //   • Teacher Android — HomeworkFirestoreRepository.mintHwId() uses
+    //     the same {school}_{ms}_{8-hex-random} format (entropy hardening
+    //     2026-05-15, parity with admin).
+    //   • Submission / teacherMark IDs remain {hwId}_{studentId}.
+    // This rule does NOT enforce ID format (the {docId} wildcard matches
+    // anything); the comment documents the shape downstream tooling and
+    // forensic queries can assume.
+    //
+    // Trade-off: client .get() of a non-existent doc returns
+    // PERMISSION_DENIED instead of success-with-empty. Callers MUST
+    // wrap such reads in try/catch and treat PERMISSION_DENIED as
+    // "not found". Parent app's getSubmissionStatus() and
+    // getTeacherMark() already do this; Teacher app's reviewOrMark
+    // transaction was patched 2026-05-14 to catch PERMISSION_DENIED
+    // inside the txn lambda for the same reason.
+    function isSameSchoolStrict() {
+      return isAuth()
+        && resource != null
+        && (
+          resource.data.schoolId == request.auth.token.school_id ||
+          resource.data.schoolCode == request.auth.token.school_id
+        );
+    }
+
+    // Finding #6 / Option B1 hardening 2026-05-14: explicit non-empty
+    // schoolId guard closes the latent edge case where a user with a
+    // missing/empty JWT `school_id` claim could otherwise pass this rule
+    // by sending a write payload with empty `schoolId` field — the empty
+    // == empty comparison would have evaluated true under the prior
+    // helper. The new guard hard-rejects writes whose payload carries
+    // no schoolId, regardless of JWT claim state.
+    //
+    // Read-side behavior is INTENTIONALLY UNTIGHTENED — isSameSchool()
+    // continues to accept resource.data.schoolCode as a legacy fallback
+    // so existing schoolCode-only documents (produced by PHP backend
+    // Entity_firestore_sync syncStaff/syncExam/syncExamSchedule/
+    // syncAttendance — service-account writes that bypass these rules)
+    // remain readable. Canonicalizing those PHP write paths is tracked
+    // as a separate technical-debt remediation, not in this scope.
+    //
+    // Backward-compat for legacy writers that still send schoolCode
+    // (none observed in current Admin/Teacher/Parent code paths) is
+    // preserved via the `||` clause: a write carrying schoolCode
+    // (and no schoolId) would still fail the new non-empty guard, but
+    // such writes do not exist in the current canonicalized client code.
     function isSameSchoolWrite() {
-      return isAuth() && (
-        request.resource.data.schoolId == request.auth.token.school_id ||
-        request.resource.data.schoolCode == request.auth.token.school_id
-      );
+      return isAuth()
+        && request.resource.data.schoolId is string
+        && request.resource.data.schoolId.size() > 0
+        && (
+          request.resource.data.schoolId == request.auth.token.school_id ||
+          request.resource.data.schoolCode == request.auth.token.school_id
+        );
     }
 
     function isAdmin() {
@@ -175,8 +232,25 @@ service cloud.firestore {
     }
 
     // ── Homework ──────────────────────────────────────────────────
+    //
+    // Finding #26 (deferred, 2026-05-14): rule-layer per-class teacher ACL
+    // is NOT enforced on /homework, /submissions, or /teacherMarks. Any
+    // same-school staff member can read/write across classes via direct
+    // Firestore SDK calls, bypassing the Teacher app's UI assignment
+    // scoping and the PHP backend's _teacher_can_access check. Current
+    // mitigations:
+    //   • Teacher app UI shows only assigned classes (loadAssignedClasses)
+    //   • PHP _teacher_can_access (Academic.php:665) gates PHP endpoints
+    //   • Audit logging captures cross-class access patterns
+    // Rule-layer enforcement deferred because the canonical subjectAssignments
+    // docId format ({schoolId}_{session}_{className}_{section}_{subjectCode})
+    // does not include teacherId, and the homework doc lacks `session` and
+    // `subjectCode` fields needed to compose a rule-side get(). Revisit when
+    // either (a) JWT assignment-claim infrastructure exists, or (b) the
+    // subjectAssignments schema is redesigned for cheap teacher-keyed lookups.
+    //
     match /homework/{docId} {
-      allow read:   if isSameSchool();
+      allow read:   if isSameSchoolStrict();
       allow create: if isStaff() && isSameSchoolWrite();
 
       // Staff path — full edit access on their school's homework.
@@ -187,6 +261,29 @@ service cloud.firestore {
       // are rejected, decrements are blocked, and arbitrary increments are
       // capped — without the +1 cap a tampered client could push the
       // counter to any value to fake high submission rates.
+      //
+      // Finding #2 (deferred, 2026-05-14): this counter is denormalized and
+      // client-mutable. Audit's race-condition claim was INCORRECT — Firestore
+      // transactions correctly serialize the legitimate submitHomework flow
+      // (HomeworkFirestoreRepository.kt:226-261). Real adjacent issues:
+      //   (2A) modified APK can call this update repeatedly without an
+      //        actual /submissions create — counter inflates 1/click
+      //   (2B) /submissions delete (teacher cascade) does NOT decrement —
+      //        counter overcounts after any deletion
+      //   (2C) Admin Homework.php:1007 overwrites counter to 0 on certain
+      //        updates (tracked separately as audit Finding #37)
+      // submissionCount is BEST-EFFORT denormalized display only — no
+      // policy/authorization decisions key off it. Anything requiring
+      // accuracy must query /submissions directly. Unified remediation
+      // with Finding #37 deferred to a future denormalization-hardening
+      // phase that introduces server-side authoritative aggregation
+      // (Cloud Function trigger / reconciler — both currently out of scope).
+      //
+      // Finding #7 (closed-as-duplicate, 2026-05-14): the audit's
+      // "submissionCount corruption / cross-flow inconsistency" finding
+      // decomposes entirely into (#2A, #2B, #37) above and Finding #4
+      // (4a/4d already fixed; 4c deferred). No materially distinct
+      // surface — closure-by-reference. See stabilization-ledger entry.
       allow update: if isAuth() && isSameSchool() && !isStaff()
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['submissionCount'])
@@ -197,28 +294,99 @@ service cloud.firestore {
 
     // ── Homework Submissions ─────────────────────────────────────
     match /submissions/{docId} {
-      allow read:   if isSameSchool();
+      // Finding #14 2026-05-14: add parent-side cross-student protection.
+      // Staff continue to read school-wide (needed for marking workflows);
+      // parents are now scoped to their own child (auth.uid == studentId).
+      // Pattern mirrors /attendance read rule at line 192-194. Composing
+      // with isSameSchoolStrict() preserves Finding #5 non-existent-doc
+      // protection. Parent app's existing try/catch around read calls
+      // (getSubmissionStatus / getSubmissionsForStudent / observeSubmissions)
+      // absorbs the new PERMISSION_DENIED for cross-student requests
+      // gracefully — no client coordination required.
+      allow read:   if isSameSchoolStrict() && (isStaff() || isOwnStudent());
       // Use isSameSchoolWrite() (checks request.resource.data.schoolId),
       // not isSameSchool() — on create, resource is null so isSameSchool()
       // returns true unconditionally for any authed user, letting a
       // tampered client write `schoolId: "OTHER_SCHOOL"` while still
       // passing the studentId == auth.uid check with their own UID.
+      // Finding #1 / Fix 1A 2026-05-14: enforce server-side timestamp on
+      // create. Prior rule trusted client-provided `submittedAt`; a modified
+      // APK could write a backdated Timestamp literal to fake an on-time
+      // submission. Legitimate Parent app already writes
+      // `firestoreService.serverTimestamp()` (HomeworkFirestoreRepository.kt:219)
+      // which the server replaces with `request.time` at commit, so this
+      // equality check is a no-op for legitimate clients and a hard reject
+      // for backdating attempts. Hard deadline (dueDate) rejection remains
+      // deferred — see Fix 1C deferral note below.
       allow create: if isAuth()
         && isSameSchoolWrite()
-        && request.auth.uid == request.resource.data.studentId;
+        && request.auth.uid == request.resource.data.studentId
+        && request.resource.data.submittedAt == request.time;
 
       // Parent (non-staff) update path — limited to work-in-progress
       // fields, and status (if changed) must be "submitted".
+      //
+      // Finding #1 / Fix 1B-a 2026-05-14: when `submittedAt` is in the
+      // affected-keys set (legitimate re-submission flow refreshes it via
+      // serverTimestamp), require the new value to equal request.time. This
+      // closes the parallel backdating exploit on the update path while
+      // preserving Parent app's normal re-submission semantics (which uses
+      // SetOptions.merge() with `firestoreService.serverTimestamp()`).
+      //
+      // Finding #17 2026-05-14: grading-finality guard. Once a submission's
+      // status advances beyond 'submitted' (i.e. teacher set it to
+      // 'reviewed' / 'graded'), parents can no longer overwrite text /
+      // files / submittedAt / status. Without this clause, a modified APK
+      // (or direct-API call) could silently swap the submitted content
+      // under an existing teacher grade and reset status to 'submitted',
+      // creating audit-trail confusion and content-vs-grade mismatch
+      // (the teacher's score/remark/reviewedBy/reviewedAt are already
+      // protected by the field-whitelist above and remain preserved, but
+      // they'd end up referring to swapped content).
+      //
+      // Legitimate re-grade workflow when needed: teacher deletes the
+      // submission (allow delete at line 289 below) — parent then re-
+      // creates via the CREATE rule above. This explicit two-step
+      // replaces what was previously a silent overwrite.
+      //
+      // Parent UI already hides the re-submit button when isCompleted()
+      // returns true (HomeworkScreen.kt:1033), so this rule tightening
+      // reinforces the existing client discipline at the server layer
+      // and only affects modified-APK / direct-API bypass attempts.
       allow update: if isAuth() && isSameSchool() && !isStaff()
+        && resource.data.get('status', '') in ['', 'submitted']
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['text', 'files', 'submittedAt', 'status'])
         && (
              !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status'])
              || request.resource.data.status == 'submitted'
+           )
+        && (
+             !request.resource.data.diff(resource.data).affectedKeys().hasAny(['submittedAt'])
+             || request.resource.data.submittedAt == request.time
            );
 
       // Teacher update path — grading fields only; status (if changed)
       // must be "reviewed" or "graded".
+      //
+      // Finding #11 (deferred, 2026-05-14): the Teacher UI dropdown
+      // (HomeworkTeacherScreen.kt:1172) offers 5 status options:
+      // ["pending", "submitted", "reviewed", "incomplete", "complete"].
+      // Only "reviewed" and "graded" pass this rule's whitelist; the
+      // other 4 attempts return PERMISSION_DENIED, which the existing
+      // try/catch in reviewOrMark surfaces as an error toast (NOT silent
+      // — audit's "silent downgrade" claim was verified false). Same
+      // dropdown call for non-submitters writes to /teacherMarks which
+      // has no status whitelist, so identical UI action behaves
+      // differently depending on whether the student submitted.
+      // No rule-only fix delivers end-to-end value: expanding to
+      // include 'incomplete'/'pending' would re-show Parent's submit
+      // button (HomeworkViewModel.kt:485-487 isCompleted) while
+      // Finding #17 simultaneously denies parent re-submission for
+      // those statuses, creating a new UX gap. Resolution requires
+      // coordinated Teacher UI restriction OR Parent UI + rules
+      // co-expansion in a future workflow/UX phase. Tracked as P2
+      // medium (UX consistency; no data corruption; failures visible).
       allow update: if isStaff() && isSameSchool()
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['score', 'reviewedBy', 'reviewedAt', 'remark', 'status'])
@@ -232,7 +400,13 @@ service cloud.firestore {
 
     // ── Teacher Marks (recorded grade for students who didn't submit) ─
     match /teacherMarks/{docId} {
-      allow read:   if isAuth() && isSameSchool();
+      // Finding #14 2026-05-14: add parent-side cross-student protection.
+      // Same composition as /submissions above — staff read school-wide
+      // (needed for grading dashboards), parents see only their own child
+      // (auth.uid == studentId). Parent app's getTeacherMark() and
+      // getTeacherMarksForStudent() already catch exceptions and return
+      // null/empty on denial, so no client coordination is required.
+      allow read:   if isSameSchoolStrict() && (isStaff() || isOwnStudent());
       allow create: if isAuth() && isStaff() && isSameSchoolWrite();
       allow update: if isStaff() && isSameSchool();
       allow delete: if isStaff() && isSameSchool();
@@ -273,18 +447,14 @@ service cloud.firestore {
       allow write: if isStaff() && isSameSchoolWrite();
     }
 
-    // ── Curriculum + topic subcollection ─────────────────────────
-    // Same-school read so the parent app can resolve topicTitle if it
-    // ever fetches a topic by id; writes restricted to staff.
-    match /curriculum/{docId} {
-      allow read:  if isSameSchool();
-      allow create, update: if isStaff() && (isSameSchoolWrite() || isSameSchool());
-      allow delete: if isAdmin() && isSameSchool();
-      match /topics/{topicId} {
-        allow read:  if isSameSchool();
-        allow write: if isStaff();
-      }
-    }
+    // 2026-05-15 Phase 3 — legacy permissive /curriculum block removed.
+    // The hardened block further down (search for "Phase 0 hardening")
+    // supersedes it with strict resource.data.schoolId == auth claim
+    // matching and an explicit role whitelist that excludes Accountant.
+    // Two `match /curriculum` blocks would have produced an undefined
+    // permission outcome under Firestore's rule-union semantics; with
+    // this removal, only the hardened block matches and there is no
+    // ambiguity.
 
     // ── Exams ────────────────────────────────────────────────────
     match /exams/{docId} {

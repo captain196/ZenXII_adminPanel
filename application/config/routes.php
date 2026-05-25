@@ -300,7 +300,8 @@ $route['school_config/delete_session']                  = 'School_config/delete_
 $route['school_config/archive_session']                 = 'School_config/archive_session';
 $route['school_config/preview_rollover']                = 'School_config/preview_rollover';
 $route['school_config/rollover_session']                = 'School_config/rollover_session';
-$route['school_config/csrf_token']                      = 'School_config/csrf_token';
+// 2026-05-15 Phase 3 — school_config/csrf_token removed (redundant; csrf
+// rotation already piggy-backs on every json_success/json_error response).
 $route['school_config/test_profile']                    = 'School_config/test_profile';
 $route['school_config/test_classes']                    = 'School_config/test_classes';
 $route['school_config/test_sections']                   = 'School_config/test_sections';
@@ -669,6 +670,7 @@ $route['accounting/acknowledge_alert']                  = 'Accounting/acknowledg
 // Settings
 $route['accounting/get_settings']                       = 'Accounting/get_settings';
 $route['accounting/lock_period']                        = 'Accounting/lock_period';
+$route['accounting/reopen_period']                      = 'Accounting/reopen_period';
 $route['accounting/get_migration_status']               = 'Accounting/get_migration_status';
 $route['accounting/unmatch_transaction']                = 'Accounting/unmatch_transaction';
 $route['accounting/suggest_matches']                    = 'Accounting/suggest_matches';

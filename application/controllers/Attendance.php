@@ -117,8 +117,12 @@ class Attendance extends MY_Controller
         // Phase 8b/10: process pending teacher requests before
         // computing stats. Best-effort — don't let a failure break
         // the dashboard.
-        try { $this->_process_pending_push_requests(); } catch (\Exception $e) {}
-        try { $this->_process_approved_leaves(); } catch (\Exception $e) {}
+        try { $this->_process_pending_push_requests(); } catch (\Exception $e) {
+            log_message('error', 'Attendance::dashboard_stats _process_pending_push_requests failed: ' . $e->getMessage());
+        }
+        try { $this->_process_approved_leaves(); } catch (\Exception $e) {
+            log_message('error', 'Attendance::dashboard_stats _process_approved_leaves failed: ' . $e->getMessage());
+        }
 
         $school  = $this->school_name;
         $session = $this->session_year;
@@ -137,7 +141,10 @@ class Attendance extends MY_Controller
                 ['date', '==', $todayDate],
                 ['type', '==', 'student'],
             ]);
-        } catch (\Exception $e) { $todayAttDocs = []; }
+        } catch (\Exception $e) {
+            log_message('error', 'Attendance::dashboard_stats todayAttDocs Firestore read failed: ' . $e->getMessage());
+            $todayAttDocs = [];
+        }
         foreach ($todayAttDocs as $doc) {
             $mark = strtoupper($doc['data']['status'] ?? 'V');
             $stuTotal++;
@@ -152,7 +159,10 @@ class Attendance extends MY_Controller
                 $attSummaryDocs = $this->fs->schoolWhere('attendanceSummary', [
                     ['month', '==', date('Y-m')],
                 ]);
-            } catch (\Exception $e) { $attSummaryDocs = []; }
+            } catch (\Exception $e) {
+                log_message('error', 'Attendance::dashboard_stats attSummaryDocs Firestore read failed: ' . $e->getMessage());
+                $attSummaryDocs = [];
+            }
             foreach ($attSummaryDocs as $doc) {
                 $d = $doc['data'];
                 if (($d['type'] ?? 'student') !== 'student') continue;
@@ -195,7 +205,10 @@ class Attendance extends MY_Controller
                         elseif ($mark === 'L') $stuL++;
                     }
                 }
-            } catch (\Exception $e) { /* leave totals at zero */ }
+            } catch (\Exception $e) {
+                log_message('error', 'Attendance::dashboard_stats student RTDB fallback failed: ' . $e->getMessage());
+                /* leave totals at zero */
+            }
         }
 
         // ── Staff stats — Firestore FIRST ──
@@ -205,7 +218,10 @@ class Attendance extends MY_Controller
                 ['date', '==', $todayDate],
                 ['type', '==', 'staff'],
             ]);
-        } catch (\Exception $e) { $staffAttDocs = []; }
+        } catch (\Exception $e) {
+            log_message('error', 'Attendance::dashboard_stats staffAttDocs Firestore read failed: ' . $e->getMessage());
+            $staffAttDocs = [];
+        }
         foreach ($staffAttDocs as $doc) {
             $mark = strtoupper($doc['data']['status'] ?? 'V');
             $staffTotal++;
@@ -220,7 +236,10 @@ class Attendance extends MY_Controller
                     ['month', '==', date('Y-m')],
                     ['type', '==', 'staff'],
                 ]);
-            } catch (\Exception $e) { $staffSummaryDocs = []; }
+            } catch (\Exception $e) {
+                log_message('error', 'Attendance::dashboard_stats staffSummaryDocs Firestore read failed: ' . $e->getMessage());
+                $staffSummaryDocs = [];
+            }
             foreach ($staffSummaryDocs as $doc) {
                 $dayWise = $doc['data']['dayWise'] ?? '';
                 if (strlen($dayWise) < $today) { $staffTotal++; continue; }
@@ -250,7 +269,10 @@ class Attendance extends MY_Controller
                         elseif ($mark === 'T') $staffT++;
                     }
                 }
-            } catch (\Exception $e) { /* leave totals at zero */ }
+            } catch (\Exception $e) {
+                log_message('error', 'Attendance::dashboard_stats staff RTDB fallback failed: ' . $e->getMessage());
+                /* leave totals at zero */
+            }
         }
 
         // Count pending student leave applications
@@ -261,7 +283,9 @@ class Attendance extends MY_Controller
                 ['applicantType', '==', 'student'],
             ]);
             $pendingLeaves = count($leaveDocs);
-        } catch (\Exception $e) {}
+        } catch (\Exception $e) {
+            log_message('error', 'Attendance::dashboard_stats pendingLeaves count failed: ' . $e->getMessage());
+        }
 
         return $this->json_success([
             'date'     => date('Y-m-d'),
@@ -1374,6 +1398,7 @@ class Attendance extends MY_Controller
                 ['type', '==', 'student'],
             ]);
         } catch (\Exception $e) {
+            log_message('error', 'Attendance::get_student_summary fsDocs Firestore read failed: ' . $e->getMessage());
             $fsDocs = [];
         }
 
@@ -1463,7 +1488,9 @@ class Attendance extends MY_Controller
                     }
                 }
             }
-        } catch (\Exception $e) {}
+        } catch (\Exception $e) {
+            log_message('error', 'Attendance::fetch_staff_attendance allTeachers Firestore query failed: ' . $e->getMessage());
+        }
         // RTDB fallback only on Firestore exception
         if ($allTeachers === null) {
             $allTeachers = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
@@ -1492,6 +1519,7 @@ class Attendance extends MY_Controller
                 }
             }
         } catch (\Exception $e) {
+            log_message('error', 'Attendance::fetch_staff_attendance allStaffAtt Firestore read failed: ' . $e->getMessage());
             $allStaffAtt = [];
         }
 
@@ -2083,6 +2111,7 @@ class Attendance extends MY_Controller
         try {
             $docs = $this->fs->schoolList('attendanceDevices');
         } catch (\Exception $e) {
+            log_message('error', 'Attendance::fetch_devices Firestore read failed: ' . $e->getMessage());
             $docs = [];
         }
 
@@ -2728,6 +2757,7 @@ class Attendance extends MY_Controller
                 }
             }
         } catch (\Exception $e) {
+            log_message('error', 'Attendance::fetch_analytics fsByStudent Firestore read failed: ' . $e->getMessage());
             $fsByStudent = []; // fall through to RTDB-only path
         }
 
@@ -2878,6 +2908,7 @@ class Attendance extends MY_Controller
                 $fsTotalsByMonth[$mk]['work'] += $present + $tardy + $absent + $leave;
             }
         } catch (\Exception $e) {
+            log_message('error', 'Attendance::fetch_monthly_trend fsTotalsByMonth Firestore read failed: ' . $e->getMessage());
             $fsTotalsByMonth = []; // fall through to legacy paths
         }
 
@@ -3058,6 +3089,7 @@ class Attendance extends MY_Controller
                 }
             }
         } catch (\Exception $e) {
+            log_message('error', 'Attendance::fetch_individual_report fsByMonth Firestore read failed: ' . $e->getMessage());
             $fsByMonth = []; // fall through to RTDB-only path
         }
 
@@ -3205,7 +3237,10 @@ class Attendance extends MY_Controller
             $fsPunches = $this->fs->schoolList('attendancePunches', [
                 ['date', '==', $date],
             ]);
-        } catch (\Exception $e) { $fsPunches = []; }
+        } catch (\Exception $e) {
+            log_message('error', 'Attendance::fetch_punch_log fsPunches Firestore read failed: ' . $e->getMessage());
+            $fsPunches = [];
+        }
 
         if (!empty($fsPunches) && is_array($fsPunches)) {
             usort($fsPunches, function ($a, $b) {
@@ -3608,7 +3643,16 @@ class Attendance extends MY_Controller
             log_message('warning',
                 "Attendance::scan_qr — cross-school attempt: token={$tokSchoolId} caller={$this->school_name}"
             );
-            return $this->json_error('This QR is for a different school.', 403);
+            // BUG-034: tenant-boundary security telemetry (Phase 6+ scope; mirror Homework BUG-014)
+            if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+                $this->sec_telem->emit('CROSS_TENANT_PROBE', 'warning', [
+                    'endpoint'      => __FUNCTION__,
+                    'token_school'  => $tokSchoolId,
+                    'caller_school' => $this->school_name,
+                ]);
+            }
+            // BUG-036: existence-oracle collapse — match truly-not-found branch (line ~3653) shape; CROSS_TENANT_PROBE telemetry above preserves forensic capability (mirror Homework v1 BUG-015 pattern)
+            return $this->json_error('Student not found.', 404);
         }
 
         // Firestore student fetch — same docId convention the rest of
@@ -7387,7 +7431,17 @@ class Attendance extends MY_Controller
             return $this->json_error('Request not found.', 404);
         }
         if ((string) ($req['schoolId'] ?? '') !== $this->school_id) {
-            return $this->json_error('Cross-school access denied.', 403);
+            // BUG-034: tenant-boundary security telemetry (Phase 6+ scope; mirror Homework BUG-014)
+            if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+                $this->sec_telem->emit('CROSS_TENANT_PROBE', 'warning', [
+                    'endpoint'       => __FUNCTION__,
+                    'request_id'     => $reqId,
+                    'request_school' => (string) ($req['schoolId'] ?? ''),
+                    'caller_school'  => $this->school_id,
+                ]);
+            }
+            // BUG-036: existence-oracle collapse — match truly-not-found branch shape; CROSS_TENANT_PROBE telemetry above preserves forensic capability (mirror Homework v1 BUG-015 pattern)
+            return $this->json_error('Request not found.', 404);
         }
         if (((string) ($req['status'] ?? 'pending')) !== 'pending') {
             return $this->json_error('Request already decided.', 409);

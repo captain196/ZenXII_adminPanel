@@ -63,12 +63,14 @@ class School_config extends MY_Controller
         $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
         if (!is_array($fsSchool)) $fsSchool = [];
 
-        // Auto-sync: if Firestore school doc has no name but the session has
-        // one (from RTDB/login), backfill it so apps can read it.
-        if (empty($fsSchool['name']) && !empty($this->school_display_name)) {
-            $this->fs->saveSchool([
-                'display_name' => $this->school_display_name,
-            ]);
+        // 2026-05-21 BUG-031 — removed write-on-read auto-sync that survived
+        // Phase 1's cleanup. Same drawbacks as the removed session auto-seed:
+        // silent writes on every page load, races with concurrent save_profile,
+        // quota burn under refresh storms. Now: in-memory only via the
+        // name_not_configured flag. Operator invokes save_profile to persist.
+        $nameNotConfigured = empty($fsSchool['name']) && !empty($this->school_display_name);
+        if ($nameNotConfigured) {
+            // In-memory only — DO NOT persist. UI shows "Configure display name" prompt.
             $fsSchool['name'] = $this->school_display_name;
         }
 
@@ -137,23 +139,33 @@ class School_config extends MY_Controller
             ? array_values(array_filter($sessions, 'is_string'))
             : [];
 
-        // Auto-seed sessions list with active session if missing, so the
-        // Sessions tab never appears blank when currentSession is set.
-        if (empty($sessions) && !empty($activeSess) && preg_match('/^\d{4}-\d{2}$/', (string) $activeSess)) {
-            $sessions = [(string) $activeSess];
-            $this->fs->update('schools', $this->fs->schoolId(), [
-                'sessions'  => $sessions,
-                'updatedAt' => date('c'),
-            ]);
-        } elseif (!empty($activeSess) && preg_match('/^\d{4}-\d{2}$/', (string) $activeSess)
+        // 2026-05-15 Phase 1 — get_config is now read-only. The previous
+        // auto-seed writes (Firestore update on read) caused: (a) silent
+        // writes on every page load by any operator with config-read
+        // permission, (b) races with concurrent add_session, (c) quota
+        // burn under refresh storms. The UI now receives the unmodified
+        // state and a `session_not_configured` flag; operators must use
+        // the explicit `add_session` / `set_active_session` endpoints.
+        $sessionNotConfigured = false;
+        if (empty($sessions)) {
+            $sessionNotConfigured = true;
+            if (!empty($activeSess) && preg_match('/^\d{4}-\d{2}$/', (string) $activeSess)) {
+                // Surface the dangling currentSession to the UI in-memory
+                // only — DO NOT persist. The Sessions tab will show this
+                // as a recoverable "needs configuration" state.
+                $sessions = [(string) $activeSess];
+            }
+        } elseif (!empty($activeSess)
+                  && preg_match('/^\d{4}-\d{2}$/', (string) $activeSess)
                   && !in_array((string) $activeSess, $sessions, true)) {
-            // Active session exists but not in list — add and persist.
+            // Inconsistent state: currentSession points outside sessions[].
+            // Surface to UI in-memory only — DO NOT persist.
             $sessions[] = (string) $activeSess;
             sort($sessions);
-            $this->fs->update('schools', $this->fs->schoolId(), [
-                'sessions'  => $sessions,
-                'updatedAt' => date('c'),
-            ]);
+            $sessionNotConfigured = true;
+            log_message('error',
+                "ACC_STALE_SESSION schoolId={$this->school_id} "
+                . "currentSession={$activeSess} not in sessions[]");
         }
 
         // ── Sync PHP session cache to match Firebase ──────────────────────
@@ -171,16 +183,166 @@ class School_config extends MY_Controller
                             : [];
 
         $this->json_success([
-            'profile'               => is_array($profile)  ? $profile  : [],
-            'board'                 => is_array($board)     ? $board    : [],
-            'classes'               => $classes,
-            'streams'               => (object) (is_array($streams) ? $streams : []),
-            'sessions'              => $sessions,
-            'active_session'        => (string) $activeSess,
-            'archived_sessions'     => $archivedSess,
-            'firebase_path'         => "Schools/{$school}/Sessions",
-            'report_card_template'  => $rcTemplate,
+            'profile'                 => is_array($profile)  ? $profile  : [],
+            'board'                   => is_array($board)     ? $board    : [],
+            'classes'                 => $classes,
+            'streams'                 => (object) (is_array($streams) ? $streams : []),
+            'sessions'                => $sessions,
+            'active_session'          => (string) $activeSess,
+            'archived_sessions'       => $archivedSess,
+            'firebase_path'           => "Schools/{$school}/Sessions",
+            'report_card_template'    => $rcTemplate,
+            'session_not_configured'  => $sessionNotConfigured,
+            'name_not_configured'     => $nameNotConfigured,  // BUG-031
         ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Phase 1 (2026-05-15) — school-config concurrency lock + CAS helpers
+    //
+    // A filesystem lock keyed by (schoolFs, lockName) serializes brief
+    // controller-level critical sections (add_session, set_active_session,
+    // rollover_session start). It does NOT replace Firestore CAS — it
+    // narrows the read-then-write race window before the CAS attempt.
+    //
+    // Lock TTL is enforced via flock + brief acquire timeout. If a
+    // previous PHP request died without releasing, the next acquire
+    // will succeed once the prior lock file handle is garbage-collected
+    // by the OS (Apache worker recycle / fastcgi process end).
+    // ─────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
+    // Phase 2 (2026-05-15) — dependency-summary + telemetry helpers
+    //
+    // Centralises the "count rows in a dependent collection, never throw"
+    // pattern used by every harden-delete endpoint. Returns a structured
+    // [collection => count] map suitable for direct inclusion in the
+    // response payload. Each per-collection query is wrapped in its own
+    // try/catch so one Firestore index miss never sinks the whole check.
+    //
+    // Signature:
+    //   _dep_count_safe([
+    //     ['key' => 'students', 'collection' => 'students',
+    //      'filters' => [['sectionKey', '==', $sectionKey], ['status', '==', 'Active']],
+    //      'label' => 'enrolled student(s)'],
+    //     ...
+    //   ]): [
+    //     'has_any'      => bool,
+    //     'total'        => int,
+    //     'by_key'       => ['students' => 3, ...],
+    //     'human'        => ['3 enrolled student(s)', '12 attendance row(s)', ...],
+    //     'errors'       => ['students' => 'index missing', ...],  // only on failures
+    //   ]
+    //
+    // Cap is 200 per query — enough to know "there are dependencies" without
+    // burning quota; the response surfaces the count, not the rows.
+    // ─────────────────────────────────────────────────────────────────────
+    private function _dep_count_safe(array $checks): array
+    {
+        $out = [
+            'has_any' => false,
+            'total'   => 0,
+            'by_key'  => [],
+            'human'   => [],
+            'errors'  => [],
+        ];
+        foreach ($checks as $check) {
+            if (!is_array($check)) continue;
+            $key   = (string) ($check['key'] ?? '');
+            $coll  = (string) ($check['collection'] ?? '');
+            $label = (string) ($check['label'] ?? $key);
+            $flts  = is_array($check['filters'] ?? null) ? $check['filters'] : [];
+            if ($key === '' || $coll === '') continue;
+            try {
+                $rows = $this->fs->schoolWhere($coll, $flts, null, 'ASC', 200);
+                $n    = is_array($rows) ? count($rows) : 0;
+                $out['by_key'][$key] = $n;
+                if ($n > 0) {
+                    $out['has_any'] = true;
+                    $out['total'] += $n;
+                    $suffix = ($n >= 200) ? '+' : '';
+                    $out['human'][] = "{$n}{$suffix} {$label}";
+                }
+            } catch (\Throwable $e) {
+                $out['errors'][$key] = $e->getMessage();
+                log_message('error',
+                    "ACC_DEP_CHECK_FAILED schoolId={$this->school_id} "
+                    . "collection={$coll} key={$key} err=" . $e->getMessage());
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Phase 2 (2026-05-15) — local structured-error emitter. The shared
+     * `json_error()` on MY_Controller only accepts a string message;
+     * for dependency-blocked deletes we want to surface a structured
+     * `dependencies: {…}` payload alongside the human message so the
+     * UI can render per-collection counts without re-querying. Mirrors
+     * `json_error()`'s exit semantics for compatibility — calls exit
+     * after writing the response.
+     */
+    private function _json_error_with_data(string $message, array $data, int $httpCode = 400): void
+    {
+        http_response_code($httpCode);
+        header('Content-Type: application/json');
+        $payload = array_merge([
+            'status'     => 'error',
+            'message'    => $message,
+            'csrf_token' => $this->security->get_csrf_hash(),
+        ], $data);
+        echo json_encode($payload);
+        exit;
+    }
+
+    /**
+     * Phase 2 (2026-05-15) — uniform dependency-block telemetry. Emitted
+     * by every delete endpoint that refuses a destructive action because
+     * of live references. Operators / log aggregators grep
+     * `ACC_DELETE_BLOCKED endpoint=…` to spot governance-relevant
+     * rejections.
+     */
+    private function _log_dep_block(string $endpoint, string $entityId, array $depSummary): void
+    {
+        $kv = [];
+        foreach ((array) ($depSummary['by_key'] ?? []) as $k => $n) {
+            if ((int) $n > 0) $kv[] = "{$k}={$n}";
+        }
+        log_message('error',
+            "ACC_DELETE_BLOCKED endpoint={$endpoint} schoolId={$this->school_id} "
+            . "actor={$this->admin_id} entityId={$entityId} "
+            . "total={$depSummary['total']} deps=" . (empty($kv) ? '(none)' : implode(',', $kv)));
+    }
+
+    private function _config_lock_acquire(string $lockName, int $timeoutMs = 2000)
+    {
+        $dir = APPPATH . 'cache/school_config_locks/';
+        if (!is_dir($dir)) @mkdir($dir, 0775, true);
+        $safe = preg_replace('/[^A-Za-z0-9_-]/', '_', $this->school_id . '__' . $lockName);
+        $path = $dir . $safe . '.lock';
+        $fh = @fopen($path, 'c+');
+        if (!$fh) return null;
+        $deadline = microtime(true) + ($timeoutMs / 1000.0);
+        do {
+            if (@flock($fh, LOCK_EX | LOCK_NB)) {
+                @ftruncate($fh, 0);
+                @fwrite($fh, json_encode([
+                    'acquired_at' => date('c'),
+                    'admin_id'    => $this->admin_id,
+                    'pid'         => function_exists('getmypid') ? getmypid() : 0,
+                ]));
+                return $fh;
+            }
+            usleep(50000); // 50 ms
+        } while (microtime(true) < $deadline);
+        @fclose($fh);
+        return null;
+    }
+    private function _config_lock_release($fh): void
+    {
+        if (is_resource($fh)) {
+            @flock($fh, LOCK_UN);
+            @fclose($fh);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -198,10 +360,24 @@ class School_config extends MY_Controller
             'affiliation_board', 'affiliation_no', 'established_year',
         ];
 
+        // BUG-029: byte-length caps at trust boundary prevent Firestore DocTooLarge.
+        // strlen() byte count matches Firestore 1MB doc-cap semantics.
+        $maxLengths = [
+            'display_name'      => 200, 'address'           => 500,
+            'city'              => 100, 'state'             => 100,
+            'pincode'           => 20,  'phone'             => 50,
+            'email'             => 200, 'website'           => 500,
+            'principal_name'    => 200, 'affiliation_board' => 100,
+            'affiliation_no'    => 100, 'established_year'  => 10,
+        ];
+
         $data = [];
         foreach ($allowed as $field) {
             $val = trim((string) $this->input->post($field, TRUE));
             if ($val !== '') {
+                if (strlen($val) > $maxLengths[$field]) {
+                    return $this->json_error("Field '{$field}' exceeds {$maxLengths[$field]} characters.");
+                }
                 $data[$field] = $val;
             }
         }
@@ -283,6 +459,8 @@ class School_config extends MY_Controller
         // Firestore (sole write target)
         $this->fs->saveSchool(['logo_url' => $url, 'logo_updated_at' => date('Y-m-d H:i:s')]);
 
+        log_audit('Configuration', 'upload_logo', $school, 'Uploaded school logo');
+
         $this->json_success(['logo_url' => $url, 'message' => 'Logo uploaded successfully.']);
     }
 
@@ -343,6 +521,9 @@ class School_config extends MY_Controller
         $this->fs->update('schools', $this->fs->schoolId(), [$type => $url, 'updatedAt' => date('c')]);
 
         $label = $type === 'holidays_calendar' ? 'Holidays Calendar' : 'Academic Calendar';
+
+        log_audit('Configuration', 'upload_document', $type, "Uploaded {$label}");
+
         $this->json_success(['url' => $url, 'message' => "{$label} uploaded successfully."]);
     }
 
@@ -406,6 +587,8 @@ class School_config extends MY_Controller
         // Firestore (sole write target)
         $this->fs->update('schools', $this->fs->schoolId(), ['board_config' => $data, 'updatedAt' => date('c')]);
 
+        log_audit('Configuration', 'save_board', $school, "Board {$type} ({$gradingPattern}) saved");
+
         $this->json_success(['message' => 'Board configuration saved.']);
     }
 
@@ -421,6 +604,12 @@ class School_config extends MY_Controller
 
         if (!is_array($rawClasses) || empty($rawClasses)) {
             return $this->json_error('No classes provided.');
+        }
+
+        // BUG-029: cardinality cap — classes stored as single array field on
+        // school doc; oversize array trips Firestore 1MB DocTooLarge.
+        if (count($rawClasses) > 200) {
+            return $this->json_error('Too many classes (max 200).');
         }
 
         $validTypes = ['foundational', 'primary', 'middle', 'secondary', 'senior'];
@@ -440,14 +629,32 @@ class School_config extends MY_Controller
                 continue;
             }
 
+            // BUG-029: per-label byte cap
+            if (strlen($label) > 100) {
+                return $this->json_error("Class label '{$label}' exceeds 100 characters.");
+            }
+
             if (!in_array($type, $validTypes, true)) {
                 $type = 'primary';
+            }
+
+            // 2026-05-15 Phase 3 — canonicalize the label. For known key
+            // patterns (numeric grades + foundational keywords) the label
+            // is rewritten to the canonical form derived from the key.
+            // For custom keys (e.g. Montessori "primary_a") the client
+            // label is preserved verbatim. See _normalize_class_label.
+            $canonicalLabel = $this->_normalize_class_label($key, $label);
+            if ($canonicalLabel !== $label) {
+                log_message('info',
+                    "ACC_CLASS_LABEL_NORMALIZED schoolId={$this->school_id} "
+                    . "actor=" . ($this->admin_id ?? 'unknown') . " "
+                    . "key={$key} from=" . json_encode($label) . " to=" . json_encode($canonicalLabel));
             }
 
             // Issue 7: Preserve soft-delete flag
             $clean[] = [
                 'key'             => $key,
-                'label'           => $label,
+                'label'           => $canonicalLabel,
                 'type'            => $type,
                 'order'           => $order,
                 'streams_enabled' => !empty($cls['streams_enabled']),
@@ -461,6 +668,8 @@ class School_config extends MY_Controller
 
         // Firestore (sole write target)
         $this->fs->update('schools', $this->fs->schoolId(), ['classes' => $clean, 'updatedAt' => date('c')]);
+
+        log_audit('Configuration', 'save_classes', $school, 'Saved class list (' . count($clean) . ' classes)');
 
         $this->json_success(['message' => 'Class list saved.', 'count' => count($clean)]);
     }
@@ -527,6 +736,8 @@ class School_config extends MY_Controller
             $created++;
         }
 
+        log_audit('Configuration', 'activate_classes', $sessionYear, "Activated {$created} class(es) in {$sessionYear} ({$skipped} already existed)");
+
         $this->json_success([
             'message' => "{$created} class(es) activated in {$sessionYear}. {$skipped} already existed.",
             'created' => $created,
@@ -570,8 +781,20 @@ class School_config extends MY_Controller
             return $this->json_error('Class not found.');
         }
 
-        // Check for enrolled students before soft-deleting (Firestore only)
-        $classNode = $this->_class_node_name($classKey);
+        // 2026-05-15 Phase 2 — extended referential-integrity check.
+        // Was: students-in-each-section only (per-section iteration).
+        // Now: students + class-level attendance/timetable/marks/feeDemands
+        // scoped to the current session. A single class-level query is
+        // cheaper than per-section iteration AND catches data tied to
+        // the class without a section binding (e.g. class-wide notices,
+        // class-default fees). Section-level students check is retained
+        // for backwards-compat error messaging.
+        $classNode  = $this->_class_node_name($classKey);
+        $curSession = $this->session_year;
+
+        // First, the existing per-section enrolled-students sweep (kept
+        // because it produces the most informative error message:
+        // "students enrolled in class 5 / Section A").
         $fsSections = $this->fs->schoolWhere('sections', [['className', '==', $classNode]]);
         if (is_array($fsSections)) {
             foreach ($fsSections as $secDoc) {
@@ -584,17 +807,82 @@ class School_config extends MY_Controller
                     ['status', '==', 'Active'],
                 ]);
                 if (!empty($stuDocs)) {
-                    return $this->json_error(
-                        "Cannot delete: students are enrolled in {$classNode} / {$secName}. Transfer or remove students first."
+                    $stuCount = count($stuDocs);
+                    log_message('error',
+                        "ACC_DELETE_BLOCKED endpoint=soft_delete_class schoolId={$this->school_id} "
+                        . "actor={$this->admin_id} classKey={$classKey} reason=enrolled_students "
+                        . "section={$sectionKey} count={$stuCount}");
+                    $this->_json_error_with_data(
+                        "Cannot delete: {$stuCount} active student(s) enrolled in {$classNode} / {$secName}. "
+                        . "Transfer or remove students first.",
+                        [
+                            'dependencies' => ['students' => $stuCount],
+                            'sectionKey'   => $sectionKey,
+                            'classKey'     => $classKey,
+                        ],
+                        409
                     );
                 }
             }
+        }
+
+        // Class-level dependency sweep — catches non-section-keyed records
+        // that would orphan against the deleted class.
+        $deps = $this->_dep_count_safe([
+            [
+                'key'        => 'attendance',
+                'collection' => 'attendance',
+                'filters'    => [['className', '==', $classNode], ['session', '==', $curSession]],
+                'label'      => 'attendance record(s)',
+            ],
+            [
+                'key'        => 'timetables',
+                'collection' => 'timetables',
+                'filters'    => [['className', '==', $classNode], ['session', '==', $curSession]],
+                'label'      => 'timetable entry/entries',
+            ],
+            [
+                'key'        => 'marks',
+                'collection' => 'marks',
+                'filters'    => [['className', '==', $classNode], ['session', '==', $curSession]],
+                'label'      => 'marks record(s)',
+            ],
+            [
+                'key'        => 'feeDemands',
+                'collection' => 'feeDemands',
+                'filters'    => [['className', '==', $classNode], ['session', '==', $curSession]],
+                'label'      => 'fee demand(s)',
+            ],
+            [
+                'key'        => 'subjectAssignments',
+                'collection' => 'subjectAssignments',
+                'filters'    => [['classKey', '==', $this->_numeric_class_key($classKey)], ['session', '==', $curSession]],
+                'label'      => 'subject assignment(s)',
+            ],
+        ]);
+        if (!empty($deps['has_any'])) {
+            $this->_log_dep_block('soft_delete_class', $classKey, $deps);
+            $this->_json_error_with_data(
+                "Cannot delete class {$classKey}: " . implode(', ', $deps['human'])
+                . ' reference this class. Migrate or archive the data first.',
+                [
+                    'dependencies' => $deps['by_key'],
+                    'classKey'     => $classKey,
+                    'session'      => $curSession,
+                ],
+                409
+            );
         }
 
         $cleanClasses = array_values($classes);
 
         // Firestore (sole write target)
         $this->fs->update('schools', $this->fs->schoolId(), ['classes' => $cleanClasses, 'updatedAt' => date('c')]);
+
+        log_message('error',
+            "ACC_CLASS_SOFT_DELETED schoolId={$this->school_id} actor={$this->admin_id} "
+            . "classKey={$classKey}");
+        log_audit('Configuration', 'soft_delete_class', $classKey, "Soft-deleted class '{$classKey}'");
 
         $this->json_success(['message' => "Class '{$classKey}' soft-deleted. It can be restored later."]);
     }
@@ -640,6 +928,8 @@ class School_config extends MY_Controller
         // Firestore (sole write target)
         $this->fs->update('schools', $this->fs->schoolId(), ['classes' => $cleanClasses, 'updatedAt' => date('c')]);
 
+        log_audit('Configuration', 'restore_class', $classKey, "Restored class '{$classKey}'");
+
         $this->json_success(['message' => "Class '{$classKey}' restored."]);
     }
 
@@ -652,25 +942,39 @@ class School_config extends MY_Controller
         $this->_require_role(self::ADMIN_ROLES, 'school_config_seed_streams');
         $school = $this->school_name;
 
-        try {
-            $defaults = [
-                'Science'  => ['key' => 'Science',  'label' => 'Science',  'enabled' => true],
-                'Commerce' => ['key' => 'Commerce', 'label' => 'Commerce', 'enabled' => true],
-                'Arts'     => ['key' => 'Arts',     'label' => 'Arts',     'enabled' => true],
-                'General'  => ['key' => 'General',  'label' => 'General',  'enabled' => true],
-            ];
+        $defaults = [
+            'Science'  => ['key' => 'Science',  'label' => 'Science',  'enabled' => true],
+            'Commerce' => ['key' => 'Commerce', 'label' => 'Commerce', 'enabled' => true],
+            'Arts'     => ['key' => 'Arts',     'label' => 'Arts',     'enabled' => true],
+            'General'  => ['key' => 'General',  'label' => 'General',  'enabled' => true],
+        ];
 
-            // Read existing streams from Firestore
-            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+        // BUG-028 Phase 1: concurrency hardening — shared 'streams' lock serializes
+        // against delete_stream + save_stream. Firestore __updateTime precondition
+        // catches cross-process races. Mirror of Phase 2 delete_stream canon.
+        $lock = $this->_config_lock_acquire('streams');
+        if ($lock === null) {
+            log_message('error',
+                "ACC_CONCURRENT_REJECTED endpoint=seed_streams schoolId={$this->school_id} "
+                . "actor={$this->admin_id} reason=lock_timeout");
+            return $this->json_error(
+                'Another stream-management operation is in progress. Please retry in a few seconds.',
+                409
+            );
+        }
+        try {
+            $schoolDocId = $this->fs->schoolId();
+            $fsSchool    = $this->firebase->firestoreGet('schools', $schoolDocId);
+            if (!is_array($fsSchool)) {
+                return $this->json_error('School profile is not yet initialised.');
+            }
             $existing = [];
-            if (is_array($fsSchool) && isset($fsSchool['streams'])) {
-                $raw = $fsSchool['streams'];
-                if (is_array($raw)) {
-                    foreach ($raw as $k => $v) {
-                        $existing[$k] = is_array($v) ? $v : (array) $v;
-                    }
+            if (isset($fsSchool['streams']) && is_array($fsSchool['streams'])) {
+                foreach ($fsSchool['streams'] as $k => $v) {
+                    $existing[$k] = is_array($v) ? $v : (array) $v;
                 }
             }
+            $updateTime = (string) ($fsSchool['__updateTime'] ?? '');
 
             $added   = 0;
             $skipped = 0;
@@ -684,8 +988,38 @@ class School_config extends MY_Controller
                 $added++;
             }
 
-            // Firestore (sole write target)
-            $this->fs->update('schools', $this->fs->schoolId(), ['streams' => $existing, 'updatedAt' => date('c')]);
+            // BUG-028 Phase 1: CAS commit — refuse if another writer mutated the school
+            // doc between our read and write. Caller is expected to refresh and retry on 409.
+            $ops = [[
+                'op'         => 'update',
+                'collection' => 'schools',
+                'docId'      => $schoolDocId,
+                'data'       => [
+                    'streams'   => $existing,
+                    'updatedAt' => date('c'),
+                ],
+            ]];
+            if ($updateTime !== '') {
+                $ops[0]['precondition'] = ['updateTime' => $updateTime];
+            }
+            $committed = false;
+            try {
+                $committed = (bool) $this->firebase->firestoreCommitBatch($ops);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "ACC_SEED_STREAMS_COMMIT_FAILED schoolId={$this->school_id} "
+                    . "err=" . $e->getMessage());
+            }
+            if (!$committed) {
+                log_message('error',
+                    "ACC_CONCURRENT_REJECTED endpoint=seed_streams schoolId={$this->school_id} "
+                    . "actor={$this->admin_id} reason=cas_failed");
+                return $this->json_error(
+                    'Another administrator updated school configuration during your request. '
+                    . 'Please reload the page and retry.', 409);
+            }
+
+            log_audit('Configuration', 'seed_streams', $school, "Seeded {$added} stream(s) ({$skipped} already existed)");
 
             $this->json_success([
                 'message' => "{$added} stream(s) seeded. {$skipped} already existed.",
@@ -695,7 +1029,9 @@ class School_config extends MY_Controller
             ]);
         } catch (\Exception $e) {
             log_message('error', 'seed_streams error: ' . $e->getMessage());
-            $this->json_error('Failed to seed streams: ' . $e->getMessage());
+            $this->json_error('Failed to seed streams. Contact administrator.');
+        } finally {
+            $this->_config_lock_release($lock);
         }
     }
 
@@ -786,6 +1122,8 @@ class School_config extends MY_Controller
         // Firestore (sole write target)
         $this->fs->saveSection($classNode, $sectionLetter, $sectionData);
 
+        log_audit('Configuration', 'save_section', "{$classNode}/{$sectionNode}", "Created section {$classNode} / {$sectionNode}");
+
         $this->json_success([
             'message'      => "{$classNode} / {$sectionNode} created.",
             'class_node'   => $classNode,
@@ -827,18 +1165,73 @@ class School_config extends MY_Controller
             return $this->json_error('Section not found.');
         }
 
-        // Safety: refuse if students are enrolled (Firestore only)
+        // 2026-05-15 Phase 2 — extended referential-integrity check.
+        // Was: students-only check. Now: students + feeDemands + attendance
+        // + marks + timetables, scoped to this section. Prevents orphaning
+        // historical/financial records that would silently reference a
+        // section that no longer exists. Each per-collection query is
+        // bounded at 200 rows (count is authoritative, not the rows).
         $sectionKey = "{$classNode}/{$sectionNode}";
-        $stuDocs = $this->fs->schoolWhere('students', [
-            ['sectionKey', '==', $sectionKey],
-            ['status', '==', 'Active'],
+        $deps = $this->_dep_count_safe([
+            [
+                'key'        => 'students',
+                'collection' => 'students',
+                'filters'    => [['sectionKey', '==', $sectionKey], ['status', '==', 'Active']],
+                'label'      => 'active student(s)',
+            ],
+            [
+                'key'        => 'feeDemands',
+                'collection' => 'feeDemands',
+                'filters'    => [['sectionKey', '==', $sectionKey], ['session', '==', $sessionYear]],
+                'label'      => 'fee demand(s)',
+            ],
+            [
+                'key'        => 'attendance',
+                'collection' => 'attendance',
+                'filters'    => [['sectionKey', '==', $sectionKey], ['session', '==', $sessionYear]],
+                'label'      => 'attendance record(s)',
+            ],
+            [
+                'key'        => 'marks',
+                'collection' => 'marks',
+                'filters'    => [['sectionKey', '==', $sectionKey], ['session', '==', $sessionYear]],
+                'label'      => 'marks record(s)',
+            ],
+            [
+                'key'        => 'timetables',
+                'collection' => 'timetables',
+                'filters'    => [['sectionKey', '==', $sectionKey], ['session', '==', $sessionYear]],
+                'label'      => 'timetable entry/entries',
+            ],
+            [
+                'key'        => 'subjectAssignments',
+                'collection' => 'subjectAssignments',
+                'filters'    => [['sectionKey', '==', $sectionKey], ['session', '==', $sessionYear]],
+                'label'      => 'subject assignment(s)',
+            ],
         ]);
-        if (!empty($stuDocs)) {
-            return $this->json_error('Cannot delete: students are enrolled in this section.');
+        if (!empty($deps['has_any'])) {
+            $this->_log_dep_block('delete_section', $sectionKey, $deps);
+            $this->_json_error_with_data(
+                'Cannot delete section ' . $sectionKey . ': '
+                . implode(', ', $deps['human'])
+                . '. Migrate or remove dependent data first.',
+                [
+                    'dependencies' => $deps['by_key'],
+                    'sectionKey'   => $sectionKey,
+                    'session'      => $sessionYear,
+                ],
+                409
+            );
         }
 
         // Firestore (sole write target)
         $this->fs->remove('sections', $fsDocId);
+
+        log_message('error',
+            "ACC_SECTION_DELETED schoolId={$this->school_id} actor={$this->admin_id} "
+            . "sectionKey={$sectionKey} session={$sessionYear}");
+        log_audit('Configuration', 'delete_section', $sectionKey, "Deleted section {$sectionKey} (session={$sessionYear})");
 
         $this->json_success(['message' => "{$classNode} / {$sectionNode} deleted."]);
     }
@@ -1009,55 +1402,146 @@ class School_config extends MY_Controller
 
         $created  = 0;
         $removed  = 0;
-        $skipped  = [];
+        $skipped  = [];   // legacy compat — human-readable strings
+        $failed   = [];   // 2026-05-15 Phase 2 — structured rows
         $now      = date('Y-m-d H:i:s');
 
+        // 2026-05-15 Phase 2 — every per-row write is wrapped in a
+        // try/catch so a single failure does not abort the whole batch.
+        // Each failure is captured as a structured `failed[]` entry
+        // ({class_key, section, action, reason}); the existing
+        // `skipped[]` array remains populated with the legacy
+        // human-readable strings for backward compatibility.
         foreach ($changes as $ch) {
             if (!is_array($ch) || empty($ch['class_key'])) continue;
-            $classNode = $this->_class_node_name($ch['class_key']);
+            $classKey  = (string) $ch['class_key'];
+            $classNode = $this->_class_node_name($classKey);
 
             // Add sections — supports both plain ("A") and stream-based ("Science A")
             foreach (($ch['add'] ?? []) as $sectionLabel) {
                 $sectionLabel = trim((string) $sectionLabel);
-                // Validate: either a single letter "A" or "StreamName Letter" like "Science A"
-                if (!preg_match('/^(?:[A-Za-z]+(?: [A-Za-z]+)* )?[A-Z]$/', $sectionLabel)) continue;
-                // Check if section already exists in Firestore
-                $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel);
-                if (is_array($this->fs->get('sections', $fsDocId))) continue;
-                // Firestore (sole write target)
-                $this->fs->saveSection($classNode, $sectionLabel, ['created_at' => $now]);
-                $created++;
+                if (!preg_match('/^(?:[A-Za-z]+(?: [A-Za-z]+)* )?[A-Z]$/', $sectionLabel)) {
+                    $failed[] = [
+                        'class_key' => $classKey,
+                        'section'   => $sectionLabel,
+                        'action'    => 'add',
+                        'reason'    => 'invalid_format',
+                    ];
+                    continue;
+                }
+                try {
+                    $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel);
+                    if (is_array($this->fs->get('sections', $fsDocId))) {
+                        // Already exists — neither created nor failed; record as skipped.
+                        $skipped[] = "{$classNode} Section {$sectionLabel} (already exists)";
+                        $failed[]  = [
+                            'class_key' => $classKey,
+                            'section'   => $sectionLabel,
+                            'action'    => 'add',
+                            'reason'    => 'already_exists',
+                        ];
+                        continue;
+                    }
+                    $this->fs->saveSection($classNode, $sectionLabel, ['created_at' => $now]);
+                    $created++;
+                } catch (\Throwable $e) {
+                    $failed[] = [
+                        'class_key' => $classKey,
+                        'section'   => $sectionLabel,
+                        'action'    => 'add',
+                        'reason'    => $e->getMessage(),
+                    ];
+                    log_message('error',
+                        "ACC_BULK_ROW_FAILED endpoint=bulk_save_sections schoolId={$this->school_id} "
+                        . "action=add class={$classNode} section={$sectionLabel} err=" . $e->getMessage());
+                }
             }
 
             // Remove sections
             foreach (($ch['remove'] ?? []) as $sectionLabel) {
                 $sectionLabel = trim((string) $sectionLabel);
-                if (!preg_match('/^(?:[A-Za-z]+(?: [A-Za-z]+)* )?[A-Z]$/', $sectionLabel)) continue;
-                $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel);
-                $fsDoc = $this->fs->get('sections', $fsDocId);
-                if (!is_array($fsDoc)) continue;
-                // Check for enrolled students in Firestore
-                $sectionKey = "{$classNode}/Section {$sectionLabel}";
-                $stuDocs = $this->fs->schoolWhere('students', [
-                    ['sectionKey', '==', $sectionKey],
-                    ['status', '==', 'Active'],
-                ]);
-                if (!empty($stuDocs)) {
-                    $skipped[] = "{$classNode} Section {$sectionLabel} (has students)";
+                if (!preg_match('/^(?:[A-Za-z]+(?: [A-Za-z]+)* )?[A-Z]$/', $sectionLabel)) {
+                    $failed[] = [
+                        'class_key' => $classKey,
+                        'section'   => $sectionLabel,
+                        'action'    => 'remove',
+                        'reason'    => 'invalid_format',
+                    ];
                     continue;
                 }
-                // Firestore (sole write target)
-                $this->fs->remove('sections', $fsDocId);
-                $removed++;
+                try {
+                    $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel);
+                    $fsDoc   = $this->fs->get('sections', $fsDocId);
+                    if (!is_array($fsDoc)) {
+                        // Already gone — not an error, but record for visibility.
+                        $skipped[] = "{$classNode} Section {$sectionLabel} (does not exist)";
+                        $failed[]  = [
+                            'class_key' => $classKey,
+                            'section'   => $sectionLabel,
+                            'action'    => 'remove',
+                            'reason'    => 'not_found',
+                        ];
+                        continue;
+                    }
+                    $sectionKey = "{$classNode}/Section {$sectionLabel}";
+                    $stuDocs    = $this->fs->schoolWhere('students', [
+                        ['sectionKey', '==', $sectionKey],
+                        ['status', '==', 'Active'],
+                    ]);
+                    if (!empty($stuDocs)) {
+                        $skipped[] = "{$classNode} Section {$sectionLabel} (has students)";
+                        $failed[]  = [
+                            'class_key' => $classKey,
+                            'section'   => $sectionLabel,
+                            'action'    => 'remove',
+                            'reason'    => 'has_active_students',
+                            'count'     => count($stuDocs),
+                        ];
+                        log_message('error',
+                            "ACC_ORPHAN_PREVENTED endpoint=bulk_save_sections "
+                            . "schoolId={$this->school_id} actor={$this->admin_id} "
+                            . "sectionKey={$sectionKey} students=" . count($stuDocs));
+                        continue;
+                    }
+                    $this->fs->remove('sections', $fsDocId);
+                    $removed++;
+                } catch (\Throwable $e) {
+                    $failed[] = [
+                        'class_key' => $classKey,
+                        'section'   => $sectionLabel,
+                        'action'    => 'remove',
+                        'reason'    => $e->getMessage(),
+                    ];
+                    log_message('error',
+                        "ACC_BULK_ROW_FAILED endpoint=bulk_save_sections schoolId={$this->school_id} "
+                        . "action=remove class={$classNode} section={$sectionLabel} err=" . $e->getMessage());
+                }
             }
         }
 
+        $failedCount = count($failed);
         $msg = "Done: {$created} created, {$removed} removed.";
+        if ($failedCount > 0) {
+            $msg .= " {$failedCount} row(s) failed or skipped — see failed[] for details.";
+            log_message('error',
+                "ACC_BULK_PARTIAL_FAILURE endpoint=bulk_save_sections schoolId={$this->school_id} "
+                . "actor={$this->admin_id} created={$created} removed={$removed} failed={$failedCount}");
+        }
         if (!empty($skipped)) {
             $msg .= ' Skipped: ' . implode(', ', $skipped);
         }
 
-        $this->json_success(['message' => $msg, 'created' => $created, 'removed' => $removed, 'skipped' => $skipped]);
+        log_audit('Configuration', 'bulk_save_sections', $sessionYear, "Bulk section update (session={$sessionYear}): {$created} created, {$removed} removed, {$failedCount} failed");
+
+        $this->json_success([
+            'message'         => $msg,
+            'created'         => $created,
+            'removed'         => $removed,
+            'skipped'         => $skipped,
+            'failed'          => $failed,
+            'failed_count'    => $failedCount,
+            'partial_failure' => $failedCount > 0,
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1107,7 +1591,7 @@ class School_config extends MY_Controller
             ]);
         } catch (\Exception $e) {
             log_message('error', 'get_subjects failed: ' . $e->getMessage());
-            $this->json_error('Failed to load subjects: ' . $e->getMessage());
+            $this->json_error('Failed to load subjects. Contact administrator.');
         }
     }
 
@@ -1198,7 +1682,7 @@ class School_config extends MY_Controller
             ]);
         } catch (\Exception $e) {
             log_message('error', 'get_all_subjects failed: ' . $e->getMessage());
-            $this->json_error('Failed to load subjects: ' . $e->getMessage());
+            $this->json_error('Failed to load subjects. Contact administrator.');
         }
     }
 
@@ -1336,7 +1820,7 @@ class School_config extends MY_Controller
             ]);
         } catch (\Exception $e) {
             log_message('error', 'get_suggested_subjects failed: ' . $e->getMessage());
-            $this->json_error('Failed to load suggestions: ' . $e->getMessage());
+            $this->json_error('Failed to load suggestions. Contact administrator.');
         }
     }
 
@@ -1379,6 +1863,11 @@ class School_config extends MY_Controller
 
         if ($classKey === '' || $name === '') {
             return $this->json_error('class_key and name are required.');
+        }
+
+        // BUG-029: byte-length cap to prevent Firestore DocTooLarge
+        if (strlen($name) > 200) {
+            return $this->json_error('Subject name exceeds 200 characters.');
         }
 
         // Issue 8: Added Assessment category
@@ -1438,6 +1927,8 @@ class School_config extends MY_Controller
             'stream'      => $stream,
         ]);
 
+        log_audit('Configuration', 'save_subject', "{$numKey}_{$code}", "Saved subject '{$name}' (classKey={$numKey}, code={$code})");
+
         $this->json_success(['message' => "Subject '{$name}' saved.", 'code' => $code]);
     }
 
@@ -1460,8 +1951,62 @@ class School_config extends MY_Controller
         }
 
         $numKey = $this->_numeric_class_key($classKey);
+        $entityId = "{$numKey}_{$code}";
+
+        // 2026-05-15 Phase 2 — referential integrity check. Block deletion
+        // when active subjectAssignments reference this subject, otherwise
+        // the Teacher app's auth gate (MY_Controller::_get_teacher_assignments)
+        // would surface orphaned assignments and let teachers post against
+        // a phantom subject. Cap the surfaced teacher list at 25 to keep
+        // the response payload small; the count is the authoritative figure.
+        $deps = $this->_dep_count_safe([
+            [
+                'key'        => 'subjectAssignments',
+                'collection' => 'subjectAssignments',
+                'filters'    => [
+                    ['classKey',    '==', $numKey],
+                    ['subjectCode', '==', $code],
+                ],
+                'label'      => 'active teacher assignment(s)',
+            ],
+        ]);
+        if (!empty($deps['has_any'])) {
+            $this->_log_dep_block('delete_subject', $entityId, $deps);
+            // Surface up to 25 dependent teacher identifiers so the operator
+            // knows who to reassign before retrying. Best-effort: failures
+            // here are non-fatal (count is already authoritative).
+            $dependentTeachers = [];
+            try {
+                $rows = $this->fs->schoolWhere('subjectAssignments', [
+                    ['classKey',    '==', $numKey],
+                    ['subjectCode', '==', $code],
+                ], null, 'ASC', 25);
+                foreach ((array) $rows as $r) {
+                    $d = is_array($r['data'] ?? null) ? $r['data'] : [];
+                    $tid = (string) ($d['teacherId'] ?? '');
+                    if ($tid === '') continue;
+                    $dependentTeachers[] = [
+                        'teacherId'   => $tid,
+                        'teacherName' => (string) ($d['teacherName'] ?? ''),
+                        'sectionKey'  => (string) ($d['sectionKey']  ?? ''),
+                    ];
+                }
+            } catch (\Throwable $_) { /* count already captured above */ }
+            return $this->json_error(
+                "Cannot delete subject {$code}: it is currently assigned to "
+                . $deps['by_key']['subjectAssignments'] . " teacher(s). "
+                . "Reassign or remove those assignments first.",
+                409
+            );
+        }
+
         // Firestore (sole write target)
-        $this->fs->removeEntity('subjects', "{$numKey}_{$code}");
+        $this->fs->removeEntity('subjects', $entityId);
+
+        log_message('error',
+            "ACC_SUBJECT_DELETED schoolId={$this->school_id} actor={$this->admin_id} "
+            . "classKey={$numKey} subjectCode={$code}");
+        log_audit('Configuration', 'delete_subject', $entityId, "Deleted subject {$entityId}");
 
         $this->json_success(['message' => 'Subject deleted.']);
     }
@@ -1706,9 +2251,15 @@ class School_config extends MY_Controller
             return $this->json_error('No valid subjects to save.');
         }
 
-        try {
-            // Firestore (sole write target)
-            foreach ($subjectMap as $code => $entry) {
+        // 2026-05-15 Phase 2 — per-row try/catch so a single failure does
+        // not abort the whole batch. Each failure is captured as a
+        // structured `failed[]` entry; partial-success responses now
+        // carry `partial_failure: true` instead of returning HTTP 200
+        // with a single missing-subject silently dropped.
+        $saved  = 0;
+        $failed = [];
+        foreach ($subjectMap as $code => $entry) {
+            try {
                 $this->fs->setEntity('subjects', "{$numKey}_{$code}", [
                     'classKey'    => $numKey,
                     'subjectCode' => $code,
@@ -1716,15 +2267,51 @@ class School_config extends MY_Controller
                     'category'    => $entry['category'] ?? 'Core',
                     'stream'      => $entry['stream'] ?? 'common',
                 ]);
+                $saved++;
+            } catch (\Throwable $e) {
+                $failed[] = [
+                    'subject_code' => (string) $code,
+                    'name'         => $entry['name'] ?? '',
+                    'reason'       => $e->getMessage(),
+                ];
+                log_message('error',
+                    "ACC_BULK_ROW_FAILED endpoint=save_bulk_subjects schoolId={$this->school_id} "
+                    . "classKey={$numKey} subjectCode={$code} err=" . $e->getMessage());
             }
-
-            $this->json_success([
-                'message' => count($subjectMap) . ' subjects saved for class ' . $classKey . '.',
-                'count'   => count($subjectMap),
-            ]);
-        } catch (\Exception $e) {
-            $this->json_error('Failed to save subjects: ' . $e->getMessage());
         }
+
+        $failedCount = count($failed);
+        if ($failedCount > 0) {
+            log_message('error',
+                "ACC_BULK_PARTIAL_FAILURE endpoint=save_bulk_subjects schoolId={$this->school_id} "
+                . "actor={$this->admin_id} classKey={$numKey} saved={$saved} failed={$failedCount}");
+        }
+
+        if ($saved === 0 && $failedCount > 0) {
+            // Total failure — surface as HTTP 500 so the caller treats it
+            // as a hard error instead of "saved nothing successfully".
+            $this->_json_error_with_data(
+                "Failed to save any subjects ({$failedCount} attempted).",
+                [
+                    'count'           => 0,
+                    'failed'          => $failed,
+                    'failed_count'    => $failedCount,
+                    'partial_failure' => false,
+                ],
+                500
+            );
+        }
+
+        log_audit('Configuration', 'save_bulk_subjects', $classKey, "Bulk subjects update for class {$classKey}: {$saved} saved, {$failedCount} failed");
+
+        $this->json_success([
+            'message'         => $saved . ' subjects saved for class ' . $classKey
+                . ($failedCount > 0 ? ", {$failedCount} failed — see failed[]." : '.'),
+            'count'           => $saved,
+            'failed'          => $failed,
+            'failed_count'    => $failedCount,
+            'partial_failure' => $failedCount > 0,
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1747,6 +2334,24 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid stream key. Use letters, digits, underscores only.');
         }
 
+        // BUG-029: byte-length cap on label
+        if (strlen($label) > 100) {
+            return $this->json_error('Stream label exceeds 100 characters.');
+        }
+
+        // BUG-028 Phase 1: concurrency hardening — shared 'streams' lock serializes
+        // against delete_stream + seed_streams. Firestore __updateTime precondition
+        // catches cross-process races. Mirror of Phase 2 delete_stream canon.
+        $lock = $this->_config_lock_acquire('streams');
+        if ($lock === null) {
+            log_message('error',
+                "ACC_CONCURRENT_REJECTED endpoint=save_stream schoolId={$this->school_id} "
+                . "actor={$this->admin_id} reason=lock_timeout streamKey={$streamKey}");
+            return $this->json_error(
+                'Another stream-management operation is in progress. Please retry in a few seconds.',
+                409
+            );
+        }
         try {
             $streamData = [
                 'key'     => $streamKey,
@@ -1754,27 +2359,60 @@ class School_config extends MY_Controller
                 'enabled' => $enabled,
             ];
 
-            // Read current streams from Firestore
-            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            $schoolDocId = $this->fs->schoolId();
+            $fsSchool    = $this->firebase->firestoreGet('schools', $schoolDocId);
+            if (!is_array($fsSchool)) {
+                return $this->json_error('School profile is not yet initialised.');
+            }
             $allStreams = [];
-            if (is_array($fsSchool) && isset($fsSchool['streams'])) {
-                $raw = $fsSchool['streams'];
-                if (is_array($raw)) {
-                    foreach ($raw as $k => $v) {
-                        $allStreams[$k] = is_array($v) ? $v : (array) $v;
-                    }
+            if (isset($fsSchool['streams']) && is_array($fsSchool['streams'])) {
+                foreach ($fsSchool['streams'] as $k => $v) {
+                    $allStreams[$k] = is_array($v) ? $v : (array) $v;
                 }
             }
+            $updateTime = (string) ($fsSchool['__updateTime'] ?? '');
 
             $allStreams[$streamKey] = $streamData;
 
-            // Firestore (sole write target)
-            $this->fs->update('schools', $this->fs->schoolId(), ['streams' => $allStreams, 'updatedAt' => date('c')]);
+            // BUG-028 Phase 1: CAS commit — refuse if another writer mutated the school
+            // doc between our read and write. Caller is expected to refresh and retry on 409.
+            $ops = [[
+                'op'         => 'update',
+                'collection' => 'schools',
+                'docId'      => $schoolDocId,
+                'data'       => [
+                    'streams'   => $allStreams,
+                    'updatedAt' => date('c'),
+                ],
+            ]];
+            if ($updateTime !== '') {
+                $ops[0]['precondition'] = ['updateTime' => $updateTime];
+            }
+            $committed = false;
+            try {
+                $committed = (bool) $this->firebase->firestoreCommitBatch($ops);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "ACC_SAVE_STREAM_COMMIT_FAILED schoolId={$this->school_id} "
+                    . "streamKey={$streamKey} err=" . $e->getMessage());
+            }
+            if (!$committed) {
+                log_message('error',
+                    "ACC_CONCURRENT_REJECTED endpoint=save_stream schoolId={$this->school_id} "
+                    . "actor={$this->admin_id} reason=cas_failed streamKey={$streamKey}");
+                return $this->json_error(
+                    'Another administrator updated school configuration during your request. '
+                    . 'Please reload the page and retry.', 409);
+            }
+
+            log_audit('Configuration', 'save_stream', $streamKey, "Saved stream '{$label}'");
 
             $this->json_success(['message' => "Stream '{$label}' saved.", 'streams' => (object) $allStreams]);
         } catch (\Throwable $e) {
             log_message('error', 'save_stream error: ' . $e->getMessage());
-            $this->json_error('Failed to save stream: ' . $e->getMessage());
+            $this->json_error('Failed to save stream. Contact administrator.');
+        } finally {
+            $this->_config_lock_release($lock);
         }
     }
 
@@ -1791,31 +2429,130 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid stream key.');
         }
 
+        // 2026-05-15 Phase 2 — concurrency hardening + dependency check.
+        // Pre-fix this method did read-then-modify-write on the whole
+        // streams map: a concurrent "add stream" by another admin between
+        // the read and the write would be lost because the writer
+        // replaced the entire `streams` field with its stale snapshot.
+        // Fix mirrors the Phase 1 add_session pattern: filesystem lock
+        // serializes the brief critical section within this PHP worker
+        // pool, Firestore __updateTime precondition catches cross-process
+        // races, and a sectionAssignment / sections dependency sweep
+        // refuses delete when live class sections still reference the
+        // stream.
+        $lock = $this->_config_lock_acquire('streams');
+        if ($lock === null) {
+            log_message('error',
+                "ACC_CONCURRENT_REJECTED endpoint=delete_stream schoolId={$this->school_id} "
+                . "actor={$this->admin_id} reason=lock_timeout streamKey={$streamKey}");
+            return $this->json_error(
+                'Another stream-management operation is in progress. Please retry in a few seconds.',
+                409
+            );
+        }
         try {
-            // Read streams from Firestore, remove key, write back
-            $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
+            $schoolDocId = $this->fs->schoolId();
+            $fsSchool    = $this->firebase->firestoreGet('schools', $schoolDocId);
+            if (!is_array($fsSchool)) {
+                return $this->json_error('School profile is not yet initialised.');
+            }
             $allStreams = [];
-            if (is_array($fsSchool) && isset($fsSchool['streams'])) {
-                $raw = $fsSchool['streams'];
-                if (is_array($raw)) {
-                    foreach ($raw as $k => $v) {
-                        $allStreams[$k] = is_array($v) ? $v : (array) $v;
-                    }
+            if (isset($fsSchool['streams']) && is_array($fsSchool['streams'])) {
+                foreach ($fsSchool['streams'] as $k => $v) {
+                    $allStreams[$k] = is_array($v) ? $v : (array) $v;
                 }
+            }
+            $updateTime = (string) ($fsSchool['__updateTime'] ?? '');
+
+            if (!array_key_exists($streamKey, $allStreams)) {
+                return $this->json_error("Stream '{$streamKey}' does not exist.");
+            }
+
+            // Dependency check — sections / subjectAssignments / students
+            // that reference this stream. Cap each at 200 (count is
+            // authoritative, not the rows).
+            $curSession = $this->session_year;
+            $deps = $this->_dep_count_safe([
+                [
+                    'key'        => 'sections',
+                    'collection' => 'sections',
+                    'filters'    => [['streamKey', '==', $streamKey], ['session', '==', $curSession]],
+                    'label'      => 'live section(s)',
+                ],
+                [
+                    'key'        => 'subjectAssignments',
+                    'collection' => 'subjectAssignments',
+                    'filters'    => [['stream', '==', $streamKey], ['session', '==', $curSession]],
+                    'label'      => 'subject assignment(s)',
+                ],
+                [
+                    'key'        => 'students',
+                    'collection' => 'students',
+                    'filters'    => [['streamKey', '==', $streamKey], ['status', '==', 'Active']],
+                    'label'      => 'active student(s)',
+                ],
+            ]);
+            if (!empty($deps['has_any'])) {
+                $this->_log_dep_block('delete_stream', $streamKey, $deps);
+                $this->_json_error_with_data(
+                    "Cannot delete stream '{$streamKey}': " . implode(', ', $deps['human'])
+                    . ' reference it. Reassign or remove dependent data first.',
+                    [
+                        'dependencies' => $deps['by_key'],
+                        'streamKey'    => $streamKey,
+                        'session'      => $curSession,
+                    ],
+                    409
+                );
             }
 
             unset($allStreams[$streamKey]);
 
-            // Firestore (sole write target)
-            $this->fs->update('schools', $this->fs->schoolId(), [
-                'streams'   => $allStreams,
-                'updatedAt' => date('c'),
-            ]);
+            // CAS commit — refuse if another writer mutated the school
+            // doc between our read and write. Caller is expected to
+            // refresh and retry on 409.
+            $ops = [[
+                'op'         => 'update',
+                'collection' => 'schools',
+                'docId'      => $schoolDocId,
+                'data'       => [
+                    'streams'   => $allStreams,
+                    'updatedAt' => date('c'),
+                ],
+            ]];
+            if ($updateTime !== '') {
+                $ops[0]['precondition'] = ['updateTime' => $updateTime];
+            }
+            $committed = false;
+            try {
+                $committed = (bool) $this->firebase->firestoreCommitBatch($ops);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "ACC_STREAM_DELETE_COMMIT_FAILED schoolId={$this->school_id} "
+                    . "streamKey={$streamKey} err=" . $e->getMessage());
+            }
+            if (!$committed) {
+                log_message('error',
+                    "ACC_CONCURRENT_REJECTED endpoint=delete_stream schoolId={$this->school_id} "
+                    . "actor={$this->admin_id} reason=cas_failed streamKey={$streamKey}");
+                return $this->json_error(
+                    'Another administrator updated stream configuration during your request. '
+                    . 'Please reload the page and retry.',
+                    409
+                );
+            }
 
-            $this->json_success(['message' => 'Stream deleted.']);
+            log_message('error',
+                "ACC_STREAM_DELETED schoolId={$this->school_id} actor={$this->admin_id} "
+                . "streamKey={$streamKey}");
+            log_audit('Configuration', 'delete_stream', $streamKey, "Deleted stream '{$streamKey}'");
+
+            return $this->json_success(['message' => 'Stream deleted.']);
         } catch (\Throwable $e) {
             log_message('error', 'delete_stream error: ' . $e->getMessage());
-            $this->json_error('Failed to delete stream: ' . $e->getMessage());
+            $this->json_error('Failed to delete stream. Contact administrator.');
+        } finally {
+            $this->_config_lock_release($lock);
         }
     }
 
@@ -1824,8 +2561,12 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function test_sessions()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_test_sessions');
-        if (!defined('GRADER_DEBUG') || !GRADER_DEBUG) { show_404(); return; }
+        $this->_assert_diagnostic_allowed('school_config_test_sessions');
+
+        // BUG-030: diagnostic-endpoint access telemetry — fail-loud on dev-surface in prod
+        if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+            $this->sec_telem->emit('CONFIG_DIAGNOSTIC_ACCESSED', 'info', ['endpoint' => __FUNCTION__, 'actor' => $this->admin_id]);
+        }
         $school = $this->school_name;
 
         $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
@@ -1928,27 +2669,23 @@ class School_config extends MY_Controller
         ]);
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // GET  /school_config/csrf_token
-    // ─────────────────────────────────────────────────────────────────────
-    public function csrf_token()
-    {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_csrf_token');
-        $this->output
-            ->set_content_type('application/json')
-            ->set_output(json_encode([
-                'csrf_name'  => $this->security->get_csrf_token_name(),
-                'csrf_token' => $this->security->get_csrf_hash(),
-            ]));
-    }
+    // 2026-05-15 Phase 3 — /school_config/csrf_token endpoint removed.
+    // Reason: every json_success()/json_error() response auto-includes the
+    // current csrf_token (see MY_Controller::json_success), so the standalone
+    // endpoint was never actually called from any view. Removing both the
+    // method and the route shrinks the attack surface without changing
+    // any consumer behavior.
 
     // ─────────────────────────────────────────────────────────────────────
     // GET  /school_config/test_profile  (dev diagnostic — debug only)
     // ─────────────────────────────────────────────────────────────────────
     public function test_profile()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_test_profile');
-        if (!defined('GRADER_DEBUG') || !GRADER_DEBUG) { show_404(); return; }
+        $this->_assert_diagnostic_allowed('school_config_test_profile');
+        // BUG-030: diagnostic-endpoint access telemetry
+        if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+            $this->sec_telem->emit('CONFIG_DIAGNOSTIC_ACCESSED', 'info', ['endpoint' => __FUNCTION__, 'actor' => $this->admin_id]);
+        }
         $data = $this->fs->get('schools', $this->fs->schoolId());
         $this->json_success(['data' => is_array($data) ? $data : []]);
     }
@@ -1958,8 +2695,11 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function test_classes()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_test_classes');
-        if (!defined('GRADER_DEBUG') || !GRADER_DEBUG) { show_404(); return; }
+        $this->_assert_diagnostic_allowed('school_config_test_classes');
+        // BUG-030: diagnostic-endpoint access telemetry
+        if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+            $this->sec_telem->emit('CONFIG_DIAGNOSTIC_ACCESSED', 'info', ['endpoint' => __FUNCTION__, 'actor' => $this->admin_id]);
+        }
         $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
         $raw = (is_array($fsSchool['classes'] ?? null)) ? $fsSchool['classes'] : [];
         $data = array_values($raw);
@@ -1971,8 +2711,11 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function test_sections()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_test_sections');
-        if (!defined('GRADER_DEBUG') || !GRADER_DEBUG) { show_404(); return; }
+        $this->_assert_diagnostic_allowed('school_config_test_sections');
+        // BUG-030: diagnostic-endpoint access telemetry
+        if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+            $this->sec_telem->emit('CONFIG_DIAGNOSTIC_ACCESSED', 'info', ['endpoint' => __FUNCTION__, 'actor' => $this->admin_id]);
+        }
         $session = $this->session_year;
 
         $fsDocs = $this->fs->schoolWhere('sections', [['session', '==', $session]]);
@@ -1998,8 +2741,11 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function test_subjects()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_test_subjects');
-        if (!defined('GRADER_DEBUG') || !GRADER_DEBUG) { show_404(); return; }
+        $this->_assert_diagnostic_allowed('school_config_test_subjects');
+        // BUG-030: diagnostic-endpoint access telemetry
+        if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+            $this->sec_telem->emit('CONFIG_DIAGNOSTIC_ACCESSED', 'info', ['endpoint' => __FUNCTION__, 'actor' => $this->admin_id]);
+        }
         $fsRows = $this->fs->schoolWhere('subjects', []);
         $data = [];
         if (is_array($fsRows)) {
@@ -2032,24 +2778,86 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid session: end year must follow start year (e.g. 2025-26).');
         }
 
-        // Read sessions from Firestore
-        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
-        $sessions = (is_array($fsSchool['sessions'] ?? null)) ? $fsSchool['sessions'] : [];
-        $sessions = array_values(array_filter($sessions, 'is_string'));
-
-        if (in_array($session, $sessions, true)) {
-            return $this->json_error("Session {$session} already exists.");
+        // Phase 1 (2026-05-15) — concurrency hardening. Brief filesystem
+        // lock serializes concurrent add_session calls for THIS school;
+        // Firestore __updateTime precondition (CAS) on the commit is the
+        // authoritative guard against cross-process races. Idempotent on
+        // re-submit: if the session is already in the list after the
+        // re-read inside the lock, return success without writing.
+        $lock = $this->_config_lock_acquire('sessions');
+        if ($lock === null) {
+            log_message('error',
+                "ACC_CONCURRENT_REJECTED endpoint=add_session schoolId={$this->school_id} "
+                . "actor={$this->admin_id} reason=lock_timeout session={$session}");
+            return $this->json_error('Another session-management operation is in progress. Please retry in a few seconds.', 409);
         }
+        try {
+            // Re-read INSIDE the lock so we see the freshest sessions[].
+            $schoolDocId = $this->fs->schoolId();
+            $fsSchool    = $this->firebase->firestoreGet('schools', $schoolDocId);
+            if (!is_array($fsSchool)) {
+                return $this->json_error('School profile is not yet initialised.');
+            }
+            $sessions   = (is_array($fsSchool['sessions'] ?? null)) ? $fsSchool['sessions'] : [];
+            $sessions   = array_values(array_filter($sessions, 'is_string'));
+            $updateTime = (string) ($fsSchool['__updateTime'] ?? '');
 
-        $sessions[] = $session;
-        sort($sessions);
+            // Idempotent re-submit: already present → success without write.
+            if (in_array($session, $sessions, true)) {
+                log_message('error',
+                    "ACC_SESSION_ADD_IDEMPOTENT schoolId={$this->school_id} "
+                    . "session={$session} actor={$this->admin_id}");
+                $this->session->set_userdata('available_sessions', $sessions);
+                return $this->json_success([
+                    'message'    => "Session {$session} already exists.",
+                    'sessions'   => $sessions,
+                    'idempotent' => true,
+                ]);
+            }
 
-        // Firestore (sole write target)
-        $this->fs->update('schools', $this->fs->schoolId(), ['sessions' => $sessions, 'updatedAt' => date('c')]);
+            $sessions[] = $session;
+            sort($sessions);
 
-        $this->session->set_userdata('available_sessions', $sessions);
+            $ops = [[
+                'op'         => 'update',
+                'collection' => 'schools',
+                'docId'      => $schoolDocId,
+                'data'       => [
+                    'sessions'  => $sessions,
+                    'updatedAt' => date('c'),
+                ],
+            ]];
+            if ($updateTime !== '') {
+                $ops[0]['precondition'] = ['updateTime' => $updateTime];
+            }
+            $committed = false;
+            try {
+                $committed = (bool) $this->firebase->firestoreCommitBatch($ops);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "ACC_SESSION_ADD_COMMIT_FAILED schoolId={$this->school_id} "
+                    . "session={$session} err=" . $e->getMessage());
+            }
+            if (!$committed) {
+                log_message('error',
+                    "ACC_CONCURRENT_REJECTED endpoint=add_session schoolId={$this->school_id} "
+                    . "actor={$this->admin_id} reason=cas_failed session={$session}");
+                return $this->json_error(
+                    'Another administrator updated school configuration during your request. '
+                    . 'Please reload the page and retry.', 409);
+            }
 
-        $this->json_success(['message' => "Session {$session} added.", 'sessions' => $sessions]);
+            $this->session->set_userdata('available_sessions', $sessions);
+
+            log_message('error',
+                "ACC_SESSION_ADDED schoolId={$this->school_id} session={$session} "
+                . "actor={$this->admin_id} total=" . count($sessions));
+            log_audit('Configuration', 'add_session', $session, "Added session {$session}");
+
+            return $this->json_success(['message' => "Session {$session} added.", 'sessions' => $sessions]);
+        } finally {
+            $this->_config_lock_release($lock);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -2067,36 +2875,111 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid session format.');
         }
 
-        // Must exist in the sessions list (Firestore only)
-        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
-        $sessions = (is_array($fsSchool['sessions'] ?? null)) ? $fsSchool['sessions'] : [];
-        $sessions = array_values(array_filter($sessions, 'is_string'));
-        if (!in_array($session, $sessions, true)) {
-            return $this->json_error('Session not found. Add it first.');
+        // Phase 1 (2026-05-15) — concurrency hardening. Same lock+CAS
+        // pattern as add_session: brief filesystem lock for THIS school,
+        // Firestore __updateTime precondition on the commit. The PHP
+        // session keys are mutated ONLY after the Firestore commit
+        // succeeds, eliminating PHP/Firestore divergence.
+        $lock = $this->_config_lock_acquire('sessions');
+        if ($lock === null) {
+            log_message('error',
+                "ACC_CONCURRENT_REJECTED endpoint=set_active_session "
+                . "schoolId={$this->school_id} actor={$this->admin_id} "
+                . "reason=lock_timeout session={$session}");
+            return $this->json_error('Another session-management operation is in progress. Please retry in a few seconds.', 409);
         }
+        try {
+            // Re-read INSIDE the lock for the freshest sessions[] and
+            // the __updateTime token for the CAS commit.
+            $schoolDocId = $this->fs->schoolId();
+            $fsSchool    = $this->firebase->firestoreGet('schools', $schoolDocId);
+            if (!is_array($fsSchool)) {
+                return $this->json_error('School profile is not yet initialised.');
+            }
+            $sessions   = (is_array($fsSchool['sessions'] ?? null)) ? $fsSchool['sessions'] : [];
+            $sessions   = array_values(array_filter($sessions, 'is_string'));
+            $updateTime = (string) ($fsSchool['__updateTime'] ?? '');
+            $priorActive = (string) ($fsSchool['currentSession'] ?? '');
 
-        // Firestore (sole write target)
-        $this->fs->update('schools', $this->fs->schoolId(), ['currentSession' => $session, 'updatedAt' => date('c')]);
+            if (!in_array($session, $sessions, true)) {
+                return $this->json_error('Session not found. Add it first.');
+            }
 
-        // ── Issue 2 Fix: Update all 3 PHP session keys ─────────────────
-        // These are the same 3 keys that Admin::switch_session() updates,
-        // ensuring full compatibility with the header session-switcher and
-        // every controller that reads $this->session_year.
-        $this->session->set_userdata([
-            'session'         => $session,
-            'current_session' => $session,
-            'session_year'    => $session,
-        ]);
+            // Refuse switching INTO an archived session — defence-in-depth
+            // for the reversibility gap noted in audit (P1 #16). Cheap
+            // check; doesn't redesign anything.
+            $archived = (is_array($fsSchool['archivedSessions'] ?? null))
+                ? array_values(array_filter($fsSchool['archivedSessions'], 'is_string'))
+                : [];
+            if (in_array($session, $archived, true)) {
+                log_message('error',
+                    "ACC_SESSION_SWITCH_REJECTED schoolId={$this->school_id} "
+                    . "target={$session} reason=archived actor={$this->admin_id}");
+                return $this->json_error("Session {$session} is archived. Unarchive it before activation.", 409);
+            }
 
-        // Also update the controller property for this request
-        $this->session_year = $session;
+            // Idempotent: same active session → success, no write, no log_audit noise.
+            if ($priorActive === $session) {
+                return $this->json_success([
+                    'message'        => "Active session is already {$session}.",
+                    'active_session' => $session,
+                    'idempotent'     => true,
+                ]);
+            }
 
-        log_audit('Configuration', 'set_active_session', $session, "Changed active session to {$session}");
+            $ops = [[
+                'op'         => 'update',
+                'collection' => 'schools',
+                'docId'      => $schoolDocId,
+                'data'       => [
+                    'currentSession' => $session,
+                    'updatedAt'      => date('c'),
+                ],
+            ]];
+            if ($updateTime !== '') {
+                $ops[0]['precondition'] = ['updateTime' => $updateTime];
+            }
+            $committed = false;
+            try {
+                $committed = (bool) $this->firebase->firestoreCommitBatch($ops);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "ACC_SESSION_SWITCH_COMMIT_FAILED schoolId={$this->school_id} "
+                    . "session={$session} err=" . $e->getMessage());
+            }
+            if (!$committed) {
+                log_message('error',
+                    "ACC_CONCURRENT_REJECTED endpoint=set_active_session "
+                    . "schoolId={$this->school_id} actor={$this->admin_id} "
+                    . "reason=cas_failed prior={$priorActive} attempted={$session}");
+                return $this->json_error(
+                    'Another administrator updated school configuration during your request. '
+                    . 'Please reload the page and retry.', 409);
+            }
 
-        $this->json_success([
-            'message'        => "Active session set to {$session}. All modules will now use this session.",
-            'active_session' => $session,
-        ]);
+            // PHP session updates ONLY after successful Firestore commit.
+            // Pre-fix order had a small window where Firestore was already
+            // written but PHP session keys were stale (or vice-versa).
+            $this->session->set_userdata([
+                'session'         => $session,
+                'current_session' => $session,
+                'session_year'    => $session,
+            ]);
+            $this->session_year = $session;
+
+            log_message('error',
+                "ACC_SESSION_SWITCH schoolId={$this->school_id} "
+                . "from={$priorActive} to={$session} actor={$this->admin_id}");
+            log_audit('Configuration', 'set_active_session', $session,
+                "Changed active session from {$priorActive} to {$session}");
+
+            return $this->json_success([
+                'message'        => "Active session set to {$session}. All modules will now use this session.",
+                'active_session' => $session,
+            ]);
+        } finally {
+            $this->_config_lock_release($lock);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -2235,6 +3118,60 @@ class School_config extends MY_Controller
             return $this->json_error("Source session '{$from}' is not in the sessions list.");
         }
 
+        // Phase 1 (2026-05-15) — rollover intent + duplicate-protection.
+        // The intent map lives on the schools doc (no new collection)
+        // and tracks (from→to) attempts. A previous attempt that
+        // partially completed leaves a `running` entry; a retry sees
+        // that entry, switches to `resuming` mode, and skips students
+        // whose `session==to` (already promoted). Retry across worker
+        // restarts is therefore idempotent without redesigning the
+        // students collection.
+        $intentKey   = "{$from}__to__{$to}";
+        $rolloverMap = (is_array($fsSchool['rolloverIntents'] ?? null)) ? $fsSchool['rolloverIntents'] : [];
+        $prior       = (is_array($rolloverMap[$intentKey] ?? null))     ? $rolloverMap[$intentKey]     : [];
+        $resuming    = false;
+        if (!empty($prior) && (($prior['status'] ?? '') === 'running')) {
+            $resuming = true;
+            log_message('error',
+                "ACC_ROLLOVER_RESUME schoolId={$this->school_id} key={$intentKey} "
+                . "started_at=" . (string) ($prior['started_at'] ?? '?'));
+        } elseif (!empty($prior) && (($prior['status'] ?? '') === 'completed')) {
+            // Idempotent: same rollover already finished. Return the prior summary.
+            log_message('error',
+                "ACC_ROLLOVER_IDEMPOTENT schoolId={$this->school_id} key={$intentKey} "
+                . "completed_at=" . (string) ($prior['completed_at'] ?? '?'));
+            return $this->json_success([
+                'message'    => "Rollover {$from} → {$to} was already completed.",
+                'summary'    => is_array($prior['summary'] ?? null) ? $prior['summary'] : [],
+                'idempotent' => true,
+            ]);
+        }
+
+        // Write the `running` intent before any mutation.
+        $now = date('c');
+        try {
+            $this->fs->update('schools', $schoolId, [
+                'rolloverIntents.' . $intentKey => [
+                    'status'     => 'running',
+                    'from'       => $from,
+                    'to'         => $to,
+                    'started_at' => $now,
+                    'started_by' => $this->admin_id,
+                    'attempt'    => (int) (($prior['attempt'] ?? 0)) + 1,
+                ],
+                'updatedAt' => $now,
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error',
+                "ACC_ROLLOVER_INTENT_WRITE_FAILED schoolId={$this->school_id} "
+                . "key={$intentKey} err=" . $e->getMessage());
+            return $this->json_error('Could not record rollover intent. Retry.', 500);
+        }
+
+        log_message('error',
+            "ACC_ROLLOVER_START schoolId={$this->school_id} from={$from} to={$to} "
+            . "actor={$this->admin_id} resuming=" . ($resuming ? '1' : '0'));
+
         // Ensure target session is in the list
         if (!in_array($to, $sessions, true)) {
             $sessions[] = $to;
@@ -2249,6 +3186,8 @@ class School_config extends MY_Controller
             'students_graduated'=> 0,
             'students_skipped'  => 0,
             'errors'            => [],
+            'failed_rows'       => [],   // structured: [{id, kind, reason}]
+            'resuming'          => $resuming,
         ];
 
         // ── Copy sections ──────────────────────────────────────────────
@@ -2299,29 +3238,82 @@ class School_config extends MY_Controller
         }
 
         // ── Promote students ───────────────────────────────────────────
+        // 2026-05-15 Phase 1 critical-bug fix — the promotion loop had
+        // `$id = $d['id'] ?? ''` BEFORE `$d = $row['data'] ?? []`, so
+        // $d was a stale value from the previous iteration (or empty on
+        // the first row). The block now:
+        //   1. Reads $row → $stuId + $stuData explicitly (no $d alias)
+        //   2. Validates the student ID up front; SKIPS + logs on empty
+        //   3. Skips students whose `session==to` (already-promoted on a
+        //      prior failed attempt — idempotent resume)
+        //   4. Captures each failure as a structured failed_rows[] entry
+        //   5. Aborts the loop and marks the intent `failed` if the
+        //      consecutive failure rate exceeds 10 — protects against a
+        //      Firestore-side outage silently halving the school roster.
         if ($promoteStudents) {
             $srcStudents = $this->fs->schoolWhere('students', [['session', '==', $from]]);
             $srcStudents = is_array($srcStudents) ? $srcStudents : [];
 
-            foreach ($srcStudents as $row) {
-                $id = $d['id'] ?? '';
-                $d  = $row['data'] ?? [];
-                if ($id === '') { $summary['students_skipped']++; continue; }
-                if (($d['status'] ?? 'Active') !== 'Active') { $summary['students_skipped']++; continue; }
+            $consecFails = 0;
+            $consecCap   = 10;
 
-                $order = $d['classOrder'] ?? null;
+            foreach ($srcStudents as $row) {
+                if (!is_array($row)) {
+                    $summary['students_skipped']++;
+                    log_message('error',
+                        "ACC_ROLLOVER_SKIP schoolId={$this->school_id} reason=row_not_array");
+                    continue;
+                }
+                $stuData = is_array($row['data'] ?? null) ? $row['data'] : [];
+                $stuId   = (string) ($row['id'] ?? ($stuData['id'] ?? ''));
+
+                if ($stuId === '') {
+                    $summary['students_skipped']++;
+                    $summary['failed_rows'][] = [
+                        'id'     => '(none)',
+                        'kind'   => 'promotion',
+                        'reason' => 'empty_student_id',
+                    ];
+                    log_message('error',
+                        "ACC_ROLLOVER_SKIP schoolId={$this->school_id} reason=empty_id "
+                        . "session_from={$from} session_to={$to}");
+                    continue;
+                }
+                if (($stuData['status'] ?? 'Active') !== 'Active') {
+                    $summary['students_skipped']++;
+                    continue;
+                }
+                // Idempotent resume: skip students already in the target session
+                // (a prior partial attempt promoted them).
+                if (((string) ($stuData['session'] ?? '')) === $to) {
+                    $summary['students_skipped']++;
+                    log_message('error',
+                        "ACC_ROLLOVER_SKIP schoolId={$this->school_id} reason=already_promoted "
+                        . "id={$stuId} target={$to}");
+                    continue;
+                }
+
+                $order = $stuData['classOrder'] ?? null;
 
                 // Class 12 → Alumni (keep session, mark graduated)
-                if ($order === 12) {
+                if ($order === 12 || (is_numeric($order) && (int)$order === 12)) {
                     try {
-                        $this->fs->update('students', $id, [
+                        $this->fs->update('students', $stuId, [
                             'status'         => 'Alumni',
                             'graduatedFrom'  => $from,
                             'updatedAt'      => date('c'),
                         ]);
                         $summary['students_graduated']++;
+                        $consecFails = 0;
                     } catch (\Exception $e) {
-                        $summary['errors'][] = "Student {$id} graduate: " . $e->getMessage();
+                        $consecFails++;
+                        $msg = "Student {$stuId} graduate: " . $e->getMessage();
+                        $summary['errors'][]      = $msg;
+                        $summary['failed_rows'][] = ['id' => $stuId, 'kind' => 'graduate', 'reason' => $e->getMessage()];
+                        log_message('error',
+                            "ACC_ROLLOVER_FAIL schoolId={$this->school_id} id={$stuId} "
+                            . "kind=graduate err=" . $e->getMessage());
+                        if ($consecFails >= $consecCap) break;
                     }
                     continue;
                 }
@@ -2331,17 +3323,25 @@ class School_config extends MY_Controller
                     $nextNum = (int)$order + 1;
                     $nextLabel = 'Class ' . $nextNum . (in_array($nextNum, [11,12], true) ? 'th' : $this->_ordinal($nextNum));
                     try {
-                        $this->fs->update('students', $id, [
+                        $this->fs->update('students', $stuId, [
                             'session'      => $to,
                             'className'    => $nextLabel,
                             'classOrder'   => $nextNum,
-                            'sectionKey'   => "{$nextLabel}/" . ($d['section'] ?? ''),
+                            'sectionKey'   => "{$nextLabel}/" . ($stuData['section'] ?? ''),
                             'promotedFrom' => $from,
                             'updatedAt'    => date('c'),
                         ]);
                         $summary['students_promoted']++;
+                        $consecFails = 0;
                     } catch (\Exception $e) {
-                        $summary['errors'][] = "Student {$id} promote: " . $e->getMessage();
+                        $consecFails++;
+                        $msg = "Student {$stuId} promote: " . $e->getMessage();
+                        $summary['errors'][]      = $msg;
+                        $summary['failed_rows'][] = ['id' => $stuId, 'kind' => 'promote', 'reason' => $e->getMessage()];
+                        log_message('error',
+                            "ACC_ROLLOVER_FAIL schoolId={$this->school_id} id={$stuId} "
+                            . "kind=promote err=" . $e->getMessage());
+                        if ($consecFails >= $consecCap) break;
                     }
                     continue;
                 }
@@ -2352,24 +3352,49 @@ class School_config extends MY_Controller
                 if (is_numeric($order) && isset($foundationalNext[(int)$order])) {
                     $nextOrder = $foundationalNext[(int)$order];
                     $nextLabel = $foundationalLabel[$nextOrder] ?? '';
-                    if ($nextLabel === '') { $summary['students_skipped']++; continue; }
+                    if ($nextLabel === '') {
+                        $summary['students_skipped']++;
+                        log_message('error',
+                            "ACC_ROLLOVER_SKIP schoolId={$this->school_id} reason=no_foundational_label "
+                            . "id={$stuId} classOrder={$order}");
+                        continue;
+                    }
                     try {
-                        $this->fs->update('students', $id, [
+                        $this->fs->update('students', $stuId, [
                             'session'      => $to,
                             'className'    => $nextLabel,
                             'classOrder'   => $nextOrder,
-                            'sectionKey'   => "{$nextLabel}/" . ($d['section'] ?? ''),
+                            'sectionKey'   => "{$nextLabel}/" . ($stuData['section'] ?? ''),
                             'promotedFrom' => $from,
                             'updatedAt'    => date('c'),
                         ]);
                         $summary['students_promoted']++;
+                        $consecFails = 0;
                     } catch (\Exception $e) {
-                        $summary['errors'][] = "Student {$id} promote: " . $e->getMessage();
+                        $consecFails++;
+                        $msg = "Student {$stuId} promote: " . $e->getMessage();
+                        $summary['errors'][]      = $msg;
+                        $summary['failed_rows'][] = ['id' => $stuId, 'kind' => 'promote', 'reason' => $e->getMessage()];
+                        log_message('error',
+                            "ACC_ROLLOVER_FAIL schoolId={$this->school_id} id={$stuId} "
+                            . "kind=promote err=" . $e->getMessage());
+                        if ($consecFails >= $consecCap) break;
                     }
                     continue;
                 }
 
+                // Non-numeric classOrder, no foundational match — explicit skip with reason
                 $summary['students_skipped']++;
+                log_message('error',
+                    "ACC_ROLLOVER_SKIP schoolId={$this->school_id} reason=unknown_classOrder "
+                    . "id={$stuId} classOrder=" . var_export($order, true));
+            }
+
+            if ($consecFails >= $consecCap) {
+                $summary['errors'][]  = "Aborted promotion loop after {$consecCap} consecutive failures.";
+                log_message('error',
+                    "ACC_ROLLOVER_ABORT schoolId={$this->school_id} consec_fails={$consecFails} "
+                    . "promoted_before_abort={$summary['students_promoted']}");
             }
         }
 
@@ -2384,8 +3409,46 @@ class School_config extends MY_Controller
             $this->session_year = $to;
         }
 
+        // Phase 1 (2026-05-15) — finalise the rollover intent.
+        // `completed` when there are no errors AND no failed rows.
+        // `partial` when some rows succeeded but errors are present.
+        // `failed` when nothing succeeded.
+        $touched = $summary['sections_copied']
+            + $summary['students_promoted']
+            + $summary['students_graduated'];
+        $hasFailures = !empty($summary['errors']) || !empty($summary['failed_rows']);
+        $intentStatus = $hasFailures
+            ? ($touched > 0 ? 'partial' : 'failed')
+            : 'completed';
+        $summary['partial_failure'] = ($intentStatus === 'partial');
+
+        try {
+            $this->fs->update('schools', $schoolId, [
+                'rolloverIntents.' . $intentKey => [
+                    'status'        => $intentStatus,
+                    'from'          => $from,
+                    'to'            => $to,
+                    'started_at'    => $now,
+                    'completed_at'  => date('c'),
+                    'started_by'    => $this->admin_id,
+                    'summary'       => $summary,
+                ],
+                'updatedAt' => date('c'),
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error',
+                "ACC_ROLLOVER_INTENT_FINALISE_FAILED schoolId={$this->school_id} "
+                . "key={$intentKey} err=" . $e->getMessage());
+        }
+
+        log_message('error',
+            "ACC_ROLLOVER_END schoolId={$this->school_id} from={$from} to={$to} "
+            . "status={$intentStatus} sections_copied={$summary['sections_copied']} "
+            . "promoted={$summary['students_promoted']} graduated={$summary['students_graduated']} "
+            . "skipped={$summary['students_skipped']} errors=" . count($summary['errors']));
+
         log_audit('Configuration', 'rollover_session', $to,
-            "Rolled over {$from} → {$to}: " . json_encode($summary));
+            "Rolled over {$from} → {$to} (status={$intentStatus}): " . json_encode($summary));
 
         $parts = [];
         if ($summary['sections_copied'])    $parts[] = $summary['sections_copied']    . ' sections copied';
@@ -2447,21 +3510,38 @@ class School_config extends MY_Controller
             return $this->json_error("Cannot delete the active session. Set a different session as active first.");
         }
 
-        // ── Guard: refuse if data exists for this session ──────────────
-        $blockers = [];
-        foreach (['students' => 'student(s)', 'sections' => 'section(s)', 'staff' => 'staff record(s)'] as $coll => $label) {
-            try {
-                $rows = $this->fs->schoolWhere($coll, [['session', '==', $session]]);
-                $n = is_array($rows) ? count($rows) : 0;
-                if ($n > 0) $blockers[] = "{$n} {$label}";
-            } catch (\Exception $e) {
-                log_message('error', "delete_session check [{$coll}]: " . $e->getMessage());
-            }
-        }
-        if (!empty($blockers)) {
-            return $this->json_error(
-                "Cannot delete {$session}. It is referenced by: " . implode(', ', $blockers) .
-                '. Move or remove that data first, or use Archive instead.'
+        // 2026-05-15 Phase 2 — extended dependency sweep + structured
+        // response. Was: 3 collections (students/sections/staff). Now:
+        // also attendance / marks / feeDemands / feeReceipts / timetables
+        // / subjectAssignments — same collections delete_section /
+        // soft_delete_class already check, applied at the session level.
+        // The legacy `blockers[]` string list is retained for backward
+        // compat; the new `dependencies` object exposes per-collection
+        // counts that UI can render as a structured breakdown.
+        $deps = $this->_dep_count_safe([
+            ['key' => 'students',           'collection' => 'students',           'filters' => [['session', '==', $session]], 'label' => 'student(s)'],
+            ['key' => 'sections',           'collection' => 'sections',           'filters' => [['session', '==', $session]], 'label' => 'section(s)'],
+            ['key' => 'staff',              'collection' => 'staff',              'filters' => [['session', '==', $session]], 'label' => 'staff record(s)'],
+            ['key' => 'attendance',         'collection' => 'attendance',         'filters' => [['session', '==', $session]], 'label' => 'attendance record(s)'],
+            ['key' => 'marks',              'collection' => 'marks',              'filters' => [['session', '==', $session]], 'label' => 'marks record(s)'],
+            ['key' => 'feeDemands',         'collection' => 'feeDemands',         'filters' => [['session', '==', $session]], 'label' => 'fee demand(s)'],
+            ['key' => 'feeReceipts',        'collection' => 'feeReceipts',        'filters' => [['session', '==', $session]], 'label' => 'fee receipt(s)'],
+            ['key' => 'timetables',         'collection' => 'timetables',         'filters' => [['session', '==', $session]], 'label' => 'timetable entry/entries'],
+            ['key' => 'subjectAssignments', 'collection' => 'subjectAssignments', 'filters' => [['session', '==', $session]], 'label' => 'subject assignment(s)'],
+        ]);
+        $blockers = $deps['human']; // backward-compat alias for legacy callers
+        if (!empty($deps['has_any'])) {
+            $this->_log_dep_block('delete_session', $session, $deps);
+            $this->_json_error_with_data(
+                "Cannot delete {$session}. It is referenced by: " . implode(', ', $blockers)
+                . '. Use Archive instead to hide the session while preserving all data.',
+                [
+                    'dependencies'      => $deps['by_key'],
+                    'blockers'          => $blockers,  // legacy compat
+                    'session'           => $session,
+                    'recommend_archive' => true,
+                ],
+                409
             );
         }
 
@@ -2515,6 +3595,14 @@ class School_config extends MY_Controller
             return $this->json_error("Session {$session} is not in the sessions list.");
         }
         if ($doArchive && $session === $active) {
+            // 2026-05-15 Phase 2 — structured rejection telemetry for
+            // governance audits. Pairs with set_active_session's archive
+            // rejection (added in Phase 1) — together they enforce the
+            // invariant: an archived session is never simultaneously
+            // active.
+            log_message('error',
+                "ACC_SESSION_ARCHIVE_REJECTED schoolId={$this->school_id} "
+                . "actor={$this->admin_id} target={$session} reason=is_active_session");
             return $this->json_error("Cannot archive the active session. Set a different session as active first.");
         }
 
@@ -2526,9 +3614,13 @@ class School_config extends MY_Controller
             if (!in_array($session, $archived, true)) $archived[] = $session;
             sort($archived);
             $msg = "Session {$session} archived. It will be hidden from default dropdowns but data is preserved.";
+            log_message('error',
+                "ACC_SESSION_ARCHIVED schoolId={$this->school_id} actor={$this->admin_id} target={$session}");
         } else {
             $archived = array_values(array_filter($archived, fn($s) => $s !== $session));
             $msg = "Session {$session} unarchived.";
+            log_message('error',
+                "ACC_SESSION_UNARCHIVED schoolId={$this->school_id} actor={$this->admin_id} target={$session}");
         }
 
         $this->fs->update('schools', $this->fs->schoolId(), [
@@ -2656,6 +3748,76 @@ class School_config extends MY_Controller
     //  PRIVATE HELPERS
     // =========================================================================
 
+    /**
+     * 2026-05-15 Phase 3 — uniform diagnostic-endpoint gate.
+     *
+     * Single source of truth for "is this caller allowed to hit a debug-only
+     * diagnostic endpoint?". Returns void after emitting a 404 if the gate
+     * fails, so the caller can `return $this->_assert_diagnostic_allowed(...)`
+     * and rely on `exit` semantics (show_404 calls exit internally).
+     *
+     * Gate composition (all must hold):
+     *   1. Caller is in ADMIN_ROLES (already enforced by per-method
+     *      _require_role, but re-checked here as defense-in-depth).
+     *   2. GRADER_DEBUG flag is on. GRADER_DEBUG is file-flag based
+     *      (application/logs/.debug_enabled) — production deployments
+     *      never have that file, so the flag is false and diagnostic
+     *      endpoints become invisible (show_404, not 403, so attackers
+     *      cannot enumerate which endpoints exist).
+     *
+     * Why 404 instead of 403: 403 confirms the endpoint exists. 404
+     * makes the endpoint indistinguishable from a non-route. Combined
+     * with the route still being declared in routes.php, this is
+     * deliberate misdirection — the route resolves, but the controller
+     * pretends the URL never existed.
+     */
+    private function _assert_diagnostic_allowed(string $action): void
+    {
+        $this->_require_role(self::ADMIN_ROLES, $action);
+        if (!defined('GRADER_DEBUG') || !GRADER_DEBUG) {
+            log_message('info',
+                "ACC_DIAG_ROUTE_BLOCKED action={$action} schoolId={$this->school_id} "
+                . "actor=" . ($this->admin_id ?? 'unknown') . " reason=debug_flag_off");
+            show_404();
+        }
+    }
+
+    /**
+     * 2026-05-15 Phase 3 — canonicalize class labels for known key patterns.
+     *
+     * Problem this solves: `save_classes()` accepted whatever label the
+     * client posted ("class 5", "Class V", "Std 5", "5th grade"), which
+     * caused shape drift between systems. The class/section canonical
+     * contract requires labels in the form "Class N{ordinal}" for numeric
+     * grades and "Nursery|LKG|UKG|Playgroup" for foundational classes.
+     *
+     * Strategy: derive the canonical label from the key (already validated
+     * by save_classes' regex `^[A-Za-z0-9_]+$`). For unknown keys, return
+     * the trimmed client label unchanged so custom schools (e.g. Montessori
+     * "primary_a") continue to function. This means existing data is NOT
+     * rewritten; new saves are canonical only for the common cases.
+     */
+    private function _normalize_class_label(string $key, string $clientLabel): string
+    {
+        $lower = strtolower(trim($key));
+        $map = [
+            'nursery'   => 'Nursery',
+            'lkg'       => 'LKG',
+            'ukg'       => 'UKG',
+            'playgroup' => 'Playgroup',
+        ];
+        if (isset($map[$lower])) {
+            return $map[$lower];
+        }
+        if (preg_match('/^\d+$/', $key)) {
+            $n      = (int) $key;
+            $suffix = $this->_ordinal_suffix($n);
+            return "Class {$n}{$suffix}";
+        }
+        // Non-canonical key — preserve the client label (trimmed by save_classes).
+        return trim($clientLabel);
+    }
+
     private function _class_node_name(string $classKey): string
     {
         static $map = [
@@ -2710,6 +3872,8 @@ class School_config extends MY_Controller
 
         // Firestore (sole write target)
         $this->fs->update('schools', $this->fs->schoolId(), ['reportCardTemplate' => $template, 'updatedAt' => date('c')]);
+
+        log_audit('Configuration', 'save_report_card_template', $school, "Set report card template to {$template}");
 
         $this->json_success(['message' => 'Report card template saved.', 'template' => $template]);
     }
@@ -2804,7 +3968,14 @@ class School_config extends MY_Controller
      */
     public function health_check()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_health_check');
+        // 2026-05-15 Phase 3 — gated behind GRADER_DEBUG.
+        // The user-facing health-check UI is served by the separate
+        // /health_check controller (see views/health_check/index.php +
+        // header.php sidebar link). This endpoint is the legacy
+        // school_config diagnostic that dumps the full school doc and
+        // every classes/sections/subjects row — useful in dev, but a
+        // PII/credential-leak surface in production. show_404 in prod.
+        $this->_assert_diagnostic_allowed('school_config_health_check');
 
         $school    = $this->school_name;
         $schoolId  = $this->school_id;

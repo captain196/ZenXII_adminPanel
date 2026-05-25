@@ -217,8 +217,8 @@ class Communication extends MY_Controller
         'Notice'       => ['notices',        'NOT'],
         'Circular'     => ['circulars',      'CIR'],
         'Template'     => ['messageTemplates','TPL'],
-        'Trigger'      => ['messageTriggers','TRG'],
-        'Log'          => ['messageLogs',    'LOG'],
+        'Trigger'      => ['alertTriggers', 'TRG'],
+        'Log'          => ['deliveryLogs',  'LOG'],
     ];
 
     /**

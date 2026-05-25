@@ -253,7 +253,10 @@ class Entity_firestore_sync
             'studentId'   => $studentId,
             'userId'      => $studentId,
             'parentDbKey' => $this->schoolCode,
-            'session'     => $this->session,
+            // BUG-052 fix 2026-05-25: respect caller-provided session for cross-session writes
+            // (e.g. Sis::promote target_session). Fallback to $this->session preserves
+            // legacy single-session callers (save_student, admit_student, import_students).
+            'session'     => $data['session'] ?? $data['Session'] ?? $this->session,
             'updatedAt'   => date('c'),
         ];
 
@@ -417,7 +420,8 @@ class Entity_firestore_sync
             'classOrder'    => $cs['classOrder'],
             'sectionCode'   => $cs['sectionCode'],
             'rollNo'        => $data['Roll No'] ?? $data['rollNo'] ?? '',
-            'session'       => $this->session,
+            // BUG-052 fix 2026-05-25: caller-provided session precedence
+            'session'       => $data['session'] ?? $data['Session'] ?? $this->session,
 
             // Father details
             'name'          => $fatherName,
@@ -488,7 +492,8 @@ class Entity_firestore_sync
             'department'  => $data['Department'] ?? $data['department'] ?? '',
             'profilePic'  => $data['Doc']['ProfilePic'] ?? $data['profile_pic'] ?? '',
             'status'      => $data['Status'] ?? 'Active',
-            'session'     => $this->session,
+            // BUG-052 fix 2026-05-25: caller-provided session precedence
+            'session'     => $data['session'] ?? $data['Session'] ?? $this->session,
             'updatedAt'   => date('c'),
 
             // Phase A (2026-04-08): statutory + profile fields
@@ -532,7 +537,8 @@ class Entity_firestore_sync
             'className'    => $classKey,
             'section'      => $sectionKey,
             'classTeacher' => $data['ClassTeacher'] ?? '',
-            'session'      => $this->session,
+            // BUG-052 fix 2026-05-25: caller-provided session precedence
+            'session'      => $data['session'] ?? $data['Session'] ?? $this->session,
             'studentCount' => 0,
             'updatedAt'    => date('c'),
         ];
@@ -559,7 +565,8 @@ class Entity_firestore_sync
             'startDate'   => $data['start_date'] ?? '',
             'endDate'     => $data['end_date'] ?? '',
             'maxMarks'    => $data['max_marks'] ?? '',
-            'session'     => $this->session,
+            // BUG-052 fix 2026-05-25: caller-provided session precedence
+            'session'     => $data['session'] ?? $data['Session'] ?? $this->session,
             'status'      => $data['status'] ?? 'Active',
             'updatedAt'   => date('c'),
         ];
@@ -581,7 +588,8 @@ class Entity_firestore_sync
             'className'   => $classKey,
             'section'     => $sectionKey,
             'schedule'    => $scheduleData,
-            'session'     => $this->session,
+            // BUG-052 fix 2026-05-25: caller-provided session precedence (parameter is $scheduleData here)
+            'session'     => $scheduleData['session'] ?? $scheduleData['Session'] ?? $this->session,
             'updatedAt'   => date('c'),
         ];
         return $this->_write('examSchedule', $docId, $doc);
@@ -656,7 +664,8 @@ class Entity_firestore_sync
             'markedAt'    => $data['markedAt'] ?? date('c'),
             'late'        => $data['late'] ?? false,
             'lateMinutes' => $data['lateMinutes'] ?? 0,
-            'session'     => $this->session,
+            // BUG-052 fix 2026-05-25: caller-provided session precedence
+            'session'     => $data['session'] ?? $data['Session'] ?? $this->session,
         ];
         return $this->_write('attendance', $docId, $doc);
     }
@@ -682,7 +691,8 @@ class Entity_firestore_sync
             'targetClass' => $data['targetClass'] ?? '',
             'createdAt'   => $data['createdAt'] ?? date('c'),
             'createdBy'   => $data['createdBy'] ?? '',
-            'session'     => $this->session,
+            // BUG-052 fix 2026-05-25: caller-provided session precedence
+            'session'     => $data['session'] ?? $data['Session'] ?? $this->session,
         ];
         return $this->_write('notifications', $docId, $doc);
     }

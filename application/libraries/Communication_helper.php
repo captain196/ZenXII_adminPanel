@@ -327,18 +327,20 @@ class Communication_helper
         //    back to the originating event doc via `event_ref`.
         $nowIso = date('c');
         try {
-            // Reuse the Communication counter in Firestore to keep noticeIds
-            // monotonic across manual + auto-generated notices.
-            $counterDoc = $this->fs ? $this->fs->get('communicationCounters', $this->school_name ?? 'default') : null;
-            $fsCounter  = (int) (($counterDoc['noticeCounter'] ?? 0)) + 1;
-            $noticeId   = 'NOT' . str_pad($fsCounter, 5, '0', STR_PAD_LEFT);
+            // Phase 2.0.1' (2026-05-24) — multi-tenant Notice-ID hardening:
+            //   • Counter source unified to schools/{schoolFs}_profile.commCounters.Notice
+            //     (matches Communication._next_id; eliminates parallel communicationCounters
+            //     topology that was producing within-tenant doc-ID collisions post-canonicalization).
+            //   • Pad width aligned to 4 (matches Writer 1 canonical NOT0001 format).
+            //   • Doc ID school-scoped via fs->docId() (matches Writers 1/3/4; eliminates
+            //     cross-tenant doc-ID collision risk per CARRY-004 forensic verdict).
+            $profileDocId = $this->school_id . '_profile';
+            $profile      = $this->fs ? $this->fs->get('schools', $profileDocId) : null;
+            $fsCounter    = (int) (($profile['commCounters.Notice'] ?? 0)) + 1;
+            $noticeId     = 'NOT' . str_pad($fsCounter, 4, '0', STR_PAD_LEFT);
             if ($this->fs) {
-                $this->fs->set('communicationCounters', $this->school_name ?? 'default', [
-                    'schoolId'      => $this->school_id ?? $this->school_name,
-                    'noticeCounter' => $fsCounter,
-                    'updatedAt'     => $nowIso,
-                ], /* merge */ true);
-                $this->fs->set('notices', $noticeId, [
+                $this->fs->update('schools', $profileDocId, ['commCounters.Notice' => $fsCounter]);
+                $this->fs->set('notices', $this->fs->docId($noticeId), [
                     'noticeId'    => $noticeId,
                     'schoolId'    => $this->school_id ?? $this->school_name,
                     'title'       => $title,
@@ -363,7 +365,7 @@ class Communication_helper
         } catch (\Exception $e) {
             log_message('error', 'write_event_notice: Firestore write failed — ' . $e->getMessage());
             // Fall through — RTDB writes below still give the mobile apps data.
-            $noticeId = $noticeId ?? 'NOT' . str_pad((int) (microtime(true) * 1000) % 100000, 5, '0', STR_PAD_LEFT);
+            $noticeId = $noticeId ?? 'NOT' . str_pad((int) (microtime(true) * 1000) % 10000, 4, '0', STR_PAD_LEFT);
         }
 
         // ── 2. RTDB Communication/Notices — TODO remove after 7-day verification ──
