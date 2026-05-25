@@ -198,10 +198,29 @@ class FeeCollectionService
         // re-introduce it (preserve the keyed response shape so the
         // four assignments below still work).
         $__parPreloadT0  = microtime(true);
-        $idemp           = $controller->firebase->firestoreGet('feeIdempotency',  "{$schoolFs}_{$idempHash}");
-        $__feeStructure  = $controller->firebase->firestoreGet('feeStructures',   "{$schoolFs}_{$session}_{$class}_{$section}");
-        $__existingLock  = $controller->firebase->firestoreGet('feeLocks',        "{$schoolFs}_{$userId}");
-        $__existingRcpt  = $controller->firebase->firestoreGet('feeReceiptIndex', "{$schoolFs}_{$session}_{$receiptNo}");
+        // BUG-045 OP1' fix: true parallel reads via Firestore_rest_client.
+        // Mirrors Curriculum_service.php:681-688 pattern. Falls back to
+        // sequential firestoreGet if the rest client doesn't expose the
+        // method (defensive — preserves correctness across environments).
+        $__preloadReqs = [
+            'idemp'        => ['collection' => 'feeIdempotency',  'docId' => "{$schoolFs}_{$idempHash}"],
+            'feeStructure' => ['collection' => 'feeStructures',   'docId' => "{$schoolFs}_{$session}_{$class}_{$section}"],
+            'lock'         => ['collection' => 'feeLocks',        'docId' => "{$schoolFs}_{$userId}"],
+            'rcpt'         => ['collection' => 'feeReceiptIndex', 'docId' => "{$schoolFs}_{$session}_{$receiptNo}"],
+        ];
+        $__rest = $controller->firebase->getFirestoreDb();
+        if ($__rest && method_exists($__rest, 'getDocumentsParallel')) {
+            $__preloadDocs = $__rest->getDocumentsParallel($__preloadReqs);
+        } else {
+            $__preloadDocs = [];
+            foreach ($__preloadReqs as $__tag => $__req) {
+                $__preloadDocs[$__tag] = $controller->firebase->firestoreGet($__req['collection'], $__req['docId']);
+            }
+        }
+        $idemp           = $__preloadDocs['idemp']        ?? null;
+        $__feeStructure  = $__preloadDocs['feeStructure'] ?? null;
+        $__existingLock  = $__preloadDocs['lock']         ?? null;
+        $__existingRcpt  = $__preloadDocs['rcpt']         ?? null;
         $__parPreloadMs  = (int) round((microtime(true) - $__parPreloadT0) * 1000);
 
         if (is_array($idemp)) {
@@ -1022,6 +1041,21 @@ class FeeCollectionService
                 }
             } else {
                 // ── SYNC MODE (default) ─────────────────────────────────
+                // BUG-045 OP4-A: append audit ops to $batchOps so audit-log
+                // writes commit atomically with the financial writes —
+                // eliminates the post-batch sequential audit-write phase
+                // (~1.6-2s saving on demands_allocated phase). Audit ops
+                // are appended only on success path; failure path retains
+                // sequential audit writes via _auditAfterBatch (kept intact
+                // for sequential fallback at line 1163+).
+                $auditOps = self::_buildAuditOpsAfterBatch(
+                    $controller, $schoolFs, $session, $data,
+                    $receiptKey, $receiptNo, $userId,
+                    $demands /* before */, $allocationsForBatch, $batchReceiptData
+                );
+                if (!empty($auditOps)) {
+                    $batchOps = array_merge($batchOps, $auditOps);
+                }
                 log_message('debug', "[FCS BATCH COMMIT] ops=" . count($batchOps) . " receipt={$receiptKey}");
                 $batchCompleted = (bool) $controller->firebase->firestoreCommitBatch($batchOps);
                 log_message('debug', "[FCS BATCH COMMIT] ok=" . ($batchCompleted ? 'true' : 'false'));
@@ -1033,17 +1067,12 @@ class FeeCollectionService
                     $allocatedMonths = $allocatedMonthsBatch;
                     $paidMonthsFlags = $paidMonthsFlagsBatch;
 
-                    // T1 audit trail — one row per demand mutation + one
-                    // for the receipt creation. Fires AFTER the atomic batch
-                    // lands in Firestore so we never audit a write that
-                    // didn't persist. Safe against logger failures (see
-                    // Fee_audit_logger::record — it returns false on error
-                    // instead of throwing).
-                    self::_auditAfterBatch(
-                        $controller, $schoolFs, $session, $data,
-                        $receiptKey, $receiptNo, $userId,
-                        $demands /* before */, $allocationsForBatch, $batchReceiptData
-                    );
+                    // BUG-045 OP4-A: _auditAfterBatch call removed — audit
+                    // writes are now embedded atomically in the $batchOps
+                    // above. Stronger atomicity: audit row CANNOT land for
+                    // a financial write that didn't persist (was previously
+                    // ordered after commit but could diverge under partial
+                    // failure).
                 } else {
                     log_message('warning', "[FCS BATCH FALLBACK] receipt={$receiptKey} — commit failed, falling through to sequential writes");
                     // Reset shared vars; sequential path will repopulate.
@@ -1753,5 +1782,93 @@ class FeeCollectionService
             self::_auditDemandUpdate($controller, $schoolFs, $session, $data, $did, $before, $after);
         }
         self::_auditReceiptWrite($controller, $schoolFs, $session, $data, $receiptKey, $batchReceiptData);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  BUG-045 OP4-A — build (don't write) variants of the audit helpers.
+    //  Mirror the existing _auditDemandUpdate / _auditReceiptWrite /
+    //  _auditAfterBatch signatures but return batch-op arrays for
+    //  inclusion in firestoreCommitBatch. Used by the batch_path success
+    //  branch to embed audit writes atomically with financial writes.
+    //  Original audit helpers remain in place for sequential fallback.
+    // ─────────────────────────────────────────────────────────────────
+
+    /** OP4-A — build (don't write) a per-demand audit op. Mirrors _auditDemandUpdate. */
+    private static function _buildAuditDemandUpdateOp(
+        $controller, string $schoolFs, string $session, array $data,
+        string $demandId, array $before, array $after
+    ): ?array {
+        $logger = self::_auditLogger($controller, $schoolFs, $session);
+        return $logger->buildOp(
+            'update', 'demand', $demandId,
+            [
+                'paidAmount'  => (float) ($before['paidAmount']  ?? $before['paid_amount']  ?? 0),
+                'balance'     => (float) ($before['balance']     ?? 0),
+                'status'      => (string) ($before['status']     ?? 'unpaid'),
+                'lastReceipt' => (string) ($before['lastReceipt'] ?? $before['last_receipt'] ?? ''),
+            ],
+            [
+                'paidAmount'  => (float) ($after['paidAmount']  ?? 0),
+                'balance'     => (float) ($after['balance']     ?? 0),
+                'status'      => (string) ($after['status']     ?? ''),
+                'lastReceipt' => (string) ($after['lastReceipt'] ?? ''),
+            ],
+            self::_performedBy($data),
+            ['source' => (string) ($data['source'] ?? 'cashier')]
+        );
+    }
+
+    /** OP4-A — build (don't write) the receipt-creation audit op. Mirrors _auditReceiptWrite. */
+    private static function _buildAuditReceiptWriteOp(
+        $controller, string $schoolFs, string $session, array $data,
+        string $receiptKey, array $receiptDoc
+    ): ?array {
+        $logger = self::_auditLogger($controller, $schoolFs, $session);
+        return $logger->buildOp(
+            'create', 'receipt', $receiptKey,
+            /* before */ [],
+            [
+                'receiptNo'       => (string) ($receiptDoc['receiptNo']      ?? ''),
+                'studentId'       => (string) ($receiptDoc['studentId']      ?? ''),
+                'totalAmount'     => (float)  ($receiptDoc['inputAmount']    ?? $receiptDoc['amount']          ?? 0),
+                'paidAmount'      => (float)  ($receiptDoc['allocatedAmount'] ?? $receiptDoc['allocated_amount'] ?? 0),
+                'discount'        => (float)  ($receiptDoc['discount']       ?? 0),
+                'fine'            => (float)  ($receiptDoc['fine']           ?? 0),
+                'paymentMode'     => (string) ($receiptDoc['paymentMode']    ?? ''),
+                'feeMonths'       => is_array($receiptDoc['feeMonths'] ?? null) ? $receiptDoc['feeMonths'] : [],
+                'txnId'           => (string) ($receiptDoc['txnId']          ?? ''),
+                'date'            => (string) ($receiptDoc['date']           ?? ''),
+            ],
+            self::_performedBy($data),
+            [
+                'source' => (string) ($data['source'] ?? 'cashier'),
+                'reason' => 'submit_fees',
+            ]
+        );
+    }
+
+    /** OP4-A — build (don't write) audit ops for a successful batch. Mirrors _auditAfterBatch. */
+    private static function _buildAuditOpsAfterBatch(
+        $controller, string $schoolFs, string $session, array $data,
+        string $receiptKey, string $receiptNo, string $userId,
+        array $demandsBefore, array $allocationsForBatch, array $batchReceiptData
+    ): array {
+        $ops = [];
+        foreach ($allocationsForBatch as $a) {
+            $did = (string) ($a['demand_id'] ?? '');
+            if ($did === '') continue;
+            $before = $demandsBefore[$did] ?? [];
+            $after = [
+                'paidAmount'  => (float)  ($a['new_paid']  ?? 0),
+                'balance'     => (float)  ($a['balance']   ?? 0),
+                'status'      => (string) ($a['status']    ?? ''),
+                'lastReceipt' => $receiptKey,
+            ];
+            $op = self::_buildAuditDemandUpdateOp($controller, $schoolFs, $session, $data, $did, $before, $after);
+            if ($op !== null) $ops[] = $op;
+        }
+        $op = self::_buildAuditReceiptWriteOp($controller, $schoolFs, $session, $data, $receiptKey, $batchReceiptData);
+        if ($op !== null) $ops[] = $op;
+        return $ops;
     }
 }

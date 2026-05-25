@@ -52,7 +52,7 @@ class AccountingWatchdog extends CI_Controller
     private const COL_ALERTS = 'accountingAlerts';
 
     private string $schoolFs   = '';
-    private string $session    = '';
+    private string $sessionYear = '';
     private string $schoolName = '';
 
     public function __construct()
@@ -62,18 +62,20 @@ class AccountingWatchdog extends CI_Controller
             show_error('AccountingWatchdog is CLI-only.', 403);
         }
         $this->load->library('firebase');
-
-        $this->schoolName = (string) (getenv('SCHOOL_NAME')  ?: '');
-        $this->session    = (string) (getenv('SESSION_YEAR') ?: '');
-        if ($this->schoolName === '' || $this->session === '') {
-            echo "ERROR: Set SCHOOL_NAME and SESSION_YEAR env vars.\n";
-            exit(1);
-        }
-        $this->firebase->initFirestore($this->schoolName, $this->session);
         $this->load->library('firestore_service');
-        $this->schoolFs = (string) $this->firebase->getSchoolId();
-        if ($this->schoolFs === '') {
-            echo "ERROR: Could not resolve schoolId for {$this->schoolName}.\n";
+
+        // BUG-A7 Framing α — direct SCHOOL_ID bootstrap. The legacy
+        // initFirestore(schoolName) + getSchoolId() round-trip was removed
+        // because Firebase library now self-initializes for the graderadmin
+        // project at construction. SCHOOL_ID env var carries the FS-style
+        // schoolId (e.g. SCH_D94FE8F7AD) directly. SCHOOL_NAME remains as
+        // an optional companion env var preserved for Accounting_health::init
+        // 4th-arg consumer (metrics_24h schoolName-vs-schoolFs query fallback).
+        $this->schoolFs    = (string) (getenv('SCHOOL_ID')    ?: '');
+        $this->sessionYear = (string) (getenv('SESSION_YEAR') ?: '');
+        $this->schoolName  = (string) (getenv('SCHOOL_NAME')  ?: '');
+        if ($this->schoolFs === '' || $this->sessionYear === '') {
+            echo "ERROR: Set SCHOOL_ID and SESSION_YEAR env vars.\n";
             exit(1);
         }
     }
@@ -83,7 +85,7 @@ class AccountingWatchdog extends CI_Controller
         $this->_out("AccountingWatchdog run @ " . date('c') . " school={$this->schoolFs}");
 
         $this->load->library('Accounting_health', null, 'acctHealth');
-        $this->acctHealth->init($this->firebase, $this->schoolFs, $this->session, $this->schoolName);
+        $this->acctHealth->init($this->firebase, $this->schoolFs, $this->sessionYear, $this->schoolName);
         $snapshot = $this->acctHealth->snapshot();
 
         $active = (array) ($snapshot['alerts'] ?? []);
@@ -116,7 +118,7 @@ class AccountingWatchdog extends CI_Controller
                 if ($webhookUrl !== '' && $this->_postWebhook($webhookUrl, [
                     'alertId'  => $alertId,
                     'schoolId' => $this->schoolFs,
-                    'session'  => $this->session,
+                    'session'  => $this->sessionYear,
                     'rule'     => $rule,
                     'severity' => $severity,
                     'message'  => $message,
@@ -154,7 +156,7 @@ class AccountingWatchdog extends CI_Controller
         try {
             $rows = (array) $this->firebase->firestoreQuery(self::COL_ALERTS, [
                 ['schoolId',     '==', $this->schoolFs],
-                ['session',      '==', $this->session],
+                ['session',      '==', $this->sessionYear],
                 ['acknowledged', '==', false],
             ], 'createdAt', 'DESC', 50);
             $out = [];
@@ -181,7 +183,7 @@ class AccountingWatchdog extends CI_Controller
             $ok = $this->firebase->firestoreSet(self::COL_ALERTS, $alertId, [
                 'alertId'        => $alertId,
                 'schoolId'       => $this->schoolFs,
-                'session'        => $this->session,
+                'session'        => $this->sessionYear,
                 'rule'           => $rule,
                 'severity'       => $severity,
                 'message'        => $message,

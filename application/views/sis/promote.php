@@ -318,8 +318,11 @@ function previewPromotion() {
             tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--t3);padding:28px;">No students found in the selected class/section.</td></tr>';
         } else {
             tbody.innerHTML = previewStudents.map(function(s, i) {
+                // 2026-05-25 — server returns already-formatted "Class 8th" / "Section A"
+                // per [[student_class_section_canonical]] (className/section are canonical
+                // full forms). Do NOT prepend "Class "/"Section " or you get "Class Class 8th".
                 return '<tr><td>' + (i+1) + '</td><td><code>' + esc(s.user_id) + '</code></td>'
-                    + '<td>' + esc(s.name) + '</td><td>Class ' + esc(s.class) + '</td>'
+                    + '<td>' + esc(s.name) + '</td><td>' + esc(s.class) + '</td>'
                     + '<td>' + esc(s.section) + '</td></tr>';
             }).join('');
         }

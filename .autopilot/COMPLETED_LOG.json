@@ -1,0 +1,247 @@
+{
+  "schema_version": "v7.0",
+  "mission_state": "runtime_validation_phase_plus_phase_4_wave_1_paused_plus_BUG_052_caller_session_remediation",
+  "session_state": "session_5_cycle_6_BUG_052_fixed_unverified_alpha_8_of_9_sites_remediated_awaiting_operator_T5_T6_T7",
+  "campaign_plan_present": true,
+  "campaign_plan_path": ".autopilot/CAMPAIGN_PLAN.yaml",
+  "instance_materialized": true,
+  "instance_path": ".autopilot/INSTANCE.yaml",
+  "current_session": 5,
+  "active_stage": "BUG_052_cross_session_synchronization_remediation",
+  "active_sub_window": "BUG_052_caller_session_precedence_remediation",
+  "next_authorized_sub_window": "operator-driven T5 (re-promote 7 students Class 8th → Class 9th target 2027-28) to verify BUG-052 + restore intended data state",
+  "active_tier": "tier_1",
+  "active_scenario_just_completed": "BUG-052 caller-session precedence 8-site remediation (Entity_firestore_sync.php) + persistence",
+  "active_scenario_next": "operator-driven T5 cross-session promote verification + T6/T7 backward-compat verification; on T5 PASS, 7 stuck students automatically restored to intended target session 2027-28",
+  "counters_session_5": {
+    "session_cycle_count": 6,
+    "session_task_count": 6,
+    "persisted_task_count_session_5": 6,
+    "bugs_filed_this_session_5": 7,
+    "bugs_verified_this_session_5": 1,
+    "bugs_reclassified_this_session_5": 3,
+    "bugs_fixed_unverified_this_session_5": 2,
+    "bugs_reopened_this_session_5": 1,
+    "bugs_rolled_back_this_session_5": 1,
+    "bugs_companion_carry_filed_this_session_5": 1,
+    "consecutive_all_OK_audits_carry": 11,
+    "audit_overrides_by_invariant": {
+      "financial_freeze_choreography": 1
+    }
+  },
+  "campaign_metrics_cumulative": {
+    "absolute_cycles": 64,
+    "absolute_tasks": 42,
+    "sessions_completed": 4,
+    "sessions_active": 5,
+    "modules_hardened": 6,
+    "modules_total": 9,
+    "hardened_percentage": 67,
+    "v7_bugs_verified": 14,
+    "v7_bugs_fixed_unverified": 2,
+    "v7_bugs_reopened": 1,
+    "v7_bugs_deferred_carry": 5,
+    "v7_bugs_runtime_validation_findings": 6,
+    "v7_bugs_rtdb_retirement_executed": 0,
+    "v7_bugs_rtdb_retirement_attempted_and_rolled_back": 1,
+    "v1_bugs_carry": 24,
+    "path_alpha_catalogued": 38,
+    "advisory_carries": 17,
+    "consecutive_all_OK_audits": 11,
+    "earned_trust_multiplier": "5.5x",
+    "commits_made": 0,
+    "rtdb_loc_eliminated_session_5": 0,
+    "rtdb_libraries_retired_session_5": 0,
+    "rtdb_loc_eliminated_then_restored_session_5": 723,
+    "data_correctness_fixes_session_5": 1,
+    "v7_bugs_verified_list": ["BUG-026", "BUG-027", "BUG-028 Phase 1", "BUG-029", "BUG-030", "BUG-031", "BUG-032", "BUG-033", "BUG-034", "BUG-035", "BUG-036", "BUG-038", "BUG-039", "BUG-046"],
+    "v7_bugs_fixed_unverified_list": [
+      "BUG-050 (PS-3 amount-mismatch guard restoration; α-caveat; awaiting staging T3+T4-T9 + telemetry soak + live promotion)",
+      "BUG-052 (caller-session precedence in Entity_firestore_sync 8 of 9 sites; α-caveat; awaiting operator T5+T6+T7; companion carry BUG-052-companion for syncExamScheduleFull deferred)"
+    ],
+    "v7_bugs_reopened_list": [
+      "BUG-051 (P4W1.1 F28 Dual_write multi-path retirement; REOPENED 2026-05-25 then DEFINITIVELY RECLASSIFIED — D1 reverse-promote with restored Dual_write also timed out, confirming pre-existing latency carry [[BUG-045]] family, NOT F28 regression; F28 retirement strategically valid; rollback was based on incomplete diagnosis but not harmful)"
+    ],
+    "v7_bugs_deferred_carry_list": ["BUG-037 (save_classes lock+CAS — UX coord)", "BUG-040 (teacher VM month-key dual-read — D10 schema coord)", "BUG-041 (teacher VM hardcoded school-start — settings-driven coord)", "BUG-042 (parent↔teacher enum-name divergence — cross-app rename coord)", "BUG-052-companion (syncExamScheduleFull signature-change requirement for cross-session exam scheduling)"],
+    "v7_bugs_runtime_validation_findings_list": [
+      "BUG-043 / FEE-VAL-001 (lastPaymentDate cross-path projection-writer canon gap; P2 INVESTIGATE; verified 2026-05-23)",
+      "BUG-044 / FEE-VAL-002 (feeOnlinePayments parent_verify_payment regression; P2 INVESTIGATE; verified 2026-05-23)",
+      "BUG-045 / FEE-VAL-003 (verify-call sustained latency ~25s; P2 INVESTIGATE; OPEN — confirmed as root cause of BUG-051 timeout via D1 reverse-promote evidence)",
+      "BUG-046 / FEE-VAL-004 (FeeCollectionService protected-method visibility; P1 VERIFIED 2026-05-23)",
+      "BUG-050 / PS-3 (Razorpay amount-mismatch guard restoration; P1 fixed-unverified-α 2026-05-24)",
+      "BUG-051 / P4W1.1 (F28 Dual_write multi-path full retirement; P2 REOPENED 2026-05-25 → RECLASSIFIED as not-a-defect, latency carry to BUG-045 family)",
+      "BUG-052 / Cross-session sync (Entity_firestore_sync hardcoded session override; P1 fixed-unverified-α 2026-05-25; surfaced via BUG-051 D1 outcome)"
+    ]
+  },
+  "phase_4_wave_1_status": {
+    "wave_id": "P4W1",
+    "forensic_decomposition": "COMPLETE 2026-05-24 (5 parallel agents — F28, F12, F14, F3, F26)",
+    "execution_layer_first_attempted_window": "P4W1.1 F28 retirement (2026-05-24) → ROLLED BACK (2026-05-25) → RECLASSIFIED as not-a-defect (rollback based on incomplete diagnosis; F28 retirement strategically valid)",
+    "execution_layer_first_completed_window": "NONE — Wave 1 has zero successful retirements yet",
+    "sub_window_authorization_chain": [
+      "P4W1.1 F28 — AUTHORIZED + EXECUTED 2026-05-24 → ROLLED BACK 2026-05-25 → BUG-051 reclassified (not-a-defect); re-attempt OPTIONAL with knowledge that rollback was unnecessary",
+      "P4W1.2 F12 — pending operator gate; BUG-051 reclassification removes the verified-gate blocker; operator may now authorize",
+      "P4W1.3 F26 Cycle 1 — pending operator gate after P4W1.2 verification",
+      "P4W1.4 F26 Cycle 2 — pending operator gate after P4W1.3 verification"
+    ],
+    "deferred_per_operator": [
+      "F14 Section roster — deferred due to no-LMS-migration governance constraint",
+      "F3 Wave 1.B+ — deferred (mobile-coupled feature work; reactions + soft-delete Firestore-ification)",
+      "F3 Wave 1.C+ retirement waves — multi-cycle campaign deferred"
+    ],
+    "explicit_constraints_held": [
+      "no cross-family bundled APPLY windows",
+      "no Examination migration",
+      "no LMS migration",
+      "no Stage 2 escalation",
+      "operator authorization gates between each sub-window",
+      "rollback-first governance — VALIDATED via BUG-051 successful Tier-1 rollback",
+      "forensic-before-APPLY discipline — VALIDATED but FLAGGED FOR IMPROVEMENT (forensic missed retry-queue layer significance + cross-session session-field hardcode)",
+      "Firestore-first convergence policy"
+    ]
+  },
+  "BUG_052_lifecycle_state": {
+    "phase_0_forensic": "COMPLETE 2026-05-25 — discovered during BUG-051 D1 outcome diagnosis; identified 9 sync methods with identical hardcoded 'session' => $this->session pattern",
+    "phase_1_fix_plan": "COMPLETE 2026-05-25 — caller-precedence pattern $data['session'] ?? $data['Session'] ?? $this->session across 8 sites; line 622 syncExamScheduleFull excluded (architecture impedance) as BUG-052-companion carry",
+    "phase_2_operator_approval": "COMPLETE 2026-05-25 — Option A approved (full 9-site, reduced to 8 due to companion carry)",
+    "phase_3_apply": "COMPLETE 2026-05-25 — 8 surgical edits in Entity_firestore_sync.php; +16 / -8 = +8 net LoC; 1 file, 8% of MAX_GENERATED_LINES cap",
+    "phase_4_static_verification": "COMPLETE 2026-05-25 — T1 php -l clean; T2 8 hits caller-precedence pattern; T3 8 BUG-052 marker comments; T4 only 1 residual hardcoded site at line 630 (documented carry)",
+    "phase_5_persistence": "COMPLETE 2026-05-25 — BUG_LEDGER + COMPLETED_LOG updated; BUG-052-companion carry filed",
+    "phase_6_operator_smoke_T5_T6_T7": "PENDING — T5 cross-session promote (proves fix); T6 backward-compat student edit (proves fallback); T7 backward-compat save_section (proves fallback)",
+    "phase_7_verification": "PENDING — operator marks BUG-052 verified on clean T5+T6+T7; 7 stuck students automatically restored to target session 2027-28 via T5 re-promote",
+    "phase_8_companion_carry_followup": "DEFERRED — BUG-052-companion: syncExamScheduleFull signature-change for cross-session exam scheduling (~3-5 LoC; not currently exercised; can wait)"
+  },
+  "Q12_invariant_override_log": [
+    {
+      "session": 5,
+      "cycle": 3,
+      "cycle_absolute": 61,
+      "invariant_id": "financial_freeze_choreography",
+      "context": "BUG-050 PS-3 amount-mismatch guard restoration — Fee_management.php in BUG-046 cool window active_freeze_scope",
+      "operator_rationale_verbatim": "the BUG-046 cool-window overlap appears to be bounded, same-domain, low-blast-radius, and near-expiry, with no evidence of runtime instability introduced by PS-3; reverting the already-applied PS-3 bounded financial-hardening patch would introduce unnecessary churn, asymmetrical shared-service state, and avoidable rollback noise",
+      "override_authorization_verbatim": "Approved with invariant override: financial_freeze_choreography",
+      "discipline_status": "WITHIN_DISCIPLINE — first occurrence session-5; Q12 WATCH threshold is 2x; ACTION_REQUIRED at 3x; counter += 1 → 1; well within limits",
+      "discovery_pattern": "post-APPLY persistence-stage forensic verification before irreversible ledger/log mutation"
+    }
+  ],
+  "session_5_log_summary": "Cycle 1 T1.1 fees runtime validation; Cycle 2 BUG-046 freeze choreography + T1.2; Cycle 3 PS-3 BUG-050 fix-patch with invariant override; Cycle 4 P4W1.1 F28 retirement; Cycle 5 BUG-051 REOPENED + rollback + DEFINITIVELY RECLASSIFIED via D1 outcome; Cycle 6 BUG-052 caller-session precedence 8-site remediation",
+  "session_5_cycle_6_log": {
+    "cycle": 6,
+    "cycle_absolute": 64,
+    "type": "BUG_052_REMEDIATION (TASK; surgical 8-site caller-session-precedence fix in Entity_firestore_sync.php)",
+    "timestamp_iso": "2026-05-25",
+    "scenario": "BUG-052 cross-session synchronization defect: Entity_firestore_sync hardcoded 'session' => $this->session in 9 sync methods, silently overriding caller-provided session in $data payload; cross-session promote produced students with new className but stale session",
+    "subcycles": {
+      "BUG_052_discovery": {
+        "trigger": "operator observation post-D1 — 'all 7 students moved to Class 9th but session is 2026-27, not 2027-28; switching to 2027-28 shows no students'",
+        "root_cause_identified": "Entity_firestore_sync.php:256 (and 8 sibling sites) initialize $doc['session'] = $this->session in identity invariants block; $pick() chains on other fields but never re-pick session; caller-provided $data['session'] ignored",
+        "scope_assessment": "9 sync methods share defect: syncStudent / syncParent / syncStaff / syncSection / syncExam / syncExamSchedule / syncExamScheduleFull / syncAttendanceRecord / syncNotification — line 256, 420, 491, 535, 562, 584, 622, 659, 685"
+      },
+      "BUG_052_forensic_review": {
+        "parameter_name_inventory": "8 of 9 methods take 'array $data' parameter; syncExamSchedule (line 584) takes 'array $scheduleData'; syncExamScheduleFull (line 622) takes 'array $subjects' (typed list, no $data envelope)",
+        "fix_pattern_design": "'session' => $data['session'] ?? $data['Session'] ?? $this->session — backward-compatible fallback; 8 sites apply directly with parameter-name variant for syncExamSchedule",
+        "architecture_impedance_for_syncExamScheduleFull": "no $data envelope; would require signature change (add optional ?string $session = null parameter); not currently exercised by any caller; deferred to BUG-052-companion separate sub-window"
+      },
+      "BUG_052_apply_execution": {
+        "files_modified_count": 1,
+        "edits_applied": 8,
+        "loc_delta": "+16 / -8 = +8 net (8 fix lines + 8 marker comment lines, 8 hardcoded lines removed)",
+        "cap_compliance": "within v7 caps (1 of 4 MAX_FILES_MODIFIED; 16 of 200 MAX_GENERATED_LINES = 8% of cap)",
+        "edit_sequence": [
+          "Edit 1 syncStudent line 256-260 — $data caller-precedence",
+          "Edit 2 syncParent line 423-425 — $data caller-precedence",
+          "Edit 3 syncStaff line 495-497 — $data caller-precedence",
+          "Edit 4 syncSection line 540-542 — $data caller-precedence",
+          "Edit 5 syncExam line 568-570 — $data caller-precedence",
+          "Edit 6 syncExamSchedule line 591-593 — $scheduleData caller-precedence (parameter name variant)",
+          "Edit 7 syncAttendanceRecord line 667-669 — $data caller-precedence",
+          "Edit 8 syncNotification line 694-696 — $data caller-precedence"
+        ],
+        "IDE_diagnostics_noise": "pre-existing PHP analyzer false-positives PHP0406/PHP0413/PHP7102 on scalar type hints; exists on unchanged lines; same class as documented BUG-029/BUG-032/BUG-046/BUG-050/BUG-051 noise"
+      },
+      "BUG_052_static_verification": {
+        "T1_php_lint": "PASS — No syntax errors detected in application/libraries/Entity_firestore_sync.php",
+        "T2_caller_precedence_pattern_count": "PASS — 8 hits at lines 259, 424, 496, 541, 569 (using $data); 592 (using $scheduleData); 668, 695 (using $data)",
+        "T3_BUG_052_marker_comments": "PASS — 8 markers at lines 256, 423, 495, 540, 568, 591, 667, 694",
+        "T4_residual_hardcoded_sites": "PASS — Only 1 residual hardcoded `'session' => $this->session,$` at line 630 (syncExamScheduleFull — documented BUG-052-companion carry)",
+        "stack_invariant_session_year_format": "REINFORCED — caller-provided session now propagates correctly through all 8 sync methods",
+        "stack_invariant_no_rtdb": "HELD — zero new RTDB calls",
+        "stack_invariant_audit_log_immutable": "HELD"
+      },
+      "BUG_052_persistence": {
+        "BUG_LEDGER_md_appended": "BUG-052 thematic block with surface/repro/observed/expected/impact/fix_plan/applied_diff_summary/verification/assumed_unverified/related_bugs/companion_carry/rollback/next_step; ## Fixed (unverified) section updated; ## Deferred (companion carries) section created with BUG-052-companion",
+        "COMPLETED_LOG_json_updated": "session_5_cycle_6 entry; BUG_052_lifecycle_state 8-phase tracking; counters incremented (cycles 63→64, tasks 41→42, bugs_filed 6→7, bugs_fixed_unverified 1→2); data_correctness_fixes_session_5 new metric +1"
+      }
+    },
+    "files_modified_this_cycle": [
+      "application/libraries/Entity_firestore_sync.php (8 surgical edits caller-session precedence; +16 / -8 = +8 net LoC)",
+      "BUG_LEDGER.md (BUG-052 thematic block + administrative section updates + Deferred section for companion carry)",
+      ".autopilot/COMPLETED_LOG.json (session_5 cycle 6 + BUG_052_lifecycle_state + counters)"
+    ],
+    "files_NOT_modified_this_cycle": [
+      "Entity_firestore_sync.php:630 syncExamScheduleFull — companion carry; architecture impedance; signature change deferred",
+      "Sis.php (no changes — promote() already passes session via $syncMeta correctly post-F28-inline; pre-F28 Dual_write also doesn't need changes; the defect was always in Entity_firestore_sync alone)",
+      "All other admin controllers — backward-compat preserved via fallback to $this->session",
+      "Mobile apps — read-only consumers; no impact"
+    ],
+    "bugs_filed_this_cycle": ["BUG-052", "BUG-052-companion"],
+    "bugs_verified_this_cycle": [],
+    "bugs_fixed_unverified_this_cycle": ["BUG-052"],
+    "bugs_reopened_this_cycle": [],
+    "bugs_rolled_back_this_cycle": [],
+    "bugs_reclassified_this_cycle": [],
+    "invariant_overrides_this_cycle": [],
+    "constraint_compliance": {
+      "rollback_first_governance": "preserved — Tier-1 git checkout documented as single command; no data migration; risk-free",
+      "forensic_before_APPLY_discipline": "preserved — operator-approved FIX_PLAN before APPLY; parameter-name forensic completed before edits (caught syncExamSchedule's $scheduleData variant + syncExamScheduleFull architecture impedance)",
+      "bounded_remediation_scope": "preserved — 1 file, 8 surgical edits, ~16 LoC; companion carry for syncExamScheduleFull explicitly out of scope",
+      "production_safe_academic_year_transition_handling": "RESTORED — cross-session writes now respect caller-provided target session",
+      "Firestore_first_convergence_policy": "preserved",
+      "no_cross_family_bundled_APPLY_windows": "preserved",
+      "no_Examination_migration": "preserved — Entity_firestore_sync changes are session-field correctness, not Examination module migration",
+      "no_LMS_migration": "preserved",
+      "no_Stage_2_escalation": "preserved",
+      "operator_authorization_gates": "preserved — explicit 'Approved — Option A: full 9-site BUG-052 remediation' before APPLY",
+      "latency_optimization_kept_separate": "preserved — BUG-052 fix does NOT address BUG-051/BUG-045 timeout; latency optimization remains separate performance-focused sub-window"
+    }
+  },
+  "halt_signal": "HALT_OPTIONAL",
+  "halt_reason": "BUG-052 fix applied + statically verified + persisted with companion-carry documentation. Awaiting operator-driven T5+T6+T7 staging verification. On T5 PASS, the 7 students (currently stuck at Class 8th SecA / session 2026-27 from D1 reverse-promote) will be automatically restored to their intended target Class 9th SecA / session 2027-28 via re-promote.",
+  "post_BUG_052_apply_operator_options": [
+    "Run T5 — re-promote 7 students Class 8th SecA → Class 9th SecA target session 2027-28; verify session field correctly lands at 2027-28 (proves BUG-052 fix; restores intended data state)",
+    "Run T6+T7 — backward-compat tests: edit a student profile (no session in payload), save a section, admit a new student; verify session stays current 2026-27 (proves fallback preserves existing behavior)",
+    "On T5 PASS — mark BUG-052 verified; the 7 students now correctly in target session; original C1A intent achieved despite intermediate rollback round-trip",
+    "audit now — fire Q1-Q12 audit (cadence 6/3 overdue; would assess Q4 module_progression + Q9 forensic accuracy + Q12 override discipline)",
+    "Continue BUG-050 PS-3 staging smoke (T3+T4-T9 still pending; separate work)",
+    "Authorize F28 re-attempt — with BUG-051 reclassification cleared, F28 retirement is now strategically de-risked (the timeout is BUG-045-family, not F28-caused)",
+    "Authorize BUG-052-companion fix — small sub-window for syncExamScheduleFull signature change",
+    "Authorize P4W1.2 F12 — separate sub-window; BUG-051 reclassification removes the verified-gate blocker",
+    "Snapshot-commit current state to anchor session-5 work",
+    "halt — close session 5"
+  ],
+  "current_active_carries": [
+    "BUG-043 P2 INVESTIGATE — cross-path projection-writer canon gap (lastPaymentDate)",
+    "BUG-044 P2 INVESTIGATE — batch_path=true synchronous verify regression (feeOnlinePayments)",
+    "BUG-045 P2 INVESTIGATE — shared-pipeline sustained latency (~25s) — CONFIRMED as root cause of BUG-051 timeout via D1 evidence",
+    "BUG-050 P1 fixed-unverified-α — PS-3 amount-mismatch guard restoration; awaiting staging T3+T4-T9 + telemetry soak + live promotion",
+    "BUG-051 RECLASSIFIED — not-a-defect (latency carry to BUG-045 family); F28 retirement strategically valid; rollback unnecessary in hindsight but not harmful",
+    "BUG-052 P1 fixed-unverified-α — caller-session precedence in Entity_firestore_sync 8 of 9 sites; awaiting operator T5+T6+T7",
+    "BUG-052-companion (deferred carry) — syncExamScheduleFull signature change for cross-session exam scheduling; not currently exercised",
+    "BUG-037 P3 deferred — save_classes lock+CAS (UX coord)",
+    "BUG-040/041/042 P3 deferred — mobile attendance findings",
+    "staff_hardening patches 6-15 HOLD",
+    "RZP-PSB-1 (processedPayments docId — pending PS-1)",
+    "RZP-PSB-2 (feeDemands docId — pending PS-2)",
+    "RZP-PSB-4 (feeSettings field-level split — pending PS-4)",
+    "RZP-H-1..9 (Razorpay production-hardening backlog)",
+    "promote.php 'Class Class 8th' UI cosmetic fix — SHIPPED + PRESERVED",
+    "P4W1.1 F28 — RECLASSIFIED; re-attempt available with knowledge that rollback was based on incomplete diagnosis",
+    "P4W1.2 F12 — authorized; verified-gate blocker removed by BUG-051 reclassification; operator may now proceed",
+    "P4W1.3 F26 Cycle 1 — gated on P4W1.2",
+    "P4W1.4 F26 Cycle 2 — gated on P4W1.3",
+    "F14 Section roster — deferred per LMS-migration constraint",
+    "F3 Wave 1.A — authorized but deprioritized",
+    "F3 Wave 1.B+ — deferred (mobile-coupled feature work)",
+    "7 students currently stuck at Class 8th SecA / session 2026-27 — will auto-restore to intended Class 9th SecA / session 2027-28 on T5 re-promote"
+  ]
+}

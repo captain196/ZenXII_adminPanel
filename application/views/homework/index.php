@@ -721,7 +721,7 @@
 
                     <div style="display:flex;gap:12px;">
                         <button type="button" class="hw-btn hw-btn-outline" onclick="HW.create.preview()"><i class="fa fa-eye"></i> Preview</button>
-                        <button type="button" class="hw-btn hw-btn-primary" onclick="HW.create.submit()"><i class="fa fa-paper-plane"></i> Create Homework</button>
+                        <button type="button" id="createSubmitBtn" class="hw-btn hw-btn-primary" onclick="HW.create.submit()"><i class="fa fa-paper-plane"></i> Create Homework</button>
                     </div>
                 </form>
             </div>
@@ -800,6 +800,23 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════
+     CONFIRM MODAL (BUG-007 — replaces window.confirm() at 4 destructive sites)
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="hw-modal-overlay" id="hwConfirmModal" role="dialog" aria-modal="true" aria-labelledby="hwConfirmTitle">
+    <div class="hw-modal" style="max-width: 480px;">
+        <div class="hw-modal-head">
+            <h4 id="hwConfirmTitle">Confirm</h4>
+            <button class="hw-modal-close" onclick="HW.confirmDialog.cancel()" aria-label="Cancel">&times;</button>
+        </div>
+        <div class="hw-modal-body" id="hwConfirmMessage"></div>
+        <div class="hw-modal-foot">
+            <button class="hw-btn hw-btn-outline" onclick="HW.confirmDialog.cancel()">Cancel</button>
+            <button class="hw-btn hw-btn-danger" id="hwConfirmOkBtn" onclick="HW.confirmDialog.confirm()">OK</button>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
      JAVASCRIPT
      ═══════════════════════════════════════════════════════════════ -->
 <script>
@@ -808,7 +825,7 @@ document.addEventListener('DOMContentLoaded', function(){
 'use strict';
 
 // Move modals to <body> to escape any ancestor transform/overflow that breaks position:fixed
-['hwDetailModal','hwEditModal'].forEach(function(id) {
+['hwDetailModal','hwEditModal','hwConfirmModal'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el && el.parentElement !== document.body) document.body.appendChild(el);
 });
@@ -1173,7 +1190,7 @@ HW.dash = {
             }
             var html = '';
             list.forEach(function(h) {
-                html += '<div class="hw-alert-item" onclick="HW.detail.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')">' +
+                html += '<div class="hw-alert-item" role="button" tabindex="0" onclick="HW.detail.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')">' +
                     '<div class="hw-alert-dot ' + (h.status.toLowerCase() === 'overdue' ? 'red' : (h.status.toLowerCase() === 'active' ? 'amber' : '')) + '"></div>' +
                     '<div class="hw-alert-info"><div class="hw-alert-title">' + esc(h.title) + '</div>' +
                     '<div class="hw-alert-meta">' + esc(h.subject) + ' &middot; ' + esc(h.class) + ' / ' + esc(h.section) + ' &middot; Due: ' + formatDate(h.dueDate) + '</div></div>' +
@@ -1217,7 +1234,7 @@ HW.dash = {
                 // detail modal. After close, we re-load the panel to drop
                 // the row.
                 var closeBtn = '<button class="hw-btn hw-btn-sm hw-btn-success" title="Close homework" onclick="event.stopPropagation();HW.dash._closeOverdue(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')"><i class="fa fa-check"></i></button>';
-                html += '<div class="hw-alert-item" onclick="HW.detail.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')">' +
+                html += '<div class="hw-alert-item" role="button" tabindex="0" onclick="HW.detail.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')">' +
                     '<div class="hw-alert-dot red"></div>' +
                     '<div class="hw-alert-info"><div class="hw-alert-title">' + esc(h.title) + '</div>' +
                     '<div class="hw-alert-meta">' + esc(h.subject) + ' &middot; ' + esc(h.class) + ' / ' + esc(h.section) +
@@ -1233,14 +1250,15 @@ HW.dash = {
     // round-trip through the list tab. Reloads both Overdue and Recent
     // panels on success since closing flips a row from active → closed.
     _closeOverdue: function(cls, sec, hwId) {
-        if (!confirm('Close this homework? Students will no longer be able to submit.')) return;
-        ajaxPost('homework/close_homework', { class: cls, section: sec, hw_id: hwId }, function(r) {
-            if (r.status !== 'success') { toast(r.message || 'Failed to close', 'error'); return; }
-            toast('Homework closed');
-            HW.dash.loadOverdue();
-            HW.dash.loadRecent();
-            HW.dash.loadOverview();
-            if (HW.list._loaded) HW.list.refresh();
+        HW.confirmDialog.open('Close this homework? Students will no longer be able to submit.', function() {  // BUG-007
+            ajaxPost('homework/close_homework', { class: cls, section: sec, hw_id: hwId }, function(r) {
+                if (r.status !== 'success') { toast(r.message || 'Failed to close', 'error'); return; }
+                toast('Homework closed');
+                HW.dash.loadOverdue();
+                HW.dash.loadRecent();
+                HW.dash.loadOverview();
+                if (HW.list._loaded) HW.list.refresh();
+            });
         });
     },
 };
@@ -1301,7 +1319,7 @@ HW.list = {
             var html = '';
             list.forEach(function(h) {
                 var sl = h.status.toLowerCase();
-                html += '<tr onclick="HW.detail.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')">' +
+                html += '<tr role="button" tabindex="0" onclick="HW.detail.open(\'' + escJs(h.class) + '\',\'' + escJs(h.section) + '\',\'' + escJs(h.id) + '\')">' +
                     '<td><strong>' + esc(h.title) + '</strong></td>' +
                     '<td>' + esc(h.subject) + '</td>' +
                     '<td>' + esc(h.class) + ' / ' + esc(h.section) + '</td>' +
@@ -1515,23 +1533,25 @@ HW.edit = {
 /* ── ACTIONS (Close, Delete) ──────────────────────────────── */
 HW.actions = {
     close: function(cls, sec, hwId) {
-        if (!confirm('Close this homework? Students will no longer be able to submit.')) return;
-        ajaxPost('homework/close_homework', { class: cls, section: sec, hw_id: hwId }, function(r) {
-            if (r.status !== 'success') { toast(r.message || 'Failed', 'error'); return; }
-            toast('Homework closed successfully');
-            if (HW.list._loaded) HW.list.refresh();
-            HW.dash.init();
+        HW.confirmDialog.open('Close this homework? Students will no longer be able to submit.', function() {  // BUG-007
+            ajaxPost('homework/close_homework', { class: cls, section: sec, hw_id: hwId }, function(r) {
+                if (r.status !== 'success') { toast(r.message || 'Failed', 'error'); return; }
+                toast('Homework closed successfully');
+                if (HW.list._loaded) HW.list.refresh();
+                HW.dash.init();
+            });
         });
     },
 
     remove: function(cls, sec, hwId) {
-        if (!confirm('Delete this homework permanently? This cannot be undone.')) return;
-        ajaxPost('homework/delete_homework', { class: cls, section: sec, hw_id: hwId }, function(r) {
-            if (r.status !== 'success') { toast(r.message || 'Failed', 'error'); return; }
-            toast('Homework deleted successfully');
-            if (HW.list._loaded) HW.list.refresh();
-            HW.dash.init();
-        });
+        HW.confirmDialog.open('Delete this homework permanently? This cannot be undone.', function() {  // BUG-007
+            ajaxPost('homework/delete_homework', { class: cls, section: sec, hw_id: hwId }, function(r) {
+                if (r.status !== 'success') { toast(r.message || 'Failed', 'error'); return; }
+                toast('Homework deleted successfully');
+                if (HW.list._loaded) HW.list.refresh();
+                HW.dash.init();
+            });
+        }, { okText: 'Delete' });
     }
 };
 
@@ -1945,48 +1965,112 @@ HW.create = {
             return;
         }
 
-        if (!confirm('Create homework for ' + sections.length + ' section(s)?')) return;
+        HW.confirmDialog.open('Create homework for ' + sections.length + ' section(s)?', function() {  // BUG-007
+            var data = {
+                class:    cls,
+                subject:  subj,
+                title:    title,
+                description: desc,
+                due_date: due,
+            };
+            // Add sections as array
+            sections.forEach(function(s, i) {
+                data['sections[' + i + ']'] = s;
+            });
 
-        var data = {
-            class:    cls,
-            subject:  subj,
-            title:    title,
-            description: desc,
-            due_date: due,
-        };
-        // Add sections as array
-        sections.forEach(function(s, i) {
-            data['sections[' + i + ']'] = s;
-        });
+            // BUG-006 — lock the button + show spinner while the request is in
+            // flight. Mirrors HW.edit.save's pattern earlier in this file;
+            // closes the double-submit window that would otherwise allow rapid
+            // clicks to write duplicate homework documents (each click produces
+            // a distinct entropy-suffixed hwId, so server-side dedup doesn't
+            // catch the duplication — UX layer must prevent it).
+            var btn = document.getElementById('createSubmitBtn');
+            var originalHtml = btn ? btn.innerHTML : '';
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Creating…';
+            }
+            var restore = function() {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = originalHtml;
+                }
+            };
 
-        ajaxPost('homework/create_homework', data, function(r) {
-            if (r.status !== 'success') { toast(r.message || 'Creation failed', 'error'); return; }
-            toast('Homework created successfully!');
+            ajaxPost('homework/create_homework', data, function(r) {
+                restore();
+                if (r.status !== 'success') { toast(r.message || 'Creation failed', 'error'); return; }
+                toast('Homework created successfully!');
 
-            // Reset form
-            document.getElementById('createHwForm').reset();
-            document.getElementById('createSectionsList').innerHTML = '<div class="hw-check-empty">Select a class first</div>';
-            document.getElementById('createSubject').innerHTML = '<option value="">Select class first…</option>';
-            document.getElementById('createPreview').style.display = 'none';
+                // Reset form
+                document.getElementById('createHwForm').reset();
+                document.getElementById('createSectionsList').innerHTML = '<div class="hw-check-empty">Select a class first</div>';
+                document.getElementById('createSubject').innerHTML = '<option value="">Select class first…</option>';
+                document.getElementById('createPreview').style.display = 'none';
 
-            // Reset default due date
-            var tomorrow = new Date();
-            tomorrow.setDate(tomorrow.getDate() + 1);
-            document.getElementById('createDueDate').value = tomorrow.toISOString().split('T')[0];
+                // Reset default due date
+                var tomorrow = new Date();
+                tomorrow.setDate(tomorrow.getDate() + 1);
+                document.getElementById('createDueDate').value = tomorrow.toISOString().split('T')[0];
 
-            // Invalidate caches and force-refresh the visible list + dashboard
-            // tiles. Without this, the just-created homework wouldn't appear
-            // until the user manually clicked Refresh / changed a filter.
-            _classSections = null;
-            _hwCache = null;
-            HW.list._loaded = false;
-            HW.list.refresh();
-            HW.dash.init();
-        });
+                // Invalidate caches and force-refresh the visible list + dashboard
+                // tiles. Without this, the just-created homework wouldn't appear
+                // until the user manually clicked Refresh / changed a filter.
+                _classSections = null;
+                _hwCache = null;
+                HW.list._loaded = false;
+                HW.list.refresh();
+                HW.dash.init();
+            });
+        }, { okText: 'Create' });
+    }
+};
+
+// BUG-007 — project-consistent confirm modal helper. Replaces native
+// window.confirm() at 4 destructive-action sites with an async modal
+// using the existing .hw-modal-* primitives (CSS at lines ~234-262).
+// Callback-based: callers wrap their "on confirm" body in the second arg.
+HW.confirmDialog = {
+    _onYes: null,
+    open: function(message, onYes, opts) {
+        opts = opts || {};
+        document.getElementById('hwConfirmTitle').textContent = opts.title || 'Confirm';
+        document.getElementById('hwConfirmMessage').textContent = message;
+        document.getElementById('hwConfirmOkBtn').textContent = opts.okText || 'OK';
+        this._onYes = (typeof onYes === 'function') ? onYes : null;
+        document.getElementById('hwConfirmModal').classList.add('show');
+        // Focus the OK button so Enter/Space activates the affirmative path
+        setTimeout(function() {
+            var btn = document.getElementById('hwConfirmOkBtn');
+            if (btn) btn.focus();
+        }, 0);
+    },
+    confirm: function() {
+        var fn = this._onYes;
+        this._onYes = null;
+        document.getElementById('hwConfirmModal').classList.remove('show');
+        if (fn) fn();
+    },
+    cancel: function() {
+        this._onYes = null;
+        document.getElementById('hwConfirmModal').classList.remove('show');
     }
 };
 
 /* ── INIT ────────────────────────────────────── */
+// BUG-005 accessibility — Enter/Space triggers click on any non-native
+// element marked role="button" + tabindex="0" (the hw-alert-item divs and
+// the hw-list <tr>s). Native <button>s already handle keyboard activation
+// per browser default and are explicitly skipped to avoid double-fire.
+document.addEventListener('keydown', function(e) {
+    if ((e.key === 'Enter' || e.key === ' ')
+        && e.target instanceof HTMLElement
+        && e.target.getAttribute('role') === 'button'
+        && e.target.tagName !== 'BUTTON') {
+        e.preventDefault();
+        e.target.click();
+    }
+});
 HW.dash.init();
 
 })();

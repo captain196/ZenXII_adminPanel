@@ -3212,6 +3212,72 @@ class Fee_management extends MY_Controller
         }
         log_message('debug', "[VERIFY SIG OK] payment={$gwPaymentId} elapsed=" . round((microtime(true) - $_verifyT0) * 1000) . "ms");
 
+        // ── BUG-050 / PS-3: amount-mismatch enforcement (parent path) ────
+        // Mirrors the webhook-path guard at _verify_and_process (~line 3850).
+        // Without this check the parent app could mark a payment paid with
+        // a locally-tampered order.amount that doesn't match what Razorpay
+        // actually captured. Policy: fail-CLOSED on populated mismatch;
+        // fail-OPEN on fetch unavailable (sig already valid) with telemetry
+        // gated by gateway name to keep mock-mode quiet.
+        $orderAmountParent      = floatval($order['amount'] ?? 0);
+        $gwReportedAmountParent = $verifyResult['gateway_amount'] ?? null;
+        $gatewayNameParent      = (string) ($verifyResult['gateway_name'] ?? ($order['gateway'] ?? 'mock'));
+
+        if ($gwReportedAmountParent === null) {
+            if ($gatewayNameParent === 'razorpay') {
+                if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+                    $this->sec_telem->emit('PAYMENT_AMOUNT_UNVERIFIED', 'warning', [
+                        'endpoint'     => 'parent_verify_payment',
+                        'order_id'     => $gwOrderId,
+                        'payment_id'   => $gwPaymentId,
+                        'order_amount' => $orderAmountParent,
+                    ]);
+                }
+                log_message('warning', "parent_verify_payment: gateway_amount UNAVAILABLE order={$gwOrderId} — proceeding on signature-only");
+            }
+            // Fall through; signature already validated.
+        } elseif (abs($orderAmountParent - floatval($gwReportedAmountParent)) > 0.50) {
+            log_message('error', "parent_verify_payment: AMOUNT MISMATCH order={$gwOrderId} expected={$orderAmountParent} got={$gwReportedAmountParent}");
+            try {
+                $this->firebase->firestoreSet('feeOnlineOrders', $orderDocId, [
+                    'status'          => 'amount_mismatch',
+                    'expected_amount' => $orderAmountParent,
+                    'gateway_amount'  => $gwReportedAmountParent,
+                    'flagged_at'      => date('c'),
+                    'flagged_source'  => 'parent_verify_payment',
+                ], true);
+            } catch (\Exception $e) {
+                log_message('warning', 'parent_verify_payment: order flag write failed: ' . $e->getMessage());
+            }
+            try {
+                $this->load->library('Fee_audit', null, 'feeAudit');
+                if (method_exists($this->feeAudit, 'record')) {
+                    $this->feeAudit->record('amount_mismatch', [
+                        'order_id'   => $gwOrderId,
+                        'payment_id' => $gwPaymentId,
+                        'student_id' => $studentId,
+                        'expected'   => $orderAmountParent,
+                        'gateway'    => $gwReportedAmountParent,
+                        'source'     => 'parent_verify_payment',
+                    ]);
+                }
+            } catch (\Exception $e) {
+                log_message('warning', 'parent_verify_payment: Fee_audit emit failed: ' . $e->getMessage());
+            }
+            if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+                $this->sec_telem->emit('PAYMENT_AMOUNT_MISMATCH', 'critical', [
+                    'endpoint'   => 'parent_verify_payment',
+                    'order_id'   => $gwOrderId,
+                    'payment_id' => $gwPaymentId,
+                    'expected'   => $orderAmountParent,
+                    'gateway'    => $gwReportedAmountParent,
+                ]);
+            }
+            http_response_code(422);
+            echo json_encode(['success' => false, 'error' => 'Payment amount does not match order amount.']);
+            return;
+        }
+
         // Signature is valid — now do the full fee allocation pipeline.
         $feeMonths = is_array($order['fee_months'] ?? null) ? $order['fee_months'] : [];
         $paidAmount = round((float) ($order['amount'] ?? 0), 2);
@@ -3349,7 +3415,38 @@ class Fee_management extends MY_Controller
             log_message('error', "parent_verify_payment: order status update failed [{$orderDocId}]: " . $e->getMessage());
         }
 
-        echo json_encode([
+        // BUG-044 fix: write feeOnlinePayments audit-trail doc to
+        // match _verify_and_process line 3919 + retry_payment_processing
+        // line 4066 behavior. Without this, parent-app sync verify
+        // receipts are invisible to reconciliation queries.
+        try {
+            $payRecId = 'PAY_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(3)), 0, 6);
+            $this->firebase->firestoreSet('feeOnlinePayments', "{$this->school_name}_{$payRecId}", [
+                'schoolId'           => $this->school_name,
+                'order_id'           => $orderDocId,
+                'gateway_order_id'   => $gwOrderId,
+                'gateway_payment_id' => $gwPaymentId,
+                'student_id'         => $studentId,
+                'student_name'       => $order['student_name'] ?? '',
+                'amount'             => (float) ($order['amount'] ?? 0),
+                'receipt_key'        => $receiptKey,
+                'gateway'            => $order['gateway'] ?? 'mock',
+                'payment_status'     => 'captured',
+                'source'             => 'parent-razorpay',
+                'signature'          => substr($signature, 0, 16) . '...',
+                'created_at'         => date('c'),
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', "parent_verify_payment: feeOnlinePayments write failed [{$gwPaymentId}]: " . $e->getMessage());
+        }
+
+        // BUG-045 OP5-A fix: build response to a variable so Content-Length
+        // can be computed BEFORE emit, then apply Option B early-response
+        // flush (mirrors FeeCollectionService.php:1481-1495 admin-path
+        // pattern). Pushes response to client BEFORE the shutdown handler
+        // runs accounting journal + summary refresh, eliminating ~7-8s
+        // post-response wall-clock previously borne by parent app users.
+        $__op5ResponseJson = json_encode([
             'success'          => true,
             'message'          => 'Payment verified and fees recorded.',
             'receipt_no'       => $receiptNo,
@@ -3357,6 +3454,19 @@ class Fee_management extends MY_Controller
             'amount_paid'      => $paidAmount,
             'allocated_months' => $allocMonths,
         ]);
+        @set_time_limit(0);
+        @ignore_user_abort(true);
+        if (!headers_sent()) {
+            @header('Connection: close');
+            @header('Content-Type: application/json');
+            @header('Content-Length: ' . strlen($__op5ResponseJson));
+            @header('Content-Encoding: none'); // disable mod_deflate so length is honest
+        }
+        while (ob_get_level() > 0) {
+            @ob_end_flush();
+        }
+        echo $__op5ResponseJson;
+        @flush();
     }
 
     // parent_pay_from_wallet() removed in Phase 9 (wallet subsystem
@@ -3812,21 +3922,75 @@ class Fee_management extends MY_Controller
         $order     = $verifyResult['order'];
         $orderDocId = "{$this->school_name}_{$recordId}";
 
-        // ── C. Strict amount validation ──
-        // Prevents tampered callbacks claiming different amounts.
-        $orderAmount = floatval($order['amount'] ?? 0);
-        $gwReportedAmount = floatval($verifyResult['gateway_amount'] ?? $orderAmount);
-        if (abs($orderAmount - $gwReportedAmount) > 0.50) {
-            log_message('error', "verify_and_process: AMOUNT MISMATCH order={$gwOrderId} expected={$orderAmount} got={$gwReportedAmount}");
-            $releaseLock();
+        // ── C. Strict amount validation (BUG-050 / PS-3 restored) ──
+        // Pre-PS-3 this guard was structurally complete but INERT —
+        // verify_payment() never populated $verifyResult['gateway_amount']
+        // so the ?? fallback collapsed the comparison to abs(0) > 0.50,
+        // which is permanently false. Payment_service::verify_payment now
+        // returns the authoritative captured amount via gateway fetch.
+        // Policy:
+        //   - gateway_amount populated + mismatch    → FAIL CLOSED (this branch)
+        //   - gateway_amount null + gateway=razorpay → FAIL OPEN + telemetry (sig was valid; do not brick legit collection on Razorpay API outage)
+        //   - gateway_amount null + gateway=mock     → FAIL OPEN silently (mock has no real captured amount)
+        $orderAmount      = floatval($order['amount'] ?? 0);
+        $gwReportedAmount = $verifyResult['gateway_amount'] ?? null;  // float|null in rupees
+        $gatewayName      = (string) ($verifyResult['gateway_name'] ?? ($order['gateway'] ?? 'mock'));
+
+        if ($gwReportedAmount === null) {
+            // Fetch unavailable — fail open. Telemetry only for real gateways.
+            if ($gatewayName === 'razorpay') {
+                if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+                    $this->sec_telem->emit('PAYMENT_AMOUNT_UNVERIFIED', 'warning', [
+                        'endpoint'     => '_verify_and_process',
+                        'source'       => $source,
+                        'order_id'     => $gwOrderId,
+                        'payment_id'   => $gwPaymentId,
+                        'order_amount' => $orderAmount,
+                    ]);
+                }
+                log_message('warning', "verify_and_process({$source}): gateway_amount UNAVAILABLE order={$gwOrderId} — proceeding on signature-only");
+            }
+            // No fail; gateway fetch unavailable does not block the flow.
+        } elseif (abs($orderAmount - floatval($gwReportedAmount)) > 0.50) {
+            // FAIL CLOSED — captured amount differs from order amount by >₹0.50.
+            log_message('error', "verify_and_process({$source}): AMOUNT MISMATCH order={$gwOrderId} expected={$orderAmount} got={$gwReportedAmount}");
             $this->firebase->firestoreSet('feeOnlineOrders', $orderDocId, [
-                'status' => 'amount_mismatch',
+                'status'          => 'amount_mismatch',
                 'expected_amount' => $orderAmount,
-                'gateway_amount' => $gwReportedAmount,
-                'flagged_at' => date('c'),
+                'gateway_amount'  => $gwReportedAmount,
+                'flagged_at'      => date('c'),
+                'flagged_source'  => $source,
             ], true);
+            // Emit Fee_audit amount_mismatch event (severity=critical per Fee_audit.php:113).
+            try {
+                $this->load->library('Fee_audit', null, 'feeAudit');
+                if (method_exists($this->feeAudit, 'record')) {
+                    $this->feeAudit->record('amount_mismatch', [
+                        'order_id'   => $gwOrderId,
+                        'payment_id' => $gwPaymentId,
+                        'student_id' => (string) ($order['student_id'] ?? ''),
+                        'expected'   => $orderAmount,
+                        'gateway'    => $gwReportedAmount,
+                        'source'     => $source,
+                    ]);
+                }
+            } catch (\Exception $e) {
+                log_message('warning', 'verify_and_process: Fee_audit emit failed: ' . $e->getMessage());
+            }
+            if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+                $this->sec_telem->emit('PAYMENT_AMOUNT_MISMATCH', 'critical', [
+                    'endpoint'   => '_verify_and_process',
+                    'source'     => $source,
+                    'order_id'   => $gwOrderId,
+                    'payment_id' => $gwPaymentId,
+                    'expected'   => $orderAmount,
+                    'gateway'    => $gwReportedAmount,
+                ]);
+            }
+            $releaseLock();
             return ['ok' => false, 'error' => 'Payment amount does not match order amount.'];
         }
+        // gateway_amount populated AND within tolerance → proceed.
 
         // ── D. Transition: verified → processing ──
         $now = date('c');

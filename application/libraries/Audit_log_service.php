@@ -47,22 +47,50 @@ class Audit_log_service
     private $ready = false;
 
     const COLLECTION    = 'academicAuditLog';
-    const ACTIONS       = ['create', 'update', 'delete', 'status_change', 'rollover', 'generation'];
+    const ACTIONS       = ['create', 'update', 'delete', 'status_change', 'rollover', 'generation', 'role_change'];
     const ENTITY_TYPES  = ['curriculum', 'curriculumTopic', 'timetable', 'timetableSettings',
                            'substitute', 'calendarEvent', 'subjectAssignment'];
     const MAX_STR_LEN   = 500;
     const MAX_ARR_ITEMS = 50;
 
+    // ── PHASE A (Staff hardening) ADDITIONS ─────────────────────────────────
+    /**
+     * Entity types valid in the staff-audit context.
+     * Callers opting into the staff audit collection MUST pass these (or a
+     * subset) as the $extraEntityTypes argument to init().
+     */
+    const STAFF_ENTITY_TYPES = ['staff', 'staffRole', 'staffDocument', 'staffPassword', 'staffStatus'];
+
+    /** @var string  Per-instance collection target (defaults to COLLECTION) */
+    private $collection = self::COLLECTION;
+
+    /** @var array  Per-instance entity-type allowlist (academic ∪ extras) */
+    private $entityTypes = self::ENTITY_TYPES;
+    // ────────────────────────────────────────────────────────────────────────
+
     /**
      * Bind dependencies. Idempotent — safe to re-init.
      *
-     * @param object $firebase   Firebase library instance
+     * @param object $firebase         Firebase library instance
      * @param string $schoolId
      * @param string $session
-     * @param array  $defaultActor ['uid'=>..., 'name'=>..., 'role'=>...]
+     * @param array  $defaultActor     ['uid'=>..., 'name'=>..., 'role'=>...]
+     * @param string $collectionName   Optional. Phase A: pass 'staffAuditLog' for
+     *                                 the staff-audit context. Empty string (or
+     *                                 omitted) keeps the academic default.
+     * @param array  $extraEntityTypes Optional. Phase A: pass
+     *                                 self::STAFF_ENTITY_TYPES to enable
+     *                                 staff entity logging. Empty/omitted keeps
+     *                                 only the academic allowlist.
      */
-    public function init($firebase, string $schoolId, string $session, array $defaultActor = []): self
-    {
+    public function init(
+        $firebase,
+        string $schoolId,
+        string $session,
+        array $defaultActor = [],
+        string $collectionName = '',
+        array $extraEntityTypes = []
+    ): self {
         $this->firebase = $firebase;
         $this->schoolId = (string) $schoolId;
         $this->session  = (string) $session;
@@ -71,6 +99,12 @@ class Audit_log_service
             'name' => (string) ($defaultActor['name'] ?? ''),
             'role' => (string) ($defaultActor['role'] ?? ''),
         ];
+        // ── PHASE A: configurable collection + entity-type allowlist ────────
+        $this->collection = $collectionName !== '' ? $collectionName : self::COLLECTION;
+        $this->entityTypes = empty($extraEntityTypes)
+            ? self::ENTITY_TYPES
+            : array_values(array_unique(array_merge(self::ENTITY_TYPES, $extraEntityTypes)));
+        // ────────────────────────────────────────────────────────────────────
         $this->ready = ($firebase !== null && $this->schoolId !== '');
         return $this;
     }
@@ -106,8 +140,8 @@ class Audit_log_service
             log_message('error', "audit_log: invalid action='$action'");
             return false;
         }
-        if (!in_array($entityType, self::ENTITY_TYPES, true)) {
-            log_message('error', "audit_log: invalid entityType='$entityType'");
+        if (!in_array($entityType, $this->entityTypes, true)) {
+            log_message('error', "audit_log: invalid entityType='$entityType' for collection='{$this->collection}'");
             return false;
         }
         if ($entityId === '') {
@@ -140,10 +174,10 @@ class Audit_log_service
         ];
 
         try {
-            $this->firebase->firestoreSet(self::COLLECTION, $logId, $doc);
+            $this->firebase->firestoreSet($this->collection, $logId, $doc);
             return true;
         } catch (\Throwable $e) {
-            log_message('error', 'audit_log write failed [' . $action . '/' . $entityType . '/' . $entityId . ']: ' . $e->getMessage());
+            log_message('error', 'audit_log write failed [' . $action . '/' . $entityType . '/' . $entityId . '] collection=[' . $this->collection . ']: ' . $e->getMessage());
             return false;
         }
     }

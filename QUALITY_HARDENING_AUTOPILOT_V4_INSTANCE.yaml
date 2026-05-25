@@ -1,0 +1,659 @@
+# QUALITY HARDENING AUTOPILOT v4.0 — PROJECT INSTANCE
+# School ERP project (Admin web + Parent Android + Teacher Android + Firebase rules)
+#
+# This file is OPERATOR-OWNED. Edit when project structure changes.
+# Paired with: QUALITY_HARDENING_AUTOPILOT_V4_LOGIC.md
+# See:         QUALITY_HARDENING_AUTOPILOT_V4_README.md
+#
+# Surface verification: any entry with `verified: false` MUST be confirmed
+# by the operator before the autopilot will scan it. The first DISCOVERY
+# cycle for a module with unverified surfaces emits BLOCKED
+# "surface_unverified". To clear: confirm the path exists, then change
+# `verified: false` to `verified: true` (or use command:
+#   verify surface <module>:<platform>:<path>
+# ).
+
+schema_version: "v4.0"
+project_name: "School ERP — 3-system workspace"
+last_revised: "2026-05-21"
+revised_by: "operator"
+
+
+# ========================================================================
+# PLATFORMS
+# ========================================================================
+# Each platform is an independent codebase / deploy target with its own
+# baseline_commit, test framework, test_floor, and applicable_dimensions.
+
+platforms:
+
+  - platform_id: admin-web
+    name: "Admin Panel (PHP / CodeIgniter)"
+    root: "C:\\xampp\\htdocs\\Grader\\school"
+    vcs: git
+    remote: "captain196/ZenXII_adminPanel"
+    baseline_commit: "83e97f82"           # verified from git log
+    test_framework: "none"
+    test_floor: "none"                    # legacy; manual repros only
+    primary_language: "PHP"
+    applicable_dimensions: [D1, D2, D3, D4, D5, D6, D7, D8, D9, D10, D11]
+
+  - platform_id: parent-android
+    name: "Parent App (Kotlin / Android)"
+    root: "D:\\Projects\\SchoolSyncParent"
+    vcs: git
+    remote: "captain196/ZenXII_Parent"
+    baseline_commit: null                 # operator: fill from `git rev-parse HEAD`
+    test_framework: "AndroidJUnit + Espresso"
+    test_floor: "require-where-feasible"
+    primary_language: "Kotlin"
+    applicable_dimensions: [D1, D2, D3, D4, D5, D6, D7, D8, D9, D10, D11]
+
+  - platform_id: teacher-android
+    name: "Teacher App (Kotlin / Android)"
+    root: "D:\\Projects\\SchoolSyncTeacher"
+    vcs: git
+    remote: "captain196/ZenXII_Teacher"
+    baseline_commit: null                 # operator: fill from `git rev-parse HEAD`
+    test_framework: "AndroidJUnit + Espresso"
+    test_floor: "require-where-feasible"
+    primary_language: "Kotlin"
+    applicable_dimensions: [D1, D2, D3, D4, D5, D6, D7, D8, D9, D10, D11]
+
+  - platform_id: firebase-rules
+    name: "Firebase Security Rules & Firestore Indexes"
+    root: "C:\\xampp\\htdocs\\Grader\\school\\firebase-rules"
+    vcs: git                              # shared with admin-web
+    remote: "captain196/ZenXII_adminPanel"
+    baseline_commit: "83e97f82"
+    test_framework: "firebase-rules-unit-testing"
+    test_floor: "require-where-feasible"
+    primary_language: "Firebase Rules DSL + JSON"
+    applicable_dimensions: [D2, D4, D9, D10, D11]
+    # rationale: no UI, no a11y, no real-life conditions, no UI perf
+
+
+# ========================================================================
+# MODULES
+# ========================================================================
+# Effective dimensions for scanning module × platform =
+#   module.applicable_dimensions ∩ platform.applicable_dimensions
+#
+# estimated_sessions: operator-owned forecast. PLAN cycle uses these to
+# compute estimated_total_sessions. Leave as null until calibrated.
+#
+# priority: P0/P1/P2/P3 — used by PLAN cycle for proposed sequencing.
+# Operator approves sequence; can override.
+
+modules:
+
+  - module_id: staff_hardening
+    name: "Staff Records Hardening (Phase A)"
+    description: |
+      Audit_log_service + Security_telemetry hardening. Patches 1-5 landed
+      2026-05-17. HOLD state — do NOT proceed to Patches 6-15 without
+      explicit operator reauthorization.
+    platforms: [admin-web, firebase-rules]
+    shared_services_consumed: [audit_log_service, security_telemetry,
+                               my_controller_auth, firebase_lib]
+    surfaces:
+      - platform: admin-web
+        paths:
+          - "application/libraries/Audit_log_service.php"
+          - "application/libraries/Security_telemetry.php"
+          - "application/core/MY_Controller.php"
+          - "application/config/security_telemetry.php"
+        verified: true
+      - platform: admin-web
+        paths:
+          - "application/controllers/Staff.php"
+        verified: false                   # operator: confirm path exists
+      - platform: firebase-rules
+        paths:
+          - "firestore.rules"             # staff block within
+        verified: true
+    applicable_dimensions: [D1, D2, D3, D4, D9, D11]
+    completion_criteria:
+      max_open_P2: 2
+      max_open_P3: unlimited
+    priority: P1
+    estimated_sessions: null              # operator: forecast
+    notes: |
+      HOLD discipline applies. Mission planning should NOT auto-sequence
+      this module first if HOLD is active. Operator must explicitly clear
+      HOLD via "include staff_hardening" or revised PLAN cycle.
+
+  - module_id: fees
+    name: "Fees"
+    description: |
+      feeDemands authoritative; feeDefaulters self-healing projection.
+      Multi-platform parent payment sync via Firestore. Financial code —
+      freeze→forensic→package→apply choreography required.
+    platforms: [admin-web, parent-android, teacher-android, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib,
+                               entity_firestore_sync, firestore_get_parallel]
+    surfaces:
+      - platform: admin-web
+        paths:
+          - "application/controllers/Accounting.php"
+          - "application/views/accounting/index.php"
+        verified: true
+      - platform: admin-web
+        paths:
+          - "application/libraries/Fees_service.php"
+        verified: false                   # operator: confirm if exists
+      - platform: parent-android
+        paths:
+          - "app/src/main/java/.../fees/**"
+        verified: false                   # operator: replace with real package path
+      - platform: teacher-android
+        paths:
+          - "app/src/main/java/.../fees/**"
+        verified: false
+      - platform: firebase-rules
+        paths:
+          - "firestore.rules"             # fees rules block
+          - "firestore.indexes.json"
+        verified: true
+    applicable_dimensions: [D1, D2, D3, D4, D5, D7, D9, D10, D11]
+    completion_criteria:
+      max_open_P2: 3
+      max_open_P3: unlimited
+    priority: P0
+    estimated_sessions: null              # operator: forecast
+    notes: |
+      Financial code — freeze→forensic→package→apply discipline. Highest
+      blast radius across 4 platforms. D10 schema drift is the most
+      common finding class here (snake_case admin vs camelCase mobile).
+
+  - module_id: accounting
+    name: "Accounting"
+    description: |
+      Concession Stage 1 + Payroll Stages 2-4 in soak. Simulator-verified
+      across 21 scenarios. Soak telemetry response mode locked:
+      observe → verify → classify; FREEZE_REQUIRED on signal.
+    platforms: [admin-web, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib,
+                               firestore_get_parallel]
+    surfaces:
+      - platform: admin-web
+        paths:
+          - "application/controllers/Accounting.php"
+          - "application/views/accounting/index.php"
+        verified: true
+      - platform: admin-web
+        paths:
+          - "application/libraries/AccountingSimulator"
+        verified: false                   # operator: confirm directory
+      - platform: firebase-rules
+        paths:
+          - "firestore.rules"             # accounting block
+          - "firestore.indexes.json"
+        verified: true
+    applicable_dimensions: [D1, D2, D3, D4, D9, D11]
+    completion_criteria:
+      max_open_P2: 2
+      max_open_P3: unlimited
+    priority: P0
+    estimated_sessions: null
+    notes: |
+      Backend-only financial module. Simulator scenarios anchor regression.
+      FREEZE_REQUIRED on identified P0 signals — autopilot must pause and
+      escalate, not patch directly.
+
+  - module_id: homework
+    name: "Homework"
+    description: |
+      Phase 1 attachment MVP shipped 2026-05-15. Stabilization window
+      active. Teacher hwId entropy gap (Finding #8 sibling) closed
+      2026-05-15.
+    platforms: [admin-web, parent-android, teacher-android, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib]
+    surfaces:
+      - platform: admin-web
+        paths:
+          - "application/controllers/Homework.php"
+          - "application/views/homework/index.php"
+        verified: true
+      - platform: parent-android
+        paths:
+          - "app/src/main/java/.../homework/**"
+        verified: false
+      - platform: teacher-android
+        paths:
+          - "app/src/main/java/.../homework/**"
+        verified: false
+      - platform: firebase-rules
+        paths:
+          - "firestore.rules"             # homework block
+          - "storage.rules"
+        verified: true
+    applicable_dimensions: [D1, D2, D4, D5, D7, D9, D10, D11]
+    completion_criteria:
+      max_open_P2: 3
+      max_open_P3: unlimited
+    priority: P1
+    estimated_sessions: null
+    notes: |
+      Recently shipped — stabilization soak active. Repository-level
+      defense (createFlag-accepts-StudentDoc) still pending; not in scope
+      for this mission unless operator promotes.
+
+  - module_id: attendance
+    name: "Attendance"
+    description: |
+      Phase 7 staff/devices/punches Firestore-first complete.
+      Tardy is canonical; "late" legacy alias still written for one cycle.
+    platforms: [admin-web, parent-android, teacher-android, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib,
+                               entity_firestore_sync]
+    surfaces:
+      - platform: admin-web
+        paths:
+          - "application/controllers/Attendance.php"
+        verified: false                   # operator: confirm
+      - platform: parent-android
+        paths:
+          - "app/src/main/java/.../attendance/**"
+        verified: false
+      - platform: teacher-android
+        paths:
+          - "app/src/main/java/.../attendance/**"
+        verified: false
+      - platform: firebase-rules
+        paths:
+          - "firestore.rules"             # attendance block
+        verified: true
+    applicable_dimensions: [D1, D2, D3, D5, D7, D9, D10, D11]
+    completion_criteria:
+      max_open_P2: 3
+      max_open_P3: unlimited
+    priority: P1
+    estimated_sessions: null
+    notes: |
+      D10 finding likely on tardy/late alias drift. Late-time wiring uses
+      lateMinutes from 08:00 default per 2026-05-11 cleanup.
+
+  - module_id: communication
+    name: "Communication / Messaging"
+    description: |
+      Phases 1-5 shipped 2026-04-16. Communication.php reduced 60→13 RTDB
+      calls. Remaining 13 are SIS/FCM-blocked. Messaging schema is
+      camelCase canonical with lowercase inbox role paths.
+    platforms: [admin-web, parent-android, teacher-android, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib]
+    surfaces:
+      - platform: admin-web
+        paths:
+          - "application/controllers/Communication.php"
+        verified: false                   # operator: confirm
+      - platform: parent-android
+        paths:
+          - "app/src/main/java/.../messaging/**"
+        verified: false
+      - platform: teacher-android
+        paths:
+          - "app/src/main/java/.../messaging/**"
+        verified: false
+      - platform: firebase-rules
+        paths:
+          - "firestore.rules"             # messaging block
+        verified: true
+    applicable_dimensions: [D1, D2, D4, D5, D6, D7, D9, D10, D11]
+    completion_criteria:
+      max_open_P2: 3
+      max_open_P3: unlimited
+    priority: P2
+    estimated_sessions: null
+    notes: |
+      User-facing messaging; D6 accessibility applies. 13 SIS/FCM-blocked
+      RTDB calls remain — those are excluded from this mission unless
+      blocker resolved.
+
+  - module_id: hr_payroll
+    name: "HR / Payroll / Appraisals / Recruitment"
+    description: |
+      2026-04-15 dual-emit snake_case + camelCase. Teacher screens read
+      camelCase. salarySlips Firestore deploy complete 2026-04-15.
+    platforms: [admin-web, teacher-android, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib]
+    surfaces:
+      - platform: admin-web
+        paths:
+          - "application/controllers/HR.php"
+        verified: false                   # operator: confirm path/name
+      - platform: teacher-android
+        paths:
+          - "app/src/main/java/.../hr/**"
+          - "app/src/main/java/.../payroll/**"
+        verified: false
+      - platform: firebase-rules
+        paths:
+          - "firestore.rules"             # hr block
+        verified: true
+    applicable_dimensions: [D1, D2, D4, D5, D9, D10, D11]
+    completion_criteria:
+      max_open_P2: 2
+      max_open_P3: unlimited
+    priority: P2
+    estimated_sessions: null
+    notes: |
+      Dual-emit schema is a D10 hotspot. Verify Teacher reads camelCase
+      across all HR sub-areas (payroll, appraisals, recruitment).
+
+  - module_id: school_config
+    name: "school_config"
+    description: |
+      Phase 3 soak. 6 areas shipped 2026-05-15. Observe→verify→classify
+      locked. S1 + C1 queued for Phase 4 (NOT in this mission scope).
+    platforms: [admin-web, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib]
+    surfaces:
+      - platform: admin-web
+        paths:
+          - "application/controllers/School_config.php"
+          - "application/views/school_config/index.php"
+        verified: true
+      - platform: firebase-rules
+        paths:
+          - "firestore.rules"             # school_config block
+        verified: true
+    applicable_dimensions: [D1, D2, D4, D5, D9]
+    completion_criteria:
+      max_open_P2: 2
+      max_open_P3: unlimited
+    priority: P2
+    estimated_sessions: null
+    notes: |
+      Phase 3 soak — close out final verification. Phase 4 areas (S1+C1)
+      are out of scope for THIS mission.
+
+  - module_id: academic_planner
+    name: "Academic Planner"
+    description: |
+      Currently active branch (Academic_planner). Recent updates per
+      83e97f82 commit.
+    platforms: [admin-web]
+    shared_services_consumed: [audit_log_service, firebase_lib]
+    surfaces:
+      - platform: admin-web
+        paths:
+          - "application/controllers/Academic_planner.php"
+          - "application/views/academic_planner"
+        verified: false                   # operator: confirm both paths
+    applicable_dimensions: [D1, D2, D4, D5, D9]
+    completion_criteria:
+      max_open_P2: 3
+      max_open_P3: unlimited
+    priority: P3
+    estimated_sessions: null
+    notes: |
+      Single-platform; lowest blast radius. Active development branch —
+      shape may shift mid-mission; re-verify surfaces before each DISCOVERY.
+
+
+# Modules that exist in the project but are explicitly OUT OF MISSION
+# scope. Operator may include them later via "include <module> <reason>"
+# command, which triggers a PLAN cycle revision.
+
+out_of_mission_modules:
+
+  - module_id: transport
+    reason: "Subsystem removed (placeholder UI was eliminated 2026-04-17)."
+
+  - module_id: wallet_advance
+    reason: "Phase 9 removed wallet/advance-balance subsystem from admin."
+
+  - module_id: razorpay
+    reason: "Test-mode live; not yet promoted to mission scope. Defer to
+             next hardening mission."
+
+  - module_id: dashboard_redesign
+    reason: "Parent Dashboard ERP-bento + Razorpay deploy 2026-04-17.
+             Stable; defer to next mission."
+
+  - module_id: library_fines
+    reason: "Deployed 2026-04-15. Stable; not in mission scope unless
+             operator promotes."
+
+  - module_id: tc_transfer_certificate
+    reason: "Out of scope; financial code with separate freeze discipline."
+
+
+# ========================================================================
+# SHARED SERVICES
+# ========================================================================
+
+shared_services:
+
+  - service_id: audit_log_service
+    name: "Audit Log Service"
+    surfaces:
+      - platform: admin-web
+        paths: ["application/libraries/Audit_log_service.php"]
+        verified: true
+    consumers: [staff_hardening, fees, accounting, homework, attendance,
+                communication, hr_payroll, school_config, academic_planner]
+    contract_summary: |
+      write_audit(actor, action, entity, before, after, meta)
+      Generalised 2026-05-17 (Patch 1 of Phase A). Records immutable —
+      never overwrite.
+    verification_strategy: per-consumer
+    contract_version: "2026-05-17"
+    last_change_in: "2026-05-17"
+
+  - service_id: security_telemetry
+    name: "Security Telemetry"
+    surfaces:
+      - platform: admin-web
+        paths:
+          - "application/libraries/Security_telemetry.php"
+          - "application/config/security_telemetry.php"
+        verified: true
+    consumers: [staff_hardening]          # will expand as adoption grows
+    contract_summary: |
+      log_security_event(event_type, actor, target, severity, meta)
+      Added 2026-05-17 (Patch 2 of Phase A).
+    verification_strategy: per-consumer
+    contract_version: "2026-05-17"
+    last_change_in: "2026-05-17"
+
+  - service_id: firebase_lib
+    name: "Firebase Library (PHP)"
+    surfaces:
+      - platform: admin-web
+        paths: ["application/libraries/Firebase.php"]
+        verified: true
+    consumers: [staff_hardening, fees, accounting, homework, attendance,
+                communication, hr_payroll, school_config, academic_planner]
+    contract_summary: |
+      Firestore CRUD + auth-token verification.
+      Includes firestoreGetParallel (currently sequential shim).
+      NO RTDB — absolute rule.
+    verification_strategy: "contract-test + per-consumer spot-check"
+    contract_version: "stable"
+    last_change_in: "stable"
+
+  - service_id: entity_firestore_sync
+    name: "Entity Firestore Sync (class/section normalizer)"
+    surfaces:
+      - platform: admin-web
+        paths: ["application/libraries/Entity_firestore_sync.php"]
+        verified: false                   # operator: confirm path
+    consumers: [fees, homework, attendance, communication]
+    contract_summary: |
+      normalizeClassSection(input) → {class: "Class Nth", section: "Section A"}
+      Canonical for any cross-platform write. Teacher Kotlin path lacks
+      equivalent normalizer (pre-existing latent bug per memory).
+    verification_strategy: per-consumer
+    contract_version: "stable"
+    last_change_in: "stable"
+
+  - service_id: my_controller_auth
+    name: "MY_Controller auth helpers"
+    surfaces:
+      - platform: admin-web
+        paths: ["application/core/MY_Controller.php"]
+        verified: true
+    consumers: [staff_hardening, fees, accounting, homework, attendance,
+                communication, hr_payroll, school_config, academic_planner]
+    contract_summary: |
+      _require_role(roles[]); _get_teacher_assignments() reads Firestore
+      subjectAssignments (NOT RTDB Duties; migrated 2026-05-07).
+    verification_strategy: per-consumer
+    contract_version: "2026-05-07"
+    last_change_in: "2026-05-07"
+
+  - service_id: firestore_get_parallel
+    name: "firestoreGetParallel (sequential shim)"
+    surfaces:
+      - platform: admin-web
+        paths: ["application/libraries/Firebase.php"]    # method within
+        verified: true
+    consumers: [fees, accounting, homework]
+    contract_summary: |
+      Parallel-shaped API; currently sequential implementation.
+      Returns array keyed by request order. 2026-05-10 fix restored 8
+      broken call sites.
+    verification_strategy: contract-test
+    contract_version: "2026-05-10"
+    last_change_in: "2026-05-10"
+
+
+# ========================================================================
+# STACK INVARIANTS
+# ========================================================================
+# These must NOT change without a HIGH-risk FIX_PLAN approval.
+
+stack_invariants:
+
+  - id: no_rtdb
+    rule: |
+      NO Realtime Database. Firestore only. No fallbacks, no mirrors,
+      no RTDB reads even for config.
+    enforced_via: "code review + memory/feedback_no_rtdb_ever.md"
+
+  - id: class_section_canonical
+    rule: |
+      Class/section canonical format: "Class Nth" + "Section A" exactly.
+      Use Entity_firestore_sync::normalizeClassSection for any new writer.
+      Pre-existing latent bug: Teacher Kotlin RedFlagRepository.kt
+      long-form path lacks Kotlin normalizer.
+    enforced_via: "shared service entity_firestore_sync"
+
+  - id: session_year_format
+    rule: 'Session year format: "YYYY-YY" (e.g., "2026-27"). Never bare year.'
+    enforced_via: "manual review"
+
+  - id: messaging_schema_camelcase
+    rule: |
+      Messaging schema: camelCase only; lowercase inbox role paths.
+      Snake_case anywhere in messaging payloads is a D10 violation.
+    enforced_via: "manual review + D10 scans"
+
+  - id: hr_dual_emit
+    rule: |
+      HR schema: dual-emit snake_case + camelCase during transition.
+      Teacher screens read camelCase. Admin still emits both.
+    enforced_via: "manual review + D10 scans"
+
+  - id: fees_authoritative_collection
+    rule: |
+      Fees: feeDemands is authoritative. feeDefaulters is a self-healing
+      projection — never the source of truth. Writers MUST target
+      feeDemands.
+    enforced_via: "code review"
+
+  - id: financial_freeze_choreography
+    rule: |
+      Financial code (fees / TC / payment / accounting): explicit
+      freeze → forensic → package → apply choreography. Do NOT collapse
+      stages. Autopilot must pause and escalate (FREEZE_REQUIRED) rather
+      than patch directly when financial telemetry signals P0.
+    enforced_via: "operator approval gate"
+
+  - id: parent_db_key_vs_school_id
+    rule: |
+      parent_db_key and school_id are DISTINCT. Never conflate. Wrong
+      conflation breaks tenant isolation.
+    enforced_via: "manual review"
+
+  - id: gold_css_means_teal
+    rule: |
+      --gold CSS variables = teal color (legacy naming). Do not "fix"
+      the naming; downstream depends on it.
+    enforced_via: "code comment"
+
+  - id: staff_active_inactive_lifecycle
+    rule: |
+      Staff records: Active/Inactive lifecycle gates login + FCM
+      registration + session cleanup + subjectAssignments cascade.
+      All 4 phases must coexist; never split.
+    enforced_via: "code review"
+
+  - id: accounting_telemetry_response_mode
+    rule: |
+      Accounting telemetry: observe → verify → classify discipline.
+      FREEZE_REQUIRED on identified P0 signals. Never patch first.
+    enforced_via: "operator approval gate"
+
+  - id: audit_log_immutable
+    rule: |
+      Audit_log_service writes are immutable. Never overwrite an audit
+      record. Corrections happen via NEW audit entries referencing
+      the original.
+    enforced_via: "service contract"
+
+  - id: storage_rules_recovery_path
+    rule: |
+      A firebase-rules/storage.rules.recovery file exists as an emergency
+      rollback. Do not delete; do not collapse into storage.rules.
+    enforced_via: "code comment + presence check"
+
+
+# ========================================================================
+# QUALITY BAR OVERRIDES (optional)
+# ========================================================================
+# Project-specific tweaks to the default QUALITY_BAR in LOGIC.md.
+
+quality_bar_overrides:
+
+  - dimension: D2
+    override: |
+      Audit_log_service writes are exempt from "no silent imputation"
+      rule for the actor field when source is system-triggered (e.g.,
+      scheduled jobs). Such writes MUST set actor = "system" explicitly,
+      not null.
+
+  - dimension: D4
+    override: |
+      Firestore rules are authoritative for resource ownership. PHP
+      controllers must additionally check ownership before mutation;
+      do not rely on Firestore rules alone (defense in depth).
+
+  - dimension: D11
+    override: |
+      Audit_log_service contract is FROZEN as of 2026-05-17. Consumer-
+      side adoption may evolve, but service signature does not change
+      without contract_version bump.
+
+
+# ========================================================================
+# OPERATOR CHECKLIST (before first PLAN cycle)
+# ========================================================================
+# 1. [ ] Fill baseline_commit for parent-android and teacher-android
+# 2. [ ] Walk each module's surfaces[]; confirm paths exist; flip
+#        verified: false → verified: true (or remove non-existent paths)
+# 3. [ ] Fill estimated_sessions per module (rough forecasts)
+# 4. [ ] Confirm out_of_mission_modules list is correct for THIS mission
+# 5. [ ] Review priorities; adjust if mission focus differs
+# 6. [ ] Confirm shared_services[].contract_version is current
+# 7. [ ] Re-read stack_invariants[]; add any project-specific rules
+#        that emerged since last revision
+# 8. [ ] Commit this INSTANCE.yaml file so the autopilot reads a stable
+#        version
+
+
+# ========================================================================
+# END OF INSTANCE
+# ========================================================================
