@@ -243,6 +243,10 @@ class Admin_login extends CI_Controller
         $rbacPerms = load_role_permissions($firebase, $school_firebase_key, $adminRole);
         $this->session->set_userdata('rbac_permissions', $rbacPerms);
 
+        // Forced-change-password gate (admin-driven reset flow).
+        $mustChange = (bool) $this->firebase->getCustomClaim($adminId, 'must_change_password', false);
+        $this->session->set_userdata('must_change_password', $mustChange);
+
         log_message('info',
             'Login OK (auth-api) admin=' . $this->_log_safe($adminId)
             . ' school=' . $this->_log_safe($school_login_code)
@@ -251,7 +255,7 @@ class Admin_login extends CI_Controller
             . ' ip=' . $ip
         );
 
-        redirect('admin/index');
+        redirect($mustChange ? 'admin_users/change_my_password' : 'admin/index');
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -303,27 +307,69 @@ class Admin_login extends CI_Controller
             }
         }
 
-        // Password verification
-        $storedHash       = ($adminData !== null)
-            ? (string) ($adminData['Credentials']['Password'] ?? '') : self::DUMMY_HASH;
-        // Normalise Node-bcrypt prefix ($2b$) to PHP-bcrypt ($2y$) — the algorithms
-        // are identical, only the prefix differs, and PHP's password_verify() on some
-        // builds rejects $2b$ outright. This makes existing Node-stored hashes verify.
-        if (strncmp($storedHash, '$2b$', 4) === 0) {
-            $storedHash = '$2y$' . substr($storedHash, 4);
-        }
+        // ── Password verification ──
+        // PRIMARY: Firebase Auth via identitytoolkit REST.
+        // TRANSITIONAL FALLBACK: RTDB bcrypt — for admins whose Firebase Auth
+        // password is not yet in sync. On RTDB success, we lazy-migrate the
+        // password into Firebase Auth so subsequent logins take the primary path.
+        // TODO: remove the RTDB fallback once migration of existing admins is verified.
         $credentialsValid = false;
+        $authSource       = 'none';
 
-        if ($adminData !== null && $schoolId_resolved !== null) {
-            $credentialsValid = password_verify($password, $storedHash);
-            if (! $credentialsValid && strlen($storedHash) !== 60
+        $adminEmail = $adminData !== null
+            ? (string) ($adminData['Profile']['email'] ?? $adminData['Email'] ?? '')
+            : '';
+        $emailValid = $adminEmail !== '' && filter_var($adminEmail, FILTER_VALIDATE_EMAIL);
+
+        // Path 1: Firebase Auth (primary)
+        if ($adminData !== null && $emailValid) {
+            $fbResult = $firebase->verifyEmailPassword($adminEmail, $password);
+            if (!empty($fbResult['ok'])) {
+                $credentialsValid = true;
+                $authSource       = 'firebase_auth';
+            }
+        }
+
+        // Path 2: RTDB bcrypt (transitional fallback)
+        if (! $credentialsValid && $adminData !== null && $schoolId_resolved !== null) {
+            $storedHash = (string) ($adminData['Credentials']['Password'] ?? '');
+            // Normalise Node-bcrypt prefix ($2b$) to PHP-bcrypt ($2y$).
+            if (strncmp($storedHash, '$2b$', 4) === 0) {
+                $storedHash = '$2y$' . substr($storedHash, 4);
+            }
+            if ($storedHash !== '' && password_verify($password, $storedHash)) {
+                $credentialsValid = true;
+                $authSource       = 'rtdb_bcrypt_legacy';
+            } elseif (strlen($storedHash) !== 60
                 && strpos($storedHash, '$2y$') !== 0 && strpos($storedHash, '$2a$') !== 0
                 && $password === $storedHash) {
+                // Legacy plaintext-password upgrade — re-hash and accept.
                 $newHash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
                 $firebase->update("Users/Admin/{$schoolId}/{$adminId}/Credentials", ['Password' => $newHash]);
                 $credentialsValid = true;
+                $authSource       = 'rtdb_bcrypt_plaintext_upgrade';
+            }
+
+            // Lazy-migrate into Firebase Auth (best-effort) on RTDB success.
+            if ($credentialsValid && $emailValid) {
+                try {
+                    $existingFb = $this->firebase->getFirebaseUser($adminId);
+                    if ($existingFb !== null) {
+                        $this->firebase->updateFirebaseUser($adminId, ['password' => $password]);
+                    } else {
+                        $this->firebase->createFirebaseUser($adminEmail, $password, [
+                            'uid'         => $adminId,
+                            'displayName' => $adminData['Name'] ?? $adminId,
+                        ]);
+                    }
+                    log_message('info', 'Admin_login lazy-migrated to Firebase Auth: ' . $this->_log_safe($adminId));
+                } catch (\Exception $e) {
+                    log_message('error', 'Admin_login lazy-migration failed for '
+                        . $this->_log_safe($adminId) . ': ' . $e->getMessage());
+                }
             }
         } else {
+            // Timing-safe dummy verify when admin record is missing.
             password_verify($password, self::DUMMY_HASH);
         }
 
@@ -455,11 +501,17 @@ class Admin_login extends CI_Controller
         $rbacPerms = load_role_permissions($firebase, $schoolId_resolved, $adminRole);
         $this->session->set_userdata('rbac_permissions', $rbacPerms);
 
-        log_message('info',
-            'Login OK (firebase-fallback) admin=' . $this->_log_safe($adminId)
-            . ' school=' . $this->_log_safe($schoolId) . ' ip=' . $ip);
+        // Forced-change-password gate (admin-driven reset flow).
+        $mustChange = (bool) $this->firebase->getCustomClaim($adminId, 'must_change_password', false);
+        $this->session->set_userdata('must_change_password', $mustChange);
 
-        redirect('admin/index');
+        log_message('info',
+            'Login OK admin=' . $this->_log_safe($adminId)
+            . ' school=' . $this->_log_safe($schoolId)
+            . ' source=' . $authSource
+            . ' ip=' . $ip);
+
+        redirect($mustChange ? 'admin_users/change_my_password' : 'admin/index');
     }
 
     /**

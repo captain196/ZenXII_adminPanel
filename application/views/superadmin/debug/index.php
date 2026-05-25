@@ -259,7 +259,7 @@
       <div class="tab-pane" id="tab-schema">
         <p style="font-size:12.5px;color:var(--t3);margin-bottom:10px;">
           Schema mismatches detected during Firebase reads. These indicate missing required fields
-          compared to the expected GraderIQ node structure.
+          compared to the expected ZenXii node structure.
         </p>
         <div class="log-wrap" id="wrapSchema">
           <table class="log-table">

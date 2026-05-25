@@ -126,6 +126,17 @@ class Firestore_service
     }
 
     /**
+     * Expose the underlying REST client for diagnostic helpers that need
+     * raw-protobuf access (e.g. inspecting whether a stored field is
+     * `mapValue` vs `arrayValue`, which the regular `get()` decoder
+     * flattens into PHP `[]` either way).
+     */
+    public function raw_client()
+    {
+        return $this->client;
+    }
+
+    /**
      * Initialize with school context. Call before any school-scoped operations.
      */
     public function init(string $schoolId, string $session = '', string $schoolCode = ''): self

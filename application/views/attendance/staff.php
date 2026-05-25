@@ -141,6 +141,20 @@
 }
 .att-grid td.att-col-sunday { background: var(--att-sunday); border-left: 1px solid rgba(239,68,68,.10); border-right: 1px solid rgba(239,68,68,.10); }
 .att-grid td.att-col-holiday { background: var(--att-holiday); border-left: 1px solid rgba(139,92,246,.10); border-right: 1px solid rgba(139,92,246,.10); }
+/* Future days: visually grayed, not editable. Header gets the same wash. */
+.att-grid th.att-col-future,
+.att-grid td.att-col-future {
+    background: repeating-linear-gradient(45deg, rgba(148,163,184,.06) 0 6px, transparent 6px 12px);
+    color: var(--att-text3);
+}
+.att-grid td.att-col-future .att-cell { cursor: not-allowed; opacity: .32; }
+.att-grid td.att-col-future .att-cell:hover { transform: none; }
+/* Sundays and Holidays are also locked — same cursor + dim treatment.
+   The existing red/purple column tint stays so the reason is still legible. */
+.att-grid td.att-col-sunday .att-cell,
+.att-grid td.att-col-holiday .att-cell { cursor: not-allowed; opacity: .55; }
+.att-grid td.att-col-sunday .att-cell:hover,
+.att-grid td.att-col-holiday .att-cell:hover { transform: none; }
 
 .att-grid tbody tr:hover td { background: var(--att-bg3); }
 .att-grid tbody tr:hover td.att-col-sunday { background: rgba(239,68,68,.12); }
@@ -369,6 +383,19 @@
     <!-- Toast -->
     <div class="att-toast" id="attToast"></div>
 
+    <!-- Past-edit confirmation modal (two-step) -->
+    <div class="att-modal-overlay" id="attPastConfirm">
+        <div class="att-modal">
+            <button class="att-modal-close" id="attPastConfirmClose">&times;</button>
+            <h3 id="attPastConfirmTitle">Confirm edits to past dates</h3>
+            <div id="attPastConfirmBody"></div>
+            <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px;">
+                <button type="button" class="att-btn att-btn-outline att-btn-sm" id="attPastConfirmCancel">Cancel</button>
+                <button type="button" class="att-btn att-btn-primary att-btn-sm" id="attPastConfirmNext">Continue</button>
+            </div>
+        </div>
+    </div>
+
 </div>
 </section>
 </div>
@@ -428,6 +455,52 @@
     function nextMark(v) {
         var i = CYCLE.indexOf(v);
         return CYCLE[(i + 1) % CYCLE.length];
+    }
+
+    /**
+     * Classify a day in the currently loaded month relative to today.
+     * Returns 'past' | 'today' | 'future'. Used to:
+     *   - block edits to future days
+     *   - trigger double-confirmation for past-date edits on save
+     */
+    function dayState(day) {
+        if (!state.month || !state.year) return 'today';
+        var now = new Date();
+        now.setHours(0,0,0,0);
+        var cellDate = new Date(state.year, getMonthIndex(state.month), day);
+        cellDate.setHours(0,0,0,0);
+        if (cellDate.getTime() > now.getTime()) return 'future';
+        if (cellDate.getTime() < now.getTime()) return 'past';
+        return 'today';
+    }
+
+    /**
+     * Single source of truth for "can this day be edited?"
+     * Returns the lock reason ('future' | 'sunday' | 'holiday') if locked,
+     * otherwise null. Order matters: future wins over sunday/holiday so the
+     * toast message stays accurate when both apply.
+     *
+     * Holidays are read live from state.holidays (refreshed every
+     * loadAttendance), so any holiday added or edited via /attendance/settings
+     * takes effect on the next Load click — no extra wiring needed.
+     */
+    function dateLockReason(day) {
+        if (dayState(day) === 'future') return 'future';
+        if (state.sundays && state.sundays.indexOf(day) !== -1) return 'sunday';
+        // Use property-existence (not truthiness) so a holiday saved with an
+        // empty name still locks the date.
+        if (state.holidays && state.holidays[day] !== undefined) return 'holiday';
+        return null;
+    }
+
+    function lockToastMessage(reason, day) {
+        if (reason === 'future')  return 'Future dates cannot be marked.';
+        if (reason === 'sunday')  return 'Sundays cannot be marked.';
+        if (reason === 'holiday') {
+            var label = (state.holidays && state.holidays[day]) ? state.holidays[day] : '';
+            return 'Holiday (' + (label || 'declared') + ') — attendance cannot be marked.';
+        }
+        return 'This date is locked.';
     }
 
     function showToast(msg, type) {
@@ -506,8 +579,14 @@
                     state.original[s.id] = arr.join('');
                 });
 
-                elDayPick.max = state.daysInMonth;
-                if (parseInt(elDayPick.value, 10) > state.daysInMonth) elDayPick.value = 1;
+                /* Day-picker max: for the current calendar month, cap at today
+                 * so bulk actions can't target future days. Past months stay
+                 * fully spannable so admins can audit retroactively. */
+                var now = new Date();
+                var isCurrentMonth = (state.year === now.getFullYear() &&
+                                      getMonthIndex(state.month) === now.getMonth());
+                elDayPick.max = isCurrentMonth ? now.getDate() : state.daysInMonth;
+                if (parseInt(elDayPick.value, 10) > parseInt(elDayPick.max, 10)) elDayPick.value = 1;
 
                 renderGrid();
                 elGridWrap.style.display = 'block';
@@ -536,6 +615,7 @@
             var isSun = sundaySet[d];
             if (isSun) cls += ' att-col-sunday';
             if (holidaySet[d]) cls += ' att-col-holiday';
+            if (dayState(d) === 'future') cls += ' att-col-future';
             var dt = new Date(state.year, getMonthIndex(state.month), d);
             var dn = dayNames[dt.getDay()];
             hHtml += '<th class="' + cls + '" title="' + dn + ', ' + state.month + ' ' + d + '">';
@@ -561,6 +641,7 @@
                 var tdCls = '';
                 if (sundaySet[day]) tdCls += ' att-col-sunday';
                 if (holidaySet[day]) tdCls += ' att-col-holiday';
+                if (dayState(day) === 'future') tdCls += ' att-col-future';
                 var dirtyMark = state.dirty.has(s.id) && att[d] !== state.original[s.id].charAt(d) ? ' att-dirty' : '';
                 var clock = v === 'T' ? '<span class="att-clock"><i class="fa fa-clock-o"></i></span>' : '';
                 bHtml += '<td class="' + tdCls + '">';
@@ -619,6 +700,13 @@
         if (!cell) return;
         var sid = cell.getAttribute('data-sid');
         var d = parseInt(cell.getAttribute('data-d'), 10);
+        var day = d + 1;
+        // Block edits on future dates, Sundays, and declared holidays.
+        var lock = dateLockReason(day);
+        if (lock) {
+            showToast(lockToastMessage(lock, day), 'error');
+            return;
+        }
         var curr = state.attendance[sid][d];
         state.attendance[sid][d] = nextMark(curr);
         updateCell(sid, d);
@@ -693,6 +781,14 @@
                 showToast('Invalid day number.', 'error');
                 return;
             }
+            // Block bulk on future dates, Sundays, and declared holidays.
+            // Sundays/holidays are already off-days — re-stamping them
+            // would either be a no-op or override the school calendar.
+            var lock = dateLockReason(day);
+            if (lock) {
+                showToast(lockToastMessage(lock, day), 'error');
+                return;
+            }
             var d = day - 1;
             state.staff.forEach(function(s) {
                 state.attendance[s.id][d] = mark;
@@ -703,9 +799,30 @@
     });
 
     /* ── Save ── */
-    elSaveBtn.addEventListener('click', function() {
-        if (state.dirty.size === 0) return;
+    /**
+     * Walk the dirty set and collect every (staffId, day) cell whose value
+     * changed vs the loaded original AND whose date is strictly before today.
+     * The result drives the two-step past-edit confirmation modal.
+     */
+    function collectPastEdits() {
+        var edits = [];   // [{sid, name, day}]
+        state.dirty.forEach(function(sid) {
+            var cur  = state.attendance[sid];
+            var orig = state.original[sid];
+            for (var i = 0; i < cur.length; i++) {
+                if (cur[i] !== orig.charAt(i) && dayState(i + 1) === 'past') {
+                    var member = null;
+                    for (var k = 0; k < state.staff.length; k++) {
+                        if (state.staff[k].id === sid) { member = state.staff[k]; break; }
+                    }
+                    edits.push({ sid: sid, name: member ? member.name : sid, day: i + 1 });
+                }
+            }
+        });
+        return edits;
+    }
 
+    function performSave() {
         var mon = elMonth.value;
 
         var attObj = {};
@@ -732,15 +849,28 @@
         .then(function(res) {
             elSaveBtn.innerHTML = '<i class="fa fa-save"></i> Save Changes';
             if (res && res.status === 'success') {
-                /* Update originals */
+                var skipped = Array.isArray(res.skipped) ? res.skipped : [];
+                var savedCount = (typeof res.saved === 'number') ? res.saved : 0;
+                var skippedIds = {};
+                skipped.forEach(function(s){ if (s && s.staffId) skippedIds[s.staffId] = true; });
+
                 state.dirty.forEach(function(sid) {
-                    state.original[sid] = state.attendance[sid].join('');
+                    if (!skippedIds[sid]) {
+                        state.original[sid] = state.attendance[sid].join('');
+                    }
                 });
-                state.dirty = new Set();
+                state.dirty = new Set(Object.keys(skippedIds));
                 updateSaveBtn();
-                /* Remove dirty highlights */
-                elBody.querySelectorAll('.att-dirty').forEach(function(c){ c.classList.remove('att-dirty'); });
-                showToast('Staff attendance saved successfully!', 'success');
+                elBody.querySelectorAll('.att-dirty').forEach(function(c){
+                    var sid = c.getAttribute('data-sid');
+                    if (sid && !skippedIds[sid]) c.classList.remove('att-dirty');
+                });
+
+                if (skipped.length > 0) {
+                    showSkippedModal(skipped, savedCount);
+                } else {
+                    showToast('Staff attendance saved successfully!', 'success');
+                }
             } else {
                 showToast(res && res.message ? res.message : 'Failed to save attendance.', 'error');
                 elSaveBtn.disabled = false;
@@ -751,7 +881,112 @@
             elSaveBtn.disabled = false;
             showToast('Network error while saving.', 'error');
         });
+    }
+
+    /* ── Past-edit confirmation modal (two-step) ── */
+    var elPC       = document.getElementById('attPastConfirm');
+    var elPCTitle  = document.getElementById('attPastConfirmTitle');
+    var elPCBody   = document.getElementById('attPastConfirmBody');
+    var elPCNext   = document.getElementById('attPastConfirmNext');
+    var elPCCancel = document.getElementById('attPastConfirmCancel');
+    var elPCClose  = document.getElementById('attPastConfirmClose');
+
+    function closePastConfirm() { elPC.classList.remove('open'); }
+    elPCClose.addEventListener('click', closePastConfirm);
+    elPCCancel.addEventListener('click', closePastConfirm);
+    elPC.addEventListener('click', function(e){ if (e.target === elPC) closePastConfirm(); });
+
+    function openPastConfirm(edits) {
+        // Step 1 — list affected past dates, grouped by date for readability.
+        var byDay = {};
+        edits.forEach(function(e){
+            var k = state.month + ' ' + e.day + ', ' + state.year;
+            (byDay[k] = byDay[k] || []).push(e.name);
+        });
+        var rows = '';
+        Object.keys(byDay).sort().forEach(function(k){
+            var names = byDay[k];
+            rows += '<div class="att-modal-stat"><span>' + esc(k) + '</span>'
+                  + '<span style="color:var(--att-a);font-weight:700">' + names.length + ' staff</span></div>';
+        });
+        elPCTitle.textContent = 'Confirm edits to past dates';
+        elPCBody.innerHTML =
+            '<p style="font-family:var(--att-font);font-size:13px;color:var(--att-text2);margin:0 0 14px 0;">'
+          + 'You are about to modify attendance for <strong>' + edits.length + ' past-date entr' + (edits.length === 1 ? 'y' : 'ies') + '</strong>. '
+          + 'Past-date changes are recorded in the audit log.</p>'
+          + rows;
+        elPCNext.innerHTML = 'Continue';
+        elPCNext.onclick = function(){ openPastConfirmStep2(edits); };
+        elPC.classList.add('open');
+    }
+
+    function openPastConfirmStep2(edits) {
+        // Step 2 — final "are you absolutely sure?" gate before POST.
+        elPCTitle.textContent = 'Are you absolutely sure?';
+        elPCBody.innerHTML =
+            '<p style="font-family:var(--att-font);font-size:13px;color:var(--att-text2);margin:0 0 8px 0;">'
+          + 'This will overwrite <strong>' + edits.length + '</strong> past-date attendance mark' + (edits.length === 1 ? '' : 's') + '. '
+          + 'There is no undo — only another correction will reverse it.</p>'
+          + '<p style="font-family:var(--att-font);font-size:12px;color:var(--att-text3);margin:0;">Click <strong>Yes, save changes</strong> to proceed, or Cancel to review.</p>';
+        elPCNext.innerHTML = '<i class="fa fa-check"></i> Yes, save changes';
+        elPCNext.onclick = function(){
+            closePastConfirm();
+            performSave();
+        };
+    }
+
+    elSaveBtn.addEventListener('click', function() {
+        if (state.dirty.size === 0) return;
+        var pastEdits = collectPastEdits();
+        if (pastEdits.length > 0) {
+            openPastConfirm(pastEdits);
+        } else {
+            performSave();
+        }
     });
+
+    /**
+     * Server returned a non-empty `skipped` list — show admin exactly which
+     * staff members didn't sync and why, instead of a "Saved" toast hiding
+     * silent Firestore failures.
+     */
+    function reasonText(reason) {
+        switch (reason) {
+            case 'firestore_write_failed':
+                return 'Firestore write failed (network/permissions — retry, or check server logs).';
+            case 'invalid_id_format':
+                return 'Invalid staff-ID format.';
+            default:
+                return reason || 'Unknown reason.';
+        }
+    }
+
+    function showSkippedModal(skipped, savedCount) {
+        elPCTitle.textContent = (savedCount > 0)
+            ? ('Saved ' + savedCount + ' · ' + skipped.length + ' could NOT be saved')
+            : (skipped.length + ' staff member' + (skipped.length === 1 ? '' : 's') + ' could NOT be saved');
+
+        var rows = '';
+        skipped.forEach(function(s) {
+            rows += '<div class="att-modal-stat" style="align-items:flex-start;">'
+                  +   '<span><strong>' + esc(s.name || s.staffId) + '</strong>'
+                  +     '<div style="font-size:11px;color:var(--att-text3);margin-top:2px;">' + esc(s.staffId) + '</div></span>'
+                  +   '<span style="color:var(--att-a);font-size:11px;max-width:55%;text-align:right;line-height:1.3;">'
+                  +     esc(reasonText(s.reason))
+                  +   '</span>'
+                  + '</div>';
+        });
+
+        elPCBody.innerHTML =
+            '<p style="font-family:var(--att-font);font-size:13px;color:var(--att-text2);margin:0 0 14px 0;">'
+          + 'Their marks are still highlighted — fix the underlying records, then Save again. '
+          + 'The other ' + savedCount + ' mark' + (savedCount === 1 ? '' : 's') + ' synced successfully.</p>'
+          + rows;
+
+        elPCNext.innerHTML = 'OK';
+        elPCNext.onclick = closePastConfirm;
+        elPC.classList.add('open');
+    }
 
     /* ── Warn on Leave ── */
     window.addEventListener('beforeunload', function(e) {

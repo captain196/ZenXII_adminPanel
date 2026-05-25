@@ -1827,7 +1827,7 @@ function showStaffConfirmation(res) {
             '</div>' +
             '<div class="sf-note">' +
                 '<i class="fa fa-info-circle" style="margin-right:5px;color:var(--gold,#0f766e);"></i>' +
-                'Staff can login using <strong>Staff ID</strong> and <strong>Password</strong> in the SchoolSync Teacher App.' +
+                'Staff can login using <strong>Staff ID</strong> and <strong>Password</strong> in the ZenXii Teacher App.' +
             '</div>' +
             '<div class="sf-actions">' +
                 '<button class="sf-btn sf-btn-print" onclick="printStaffSlip()"><i class="fa fa-print"></i> Print Slip</button>' +
@@ -1863,7 +1863,7 @@ function printStaffSlip() {
         '<tr><td>Password</td><td class="pwd">' + nsaEsc(d.default_password||'') + '</td></tr>' +
         '<tr><td>Position</td><td>' + nsaEsc(d.position||'') + '</td></tr>' +
         '</table>' +
-        '<div class="note"><strong>Note:</strong> Use Staff ID and Password to login in the SchoolSync Teacher App.</div>' +
+        '<div class="note"><strong>Note:</strong> Use Staff ID and Password to login in the ZenXii Teacher App.</div>' +
         '</body></html>'
     );
     w.document.close();

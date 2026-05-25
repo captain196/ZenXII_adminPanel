@@ -312,6 +312,13 @@
                         <td style="font-size:11px;color:var(--nsa-muted);white-space:nowrap"><?= $joinDateFmt ?></td>
 
                         <td class="nsa-td-action">
+                            <?php
+                              $canResetPw = in_array(
+                                $this->session->userdata('admin_role'),
+                                ['Super Admin', 'School Super Admin', 'Admin', 'Principal'],
+                                true
+                              );
+                            ?>
                             <div class="nsa-action-group">
                                 <a href="<?= base_url('staff/teacher_profile/' . $userId) ?>"
                                    class="nsa-action-btn nsa-action-view" title="View Profile">
@@ -321,6 +328,16 @@
                                    class="nsa-action-btn nsa-action-edit" title="Edit Staff">
                                     <i class="fa fa-pencil"></i>
                                 </a>
+                                <?php if ($canResetPw): ?>
+                                <button type="button"
+                                        class="nsa-action-btn js-reset-pw-btn"
+                                        data-user-id="<?= htmlspecialchars($userId) ?>"
+                                        data-user-name="<?= htmlspecialchars($s['Name'] ?? $s['name'] ?? $userId) ?>"
+                                        title="Reset Password"
+                                        style="background:rgba(56,189,248,.08);color:#0284c7;border:none;cursor:pointer">
+                                    <i class="fa fa-key"></i>
+                                </button>
+                                <?php endif; ?>
                                 <?php if ($status === 'Active'): ?>
                                 <button type="button"
                                         class="nsa-action-btn staff-status-toggle"
@@ -1011,3 +1028,14 @@ function resetAllFilters() {
 .nsa-role-pill.nsa-badge-gray  { background: #f3f4f6; color: #6b7280; border: 1px solid #d1d5db; }
 .nsa-role-pill-primary { font-weight: 700; }
 </style>
+
+<?php
+// Reset Password modal (shared partial) — only loaded when the role allows it.
+if (in_array($this->session->userdata('admin_role'),
+              ['Super Admin', 'School Super Admin', 'Admin', 'Principal'], true)) {
+    $this->load->view('partials/reset_password_modal', [
+        'reset_pw_endpoint' => base_url('staff/reset_password'),
+        'reset_pw_label'    => 'Staff',
+    ]);
+}
+?>

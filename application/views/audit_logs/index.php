@@ -142,6 +142,7 @@
                     <option value="Operations">Operations</option>
                     <option value="Certificates">Certificates</option>
                     <option value="AdminUsers">Admin Users</option>
+                    <option value="Staff">Staff</option>
                     <option value="Configuration">Configuration</option>
                     <option value="Academic">Academic</option>
                 </select>
@@ -153,6 +154,18 @@
             <div style="display:flex;align-items:flex-end;">
                 <button class="al-btn al-btn-p al-btn-sm" onclick="AL.applyFilter()"><i class="fa fa-search"></i> Search</button>
             </div>
+        </div>
+        <div style="display:flex;gap:8px;padding:0 14px 12px;flex-wrap:wrap;align-items:center">
+            <span style="font-size:11.5px;color:var(--t3);font-weight:600">Quick filters:</span>
+            <button class="al-btn al-btn-ghost al-btn-sm" onclick="AL.quickFilter('', 'reset_password')" title="Show password resets across all user types">
+                <i class="fa fa-key"></i> Password resets
+            </button>
+            <button class="al-btn al-btn-ghost al-btn-sm" onclick="AL.quickFilter('AdminUsers', '')">
+                Admin actions
+            </button>
+            <button class="al-btn al-btn-ghost al-btn-sm" onclick="AL.quickFilter('', '')">
+                Clear filters
+            </button>
         </div>
     </div>
 
@@ -384,6 +397,14 @@ AL.applyFilter = function(){
         if(r.status!=='success'){ AL.toast(r.message||'Filter failed',''); return; }
         renderLogs(r.logs||[], r.total||0);
     },'json').fail(function(){ AL.toast('Network error',''); });
+};
+
+// Preset filter — sets module + action, clears date range, fires applyFilter.
+AL.quickFilter = function(module, action){
+    $('#fDateFrom,#fDateTo,#fUser').val('');
+    $('#fModule').val(module || '');
+    $('#fAction').val(action || '');
+    AL.applyFilter();
 };
 
 AL.clearFilters = function(){

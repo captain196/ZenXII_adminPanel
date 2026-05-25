@@ -779,16 +779,18 @@
         <!-- ══ Visual left ══ -->
         <div class="lx-visual">
             <div class="lx-vgrid"></div>
-            <div class="lx-big-num">S</div>
+            <div class="lx-big-num">Z</div>
 
             <div class="lx-vtop">
                 <div class="lx-brand">
                     <div class="lx-brand-mark">
-                        <div class="lx-brand-icon-wrap">🏫</div>
+                        <div class="lx-brand-icon-wrap" style="background:transparent;padding:0;">
+                            <img src="<?= base_url('uploads/zenxii_brand/logo_wide.png') ?>" alt="ZenXii" style="width:100%;height:100%;object-fit:contain;display:block;">
+                        </div>
                     </div>
                     <div class="lx-brand-text">
-                        <div class="lx-brand-name">SchoolXAdmin</div>
-                        <div class="lx-brand-sub">Management System</div>
+                        <div class="lx-brand-name">ZenXii</div>
+                        <div class="lx-brand-sub">School Management</div>
                     </div>
                 </div>
             </div>

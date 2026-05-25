@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZenXii — Blog</title>
+<meta name="description" content="Short reads on running modern schools — operations, communication, security and the small habits that make a school day work.">
+<link rel="icon" type="image/png" href="Designs/logo_square.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #1B1410; --ink: #F2E9DA; --ink-dim: #C7B8A2; --ink-mute: #8B7A66;
+    --accent: #E0B36A; --accent-2: #F5D9A5;
+    --line: rgba(255,235,210,.08);
+    --card: rgba(255,235,210,.04);
+    --card-hover: rgba(255,235,210,.07);
+    --maxw: 760px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--ink); line-height: 1.7;
+  }
+  a { color: var(--accent-2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+  .topbar {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 50;
+    display: flex; align-items: center; gap: 14px;
+    padding: 8px 14px 8px 10px;
+    background: rgba(20,15,12,.55);
+    border: 1px solid rgba(255,255,255,.16);
+    border-radius: 999px;
+    backdrop-filter: blur(18px) saturate(140%);
+    box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  }
+  .topbar .brand { display: inline-flex; align-items: center; gap: 8px; color: #fff; }
+  .topbar .brand:hover { text-decoration: none; }
+  .topbar .brand img { width: 26px; height: 26px; }
+  .topbar .brand-name { font-family: "Playfair Display", Georgia, serif; font-weight: 600; font-size: 1rem; }
+  .topbar .back { color: var(--ink-dim); font-size: .9rem; padding: 6px 12px; border-radius: 999px; }
+  .topbar .back:hover { background: rgba(255,255,255,.08); color: var(--ink); text-decoration: none; }
+
+  .post-hero {
+    position: relative; isolation: isolate;
+    min-height: 50vh;
+    padding: 70px 24px 60px;
+    color: #fff;
+    background-color: #140d09;
+    background-image: var(--bg-img);
+    background-size: cover; background-position: center;
+  }
+  .post-hero::before {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(20,15,12,.40) 0%, rgba(20,15,12,.65) 60%, var(--bg) 100%);
+    z-index: -1;
+  }
+  .post-hero .inner { max-width: var(--maxw); margin: 0 auto; }
+  .post-hero .meta {
+    display: inline-block;
+    font-size: .75rem; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--accent-2);
+    background: rgba(224,179,106,.12);
+    border: 1px solid rgba(224,179,106,.32);
+    padding: 6px 12px; border-radius: 999px;
+    margin-bottom: 22px;
+  }
+  .post-hero h1 {
+    font-family: "Fraunces", "Playfair Display", Georgia, serif;
+    font-weight: 500;
+    font-size: clamp(2.2rem, 4.6vw, 3.4rem);
+    line-height: 1.08;
+    letter-spacing: -.018em;
+    margin: 0 0 18px;
+    text-shadow: 0 2px 14px rgba(0,0,0,.55);
+    font-variation-settings: "opsz" 96;
+  }
+  .post-hero .byline { color: rgba(248,242,234,.86); font-size: .95rem; }
+
+  article {
+    padding: 50px 0 80px;
+  }
+  article p { color: var(--ink-dim); font-size: 1.05rem; margin: 0 0 1.2em; }
+  article h2 {
+    font-family: "Fraunces", "Playfair Display", Georgia, serif;
+    font-weight: 500;
+    font-size: 1.65rem;
+    color: var(--ink);
+    margin: 1.8em 0 .5em;
+    letter-spacing: -.005em;
+    font-variation-settings: "opsz" 36;
+  }
+  article ul { margin: 0 0 1.2em; padding-left: 1.2em; color: var(--ink-dim); }
+  article li { margin-bottom: .4em; }
+  article blockquote {
+    margin: 1.4em 0; padding: 8px 0 8px 18px;
+    border-left: 3px solid var(--accent);
+    color: var(--ink);
+    font-family: "Fraunces", "Playfair Display", Georgia, serif;
+    font-style: italic;
+    font-size: 1.15rem;
+  }
+  article code { background: rgba(255,255,255,.05); padding: 2px 6px; border-radius: 6px; color: var(--accent-2); font-size: .95em; }
+
+  .post-foot { margin-top: 50px; padding-top: 26px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 14px; }
+  .post-foot a.btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 18px; border-radius: 999px;
+    background: transparent; color: var(--ink);
+    border: 1px solid var(--line);
+    transition: background .2s ease, border-color .2s ease;
+  }
+  .post-foot a.btn:hover { background: var(--card-hover); border-color: rgba(224,179,106,.3); text-decoration: none; }
+
+  .err { padding: 180px 24px 80px; text-align: center; }
+  .err h1 { font-family: "Playfair Display", Georgia, serif; font-weight: 700; font-size: 2rem; margin: 0 0 10px; }
+  .err p { color: var(--ink-dim); margin: 0 0 24px; }
+
+  footer { padding: 28px 0; border-top: 1px solid var(--line); color: var(--ink-mute); font-size: .9rem; text-align: center; }
+  @media (max-width: 720px) { .topbar .brand-name { display: none; } }
+</style>
+</head>
+<body>
+
+<main id="post-root"></main>
+
+<footer>© 2026 ZenXii · Made with care</footer>
+
+<script src="blog-data.js"></script>
+<script>
+  function esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+  function fmtDate(iso) {
+    try { return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }); }
+    catch { return iso; }
+  }
+
+  const params = new URLSearchParams(location.search);
+  const id = params.get('id');
+  const p = POSTS[id];
+  const root = document.getElementById('post-root');
+
+  if (!p) {
+    document.title = "ZenXii — Post not found";
+    root.innerHTML = `
+      <div class="err">
+        <h1>Post not found</h1>
+        <p>This post doesn't exist or the link is broken.</p>
+        <a class="btn" href="blog.html">← Back to all posts</a>
+      </div>`;
+  } else {
+    document.title = "ZenXii — " + p.title;
+    const bodyHTML = p.body.map(b => {
+      if (b.type === 'h2') return `<h2>${esc(b.text)}</h2>`;
+      if (b.type === 'quote') return `<blockquote>${esc(b.text)}</blockquote>`;
+      if (b.type === 'ul') return `<ul>${b.items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>`;
+      return `<p>${esc(b.text)}</p>`;
+    }).join('');
+
+    root.innerHTML = `
+      <section class="post-hero" style="--bg-img:url('${p.cover}?auto=format&fit=crop&w=1800&q=75')">
+        <div class="inner">
+          <span class="meta">${esc(p.category)} · ${p.readMin} min read</span>
+          <h1>${esc(p.title)}</h1>
+          <div class="byline">${esc(p.author)} · ${fmtDate(p.date)}</div>
+        </div>
+      </section>
+      <article>
+        <div class="wrap">
+          ${bodyHTML}
+          <div class="post-foot">
+            <a class="btn" href="blog.html">← All posts</a>
+            <a class="btn" href="landing_page.html#contact">Want a demo? Get in touch →</a>
+          </div>
+        </div>
+      </article>
+    `;
+  }
+</script>
+</body>
+</html>

@@ -346,7 +346,7 @@ $esc = function($v) { return htmlspecialchars($v, ENT_QUOTES, 'UTF-8'); };
         <p style="font-size:12px;color:var(--t3);margin-top:8px;">The school will verify your details and contact you with next steps. Please keep your application ID for reference.</p>
     </div>
 
-    <div class="pf-footer">Powered by GraderIQ ERP</div>
+    <div class="pf-footer">Powered by ZenXii ERP</div>
 </div>
 
 <script>

@@ -507,11 +507,20 @@ class Superadmin_schools extends MY_Superadmin_Controller
             }
         } catch (Exception $e) {}
 
+        // School Super Admins (read from RTDB Users/Admin/{school_code}).
+        $ssas = [];
+        $school_code_for_lookup = (string) ($school['profile']['school_code'] ?? '');
+        if ($school_code_for_lookup !== '') {
+            $this->load->library('Ssa_reset', null, 'ssa_reset');
+            $ssas = $this->ssa_reset->listSsasInSchool($school_code_for_lookup);
+        }
+
         $data = [
             'page_title' => 'School — ' . $school_name,
             'school_uid' => $school_uid,
             'school'     => $school,
             'plans'      => $plans,
+            'ssas'       => $ssas,
         ];
 
         $this->load->view('superadmin/include/sa_header', $data);
@@ -612,6 +621,62 @@ class Superadmin_schools extends MY_Superadmin_Controller
         } catch (Exception $e) {
             $this->json_error('Failed to update profile.');
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // POST  /superadmin/schools/reset_ssa_password
+    //
+    // Developer Super Admin resets any School Super Admin's password.
+    // MY_Superadmin_Controller already enforces sa_id session.
+    // ─────────────────────────────────────────────────────────────────────────
+    public function reset_ssa_password()
+    {
+        $school_uid   = trim((string) ($this->input->post('school_uid', TRUE) ?? ''));
+        $target_id    = trim((string) ($this->input->post('ssa_id',     TRUE) ?? ''));
+        $new_password = (string) ($this->input->post('new_password', FALSE) ?? '');
+
+        if ($school_uid === '' || !preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $school_uid)) {
+            $this->json_error('Invalid school identifier.'); return;
+        }
+        if ($target_id === '' || !preg_match('/^SSA\d+$/', $target_id)) {
+            $this->json_error('Invalid SSA id.'); return;
+        }
+
+        // Resolve school_code from System/Schools/{uid}/profile/school_code.
+        $school_code = (string) ($this->firebase->get("System/Schools/{$school_uid}/profile/school_code") ?? '');
+        if ($school_code === '') {
+            $this->json_error('School not found or missing school code.', 404); return;
+        }
+
+        // Confirm target SSA exists in that school.
+        $target = $this->firebase->get("Users/Admin/{$school_code}/{$target_id}");
+        if (empty($target) || !is_array($target)) {
+            $this->json_error('SSA not found in this school.', 404); return;
+        }
+
+        $this->load->library('Ssa_reset', null, 'ssa_reset');
+        $result = $this->ssa_reset->resetSsaPassword(
+            $school_code,
+            $school_uid,    // school_uid is the Firestore school_id (SCH_XXXXXX)
+            $target_id,
+            $new_password,
+            'SA:' . (string) $this->sa_id
+        );
+
+        if (empty($result['success'])) {
+            $this->json_error($result['message'] ?? 'Reset failed.'); return;
+        }
+
+        $this->sa_log('ssa_password_reset', $school_uid, [
+            'ssa_id'   => $target_id,
+            'ssa_name' => $result['ssa_name'],
+        ]);
+
+        $this->json_success([
+            'message' => $result['message'],
+            'ssa_id'  => $target_id,
+            'name'    => $result['ssa_name'],
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

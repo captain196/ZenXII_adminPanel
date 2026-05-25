@@ -101,30 +101,44 @@ function require_permission(string $module, string $action = ''): void
 }
 
 /**
- * Load role permissions from Firebase for the given school and role.
+ * Load role permissions from Firestore for the given school and role.
+ *
+ * Reads `schools/{schoolId}.roles[role].permissions` — the same document
+ * AdminUsers::save_role / delete_role / _seed_default_roles write to.
  *
  * Called at login time and by MY_Controller for refresh.
  * Returns array of module strings, or empty array on failure.
  *
- * @param  object $firebase  Firebase library instance
- * @param  string $school_name  School identifier (SCH_XXXXXX or legacy name)
- * @param  string $role  Role name as stored in admin record
+ * @param  object $firebase   Legacy RTDB library handle. Unused — kept for
+ *                            signature compatibility with existing callers.
+ * @param  string $school_id  Firestore `schools` document id (SCH_XXXXXX).
+ *                            Param name `school_name` historical; value is the Firestore key.
+ * @param  string $role       Role name as stored in admin record / claim.
  * @return array
  */
-function load_role_permissions($firebase, string $school_name, string $role): array
+function load_role_permissions($firebase, string $school_id, string $role): array
 {
     // Bypass roles don't need to load — they have full access
     if (in_array($role, RBAC_BYPASS_ROLES, true)) {
         return RBAC_MODULES; // return all for sidebar rendering
     }
 
-    if (empty($school_name) || empty($role)) {
+    if (empty($school_id) || empty($role)) {
         return [];
     }
 
     try {
-        $role_safe = preg_replace('/[^A-Za-z0-9_ \-]/', '', $role);
-        $role_data = $firebase->get("Schools/{$school_name}/Roles/{$role_safe}");
+        $CI =& get_instance();
+        if (!isset($CI->fs)) {
+            log_message('error', 'RBAC load_role_permissions: fs library not loaded');
+            return [];
+        }
+
+        $schoolDoc = $CI->fs->get('schools', $school_id);
+        $roles     = (is_array($schoolDoc) && isset($schoolDoc['roles']) && is_array($schoolDoc['roles']))
+                     ? $schoolDoc['roles']
+                     : [];
+        $role_data = $roles[$role] ?? null;
 
         if (is_array($role_data) && isset($role_data['permissions']) && is_array($role_data['permissions'])) {
             // Whitelist against known modules

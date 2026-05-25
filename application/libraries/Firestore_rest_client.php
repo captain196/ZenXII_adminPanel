@@ -438,6 +438,23 @@ class FirestoreRestClient
             foreach ($value as $k => $v) $fields[$k] = $this->encode($v);
             return ['mapValue' => ['fields' => $fields]];
         }
+        // stdClass → mapValue. Callers use `new \stdClass()` (or cast an
+        // array to object) to force map type when the natural shape would
+        // otherwise serialise as an array — most importantly, for empty
+        // maps. Without this branch the empty case fell through to
+        // `(string) $value` which fatals on objects and 500s the request.
+        //
+        // The inner `fields` wrapper is itself a stdClass so PHP's
+        // json_encode emits `{}` for the empty case (an empty PHP array
+        // would encode as `[]` and Firestore's REST API rejects
+        // `{"mapValue":{"fields":[]}}` as a malformed mapValue).
+        if ($value instanceof \stdClass) {
+            $fields = new \stdClass();
+            foreach (get_object_vars($value) as $k => $v) {
+                $fields->{(string) $k} = $this->encode($v);
+            }
+            return ['mapValue' => ['fields' => $fields]];
+        }
         return ['stringValue' => (string)$value];
     }
 
@@ -516,6 +533,22 @@ class FirestoreRestClient
             return null;
         }
         return $this->decodeDocument($r['body']);
+    }
+
+    /**
+     * Diagnostic-only — fetch a document and return the *raw* REST body
+     * with the per-field protobuf type tags intact (`mapValue`,
+     * `arrayValue`, `stringValue`, …). Lets debug callers tell apart an
+     * empty map from an empty array, which `getDocument()` collapses to
+     * the same `[]` after decoding.
+     */
+    public function getRawDocument(string $collection, string $docId): ?array
+    {
+        $safeDocId = rawurlencode($docId);
+        $url = $this->baseUrl() . "/$collection/$safeDocId";
+        $r = $this->request('GET', $url);
+        if ($r['code'] !== 200) return null;
+        return is_array($r['body']) ? $r['body'] : null;
     }
 
     /**

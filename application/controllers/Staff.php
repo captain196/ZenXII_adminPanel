@@ -1715,6 +1715,120 @@ class Staff extends MY_Controller
         return $stats;
     }
 
+    /**
+     * POST /staff/reset_password
+     *
+     * School-admin / principal driven password reset for a staff member.
+     * Writes the new password to Firebase Auth (primary auth source for
+     * teacher/staff mobile apps), flags must_change_password=true so the
+     * app forces a self-set on next login, and revokes existing refresh
+     * tokens so other devices re-authenticate.
+     *
+     * Mirror: the new bcrypt hash is also written to the staff Firestore
+     * doc's Credentials.Password field — write-only, nothing reads it,
+     * kept for record-keeping per project policy.
+     *
+     * @return void
+     */
+    public function reset_password(): void
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal'], 'reset_staff_password');
+        header('Content-Type: application/json');
+
+        if ($this->input->method() !== 'post') {
+            $this->json_error('POST only.', 405);
+            return;
+        }
+
+        $staff_id     = trim((string) $this->input->post('user_id', TRUE));
+        $new_password = (string) $this->input->post('new_password', FALSE);
+
+        if ($staff_id === '' || !preg_match('/^[A-Za-z0-9_]+$/', $staff_id)) {
+            $this->json_error('Invalid staff id.', 400);
+            return;
+        }
+        if ($new_password === '') {
+            $this->json_error('New password is required.');
+            return;
+        }
+        if (strlen($new_password) < 8 || strlen($new_password) > 72) {
+            $this->json_error('Password must be 8–72 characters.');
+            return;
+        }
+        if (!preg_match('/[A-Z]/', $new_password)
+            || !preg_match('/[a-z]/', $new_password)
+            || !preg_match('/[0-9]/', $new_password)) {
+            $this->json_error('Password must contain an uppercase letter, a lowercase letter, and a digit.');
+            return;
+        }
+
+        // Tenant check — staff must belong to the current school.
+        try {
+            $staffDoc = $this->fs->getEntity('staff', $staff_id);
+        } catch (\Exception $e) {
+            log_message('error', 'Staff::reset_password fetch failed: ' . $e->getMessage());
+            $this->json_error('Failed to load staff record.');
+            return;
+        }
+        if (empty($staffDoc) || !is_array($staffDoc)) {
+            $this->json_error('Staff not found.', 404);
+            return;
+        }
+        if (((string) ($staffDoc['schoolId'] ?? '')) !== $this->school_id) {
+            log_message('error', "RBAC tenant breach attempt: admin={$this->admin_id} school={$this->school_id} tried to reset staff={$staff_id} of school={$staffDoc['schoolId']}");
+            $this->json_error('Staff not found in your school.', 404);
+            return;
+        }
+
+        $name = (string) ($staffDoc['name'] ?? $staffDoc['Name'] ?? $staff_id);
+
+        // 1. Update Firebase Auth password (primary auth source).
+        $updated = $this->firebase->updateFirebaseUser($staff_id, ['password' => $new_password]);
+        if ($updated === null) {
+            $this->json_error('Failed to update Firebase Auth password.');
+            return;
+        }
+
+        // 2. Set must-change-password claim — the app gates first login on this.
+        $this->firebase->setFirebaseClaims($staff_id, [
+            'role'                 => (string) ($staffDoc['role'] ?? 'Teacher'),
+            'school_id'            => $this->school_id,
+            'school_code'          => $this->school_code,
+            'parent_db_key'        => $this->parent_db_key,
+            'must_change_password' => true,
+            'password_reset_at'    => time(),
+            'password_reset_by'    => (string) ($this->admin_id ?? ''),
+        ]);
+
+        // 3. Revoke refresh tokens — kicks active sessions on other devices.
+        $this->firebase->revokeRefreshTokens($staff_id);
+
+        // 4. Mirror bcrypt hash + must-change flag to Firestore staff doc.
+        //    bcrypt is write-only for record-keeping. mustChangePassword is
+        //    read by the Teacher app to trigger its force-change-password screen.
+        try {
+            $hashed = password_hash($new_password, PASSWORD_BCRYPT, ['cost' => 12]);
+            $this->fs->set('staff', $this->fs->docId($staff_id), [
+                'Credentials'        => ['Id' => $staff_id, 'Password' => $hashed],
+                'Password'           => $hashed,
+                'mustChangePassword' => true,
+                'lastUpdated'        => date('Y-m-d'),
+                'updatedAt'          => date('c'),
+            ], true);
+        } catch (\Exception $e) {
+            log_message('error', 'Staff::reset_password Firestore mirror failed: ' . $e->getMessage());
+            // Non-fatal: Firebase Auth is the truth.
+        }
+
+        log_audit('Staff', 'reset_password', $staff_id, "Password reset for '{$name}'");
+
+        $this->json_success([
+            'message' => "Password reset for '{$name}'. They will be required to change it on next login.",
+            'user_id' => $staff_id,
+            'name'    => $name,
+        ]);
+    }
+
     public function delete_staff($id)
     {
         $this->_require_role(self::MANAGE_ROLES);

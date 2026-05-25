@@ -775,6 +775,98 @@ class Attendance extends MY_Controller
         ]);
     }
 
+    /**
+     * Debug endpoint — verify what the parent/teacher apps would read for
+     * a given student + month. Accepts GET so it can be hit directly from
+     * the browser address bar while debugging sync issues.
+     *
+     * URL: /attendance/debug_student_sync?student_id=STU0001&month=May&year=2026
+     *
+     * Returns the exact Firestore docId being looked up, whether the doc
+     * exists, and (if it does) the full document the parent/teacher apps
+     * would see. If `exists` is false, the admin save never landed for
+     * this student — most likely the silent-skip bug (look at `lookup` to
+     * see what schoolId and docId the request resolved to).
+     */
+    public function debug_student_sync()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'debug_student_sync');
+
+        $studentId = trim((string) ($this->input->get('student_id') ?: $this->input->post('student_id')));
+        $month     = trim((string) ($this->input->get('month')      ?: $this->input->post('month')));
+        $yearRaw   = trim((string) ($this->input->get('year')       ?: $this->input->post('year')));
+
+        if (!$studentId || !$month) {
+            return $this->json_error('student_id and month are required.');
+        }
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $studentId)) {
+            return $this->json_error('Invalid student_id format.');
+        }
+        if (!isset($this->month_map[$month])) {
+            return $this->json_error('Invalid month (use full name like "May").');
+        }
+
+        $monthNum = $this->month_map[$month];
+        $year     = ((int) $yearRaw) ?: $this->_resolve_year($month);
+        $monthKey = sprintf('%04d-%02d', $year, $monthNum);
+
+        // Same docId the admin save uses and the parent/teacher apps read.
+        $docId = $this->fs->docId2($studentId, $monthKey);
+
+        $doc = $this->fs->get('attendanceSummary', $docId);
+
+        // Also try to read the student's own profile so the admin can
+        // spot mismatched className/section/status that would prevent
+        // future saves from picking them up.
+        $studentDocId = $this->fs->docId($studentId);
+        $studentDoc   = $this->fs->get('students', $studentDocId);
+
+        // Raw lateTimes type — empty map and empty array both decode to []
+        // in PHP, so the `doc` view above can't tell them apart. We
+        // re-query the doc via reflection-style access to the REST client
+        // so we can read the raw protobuf type tag (mapValue vs arrayValue).
+        $lateTimesRawType = 'unknown';
+        try {
+            $client = $this->fs->raw_client();   // see helper below
+            if ($client !== null) {
+                $rawDoc = $client->getRawDocument('attendanceSummary', $docId);
+                $rawLT  = $rawDoc['fields']['lateTimes'] ?? null;
+                if (is_array($rawLT)) {
+                    if (isset($rawLT['mapValue']))      $lateTimesRawType = 'mapValue';
+                    elseif (isset($rawLT['arrayValue'])) $lateTimesRawType = 'arrayValue';
+                    elseif (isset($rawLT['nullValue']))  $lateTimesRawType = 'nullValue';
+                    else $lateTimesRawType = 'other:' . implode(',', array_keys($rawLT));
+                } elseif ($rawLT === null) {
+                    $lateTimesRawType = 'missing';
+                }
+            }
+        } catch (\Exception $e) {
+            $lateTimesRawType = 'error:' . $e->getMessage();
+        }
+
+        return $this->json_success([
+            'lookup' => [
+                'schoolId'     => $this->school_id,
+                'studentId'    => $studentId,
+                'month'        => $month,
+                'year'         => $year,
+                'monthKey'     => $monthKey,
+                'collection'   => 'attendanceSummary',
+                'attDocId'     => $docId,
+                'studentDocId' => $studentDocId,
+            ],
+            'attendance_summary' => [
+                'exists' => $doc !== null,
+                'doc'    => $doc,
+                'lateTimes_raw_type' => $lateTimesRawType,
+            ],
+            'student_profile' => [
+                'exists' => $studentDoc !== null,
+                'doc'    => $studentDoc,
+            ],
+        ]);
+    }
+
     /* ================================================================
        GROUP B: STUDENT ATTENDANCE AJAX
        ================================================================ */
@@ -1008,26 +1100,48 @@ class Attendance extends MY_Controller
         $nameMap = $this->_get_section_students($class, $section);
 
         // B1 — Cache Active-status per studentId to avoid N+1 Firestore
-        // reads inside the bulk loop. Pre-fetched once via Roster_helper
-        // (which already filters status='Active' at the source).
+        // reads inside the bulk loop. We pre-fetch via _get_active_roster
+        // (the same source the teacher /attendance/save endpoint uses)
+        // rather than Roster_helper alone, because the `students`
+        // collection contains a mix of legacy `Status` (PascalCase) and
+        // new `status` (camelCase) field shapes plus a mix of case in
+        // the value ("Active" / "active" / ""). Roster_helper's strict
+        // `status == 'Active'` Firestore filter silently drops docs in
+        // the legacy shape — that was the silent-skip bug that caused
+        // students to disappear from parent/teacher views after admin
+        // bulk saves.
+        $activeRoster = $this->_get_active_roster($class, $section);
         $activeRosterIds = [];
-        $rosterRows = $this->roster->for_class($class, $section);
-        foreach ($rosterRows as $rid => $_unused) { $activeRosterIds[$rid] = true; }
+        foreach ($activeRoster as $rid => $_unused) { $activeRosterIds[$rid] = true; }
+
+        // Collect every student we *couldn't* save and why, so the
+        // admin UI can surface them as a warning instead of the user
+        // discovering hours later that parent/teacher views are empty.
+        $skipped = [];   // [{studentId, name, reason}]
 
         foreach ($attData as $studentId => $attString) {
             $studentId = trim((string) $studentId);
-            if (!preg_match('/^[A-Za-z0-9_]+$/', $studentId)) continue;
+            if (!preg_match('/^[A-Za-z0-9_]+$/', $studentId)) {
+                $skipped[] = [
+                    'studentId' => $studentId,
+                    'name'      => $nameMap[$studentId] ?? $studentId,
+                    'reason'    => 'invalid_id_format',
+                ];
+                continue;
+            }
 
-            // B1 — Attendance status gate. Reject marks for any student
-            // whose Firestore doc is not status='Active' (Inactive / TC /
-            // Deleted). Pre-fix this loop accepted any well-formed
-            // studentId in the POST, so a stale form / scripted POST
-            // could land marks on withdrawn students.
+            // Attendance status gate. Reject marks for any student
+            // whose Firestore doc is not Active (Inactive / TC / Deleted).
             if (!isset($activeRosterIds[$studentId])) {
                 log_message('warning',
                     "save_student_attendance: skipped non-Active student {$studentId} "
-                    . "in {$class}/{$section} — status gate (B1)"
+                    . "in {$class}/{$section} — status gate"
                 );
+                $skipped[] = [
+                    'studentId' => $studentId,
+                    'name'      => $nameMap[$studentId] ?? $studentId,
+                    'reason'    => 'not_in_active_roster',
+                ];
                 continue;
             }
 
@@ -1047,18 +1161,34 @@ class Attendance extends MY_Controller
             }
             $pct = $working > 0 ? round(($present + $tardy) / $working * 100, 1) : 0;
 
-            // Build late metadata
-            $lateMap = [];
+            // Build late metadata.
+            //
+            // CRITICAL: keys MUST be strings and the empty case MUST be a
+            // stdClass — not an empty PHP array — otherwise Firestore stores
+            // the field as `array_value` instead of `map_value`. The Android
+            // SDKs in the parent + teacher apps declare this field as
+            // `Map<String, Map<String, String>>`, and `toObject()` throws on
+            // an array→map mismatch. Result: the whole doc fails to
+            // deserialize and the parent app silently shows "no data" even
+            // though the doc is present in Firestore. (Confirmed via the
+            // debug_student_sync endpoint — STU0001 had `lateTimes: []` and
+            // the parent UI was blank as a consequence.)
+            $lateMap = new \stdClass();
             if (is_array($lateData) && isset($lateData[$studentId]) && is_array($lateData[$studentId])) {
                 foreach ($lateData[$studentId] as $day => $time) {
                     $day = (int) $day;
                     if ($day < 1 || $day > $daysInMonth) continue;
                     $time = preg_replace('/[^0-9:]/', '', (string) $time);
-                    if ($time) $lateMap[$day] = ['time' => $time];
+                    if ($time) $lateMap->{(string) $day} = ['time' => $time];
                 }
             }
 
             // ── WRITE: Firestore FIRST (canonical store) ──
+            // If the Firestore write fails we DO NOT count this student
+            // as saved and we add them to `skipped` so the admin sees it.
+            // Previously a Firestore failure only logged silently — admin
+            // got a "saved successfully" toast while parent/teacher apps
+            // saw no update.
             $studentName = $nameMap[$studentId] ?? $studentId;
             $summaryDocId = $this->fs->docId2($studentId, $monthKey);
             $fsOk = (bool) $this->fs->set('attendanceSummary', $summaryDocId, [
@@ -1100,19 +1230,32 @@ class Attendance extends MY_Controller
                 } catch (\Exception $e) {
                     log_message('error', "save_student_attendance RTDB mirror failed for {$studentId}: " . $e->getMessage());
                 }
+                $saved++;
+            } else {
+                log_message('error',
+                    "save_student_attendance: Firestore write FAILED for {$studentId} "
+                    . "in {$class}/{$section} {$attKey} — see Firestore_service log"
+                );
+                $skipped[] = [
+                    'studentId' => $studentId,
+                    'name'      => $studentName,
+                    'reason'    => 'firestore_write_failed',
+                ];
             }
-
-            $saved++;
         }
 
         $this->_log_attendance_change('BULK_SAVE_STUDENT', [
-            'class' => $class, 'section' => $section, 'month' => $attKey, 'count' => $saved,
+            'class' => $class, 'section' => $section, 'month' => $attKey,
+            'count' => $saved, 'skipped' => count($skipped),
         ]);
 
         // Fire communication events for newly absent/late students
         $this->_fire_student_att_events($class, $section, $attKey);
 
-        return $this->json_success(['saved' => $saved]);
+        return $this->json_success([
+            'saved'   => $saved,
+            'skipped' => $skipped,
+        ]);
     }
 
     /**
@@ -1633,9 +1776,17 @@ class Attendance extends MY_Controller
         if (!is_array($allStaff)) $allStaff = [];
 
         $saved = 0;
+        $skipped = [];   // [{staffId, name, reason}]
         foreach ($attData as $staffId => $attString) {
             $staffId = trim((string) $staffId);
-            if (!preg_match('/^[A-Za-z0-9_]+$/', $staffId)) continue;
+            if (!preg_match('/^[A-Za-z0-9_]+$/', $staffId)) {
+                $skipped[] = [
+                    'staffId' => $staffId,
+                    'name'    => $staffId,
+                    'reason'  => 'invalid_id_format',
+                ];
+                continue;
+            }
 
             $cleanStr = $this->_sanitize_att_string($attString, $daysInMonth);
             $cleanStr = enforce_holidays_on_string($cleanStr, $daysInMonth, $nonWorking);
@@ -1646,9 +1797,19 @@ class Attendance extends MY_Controller
             }
 
             // Phase 7b — Firestore primary write for the monthly summary.
-            // Best-effort here because bulk save is a hot path; failures
-            // are logged but don't block the rest of the batch.
-            $this->_syncStaffSummaryToFirestore($staffId, $attKey, $cleanStr, $staffName);
+            // Track failures so admin gets feedback instead of a silent miss.
+            $fsOk = $this->_syncStaffSummaryToFirestore($staffId, $attKey, $cleanStr, $staffName);
+            if (!$fsOk) {
+                log_message('error',
+                    "save_staff_attendance: Firestore write FAILED for {$staffId} {$attKey}"
+                );
+                $skipped[] = [
+                    'staffId' => $staffId,
+                    'name'    => $staffName ?: $staffId,
+                    'reason'  => 'firestore_write_failed',
+                ];
+                continue;
+            }
 
             $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
             $this->firebase->set($attPath, $cleanStr);
@@ -1671,10 +1832,13 @@ class Attendance extends MY_Controller
         }
 
         $this->_log_attendance_change('BULK_SAVE_STAFF', [
-            'month' => $attKey, 'count' => $saved,
+            'month' => $attKey, 'count' => $saved, 'skipped' => count($skipped),
         ]);
 
-        return $this->json_success(['saved' => $saved]);
+        return $this->json_success([
+            'saved'   => $saved,
+            'skipped' => $skipped,
+        ]);
     }
 
     /**

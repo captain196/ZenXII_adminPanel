@@ -4,7 +4,7 @@
 <head>
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <title>SchoolX</title>
+    <title>ZenXii Admin</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 
     <!-- CSRF tokens — must be before any scripts -->
@@ -594,9 +594,9 @@
 <header class="main-header">
     <div class="logo">
         <a href="<?= base_url('admin') ?>" class="g-logo-link">
-            <div class="g-mark">G</div>
+            <img src="<?= base_url('uploads/zenxii_brand/logo_wide.png') ?>" alt="ZenXii" class="g-mark" style="width:32px;height:32px;object-fit:contain;border-radius:6px;">
             <div class="g-logotext">
-                <div class="g-logoname"><b>School</b>X</div>
+                <div class="g-logoname">ZenXii</div>
                 <div class="g-logosub">
                     <?= isset($school_display_name) ? strtoupper(htmlspecialchars($school_display_name, ENT_QUOTES, 'UTF-8')) : (isset($school_name) ? strtoupper(htmlspecialchars($school_name, ENT_QUOTES, 'UTF-8')) : 'SCHOOL ERP') ?>
                     <?= isset($session_year) ? ' · ' . htmlspecialchars($session_year, ENT_QUOTES, 'UTF-8') : '' ?>
@@ -1120,6 +1120,11 @@
 
             <?php if ($can('Admin Users')): ?>
             <li class="sidebar-single"><a href="<?= base_url('admin_users') ?>"><i class="fa fa-user-circle-o"></i><span>Admin Users</span></a></li>
+            <?php endif; ?>
+            <?php if (strcasecmp($admin_role ?? '', 'School Super Admin') === 0): ?>
+            <li class="sidebar-single"><a href="<?= base_url('admin_users/school_super_admins') ?>"><i class="fa fa-user-shield"></i><span>School Super Admins</span></a></li>
+            <?php endif; ?>
+            <?php if ($can('Admin Users')): ?>
             <li class="sidebar-single"><a href="<?= base_url('audit_logs') ?>"><i class="fa fa-shield"></i><span>Audit Logs</span></a></li>
             <li class="sidebar-single"><a href="<?= base_url('school_backup') ?>"><i class="fa fa-cloud-download"></i><span>Backup</span></a></li>
             <?php endif; ?>

@@ -189,6 +189,8 @@ $config['csrf_exclude_uris'] = [
     'fee_management/payment_webhook',
     'fee_management/parent_create_order',
     'fee_management/parent_verify_payment',
+    // Mobile API endpoints (Firebase ID-token authenticated, not CSRF-protected)
+    'auth/(.*)',
 ];
 
 $config['compress_output'] = FALSE;

@@ -148,6 +148,23 @@ class MY_Controller extends CI_Controller
                 redirect('admin_login');
             }
 
+            // ── Forced-change-password gate (admin-driven reset flow) ─────
+            // If an admin's password was reset by someone else, must_change_password
+            // is set on their Firebase Auth claims and (after login) in their CI
+            // session. Restrict them to the change-password screen + logout until
+            // they pick a new password.
+            $allowedRoutes = [
+                'admin_users/change_my_password',
+                'admin_login/logout',
+            ];
+            if ((bool) $this->session->userdata('must_change_password')
+                && !in_array($route_key, $allowedRoutes, true)) {
+                if ($this->input->is_ajax_request()) {
+                    $this->json_error('You must set a new password before continuing.', 403);
+                }
+                redirect('admin_users/change_my_password');
+            }
+
             // ── [FIX-4] Session tamper check ──────────────────────────────
             if (
                 ! $this->_is_safe_segment((string) $this->school_name) ||

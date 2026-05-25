@@ -7,9 +7,11 @@ defined('BASEPATH') OR exit('No direct script access allowed');
  * Central administrator management for each school tenant.
  * Manages admin accounts, RBAC roles/permissions, and login audit logs.
  *
- * Firebase paths (aligned with Admin_login.php & Superadmin_schools.php):
- *   Users/Admin/{school_code}/{adminId}       - admin user profiles
- *   Schools/{school}/Roles/{roleName}          - role permission sets
+ * Storage paths:
+ *   Firestore  schools/{schoolId}.roles[roleName]   - role permission sets (primary)
+ *   Firestore  rbacRoles/{roleName}                  - dual-write copy
+ *   Firestore  admins/{adminId}                      - admin user profiles
+ *   RTDB       Users/Admin/{school_code}/{adminId}   - legacy mirror (audit + access history)
  *
  * Admin record schema (matches onboarding + login validator):
  *   Status        : 'Active' | 'Disabled'
@@ -225,6 +227,105 @@ class AdminUsers extends MY_Controller
             'createdAt' => is_numeric($created) ? date('Y-m-d', (int)$created) : (string)$created,
             'lastLogin' => $a['AccessHistory']['LastLogin'] ?? '',
         ];
+    }
+
+    // -------------------------------------------------------------------------
+    // GET / POST  /admin_users/change_my_password
+    //
+    // Self-service password change. Used by:
+    //   1. The forced-change gate after an admin-driven reset (must_change_password=true).
+    //   2. Any logged-in admin who wants to change their own password voluntarily.
+    //
+    // GET renders the form; POST validates + writes Firebase Auth + clears the claim
+    // and the CI session flag.
+    // -------------------------------------------------------------------------
+
+    public function change_my_password(): void
+    {
+        if (empty($this->admin_id)) {
+            redirect('admin_login');
+            return;
+        }
+
+        if ($this->input->method() !== 'post') {
+            $data = [
+                'page_title'         => 'Set New Password',
+                'must_change'        => (bool) $this->session->userdata('must_change_password'),
+                'admin_id'           => $this->admin_id,
+                'admin_name'         => $this->session->userdata('admin_name'),
+            ];
+            $this->load->view('admin_users/change_my_password', $data);
+            return;
+        }
+
+        $new_password     = (string) $this->input->post('new_password', FALSE);
+        $confirm_password = (string) $this->input->post('confirm_password', FALSE);
+
+        if ($new_password === '' || $confirm_password === '') {
+            $this->json_error('New password and confirmation are required.');
+            return;
+        }
+        if (!hash_equals($new_password, $confirm_password)) {
+            $this->json_error('Passwords do not match.');
+            return;
+        }
+        if (strlen($new_password) < 8 || strlen($new_password) > 72) {
+            $this->json_error('Password must be 8–72 characters.');
+            return;
+        }
+        if (!preg_match('/[A-Z]/', $new_password)
+            || !preg_match('/[a-z]/', $new_password)
+            || !preg_match('/[0-9]/', $new_password)) {
+            $this->json_error('Password must contain an uppercase letter, a lowercase letter, and a digit.');
+            return;
+        }
+
+        try {
+            $updated = $this->firebase->updateFirebaseUser($this->admin_id, ['password' => $new_password]);
+            if ($updated === null) {
+                $this->json_error('Failed to update password in Firebase Auth.');
+                return;
+            }
+
+            // Clear the must-change-password claim while preserving the rest.
+            $this->firebase->clearCustomClaims($this->admin_id, [
+                'must_change_password', 'password_reset_at', 'password_reset_by',
+            ]);
+
+            // Mirror bcrypt to RTDB (write-only, record-keeping).
+            try {
+                $hashed = password_hash($new_password, PASSWORD_BCRYPT, ['cost' => 12]);
+                $this->firebase->update(
+                    "Users/Admin/{$this->school_code}/{$this->admin_id}/Credentials",
+                    ['Password' => $hashed]
+                );
+            } catch (\Exception $mirrorEx) {
+                log_message('error', 'AdminUsers::change_my_password — RTDB mirror failed: ' . $mirrorEx->getMessage());
+            }
+
+            // Clear mustChangePassword on the admins Firestore doc too.
+            try {
+                $this->fs->set('admins', $this->fs->docId($this->admin_id), [
+                    'mustChangePassword' => false,
+                    'updatedAt'          => date('c'),
+                ], true);
+            } catch (\Exception $e) {
+                log_message('error', 'AdminUsers::change_my_password Firestore clear failed: ' . $e->getMessage());
+            }
+
+            // Drop the session flag so the preflight guard releases the user.
+            $this->session->unset_userdata('must_change_password');
+
+            log_audit('AdminUsers', 'change_my_password', $this->admin_id, 'Self-changed password');
+
+            $this->json_success([
+                'message'  => 'Password updated. Redirecting to dashboard.',
+                'redirect' => base_url('admin/index'),
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'AdminUsers::change_my_password failed: ' . $e->getMessage());
+            $this->json_error('Failed to update password.');
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -690,17 +791,23 @@ class AdminUsers extends MY_Controller
 
     public function reset_password(): void
     {
-        $this->_require_role(['Super Admin', 'Admin'], 'reset_password');
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin'], 'reset_password');
 
         $admin_id     = $this->safe_path_segment(trim($this->input->post('admin_id', TRUE) ?? ''), 'admin_id');
         $new_password = (string)($this->input->post('new_password', FALSE) ?? '');
 
-        if (strlen($new_password) < 8) {
-            $this->json_error('Password must be at least 8 characters.');
+        if ($new_password === '') {
+            $this->json_error('New password is required.');
             return;
         }
-        if (strlen($new_password) > 72) {
-            $this->json_error('Password must be 72 characters or less.');
+        if (strlen($new_password) < 8 || strlen($new_password) > 72) {
+            $this->json_error('Password must be 8–72 characters.');
+            return;
+        }
+        if (!preg_match('/[A-Z]/', $new_password)
+            || !preg_match('/[a-z]/', $new_password)
+            || !preg_match('/[0-9]/', $new_password)) {
+            $this->json_error('Password must contain an uppercase letter, a lowercase letter, and a digit.');
             return;
         }
 
@@ -711,27 +818,172 @@ class AdminUsers extends MY_Controller
                 return;
             }
 
-            // Password reset — Firebase Auth is the primary auth source now
-            $hashed = password_hash($new_password, PASSWORD_BCRYPT, ['cost' => 12]);
-
-            // RTDB credential write removed — Firebase Auth is the primary auth source.
-            // Passwords are no longer stored in any database (RTDB or Firestore).
-
-            // Sync password to Firebase Auth (best-effort)
-            try {
-                $this->firebase->updateFirebaseUser($admin_id, ['password' => $new_password]);
-            } catch (Exception $syncEx) {
-                log_message('error', 'AdminUsers::reset_password — Firebase Auth sync failed: ' . $syncEx->getMessage());
+            // Tenant check — only reset admins in the current school.
+            $adminSchool = (string) ($existing['schoolId'] ?? $existing['school_id'] ?? '');
+            if ($adminSchool !== '' && $adminSchool !== $this->school_id) {
+                log_message('error',
+                    "RBAC tenant breach attempt: admin={$this->admin_id} school={$this->school_id} "
+                    . "tried to reset admin={$admin_id} of school={$adminSchool}"
+                );
+                $this->json_error('Admin user not found in your school.', 404);
+                return;
             }
 
             $name = $existing['Name'] ?? $existing['Profile']['name'] ?? $admin_id;
+            $hashed = password_hash($new_password, PASSWORD_BCRYPT, ['cost' => 12]);
+
+            // 1. Firebase Auth — primary auth source.
+            $updated = $this->firebase->updateFirebaseUser($admin_id, ['password' => $new_password]);
+            if ($updated === null) {
+                $this->json_error('Failed to update Firebase Auth password.');
+                return;
+            }
+
+            // 2. must-change-password claim — first-login self-set gate.
+            $this->firebase->setFirebaseClaims($admin_id, [
+                'role'                 => (string) ($existing['Role'] ?? $existing['role'] ?? 'Admin'),
+                'school_id'            => $this->school_id,
+                'school_code'          => $this->school_code,
+                'parent_db_key'        => $this->parent_db_key,
+                'must_change_password' => true,
+                'password_reset_at'    => time(),
+                'password_reset_by'    => (string) ($this->admin_id ?? ''),
+            ]);
+
+            // 3. Revoke refresh tokens — invalidates active sessions.
+            $this->firebase->revokeRefreshTokens($admin_id);
+
+            // 4. RTDB bcrypt mirror — write-only, kept for record-keeping per project policy.
+            try {
+                $rtdbBase = "Users/Admin/{$this->school_code}/{$admin_id}";
+                $this->firebase->update($rtdbBase . '/Credentials', ['Password' => $hashed]);
+            } catch (\Exception $mirrorEx) {
+                log_message('error', 'AdminUsers::reset_password — RTDB mirror failed: ' . $mirrorEx->getMessage());
+                // Non-fatal: Firebase Auth is the truth.
+            }
+
+            // 5. Firestore admins doc — sets mustChangePassword=true for clients
+            //    that read this field instead of (or in addition to) the claim.
+            try {
+                $this->fs->set('admins', $this->fs->docId($admin_id), [
+                    'mustChangePassword' => true,
+                    'updatedAt'          => date('c'),
+                ], true);
+            } catch (\Exception $e) {
+                log_message('error', 'AdminUsers::reset_password Firestore mustChange write failed: ' . $e->getMessage());
+            }
 
             log_audit('AdminUsers', 'reset_password', $admin_id, "Password reset for '{$name}'");
 
-            $this->json_success(['message' => "Password reset for '{$name}'."]);
+            $this->json_success([
+                'message' => "Password reset for '{$name}'. They will be required to change it on next login.",
+                'admin_id' => $admin_id,
+                'name'     => $name,
+            ]);
         } catch (Exception $e) {
+            log_message('error', 'AdminUsers::reset_password failed: ' . $e->getMessage());
             $this->json_error('Failed to reset password.');
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // GET  /admin_users/school_super_admins
+    //
+    // Lists every other SSA in the caller's school so a School Super Admin
+    // can reset a peer's password. Self is excluded — to change your own
+    // password use /admin_users/change_my_password.
+    // -------------------------------------------------------------------------
+
+    public function school_super_admins(): void
+    {
+        if (strcasecmp($this->admin_role ?? '', 'School Super Admin') !== 0) {
+            $this->session->set_flashdata('error', 'Only School Super Admins can access this page.');
+            redirect('admin/index');
+            return;
+        }
+
+        $this->load->library('Ssa_reset', null, 'ssa_reset');
+        $all = $this->ssa_reset->listSsasInSchool($this->school_code);
+
+        // Exclude self — peer-reset only.
+        $peers = array_values(array_filter($all, fn($r) => $r['id'] !== $this->admin_id));
+
+        $data = [
+            'page_title' => 'School Super Admins',
+            'peers'      => $peers,
+            'self_id'    => $this->admin_id,
+        ];
+
+        $this->load->view('include/header', $data);
+        $this->load->view('admin_users/school_super_admins', $data);
+        $this->load->view('include/footer');
+    }
+
+    // -------------------------------------------------------------------------
+    // POST  /admin_users/reset_ssa_password
+    //
+    // Caller MUST be School Super Admin. Target MUST be another SSA in the
+    // same school. Refuses self-reset (use change_my_password for that).
+    // -------------------------------------------------------------------------
+
+    public function reset_ssa_password(): void
+    {
+        if (strcasecmp($this->admin_role ?? '', 'School Super Admin') !== 0) {
+            $this->json_error('Only a School Super Admin can reset another SSA.', 403);
+            return;
+        }
+
+        if ($this->input->method() !== 'post') {
+            $this->json_error('POST only.', 405);
+            return;
+        }
+
+        $target_id    = trim((string) $this->input->post('ssa_id', TRUE));
+        $new_password = (string) $this->input->post('new_password', FALSE);
+
+        if ($target_id === '' || !preg_match('/^SSA\d+$/', $target_id)) {
+            $this->json_error('Invalid SSA id.');
+            return;
+        }
+        if ($target_id === $this->admin_id) {
+            $this->json_error('Use Change My Password to reset your own account.');
+            return;
+        }
+
+        // Tenant check — target must exist under the caller's school_code.
+        $targetPath = "Users/Admin/{$this->school_code}/{$target_id}";
+        $target = $this->firebase->get($targetPath);
+        if (empty($target) || !is_array($target)) {
+            log_message('error',
+                "RBAC tenant breach attempt: ssa={$this->admin_id} school={$this->school_code} "
+                . "tried to reset ssa={$target_id} (not found in their school)"
+            );
+            $this->json_error('SSA not found in your school.', 404);
+            return;
+        }
+
+        $this->load->library('Ssa_reset', null, 'ssa_reset');
+        $result = $this->ssa_reset->resetSsaPassword(
+            $this->school_code,
+            $this->school_id,
+            $target_id,
+            $new_password,
+            (string) $this->admin_id
+        );
+
+        if (empty($result['success'])) {
+            $this->json_error($result['message'] ?? 'Reset failed.');
+            return;
+        }
+
+        log_audit('AdminUsers', 'reset_ssa_password', $target_id,
+            "Password reset for SSA '{$result['ssa_name']}' by peer SSA");
+
+        $this->json_success([
+            'message' => $result['message'],
+            'ssa_id'  => $target_id,
+            'name'    => $result['ssa_name'],
+        ]);
     }
 
     // -------------------------------------------------------------------------

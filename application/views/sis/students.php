@@ -157,6 +157,11 @@ html { font-size: 16px !important; }
 var csrfName  = document.querySelector('meta[name="csrf-name"]').content;
 var csrfToken = document.querySelector('meta[name="csrf-token"]').content;
 var CLASS_MAP = <?= json_encode($class_map) ?>;
+var CAN_RESET_PW = <?= json_encode(in_array(
+    $this->session->userdata('admin_role'),
+    ['Super Admin', 'School Super Admin', 'Admin', 'Principal'],
+    true
+)) ?>;
 var currentPage = 1;
 
 document.getElementById('classFilter').addEventListener('change', function () {
@@ -233,6 +238,7 @@ function loadStudents(page) {
                     <a href="<?= base_url('sis/profile/') ?>${encodeURIComponent(s.user_id)}" class="act-btn" title="View Profile"><i class="fa fa-eye"></i></a>
                     <a href="<?= base_url('sis/edit_student/') ?>${encodeURIComponent(s.user_id)}" class="act-btn" title="Edit Student" style="background:var(--gold-dim);color:var(--gold);"><i class="fa fa-pencil"></i></a>
                     <a href="<?= base_url('sis/documents/') ?>${encodeURIComponent(s.user_id)}" class="act-btn" title="Documents"><i class="fa fa-folder-open-o"></i></a>
+                    ${CAN_RESET_PW ? `<button type="button" class="act-btn js-reset-pw-btn" style="background:rgba(56,189,248,.12);color:#0284c7;" title="Reset Password" data-user-id="${esc(s.user_id)}" data-user-name="${esc(s.name)}"><i class="fa fa-key"></i></button>` : ''}
                     ${s.status === 'Active' ? `<button class="act-btn" style="background:#fef3c7;color:#92400e;" title="Mark Inactive" onclick="changeStatus(event, '${esc(s.user_id)}','${esc(s.name)}','Inactive')"><i class="fa fa-pause"></i></button>` : ''}
                     ${s.status === 'Inactive' ? `<button class="act-btn" style="background:#dcfce7;color:#166534;" title="Reactivate" onclick="changeStatus(event, '${esc(s.user_id)}','${esc(s.name)}','Active')"><i class="fa fa-play"></i></button>` : ''}
                     ${s.status !== 'Inactive' ? `<button class="act-btn red" title="Withdraw" onclick="withdrawStudent(event, '${esc(s.user_id)}','${esc(s.name)}')"><i class="fa fa-sign-out"></i></button>` : ''}
@@ -435,3 +441,13 @@ async function bulkDelete() {
 // Initial load — show all enrolled students on page open
 loadStudents(1);
 </script>
+
+<?php
+if (in_array($this->session->userdata('admin_role'),
+              ['Super Admin', 'School Super Admin', 'Admin', 'Principal'], true)) {
+    $this->load->view('partials/reset_password_modal', [
+        'reset_pw_endpoint' => base_url('sis/reset_password'),
+        'reset_pw_label'    => 'Student',
+    ]);
+}
+?>

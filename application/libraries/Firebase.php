@@ -681,6 +681,115 @@ class Firebase
     }
 
     /**
+     * Read a single custom claim for a user. Returns the claim value
+     * or $default if the user / claim doesn't exist. Used to gate
+     * post-login flows (e.g. must_change_password).
+     *
+     * @param  mixed $default Value to return when the claim is missing.
+     * @return mixed
+     */
+    public function getCustomClaim(string $uid, string $claim, $default = null)
+    {
+        try {
+            $user = $this->auth->getUser($uid);
+            $claims = method_exists($user, 'customClaims') ? $user->customClaims() : ($user->customClaims ?? []);
+            if (is_array($claims) && array_key_exists($claim, $claims)) {
+                return $claims[$claim];
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Firebase::getCustomClaim() failed [uid=' . $uid . ' claim=' . $claim . ']: ' . $e->getMessage());
+        }
+        return $default;
+    }
+
+    /**
+     * Clear specific custom claims on a user (preserves the others).
+     * Pass an array of claim keys to remove.
+     */
+    public function clearCustomClaims(string $uid, array $claimKeys): bool
+    {
+        try {
+            $user   = $this->auth->getUser($uid);
+            $claims = method_exists($user, 'customClaims') ? $user->customClaims() : ($user->customClaims ?? []);
+            $claims = is_array($claims) ? $claims : [];
+            foreach ($claimKeys as $k) unset($claims[$k]);
+            $this->auth->setCustomUserClaims($uid, $claims);
+            return true;
+        } catch (\Exception $e) {
+            log_message('error', 'Firebase::clearCustomClaims() failed [uid=' . $uid . ']: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Verify an email + password against Firebase Authentication via the
+     * identitytoolkit REST API. The Admin SDK can't verify passwords directly.
+     *
+     * Returns ['ok' => true, 'uid' => '...', 'idToken' => '...'] on success
+     * or ['ok' => false, 'reason' => 'invalid_credentials'|'user_disabled'|'not_found'|'network'|'unknown',
+     *     'message' => '...'] on failure.
+     */
+    public function verifyEmailPassword(string $email, string $password): array
+    {
+        $CI =& get_instance();
+        $CI->config->load('firebase_client', TRUE);
+        $apiKey  = (string) $CI->config->item('firebase_web_api_key', 'firebase_client');
+        $timeout = (int) ($CI->config->item('firebase_auth_timeout', 'firebase_client') ?: 10);
+
+        if ($apiKey === '') {
+            return ['ok' => false, 'reason' => 'unknown', 'message' => 'Firebase Web API Key not configured.'];
+        }
+
+        $url = 'https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=' . urlencode($apiKey);
+        $payload = json_encode([
+            'email' => $email,
+            'password' => $password,
+            'returnSecureToken' => true,
+        ]);
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $payload,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+            CURLOPT_TIMEOUT        => $timeout,
+            CURLOPT_CONNECTTIMEOUT => 5,
+        ]);
+        $body = curl_exec($ch);
+        $http = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err  = curl_error($ch);
+        curl_close($ch);
+
+        if ($body === false || $http === 0) {
+            log_message('error', 'Firebase::verifyEmailPassword() network error: ' . $err);
+            return ['ok' => false, 'reason' => 'network', 'message' => 'Auth service unreachable.'];
+        }
+
+        $data = json_decode($body, true);
+        if (!is_array($data)) {
+            return ['ok' => false, 'reason' => 'unknown', 'message' => 'Malformed auth response.'];
+        }
+
+        if ($http === 200 && !empty($data['localId'])) {
+            return [
+                'ok'      => true,
+                'uid'     => (string) $data['localId'],
+                'idToken' => (string) ($data['idToken'] ?? ''),
+            ];
+        }
+
+        // Firebase error shape: { error: { message: "INVALID_PASSWORD" | "EMAIL_NOT_FOUND" | "USER_DISABLED" | ... } }
+        $errMsg = (string) ($data['error']['message'] ?? 'UNKNOWN');
+        $reason = 'invalid_credentials';
+        if ($errMsg === 'EMAIL_NOT_FOUND')        $reason = 'not_found';
+        elseif ($errMsg === 'USER_DISABLED')      $reason = 'user_disabled';
+        elseif (strpos($errMsg, 'TOO_MANY')!==false) $reason = 'rate_limited';
+
+        return ['ok' => false, 'reason' => $reason, 'message' => $errMsg, 'http' => $http];
+    }
+
+    /**
      * Revoke all refresh tokens for a user (forces re-authentication).
      */
     public function revokeRefreshTokens(string $uid): bool

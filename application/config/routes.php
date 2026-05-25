@@ -156,6 +156,7 @@ $route['superadmin/schools/refresh_school_stats']       = 'Superadmin_schools/re
 $route['superadmin/schools/migrate_existing']           = 'Superadmin_schools/migrate_existing_schools';
 $route['superadmin/schools/migrate_academic']           = 'Superadmin_schools/migrate_academic_data';
 $route['superadmin/schools/upload_logo']               = 'Superadmin_schools/upload_logo';
+$route['superadmin/schools/reset_ssa_password']         = 'Superadmin_schools/reset_ssa_password';
 
 // Bootstrap (one-time system init)
 $route['superadmin/bootstrap']                          = 'Superadmin_bootstrap/run';
@@ -419,6 +420,7 @@ $route['sis/print_tc/(:any)']                   = 'Sis/print_tc/$1';
 $route['sis/cancel_tc']                         = 'Sis/cancel_tc';
 $route['sis/withdraw']                          = 'Sis/withdraw_student';
 $route['sis/change_status']                     = 'Sis/change_status';
+$route['sis/reset_password']                    = 'Sis/reset_password';
 $route['sis/documents/(:any)']                  = 'Sis/documents/$1';
 $route['sis/upload_document']                   = 'Sis/upload_document';
 $route['sis/delete_document']                   = 'Sis/delete_document';
@@ -549,6 +551,7 @@ $route['attendance/analytics']               = 'Attendance/analytics';
 $route['attendance/punch_log']               = 'Attendance/punch_log';
 $route['attendance/fetch_student']           = 'Attendance/fetch_student_attendance';
 $route['attendance/save_student']            = 'Attendance/save_student_attendance';
+$route['attendance/debug_student_sync']      = 'Attendance/debug_student_sync';
 $route['attendance/mark_student_day']        = 'Attendance/mark_student_day';
 $route['attendance/bulk_mark_student']       = 'Attendance/bulk_mark_student';
 $route['attendance/student_summary']         = 'Attendance/get_student_summary';
@@ -698,6 +701,7 @@ $route['staff/master_staff']                              = 'Staff/master_staff'
 $route['staff/import_staff']                              = 'Staff/import_staff';
 $route['staff/download_staff_template']                   = 'Staff/download_staff_template';
 $route['staff/fix_staff_count']                           = 'Staff/fix_staff_count';
+$route['staff/reset_password']                            = 'Staff/reset_password';
 
 // ─── Staff Role Management ──────────────────────────────────────────────────────
 $route['staff/get_staff_roles']                            = 'Staff/get_staff_roles';
@@ -1166,6 +1170,12 @@ $route['admin_users/update_admin']                   = 'AdminUsers/update_admin'
 $route['admin_users/disable_admin']                  = 'AdminUsers/disable_admin';
 $route['admin_users/delete_admin']                   = 'AdminUsers/delete_admin';
 $route['admin_users/reset_password']                 = 'AdminUsers/reset_password';
+$route['admin_users/change_my_password']             = 'AdminUsers/change_my_password';
+$route['admin_users/school_super_admins']            = 'AdminUsers/school_super_admins';
+$route['admin_users/reset_ssa_password']             = 'AdminUsers/reset_ssa_password';
+
+// ─── Mobile auth endpoints (Firebase ID token authenticated) ────────────────────
+$route['auth/clear_must_change']                     = 'Auth_api/clear_must_change';
 $route['admin_users/get_roles']                      = 'AdminUsers/get_roles';
 $route['admin_users/save_role']                      = 'AdminUsers/save_role';
 $route['admin_users/delete_role']                    = 'AdminUsers/delete_role';

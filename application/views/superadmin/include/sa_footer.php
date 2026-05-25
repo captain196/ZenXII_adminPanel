@@ -2,7 +2,7 @@
 </div><!-- ./content-wrapper -->
 
 <footer class="main-footer" style="text-align:center;font-family:var(--font-m);font-size:11.5px;color:var(--t3);padding:12px 24px !important;">
-    <strong style="color:var(--t2);">GraderIQ Super Admin</strong>
+    <strong style="color:var(--t2);">ZenXii Super Admin</strong>
     <span style="margin:0 8px;color:var(--border);">·</span>
     <span style="color:var(--sa3);">Restricted Access</span>
     <span style="margin:0 8px;color:var(--border);">·</span>

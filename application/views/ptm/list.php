@@ -83,7 +83,7 @@
   <div id="ptmEmpty" class="ptm-empty-panel" style="display:none">
     <div class="icon-wrap"><i class="fa fa-calendar-plus-o"></i></div>
     <h3>No PTMs scheduled yet</h3>
-    <p>Schedule your first parent-teacher meeting and parents in the targeted classes will be notified instantly to RSVP from the SchoolSync app.</p>
+    <p>Schedule your first parent-teacher meeting and parents in the targeted classes will be notified instantly to RSVP from the ZenXii app.</p>
     <a href="<?= base_url('ptm/create') ?>" class="ptm-btn ptm-btn-primary"><i class="fa fa-plus"></i> Schedule your first PTM</a>
   </div>
 </div>

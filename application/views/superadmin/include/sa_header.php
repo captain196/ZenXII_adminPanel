@@ -4,7 +4,7 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
-<title><?= htmlspecialchars($page_title ?? 'Super Admin') ?> — GraderIQ SA</title>
+<title><?= htmlspecialchars($page_title ?? 'Super Admin') ?> — ZenXii SA</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="csrf-token" content="<?= htmlspecialchars($sa_csrf_token ?? '', ENT_QUOTES) ?>">
 <meta name="csrf-name"  content="csrf_token">
@@ -576,9 +576,9 @@ var BASE_URL = '<?= base_url() ?>';
 <header class="main-header">
     <div class="logo">
         <a class="g-logo-link" href="<?= base_url('superadmin/dashboard') ?>">
-            <div class="g-mark">G</div>
+            <img src="<?= base_url('uploads/zenxii_brand/logo_wide.png') ?>" alt="ZenXii" class="g-mark" style="width:32px;height:32px;object-fit:contain;border-radius:6px;">
             <div class="g-logotext">
-                <div class="g-logoname">Grader<b>IQ</b></div>
+                <div class="g-logoname">ZenXii</div>
                 <div class="g-logosub">Super Admin</div>
             </div>
         </a>

@@ -1534,6 +1534,101 @@ class Sis extends MY_Controller
     }
 
     /* ══════════════════════════════════════════════════════════════════════
+       PASSWORD RESET (admin-driven)
+       Admins/Principals reset student/parent passwords here.
+       Firebase Auth is the sole auth source for SIS users (Parent app).
+    ══════════════════════════════════════════════════════════════════════ */
+
+    /**
+     * POST /sis/reset_password
+     *
+     * Reset a student/parent Firebase Auth password on behalf of the user.
+     * Sets must_change_password=true so the Parent app gates first launch
+     * after reset and forces a self-chosen password.
+     *
+     */
+    public function reset_password()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'sis_reset_password');
+        if ($this->input->method() !== 'post') {
+            return $this->json_error('POST required');
+        }
+
+        $user_id      = trim((string) $this->input->post('user_id', TRUE));
+        $new_password = (string) $this->input->post('new_password', FALSE);
+
+        if ($user_id === '' || !$this->safe_path_segment($user_id)) {
+            return $this->json_error('Invalid user id.');
+        }
+        if ($new_password === '') {
+            return $this->json_error('New password is required.');
+        }
+        if (strlen($new_password) < 8 || strlen($new_password) > 72) {
+            return $this->json_error('Password must be 8–72 characters.');
+        }
+        if (!preg_match('/[A-Z]/', $new_password)
+            || !preg_match('/[a-z]/', $new_password)
+            || !preg_match('/[0-9]/', $new_password)) {
+            return $this->json_error('Password must contain an uppercase letter, a lowercase letter, and a digit.');
+        }
+
+        // Tenant check — student must belong to the current school.
+        $student = $this->_getStudent($user_id);
+        if (empty($student)) {
+            return $this->json_error('Student not found.', 404);
+        }
+        $studentSchool = (string) ($student['schoolId'] ?? $student['School_id'] ?? '');
+        if ($studentSchool !== $this->school_id) {
+            log_message('error',
+                "RBAC tenant breach attempt: admin={$this->admin_id} school={$this->school_id} "
+                . "tried to reset student={$user_id} of school={$studentSchool}"
+            );
+            return $this->json_error('Student not found in your school.', 404);
+        }
+
+        $name = (string) ($student['Name'] ?? $student['name'] ?? $user_id);
+
+        // 1. Update Firebase Auth password.
+        $updated = $this->firebase->updateFirebaseUser($user_id, ['password' => $new_password]);
+        if ($updated === null) {
+            return $this->json_error('Failed to update Firebase Auth password.');
+        }
+
+        // 2. Set must-change-password claim — Parent app gates on this.
+        $this->firebase->setFirebaseClaims($user_id, [
+            'role'                 => 'Parent',
+            'school_id'            => $this->school_id,
+            'school_code'          => $this->school_code,
+            'parent_db_key'        => $this->parent_db_key,
+            'must_change_password' => true,
+            'password_reset_at'    => time(),
+            'password_reset_by'    => (string) ($this->admin_id ?? ''),
+        ]);
+
+        // 3. Revoke refresh tokens — kicks active app sessions.
+        $this->firebase->revokeRefreshTokens($user_id);
+
+        // 4. Mirror flag to Firestore students doc — the Parent app reads
+        //    this field to trigger its force-change-password screen.
+        try {
+            $this->fs->set('students', $this->fs->docId($user_id), [
+                'mustChangePassword' => true,
+                'updatedAt'          => date('c'),
+            ], true);
+        } catch (\Exception $e) {
+            log_message('error', 'Sis::reset_password Firestore mustChange write failed: ' . $e->getMessage());
+        }
+
+        log_audit('SIS', 'reset_password', $user_id, "Password reset for '{$name}'");
+
+        return $this->json_success([
+            'message' => "Password reset for '{$name}'. They will be required to change it on next login.",
+            'user_id' => $user_id,
+            'name'    => $name,
+        ]);
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
        DOCUMENTS
     ══════════════════════════════════════════════════════════════════════ */
 

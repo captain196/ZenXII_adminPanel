@@ -1,0 +1,2228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ZenXii — School management platform for admins, teachers and parents</title>
+<meta name="description" content="ZenXii unifies your school's admin panel, teacher app and parent app on one real-time platform. Attendance, homework, marks, fees, messages, transport — all in sync." />
+<meta property="og:title" content="ZenXii — One school. Three apps. One platform." />
+<meta property="og:description" content="Run your entire school on one connected platform — admin, teachers, parents." />
+<!-- TODO before deploy: replace with absolute URL on your production domain, e.g. https://zenxii.com/Designs/zenxii_logo_2.png -->
+<meta property="og:image" content="Designs/zenxii_logo_2.png" />
+<meta name="theme-color" content="#1B1410" />
+<link rel="icon" type="image/png" href="Designs/logo_square.png" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Playfair+Display:ital,wght@0,500;0,700;1,500&family=Caveat:wght@600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    /* Warm sepia palette — adapted to the library hero image */
+    --bg: #1B1410;          /* deep warm dark brown */
+    --bg-2: #251C15;        /* second layer */
+    --bg-3: #2F2419;        /* third layer */
+    --ink: #F2E9DA;         /* warm ivory text */
+    --ink-dim: #C7B8A2;     /* muted warm ivory */
+    --ink-mute: #8B7A66;    /* warm brown muted */
+    --accent: #E0B36A;      /* golden amber — matches hero italic */
+    --accent-2: #F5D9A5;    /* lighter gold */
+    --accent-warm: #D89A4E; /* burnt orange */
+    --accent-fresh: #8FB785;/* sage green (trust dot) */
+    --on-accent: #1B1410;   /* text on golden buttons */
+    --line: rgba(255,235,210,.08);
+    --card: rgba(255,235,210,.04);
+    --card-hover: rgba(255,235,210,.07);
+    --footer-bg: #140E0A;
+    --radius: 14px;
+    --radius-sm: 10px;
+    --maxw: 1180px;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  /* Push page content below the fixed nav */
+  main { padding-top: 68px; }
+  a { color: var(--accent-2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  img { max-width: 100%; display: block; }
+  h1, h2, h3, h4 { line-height: 1.2; margin: 0 0 .5em; letter-spacing: -.01em; }
+  h1 { font-size: clamp(2.2rem, 4.5vw, 3.6rem); font-weight: 700; }
+  h2 { font-size: clamp(1.6rem, 3vw, 2.2rem); font-weight: 700; }
+  h3 { font-size: 1.15rem; font-weight: 600; }
+  p  { margin: 0 0 1em; color: var(--ink-dim); }
+  ul { margin: 0 0 1em; padding-left: 1.1em; color: var(--ink-dim); }
+  li { margin-bottom: .35em; }
+
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+  .eyebrow {
+    display: inline-block;
+    font-size: .78rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent-2);
+    background: rgba(224,179,106,.1);
+    border: 1px solid rgba(224,179,106,.24);
+    padding: 6px 12px;
+    border-radius: 999px;
+    margin-bottom: 18px;
+  }
+
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: .02em; }
+  .brand-mark {
+    width: 34px; height: 34px;
+    object-fit: contain;
+    filter: drop-shadow(0 2px 6px rgba(0,0,0,.35));
+  }
+  img.brand-mark { display: block; }
+  .brand-name {
+    color: var(--ink);
+    font-family: "Fraunces", "Playfair Display", Georgia, serif;
+    font-weight: 600;
+    font-size: 1.2rem;
+    letter-spacing: -.005em;
+    font-variation-settings: "opsz" 36;
+  }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 11px 18px; border-radius: 10px;
+    font-weight: 600; font-size: .95rem;
+    transition: transform .12s ease, background .15s ease, border-color .15s ease;
+    border: 1px solid transparent;
+    cursor: pointer;
+  }
+  .btn-primary { background: var(--accent); color: var(--on-accent); }
+  .btn-primary:hover { background: var(--accent-2); text-decoration: none; }
+  .btn-ghost { background: transparent; color: var(--ink); border-color: var(--line); }
+  .btn-ghost:hover { background: var(--card-hover); text-decoration: none; }
+  /* ========== FIXED TOP NAV (edge-to-edge, rigid, no curves) ========== */
+  .site-nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    background: rgba(15,10,8,.82);
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    border-bottom: 1px solid rgba(255,255,255,.10);
+    box-shadow: 0 4px 18px rgba(0,0,0,.30);
+  }
+  .site-nav .hero-nav {
+    /* Override the floating pill: rigid full-width row */
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: none;
+    max-width: 1180px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 10px 24px;
+  }
+
+  /* ---------- HERO CARD (editorial style) ---------- */
+  .hero {
+    position: relative;
+    margin: 14px;
+    border-radius: 28px;
+    overflow: hidden;
+    min-height: calc(100vh - 96px);
+    padding: 22px 22px 26px;
+    display: flex;
+    flex-direction: column;
+    /* The SVG below carries the scene; no static bg image needed */
+    background: var(--bg-2);
+    color: #f8f2ea;
+    isolation: isolate;
+  }
+
+  /* Animated student-to-school scene, sits behind hero content */
+  .hero-bg-anim {
+    position: absolute;
+    inset: 0;
+    width: 100%; height: 100%;
+    z-index: 0;
+    pointer-events: none;
+    display: block;
+  }
+  .hero-nav, .hero-content { position: relative; z-index: 1; }
+
+  /* === Scene animations === */
+  @keyframes sunPulse {
+    0%, 100% { transform: scale(1); opacity: 0.92; }
+    50%      { transform: scale(1.04); opacity: 1; }
+  }
+  .hero-bg-anim #sun { transform-origin: 3100px 520px; animation: sunPulse 6s ease-in-out infinite; }
+
+  @keyframes drift {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-4200px); }
+  }
+  .hero-bg-anim .cloud-layer { animation: drift 90s linear infinite; }
+
+  @keyframes flyAcross {
+    0%   { transform: translate(0,0); opacity: 0; }
+    8%   { opacity: 1; }
+    92%  { opacity: 1; }
+    100% { transform: translate(-4400px, -160px); opacity: 0; }
+  }
+  .hero-bg-anim .bird-flight { animation: flyAcross 22s linear infinite; }
+  .hero-bg-anim .bird-flight.delay { animation-delay: -11s; }
+
+  @keyframes flap {
+    0%, 100% { d: path("M0,0 Q12,-10 24,0 Q36,-10 48,0"); }
+    50%      { d: path("M0,0 Q12,8 24,0 Q36,8 48,0"); }
+  }
+  .hero-bg-anim .bird path { animation: flap 0.5s ease-in-out infinite; }
+
+  @keyframes journey {
+    0%   { transform: translateX(0); }
+    6%   { transform: translateX(0); }
+    60%  { transform: translateX(-2400px); }
+    100% { transform: translateX(-2400px); }
+  }
+  .hero-bg-anim .world { animation: journey 16s ease-in-out forwards; }
+
+  @keyframes enterSchool {
+    0%, 60%  { opacity: 1; }
+    70%      { opacity: 0; }
+    100%     { opacity: 0; }
+  }
+  .hero-bg-anim .student-wrap { animation: enterSchool 16s ease-in-out forwards; }
+
+  @keyframes doorCycle {
+    0%, 58%  { transform: scaleX(1); }
+    66%      { transform: scaleX(0.15); }
+    74%      { transform: scaleX(0.15); }
+    80%      { transform: scaleX(1); }
+    100%     { transform: scaleX(1); }
+  }
+  .hero-bg-anim .school-door {
+    transform-box: fill-box;
+    transform-origin: left center;
+    animation: doorCycle 16s ease-in-out forwards;
+  }
+
+  @keyframes bob {
+    0%, 100% { transform: translateY(0); }
+    25%      { transform: translateY(-6px); }
+    75%      { transform: translateY(-6px); }
+  }
+  .hero-bg-anim .student-body { animation: bob 0.6s ease-in-out infinite; }
+
+  @keyframes legBack  { 0%, 100% { transform: rotate(20deg); }  50% { transform: rotate(-20deg); } }
+  @keyframes legFront { 0%, 100% { transform: rotate(-20deg); } 50% { transform: rotate(20deg);  } }
+  .hero-bg-anim .leg-back  { transform-origin: 0 0; animation: legBack  0.6s ease-in-out infinite; }
+  .hero-bg-anim .leg-front { transform-origin: 0 0; animation: legFront 0.6s ease-in-out infinite; }
+
+  @keyframes armBack  { 0%, 100% { transform: rotate(-15deg); } 50% { transform: rotate(15deg);  } }
+  @keyframes armFront { 0%, 100% { transform: rotate(15deg);  } 50% { transform: rotate(-15deg); } }
+  .hero-bg-anim .arm-back  { transform-origin: 0 0; animation: armBack  0.6s ease-in-out infinite; }
+  .hero-bg-anim .arm-front { transform-origin: 0 0; animation: armFront 0.6s ease-in-out infinite; }
+
+  @keyframes flagWave {
+    0%, 100% { d: path("M0,0 Q40,-6 80,0 Q120,6 160,0 L160,60 Q120,66 80,60 Q40,54 0,60 Z"); }
+    50%      { d: path("M0,0 Q40,6 80,0 Q120,-6 160,0 L160,60 Q120,54 80,60 Q40,66 0,60 Z"); }
+  }
+  .hero-bg-anim .flag-fabric { animation: flagWave 2.2s ease-in-out infinite; }
+
+  @keyframes sway {
+    0%, 100% { transform: rotate(-1.5deg); }
+    50%      { transform: rotate(1.5deg); }
+  }
+  .hero-bg-anim .tree-top   { transform-box: fill-box; transform-origin: center bottom; animation: sway 4s   ease-in-out infinite; }
+  .hero-bg-anim .tree-top.b { animation-duration: 5.5s; animation-delay: -1s; }
+  .hero-bg-anim .tree-top.c { animation-duration: 4.8s; animation-delay: -2s; }
+
+  /* Hero backdrop dark wash fades in at end (matches preview: 0.55, not opaque) */
+  @keyframes heroBackdropIn {
+    0%, 80%  { opacity: 0; }
+    92%      { opacity: 0.55; }
+    100%     { opacity: 0.55; }
+  }
+  .hero-bg-anim .hero-backdrop { animation: heroBackdropIn 16s ease-out forwards; }
+
+  /* Journey header (every journey starts with a step) — fades in during walk, stays */
+  @keyframes svgHeadlineIn {
+    0%   { opacity: 0; transform: translateY(40px); }
+    10%  { opacity: 0; transform: translateY(40px); }
+    22%  { opacity: 1; transform: translateY(0); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes svgUnderlineIn {
+    0%, 14%  { transform: scaleX(0); opacity: 0; }
+    28%      { transform: scaleX(1); opacity: 1; }
+    100%     { transform: scaleX(1); opacity: 1; }
+  }
+  @keyframes svgSubheadIn {
+    0%, 22%  { opacity: 0; letter-spacing: 8px; }
+    38%      { opacity: 1; letter-spacing: 20px; }
+    100%     { opacity: 1; letter-spacing: 20px; }
+  }
+  .hero-bg-anim .svg-headline      { animation: svgHeadlineIn  16s ease-in-out forwards; transform-box: fill-box; }
+  .hero-bg-anim .svg-headline-rule { transform-box: fill-box; transform-origin: center; animation: svgUnderlineIn 16s ease-in-out forwards; }
+  .hero-bg-anim .svg-subhead       { animation: svgSubheadIn   16s ease-in-out forwards; }
+
+  /* HTML hero content fades in at the end (in sync with hero backdrop) */
+  @keyframes heroPartIn {
+    from { opacity: 0; transform: translateY(24px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .hero-content .trust-pill,
+  .hero-content .hero-title,
+  .hero-content .hero-sub,
+  .hero-content .search-bar,
+  .hero-content .hero-stats { opacity: 0; }
+  .hero-content .trust-pill { animation: heroPartIn 1.3s cubic-bezier(.2,.7,.2,1) 13.0s both; }
+  .hero-content .hero-title { animation: heroPartIn 1.3s cubic-bezier(.2,.7,.2,1) 13.4s both; }
+  .hero-content .hero-sub   { animation: heroPartIn 1.3s cubic-bezier(.2,.7,.2,1) 13.8s both; }
+  .hero-content .search-bar { animation: heroPartIn 1.3s cubic-bezier(.2,.7,.2,1) 14.2s both; }
+  .hero-content .hero-stats { animation: heroPartIn 1.3s cubic-bezier(.2,.7,.2,1) 14.6s both; }
+
+  /* Floating glass nav pill */
+  .hero-nav {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px;
+    padding: 8px 8px 8px 18px;
+    background: rgba(255,255,255,.14);
+    border: 1px solid rgba(255,255,255,.22);
+    border-radius: 999px;
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    box-shadow: 0 8px 30px rgba(0,0,0,.25);
+    max-width: 1180px; width: 100%;
+    margin: 4px auto 0;
+  }
+  .hero-nav .brand { color: #f8f2ea; font-weight: 700; font-size: 1rem; letter-spacing: .01em; }
+  .hero-nav .brand-name {
+    color: #f8f2ea;
+    font-family: "Fraunces", "Playfair Display", Georgia, serif;
+    font-weight: 600;
+    font-size: 1.4rem;
+    letter-spacing: -.005em;
+    text-shadow: 0 1px 6px rgba(0,0,0,.4);
+    font-variation-settings: "opsz" 48;
+  }
+  .hero-nav .wordmark-only {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding-left: 4px;
+  }
+  .brand-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 12px rgba(224,179,106,.7);
+    display: inline-block;
+  }
+  .hero-nav-links {
+    display: flex; gap: 4px; align-items: center;
+    background: rgba(255,255,255,.06);
+    border-radius: 999px;
+    padding: 4px;
+  }
+  .hero-nav-links a {
+    color: rgba(248,242,234,.85);
+    font-size: .9rem; font-weight: 500;
+    padding: 8px 14px; border-radius: 999px;
+    transition: background .15s ease, color .15s ease;
+    white-space: nowrap;
+  }
+  .hero-nav-links a:hover { color: #fff; background: rgba(255,255,255,.08); text-decoration: none; }
+  .hero-nav-links a.active { background: #f8f2ea; color: #1c1611; }
+  .hero-nav-cta { display: flex; gap: 8px; align-items: center; }
+
+  /* School login — solid gold, the one accent moment in the nav */
+  .btn-login {
+    background: var(--accent);
+    color: var(--on-accent);
+    border: 1px solid transparent;
+    border-radius: 999px;
+    padding: 10px 22px;
+    font-family: inherit;
+    font-weight: 600;
+    font-size: .88rem;
+    letter-spacing: .02em;
+    line-height: 1;
+    display: inline-flex; align-items: center; gap: 8px;
+    box-shadow: 0 6px 18px rgba(224,179,106,.28);
+    transition: background .2s ease, box-shadow .2s ease;
+  }
+  .btn-login:hover {
+    background: var(--accent-2);
+    box-shadow: 0 8px 22px rgba(245,217,165,.35);
+    text-decoration: none;
+  }
+  .btn-login .arr {
+    display: inline-block;
+    transition: transform .2s ease;
+    font-size: 1.05em;
+  }
+  .btn-login:hover .arr { transform: translateX(3px); }
+
+  /* Developer access — quiet text link, hairline grows in on hover */
+  .dev-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: rgba(248,242,234,.78);
+    font-size: .86rem;
+    font-weight: 500;
+    letter-spacing: .02em;
+    padding: 6px 10px 8px;
+    position: relative;
+  }
+  .dev-link::after {
+    content: "";
+    position: absolute;
+    left: 10px; right: 10px; bottom: 3px;
+    height: 1px;
+    background: rgba(248,242,234,.7);
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform .28s ease;
+  }
+  .dev-link:hover { color: #fff; text-decoration: none; }
+  .dev-link:hover::after { transform: scaleX(1); }
+  .dev-link .arr {
+    display: inline-block;
+    transition: transform .2s ease, opacity .2s ease;
+    opacity: .6;
+    font-size: 1em;
+  }
+  .dev-link:hover .arr { transform: translateX(2px); opacity: 1; }
+
+  /* Center the headline column */
+  .hero-content {
+    flex: 1;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center;
+    max-width: 880px; margin: 0 auto;
+    padding: 40px 20px;
+  }
+
+  .trust-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: rgba(255,255,255,.12);
+    border: 1px solid rgba(255,255,255,.2);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    padding: 7px 14px;
+    border-radius: 999px;
+    font-size: .82rem; color: #f8f2ea; font-weight: 500;
+    margin-bottom: 28px;
+  }
+  .trust-pill::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%;
+    background: #6CCB7A; box-shadow: 0 0 10px rgba(108,203,122,.7);
+  }
+
+  .hero-title {
+    font-family: "Playfair Display", Georgia, serif;
+    font-weight: 500;
+    font-size: clamp(2.6rem, 6vw, 4.6rem);
+    line-height: 1.05;
+    color: #f8f2ea;
+    letter-spacing: -.01em;
+    margin: 0 0 22px;
+    text-shadow: 0 2px 24px rgba(0,0,0,.4);
+  }
+  .hero-title .gold {
+    font-family: "Caveat", "Playfair Display", cursive;
+    font-style: italic;
+    font-weight: 600;
+    color: #E0B36A;
+    font-size: 1.15em;
+    padding: 0 .08em;
+  }
+
+  .hero-sub {
+    font-size: 1.05rem;
+    color: rgba(248,242,234,.85);
+    max-width: 56ch;
+    margin: 0 auto 36px;
+    text-shadow: 0 1px 14px rgba(0,0,0,.35);
+  }
+
+  /* Search bar (pill) */
+  .search-bar {
+    width: 100%; max-width: 620px;
+    display: flex; align-items: center;
+    background: rgba(255,255,255,.96);
+    border-radius: 999px;
+    padding: 6px 6px 6px 22px;
+    box-shadow: 0 14px 40px rgba(0,0,0,.25);
+    gap: 10px;
+  }
+  .search-bar svg { flex-shrink: 0; color: #6b6258; }
+  .search-bar input {
+    flex: 1; border: none; outline: none; background: transparent;
+    font: inherit; font-size: .95rem; color: #1c1611;
+    padding: 10px 0;
+  }
+  .search-bar input::placeholder { color: #8a8278; }
+  .search-bar button {
+    background: #1c1611; color: #f8f2ea;
+    border: none; cursor: pointer;
+    padding: 11px 22px; border-radius: 999px;
+    font: inherit; font-weight: 600; font-size: .9rem;
+    transition: background .15s ease;
+  }
+  .search-bar button:hover { background: #2a211a; }
+
+  /* Hero stats row — sits below the hero search bar */
+  .hero-stats {
+    display: flex; gap: 40px; flex-wrap: wrap;
+    margin-top: 22px;
+    color: rgba(248,242,234,.78);
+    font-size: .95rem;
+  }
+  .hero-stats strong {
+    color: #f5d9a5;
+    font-weight: 700;
+    margin-right: 8px;
+  }
+  @media (max-width: 600px) {
+    .hero-stats { gap: 18px 24px; font-size: .88rem; }
+  }
+
+  /* Responsive nav */
+  @media (max-width: 940px) {
+    .hero-nav-links { display: none; }
+  }
+  @media (max-width: 600px) {
+    .hero { margin: 8px; border-radius: 22px; padding: 14px 14px 18px; }
+    .hero-nav { padding: 6px 6px 6px 14px; }
+    .hero-nav .brand-name { display: none; }
+  }
+  .hero-grid {
+    display: grid; grid-template-columns: 1.05fr .95fr;
+    gap: 48px; align-items: center;
+  }
+  .hero h1 .accent { color: var(--accent-2); }
+  .hero .lede { font-size: 1.15rem; color: var(--ink-dim); max-width: 56ch; }
+  .hero-ctas { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+  .hero-meta {
+    margin-top: 28px; display: flex; gap: 22px; flex-wrap: wrap;
+    color: var(--ink-mute); font-size: .9rem;
+  }
+  .hero-meta span::before { content: "•"; margin-right: 10px; color: var(--accent); }
+  .hero-art {
+    background: linear-gradient(160deg, var(--bg-2), var(--bg-3));
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 28px;
+    aspect-ratio: 4/3;
+    display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 14px;
+    align-items: stretch;
+  }
+  .device { background: rgba(0,0,0,.25); border: 1px solid var(--line); border-radius: 12px; padding: 14px; position: relative; overflow: hidden; }
+  .device::before {
+    content: ""; position: absolute; inset: 0;
+    background: radial-gradient(120% 60% at 50% 0%, rgba(91,168,255,.12), transparent 60%);
+    pointer-events: none;
+  }
+  .device.web::after,
+  .device.phone::after { content: attr(data-label); position: absolute; bottom: 10px; left: 12px; right: 12px; font-size: .72rem; color: var(--ink-mute); letter-spacing: .08em; text-transform: uppercase; }
+  .device .bar { height: 8px; background: rgba(255,255,255,.08); border-radius: 6px; margin-bottom: 8px; }
+  .device .bar.short { width: 60%; }
+  .device .bar.mid   { width: 80%; }
+  .device .row { display: flex; gap: 6px; margin-bottom: 8px; }
+  .device .chip { height: 18px; flex: 1; background: rgba(91,168,255,.18); border-radius: 5px; }
+  .device .chip.alt { background: rgba(125,211,252,.18); }
+  .device .chip.warm{ background: rgba(255,180,84,.22); }
+  .device .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .device .tile { aspect-ratio: 1/1; background: rgba(255,255,255,.06); border-radius: 6px; }
+
+  @media (max-width: 900px) {
+    .hero-grid { grid-template-columns: 1fr; }
+    .hero-art { aspect-ratio: 16/10; }
+  }
+
+  /* Section base */
+  section.block { padding: 80px 0; border-top: 1px solid var(--line); }
+  .section-head { max-width: 720px; margin-bottom: 36px; }
+  .section-head p { font-size: 1.05rem; }
+
+  /* ---------- Product showcase (stacked, alternating) ---------- */
+  .showcase {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 56px;
+    align-items: center;
+    padding: 60px 0;
+  }
+  .showcase:first-of-type { padding-top: 12px; }
+  .showcase + .showcase { border-top: 1px solid var(--line); }
+  .showcase.reverse .showcase-copy { order: 2; }
+  .showcase-tag {
+    display: inline-block;
+    font-size: .72rem;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--accent-2);
+    background: rgba(224,179,106,.10);
+    border: 1px solid rgba(224,179,106,.28);
+    padding: 6px 12px;
+    border-radius: 999px;
+    margin-bottom: 16px;
+  }
+  .showcase-copy h3 {
+    font-family: "Playfair Display", Georgia, serif;
+    font-weight: 600;
+    font-size: clamp(1.7rem, 3vw, 2.3rem);
+    color: var(--ink);
+    margin: 0 0 14px;
+    letter-spacing: -.005em;
+  }
+  .showcase-copy > p {
+    color: var(--ink-dim);
+    font-size: 1.02rem;
+    line-height: 1.6;
+    margin: 0 0 20px;
+    max-width: 44ch;
+  }
+  .showcase-points { list-style: none; padding: 0; margin: 0 0 26px; }
+  .showcase-points li {
+    display: flex; align-items: center; gap: 12px;
+    padding: 7px 0;
+    color: var(--ink-dim);
+    font-size: .96rem;
+  }
+  .showcase-points li::before {
+    content: "";
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 10px rgba(224,179,106,.55);
+    flex-shrink: 0;
+  }
+  .showcase-art {
+    position: relative;
+    display: flex; justify-content: center; align-items: center;
+  }
+  .showcase-art::after {
+    /* soft amber glow behind the device */
+    content: "";
+    position: absolute;
+    inset: -10%;
+    background: radial-gradient(ellipse at center, rgba(224,179,106,.16), transparent 60%);
+    z-index: -1;
+    pointer-events: none;
+  }
+
+  /* ---------- Laptop frame + Admin Panel mockup ---------- */
+  .device-laptop {
+    width: 100%;
+    max-width: 540px;
+    filter: drop-shadow(0 30px 50px rgba(0,0,0,.55));
+  }
+  .laptop-screen {
+    background: #0e0a07;
+    border: 8px solid #2a201a;
+    border-bottom-width: 12px;
+    border-radius: 12px 12px 4px 4px;
+    overflow: hidden;
+    aspect-ratio: 16/10;
+    display: flex; flex-direction: column;
+  }
+  .laptop-base {
+    width: 112%;
+    height: 12px;
+    margin: -1px -6% 0;
+    background: linear-gradient(180deg, #3a2e25, #1c1410);
+    border-radius: 0 0 22px 22px;
+    position: relative;
+  }
+  .laptop-base::before {
+    content: "";
+    position: absolute; left: 50%; top: 0;
+    transform: translateX(-50%);
+    width: 90px; height: 5px;
+    background: rgba(0,0,0,.45);
+    border-radius: 0 0 12px 12px;
+  }
+  .browser-bar {
+    display: flex; align-items: center; gap: 8px;
+    background: #1a120d;
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(255,255,255,.05);
+    flex-shrink: 0;
+  }
+  .browser-bar .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .browser-bar .dot.r { background: #f57063; }
+  .browser-bar .dot.y { background: #f0bd2e; }
+  .browser-bar .dot.g { background: #5fbf5f; }
+  .browser-url {
+    flex: 1; margin-left: 6px;
+    background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.06);
+    border-radius: 6px;
+    font-size: .66rem;
+    color: var(--ink-mute);
+    padding: 3px 10px;
+    text-align: center;
+  }
+  .admin-ui {
+    flex: 1;
+    display: grid; grid-template-columns: 116px 1fr;
+    background: #15100c;
+    min-height: 0;
+  }
+  .admin-side {
+    background: #100b08;
+    padding: 12px 8px;
+    display: flex; flex-direction: column; gap: 3px;
+    border-right: 1px solid rgba(255,255,255,.04);
+  }
+  .admin-side-brand {
+    font-family: "Playfair Display", serif;
+    color: var(--accent-2);
+    font-weight: 700;
+    font-size: .82rem;
+    padding: 4px 8px 8px;
+  }
+  .admin-side-item {
+    font-size: .66rem;
+    color: var(--ink-mute);
+    padding: 5px 8px;
+    border-radius: 5px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .admin-side-item::before {
+    content: ""; width: 5px; height: 5px; border-radius: 2px;
+    background: rgba(255,255,255,.18);
+  }
+  .admin-side-item.active { background: rgba(224,179,106,.12); color: var(--accent-2); }
+  .admin-side-item.active::before { background: var(--accent); }
+  .admin-main {
+    padding: 14px;
+    display: flex; flex-direction: column; gap: 10px;
+    min-width: 0;
+  }
+  .admin-row { display: flex; justify-content: space-between; align-items: center; }
+  .admin-row h5 {
+    font-family: "Playfair Display", serif;
+    color: var(--ink);
+    font-weight: 600;
+    font-size: .92rem;
+    margin: 0;
+  }
+  .admin-row .pill {
+    font-size: .54rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: #b9d6af;
+    background: rgba(143,183,133,.15);
+    border: 1px solid rgba(143,183,133,.3);
+    padding: 3px 8px;
+    border-radius: 999px;
+  }
+  .admin-stats {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+  }
+  .admin-stat {
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.05);
+    border-radius: 8px;
+    padding: 10px;
+  }
+  .admin-stat .num {
+    display: block; color: var(--ink);
+    font-family: "Playfair Display", serif;
+    font-weight: 700;
+    font-size: 1.05rem; line-height: 1;
+  }
+  .admin-stat .lbl {
+    display: block;
+    font-size: .5rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    margin-top: 4px;
+  }
+  .admin-chart {
+    flex: 1;
+    min-height: 50px;
+    background: rgba(224,179,106,.04);
+    border: 1px solid rgba(255,255,255,.04);
+    border-radius: 8px;
+    padding: 6px;
+    overflow: hidden;
+  }
+  .admin-chart svg { width: 100%; height: 100%; display: block; }
+
+  /* ---------- Phone frame + App mockup ---------- */
+  .device-phone {
+    width: 100%;
+    max-width: 272px;
+    background: #1a120c;
+    border-radius: 36px;
+    border: 8px solid #2a201a;
+    padding: 8px;
+    filter: drop-shadow(0 30px 50px rgba(0,0,0,.55));
+    position: relative;
+  }
+  .phone-notch {
+    position: absolute;
+    top: 14px; left: 50%; transform: translateX(-50%);
+    width: 76px; height: 18px;
+    background: #100b08;
+    border-radius: 0 0 12px 12px;
+    z-index: 3;
+  }
+  .phone-screen {
+    background: linear-gradient(180deg, #1B1410 0%, #251C15 100%);
+    border-radius: 26px;
+    overflow: hidden;
+    aspect-ratio: 9/19;
+    padding: 38px 12px 14px;
+    display: flex; flex-direction: column;
+    gap: 8px;
+  }
+  .phone-status {
+    position: absolute;
+    top: 18px; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0 26px;
+    font-size: .58rem; font-weight: 700;
+    color: var(--ink);
+    z-index: 4;
+  }
+  .phone-status .right { display: inline-flex; gap: 4px; align-items: center; }
+  .app-header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 4px 4px 6px;
+  }
+  .app-avatar {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent-warm));
+    flex-shrink: 0;
+    border: 1.5px solid rgba(255,255,255,.18);
+  }
+  .app-greet .name {
+    display: block;
+    font-family: "Playfair Display", serif;
+    color: var(--ink);
+    font-weight: 600;
+    font-size: .8rem;
+    line-height: 1.15;
+  }
+  .app-greet .sub {
+    display: block;
+    font-size: .56rem;
+    color: var(--ink-mute);
+    letter-spacing: .04em;
+    margin-top: 2px;
+  }
+  .app-card {
+    background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.06);
+    border-radius: 12px;
+    padding: 10px 12px;
+  }
+  .app-card .lbl {
+    display: block;
+    font-size: .52rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent-2);
+    margin-bottom: 4px;
+  }
+  .app-card .ttl {
+    font-family: "Playfair Display", serif;
+    color: var(--ink);
+    font-weight: 600;
+    font-size: .82rem;
+    margin: 0;
+    line-height: 1.2;
+  }
+  .app-card p { font-size: .62rem; color: var(--ink-dim); margin: 4px 0 0; line-height: 1.4; }
+  .app-bar {
+    height: 4px; background: rgba(255,255,255,.06);
+    border-radius: 999px; margin-top: 8px;
+    overflow: hidden;
+  }
+  .app-bar .fill {
+    height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    border-radius: 999px;
+  }
+  .app-row {
+    display: flex; align-items: center;
+    padding: 4px 0;
+    gap: 8px;
+  }
+  .app-row + .app-row { border-top: 1px solid rgba(255,255,255,.05); margin-top: 4px; padding-top: 8px; }
+  .app-row .dotg {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent-fresh);
+    flex-shrink: 0;
+  }
+  .app-row .who { font-size: .66rem; color: var(--ink); flex: 1; line-height: 1.3; }
+  .app-row .meta { font-size: .54rem; color: var(--ink-mute); }
+
+  @media (max-width: 880px) {
+    .showcase { grid-template-columns: 1fr; gap: 30px; padding: 40px 0; text-align: left; }
+    .showcase.reverse .showcase-copy { order: 0; }
+    .showcase-art { order: -1; }
+    .device-laptop { max-width: 460px; }
+    .device-phone { max-width: 230px; }
+  }
+
+  /* Features (admin/teacher/parent) */
+  .feature-block { margin-bottom: 56px; }
+  .feature-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+  .feature-head h3 { font-size: 1.5rem; color: var(--ink); }
+  .feature-head .sub { color: var(--ink-mute); font-size: .95rem; }
+  .feature-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+  }
+  .feature-grid.tight { grid-template-columns: repeat(4, 1fr); }
+  .feature-cell {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 18px;
+  }
+  .feature-cell h4 { font-size: 1rem; margin-bottom: 8px; color: var(--ink); }
+  .feature-cell ul { font-size: .92rem; padding-left: 1em; margin: 0; }
+  .feature-cell li { margin-bottom: .25em; }
+
+  /* Image-backed tile variant: background photo + short quote */
+  .feature-cell.tile {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    min-height: 260px;
+    padding: 24px;
+    color: #f8f2ea;
+    text-decoration: none;
+    background-color: #1a120c;
+    background-image: var(--bg);
+    background-size: cover;
+    background-position: center;
+    border: 0;
+    border-radius: 20px;
+    cursor: pointer;
+    box-shadow:
+      0 1px 0 rgba(255,255,255,.06) inset,
+      0 0 0 1px rgba(255,255,255,.05) inset,
+      0 18px 40px -22px rgba(0,0,0,.55),
+      0 4px 14px -8px rgba(0,0,0,.35);
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    opacity: 0;
+    transform: translateY(40px);
+    transition:
+      opacity .9s cubic-bezier(.22,.61,.36,1),
+      transform .9s cubic-bezier(.22,.61,.36,1),
+      box-shadow .35s ease;
+    will-change: opacity, transform;
+  }
+  .feature-cell.tile.in-view {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .feature-cell.tile.in-view:hover { transform: translateY(-4px); }
+  .feature-cell.tile::before {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      linear-gradient(180deg, rgba(20,15,12,.10) 0%, rgba(20,15,12,.55) 55%, rgba(20,15,12,.92) 100%);
+    z-index: -1;
+    transition: opacity .35s ease;
+  }
+  .feature-cell.tile:hover {
+    transform: translateY(-3px);
+    text-decoration: none;
+    box-shadow:
+      0 1px 0 rgba(255,255,255,.08) inset,
+      0 0 0 1px rgba(255,255,255,.08) inset,
+      0 26px 48px -22px rgba(0,0,0,.65),
+      0 6px 18px -8px rgba(0,0,0,.45);
+  }
+  .feature-cell.tile h4 {
+    color: #fff;
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-weight: 600;
+    font-size: 1.05rem;
+    letter-spacing: .005em;
+    margin: 0 0 10px;
+    text-shadow: 0 1px 8px rgba(0,0,0,.5);
+  }
+  .feature-cell.tile h4::before {
+    content: "";
+    display: block;
+    width: 28px;
+    height: 2px;
+    background: var(--accent, #e0b36a);
+    border-radius: 2px;
+    margin-bottom: 12px;
+    box-shadow: 0 0 10px rgba(224,179,106,.45);
+  }
+  .feature-cell.tile .tile-quote {
+    font-family: "Playfair Display", Georgia, serif;
+    font-style: italic;
+    font-weight: 400;
+    font-size: 1rem;
+    line-height: 1.45;
+    color: rgba(248,242,234,.92);
+    margin: 0;
+    text-shadow: 0 1px 8px rgba(0,0,0,.6);
+  }
+  @media (max-width: 980px) {
+    .feature-grid, .feature-grid.tight { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 600px) {
+    .feature-grid, .feature-grid.tight { grid-template-columns: 1fr; }
+  }
+
+  /* Value props */
+  .values { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .value {
+    padding: 22px; border: 1px solid var(--line); border-radius: var(--radius);
+    background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,0));
+  }
+  .value .num {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--accent); font-size: .85rem; letter-spacing: .12em;
+    margin-bottom: 8px;
+  }
+  .value h4 { color: var(--ink); margin-bottom: 6px; font-size: 1.05rem; }
+  .value p { margin: 0; font-size: .95rem; }
+  @media (max-width: 880px) { .values { grid-template-columns: 1fr; } }
+
+  /* How it works */
+  .steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; counter-reset: step; }
+  .step {
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    padding: 18px; position: relative; background: var(--card);
+  }
+  .step::before {
+    counter-increment: step; content: counter(step);
+    display: inline-grid; place-items: center;
+    width: 26px; height: 26px; border-radius: 50%;
+    background: var(--accent); color: var(--on-accent); font-weight: 700; font-size: .85rem;
+    margin-bottom: 10px;
+  }
+  .step h4 { font-size: .98rem; margin-bottom: 6px; color: var(--ink); }
+  .step p { font-size: .9rem; margin: 0; }
+  @media (max-width: 980px) { .steps { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 520px) { .steps { grid-template-columns: 1fr; } }
+
+  /* Audience */
+  .audiences { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .audience {
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    padding: 18px; background: var(--card);
+  }
+  .audience h4 { color: var(--ink); margin-bottom: 4px; font-size: 1rem; }
+  .audience p { margin: 0; font-size: .92rem; }
+  @media (max-width: 980px) { .audiences { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 520px) { .audiences { grid-template-columns: 1fr; } }
+
+  /* FAQ */
+  .faq { max-width: 820px; }
+  details.qa {
+    border-top: 1px solid var(--line);
+    padding: 18px 0;
+  }
+  details.qa:last-of-type { border-bottom: 1px solid var(--line); }
+  details.qa summary {
+    cursor: pointer; list-style: none;
+    font-weight: 600; color: var(--ink);
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px;
+  }
+  details.qa summary::-webkit-details-marker { display: none; }
+  details.qa summary::after {
+    content: "+"; color: var(--accent); font-weight: 700; font-size: 1.4rem; line-height: 1;
+    transition: transform .15s ease;
+  }
+  details.qa[open] summary::after { content: "−"; }
+  details.qa p { margin-top: 12px; }
+
+  /* CTA strip */
+  .cta-strip {
+    margin: 0 auto;
+    background: linear-gradient(135deg, #3A2818, #614025);
+    border: 1px solid rgba(224,179,106,.3);
+    border-radius: var(--radius);
+    padding: 36px;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 24px; flex-wrap: wrap;
+  }
+  .cta-strip h3 { color: white; margin: 0 0 4px; font-size: 1.4rem; }
+  .cta-strip p { margin: 0; color: rgba(255,255,255,.8); }
+  .cta-strip .btn-primary { background: var(--accent); color: var(--on-accent); }
+  .cta-strip .btn-primary:hover { background: var(--accent-2); }
+
+  /* Footer */
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 60px 0 30px;
+    background: var(--footer-bg);
+  }
+  .foot-grid {
+    display: grid; grid-template-columns: 1.4fr repeat(4, 1fr); gap: 32px;
+  }
+  .foot-col h5 {
+    font-size: .8rem; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--ink-mute); margin: 0 0 14px;
+  }
+  .foot-col a { display: block; color: var(--ink-dim); padding: 4px 0; font-size: .92rem; }
+  .foot-col a:hover { color: var(--ink); text-decoration: none; }
+  .foot-brand p { font-size: .92rem; max-width: 32ch; }
+  .foot-bottom {
+    margin-top: 40px; padding-top: 20px;
+    border-top: 1px solid var(--line);
+    display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+    font-size: .85rem; color: var(--ink-mute);
+  }
+  .foot-contact {
+    display: inline-flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  }
+  .foot-contact .sep { color: var(--ink-mute); opacity: .5; }
+  .foot-contact a { color: var(--ink-dim); }
+  .foot-contact a:hover { color: var(--ink); text-decoration: none; }
+  @media (max-width: 880px) {
+    .foot-grid { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 520px) {
+    .foot-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ---------- Nav offset (smooth-scroll handled in JS for slower easing) ---------- */
+  section[id] { scroll-margin-top: 90px; }
+
+  /* ---------- About ---------- */
+  .about-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  .about-card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 22px;
+  }
+  .about-card h4 {
+    font-family: "Playfair Display", Georgia, serif;
+    font-weight: 600;
+    font-size: 1.15rem;
+    color: var(--ink);
+    margin: 0 0 8px;
+  }
+  .about-card p { margin: 0; color: var(--ink-dim); font-size: .95rem; }
+  @media (max-width: 880px) { .about-grid { grid-template-columns: 1fr; } }
+
+  /* ---------- Blog ---------- */
+  .blog-grid {
+    display: grid; gap: 18px;
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .blog-card {
+    display: block;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    overflow: hidden;
+    color: var(--ink);
+    text-decoration: none;
+    transition: transform .25s ease, background .25s ease, border-color .25s ease;
+  }
+  .blog-card:hover {
+    transform: translateY(-3px);
+    background: var(--card-hover);
+    border-color: rgba(224,179,106,.28);
+    text-decoration: none;
+  }
+  .blog-cover {
+    aspect-ratio: 16 / 9;
+    background-size: cover; background-position: center;
+    background-color: #1a120c;
+  }
+  .blog-body { padding: 18px 20px 22px; }
+  .blog-meta {
+    display: block;
+    font-size: .72rem;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--accent-2);
+    margin-bottom: 10px;
+  }
+  .blog-body h4 {
+    font-family: "Playfair Display", Georgia, serif;
+    font-weight: 600;
+    font-size: 1.1rem;
+    color: var(--ink);
+    margin: 0 0 8px;
+    line-height: 1.3;
+  }
+  .blog-body p { margin: 0; color: var(--ink-dim); font-size: .92rem; line-height: 1.5; }
+  @media (max-width: 880px) { .blog-grid { grid-template-columns: 1fr; } }
+
+  /* ---------- Contact ---------- */
+  .contact-grid {
+    display: grid;
+    grid-template-columns: .9fr 1.1fr;
+    gap: 40px;
+    align-items: start;
+  }
+  .contact-intro h2 { margin-top: 8px; }
+  .contact-list { list-style: none; padding: 0; margin: 22px 0 0; }
+  .contact-list li {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 0;
+    color: var(--ink-dim);
+    font-size: .95rem;
+  }
+  .contact-list li a { color: var(--ink); }
+  .contact-form {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 24px;
+    display: grid; gap: 14px;
+  }
+  .contact-form label {
+    display: block;
+    font-size: .82rem; letter-spacing: .04em;
+    color: var(--ink-dim);
+  }
+  .contact-form input,
+  .contact-form textarea {
+    width: 100%;
+    margin-top: 6px;
+    background: rgba(0,0,0,.18);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    color: var(--ink);
+    font: inherit; font-size: .98rem;
+    transition: border-color .2s ease, background .2s ease;
+  }
+  .contact-form input:focus,
+  .contact-form textarea:focus {
+    outline: 0;
+    border-color: rgba(224,179,106,.45);
+    background: rgba(0,0,0,.28);
+  }
+  .contact-form textarea { resize: vertical; min-height: 120px; }
+  .contact-form button {
+    justify-self: start;
+    background: var(--accent);
+    color: var(--on-accent);
+    border: 0; border-radius: 999px;
+    padding: 12px 22px;
+    font: inherit; font-weight: 600;
+    cursor: pointer;
+    transition: background .2s ease, transform .12s ease;
+  }
+  .contact-form button:hover { background: var(--accent-2); transform: translateY(-1px); }
+  .contact-note { margin: 4px 0 0; color: var(--ink-mute); font-size: .85rem; }
+  .contact-status { font-size: .9rem; padding: 8px 12px; border-radius: 8px; }
+  .contact-status.ok { background: rgba(143,183,133,.15); color: #b9d6af; border: 1px solid rgba(143,183,133,.35); }
+  .contact-status.err { background: rgba(216,154,78,.15); color: var(--accent-2); border: 1px solid rgba(216,154,78,.4); }
+  @media (max-width: 880px) {
+    .contact-grid { grid-template-columns: 1fr; gap: 28px; }
+  }
+</style>
+<script>
+  /* Runs BEFORE the body parses — prevents the browser from
+     auto-scrolling to a URL hash on refresh. */
+  if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+  if (location.hash) {
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+</script>
+</head>
+<body>
+
+<main id="top">
+
+  <!-- ====== Fixed top nav: edge-to-edge, rigid, no curves ====== -->
+  <header class="site-nav">
+    <nav class="hero-nav" aria-label="Primary">
+      <a class="brand" href="#top" aria-label="ZenXii home">
+        <img class="brand-mark" src="Designs/zenxii_logo_2.png" alt="ZenXii logo" />
+        <span class="brand-name">ZenXii</span>
+        <span class="brand-dot" aria-hidden="true"></span>
+      </a>
+      <div class="hero-nav-links">
+        <a href="#top" class="active">Home</a>
+        <a href="#about">About Us</a>
+        <a href="#features">Features</a>
+        <a href="#benefits">Benefits</a>
+        <a href="#blog">Blog</a>
+        <a href="#faq">FAQ</a>
+        <a href="#contact">Contact</a>
+      </div>
+      <div class="hero-nav-cta">
+        <a class="dev-link" href="superadmin/login">
+          <span>Dev access</span>
+          <span class="arr" aria-hidden="true">→</span>
+        </a>
+        <a class="btn-login" href="admin_login">
+          <span>Login</span>
+          <span class="arr" aria-hidden="true">→</span>
+        </a>
+      </div>
+    </nav>
+  </header>
+
+  <!-- HERO (editorial card) -->
+  <section class="hero">
+
+    <!-- ====== Animated background scene (student walks to school) ====== -->
+    <svg class="hero-bg-anim" viewBox="0 0 3840 2160" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <defs>
+        <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"  stop-color="#F4E9D8"/>
+          <stop offset="55%" stop-color="#EFD9C0"/>
+          <stop offset="100%" stop-color="#E8C9AA"/>
+        </linearGradient>
+        <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#C9B79C"/>
+          <stop offset="100%" stop-color="#A89372"/>
+        </linearGradient>
+        <radialGradient id="sunGlow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%"  stop-color="#F5D08A" stop-opacity="0.5"/>
+          <stop offset="100%" stop-color="#F5D08A" stop-opacity="0"/>
+        </radialGradient>
+        <!-- Cream halo so the journey header reads on cream sky and on the dark backdrop -->
+        <filter id="textHalo" x="-15%" y="-40%" width="130%" height="180%">
+          <feGaussianBlur in="SourceAlpha" stdDeviation="10"/>
+          <feFlood flood-color="#F4E9D8" flood-opacity="0.95"/>
+          <feComposite in2="SourceAlpha" operator="in"/>
+          <feMerge>
+            <feMergeNode/>
+            <feMergeNode in="SourceGraphic"/>
+          </feMerge>
+        </filter>
+      </defs>
+
+      <rect width="3840" height="2160" fill="url(#sky)"/>
+
+      <g id="sun">
+        <circle cx="3100" cy="520" r="380" fill="url(#sunGlow)"/>
+        <circle cx="3100" cy="520" r="160" fill="#F2C57C"/>
+      </g>
+
+      <g class="cloud-layer" opacity="0.7">
+        <g fill="#FBF2E2">
+          <ellipse cx="500"  cy="380" rx="180" ry="46"/>
+          <ellipse cx="640"  cy="360" rx="120" ry="38"/>
+          <ellipse cx="1500" cy="280" rx="220" ry="50"/>
+          <ellipse cx="1680" cy="300" rx="140" ry="40"/>
+          <ellipse cx="2600" cy="420" rx="200" ry="48"/>
+          <ellipse cx="3600" cy="320" rx="180" ry="44"/>
+          <ellipse cx="4340" cy="380" rx="180" ry="46"/>
+          <ellipse cx="4480" cy="360" rx="120" ry="38"/>
+          <ellipse cx="5340" cy="280" rx="220" ry="50"/>
+          <ellipse cx="5520" cy="300" rx="140" ry="40"/>
+          <ellipse cx="6440" cy="420" rx="200" ry="48"/>
+          <ellipse cx="7440" cy="320" rx="180" ry="44"/>
+        </g>
+      </g>
+
+      <g class="world">
+        <path d="M-200,1400 Q400,1180 1000,1300 T2200,1240 T3400,1300 T4600,1240 T5800,1320 T6800,1280 L6800,2160 L-200,2160 Z" fill="#B9C6A6"/>
+        <path d="M-200,1560 Q500,1380 1200,1500 T2400,1450 T3600,1520 T4800,1460 T6000,1500 T6800,1520 L6800,2160 L-200,2160 Z" fill="#8FA688"/>
+        <path d="M-200,1720 Q700,1580 1500,1680 T2800,1640 T4200,1700 T5600,1650 T6800,1700 L6800,2160 L-200,2160 Z" fill="#6E8A6B"/>
+
+        <rect x="-200" y="1820" width="7000" height="600" fill="url(#ground)"/>
+
+        <path d="M-50,2080 Q400,1980 800,2020 Q1200,2060 1700,1980 Q2200,1900 2700,1940 Q3200,1980 3700,1900 Q4200,1880 4700,1940 Q5200,2000 5700,1960 Q6200,1920 6800,1960 L6800,2200 L-50,2200 Z" fill="#D9C3A1"/>
+
+        <!-- Home -->
+        <g transform="translate(280, 1500)">
+          <rect x="0" y="180" width="420" height="320" fill="#E8D7BE" stroke="#2E2A26" stroke-width="6"/>
+          <polygon points="-30,180 210,40 450,180" fill="#B5644A" stroke="#2E2A26" stroke-width="6"/>
+          <rect x="170" y="340" width="90" height="160" fill="#6E8A6B" stroke="#2E2A26" stroke-width="6"/>
+          <circle cx="248" cy="420" r="5" fill="#2E2A26"/>
+          <rect x="50" y="240" width="80" height="80" fill="#F4E9D8" stroke="#2E2A26" stroke-width="6"/>
+          <line x1="90" y1="240" x2="90" y2="320" stroke="#2E2A26" stroke-width="4"/>
+          <line x1="50" y1="280" x2="130" y2="280" stroke="#2E2A26" stroke-width="4"/>
+          <rect x="320" y="80" width="50" height="100" fill="#9E5840" stroke="#2E2A26" stroke-width="6"/>
+          <rect x="-80" y="380" width="40" height="80" fill="#3F5C7A" stroke="#2E2A26" stroke-width="5"/>
+          <rect x="-66" y="460" width="12" height="40" fill="#2E2A26"/>
+        </g>
+
+        <!-- Trees -->
+        <g transform="translate(1000, 1620)"><rect x="-12" y="120" width="24" height="160" fill="#6B4A35"/><g class="tree-top"><circle cx="0" cy="60" r="90" fill="#6E8A6B"/><circle cx="-40" cy="100" r="70" fill="#7A9978"/><circle cx="40" cy="100" r="70" fill="#5E7E5E"/></g></g>
+        <g transform="translate(1500, 1680)"><rect x="-10" y="100" width="20" height="140" fill="#6B4A35"/><g class="tree-top b"><ellipse cx="0" cy="60" rx="70" ry="90" fill="#5E7E5E"/></g></g>
+        <g transform="translate(2400, 1640)"><rect x="-12" y="120" width="24" height="160" fill="#6B4A35"/><g class="tree-top c"><circle cx="0" cy="50" r="80" fill="#6E8A6B"/><circle cx="-50" cy="90" r="60" fill="#8FA688"/><circle cx="50" cy="90" r="60" fill="#5E7E5E"/></g></g>
+        <g transform="translate(3100, 1660)"><rect x="-10" y="110" width="20" height="150" fill="#6B4A35"/><g class="tree-top b"><ellipse cx="0" cy="50" rx="60" ry="80" fill="#6E8A6B"/></g></g>
+        <g transform="translate(3500, 1640)"><rect x="-12" y="120" width="24" height="160" fill="#6B4A35"/><g class="tree-top"><circle cx="0" cy="60" r="80" fill="#5E7E5E"/><circle cx="-40" cy="100" r="60" fill="#7A9978"/><circle cx="40" cy="100" r="60" fill="#6E8A6B"/></g></g>
+        <g transform="translate(5200, 1660)"><rect x="-10" y="110" width="20" height="150" fill="#6B4A35"/><g class="tree-top c"><ellipse cx="0" cy="50" rx="65" ry="85" fill="#6E8A6B"/></g></g>
+        <g transform="translate(5900, 1640)"><rect x="-12" y="120" width="24" height="160" fill="#6B4A35"/><g class="tree-top b"><circle cx="0" cy="60" r="80" fill="#7A9978"/><circle cx="-40" cy="100" r="60" fill="#6E8A6B"/></g></g>
+
+        <!-- Bushes -->
+        <g fill="#7A9978" stroke="#2E2A26" stroke-width="3">
+          <ellipse cx="900"  cy="2050" rx="40" ry="18"/>
+          <ellipse cx="1800" cy="2060" rx="50" ry="20"/>
+          <ellipse cx="2700" cy="2010" rx="45" ry="18"/>
+          <ellipse cx="3300" cy="2050" rx="55" ry="22"/>
+          <ellipse cx="4700" cy="2020" rx="48" ry="20"/>
+          <ellipse cx="5500" cy="2030" rx="50" ry="20"/>
+          <ellipse cx="6200" cy="2050" rx="55" ry="22"/>
+        </g>
+
+        <!-- School -->
+        <g transform="translate(4000, 1280)">
+          <rect x="0" y="200" width="560" height="520" fill="#D08465" stroke="#2E2A26" stroke-width="6"/>
+          <polygon points="-30,200 280,60 590,200" fill="#9E5840" stroke="#2E2A26" stroke-width="6"/>
+          <circle cx="280" cy="150" r="36" fill="#F4E9D8" stroke="#2E2A26" stroke-width="5"/>
+          <line x1="280" y1="150" x2="280" y2="125" stroke="#2E2A26" stroke-width="4" stroke-linecap="round"/>
+          <line x1="280" y1="150" x2="298" y2="158" stroke="#2E2A26" stroke-width="4" stroke-linecap="round"/>
+          <circle cx="280" cy="150" r="3" fill="#2E2A26"/>
+          <rect x="240" y="540" width="100" height="180" fill="#1a1612"/>
+          <g class="school-door">
+            <rect x="240" y="540" width="100" height="180" fill="#3F5C7A" stroke="#2E2A26" stroke-width="6"/>
+            <circle cx="320" cy="630" r="5" fill="#E8B860"/>
+          </g>
+          <rect x="220" y="720" width="140" height="14" fill="#A89372" stroke="#2E2A26" stroke-width="4"/>
+          <rect x="200" y="734" width="180" height="14" fill="#A89372" stroke="#2E2A26" stroke-width="4"/>
+          <g fill="#F4E9D8" stroke="#2E2A26" stroke-width="5">
+            <rect x="60"  y="320" width="90" height="90"/>
+            <rect x="180" y="320" width="90" height="90"/>
+            <rect x="300" y="320" width="90" height="90"/>
+            <rect x="420" y="320" width="90" height="90"/>
+            <rect x="60"  y="460" width="90" height="60"/>
+            <rect x="420" y="460" width="90" height="60"/>
+          </g>
+          <g stroke="#2E2A26" stroke-width="3">
+            <line x1="105" y1="320" x2="105" y2="410"/><line x1="60"  y1="365" x2="150" y2="365"/>
+            <line x1="225" y1="320" x2="225" y2="410"/><line x1="180" y1="365" x2="270" y2="365"/>
+            <line x1="345" y1="320" x2="345" y2="410"/><line x1="300" y1="365" x2="390" y2="365"/>
+            <line x1="465" y1="320" x2="465" y2="410"/><line x1="420" y1="365" x2="510" y2="365"/>
+          </g>
+          <line x1="280" y1="60" x2="280" y2="-180" stroke="#2E2A26" stroke-width="6"/>
+          <path class="flag-fabric"
+                d="M0,0 Q40,-6 80,0 Q120,6 160,0 L160,60 Q120,66 80,60 Q40,54 0,60 Z"
+                transform="translate(280,-180)"
+                fill="#E8B860" stroke="#2E2A26" stroke-width="4"/>
+          <rect x="180" y="240" width="200" height="50" fill="#F4E9D8" stroke="#2E2A26" stroke-width="5"/>
+          <text x="280" y="276" text-anchor="middle" font-family="Georgia, serif" font-size="32" font-weight="700" fill="#2E2A26" letter-spacing="6">SCHOOL</text>
+        </g>
+      </g>
+
+      <!-- Student (fixed at viewport center, fades into school) -->
+      <g class="student-wrap">
+       <g transform="translate(1900, 1880)">
+        <g class="student-body">
+          <g transform="translate(-12, 90)"><g class="leg-back"><rect x="-10" y="0" width="20" height="80" rx="6" fill="#3F5C7A" stroke="#2E2A26" stroke-width="4"/><ellipse cx="0" cy="84" rx="18" ry="8" fill="#2E2A26"/></g></g>
+          <g transform="translate(12, 90)"><g class="leg-front"><rect x="-10" y="0" width="20" height="80" rx="6" fill="#3F5C7A" stroke="#2E2A26" stroke-width="4"/><ellipse cx="0" cy="84" rx="18" ry="8" fill="#2E2A26"/></g></g>
+          <rect x="-46" y="-10" width="46" height="80" rx="12" fill="#B5644A" stroke="#2E2A26" stroke-width="4"/>
+          <rect x="-42" y="10" width="38" height="22" fill="#9E5840" stroke="#2E2A26" stroke-width="3"/>
+          <circle cx="-23" cy="62" r="5" fill="#2E2A26"/>
+          <path d="M-30,-10 Q-30,-40 0,-40 Q30,-40 30,-10 L26,90 L-26,90 Z" fill="#6B8AA8" stroke="#2E2A26" stroke-width="4"/>
+          <g transform="translate(-22, -20)"><g class="arm-back"><rect x="-8" y="0" width="16" height="70" rx="6" fill="#6B8AA8" stroke="#2E2A26" stroke-width="4"/><circle cx="0" cy="74" r="9" fill="#E8C9A8" stroke="#2E2A26" stroke-width="3"/></g></g>
+          <g transform="translate(22, -20)"><g class="arm-front"><rect x="-8" y="0" width="16" height="70" rx="6" fill="#6B8AA8" stroke="#2E2A26" stroke-width="4"/><circle cx="0" cy="74" r="9" fill="#E8C9A8" stroke="#2E2A26" stroke-width="3"/></g></g>
+          <circle cx="0" cy="-70" r="34" fill="#E8C9A8" stroke="#2E2A26" stroke-width="4"/>
+          <path d="M-34,-78 Q-30,-110 0,-110 Q30,-110 34,-78 Q24,-92 0,-90 Q-24,-92 -34,-78 Z" fill="#2E2A26"/>
+          <path d="M-36,-92 Q0,-130 36,-92 L36,-82 L-36,-82 Z" fill="#9E5840" stroke="#2E2A26" stroke-width="4"/>
+          <rect x="-44" y="-86" width="20" height="8" fill="#9E5840" stroke="#2E2A26" stroke-width="3"/>
+          <circle cx="-10" cy="-70" r="2.5" fill="#2E2A26"/>
+          <circle cx="10"  cy="-70" r="2.5" fill="#2E2A26"/>
+          <path d="M-8,-58 Q0,-52 8,-58" stroke="#2E2A26" stroke-width="3" fill="none" stroke-linecap="round"/>
+        </g>
+       </g>
+      </g>
+
+      <g transform="translate(3900, 600)">
+        <g class="bird-flight">
+          <g class="bird"><path d="M0,0 Q12,-10 24,0 Q36,-10 48,0" stroke="#2E2A26" stroke-width="4" fill="none" stroke-linecap="round"/></g>
+          <g class="bird" transform="translate(80, 30)"><path d="M0,0 Q12,-10 24,0 Q36,-10 48,0" stroke="#2E2A26" stroke-width="3" fill="none" stroke-linecap="round"/></g>
+          <g class="bird" transform="translate(150, -10)"><path d="M0,0 Q12,-10 24,0 Q36,-10 48,0" stroke="#2E2A26" stroke-width="3" fill="none" stroke-linecap="round"/></g>
+        </g>
+      </g>
+      <g transform="translate(4200, 480)">
+        <g class="bird-flight delay">
+          <g class="bird"><path d="M0,0 Q12,-10 24,0 Q36,-10 48,0" stroke="#2E2A26" stroke-width="3" fill="none" stroke-linecap="round"/></g>
+          <g class="bird" transform="translate(70, 20)"><path d="M0,0 Q12,-10 24,0 Q36,-10 48,0" stroke="#2E2A26" stroke-width="3" fill="none" stroke-linecap="round"/></g>
+        </g>
+      </g>
+
+      <!-- Dark wash fades in near the end so the HTML hero copy reads above the scene -->
+      <rect class="hero-backdrop" width="3840" height="2160" fill="#1F1812" pointer-events="none"/>
+
+      <!-- Journey header — fades in during the walk, stays through the final frame -->
+      <g class="journey-header" filter="url(#textHalo)">
+        <text class="svg-headline" x="1920" y="280" text-anchor="middle"
+              font-family="Georgia, 'Times New Roman', serif"
+              font-size="120" font-weight="300" fill="#2E2A26"
+              letter-spacing="14">
+          every journey starts with a step
+        </text>
+        <line class="svg-headline-rule" x1="1700" y1="330" x2="2140" y2="330" stroke="#9E5840" stroke-width="4"/>
+        <text class="svg-subhead" x="1920" y="400" text-anchor="middle"
+              font-family="-apple-system, system-ui, sans-serif"
+              font-size="36" font-weight="500" fill="#9E5840"
+              letter-spacing="20">
+          ZENXII · LEARN · GROW
+        </text>
+      </g>
+    </svg>
+
+    <!-- Centered editorial content -->
+    <div class="hero-content">
+      <span class="trust-pill">Trusted by parents, teachers &amp; students</span>
+
+      <h1 class="hero-title">
+        The best place to grow<br/>
+        your <span class="gold">whole school</span>
+      </h1>
+
+      <p class="hero-sub">
+        One quiet place where attendance, learning and small moments come together — for every parent, teacher and student in your school.
+      </p>
+
+      <form class="search-bar" action="find-school.html" method="get" role="search">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img"><title>Search</title><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input type="search" name="q" placeholder="Search for a school, class or teacher…" aria-label="Search" autocomplete="off" />
+        <button type="submit">Search now</button>
+      </form>
+
+      <div class="hero-stats">
+        <div><strong>120+</strong> schools onboarded</div>
+        <div><strong>14</strong> cities</div>
+        <div><strong>3</strong> boards (CBSE, ICSE, State)</div>
+      </div>
+
+    </div>
+
+  </section>
+
+  <!-- PRODUCTS -->
+  <section id="products" class="block">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">The platform</span>
+        <h2>Three purpose-built apps. One source of truth.</h2>
+        <p>Every action in one app reconciles instantly across the other two. No re-typing, no exports, no spreadsheets in the middle.</p>
+      </div>
+
+      <!-- Row 1: Admin Panel — copy left, laptop right -->
+      <article class="showcase">
+        <div class="showcase-copy">
+          <span class="showcase-tag">Web · Admin Panel</span>
+          <h3>Admin panel</h3>
+          <p>The school's back office for principals, super admins, accountants, HR, front office and exam coordinators — with a dedicated layer for running multiple campuses.</p>
+          <ul class="showcase-points">
+            <li>60+ modules · 13 roles + custom roles</li>
+            <li>Multi-school superadmin layer</li>
+            <li>Full audit trail of every action</li>
+          </ul>
+          <a class="btn btn-primary" href="#features">Explore admin features →</a>
+        </div>
+        <div class="showcase-art">
+          <div class="device-laptop">
+            <div class="laptop-screen">
+              <div class="browser-bar">
+                <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+                <div class="browser-url">admin.zenxii.com / dashboard</div>
+              </div>
+              <div class="admin-ui">
+                <aside class="admin-side">
+                  <div class="admin-side-brand">ZenXii</div>
+                  <div class="admin-side-item active">Dashboard</div>
+                  <div class="admin-side-item">Students</div>
+                  <div class="admin-side-item">Staff</div>
+                  <div class="admin-side-item">Fees</div>
+                  <div class="admin-side-item">Exams</div>
+                  <div class="admin-side-item">Reports</div>
+                </aside>
+                <div class="admin-main">
+                  <div class="admin-row">
+                    <h5>Today at school</h5>
+                    <span class="pill">● Live</span>
+                  </div>
+                  <div class="admin-stats">
+                    <div class="admin-stat"><span class="num">1,248</span><span class="lbl">Students</span></div>
+                    <div class="admin-stat"><span class="num">96.2%</span><span class="lbl">Attendance</span></div>
+                    <div class="admin-stat"><span class="num">₹4.2L</span><span class="lbl">Fees today</span></div>
+                  </div>
+                  <div class="admin-chart" aria-hidden="true">
+                    <svg viewBox="0 0 300 60" preserveAspectRatio="none">
+                      <defs>
+                        <linearGradient id="zxAdminGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stop-color="#E0B36A" stop-opacity=".4"/>
+                          <stop offset="100%" stop-color="#E0B36A" stop-opacity="0"/>
+                        </linearGradient>
+                      </defs>
+                      <path d="M0,46 L24,40 L48,44 L72,32 L96,36 L120,22 L144,28 L168,18 L192,24 L216,12 L240,18 L264,8 L288,14 L300,10 L300,60 L0,60 Z" fill="url(#zxAdminGrad)"/>
+                      <path d="M0,46 L24,40 L48,44 L72,32 L96,36 L120,22 L144,28 L168,18 L192,24 L216,12 L240,18 L264,8 L288,14 L300,10" fill="none" stroke="#E0B36A" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="laptop-base"></div>
+          </div>
+        </div>
+      </article>
+
+      <!-- Row 2: Parent app — phone left, copy right -->
+      <article class="showcase reverse">
+        <div class="showcase-copy">
+          <span class="showcase-tag">Parent app</span>
+          <h3>Parent App</h3>
+          <p>Your child's school day, live. One login covers every sibling — attendance, results, fees, homework, transport, messages and events, all a tap away.</p>
+          <ul class="showcase-points">
+            <li>Automatic sibling discovery — one account, every child</li>
+            <li>Live bus tracking and instant fee receipts</li>
+            <li>Direct messaging with class teachers</li>
+          </ul>
+          <a class="btn btn-primary" href="#features">Explore parent features →</a>
+        </div>
+        <div class="showcase-art">
+          <div class="device-phone">
+            <div class="phone-notch"></div>
+            <div class="phone-status"><span>9:41</span><span class="right">5G · 87%</span></div>
+            <div class="phone-screen">
+              <div class="app-header">
+                <div class="app-avatar"></div>
+                <div class="app-greet">
+                  <span class="name">Aarav Singh</span>
+                  <span class="sub">Class 5A · DPS Bhopal</span>
+                </div>
+              </div>
+              <div class="app-card">
+                <span class="lbl">Today · 8:42 AM</span>
+                <h4 class="ttl">Present at school</h4>
+                <p>Bus 12 · checked in at the gate</p>
+              </div>
+              <div class="app-card">
+                <span class="lbl">Last test</span>
+                <h4 class="ttl">Maths · 87 / 100</h4>
+                <div class="app-bar"><div class="fill" style="width:87%"></div></div>
+              </div>
+              <div class="app-card">
+                <span class="lbl">Term fees</span>
+                <h4 class="ttl">Paid · ₹24,500</h4>
+                <p>Receipt #ZX-4421 · 12 May</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- Row 3: Teacher app — copy left, phone right -->
+      <article class="showcase">
+        <div class="showcase-copy">
+          <span class="showcase-tag">Teacher app</span>
+          <h3>Teacher App</h3>
+          <p>Run a class with one thumb. Attendance, homework, marks, stories, messaging, leave, library and PTM — every screen, no role gating, scope from your class and subject assignments.</p>
+          <ul class="showcase-points">
+            <li>Daily attendance in under thirty seconds</li>
+            <li>Set, collect and grade homework inline</li>
+            <li>Stories — share classroom moments to parents</li>
+          </ul>
+          <a class="btn btn-primary" href="#features">Explore teacher features →</a>
+        </div>
+        <div class="showcase-art">
+          <div class="device-phone">
+            <div class="phone-notch"></div>
+            <div class="phone-status"><span>9:41</span><span class="right">5G · 87%</span></div>
+            <div class="phone-screen">
+              <div class="app-header">
+                <div class="app-avatar"></div>
+                <div class="app-greet">
+                  <span class="name">Class 7B · Maths</span>
+                  <span class="sub">Period 3 · 34 students</span>
+                </div>
+              </div>
+              <div class="app-card">
+                <span class="lbl">Attendance · today</span>
+                <h4 class="ttl">31 present · 3 absent</h4>
+                <div class="app-bar"><div class="fill" style="width:91%"></div></div>
+              </div>
+              <div class="app-card">
+                <span class="lbl">Homework due</span>
+                <h4 class="ttl">Algebra worksheet</h4>
+                <p>27 submitted · 7 pending</p>
+              </div>
+              <div class="app-card">
+                <div class="app-row">
+                  <span class="dotg"></span>
+                  <span class="who">Aarav S. · "Sir, when is PTM?"</span>
+                  <span class="meta">2m</span>
+                </div>
+                <div class="app-row">
+                  <span class="dotg"></span>
+                  <span class="who">Priya M. · "Submitted homework"</span>
+                  <span class="meta">8m</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features" class="block">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Feature catalogue</span>
+        <h2>Everything a school does, in one platform.</h2>
+        <p>A complete breakdown of what ships in each of the three apps.</p>
+      </div>
+
+      <!-- Admin -->
+      <div class="feature-block">
+        <div class="feature-head">
+          <h3>Admin panel</h3>
+          <span class="sub">Web · 60+ modules · 13 roles + custom roles · 17 module permissions</span>
+        </div>
+
+        <div class="feature-grid">
+          <a class="feature-cell tile" href="feature.html?key=student-academics" style="--bg: url('https://images.unsplash.com/photo-1719159381916-062fa9f435a6?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>Student & academics</h4>
+            <p class="tile-quote">"Every student is a story unfolding, chapter by chapter."</p>
+          </a>
+          <a class="feature-cell tile" href="feature.html?key=staff-hr" style="--bg: url('https://images.unsplash.com/photo-1573164574572-cb89e39749b4?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>Staff & HR</h4>
+            <p class="tile-quote">"Behind every great school is a team that holds it together."</p>
+          </a>
+          <a class="feature-cell tile" href="feature.html?key=finance" style="--bg: url('https://images.unsplash.com/photo-1709880945165-d2208c6ad2ec?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>Finance & accounting</h4>
+            <p class="tile-quote">"Numbers balanced. Trust earned."</p>
+          </a>
+          <a class="feature-cell tile" href="feature.html?key=communication-admin" style="--bg: url('https://images.unsplash.com/photo-1542626991-cbc4e32524cc?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>Communication & engagement</h4>
+            <p class="tile-quote">"When a school speaks clearly, families listen warmly."</p>
+          </a>
+          <a class="feature-cell tile" href="feature.html?key=operations" style="--bg: url('https://images.unsplash.com/photo-1709924168698-620ea32c3488?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>Operations</h4>
+            <p class="tile-quote">"The quiet machinery that keeps the school day moving."</p>
+          </a>
+          <a class="feature-cell tile" href="feature.html?key=security" style="--bg: url('https://images.unsplash.com/photo-1680992046626-418f7e910589?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>Administration & security</h4>
+            <p class="tile-quote">"The right access, in the right hands."</p>
+          </a>
+          <a class="feature-cell tile" href="feature.html?key=superadmin" style="--bg: url('https://images.unsplash.com/photo-1492541737557-dfd592c6e42d?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>Superadmin (multi-school)</h4>
+            <p class="tile-quote">"Many campuses. One pulse."</p>
+          </a>
+          <a class="feature-cell tile" href="feature.html?key=public" style="--bg: url('https://images.unsplash.com/photo-1613896527026-f195d5c818ed?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>Public surfaces</h4>
+            <p class="tile-quote">"The first door a family knocks on is always digital."</p>
+          </a>
+        </div>
+      </div>
+
+      <!-- Teacher -->
+      <div class="feature-block">
+        <div class="feature-head">
+          <h3>Teacher App</h3>
+          <span class="sub">Android · full feature access for every signed-in teacher · scope from class & subject assignments</span>
+        </div>
+
+        <div class="feature-grid tight">
+          <a class="feature-cell tile" href="feature.html?key=t-classroom" style="--bg: url('https://images.unsplash.com/photo-1509062522246-3755977927d7?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>Classroom</h4>
+            <p class="tile-quote">"Every present mark is a child who showed up to learn."</p>
+          </a>
+          <a class="feature-cell tile" href="feature.html?key=t-communication" style="--bg: url('https://images.unsplash.com/photo-1629360021730-3d258452c425?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>Communication</h4>
+            <p class="tile-quote">"A small message can change a child's whole week."</p>
+          </a>
+          <a class="feature-cell tile" href="feature.html?key=t-self-service" style="--bg: url('https://images.unsplash.com/photo-1536300099515-6c61b290b654?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>Self-service</h4>
+            <p class="tile-quote">"Your own little corner of the staffroom — always with you."</p>
+          </a>
+          <a class="feature-cell tile" href="feature.html?key=t-school-life" style="--bg: url('https://images.unsplash.com/photo-1769650796496-782579dcef43?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>School life</h4>
+            <p class="tile-quote">"There is a quiet kind of joy in the rhythm of school days."</p>
+          </a>
+        </div>
+      </div>
+
+      <!-- Parent -->
+      <div class="feature-block">
+        <div class="feature-head">
+          <h3>Parent App</h3>
+          <span class="sub">Android · one login covers every sibling · automatic sibling discovery</span>
+        </div>
+
+        <div class="feature-grid">
+          <a class="feature-cell tile" href="feature.html?key=p-day" style="--bg: url('https://images.unsplash.com/photo-1770346920441-23b07e014fab?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>My child's school day</h4>
+            <p class="tile-quote">"Their day, in your pocket — from first bell to last."</p>
+          </a>
+          <a class="feature-cell tile" href="feature.html?key=p-family" style="--bg: url('https://images.unsplash.com/photo-1504151932400-72d4384f04b3?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>Family & engagement</h4>
+            <p class="tile-quote">"Closer to their school than you've ever been before."</p>
+          </a>
+          <a class="feature-cell tile" href="feature.html?key=p-money" style="--bg: url('https://images.unsplash.com/photo-1613688263142-67f1e0c25ef1?auto=format&amp;fit=crop&amp;w=600&amp;q=70')">
+            <h4>Money & operations</h4>
+            <p class="tile-quote">"Fees paid. Bus tracked. Mind at ease."</p>
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- VALUE PROPS -->
+  <!-- ABOUT US -->
+  <section id="about" class="block">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">About us</span>
+        <h2>One school. Three apps. One platform.</h2>
+        <p>ZenXii is a real-time operating system for schools — admin panel for the office, teacher app for the classroom, parent app for the home. Built so the same fact never has to be typed twice.</p>
+      </div>
+
+      <div class="about-grid">
+        <div class="about-card">
+          <h4>Our mission</h4>
+          <p>Give every school the operational clarity the best companies enjoy — without losing the warmth of a school day.</p>
+        </div>
+        <div class="about-card">
+          <h4>Why we built it</h4>
+          <p>We watched school offices juggle 5–10 disconnected tools. ZenXii folds them into one tenanted platform, with role-aware access and real-time sync.</p>
+        </div>
+        <div class="about-card">
+          <h4>Where we are</h4>
+          <p>Headquartered in Bhopal, India. A small team that listens to schools first and ships second.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BENEFITS -->
+  <section id="benefits" class="block">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Benefits</span>
+        <h2>Designed for how a school actually runs.</h2>
+      </div>
+
+      <div class="values">
+        <div class="value">
+          <div class="num">01</div>
+          <h4>One source of truth, three lenses</h4>
+          <p>The admin records it, the teacher acts on it, the parent sees it — without anyone re-typing anything.</p>
+        </div>
+        <div class="value">
+          <div class="num">02</div>
+          <h4>Real-time by default</h4>
+          <p>Built on Firebase. A mark goes in on the teacher's phone and the parent sees it before the school bell.</p>
+        </div>
+        <div class="value">
+          <div class="num">03</div>
+          <h4>Multi-school ready</h4>
+          <p>A dedicated superadmin layer means you can run a single school or a federation of campuses on the same platform.</p>
+        </div>
+        <div class="value">
+          <div class="num">04</div>
+          <h4>Role-aware admin, open mobile</h4>
+          <p>Tight RBAC for the admin panel. Teachers and parents get full app access — scope is automatic from their assignments and children.</p>
+        </div>
+        <div class="value">
+          <div class="num">05</div>
+          <h4>Security in layers</h4>
+          <p>Two-layer status checks, forced password change on reset, refresh-token revocation, rate-limited login, industry-standard hashing.</p>
+        </div>
+        <div class="value">
+          <div class="num">06</div>
+          <h4>Hierarchical password recovery</h4>
+          <p>No risky self-service OTP — a higher-privileged user resets a lower-privileged one. Recovery stays in the school's trusted chain.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BLOG -->
+  <section id="blog" class="block">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Blog</span>
+        <h2>Notes on running modern schools.</h2>
+        <p>Short reads on operations, communication, and the small habits that make a school day work.</p>
+      </div>
+
+      <div class="blog-grid">
+        <a class="blog-card" href="blog-post.html?id=multi-school-rollout">
+          <div class="blog-cover" style="background-image:url('https://images.unsplash.com/photo-1492541737557-dfd592c6e42d?auto=format&amp;fit=crop&amp;w=900&amp;q=70')"></div>
+          <div class="blog-body">
+            <span class="blog-meta">Operations · 6 min read</span>
+            <h4>Rolling out one platform across a school federation</h4>
+            <p>What we learned helping a 7-campus group consolidate onto a single ZenXii tenant — and the surprises along the way.</p>
+          </div>
+        </a>
+        <a class="blog-card" href="blog-post.html?id=parent-comms-that-land">
+          <div class="blog-cover" style="background-image:url('https://images.unsplash.com/photo-1542626991-cbc4e32524cc?auto=format&amp;fit=crop&amp;w=900&amp;q=70')"></div>
+          <div class="blog-body">
+            <span class="blog-meta">Communication · 4 min read</span>
+            <h4>Parent communication that actually lands</h4>
+            <p>Most school messages get half-read. A few small structural choices change that — without changing the message itself.</p>
+          </div>
+        </a>
+        <a class="blog-card" href="blog-post.html?id=hierarchical-password-reset">
+          <div class="blog-cover" style="background-image:url('https://images.unsplash.com/photo-1680992046626-418f7e910589?auto=format&amp;fit=crop&amp;w=900&amp;q=70')"></div>
+          <div class="blog-body">
+            <span class="blog-meta">Security · 5 min read</span>
+            <h4>Why ZenXii doesn't do self-service OTP password reset</h4>
+            <p>Hierarchical reset keeps recovery in the school's trusted chain — and removes a whole class of phishing risk.</p>
+          </div>
+        </a>
+      </div>
+
+      <div style="text-align:center; margin-top: 36px;">
+        <a class="btn btn-ghost" href="blog.html">Read all posts →</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="how" class="block">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">How it works</span>
+        <h2>From sign-up to a synced school in five steps.</h2>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <h4>School signs up</h4>
+          <p>Superadmin provisions the school, assigns a School Super Admin, allocates a plan.</p>
+        </div>
+        <div class="step">
+          <h4>Admin sets up</h4>
+          <p>Load staff, students, classes, fee structures, timetable, and exams.</p>
+        </div>
+        <div class="step">
+          <h4>Teachers download</h4>
+          <p>Each teacher signs in with their staff ID and starts marking attendance and setting homework.</p>
+        </div>
+        <div class="step">
+          <h4>Parents download</h4>
+          <p>Each parent signs in. Siblings appear automatically — no separate accounts.</p>
+        </div>
+        <div class="step">
+          <h4>Everything stays in sync</h4>
+          <p>Real-time across all three apps. Reports and audit logs update live in the admin panel.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- AUDIENCE -->
+  <section id="who" class="block">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">Who it's for</span>
+        <h2>One platform for every school shape.</h2>
+      </div>
+
+      <div class="audiences">
+        <div class="audience">
+          <h4>K–12 schools</h4>
+          <p>Single-campus schools ready to retire 5–10 disconnected tools.</p>
+        </div>
+        <div class="audience">
+          <h4>School groups</h4>
+          <p>Multi-campus federations that need consolidated reporting and central licensing.</p>
+        </div>
+        <div class="audience">
+          <h4>Boarding & hostels</h4>
+          <p>Schools that need attendance, hostel, transport, and fees in one place.</p>
+        </div>
+        <div class="audience">
+          <h4>Coaching institutes</h4>
+          <p>Exams, marks, library, communication, and fees on a tight loop.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="block">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow">FAQ</span>
+        <h2>Common questions.</h2>
+      </div>
+
+      <div class="faq">
+        <details class="qa">
+          <summary>Is ZenXii available on iPhone?</summary>
+          <p>The Teacher and Parent apps currently ship on Android. iOS is on the roadmap.</p>
+        </details>
+        <details class="qa">
+          <summary>How do parents reset their password?</summary>
+          <p>Through the school office — the principal or school super admin resets it from the admin panel. There is no self-service OTP flow by design; this keeps password recovery in the school's trusted chain.</p>
+        </details>
+        <details class="qa">
+          <summary>What happens if a parent has multiple children in the school?</summary>
+          <p>They use one login. The Parent app discovers siblings automatically from the school records.</p>
+        </details>
+        <details class="qa">
+          <summary>Does the platform support more than one school per account?</summary>
+          <p>Yes — the Superadmin layer is built for multi-school deployments with per-school plans and isolated data.</p>
+        </details>
+        <details class="qa">
+          <summary>Where is the data stored?</summary>
+          <p>On a secure cloud backbone. All school data is scoped to the school's tenant.</p>
+        </details>
+        <details class="qa">
+          <summary>Can teachers see or edit each other's classes?</summary>
+          <p>A teacher's data scope is automatically determined by their subject and class assignments. They cannot see classes they are not assigned to.</p>
+        </details>
+        <details class="qa">
+          <summary>Is there an API?</summary>
+          <p>Yes — the platform exposes an Auth API and webhook endpoints (payment intent, health check). Custom integrations can be discussed on a per-deployment basis.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- CONTACT -->
+  <section id="contact" class="block">
+    <div class="wrap">
+      <div class="contact-grid">
+        <div class="contact-intro">
+          <span class="eyebrow">Contact</span>
+          <h2>Tell us about your school.</h2>
+          <p>A 30-minute demo with the team. We'll map ZenXii to your school's actual workflows before you decide anything.</p>
+          <ul class="contact-list">
+            <li>✉ <a href="mailto:yugant@zenxii.com">yugant@zenxii.com</a></li>
+            <li>☎ <a href="tel:+919131879380">+91 91318 79380</a></li>
+            <li>⌖ B-207 Lifestyle Blu, Bhopal 462042</li>
+          </ul>
+        </div>
+        <form class="contact-form" id="contactForm" onsubmit="return submitContact(event)">
+          <label>Your name
+            <input type="text" name="name" required>
+          </label>
+          <label>School / organisation
+            <input type="text" name="org">
+          </label>
+          <label>Email
+            <input type="email" name="email" required>
+          </label>
+          <label>What can we help with?
+            <textarea name="message" rows="4" required></textarea>
+          </label>
+          <button type="submit">Send message →</button>
+          <p class="contact-note">We'll reply within 1 business day.</p>
+          <div id="contactStatus" aria-live="polite"></div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA STRIP -->
+  <section class="block" id="demo">
+    <div class="wrap">
+      <div class="cta-strip">
+        <div>
+          <h3>See ZenXii running your school.</h3>
+          <p>A 30-minute guided tour of the admin panel, teacher app, and parent app — with your school's actual workflows in mind.</p>
+        </div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+          <a class="btn btn-primary" href="mailto:yugant@zenxii.com">Book a demo</a>
+          <a class="btn btn-ghost" href="#download" style="color:white; border-color: rgba(255,255,255,.3);">Download apps</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- FOOTER -->
+<footer id="download">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-col foot-brand">
+        <div class="brand" style="margin-bottom:14px;">
+          <img class="brand-mark" src="Designs/zenxii_logo_2.png" alt="ZenXii logo" />
+          <span class="brand-name">ZenXii</span>
+        </div>
+        <p>The school operating system. Admin panel, teacher app, and parent app on one real-time platform.</p>
+      </div>
+
+      <div class="foot-col">
+        <h5>Product</h5>
+        <a href="#products">Admin panel</a>
+        <a href="#products">Teacher app</a>
+        <a href="#products">Parent app</a>
+        <a href="#features">Features</a>
+      </div>
+
+      <div class="foot-col">
+        <h5>Company</h5>
+        <a href="#about">About</a>
+        <a href="#contact">Contact</a>
+        <a href="#blog">Blog</a>
+      </div>
+
+      <div class="foot-col">
+        <h5>Support</h5>
+        <a href="#faq">FAQ</a>
+        <a href="#contact">Talk to us</a>
+      </div>
+    </div>
+
+    <div class="foot-bottom">
+      <div>© <span id="yr"></span> ZenXii. All rights reserved.</div>
+      <div class="foot-contact">
+        <a href="mailto:yugant@zenxii.com">yugant@zenxii.com</a>
+        <span class="sep">·</span>
+        <a href="tel:+919131879380">+91 91318 79380</a>
+        <span class="sep">·</span>
+        <span>B-207 Lifestyle Blu, Bhopal 462042</span>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+  document.getElementById('yr').textContent = new Date().getFullYear();
+
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ---- Slower, eased in-house smooth scroll for anchor clicks ----
+  const SCROLL_DURATION = 950; // ms — bump this up for slower, down for faster
+  const NAV_OFFSET = 90;       // matches CSS scroll-margin-top
+
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+  function smoothScrollTo(targetY, duration) {
+    if (reduceMotion) { window.scrollTo(0, targetY); return; }
+    targetY = Math.max(0, targetY);
+    const startY = window.pageYOffset;
+    const distance = targetY - startY;
+    if (!distance) return;
+    const startTime = performance.now();
+    let cancelled = false;
+    const cancel = () => { cancelled = true; window.removeEventListener('wheel', cancel); window.removeEventListener('touchstart', cancel); };
+    window.addEventListener('wheel', cancel, { passive: true, once: true });
+    window.addEventListener('touchstart', cancel, { passive: true, once: true });
+    function step(now) {
+      if (cancelled) return;
+      const t = Math.min((now - startTime) / duration, 1);
+      window.scrollTo(0, startY + distance * easeInOutCubic(t));
+      if (t < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[href^="#"]');
+    if (!a) return;
+    const href = a.getAttribute('href');
+    if (!href || href === '#') return;
+    if (href === '#top') {
+      e.preventDefault();
+      smoothScrollTo(0, SCROLL_DURATION);
+      return;
+    }
+    const target = document.querySelector(href);
+    if (!target) return;
+    e.preventDefault();
+    const top = target.getBoundingClientRect().top + window.pageYOffset - NAV_OFFSET;
+    smoothScrollTo(top, SCROLL_DURATION);
+  });
+
+  // Belt-and-braces: also reset to top once load completes,
+  // in case anything else nudged the scroll position.
+  window.addEventListener('load', () => window.scrollTo(0, 0));
+
+  // ---- Feature tiles: fade & rise as they enter the viewport ----
+  const tiles = document.querySelectorAll('.feature-cell.tile');
+  if (reduceMotion) {
+    tiles.forEach(el => el.classList.add('in-view'));
+  } else if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver(entries => {
+      entries.forEach(en => {
+        if (en.isIntersecting) {
+          en.target.classList.add('in-view');
+          io.unobserve(en.target);
+        }
+      });
+    }, { threshold: 0.18, rootMargin: '0px 0px -6% 0px' });
+
+    tiles.forEach((el, i) => {
+      // stagger across each row (3 or 4 col grids — % 4 looks good for both)
+      el.style.transitionDelay = ((i % 4) * 130) + 'ms';
+      io.observe(el);
+    });
+  } else {
+    tiles.forEach(el => el.classList.add('in-view'));
+  }
+
+  // Contact form — submits via Formsubmit.co (no backend needed).
+  // First-time setup: when the FIRST message is submitted, Formsubmit
+  // emails yugant@zenxii.com with an activation link. Click it once,
+  // and every future submission is auto-emailed to that inbox.
+  async function submitContact(e) {
+    e.preventDefault();
+    const f = e.target;
+    const status = document.getElementById('contactStatus');
+    const submitBtn = f.querySelector('button[type="submit"]');
+
+    const name = f.name.value.trim();
+    const org = f.org.value.trim();
+    const email = f.email.value.trim();
+    const msg = f.message.value.trim();
+    if (!name || !email || !msg) {
+      status.className = "contact-status err";
+      status.textContent = "Please fill name, email and message.";
+      return false;
+    }
+
+    status.className = "contact-status";
+    status.textContent = "Sending…";
+    submitBtn.disabled = true;
+
+    try {
+      const resp = await fetch('https://formsubmit.co/ajax/yugant@zenxii.com', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          _subject: "ZenXii enquiry — " + (org || name),
+          _replyto: email,
+          _template: "table",
+          _captcha: "false",
+          name: name,
+          organisation: org || "—",
+          email: email,
+          message: msg
+        })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && (data.success === 'true' || data.success === true)) {
+        status.className = "contact-status ok";
+        status.textContent = "Thanks! We'll reply within 1 business day.";
+        f.reset();
+      } else {
+        throw new Error(data.message || 'Send failed');
+      }
+    } catch (err) {
+      status.className = "contact-status err";
+      status.textContent = "Couldn't send right now. Please email yugant@zenxii.com directly.";
+    } finally {
+      submitBtn.disabled = false;
+    }
+    return false;
+  }
+</script>
+
+</body>
+</html>

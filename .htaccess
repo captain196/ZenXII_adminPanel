@@ -1,6 +1,10 @@
 <IfModule mod_rewrite.c>
     RewriteEngine On
-    RewriteBase /Grader/school/
+    RewriteBase /Zennxii_adminPanel/
+
+    # Serve the landing page at the project root.
+    # Apache picks index.html before index.php for "/".
+    DirectoryIndex index.html index.php
 
     # ── Force HTTPS redirect ──────────────────────────────────────────
     # Uncomment the 2 lines below once SSL certificate is installed.

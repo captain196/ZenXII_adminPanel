@@ -79,11 +79,19 @@ service cloud.firestore {
     }
 
     // ── Schools (read-only for apps) ─────────────────────────────
+    // Authenticated reads are scoped to the caller's own school.
+    // Unauthenticated reads are allowed so the login-screen "Forgot
+    // password?" dialog can look up admin contact info by school code
+    // before the user signs in. Firestore rules can't restrict by
+    // field, so the apps display only contact-safe fields
+    // (School Name, Principal, Phone, Email, Address). Avoid storing
+    // anything genuinely sensitive on this doc.
     match /schools/{docId} {
-      allow read: if isAuth() && (
-        resource.data.schoolId == request.auth.token.school_id ||
-        docId == request.auth.token.school_id
-      );
+      allow read: if request.auth == null
+                  || (isAuth() && (
+                       resource.data.schoolId == request.auth.token.school_id ||
+                       docId == request.auth.token.school_id
+                     ));
       allow write: if isAdmin();
     }
 

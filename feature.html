@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZenXii — Feature</title>
+<meta name="description" content="ZenXii feature detail">
+<link rel="icon" type="image/png" href="Designs/logo_square.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Playfair+Display:ital,wght@0,500;0,700;1,500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #1B1410;
+    --bg-2: #251C15;
+    --ink: #F2E9DA;
+    --ink-dim: #C7B8A2;
+    --ink-mute: #8B7A66;
+    --accent: #E0B36A;
+    --accent-2: #F5D9A5;
+    --line: rgba(255,235,210,.08);
+    --card: rgba(255,235,210,.04);
+    --card-hover: rgba(255,235,210,.07);
+    --maxw: 1080px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  a { color: var(--accent-2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  img { max-width: 100%; display: block; }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+  /* Floating top pill nav */
+  .topbar {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+    z-index: 50;
+    display: flex; align-items: center; gap: 14px;
+    padding: 8px 14px 8px 10px;
+    background: rgba(20,15,12,.55);
+    border: 1px solid rgba(255,255,255,.16);
+    border-radius: 999px;
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  }
+  .topbar .brand { display: inline-flex; align-items: center; gap: 8px; color: #fff; }
+  .topbar .brand:hover { text-decoration: none; }
+  .topbar .brand img { width: 26px; height: 26px; }
+  .topbar .brand-name {
+    font-family: "Playfair Display", Georgia, serif;
+    font-weight: 600; font-size: 1rem; letter-spacing: .005em;
+  }
+  .topbar .back {
+    color: var(--ink-dim);
+    font-size: .9rem;
+    padding: 6px 12px;
+    border-radius: 999px;
+    transition: background .2s ease, color .2s ease;
+  }
+  .topbar .back:hover { background: rgba(255,255,255,.08); color: var(--ink); text-decoration: none; }
+
+  /* HERO */
+  .feature-hero {
+    position: relative;
+    isolation: isolate;
+    min-height: 64vh;
+    padding: 80px 24px 80px;
+    color: #fff;
+    background-color: #140d09;
+    background-image: var(--bg-img);
+    background-size: cover;
+    background-position: center;
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  .feature-hero::before {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      linear-gradient(180deg, rgba(20,15,12,.30) 0%, rgba(20,15,12,.55) 55%, var(--bg) 100%);
+    z-index: -1;
+  }
+  .feature-hero .inner { max-width: var(--maxw); margin: 0 auto; width: 100%; }
+  .feature-hero .eyebrow {
+    display: inline-block;
+    font-size: .78rem;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--accent-2);
+    background: rgba(224,179,106,.12);
+    border: 1px solid rgba(224,179,106,.32);
+    padding: 6px 12px;
+    border-radius: 999px;
+    margin-bottom: 22px;
+  }
+  .feature-hero .accent-bar {
+    width: 56px; height: 3px;
+    background: var(--accent);
+    border-radius: 3px;
+    box-shadow: 0 0 16px rgba(224,179,106,.6);
+    margin-bottom: 22px;
+  }
+  .feature-hero h1 {
+    font-family: "Fraunces", "Playfair Display", Georgia, serif;
+    font-weight: 500;
+    font-size: clamp(2.4rem, 5.4vw, 4rem);
+    line-height: 1.05;
+    letter-spacing: -.018em;
+    margin: 0 0 18px;
+    text-shadow: 0 2px 14px rgba(0,0,0,.5);
+    font-variation-settings: "opsz" 96;
+  }
+  .feature-hero .quote {
+    font-family: "Playfair Display", Georgia, serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: clamp(1.1rem, 1.8vw, 1.4rem);
+    color: rgba(248,242,234,.92);
+    max-width: 720px;
+    margin: 0;
+    text-shadow: 0 1px 8px rgba(0,0,0,.55);
+  }
+
+  /* INSIDE — bullet grid */
+  section.inside { padding: 64px 0 32px; }
+  .section-head { text-align: center; margin-bottom: 36px; }
+  .section-head .label {
+    font-size: .76rem; letter-spacing: .22em; text-transform: uppercase;
+    color: var(--accent-2); margin-bottom: 10px;
+  }
+  .section-head h2 {
+    font-family: "Playfair Display", Georgia, serif;
+    font-weight: 600;
+    font-size: clamp(1.6rem, 3vw, 2.2rem);
+    margin: 0;
+    letter-spacing: -.005em;
+  }
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 14px;
+  }
+  .feature-item {
+    display: flex; align-items: flex-start; gap: 12px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 16px 18px;
+    transition: background .2s ease, transform .2s ease, border-color .2s ease;
+  }
+  .feature-item:hover {
+    background: var(--card-hover);
+    border-color: rgba(224,179,106,.28);
+    transform: translateY(-2px);
+  }
+  .feature-item .dot {
+    flex: 0 0 auto;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    margin-top: 8px;
+    box-shadow: 0 0 10px rgba(224,179,106,.55);
+  }
+  .feature-item span.text { color: var(--ink); font-size: .98rem; line-height: 1.4; }
+
+  /* CTA */
+  .cta-row { margin-top: 44px; text-align: center; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 12px 22px;
+    background: var(--accent); color: #1B1410;
+    border-radius: 999px;
+    font-weight: 600;
+    transition: background .2s ease, transform .12s ease;
+  }
+  .btn:hover { background: var(--accent-2); text-decoration: none; transform: translateY(-1px); }
+  .btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  .btn.ghost:hover { background: var(--card-hover); }
+
+  /* Related */
+  .related { padding: 56px 0 80px; border-top: 1px solid var(--line); margin-top: 56px; }
+  .related h3 {
+    font-family: "Playfair Display", Georgia, serif;
+    font-weight: 600;
+    font-size: 1.4rem;
+    margin: 0 0 22px;
+    color: var(--ink);
+  }
+  .related-grid {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+  .related-card {
+    position: relative; isolation: isolate; overflow: hidden;
+    min-height: 150px; padding: 16px 18px;
+    border-radius: 16px;
+    background-color: #1a120c;
+    background-image: var(--bg-img);
+    background-size: cover; background-position: center;
+    color: #fff;
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,.05) inset,
+      0 14px 30px -20px rgba(0,0,0,.55);
+    display: flex; align-items: flex-end;
+    transition: transform .25s ease, box-shadow .25s ease;
+  }
+  .related-card:hover {
+    transform: translateY(-3px); text-decoration: none;
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,.08) inset,
+      0 22px 38px -20px rgba(0,0,0,.65);
+  }
+  .related-card::before {
+    content: "";
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(20,15,12,.15) 0%, rgba(20,15,12,.88) 100%);
+    z-index: -1;
+  }
+  .related-card span {
+    font-family: "Playfair Display", Georgia, serif;
+    font-size: 1.05rem;
+    text-shadow: 0 1px 6px rgba(0,0,0,.55);
+  }
+
+  /* Footer */
+  footer {
+    padding: 28px 0;
+    border-top: 1px solid var(--line);
+    color: var(--ink-mute);
+    font-size: .9rem;
+    text-align: center;
+  }
+
+  .err { padding: 180px 24px 80px; text-align: center; }
+  .err h1 { font-family: "Playfair Display", Georgia, serif; font-weight: 700; font-size: 2.4rem; margin: 0 0 10px; }
+  .err p { color: var(--ink-dim); margin: 0 0 24px; }
+
+  @media (max-width: 700px) {
+    .feature-hero { min-height: 56vh; padding: 70px 18px 60px; }
+    .topbar .brand-name { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<main id="feature-root"></main>
+
+<footer>© 2026 ZenXii · Made with care</footer>
+
+<script>
+  const FEATURES = {
+    "student-academics": {
+      app: "ZenXii Admin Panel",
+      title: "Student & academics",
+      quote: "Every student is a story unfolding, chapter by chapter.",
+      bg: "https://images.unsplash.com/photo-1719159381916-062fa9f435a6",
+      intro: "The academic spine of the school — every student record, every class, every exam, every report card, in one continuously updated place.",
+      bullets: [
+        "Student Information System (SIS)",
+        "Classes & sections",
+        "Academic calendar & sessions",
+        "Examinations & invigilation",
+        "Results & report cards",
+        "Student & staff attendance",
+        "Homework lifecycle",
+        "Certificate generation",
+        "Red-flag alerts per student"
+      ]
+    },
+    "staff-hr": {
+      app: "ZenXii Admin Panel",
+      title: "Staff & HR",
+      quote: "Behind every great school is a team that holds it together.",
+      bg: "https://images.unsplash.com/photo-1573164574572-cb89e39749b4",
+      intro: "Run the people side of school — directory, roles, payroll, leaves and hiring — without juggling spreadsheets.",
+      bullets: [
+        "Staff directory & roles",
+        "HR operations",
+        "Payroll processing",
+        "Leave management & balances",
+        "Applicant Tracking System (ATS)"
+      ]
+    },
+    "finance": {
+      app: "ZenXii Admin Panel",
+      title: "Finance & accounting",
+      quote: "Numbers balanced. Trust earned.",
+      bg: "https://images.unsplash.com/photo-1709880945165-d2208c6ad2ec",
+      intro: "Fees, journals, reconciliations and gateway webhooks — a real ledger built for schools, not a spreadsheet pretending.",
+      bullets: [
+        "Fee structures, demands, categories",
+        "Fee simulation & forecasting",
+        "Accounting & journals",
+        "Automated reconciliation",
+        "Real-time anomaly watchdog",
+        "Payment-gateway webhooks"
+      ]
+    },
+    "communication-admin": {
+      app: "ZenXii Admin Panel",
+      title: "Communication & engagement",
+      quote: "When a school speaks clearly, families listen warmly.",
+      bg: "https://images.unsplash.com/photo-1542626991-cbc4e32524cc",
+      intro: "Broadcasts, notices, stories and PTMs — every channel a school needs to keep parents in the loop, with one activity monitor.",
+      bullets: [
+        "Broadcasts & notifications",
+        "Notices, circulars, announcements",
+        "School Stories timeline",
+        "Parent-Teacher Meetings (PTM)",
+        "Events & gallery",
+        "Message activity monitor"
+      ]
+    },
+    "operations": {
+      app: "ZenXii Admin Panel",
+      title: "Operations",
+      quote: "The quiet machinery that keeps the school day moving.",
+      bg: "https://images.unsplash.com/photo-1709924168698-620ea32c3488",
+      intro: "Library, LMS, transport, hostel and inventory — the working parts of a school, brought online.",
+      bullets: [
+        "Library catalogue & circulation",
+        "LMS — courses & materials",
+        "Transport routes & live tracking",
+        "Hostel allocation",
+        "Inventory & fixed assets"
+      ]
+    },
+    "security": {
+      app: "ZenXii Admin Panel",
+      title: "Administration & security",
+      quote: "The right access, in the right hands.",
+      bg: "https://images.unsplash.com/photo-1680992046626-418f7e910589",
+      intro: "Granular RBAC, linked-device control, full audit trails and school backups — security designed for the realities of a school office.",
+      bullets: [
+        "Role-based access (RBAC)",
+        "Linked-device management",
+        "Comprehensive audit logs",
+        "School branding & policy",
+        "School backup & restore",
+        "Notification centre"
+      ]
+    },
+    "superadmin": {
+      app: "ZenXii Admin Panel",
+      title: "Superadmin (multi-school)",
+      quote: "Many campuses. One pulse.",
+      bg: "https://images.unsplash.com/photo-1492541737557-dfd592c6e42d",
+      intro: "Run a network of schools as one platform — billing, provisioning, analytics and migrations from a single console.",
+      bullets: [
+        "Multi-school dashboard",
+        "Cross-school admin provisioning",
+        "Plans, licences, billing",
+        "Platform-wide backups",
+        "Cross-school analytics",
+        "Data migration & transfers",
+        "Health, uptime, debug console"
+      ]
+    },
+    "public": {
+      app: "ZenXii Admin Panel",
+      title: "Public surfaces",
+      quote: "The first door a family knocks on is always digital.",
+      bg: "https://images.unsplash.com/photo-1613896527026-f195d5c818ed",
+      intro: "Public-facing endpoints that connect prospective families and the mobile apps to your school.",
+      bullets: [
+        "Public admission portal",
+        "Auth API for mobile apps",
+        "Health-check endpoint"
+      ]
+    },
+
+    "t-classroom": {
+      app: "ZenXii Teacher",
+      title: "Classroom",
+      quote: "Every present mark is a child who showed up to learn.",
+      bg: "https://images.unsplash.com/photo-1509062522246-3755977927d7",
+      intro: "Take attendance, set and grade homework, and enter marks — the daily classroom workflow, in one tab.",
+      bullets: [
+        "Daily attendance",
+        "Attendance history & absentees",
+        "Homework set & grade",
+        "Marks entry"
+      ]
+    },
+    "t-communication": {
+      app: "ZenXii Teacher",
+      title: "Communication",
+      quote: "A small message can change a child's whole week.",
+      bg: "https://images.unsplash.com/photo-1629360021730-3d258452c425",
+      intro: "Share classroom moments, reply to parents, and keep every notification in one inbox.",
+      bullets: [
+        "Stories — moments to parents",
+        "Comment threads",
+        "Notification inbox"
+      ]
+    },
+    "t-self-service": {
+      app: "ZenXii Teacher",
+      title: "Self-service",
+      quote: "Your own little corner of the staffroom — always with you.",
+      bg: "https://images.unsplash.com/photo-1536300099515-6c61b290b654",
+      intro: "Manage your own profile, password and leave applications without a single email to HR.",
+      bullets: [
+        "Profile view & edit",
+        "Change password",
+        "Leave application"
+      ]
+    },
+    "t-school-life": {
+      app: "ZenXii Teacher",
+      title: "School life",
+      quote: "There is a quiet kind of joy in the rhythm of school days.",
+      bg: "https://images.unsplash.com/photo-1769650796496-782579dcef43",
+      intro: "Library, PTMs and notices — the connective tissue of life at school.",
+      bullets: [
+        "Library access",
+        "PTM slots & scheduling",
+        "School notices"
+      ]
+    },
+
+    "p-day": {
+      app: "ZenXii Parent",
+      title: "My child's school day",
+      quote: "Their day, in your pocket — from first bell to last.",
+      bg: "https://images.unsplash.com/photo-1770346920441-23b07e014fab",
+      intro: "Everything that happens in your child's school day — attendance, homework, results, study materials — in one dashboard across every sibling.",
+      bullets: [
+        "Dashboard across all children",
+        "Attendance history",
+        "Exam results & report cards",
+        "Class timetable",
+        "Homework",
+        "Lessons & study materials",
+        "Library access",
+        "Red-flag alerts",
+        "“My Teachers” directory"
+      ]
+    },
+    "p-family": {
+      app: "ZenXii Parent",
+      title: "Family & engagement",
+      quote: "Closer to their school than you've ever been before.",
+      bg: "https://images.unsplash.com/photo-1504151932400-72d4384f04b3",
+      intro: "Stay in step with teachers, school events and PTMs without missing a beat.",
+      bullets: [
+        "Messages with teachers",
+        "Notices & circulars",
+        "Events & event details",
+        "School photo gallery",
+        "PTM list & detail"
+      ]
+    },
+    "p-money": {
+      app: "ZenXii Parent",
+      title: "Money & operations",
+      quote: "Fees paid. Bus tracked. Mind at ease.",
+      bg: "https://images.unsplash.com/photo-1613688263142-67f1e0c25ef1",
+      intro: "Fees, receipts, payments and live bus tracking — the operational side of parenting, simplified.",
+      bullets: [
+        "Fee balance & dues",
+        "Digital receipts",
+        "Payment with verification",
+        "Live bus tracking",
+        "Student leave requests"
+      ]
+    }
+  };
+
+  function esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+
+  const params = new URLSearchParams(location.search);
+  const key = params.get("key");
+  const f = FEATURES[key];
+  const root = document.getElementById("feature-root");
+
+  if (!f) {
+    document.title = "ZenXii — Feature not found";
+    root.innerHTML = `
+      <div class="err">
+        <h1>Feature not found</h1>
+        <p>This page doesn't exist or the link is broken.</p>
+        <a class="btn" href="landing_page.html#features">Back to all features</a>
+      </div>
+    `;
+  } else {
+    document.title = `ZenXii — ${f.title}`;
+    const heroBg = `${f.bg}?auto=format&fit=crop&w=1800&q=75`;
+
+    const related = Object.entries(FEATURES)
+      .filter(([k, v]) => v.app === f.app && k !== key)
+      .slice(0, 4)
+      .map(([k, v]) => `
+        <a class="related-card" href="feature.html?key=${k}" style="--bg-img:url('${v.bg}?auto=format&fit=crop&w=700&q=70')">
+          <span>${esc(v.title)}</span>
+        </a>
+      `).join("");
+
+    root.innerHTML = `
+      <section class="feature-hero" style="--bg-img:url('${heroBg}')">
+        <div class="inner">
+          <span class="eyebrow">${esc(f.app)}</span>
+          <div class="accent-bar"></div>
+          <h1>${esc(f.title)}</h1>
+          <p class="quote">"${esc(f.quote)}"</p>
+        </div>
+      </section>
+
+      <section class="inside">
+        <div class="wrap">
+          <div class="section-head">
+            <div class="label">What's inside</div>
+            <h2>${esc(f.intro)}</h2>
+          </div>
+          <div class="feature-grid">
+            ${f.bullets.map(b => `<div class="feature-item"><span class="dot"></span><span class="text">${esc(b)}</span></div>`).join("")}
+          </div>
+          <div class="cta-row">
+            <a class="btn" href="landing_page.html#features">← Back to all features</a>
+          </div>
+        </div>
+
+        ${related ? `
+          <div class="wrap related">
+            <h3>More from ${esc(f.app)}</h3>
+            <div class="related-grid">${related}</div>
+          </div>
+        ` : ""}
+      </section>
+    `;
+  }
+</script>
+</body>
+</html>

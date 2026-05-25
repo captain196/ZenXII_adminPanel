@@ -231,6 +231,38 @@ $cache      = $school['stats_cache']  ?? [];
             </div>
         </div>
 
+        <!-- School Super Admins -->
+        <div class="box">
+            <div class="box-header">
+                <i class="fa fa-user-shield" style="color:var(--sa3);margin-right:8px;"></i>
+                <span class="box-title">School Super Admins (<?= count($ssas ?? []) ?>)</span>
+            </div>
+            <div class="box-body" style="padding:8px 14px 14px;">
+                <p style="font-size:12px;color:var(--t3);margin:0 0 10px;">Resets the SSA's password and forces re-auth on every device. They must choose a new password on next login.</p>
+                <?php if (empty($ssas)): ?>
+                    <div style="font-size:12px;color:var(--t3);padding:10px 4px;">No School Super Admins found for this school.</div>
+                <?php else: foreach ($ssas as $s):
+                    $isActive = strcasecmp($s['status'], 'Active') === 0;
+                ?>
+                    <div style="display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--bg3);">
+                        <div style="flex:1;min-width:0;">
+                            <div style="font-family:var(--font-m);font-size:12.5px;color:var(--sa3);font-weight:700;"><?= htmlspecialchars($s['id']) ?></div>
+                            <div style="font-size:12.5px;color:var(--t1);font-weight:600;"><?= htmlspecialchars($s['name']) ?></div>
+                            <?php if ($s['email']): ?>
+                                <div style="font-size:11px;color:var(--t3);"><?= htmlspecialchars($s['email']) ?></div>
+                            <?php endif; ?>
+                        </div>
+                        <span class="label label-<?= $isActive ? 'success' : 'danger' ?>" style="align-self:flex-start;"><?= htmlspecialchars($s['status'] ?: 'Active') ?></span>
+                        <button class="btn btn-warning btn-xs sa-ssa-reset"
+                            data-id="<?= htmlspecialchars($s['id']) ?>"
+                            data-name="<?= htmlspecialchars($s['name']) ?>">
+                            <i class="fa fa-key"></i> Reset
+                        </button>
+                    </div>
+                <?php endforeach; endif; ?>
+            </div>
+        </div>
+
         <!-- Created Info -->
         <div class="box">
             <div class="box-body" style="font-size:12px;color:var(--t3);font-family:var(--font-m);">
@@ -244,6 +276,38 @@ $cache      = $school['stats_cache']  ?? [];
 
 </div><!-- /.row -->
 </section>
+
+<!-- SSA Reset Password Modal -->
+<div class="modal fade" id="saSsaResetModal" tabindex="-1" role="dialog">
+    <div class="modal-dialog modal-sm">
+        <div class="modal-content" style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;">
+            <div class="modal-header" style="border-color:var(--border);">
+                <button type="button" class="close" data-dismiss="modal" style="color:var(--t3);">&times;</button>
+                <h4 class="modal-title" style="font-family:var(--font-b);color:var(--t1);">
+                    <i class="fa fa-key" style="color:var(--sa3);margin-right:8px;"></i>Reset SSA Password
+                </h4>
+            </div>
+            <form id="saSsaResetForm" autocomplete="off">
+                <div class="modal-body">
+                    <input type="hidden" id="saSsaResetId" value="">
+                    <p style="font-size:12.5px;color:var(--t2);margin-bottom:12px;">
+                        Reset password for <strong id="saSsaResetName"></strong>.
+                        They will be forced to change it on next login.
+                    </p>
+                    <div class="form-group">
+                        <label style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.4px;">New Password</label>
+                        <input type="password" class="form-control" id="saSsaResetPw" minlength="8" required>
+                        <small style="color:var(--t3);">Min 8 chars, one upper, one lower, one digit.</small>
+                    </div>
+                </div>
+                <div class="modal-footer" style="border-color:var(--border);">
+                    <button type="button" class="btn btn-default btn-sm" data-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-warning btn-sm"><i class="fa fa-key"></i> Reset</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
 
 <script>
 $(function(){
@@ -317,6 +381,38 @@ $(function(){
             data:{ school_uid:'<?= addslashes($school_uid) ?>', status:status },
             success:function(r){ saToast(r.message, r.status); if(r.status==='success') setTimeout(function(){location.reload();},1000); },
             error:function(){ saToast('Server error.','error'); }
+        });
+    });
+
+    // SSA reset — open modal
+    $('.sa-ssa-reset').on('click', function(){
+        $('#saSsaResetId').val($(this).data('id'));
+        $('#saSsaResetName').text($(this).data('id') + ' — ' + $(this).data('name'));
+        $('#saSsaResetPw').val('');
+        $('#saSsaResetModal').modal('show');
+        setTimeout(function(){ $('#saSsaResetPw').focus(); }, 200);
+    });
+
+    // SSA reset — submit
+    $('#saSsaResetForm').on('submit', function(e){
+        e.preventDefault();
+        var id = $('#saSsaResetId').val();
+        var pw = $('#saSsaResetPw').val();
+        if (!pw || pw.length < 8) { saToast('Password must be at least 8 characters.','error'); return; }
+        var $btn = $(this).find('button[type=submit]').prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Resetting...');
+        $.ajax({
+            url: BASE_URL+'superadmin/schools/reset_ssa_password', type:'POST',
+            data: { school_uid:'<?= addslashes($school_uid) ?>', ssa_id:id, new_password:pw },
+            success: function(r){
+                saToast(r.message || (r.status==='success'?'Reset done.':'Error'), r.status);
+                if (r.status==='success') $('#saSsaResetModal').modal('hide');
+            },
+            error: function(xhr){
+                var m = 'Server error.';
+                try { var j = JSON.parse(xhr.responseText); if (j && j.message) m = j.message; } catch(_) {}
+                saToast(m, 'error');
+            },
+            complete: function(){ $btn.prop('disabled',false).html('<i class="fa fa-key"></i> Reset'); }
         });
     });
 
