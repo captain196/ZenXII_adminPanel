@@ -1246,6 +1246,111 @@
   @media (max-width: 880px) {
     .contact-grid { grid-template-columns: 1fr; gap: 28px; }
   }
+
+  /* ═══════════════════════════════════════════════════════════════
+     RESPONSIVE OVERRIDES — unified breakpoints (1024 / 768 / 480)
+     Added 2026-05-26. Placed AFTER all earlier @media rules so it
+     cascades over the older inconsistent breakpoints (520/600/880/
+     900/940/980). Keep this block last in <style>.
+     ═══════════════════════════════════════════════════════════════ */
+
+  /* Universal: prevent any horizontal page overflow */
+  html, body { overflow-x: hidden; }
+  img, svg, video { max-width: 100%; height: auto; }
+
+  /* ── Tablet & below (≤ 1023px) ─────────────────────────────── */
+  @media (max-width: 1023px) {
+    .hero { min-height: auto; }
+    .hero-grid { grid-template-columns: 1fr; gap: 32px; }
+    .hero-art { aspect-ratio: 16/10; }
+    .hero-title { font-size: clamp(2.2rem, 5.2vw, 3.6rem); }
+    section.block { padding: 64px 0; }
+    .section-head { margin-bottom: 28px; }
+
+    /* Section grids — unified at 2 cols for tablet */
+    .values,
+    .steps,
+    .audiences,
+    .blog-grid { grid-template-columns: repeat(2, 1fr); }
+    .about-grid { grid-template-columns: 1fr; gap: 28px; }
+    .foot-grid { grid-template-columns: repeat(2, 1fr); gap: 32px; }
+  }
+
+  /* ── Tablet portrait & phone (≤ 767px) ─────────────────────── */
+  @media (max-width: 767px) {
+    .wrap { padding: 0 18px; }
+
+    /* Hero */
+    .hero { margin: 10px; border-radius: 22px; padding: 16px 14px 20px; }
+    .hero-content { padding-top: 20px; }
+    .hero-title {
+      font-size: clamp(1.75rem, 7vw, 2.6rem);
+      margin-bottom: 14px;
+      overflow-wrap: break-word;
+      word-break: break-word;
+      hyphens: auto;
+    }
+    .hero-title .gold { font-size: 1.1em; }
+    .hero-sub { font-size: 0.95rem; margin-bottom: 22px; }
+    .hero-stats { gap: 14px 22px; font-size: 0.85rem; }
+
+    /* Search bar */
+    .search-bar { padding: 4px 4px 4px 14px; }
+    .search-bar input { font-size: 0.9rem; padding: 8px 0; min-width: 0; }
+    .search-bar button { padding: 9px 14px; font-size: 0.85rem; }
+
+    /* Section blocks */
+    section.block { padding: 48px 0; }
+    .section-head h2 { font-size: 1.6rem; line-height: 1.2; }
+    .section-head p { font-size: 0.96rem; }
+
+    /* All grids → single column */
+    .values,
+    .steps,
+    .audiences,
+    .blog-grid,
+    .about-grid,
+    .contact-grid,
+    .foot-grid { grid-template-columns: 1fr; gap: 18px; }
+
+    /* Hero devices stack vertically and lose strict aspect ratio */
+    .hero-art {
+      aspect-ratio: auto;
+      grid-template-columns: 1fr;
+      padding: 18px;
+      gap: 10px;
+    }
+
+    /* Nav: shrink CTAs so they don't overflow on narrow widths */
+    .hero-nav-cta { gap: 6px; }
+    .dev-link { font-size: 0.85rem; padding: 8px 10px; }
+    .btn-login { padding: 8px 14px; font-size: 0.85rem; }
+  }
+
+  /* ── Small phone (≤ 479px) ────────────────────────────────── */
+  @media (max-width: 479px) {
+    .wrap { padding: 0 14px; }
+    .hero { margin: 6px; padding: 12px 10px 16px; }
+    .hero-title { font-size: clamp(1.5rem, 8.5vw, 2.1rem); }
+    .hero-sub { font-size: 0.92rem; }
+    .hero-stats { font-size: 0.82rem; gap: 10px 16px; }
+
+    /* Search bar collapses to wrapping if input + button overflow */
+    .search-bar { flex-wrap: wrap; gap: 6px; padding: 6px; }
+    .search-bar input { width: 100%; padding: 8px 10px; }
+    .search-bar button { width: 100%; padding: 10px 14px; }
+
+    /* Section heads tighter */
+    .section-head h2 { font-size: 1.4rem; }
+    .section-head p { font-size: 0.92rem; }
+
+    /* Nav: drop the "Dev access" label, keep just the arrow.
+       The login button stays visible as the primary CTA. */
+    .hero-nav-cta { gap: 4px; }
+    .dev-link span:not(.arr) { display: none; }
+    .dev-link { padding: 8px 10px; }
+    .btn-login { padding: 7px 12px; font-size: 0.8rem; }
+  }
 </style>
 <script>
   /* Runs BEFORE the body parses — prevents the browser from
