@@ -1260,7 +1260,18 @@
 
   /* ── Tablet & below (≤ 1023px) ─────────────────────────────── */
   @media (max-width: 1023px) {
-    .hero { min-height: auto; }
+    /* Kill the heavy animated SVG on anything below desktop */
+    .hero-bg-anim,
+    .hero > svg.hero-bg-anim,
+    svg.hero-bg-anim { display: none !important; visibility: hidden !important; }
+
+    .hero {
+      min-height: auto;
+      background:
+        radial-gradient(120% 80% at 30% 0%, rgba(224,179,106,.18), transparent 60%),
+        radial-gradient(100% 90% at 100% 100%, rgba(45,212,191,.10), transparent 65%),
+        linear-gradient(160deg, #1F1812 0%, #2A1F16 50%, #1B1410 100%) !important;
+    }
     .hero-grid { grid-template-columns: 1fr; gap: 32px; }
     .hero-art { aspect-ratio: 16/10; }
     .hero-title { font-size: clamp(2.2rem, 5.2vw, 3.6rem); }
