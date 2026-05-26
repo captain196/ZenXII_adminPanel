@@ -1258,9 +1258,13 @@
   html, body { overflow-x: hidden; }
   img, svg, video { max-width: 100%; height: auto; }
 
-  /* ── Tablet & below (≤ 1023px) ─────────────────────────────── */
-  @media (max-width: 1023px) {
-    /* Kill the heavy animated SVG on anything below desktop */
+  /* ── Small/medium desktop & below (≤ 1279px) — kill animated SVG
+        The animated hero scene's text labels ("every journey starts
+        with a step" + "ZENXII · LEARN · GROW") were sized for the
+        3840×2160 viewBox and overlap with the editorial content on
+        any screen narrower than ~1280px (most 13–15" laptops). Only
+        wide desktops (1280px+) get the full animation. ───────────── */
+  @media (max-width: 1279px) {
     .hero-bg-anim,
     .hero > svg.hero-bg-anim,
     svg.hero-bg-anim { display: none !important; visibility: hidden !important; }
@@ -1272,6 +1276,10 @@
         radial-gradient(100% 90% at 100% 100%, rgba(45,212,191,.10), transparent 65%),
         linear-gradient(160deg, #1F1812 0%, #2A1F16 50%, #1B1410 100%) !important;
     }
+  }
+
+  /* ── Tablet & below (≤ 1023px) ─────────────────────────────── */
+  @media (max-width: 1023px) {
     .hero-grid { grid-template-columns: 1fr; gap: 32px; }
     .hero-art { aspect-ratio: 16/10; }
     .hero-title { font-size: clamp(2.2rem, 5.2vw, 3.6rem); }
