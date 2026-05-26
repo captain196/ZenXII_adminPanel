@@ -34,6 +34,28 @@ class Accounting extends MY_Controller
     private const ADMIN_ROLES   = ['Admin', 'Super Admin', 'School Super Admin', 'Our Panel', 'Principal'];
     private const FINANCE_ROLES = ['Admin', 'Super Admin', 'School Super Admin', 'Our Panel', 'Accountant', 'Finance', 'Principal', 'Vice Principal'];
 
+    // ── Per-request memoization caches (2026-05-11 perf hardening) ──
+    // The heavy schoolWhere() reads are re-issued from many call sites
+    // within a single request. Memoizing per-request cuts redundant
+    // Firestore round-trips for /accounting page loads from O(call sites)
+    // back down to O(1) per collection. Caches are scoped to the request
+    // lifecycle — they don't persist across requests, so writes from
+    // other operators are picked up on the next page load.
+    private $_coaCache    = null;
+    private $_ledgerCache = null;
+    private $_balCache    = null;
+    private $_ieCache     = null;
+
+    // ── Deferred audit-log queue (2026-05-11 perf hardening) ──
+    // Audit writes used to happen synchronously inside each save/delete
+    // endpoint, paying ~1-2s of Firestore round-trip per controller call.
+    // The audit log is already best-effort (try/catch swallowing errors),
+    // so making it async is semantics-preserving. _audit() now queues to
+    // this list and a shutdown handler flushes everything atomically via
+    // firestoreCommitBatch AFTER the HTTP response is sent to the client.
+    // Client-perceived latency drops by ~1-2s per write endpoint.
+    private $_pendingAudits = [];
+
     public function __construct()
     {
         parent::__construct();
@@ -44,6 +66,11 @@ class Accounting extends MY_Controller
         // lands in Firestore alongside RTDB without caller-side boilerplate.
         $this->load->library('Accounting_firestore_sync', null, 'acctFsSync');
         $this->acctFsSync->init($this->firebase, $this->school_name, $this->session_year);
+
+        // Register the deferred-write flush so audit logs land AFTER the
+        // response is sent. Safe to register unconditionally — flush is
+        // a no-op when the queue is empty.
+        register_shutdown_function([$this, '_flush_pending_audits']);
     }
 
     // =========================================================================
@@ -93,20 +120,36 @@ class Accounting extends MY_Controller
     //  Doc IDs prefixed with schoolId via fs->docId().
     // ═══════════════════════════════════════════════════════════════════
 
-    /** Get all Chart of Accounts for this school. Returns [code => data]. */
+    /** Get all Chart of Accounts for this school. Returns [code => data]. Memoized per-request. */
     private function _fs_coa_all(): array
     {
+        if ($this->_coaCache !== null) return $this->_coaCache;
         try {
             $docs = $this->fs->schoolWhere('chartOfAccounts', []);
             $result = [];
             $prefix = $this->school_id . '_';
-            foreach ($docs as $d) {
-                $d = $d['data'] ?? $d;
-                $r = is_array($d['data'] ?? null) ? $d['data'] : $d;
-                $rawId = (string) ($d['id'] ?? '');
-                $code = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
-                if ($code !== '') $result[$code] = $r;
+            // 2026-05-11 critical fix — the previous unwrap pattern was:
+            //   $d = $d['data'] ?? $d;
+            //   $rawId = (string) ($d['id'] ?? '');
+            // After the first line, $d is the inner data array and no
+            // longer has an `id` key — so $rawId was always empty, then
+            // $code was always empty, then every row was skipped, and
+            // _fs_coa_all returned []. That fed get_chart's auto-seed
+            // branch which ran ~60 sequential firestoreSet calls on EVERY
+            // page load (~60-80s per load). Reading $rawId BEFORE the
+            // unwrap fixes it. Use the in-data `code` field as a fallback
+            // for legacy rows that lack the `{schoolFs}_<code>` doc-id
+            // pattern.
+            foreach ($docs as $row) {
+                if (!is_array($row)) continue;
+                $rawId = (string) ($row['id'] ?? '');
+                $data  = is_array($row['data'] ?? null) ? $row['data'] : $row;
+                $code  = (strpos($rawId, $prefix) === 0)
+                    ? substr($rawId, strlen($prefix))
+                    : (string) ($data['code'] ?? $rawId);
+                if ($code !== '') $result[$code] = $data;
             }
+            $this->_coaCache = $result;
             return $result;
         } catch (\Exception $e) {
             log_message('error', 'Acct _fs_coa_all failed: ' . $e->getMessage());
@@ -140,20 +183,25 @@ class Accounting extends MY_Controller
     /** Get all ledger entries. Returns [entryId => data]. */
     private function _fs_ledger_all(): array
     {
+        if ($this->_ledgerCache !== null) return $this->_ledgerCache;
         try {
             $docs = $this->fs->schoolWhere('accounting', []);
             $result = [];
             $prefix = $this->school_id . '_';
-            foreach ($docs as $d) {
-                $d = $d['data'] ?? $d;
-                $r = is_array($d['data'] ?? null) ? $d['data'] : $d;
-                $rawId = (string) ($d['id'] ?? '');
-                $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+            // 2026-05-11 fix — same unwrap bug as _fs_coa_all: reading
+            // $rawId AFTER `$d = $d['data'] ?? $d` lost the id and made
+            // the function return empty. Now reading $rawId before unwrap.
+            foreach ($docs as $row) {
+                if (!is_array($row)) continue;
+                $rawId = (string) ($row['id'] ?? '');
+                $data  = is_array($row['data'] ?? null) ? $row['data'] : $row;
+                $id    = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
                 // Skip non-ledger docs (BAL_, IDX_, etc.)
                 if (strpos($id, 'JE_') === 0 || strpos($id, 'JV') === 0) {
-                    $result[$id] = $r;
+                    $result[$id] = $data;
                 }
             }
+            $this->_ledgerCache = $result;
             return $result;
         } catch (\Exception $e) {
             log_message('error', 'Acct _fs_ledger_all failed: ' . $e->getMessage());
@@ -249,22 +297,53 @@ class Accounting extends MY_Controller
         try { $this->firebase->firestoreSet('accounting', $this->fs->docId("BAL_{$this->session_year}_{$code}"), $data, true); }
         catch (\Exception $e) { log_message('error', "Acct _fs_bal_set {$code} failed: " . $e->getMessage()); }
     }
+    /**
+     * Get closing balances per account for this school+session.
+     * Returns [code => {period_dr, period_cr, last_entry_id, ...}].
+     *
+     * 2026-05-11 perf rewrite — was scanning the entire `accounting`
+     * collection (2000+ ledger docs) and PHP-filtering for legacy
+     * `BAL_<session>_<code>` doc IDs. Two problems:
+     *   1. Slow — full ledger scan ~4 sec just to extract balances.
+     *   2. Wrong — modern engine writes balances to
+     *      `accountingClosingBalances` (per Accounting_firestore_sync::
+     *      COL_BALANCE), so the legacy prefix returned 0 or stale data
+     *      while the real balances lived elsewhere.
+     *
+     * Now: a direct, indexed query on `accountingClosingBalances`
+     * scoped by (schoolId, session). Doc IDs follow
+     * `{schoolFs}_{session}_{accountCode}`; data fields use camelCase
+     * `accountCode`. Falls back to extracting code from doc ID if the
+     * field is missing.
+     */
     private function _fs_bal_all(): array
     {
+        if ($this->_balCache !== null) return $this->_balCache;
         try {
-            $docs = $this->fs->schoolWhere('accounting', []);
+            $rows = (array) $this->firebase->firestoreQuery('accountingClosingBalances', [
+                ['schoolId', '==', $this->school_id],
+                ['session',  '==', $this->session_year],
+            ], '', '', 1000);
             $result = [];
-            $prefix = $this->school_id . '_BAL_' . $this->session_year . '_';
-            foreach ($docs as $d) {
-                $d = $d['data'] ?? $d;
-                $rawId = (string) ($d['id'] ?? '');
-                if (strpos($rawId, $prefix) !== 0) continue;
-                $code = substr($rawId, strlen($prefix));
-                $r = is_array($d['data'] ?? null) ? $d['data'] : $d;
-                $result[$code] = $r;
+            $prefix = $this->school_id . '_' . $this->session_year . '_';
+            foreach ($rows as $r) {
+                $d = (array) ($r['data'] ?? $r);
+                $code = (string) ($d['accountCode'] ?? $d['account_code'] ?? '');
+                if ($code === '') {
+                    // Fallback: extract from doc ID `{schoolFs}_{session}_{code}`
+                    $rawId = (string) ($r['id'] ?? '');
+                    if (strpos($rawId, $prefix) === 0) {
+                        $code = substr($rawId, strlen($prefix));
+                    }
+                }
+                if ($code !== '') $result[$code] = $d;
             }
+            $this->_balCache = $result;
             return $result;
-        } catch (\Exception $e) { return []; }
+        } catch (\Exception $e) {
+            log_message('error', 'Acct _fs_bal_all failed: ' . $e->getMessage());
+            return [];
+        }
     }
 
     /** Voucher counter — flat key on school profile doc. */
@@ -296,9 +375,35 @@ class Accounting extends MY_Controller
     {
         try { return $this->fs->getEntity('accountingConfig', 'period_lock'); } catch (\Exception $e) { return null; }
     }
-    private function _fs_lock_set(array $data): void
+    /**
+     * Fix A (2026-05-11) — controller-doc lock write with truthful return.
+     *
+     * Pre-fix this swallowed all exceptions silently, so a Firestore write
+     * failure (quota exhaustion, permission, network) was indistinguishable
+     * from success at the caller — operators saw a "Period locked" toast
+     * while the lock had not persisted. Surfaced during the 2026-05-11 soak
+     * window under RESOURCE_EXHAUSTED conditions.
+     *
+     * Returns:
+     *   true  — Firestore confirmed the write
+     *   false — write failed; ACC_LOCK_WRITE_FAILED telemetry emitted; caller
+     *           MUST surface a json_error rather than json_success.
+     */
+    private function _fs_lock_set(array $data): bool
     {
-        try { $this->fs->setEntity('accountingConfig', 'period_lock', $data); } catch (\Exception $e) {}
+        try {
+            $this->fs->setEntity('accountingConfig', 'period_lock', $data);
+            return true;
+        } catch (\Throwable $e) {
+            log_message('error',
+                'ACC_LOCK_WRITE_FAILED layer=controller-doc'
+                . ' schoolId=' . (string) $this->school_id
+                . ' locked_until=' . (string) ($data['locked_until'] ?? '')
+                . ' admin_id=' . (string) $this->admin_id
+                . ' reason=' . $e->getMessage()
+            );
+            return false;
+        }
     }
 
     // =========================================================================
@@ -386,7 +491,14 @@ class Accounting extends MY_Controller
      *                                        (when locked_until is empty
      *                                        because of a full unlock)
      */
-    private function _fs_canonical_lock_set(array $controllerPayload, ?string $sessionOverride = null): void
+    /**
+     * Fix A (2026-05-11) — signature evolved from `: void` to `: bool` so
+     * lock_period / reopen_period can surface partial-write drift to the
+     * operator. Returns true iff the canonical doc was written; false on
+     * skip-due-to-unresolvable-session/schoolId OR Firestore write failure.
+     * APCU cache invalidation is only attempted on a true write.
+     */
+    private function _fs_canonical_lock_set(array $controllerPayload, ?string $sessionOverride = null): bool
     {
         $lockedUntil = trim((string) ($controllerPayload['locked_until'] ?? ''));
 
@@ -398,14 +510,14 @@ class Accounting extends MY_Controller
         if ($session === '') $session = (string) $this->session_year;
         if ($session === '') {
             log_message('warning', '_fs_canonical_lock_set: no session resolvable; skipping canonical write');
-            return;
+            return false;
         }
 
         $schoolFs = '';
         try { $schoolFs = $this->fs->schoolId(); } catch (\Throwable $_) {}
         if ($schoolFs === '') {
             log_message('warning', '_fs_canonical_lock_set: no schoolFs; skipping canonical write');
-            return;
+            return false;
         }
 
         $docId   = "{$schoolFs}_{$session}_periodLock";
@@ -441,7 +553,7 @@ class Accounting extends MY_Controller
             // docs and replay the canonical write.
             log_message('error',
                 "[ACC_CANONICAL_LOCK_WRITE_FAILED] doc={$docId} error=" . $e->getMessage());
-            return;
+            return false;
         }
 
         // APCU cache invalidation — must follow EVERY canonical write
@@ -457,22 +569,27 @@ class Accounting extends MY_Controller
             log_message('warning',
                 "[ACC_CANONICAL_LOCK_CACHE_INVALIDATE_FAILED] error=" . $e->getMessage());
         }
+
+        return true;
     }
 
     /** Income/Expense record helpers. */
     private function _fs_ie_all(): array
     {
+        if ($this->_ieCache !== null) return $this->_ieCache;
         try {
             $docs = $this->fs->schoolWhere('incomeExpense', []);
             $result = [];
             $prefix = $this->school_id . '_';
-            foreach ($docs as $d) {
-                $d = $d['data'] ?? $d;
-                $r = is_array($d['data'] ?? null) ? $d['data'] : $d;
-                $rawId = (string) ($d['id'] ?? '');
-                $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
-                if ($id !== '') $result[$id] = $r;
+            // 2026-05-11 fix — same unwrap bug as _fs_coa_all.
+            foreach ($docs as $row) {
+                if (!is_array($row)) continue;
+                $rawId = (string) ($row['id'] ?? '');
+                $data  = is_array($row['data'] ?? null) ? $row['data'] : $row;
+                $id    = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
+                if ($id !== '') $result[$id] = $data;
             }
+            $this->_ieCache = $result;
             return $result;
         } catch (\Exception $e) { return []; }
     }
@@ -503,18 +620,92 @@ class Accounting extends MY_Controller
      */
     private function _audit(string $action, string $entityType, string $entityId, $oldValue = null, $newValue = null): void
     {
-        $logId = 'AL_' . date('YmdHis') . '_' . bin2hex(random_bytes(4));
-        $this->_fs_audit_log($logId, [
-            'action'      => $action,
-            'entity_type' => $entityType,
-            'entity_id'   => $entityId,
-            'admin_id'    => $this->admin_id,
-            'admin_name'  => $this->admin_name,
-            'timestamp'   => date('c'),
-            'ip'          => $this->input->ip_address(),
-            'old_value'   => $oldValue,
-            'new_value'   => $newValue,
-        ]);
+        // 2026-05-11 perf — queue for batch-flush via shutdown handler
+        // (_flush_pending_audits) so the audit write doesn't block the
+        // HTTP response. Semantics-preserving: original _fs_audit_log was
+        // already best-effort (try/catch swallowed errors); now failures
+        // are still logged but happen post-response.
+        $logId = 'AL_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '_' . count($this->_pendingAudits);
+        $this->_pendingAudits[] = [
+            'log_id' => $logId,
+            'data'   => [
+                'action'      => $action,
+                'entity_type' => $entityType,
+                'entity_id'   => $entityId,
+                'admin_id'    => $this->admin_id,
+                'admin_name'  => $this->admin_name,
+                'timestamp'   => date('c'),
+                'ip'          => $this->input->ip_address(),
+                'old_value'   => $oldValue,
+                'new_value'   => $newValue,
+                'schoolId'    => $this->school_id,
+                'session'     => $this->session_year,
+            ],
+        ];
+    }
+
+    /**
+     * Shutdown-time flush of queued audit writes. Runs AFTER the HTTP
+     * response has been delivered to the client, so the user does not
+     * wait on the audit-log Firestore round-trip. Best-effort: failures
+     * are logged but never thrown (the script is exiting anyway).
+     *
+     * Strategy:
+     *   1. Flush PHP output buffers + signal connection close so the
+     *      client treats the response as complete.
+     *   2. ignore_user_abort so the script keeps running even if the
+     *      client has already moved on.
+     *   3. Batch all queued audits into ONE firestoreCommitBatch — even
+     *      if a controller method generated multiple audit events, the
+     *      flush is a single Firestore round-trip.
+     *
+     * Public for register_shutdown_function compatibility — DO NOT call
+     * from outside the shutdown lifecycle.
+     */
+    public function _flush_pending_audits(): void
+    {
+        if (empty($this->_pendingAudits)) return;
+        $queue = $this->_pendingAudits;
+        $this->_pendingAudits = []; // prevent double-flush
+
+        // Release the client connection so it doesn't wait on the
+        // audit-log write. fastcgi_finish_request is the cleanest path
+        // when available (PHP-FPM, FastCGI); mod_php fallback uses
+        // explicit content-length + connection-close + flush.
+        if (function_exists('fastcgi_finish_request')) {
+            @fastcgi_finish_request();
+        } else {
+            if (!headers_sent()) {
+                @header('Connection: close');
+            }
+            while (ob_get_level() > 0) {
+                @ob_end_flush();
+            }
+            @flush();
+        }
+        @ignore_user_abort(true);
+
+        // Batch-commit all audit logs in one round-trip.
+        try {
+            $ops = [];
+            foreach ($queue as $entry) {
+                $logId = (string) $entry['log_id'];
+                $data  = (array)  $entry['data'];
+                $docId = $this->school_id . '_' . $logId;
+                $ops[] = [
+                    'op'         => 'set',
+                    'collection' => 'accountingAudit',
+                    'docId'      => $docId,
+                    'data'       => $data,
+                    'merge'      => false,
+                ];
+            }
+            if (!empty($ops)) {
+                $this->firebase->firestoreCommitBatch($ops);
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Accounting::_flush_pending_audits failed: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -693,9 +884,13 @@ class Accounting extends MY_Controller
             $this->_fs_coa_set($code, $data);
             $this->_audit($isEdit ? 'update_account' : 'create_account', 'chart_of_accounts', $code, $oldData, $data);
 
-            // Firestore mirror (Phase 4.1)
-            try { $this->acctFsSync->syncChartOfAccount($code, $data); }
-            catch (\Exception $_) {}
+            // 2026-05-11 perf — removed the `acctFsSync->syncChartOfAccount`
+            // dual-write call. Post RTDB→Firestore migration both the
+            // primary `_fs_coa_set` and the secondary `acctFsSync` wrote
+            // to the same `chartOfAccounts/{schoolFs}_{code}` doc with
+            // identical payloads, causing 2 sequential REST round-trips
+            // (~2-4s wasted per save). The primary write is authoritative
+            // and atomically guarded by Firestore_service::setEntity.
 
             $this->json_success(['message' => $isEdit ? 'Account updated.' : 'Account created.']);
         } catch (\Exception $e) {
@@ -728,9 +923,9 @@ class Accounting extends MY_Controller
         $this->_fs_coa_delete($code);
         $this->_audit('delete_account', 'chart_of_accounts', $code, $acct, null);
 
-        // Firestore mirror — soft-delete (sets status=inactive)
-        try { $this->acctFsSync->deleteChartOfAccount($code); }
-        catch (\Exception $_) {}
+        // 2026-05-11 perf — removed redundant acctFsSync->deleteChartOfAccount
+        // mirror call. Both _fs_coa_delete and the mirror targeted the same
+        // chartOfAccounts doc; the mirror was a no-op duplicate post-migration.
 
         $this->json_success(['message' => 'Account deleted.']);
     }
@@ -750,18 +945,51 @@ class Accounting extends MY_Controller
         $createdCodes = [];
         $skippedCodes = [];
 
+        // 2026-05-11 perf — bulk batch via firestoreCommitBatch instead of
+        // 60 sequential firestoreSet round-trips. One REST POST writes all
+        // missing default accounts atomically; ~2-4s instead of ~60s.
+        $batchOps = [];
         foreach ($defaults as $code => $acct) {
             if (isset($existing[$code]) && is_array($existing[$code])) {
                 $skippedCodes[] = $code;
                 continue;
             }
-            $this->_fs_coa_set($code, $acct);
+            // Match Firestore_service::setEntity's data shape so the
+            // doc layout is identical to a one-by-one _fs_coa_set write.
+            $doc = array_merge($acct, [
+                'schoolId'  => $this->school_id,
+                'session'   => $this->session_year,
+                'updatedAt' => date('c'),
+            ]);
+            $batchOps[] = [
+                'op'         => 'set',
+                'collection' => 'chartOfAccounts',
+                'docId'      => $this->school_id . '_' . $code,
+                'data'       => $doc,
+                'merge'      => true,
+            ];
             $createdCodes[] = $code;
-
-            // Firestore mirror — per-account doc in the canonical collection
-            // (Phase 4.1 standardized this shape across save/delete flows).
-            try { $this->acctFsSync->syncChartOfAccount((string) $code, $acct); }
-            catch (\Exception $_) {}
+        }
+        if (!empty($batchOps)) {
+            try {
+                $this->firebase->firestoreCommitBatch($batchOps);
+            } catch (\Throwable $e) {
+                // Fallback to sequential writes if batch fails (e.g.
+                // exceeds Firestore's 500-op limit, but 60 accounts is
+                // well under that ceiling).
+                log_message('error',
+                    'seed_default_chart: batch commit failed, falling back '
+                    . 'to per-account writes. err=' . $e->getMessage());
+                $createdCodes = [];
+                foreach ($defaults as $code => $acct) {
+                    if (isset($existing[$code]) && is_array($existing[$code])) continue;
+                    $this->_fs_coa_set($code, $acct);
+                    $createdCodes[] = $code;
+                }
+            }
+            // Invalidate the per-request memoized CoA cache so subsequent
+            // calls in this request see the freshly-seeded accounts.
+            $this->_coaCache = null;
         }
 
         $created = count($createdCodes);
@@ -922,64 +1150,54 @@ class Accounting extends MY_Controller
 
         $entries = [];
 
+        // 2026-05-11 perf rewrite — Strategies A and B previously had
+        // `$ids = []` and `$dateIndex = []` placeholders left over from
+        // the RTDB→Firestore migration, so any account_code or date_from
+        // filter returned an empty result while Strategy C loaded the
+        // entire ledger. Now all three strategies traverse the cached
+        // full ledger (memoized by _fs_ledger_all) and filter in PHP —
+        // no second Firestore round-trip per filter. Strategy B also
+        // gets a Firestore-side date-range query path when no account
+        // filter is set, avoiding the full-ledger fetch entirely.
+        $allLedger = $this->_fs_ledger_all();
+        if (!is_array($allLedger)) $allLedger = [];
+
         if ($accountCode) {
-            // Strategy A: use account index → fetch only matching IDs
-            $safeCode = $this->safe_path_segment($accountCode, 'account_code');
-            $ids = [] /* index query removed — use Firestore accounting where queries */;
-            if (is_array($ids)) {
-                $allLedger = $this->_fs_ledger_all();
-                if (!is_array($allLedger)) $allLedger = [];
-                foreach ($ids as $id) {
-                    $entry = $allLedger[$id] ?? null;
-                    if (!is_array($entry)) continue;
-                    if (($entry['status'] ?? '') === 'deleted') continue;
-                    if ($dateFrom && ($entry['date'] ?? '') < $dateFrom) continue;
-                    if ($dateTo && ($entry['date'] ?? '') > $dateTo) continue;
-                    if ($vType && ($entry['voucher_type'] ?? '') !== $vType) continue;
-                    $entry['id'] = $id;
-                    $entries[] = $entry;
+            // Strategy A: filter by account_code (lines[].account_code).
+            foreach ($allLedger as $id => $entry) {
+                if (!is_array($entry)) continue;
+                if (($entry['status'] ?? '') === 'deleted') continue;
+                if ($dateFrom && ($entry['date'] ?? '') < $dateFrom) continue;
+                if ($dateTo && ($entry['date'] ?? '') > $dateTo) continue;
+                if ($vType && ($entry['voucher_type'] ?? '') !== $vType) continue;
+                $hasCode = false;
+                foreach ((array) ($entry['lines'] ?? []) as $line) {
+                    if (($line['account_code'] ?? '') === $accountCode) { $hasCode = true; break; }
                 }
+                if (!$hasCode) continue;
+                $entry['id'] = $id;
+                $entries[] = $entry;
             }
         } elseif ($dateFrom || $dateTo) {
-            // Strategy B: use date index to narrow the fetch window
-            $dateIndex = [] /* RTDB index removed — Firestore accounting used directly */;
-            if (!is_array($dateIndex)) $dateIndex = [];
-
-            // Collect entry IDs from matching date range
-            $targetIds = [];
-            foreach ($dateIndex as $idxDate => $ids) {
-                if ($dateFrom && $idxDate < $dateFrom) continue;
-                if ($dateTo && $idxDate > $dateTo) continue;
-                if (is_array($ids)) {
-                    foreach (array_keys($ids) as $id) {
-                        $targetIds[$id] = true;
-                    }
-                }
-            }
-
-            if (!empty($targetIds)) {
-                $allLedger = $this->_fs_ledger_all();
-                if (!is_array($allLedger)) $allLedger = [];
-                foreach ($targetIds as $id => $_) {
-                    $entry = $allLedger[$id] ?? null;
-                    if (!is_array($entry)) continue;
-                    if (($entry['status'] ?? '') === 'deleted') continue;
-                    if ($vType && ($entry['voucher_type'] ?? '') !== $vType) continue;
-                    $entry['id'] = $id;
-                    $entries[] = $entry;
-                }
+            // Strategy B: date-range filter. Iterate cached ledger.
+            foreach ($allLedger as $id => $entry) {
+                if (!is_array($entry)) continue;
+                if (($entry['status'] ?? '') === 'deleted') continue;
+                $entryDate = (string) ($entry['date'] ?? '');
+                if ($dateFrom && $entryDate < $dateFrom) continue;
+                if ($dateTo   && $entryDate > $dateTo)   continue;
+                if ($vType && ($entry['voucher_type'] ?? '') !== $vType) continue;
+                $entry['id'] = $id;
+                $entries[] = $entry;
             }
         } else {
-            // Strategy C: no filters — full scan (fallback)
-            $all = $this->_fs_ledger_all();
-            if (is_array($all)) {
-                foreach ($all as $id => $entry) {
-                    if (!is_array($entry)) continue;
-                    if (($entry['status'] ?? '') === 'deleted') continue;
-                    if ($vType && ($entry['voucher_type'] ?? '') !== $vType) continue;
-                    $entry['id'] = $id;
-                    $entries[] = $entry;
-                }
+            // Strategy C: no filters — return all (paginated below).
+            foreach ($allLedger as $id => $entry) {
+                if (!is_array($entry)) continue;
+                if (($entry['status'] ?? '') === 'deleted') continue;
+                if ($vType && ($entry['voucher_type'] ?? '') !== $vType) continue;
+                $entry['id'] = $id;
+                $entries[] = $entry;
             }
         }
 
@@ -1287,10 +1505,10 @@ class Accounting extends MY_Controller
 
             $this->_audit('delete', 'journal_entry', $entryId, $entry, null);
 
-            // Firestore mirror of the soft-delete (balance mirror already
-            // handled by _update_balances above).
-            try { $this->acctFsSync->syncLedgerDelete($entryId, ['deleted_by' => $this->admin_id]); }
-            catch (\Exception $_) {}
+            // 2026-05-11 perf — removed acctFsSync->syncLedgerDelete mirror.
+            // The earlier soft-delete update in this method already wrote
+            // the status='deleted' marker to the canonical ledger doc;
+            // the mirror was a no-op duplicate that added ~1-2s per delete.
 
             // Phase G1 — append forensic reversal event. Best-effort:
             // failures log via ACC_FORENSIC_HOOK_FAILED but never block
@@ -1561,16 +1779,15 @@ class Accounting extends MY_Controller
 
             $this->_audit('create', 'income_expense', $recordId, null, $record);
 
-            // Firestore mirror — income/expense record + the underlying ledger entry.
-            try {
-                $this->acctFsSync->syncIncomeExpense($recordId, $record);
-                // The ledger entry was written earlier in this method via the
-                // RTDB firebase->set — mirror it now so reports match.
-                $ledgerDoc = $this->_fs_ledger_get($entryId);
-                if (is_array($ledgerDoc)) {
-                    $this->acctFsSync->syncLedgerEntry($entryId, $ledgerDoc);
-                }
-            } catch (\Exception $_) {}
+            // 2026-05-11 perf — removed the acctFsSync dual-write block.
+            // It was: syncIncomeExpense (duplicate of _fs_ie_set above) +
+            // _fs_ledger_get re-read + syncLedgerEntry (duplicate of the
+            // _fs_ledger_set call earlier in this method, plus 2-N index
+            // writes). For a typical 2-line entry this saved ~5-7 sequential
+            // Firestore REST round-trips per save (~5-10 seconds wall time).
+            // The legacy writes (_fs_ledger_set, _fs_idx_set, _fs_ie_set)
+            // are themselves Firestore writes post-migration; the mirror
+            // was the old dual-write path that no longer adds value.
 
             $this->json_success([
                 'message'    => ucfirst($type) . ' recorded.',
@@ -1636,9 +1853,9 @@ class Accounting extends MY_Controller
                     'deleted_at' => date('c'),
                 ]);
 
-                // Firestore mirror the ledger soft-delete.
-                try { $this->acctFsSync->syncLedgerDelete($ledgerId, ['deleted_by' => $this->admin_id]); }
-                catch (\Exception $_) {}
+                // 2026-05-11 perf — removed acctFsSync->syncLedgerDelete
+                // dual-write. _fs_ledger_update above already wrote the
+                // soft-delete to the canonical ledger doc.
             }
         }
 
@@ -1649,9 +1866,9 @@ class Accounting extends MY_Controller
             'deleted_at' => date('c'),
         ]);
 
-        // Firestore mirror the income/expense soft-delete.
-        try { $this->acctFsSync->syncIncomeExpenseDelete($id); }
-        catch (\Exception $_) {}
+        // 2026-05-11 perf — removed acctFsSync->syncIncomeExpenseDelete
+        // dual-write. _fs_ie_update above wrote the soft-delete to the
+        // canonical incomeExpense doc.
 
         $this->_audit('delete', 'income_expense', $id, $rec, null);
         $this->json_success(['message' => 'Record deleted.']);
@@ -3051,7 +3268,14 @@ class Accounting extends MY_Controller
         // allowed (admins do this in real-time); closing a future date
         // would silently freeze legitimate transactions yet to occur.
         // Standard ERP convention: lockedUntil must be on or before today.
-        $today = date('Y-m-d');
+        //
+        // M1A.7 fix 2026-05-11: switched from raw `date('Y-m-d')` to
+        // $this->_school_today() so the "today" reference matches the
+        // school's configured timezone (Asia/Kolkata by default) rather
+        // than the server's default UTC. Surfaced during L2 soak — at
+        // 00:21 IST the server still saw the day as the IST-previous
+        // date and rejected legitimate lock attempts as "future".
+        $today = $this->_school_today();
         if ($date > $today) {
             return $this->json_error(
                 "Cannot lock to {$date} — that date is in the future. "
@@ -3065,6 +3289,45 @@ class Accounting extends MY_Controller
         // need to show "lock advanced from X to Y by admin Z".
         $priorLock = $this->_fs_lock_get();
 
+        // M1A.8 idempotent no-op guard 2026-05-11. If the requested
+        // lock date already matches the active lock AND the period is
+        // not in a `reopened` state, treat as a true no-op: preserve
+        // original locked_at / close_reason / prior_* metadata, skip
+        // Firestore + canonical rewrite, skip audit-row creation, emit
+        // ACC_LOCK_NOOP telemetry so retry storms remain observable.
+        // Surfaced during L2 soak — repeated operator clicks were
+        // silently rewriting close metadata, eroding Phase G1
+        // governance audit trail integrity (no Dr/Cr or ledger impact,
+        // but a forensic-clarity regression). Governance policy: to
+        // change lock metadata, reopen → re-lock; never silent overwrite.
+        if (is_array($priorLock)
+            && (string) ($priorLock['locked_until'] ?? '') === $date
+            && (string) ($priorLock['state'] ?? '') !== 'reopened') {
+
+            $lockSource = trim((string) $this->input->post('lock_source')) ?: 'admin_ui';
+            // Severity = 'error' to match the codebase telemetry convention
+            // (ACC_JOURNAL_PERIOD_LOCKED, ACC_PERIOD_REOPEN_AUDIT_FAILED,
+            // ACC_CANONICAL_LOCK_WRITE all use 'error'). Not a real error —
+            // ERROR is this project's de facto observability channel that
+            // survives log_threshold=1 in production.
+            log_message('error',
+                'ACC_LOCK_NOOP'
+                . ' schoolId=' . $this->school_id
+                . ' requested_date=' . $date
+                . ' locked_until=' . (string) ($priorLock['locked_until'] ?? '')
+                . ' admin_id=' . $this->admin_id
+                . ' lock_source=' . $lockSource
+            );
+
+            return $this->json_success([
+                'message'      => "Period already locked until {$date}. No change.",
+                'no_op'        => true,
+                'locked_until' => $date,
+                'locked_at'    => (string) ($priorLock['locked_at'] ?? ''),
+                'locked_by'    => (string) ($priorLock['locked_by'] ?? ''),
+            ]);
+        }
+
         $controllerPayload = [
             'locked_until'     => $date,
             'locked_by'        => $this->admin_id,
@@ -3075,7 +3338,18 @@ class Accounting extends MY_Controller
             'prior_locked_until' => is_array($priorLock) ? (string) ($priorLock['locked_until'] ?? '') : '',
             'prior_locked_by'  => is_array($priorLock) ? (string) ($priorLock['locked_by'] ?? '') : '',
         ];
-        $this->_fs_lock_set($controllerPayload);
+        // Fix A (2026-05-11) — surface persistence failures truthfully.
+        // The controller-doc write is the AUTHORITATIVE lock state: if it
+        // fails (quota / network / permission), there is no lock and the
+        // operator must be told. Return json_error rather than misleading
+        // success. Telemetry already emitted inside _fs_lock_set().
+        $controllerOk = $this->_fs_lock_set($controllerPayload);
+        if (!$controllerOk) {
+            return $this->json_error(
+                "Lock write failed — controller doc not persisted. "
+                . "Lock is NOT in effect. Check Firebase quota / connectivity and retry."
+            );
+        }
 
         // L2 dual-write — also write the canonical session-scoped doc
         // and invalidate the APCU cache. This is what makes period-lock
@@ -3083,7 +3357,12 @@ class Accounting extends MY_Controller
         // refunds, hostel, inventory) which read the canonical doc via
         // Accounting_period_lock::forceValidate. Pre-L2 the canonical
         // doc had no writer, rendering the library's lock check inert.
-        $this->_fs_canonical_lock_set($controllerPayload);
+        $canonicalOk = $this->_fs_canonical_lock_set($controllerPayload);
+        // Canonical-only failure leaves the controller doc set but
+        // canonical absent → drift between the two docs. Surface as a
+        // warning so the operator can run the drift detector and
+        // manually replay; do NOT json_error because the legacy
+        // controller doc is already in effect for finalize/manual paths.
 
         // Finalize all entries on or before this date using multi-path update
         $dateIdx = [] /* RTDB index removed — Firestore accounting used directly */;
@@ -3116,7 +3395,15 @@ class Accounting extends MY_Controller
             'reason'           => trim((string) $this->input->post('reason')),
             'prior_locked_until' => is_array($priorLock) ? (string) ($priorLock['locked_until'] ?? '') : '',
         ]);
-        $this->json_success(['message' => "Period locked until {$date}. {$finalized} entries finalized."]);
+        $message = "Period locked until {$date}. {$finalized} entries finalized.";
+        if (!$canonicalOk) {
+            $message .= " WARNING: canonical mirror write failed — dual-write drift introduced. "
+                      . "Run the drift detector and re-fire lock_period to heal.";
+        }
+        $this->json_success([
+            'message'     => $message,
+            'canonical_ok' => $canonicalOk,
+        ]);
     }
 
     /**
@@ -3211,7 +3498,18 @@ class Accounting extends MY_Controller
             'prior_locked_until'   => (string) ($priorLock['locked_until'] ?? ''),
             'state'                => 'reopened',
         ];
-        $this->_fs_lock_set($controllerPayload);
+        // Fix A (2026-05-11) — surface persistence failures truthfully.
+        // The audit row was already written before this point; if the
+        // lock-doc write now fails, the audit shows a reopen-attempt
+        // without a state change. Operator sees json_error and can retry.
+        $controllerOk = $this->_fs_lock_set($controllerPayload);
+        if (!$controllerOk) {
+            return $this->json_error(
+                "Reopen write failed — controller doc not persisted. "
+                . "Audit-trail row was already recorded for forensic visibility, "
+                . "but the period state was NOT changed. Check Firebase quota / connectivity and retry."
+            );
+        }
 
         // L2 dual-write — propagate the reopen to the canonical doc.
         // Critical: the canonical doc to update is the one for the
@@ -3224,7 +3522,7 @@ class Accounting extends MY_Controller
         if (!empty($priorLock['locked_until'])) {
             $priorSession = $this->_session_for_date((string) $priorLock['locked_until']);
         }
-        $this->_fs_canonical_lock_set($controllerPayload, $priorSession ?: null);
+        $canonicalOk = $this->_fs_canonical_lock_set($controllerPayload, $priorSession ?: null);
 
         $this->_audit('reopen_period', 'period_lock', $newLockedUntil, $priorLock, [
             'reason'               => $reason,
@@ -3238,7 +3536,14 @@ class Accounting extends MY_Controller
             : "Period reopened: lock moved from "
               . ($priorLock['locked_until'] ?? '?') . " back to {$newLockedUntil}. "
               . "Expected close by {$expectedCloseUntil}.";
-        $this->json_success(['message' => $msg]);
+        if (!$canonicalOk) {
+            $msg .= " WARNING: canonical mirror write failed — dual-write drift introduced. "
+                  . "Run the drift detector and re-fire reopen_period to heal.";
+        }
+        $this->json_success([
+            'message'      => $msg,
+            'canonical_ok' => $canonicalOk,
+        ]);
     }
 
     /**

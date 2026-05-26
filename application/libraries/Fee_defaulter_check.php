@@ -230,6 +230,7 @@ class Fee_defaulter_check
             $status['total_dues']     = $defaulterInfo['total_dues'];
             $status['unpaid_months']  = $defaulterInfo['unpaid_months'];
             $status['overdue_months'] = $defaulterInfo['overdue_months'];
+            $status['last_payment_date'] = $defaulterInfo['last_payment_date'] ?? '';
 
             // ── Exam-blocked: any unpaid fee head contains "exam" ───
             $status['exam_blocked'] = $this->_hasUnpaidExamFee($defaulterInfo['unpaid_months']);

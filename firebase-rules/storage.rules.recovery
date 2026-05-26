@@ -1,0 +1,36 @@
+rules_version = '2';
+
+// ════════════════════════════════════════════════════════════════════════
+// EMERGENCY RECOVERY RULE — paste-to-rollback for graderadmin Storage
+// ════════════════════════════════════════════════════════════════════════
+//
+// This file is NOT a deploy target. It is a rollback snapshot of the
+// permissive ruleset that was published on 2026-05-15 to restore
+// production functionality after the failed Phase 1 deploy. If Phase A
+// (or any later phase) causes a production regression, paste the body
+// of this file into the Firebase Console Rules editor and Publish — that
+// restores the same permissive baseline that was running before Phase A.
+//
+// SAFETY: this rule allows any authenticated user to read/write any
+// Storage path. It carries NO cross-tenant isolation. Use it ONLY as a
+// short-term recovery measure; never as a long-term production posture.
+//
+// To roll back Phase A:
+//   1. Open https://console.firebase.google.com/project/graderadmin/storage
+//   2. Rules tab → editor → Ctrl+A → paste this file's body (below)
+//   3. Click Publish → confirm → wait for green banner
+//   4. Wait 60 seconds for propagation
+//   5. Re-run failing smoke test; should now pass
+//
+// To roll back FROM this rule back to a more secure posture, re-publish
+// firebase-rules/storage.rules (Phase A) or whichever later phase was
+// most recently green.
+// ════════════════════════════════════════════════════════════════════════
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

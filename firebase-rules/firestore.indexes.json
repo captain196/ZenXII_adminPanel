@@ -985,6 +985,197 @@
         { "fieldPath": "eventType",  "order": "ASCENDING" },
         { "fieldPath": "occurredAt", "order": "DESCENDING" }
       ]
+    },
+
+    { "_comment": "school_config Phase 2 (2026-05-15) — dependency-check composite indexes. Required by School_config.php::_dep_count_safe() for destructive-endpoint orphan-prevention sweeps. Without these indexes, the catch-block in _dep_count_safe defaults count to 0 (FAIL-OPEN) and orphan-prevention is silently defeated. Endpoints: delete_subject / delete_section / soft_delete_class / delete_stream / delete_session.",
+      "collectionGroup": "students",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",   "order": "ASCENDING" },
+        { "fieldPath": "sectionKey", "order": "ASCENDING" },
+        { "fieldPath": "status",     "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "delete_session: students by session",
+      "collectionGroup": "students",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "session",  "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "delete_stream: students by streamKey + status",
+      "collectionGroup": "students",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "streamKey", "order": "ASCENDING" },
+        { "fieldPath": "status",    "order": "ASCENDING" }
+      ]
+    },
+
+    { "_comment": "delete_stream: sections by streamKey + session",
+      "collectionGroup": "sections",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "streamKey", "order": "ASCENDING" },
+        { "fieldPath": "session",   "order": "ASCENDING" }
+      ]
+    },
+
+    { "_comment": "delete_session: staff by session",
+      "collectionGroup": "staff",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "session",  "order": "ASCENDING" }
+      ]
+    },
+
+    { "_comment": "delete_section: attendance by sectionKey + session",
+      "collectionGroup": "attendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",   "order": "ASCENDING" },
+        { "fieldPath": "sectionKey", "order": "ASCENDING" },
+        { "fieldPath": "session",    "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "soft_delete_class: attendance by className + session",
+      "collectionGroup": "attendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "className", "order": "ASCENDING" },
+        { "fieldPath": "session",   "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "delete_session: attendance by session",
+      "collectionGroup": "attendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "session",  "order": "ASCENDING" }
+      ]
+    },
+
+    { "_comment": "delete_section: marks by sectionKey + session",
+      "collectionGroup": "marks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",   "order": "ASCENDING" },
+        { "fieldPath": "sectionKey", "order": "ASCENDING" },
+        { "fieldPath": "session",    "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "soft_delete_class: marks by className + session",
+      "collectionGroup": "marks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "className", "order": "ASCENDING" },
+        { "fieldPath": "session",   "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "delete_session: marks by session",
+      "collectionGroup": "marks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "session",  "order": "ASCENDING" }
+      ]
+    },
+
+    { "_comment": "delete_section: feeDemands by sectionKey + session",
+      "collectionGroup": "feeDemands",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",   "order": "ASCENDING" },
+        { "fieldPath": "sectionKey", "order": "ASCENDING" },
+        { "fieldPath": "session",    "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "soft_delete_class: feeDemands by className + session",
+      "collectionGroup": "feeDemands",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "className", "order": "ASCENDING" },
+        { "fieldPath": "session",   "order": "ASCENDING" }
+      ]
+    },
+
+    { "_comment": "delete_section: timetables by sectionKey + session",
+      "collectionGroup": "timetables",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",   "order": "ASCENDING" },
+        { "fieldPath": "sectionKey", "order": "ASCENDING" },
+        { "fieldPath": "session",    "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "soft_delete_class: timetables by className + session",
+      "collectionGroup": "timetables",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "className", "order": "ASCENDING" },
+        { "fieldPath": "session",   "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "delete_session: timetables by session",
+      "collectionGroup": "timetables",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "session",  "order": "ASCENDING" }
+      ]
+    },
+
+    { "_comment": "delete_section: subjectAssignments by sectionKey + session",
+      "collectionGroup": "subjectAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",   "order": "ASCENDING" },
+        { "fieldPath": "sectionKey", "order": "ASCENDING" },
+        { "fieldPath": "session",    "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "soft_delete_class: subjectAssignments by classKey + session",
+      "collectionGroup": "subjectAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "classKey", "order": "ASCENDING" },
+        { "fieldPath": "session",  "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "delete_subject: subjectAssignments by classKey + subjectCode",
+      "collectionGroup": "subjectAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",    "order": "ASCENDING" },
+        { "fieldPath": "classKey",    "order": "ASCENDING" },
+        { "fieldPath": "subjectCode", "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "delete_stream: subjectAssignments by stream + session",
+      "collectionGroup": "subjectAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "stream",   "order": "ASCENDING" },
+        { "fieldPath": "session",  "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "delete_session: subjectAssignments by session",
+      "collectionGroup": "subjectAssignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "session",  "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

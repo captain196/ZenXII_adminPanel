@@ -550,11 +550,34 @@ a.ac-tab.active { color: var(--ac-primary); }
             <p style="font-size:13px;color:var(--ac-text2);margin-bottom:12px;">
                 Locking a period finalizes all journal entries on or before the selected date. This cannot be undone.
             </p>
-            <div class="ac-toolbar" style="margin-bottom:0">
+            <div class="ac-toolbar" style="margin-bottom:8px">
                 <div class="ac-fg"><label>Current Lock</label><input type="text" id="settLockCurrent" readonly style="width:160px"></div>
                 <div class="ac-fg"><label>Lock Until</label><input type="date" id="settLockDate"></div>
-                <button class="ac-btn ac-btn-danger ac-role-admin" onclick="AC.lockPeriod()" style="display:none"><i class="fa fa-lock"></i> Lock Period</button>
             </div>
+            <div class="ac-fg" style="margin-bottom:8px">
+                <label>Reason <span style="color:var(--ac-text2);font-weight:normal">(optional — recorded as close_reason for governance audit trail)</span></label>
+                <input type="text" id="settLockReason" maxlength="500" placeholder="e.g., March 2026 month-end close, FY 2025-26 year-end…" style="width:100%">
+            </div>
+            <button id="btnLockPeriod" class="ac-btn ac-btn-danger ac-role-admin" onclick="AC.lockPeriod()" style="display:none"><i class="fa fa-lock"></i> Lock Period</button>
+        </div>
+
+        <div class="ac-card">
+            <div class="ac-card-title"><i class="fa fa-unlock"></i> Reopen Period</div>
+            <p style="font-size:13px;color:var(--ac-text2);margin-bottom:12px;">
+                Reopen a previously locked period for governance-controlled back-dated journal posting.
+                New lock date must be <strong>earlier</strong> than the current lock (this widens the open window).
+                Leave blank to fully unlock. All reopens are recorded in the audit trail with mandatory reason.
+            </p>
+            <div class="ac-toolbar" style="margin-bottom:8px">
+                <div class="ac-fg"><label>Current Lock</label><input type="text" id="settReopenCurrent" readonly style="width:160px"></div>
+                <div class="ac-fg"><label>New Lock Until <span style="color:var(--ac-text2);font-weight:normal">(blank = fully unlock)</span></label><input type="date" id="settReopenNewUntil"></div>
+                <div class="ac-fg"><label>Expected Close By</label><input type="date" id="settReopenExpectedClose"></div>
+            </div>
+            <div class="ac-fg" style="margin-bottom:8px">
+                <label>Reason <span style="color:#c44">*required</span></label>
+                <input type="text" id="settReopenReason" maxlength="500" placeholder="e.g., Auditor adjustment for invoice X dated 2026-03-15" style="width:100%">
+            </div>
+            <button id="btnReopenPeriod" class="ac-btn ac-btn-ghost ac-role-admin" onclick="AC.reopenPeriod()" style="display:none"><i class="fa fa-unlock"></i> Reopen Period</button>
         </div>
         <div class="ac-card">
             <div class="ac-card-title"><i class="fa fa-database"></i> Migration</div>
@@ -821,10 +844,56 @@ a.ac-tab.active { color: var(--ac-primary); }
     // ══════════════════════════════════════════════
     //  CHART OF ACCOUNTS
     // ══════════════════════════════════════════════
-    function loadCoA() {
+    // 2026-05-11 perf — sessionStorage cache for Chart of Accounts.
+    // Tab navigation triggers a full page reload, so coaCache (JS-only)
+    // was being re-fetched on every tab. CoA changes rarely; cache for
+    // 5 minutes saves a ~3s Firestore round-trip on every tab after
+    // the first. The Chart tab itself BYPASSES the cache so users see
+    // fresh data when they're explicitly viewing/editing the CoA.
+    var COA_CACHE_KEY = 'ac_coa_cache_v1';
+    var COA_CACHE_TIME_KEY = 'ac_coa_cache_time_v1';
+    var COA_CACHE_TTL_MS = 5 * 60 * 1000;  // 5 min
+
+    function _coaCacheRead() {
+        try {
+            var raw  = sessionStorage.getItem(COA_CACHE_KEY);
+            var time = parseInt(sessionStorage.getItem(COA_CACHE_TIME_KEY) || '0', 10);
+            if (!raw || !time) return null;
+            if ((Date.now() - time) > COA_CACHE_TTL_MS) return null;
+            return JSON.parse(raw);
+        } catch (e) { return null; }
+    }
+    function _coaCacheWrite(data) {
+        try {
+            sessionStorage.setItem(COA_CACHE_KEY, JSON.stringify(data || {}));
+            sessionStorage.setItem(COA_CACHE_TIME_KEY, String(Date.now()));
+        } catch (e) { /* quota or disabled storage — silently fall back */ }
+    }
+    function _coaCacheInvalidate() {
+        try {
+            sessionStorage.removeItem(COA_CACHE_KEY);
+            sessionStorage.removeItem(COA_CACHE_TIME_KEY);
+        } catch (e) {}
+    }
+
+    function loadCoA(forceFresh) {
+        // On the Chart tab, always fetch fresh — user is explicitly
+        // viewing/editing. On all other tabs (CoA needed only for
+        // dropdowns), use cached data if fresh.
+        var isChartTab = (typeof activeTab !== 'undefined' && activeTab === 'chart');
+        if (!forceFresh && !isChartTab) {
+            var cached = _coaCacheRead();
+            if (cached && typeof cached === 'object') {
+                coaCache = cached;
+                renderCoA();
+                populateAccountDropdowns();
+                return; // no AJAX needed
+            }
+        }
         getJSON('accounting/get_chart').then(function(r) {
             if (r.status !== 'success') return toast(r.message, 'error');
             coaCache = r.accounts || {};
+            _coaCacheWrite(coaCache);
             renderCoA();
             populateAccountDropdowns();
         });
@@ -966,7 +1035,7 @@ a.ac-tab.active { color: var(--ac-primary); }
         }).then(function(r){
             btn.disabled = false; btn.innerHTML = '<i class="fa fa-check"></i> Save';
             if (r.status !== 'success') return toast(r.message, 'error');
-            toast(r.message); closeModal('accountModal'); loadCoA();
+            toast(r.message); closeModal('accountModal'); _coaCacheInvalidate(); loadCoA(true);
         }).catch(function(){ btn.disabled = false; btn.innerHTML = '<i class="fa fa-check"></i> Save'; });
     }
 
@@ -976,7 +1045,7 @@ a.ac-tab.active { color: var(--ac-primary); }
         if (!confirm('Delete account ' + code + '?')) return;
         post('accounting/delete_account', { code: code }).then(function(r){
             if (r.status !== 'success') return toast(r.message, 'error');
-            toast(r.message); loadCoA();
+            toast(r.message); _coaCacheInvalidate(); loadCoA(true);
         });
     }
 
@@ -989,7 +1058,7 @@ a.ac-tab.active { color: var(--ac-primary); }
             if (r.status !== 'success') return toast(r.message, 'error');
             var msg = r.message;
             if (r.added && r.added.length) msg += '\nCreated: ' + r.added.join(', ');
-            toast(msg, 'success'); loadCoA();
+            toast(msg, 'success'); _coaCacheInvalidate(); loadCoA(true);
         }).catch(function(){
             if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-magic"></i> Seed Defaults'; }
             toast('Failed to seed chart', 'error');
@@ -1844,14 +1913,20 @@ a.ac-tab.active { color: var(--ac-primary); }
     // ══════════════════════════════════════════════
     //  SETTINGS
     // ══════════════════════════════════════════════
+    // Returns a promise resolving to the get_settings response so callers
+    // can chain post-success persistence verification (Fix C). The
+    // migration_status fetch is fired in parallel but not awaited.
     function loadSettings() {
-        getJSON('accounting/get_settings').then(function(r){
-            if (r.status !== 'success') return;
-            document.getElementById('settLockCurrent').value = (r.period_lock && r.period_lock.locked_until) || 'None';
+        var p = getJSON('accounting/get_settings').then(function(r){
+            if (r.status !== 'success') return r;
+            var lu = (r.period_lock && r.period_lock.locked_until) || 'None';
+            document.getElementById('settLockCurrent').value = lu;
+            document.getElementById('settReopenCurrent').value = lu;
             var countersHtml = '';
             var counters = r.counters || {};
             Object.keys(counters).forEach(function(k){ countersHtml += '<p><strong>' + esc(k) + ':</strong> ' + counters[k] + '</p>'; });
             document.getElementById('settCounters').innerHTML = countersHtml || '<p>No counters yet.</p>';
+            return r;
         });
 
         getJSON('accounting/get_migration_status').then(function(r){
@@ -1860,15 +1935,102 @@ a.ac-tab.active { color: var(--ac-primary); }
                 '<p>Chart of Accounts: <strong>' + r.coa_count + '</strong> accounts</p>'
                 + '<p>Old Account Book: ' + (r.has_old_book ? '<strong>Yes</strong> (can migrate)' : 'None') + '</p>';
         });
+
+        return p;
+    }
+
+    // Fix C — Compare server-claimed lock state against the just-submitted
+    // intent. Catches silent persistence failures (e.g. Firestore quota
+    // exhaustion swallowed by controller helpers). Fires a loud toast so
+    // operators don't trust a misleading success response.
+    function _verifyLockPersistence(expectedLockedUntil) {
+        return loadSettings().then(function(s){
+            if (!s || s.status !== 'success') return;  // get_settings itself errored — already toasted by helpers
+            var actual = (s.period_lock && s.period_lock.locked_until) || '';
+            var expected = expectedLockedUntil || '';
+            if (actual !== expected) {
+                var actualLabel = actual || '(unlocked)';
+                var expectedLabel = expected || '(unlocked)';
+                toast('PERSISTENCE MISMATCH: server claimed success but lock state is ' + actualLabel
+                    + ' (expected ' + expectedLabel + '). Possible cause: Firestore quota or transient write failure. Re-run the operation.',
+                    'error');
+            }
+        });
     }
 
     function lockPeriod() {
+        var btn = document.getElementById('btnLockPeriod');
         var d = document.getElementById('settLockDate').value;
+        var reason = (document.getElementById('settLockReason').value || '').trim();
         if (!d) return toast('Select a date.', 'error');
         if (!confirm('Lock all entries on or before ' + d + '? This cannot be undone.')) return;
-        post('accounting/lock_period', { locked_until: d }).then(function(r){
+
+        // Fix B — spinner + disable during the (potentially long) round-trip.
+        // Prevents accidental double-click → duplicate POST storms that we
+        // saw under quota-throttled 19s latencies during soak.
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Locking...'; }
+
+        post('accounting/lock_period', { locked_until: d, reason: reason }).then(function(r){
+            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-lock"></i> Lock Period'; }
             if (r.status !== 'success') return toast(r.message, 'error');
-            toast(r.message); loadSettings();
+            toast(r.message);
+            document.getElementById('settLockReason').value = '';
+            _verifyLockPersistence(d);
+        }).catch(function(){
+            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-lock"></i> Lock Period'; }
+        });
+    }
+
+    function reopenPeriod() {
+        var newUntil = document.getElementById('settReopenNewUntil').value;
+        var expectedClose = document.getElementById('settReopenExpectedClose').value;
+        var reason = (document.getElementById('settReopenReason').value || '').trim();
+        if (reason === '') return toast('Reason is mandatory to reopen a period.', 'error');
+
+        // Governance UX hardening 2026-05-11 (Option 3+).
+        // Empty new_locked_until = FULL UNLOCK at the endpoint (all gated
+        // journals become possible). Guard with two-stage operator
+        // acknowledgement: (A) elevated confirm text, (B) typed UNLOCK token.
+        // The narrow-the-lock path keeps the original single-confirm flow.
+        if (newUntil === '') {
+            var warning = '====== DESTRUCTIVE ACTION ======\n\n'
+                        + 'You left "New Lock Until" BLANK.\n\n'
+                        + 'This action will FULLY UNLOCK the accounting period.\n'
+                        + 'Back-dated journal posting will become possible.\n\n'
+                        + 'If you intended to narrow the lock window instead,\n'
+                        + 'click Cancel and fill the "New Lock Until" date.\n\n'
+                        + 'Continue with FULL UNLOCK?';
+            if (!confirm(warning)) return;
+            var typed = prompt('To confirm full unlock, type UNLOCK (uppercase) below:');
+            if (typed === null) return;
+            if (typed.trim() !== 'UNLOCK') {
+                return toast('Confirmation text did not match "UNLOCK". Full unlock cancelled.', 'error');
+            }
+        } else {
+            if (!confirm('Reopen the period? This will widen the open window to ' + newUntil
+                       + '. Back-dated journals posted during the reopen will be flagged in the audit trail.')) return;
+        }
+
+        var btn = document.getElementById('btnReopenPeriod');
+        // Fix B — spinner + disable during the (potentially long) round-trip.
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Reopening...'; }
+
+        post('accounting/reopen_period', {
+            new_locked_until: newUntil,
+            reason: reason,
+            expected_close_until: expectedClose
+        }).then(function(r){
+            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-unlock"></i> Reopen Period'; }
+            if (r.status !== 'success') return toast(r.message, 'error');
+            toast(r.message);
+            document.getElementById('settReopenNewUntil').value = '';
+            document.getElementById('settReopenExpectedClose').value = '';
+            document.getElementById('settReopenReason').value = '';
+            // Fix C — verify persistence. newUntil='' is the fully-unlocked path;
+            // expected actual locked_until is also ''. Otherwise expected = newUntil.
+            _verifyLockPersistence(newUntil);
+        }).catch(function(){
+            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-unlock"></i> Reopen Period'; }
         });
     }
 
@@ -1876,7 +2038,7 @@ a.ac-tab.active { color: var(--ac-primary); }
         if (!confirm('Migrate existing Account Book entries to Chart of Accounts?')) return;
         post('accounting/migrate_existing_accounts').then(function(r){
             if (r.status !== 'success') return toast(r.message, 'error');
-            toast(r.message); loadCoA(); loadSettings();
+            toast(r.message); _coaCacheInvalidate(); loadCoA(true); loadSettings();
         });
     }
 
@@ -1891,7 +2053,7 @@ a.ac-tab.active { color: var(--ac-primary); }
         if (!confirm('Carry forward closing balances as next year opening balances? This updates the Chart of Accounts.')) return;
         post('accounting/carry_forward_balances').then(function(r){
             if (r.status !== 'success') return toast(r.message, 'error');
-            toast(r.message); loadCoA();
+            toast(r.message); _coaCacheInvalidate(); loadCoA(true);
         });
     }
 
@@ -1933,7 +2095,7 @@ a.ac-tab.active { color: var(--ac-primary); }
         showImportCSV: showImportCSV, matchPrompt: matchPrompt, doMatch: doMatch,
         unmatchTxn: unmatchTxn,
         generateReport: generateReport, exportReport: exportReport, loadSettings: loadSettings,
-        lockPeriod: lockPeriod, migrateAccounts: migrateAccounts,
+        lockPeriod: lockPeriod, reopenPeriod: reopenPeriod, migrateAccounts: migrateAccounts,
         recomputeBalances: recomputeBalances, carryForward: carryForward,
         loadAuditLog: loadAuditLog, closeModal: closeModal,
     };

@@ -60,7 +60,7 @@ class FeeWorker extends CI_Controller
     private const LOCK_TTL_SEC    = 120;
 
     private string $schoolFs   = '';
-    private string $session    = '';
+    private string $sessionYear = '';
     private string $schoolName = '';
 
     public function __construct()
@@ -70,18 +70,20 @@ class FeeWorker extends CI_Controller
             show_error('FeeWorker is CLI-only.', 403);
         }
         $this->load->library('firebase');
-
-        $this->schoolName = (string) (getenv('SCHOOL_NAME') ?: '');
-        $this->session    = (string) (getenv('SESSION_YEAR') ?: '');
-        if ($this->schoolName === '' || $this->session === '') {
-            echo "ERROR: Set SCHOOL_NAME and SESSION_YEAR environment variables.\n";
-            exit(1);
-        }
-        $this->firebase->initFirestore($this->schoolName, $this->session);
         $this->load->library('firestore_service');
-        $this->schoolFs = (string) $this->firebase->getSchoolId();
-        if ($this->schoolFs === '') {
-            echo "ERROR: Could not resolve schoolId for {$this->schoolName}.\n";
+
+        // BUG-A7 Framing α — direct SCHOOL_ID bootstrap. The legacy
+        // initFirestore(schoolName) + getSchoolId() round-trip was removed
+        // because Firebase library now self-initializes for the graderadmin
+        // project at construction. SCHOOL_ID env var carries the FS-style
+        // schoolId (e.g. SCH_D94FE8F7AD) directly. SCHOOL_NAME remains as
+        // an optional companion env var preserved for downstream context
+        // (ctx['schoolName'] ?? $this->schoolName fallback at line 643).
+        $this->schoolFs    = (string) (getenv('SCHOOL_ID')    ?: '');
+        $this->sessionYear = (string) (getenv('SESSION_YEAR') ?: '');
+        $this->schoolName  = (string) (getenv('SCHOOL_NAME')  ?: '');
+        if ($this->schoolFs === '' || $this->sessionYear === '') {
+            echo "ERROR: Set SCHOOL_ID and SESSION_YEAR environment variables.\n";
             exit(1);
         }
     }
@@ -92,7 +94,7 @@ class FeeWorker extends CI_Controller
 
     public function run(): void
     {
-        $this->_out("FeeWorker run @ " . date('c') . " school={$this->schoolFs} session={$this->session}");
+        $this->_out("FeeWorker run @ " . date('c') . " school={$this->schoolFs} session={$this->sessionYear}");
 
         // Phase 7F — heartbeat write FIRST so the admin "worker is down"
         // banner clears as soon as the task runs, even if no jobs are
@@ -138,7 +140,7 @@ class FeeWorker extends CI_Controller
         try {
             $doc = array_merge([
                 'schoolId'  => $this->schoolFs,
-                'session'   => $this->session,
+                'session'   => $this->sessionYear,
                 'lastRunAt' => date('c'),
                 'lastStage' => $stage,
                 'host'      => gethostname() ?: 'unknown',
@@ -147,7 +149,7 @@ class FeeWorker extends CI_Controller
             ], $extras);
             $this->firebase->firestoreSet(
                 'feeWorkerHeartbeat',
-                "{$this->schoolFs}_{$this->session}",
+                "{$this->schoolFs}_{$this->sessionYear}",
                 $doc,
                 /* merge */ true
             );
@@ -196,7 +198,7 @@ class FeeWorker extends CI_Controller
         try {
             $queued = (array) $this->firebase->firestoreQuery(self::COL_JOBS, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'queued'],
             ], 'createdAt', 'ASC', $cap);
             $out['queued_count'] = count($queued);
@@ -211,7 +213,7 @@ class FeeWorker extends CI_Controller
 
             $processing = (array) $this->firebase->firestoreQuery(self::COL_JOBS, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'processing'],
             ], 'updatedAt', 'ASC', $cap);
             $out['processing_count'] = count($processing);
@@ -224,7 +226,7 @@ class FeeWorker extends CI_Controller
 
             $failed = (array) $this->firebase->firestoreQuery(self::COL_JOBS, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'failed'],
             ], null, 'ASC', $cap);
             $out['failed_count'] = count($failed);
@@ -250,7 +252,7 @@ class FeeWorker extends CI_Controller
         try {
             $rows = (array) $this->firebase->firestoreQuery(self::COL_JOBS, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'processing'],
             ], 'updatedAt', 'ASC', /* limit */ 20);
             foreach ($rows as $r) {
@@ -299,7 +301,7 @@ class FeeWorker extends CI_Controller
         try {
             $rows = $this->firebase->firestoreQuery(self::COL_JOBS, [
                 ['schoolId', '==', $this->schoolFs],
-                ['session',  '==', $this->session],
+                ['session',  '==', $this->sessionYear],
                 ['status',   '==', 'queued'],
             ], 'createdAt', 'ASC', $limit);
             $out = [];
@@ -584,7 +586,7 @@ class FeeWorker extends CI_Controller
         $ctx = is_array($job['payload']['context'] ?? null) ? $job['payload']['context'] : [];
         $userId   = (string) ($ctx['userId']     ?? '');
         $schoolFs = (string) ($ctx['schoolFs']   ?? $this->schoolFs);
-        $session  = (string) ($ctx['session']    ?? $this->session);
+        $session  = (string) ($ctx['session']    ?? $this->sessionYear);
         if ($userId === '') return;
 
         // Defaulter recompute.

@@ -1085,15 +1085,15 @@
                 <div class="db-card-body">
                     <div class="fee-summary">
                         <div class="fee-chip">
-                            <div class="fee-chip-val" style="color:var(--brand)" id="feeTotalCollected">&#8377;0</div>
+                            <div class="fee-chip-val" style="color:var(--brand)" id="feeTotalCollected"><i class="fa fa-spinner fa-spin" style="opacity:.4"></i></div>
                             <div class="fee-chip-lbl">Collected</div>
                         </div>
                         <div class="fee-chip">
-                            <div class="fee-chip-val" style="color:var(--muted)" id="feeTotalReceipts">0</div>
+                            <div class="fee-chip-val" style="color:var(--muted)" id="feeTotalReceipts"><i class="fa fa-spinner fa-spin" style="opacity:.4"></i></div>
                             <div class="fee-chip-lbl">Receipts</div>
                         </div>
                         <div class="fee-chip">
-                            <div class="fee-chip-val" style="color:var(--green)" id="feeTotalMonths">0</div>
+                            <div class="fee-chip-val" style="color:var(--green)" id="feeTotalMonths"><i class="fa fa-spinner fa-spin" style="opacity:.4"></i></div>
                             <div class="fee-chip-lbl">Active Months</div>
                         </div>
                     </div>

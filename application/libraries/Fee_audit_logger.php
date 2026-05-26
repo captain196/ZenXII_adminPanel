@@ -105,6 +105,54 @@ final class Fee_audit_logger
         }
     }
 
+    /**
+     * BUG-045 OP4-A — build the same audit doc that record() would write,
+     * WITHOUT executing the Firestore write. Returns a batch-op suitable
+     * for inclusion in firestoreCommitBatch. Returns null on validation
+     * failure (matches record()'s false return) OR on update with no
+     * changed keys (matches record()'s noise-reduction skip).
+     *
+     * @return array|null  ['op'=>'set','collection'=>'feeAuditLogs','docId'=>...,'data'=>...]
+     */
+    public function buildOp(
+        string $action,
+        string $entity,
+        string $entityId,
+        array  $before,
+        array  $after,
+        string $performedBy,
+        array  $opts = []
+    ): ?array {
+        if ($entity === '' || $entityId === '' || !in_array($action, ['create','update','delete'], true)) {
+            return null;
+        }
+        $before  = $this->scrub($before);
+        $after   = $this->scrub($after);
+        $changed = $this->diffKeys($before, $after);
+        if ($action === 'update' && empty($changed)) return null;
+        $auditId = self::makeAuditId($entity, $entityId);
+        return [
+            'op'         => 'set',
+            'collection' => self::COLLECTION,
+            'docId'      => $auditId,
+            'data'       => [
+                'auditId'     => $auditId,
+                'schoolId'    => $this->schoolId,
+                'session'     => $this->session,
+                'action'      => $action,
+                'entity'      => $entity,
+                'entityId'    => $entityId,
+                'before'      => $this->projectKeys($before, $changed),
+                'after'       => $this->projectKeys($after,  $changed),
+                'changedKeys' => array_values($changed),
+                'performedBy' => $performedBy !== '' ? $performedBy : 'system',
+                'source'      => (string) ($opts['source'] ?? ''),
+                'reason'      => (string) ($opts['reason'] ?? ''),
+                'timestamp'   => date('c'),
+            ],
+        ];
+    }
+
     public static function makeAuditId(string $entity, string $entityId): string
     {
         // sortable-by-time prefix + disambiguator; ≤1e6-way collision-resistant per ms.

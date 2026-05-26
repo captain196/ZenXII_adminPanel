@@ -114,6 +114,47 @@ class Payment_gateway_razorpay
         return hash_equals($expected, $signature);
     }
 
+    /**
+     * Fetch payment details from Razorpay (GET /v1/payments/{id}).
+     *
+     * BUG-050 / PS-3: used by Payment_service::verify_payment() to retrieve
+     * the captured amount for defense-in-depth amount-mismatch enforcement.
+     * Razorpay returns amount in PAISE (integer); we normalize to rupees so
+     * the caller can compare directly against the locally-stored order amount
+     * (which is in rupees).
+     *
+     * @throws RuntimeException on API error
+     * @return array {payment_id, amount_paise, amount, status, currency,
+     *                method, order_id, captured, fetched_at}
+     */
+    public function fetch_payment(string $paymentId): array
+    {
+        $this->_assert_credentials();
+        if ($paymentId === '') {
+            throw new \RuntimeException('Razorpay: paymentId is required.');
+        }
+
+        $resp = $this->_request('GET', '/payments/' . rawurlencode($paymentId));
+
+        if (empty($resp['id'])) {
+            $msg = $resp['error']['description'] ?? 'Razorpay payment fetch failed.';
+            throw new \RuntimeException('Razorpay: ' . $msg);
+        }
+
+        $amountPaise = (int) ($resp['amount'] ?? 0);
+        return [
+            'payment_id'   => (string) $resp['id'],
+            'order_id'     => (string) ($resp['order_id'] ?? ''),
+            'amount_paise' => $amountPaise,
+            'amount'       => round($amountPaise / 100, 2),
+            'currency'     => (string) ($resp['currency'] ?? 'INR'),
+            'status'       => (string) ($resp['status']   ?? ''),
+            'method'       => (string) ($resp['method']   ?? ''),
+            'captured'     => !empty($resp['captured']),
+            'fetched_at'   => date('c'),
+        ];
+    }
+
     /** @return string */
     public function get_name(): string
     {

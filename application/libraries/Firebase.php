@@ -991,5 +991,45 @@ class Firebase
         // the last doc seen on the previous cycle.
         return $this->firestoreDb->query($collection, $conditions, $orderBy, $direction, $limit, $startAfter);
     }
+
+    /**
+     * Server-side count aggregation via Firestore runAggregationQuery.
+     *
+     * Added 2026-05-15 for the Denormalization Integrity Phase 1
+     * observability instrumentation (Findings #2 / #20 / #22 / #37
+     * unified workstream). Returns the authoritative document count
+     * matching the supplied conditions WITHOUT fetching the documents
+     * themselves — orders of magnitude cheaper than fetch-then-count
+     * for large collections.
+     *
+     * Cost model: Firestore bills approximately 1 read per 1000 docs
+     * scanned by the aggregation. Far below the cost of a paginated
+     * fetch-all for the same scope.
+     *
+     * Returns:
+     *   >= 0  — authoritative count
+     *   -1    — query failed (caller should treat as "unknown"; the
+     *           denormalized cache stays the source of truth on failure)
+     *
+     * Backward compat: brand-new method; no existing call sites; no
+     * behavior change anywhere else.
+     */
+    public function firestoreCount(string $collection, array $conditions = []): int
+    {
+        if ($this->firestoreDb === null) {
+            log_message('error', 'Firebase::firestoreCount() — Firestore not initialized');
+            return -1;
+        }
+        try {
+            $r = $this->firestoreDb->runAggregation($collection, $conditions, [
+                ['op' => 'count', 'alias' => 'n'],
+            ]);
+            return isset($r['n']) ? (int) $r['n'] : -1;
+        } catch (\Throwable $e) {
+            log_message('error', 'Firebase::firestoreCount() — runAggregation failed for '
+                . $collection . ': ' . $e->getMessage());
+            return -1;
+        }
+    }
 }
 

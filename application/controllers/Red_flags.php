@@ -615,7 +615,18 @@ class Red_flags extends MY_Controller
         // the existing get_flag_detail check at the bottom of this file.
         if (($existing['schoolId']   ?? '') !== $this->school_id
             && ($existing['schoolCode'] ?? '') !== $this->school_id) {
-            $this->json_error('Unauthorized', 403);
+            // BUG-035: tenant-boundary security telemetry (Phase 6+ scope; mirror Homework BUG-014 + Attendance BUG-034)
+            if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+                $this->sec_telem->emit('CROSS_TENANT_PROBE', 'warning', [
+                    'endpoint'        => __FUNCTION__,
+                    'flag_id'         => $flagId,
+                    'existing_schoolId'   => (string) ($existing['schoolId']   ?? ''),
+                    'existing_schoolCode' => (string) ($existing['schoolCode'] ?? ''),
+                    'caller_school'   => $this->school_id,
+                ]);
+            }
+            // BUG-036: existence-oracle collapse — match truly-not-found branch shape (mirror Homework v1 BUG-015); CROSS_TENANT_PROBE above preserves forensic signal
+            $this->json_error('Flag not found.', 404);
         }
 
         if (strtolower((string)($existing['status'] ?? '')) === 'resolved') {
@@ -774,7 +785,18 @@ class Red_flags extends MY_Controller
         // Same-school guard — pass if EITHER schoolId or schoolCode matches.
         if (($existing['schoolId']   ?? '') !== $this->school_id
             && ($existing['schoolCode'] ?? '') !== $this->school_id) {
-            $this->json_error('Unauthorized', 403);
+            // BUG-035: tenant-boundary security telemetry (Phase 6+ scope; mirror Homework BUG-014 + Attendance BUG-034)
+            if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+                $this->sec_telem->emit('CROSS_TENANT_PROBE', 'warning', [
+                    'endpoint'        => __FUNCTION__,
+                    'flag_id'         => $flagId,
+                    'existing_schoolId'   => (string) ($existing['schoolId']   ?? ''),
+                    'existing_schoolCode' => (string) ($existing['schoolCode'] ?? ''),
+                    'caller_school'   => $this->school_id,
+                ]);
+            }
+            // BUG-036: existence-oracle collapse — match truly-not-found branch shape (mirror Homework v1 BUG-015); CROSS_TENANT_PROBE above preserves forensic signal
+            $this->json_error('Flag not found.', 404);
         }
 
         if (strtolower((string)($existing['status'] ?? '')) === 'deleted') {
@@ -821,7 +843,18 @@ class Red_flags extends MY_Controller
         // Same-school guard (mirror of resolve/delete).
         if (($existing['schoolId']   ?? '') !== $this->school_id
             && ($existing['schoolCode'] ?? '') !== $this->school_id) {
-            $this->json_error('Unauthorized', 403);
+            // BUG-035: tenant-boundary security telemetry (Phase 6+ scope)
+            if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+                $this->sec_telem->emit('CROSS_TENANT_PROBE', 'warning', [
+                    'endpoint'        => __FUNCTION__,
+                    'flag_id'         => $flagId,
+                    'existing_schoolId'   => (string) ($existing['schoolId']   ?? ''),
+                    'existing_schoolCode' => (string) ($existing['schoolCode'] ?? ''),
+                    'caller_school'   => $this->school_id,
+                ]);
+            }
+            // BUG-036: existence-oracle collapse — match truly-not-found branch shape (mirror Homework v1 BUG-015); CROSS_TENANT_PROBE above preserves forensic signal
+            $this->json_error('Flag not found.', 404);
         }
 
         if (strtolower((string)($existing['status'] ?? '')) !== 'deleted') {
@@ -892,7 +925,19 @@ class Red_flags extends MY_Controller
             }
             if (($existing['schoolId']   ?? '') !== $this->school_id
                 && ($existing['schoolCode'] ?? '') !== $this->school_id) {
-                $errors[] = "Item {$i}: unauthorized (cross-school).";
+                // BUG-035: tenant-boundary security telemetry (Phase 6+ scope; bulk iterator pattern)
+                if (isset($this->sec_telem) && $this->sec_telem->isReady()) {
+                    $this->sec_telem->emit('CROSS_TENANT_PROBE', 'warning', [
+                        'endpoint'        => __FUNCTION__,
+                        'item_index'      => $i,
+                        'flag_id'         => $fid,
+                        'existing_schoolId'   => (string) ($existing['schoolId']   ?? ''),
+                        'existing_schoolCode' => (string) ($existing['schoolCode'] ?? ''),
+                        'caller_school'   => $this->school_id,
+                    ]);
+                }
+                // BUG-036: existence-oracle collapse — match truly-not-found shape (mirror Homework v1 BUG-015); CROSS_TENANT_PROBE above preserves forensic signal
+                $errors[] = "Item {$i}: flag not found.";
                 continue;
             }
             if (strtolower((string)($existing['status'] ?? '')) === 'resolved') {

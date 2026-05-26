@@ -1,0 +1,22 @@
+{
+  "rules": {
+    ".read": "auth != null",
+    ".write": "auth != null",
+
+    "Indexes": {
+      "School_codes": {
+        ".read": true,
+        ".write": "auth != null"
+      },
+      "School_names": {
+        ".read": true,
+        ".write": "auth != null"
+      }
+    },
+
+    "School_ids": {
+      ".read": true,
+      ".write": "auth != null"
+    }
+  }
+}

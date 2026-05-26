@@ -1,0 +1,217 @@
+schema_version: "v7.0"
+mission_name: "School ERP — 3-system quality hardening (v7.0)"
+mission_state: planned
+approved_at: "2026-05-21 (session 1, cycle 2 — auto-mode approval)"
+total_modules: 9
+total_modules_out_of_mission: 6
+total_platforms: 4
+total_shared_services: 6
+
+sequencing_rationale: |
+  1. Calibrate first — school_config (small, 2 verified platforms) exercises the full cycle shape
+     before higher-stakes modules.
+  2. Concentrate v1 debt — homework holds all 16 v1 BUG_LEDGER findings; verification load.
+  3. Honor HOLD discipline — staff_hardening at pos 3 keeps work warm without auto-sequencing first.
+  4. Pair the P0s — fees + accounting share freeze-choreography invariant; adjacent sequence.
+  5. Cross-platform schema drift next — attendance (D10 hotspot).
+  6. P2 polish modules — communication, hr_payroll.
+  7. P3 tail — academic_planner single-platform mission close-out.
+
+modules:
+  - module_id: school_config
+    sequence_position: 1
+    priority: P2
+    platforms: [admin-web, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib]
+    applicable_dimensions: [D1, D2, D4, D5, D9]
+    estimated_sessions: null
+    blocking_dependencies: []
+    completion_criteria: {max_open_P2: 2, max_open_P3: unlimited}
+    why_now: "Calibration target. Memory: Phase 3 soak 6 areas shipped 2026-05-15."
+
+  - module_id: homework
+    sequence_position: 2
+    priority: P1
+    platforms: [admin-web, parent-android, teacher-android, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib]
+    applicable_dimensions: [D1, D2, D4, D5, D7, D9, D10, D11]
+    estimated_sessions: null
+    blocking_dependencies: []
+    completion_criteria: {max_open_P2: 3, max_open_P3: unlimited}
+    why_now: "16 v1 BUG_LEDGER findings concentrated here; tests already exist."
+
+  - module_id: staff_hardening
+    sequence_position: 3
+    priority: P1
+    platforms: [admin-web, firebase-rules]
+    shared_services_consumed: [audit_log_service, security_telemetry, my_controller_auth, firebase_lib]
+    applicable_dimensions: [D1, D2, D3, D4, D9, D11]
+    estimated_sessions: null
+    blocking_dependencies: []
+    completion_criteria: {max_open_P2: 2, max_open_P3: unlimited}
+    why_now: "Patches 1-5 shipped (dirty tree); patches 6-15 HELD pending operator reauth."
+
+  - module_id: fees
+    sequence_position: 4
+    priority: P0
+    runtime_validation_gated: true
+    runtime_validation_gate_reason: |
+      Strategy C selected by operator v7 session 2 cycle 22 (2026-05-21).
+      Reasoning: 25K+ lines of fees code + 135 endpoints + 9 high-blast-radius
+      endpoint families + financial_freeze_choreography invariant. Static
+      DISCOVERY would yield diminishing-returns findings at high cycle cost;
+      operator preference is runtime/staging validation signal first.
+      Procedure: operator runs payment flows (sandbox Razorpay + sample data
+      through demand → submit → reconcile → refund) in staging. Failures
+      define which specific endpoints/code paths to enter for targeted FIX.
+      Module remains in 'queued' state; gate lifts when operator returns
+      with staging signal or explicit `lift runtime gate fees` instruction.
+    platforms: [admin-web, parent-android, teacher-android, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib, entity_firestore_sync, firestore_get_parallel]
+    applicable_dimensions: [D1, D2, D3, D4, D5, D7, D9, D10, D11]
+    estimated_sessions: null
+    blocking_dependencies: []
+    completion_criteria: {max_open_P2: 3, max_open_P3: unlimited}
+    why_now: "Highest blast radius. Freeze choreography pairs with accounting."
+
+  - module_id: accounting
+    sequence_position: 5
+    priority: P0
+    runtime_validation_gated: true
+    runtime_validation_gate_reason: |
+      Strategy C-A selected by operator v7 session 2 cycle 23 (2026-05-21).
+      Reasoning: P0 financial sibling to fees with same freeze_choreography +
+      accounting_telemetry_response_mode invariants. Memory's
+      accounting_soak_contract explicitly defines a runtime-observation
+      discipline (observe → verify → classify) for telemetry signal.
+      Module is already in soak state — staging/production signal is
+      actively being gathered. Static DISCOVERY would compete with the
+      soak signal rather than augment it. Gate lifts on operator's
+      explicit lift instruction or telemetry classification of a P0/P1
+      finding from soak.
+    platforms: [admin-web, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib, firestore_get_parallel]
+    applicable_dimensions: [D1, D2, D3, D4, D9, D11]
+    estimated_sessions: null
+    blocking_dependencies: []
+    completion_criteria: {max_open_P2: 2, max_open_P3: unlimited}
+    why_now: "Concession Stage 1 + Payroll Stages 2-4 in soak; FREEZE_REQUIRED triggers."
+
+  - module_id: attendance
+    sequence_position: 6
+    priority: P1
+    platforms: [admin-web, parent-android, teacher-android, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib, entity_firestore_sync]
+    applicable_dimensions: [D1, D2, D3, D5, D7, D9, D10, D11]
+    estimated_sessions: null
+    blocking_dependencies: []
+    completion_criteria: {max_open_P2: 3, max_open_P3: unlimited}
+    why_now: "Phase 7 Firestore-first; tardy canonical + late legacy alias. D10/D11 hotspot."
+
+  - module_id: communication
+    sequence_position: 7
+    priority: P2
+    platforms: [admin-web, parent-android, teacher-android, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib]
+    applicable_dimensions: [D1, D2, D4, D5, D6, D7, D9, D10, D11]
+    estimated_sessions: null
+    blocking_dependencies: []
+    completion_criteria: {max_open_P2: 3, max_open_P3: unlimited}
+    why_now: "Phases 1-5 shipped; camelCase canonical."
+
+  - module_id: hr_payroll
+    sequence_position: 8
+    priority: P2
+    runtime_validation_gated: true
+    runtime_validation_gate_reason: |
+      Strategy C selected by operator v7 session 2 cycle 32 (2026-05-21) via
+      Auto Mode interpretation of `advance` after scope-pass surfaced:
+        - Hr.php 7,814 lines (2nd-largest controller after Fees)
+        - 63 silent-catch shapes (5-7x density of attendance/communication)
+        - Dual-emit snake_case + camelCase complexity (Teacher reads camelCase)
+        - Payroll = money flow (analog to fees/accounting financial risk)
+      Three convergent reasons for runtime-first: (1) payroll is financial; same
+      risk class as fees/accounting under freeze_choreography rationale.
+      (2) 63 silent catches too high to triage responsibly without speculative
+      rediscovery that operator explicitly de-prioritized. (3) Dual-emit
+      cross-platform consistency is staging-shaped (whether Teacher app reads
+      camelCase correctly under load is a runtime signal). Gate lifts on
+      operator staging signal or explicit `lift runtime gate hr_payroll`
+      instruction.
+    platforms: [admin-web, teacher-android, firebase-rules]
+    shared_services_consumed: [audit_log_service, firebase_lib]
+    applicable_dimensions: [D1, D2, D4, D5, D9, D10, D11]
+    estimated_sessions: null
+    blocking_dependencies: []
+    completion_criteria: {max_open_P2: 2, max_open_P3: unlimited}
+    why_now: "Dual-emit shipped; Teacher reads camelCase; 3-feature split on Teacher."
+
+  - module_id: academic_planner
+    sequence_position: 9
+    priority: P3
+    platforms: [admin-web]
+    shared_services_consumed: [audit_log_service, firebase_lib]
+    applicable_dimensions: [D1, D2, D4, D5, D9]
+    estimated_sessions: null
+    blocking_dependencies: []
+    completion_criteria: {max_open_P2: 3, max_open_P3: unlimited}
+    why_now: "Active branch. Single platform. Mission close-out."
+
+shared_services:
+  - service_id: audit_log_service
+    consumers: [staff_hardening, fees, accounting, homework, attendance, communication, hr_payroll, school_config, academic_planner]
+    verification_strategy: per-consumer
+  - service_id: security_telemetry
+    consumers: [staff_hardening]
+    verification_strategy: per-consumer
+  - service_id: firebase_lib
+    consumers: [staff_hardening, fees, accounting, homework, attendance, communication, hr_payroll, school_config, academic_planner]
+    verification_strategy: contract-test + per-consumer spot-check
+  - service_id: entity_firestore_sync
+    consumers: [fees, homework, attendance, communication]
+    verification_strategy: per-consumer
+  - service_id: my_controller_auth
+    consumers: [staff_hardening, fees, accounting, homework, attendance, communication, hr_payroll, school_config, academic_planner]
+    verification_strategy: per-consumer
+  - service_id: firestore_get_parallel
+    consumers: [fees, accounting, homework]
+    verification_strategy: contract-test
+
+risk_callouts:
+  - id: v1_bug_ledger_carry_forward
+    severity: STRUCTURAL
+    summary: "16 v1 BUG_LEDGER entries claim verified but every fix_commit is (pending) — uncommitted in dirty tree."
+    mitigation: "Path A (snapshot-commit) OR Path B (working-tree re-verification, bugs stay fixed-unverified until commits land)"
+    default_path: B
+  - id: staff_hardening_phase_a_hold
+    severity: PROCESS
+    summary: "Patches 6-15 HELD pending explicit operator reauthorisation."
+    mitigation: "Module advances through DISCOVERY/triage but cannot enter FIX until reauth."
+  - id: financial_freeze_choreography
+    severity: PROCESS
+    summary: "P0 financial signal on fees/accounting triggers freeze choreography — observe→verify→classify, not auto-fix."
+    mitigation: "Autopilot HALTS on P0 financial detection, emits forensic package."
+  - id: cross_platform_schema_drift_mobile
+    severity: TECHNICAL
+    summary: "class_section_canonical and messaging_schema_camelcase have manual enforcement_tier on mobile."
+    mitigation: "D10 audits surface advisory findings, not programmatic blocks."
+  - id: heavy_dirty_tree
+    severity: HOUSEKEEPING
+    summary: "19 modified + 28 untracked docs + 22 untracked tests on admin-web; ~14 changes per mobile repo."
+    mitigation: "Explicit target_files in each FIX_PATCH; operator review before commit."
+  - id: bug_ledger_schema_v1_header
+    severity: SCHEMA
+    summary: "BUG_LEDGER.md uses v1.0 schema header but content marked migrated."
+    mitigation: "First FIX cycle touching a v1 bug rewrites row to v7 format; preserves legacy_v1_form."
+
+estimated_total_sessions: "partial — 9 unfilled: [all modules]; conservative envelope 9-27 total sessions"
+
+out_of_mission_modules:
+  - {module_id: transport, reason: "Subsystem removed 2026-04-17."}
+  - {module_id: wallet_advance, reason: "Phase 9 removed wallet/advance subsystem."}
+  - {module_id: razorpay, reason: "Test-mode live; defer to next mission."}
+  - {module_id: dashboard_redesign, reason: "Stable post-2026-04-17 deploy."}
+  - {module_id: library_fines, reason: "Stable; not in this mission."}
+  - {module_id: tc_transfer_certificate, reason: "Separate freeze discipline."}
+
+overrides: []

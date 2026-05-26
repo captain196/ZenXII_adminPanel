@@ -1,53 +1,255 @@
 rules_version = '2';
 
-// Firebase Storage Security Rules — SchoolSync
+// ════════════════════════════════════════════════════════════════════════
+// Firebase Storage Security Rules — SchoolSync ERP
+// Phase A — Tenant-isolated cover-all (2026-05-15)
+// ════════════════════════════════════════════════════════════════════════
 //
-// Goal: prevent unauthorized read/write/overwrite on homework attachments.
-// Other storage paths are intentionally NOT covered here — they follow the
-// project default (deny-all when this file is present and no rule matches).
-// Add additional `match` blocks below this one as new features ship.
+// This is the FIRST hardening pass over Storage rules. Scope is intentional-
+// ly narrow: every production-active path is matched, and the only gating
+// requirement on read/write is that the requester's `school_id` JWT custom
+// claim equals the school identifier embedded in the path. NO MIME enforce-
+// ment, NO per-role gating (beyond inherent path scoping), NO size caps.
+// Those are Phase B (role gating) and Phase C (MIME + size).
+//
+// Goals of Phase A:
+//   1. Restore the pre-2026-05-15 production functionality (every current
+//      upload flow continues working).
+//   2. Add cross-tenant isolation — a logged-in user from school SCH_A can
+//      no longer write to school SCH_B's bucket prefixes.
+//   3. Keep blast radius minimal so rollback to the recovery rule is a
+//      one-paste operation.
+//
+// ────────────────────────────────────────────────────────────────────────
+// CRITICAL INVARIANT — school_id ↔ {schoolName} equivalence
+// ────────────────────────────────────────────────────────────────────────
+// The legacy `/{schoolName}/...` match blocks below rely on the following
+// session/claim invariant, audited and confirmed in Verification Audit A
+// (2026-05-15):
+//
+//   session['school_id']  == session['schoolName']  == SCH_XXXXXX
+//   JWT claim school_id   == session['school_id']    (setFirebaseClaims)
+//   Legacy Storage path {schoolName} segment == session['schoolName']
+//
+//   ⇒  request.auth.token.school_id == {schoolName} path segment
+//
+// Both login flows (Admin_login.php:222-239 and Admin_login.php:439-450)
+// assign the SAME variable to both session keys, so the equivalence is
+// structurally guaranteed today. ANY future change that splits these two
+// session keys — assigning different values to 'school_id' and 'schoolName'
+// — would silently break every {schoolName}/... legacy path. Audit any
+// new login or session-mutation code for this invariant.
+//
+// ────────────────────────────────────────────────────────────────────────
+// IMPORTANT — getDownloadUrl() bypasses these Storage Rules
+// ────────────────────────────────────────────────────────────────────────
+// Firebase Storage's getDownloadUrl() and the legacy ?alt=media&token=...
+// URL pattern produce long-lived public access tokens that BYPASS these
+// rules entirely. Anyone holding the URL can fetch the object regardless
+// of school_id / role. Mitigations in place:
+//
+//   • URLs are stored ONLY inside Firestore docs gated by firestore.rules;
+//     the URL is as private as the doc.
+//   • Client apps that open these URLs MUST validate:
+//       - scheme: https only (no http, no other schemes)
+//       - host:   firebasestorage.googleapis.com only
+//       - format: reject malformed URLs / unknown encodings
+//     before invoking Intent.ACTION_VIEW / WebView / equivalent.
+//     See Parent/HomeworkScreen.kt:863-933 and the Finding #30 warning.
+//   • Signed URLs with TTL + server-side signing are deferred to Phase 4.
+//
+// ────────────────────────────────────────────────────────────────────────
+// PHP Admin SDK BYPASSES Storage Rules
+// ────────────────────────────────────────────────────────────────────────
+// All server-side PHP uploads via $this->firebase->uploadFile() and
+// $this->CM->handleFileUpload() use a service-account token. These rules
+// do NOT govern those uploads. The match blocks below cover those PHP
+// paths anyway to defend against direct client-side writes to the same
+// paths (a hostile authenticated user crafting a direct Storage REST call
+// to schools/SCH_B/logo/... etc.).
+//
+// ────────────────────────────────────────────────────────────────────────
+// LEGACY BUCKET DEPRECATED
+// ────────────────────────────────────────────────────────────────────────
+// graders-1c047.appspot.com is classified as deprecated legacy infrastruc-
+// ture (Verification Audit B, 2026-05-15). Common_model1.php is dead code
+// with zero production callers; the service account is commented out in
+// application/config/firebase.php. No Phase A rules deploy there. Cleanup
+// queued separately.
+
 service firebase.storage {
   match /b/{bucket}/o {
 
-    // ── Homework attachments ─────────────────────────────────────
-    // Path:  homework/{schoolId}/{homeworkId}/{file=**}
-    //
-    // Read   — any authenticated user whose Firebase Auth custom claim
-    //          `school_id` matches the {schoolId} segment in the path.
-    //          Cross-school access is rejected by the path-claim mismatch.
-    //
-    // Write  — same school, AND the caller is either:
-    //            (a) staff (admin / teacher / principal / etc.), or
-    //            (b) the original uploader, identified by the
-    //                `uploadedBy` custom metadata key on the object.
-    //          For NEW uploads (resource == null) the metadata is taken
-    //          from the incoming request; for OVERWRITES / DELETES it is
-    //          taken from the existing object so a parent can only edit
-    //          their own attachment.
-    match /homework/{schoolId}/{homeworkId}/{file=**} {
+    // ════════════════════════════════════════════════════════════════════
+    //  MODERN LOWERCASE-PREFIX PATHS
+    // ════════════════════════════════════════════════════════════════════
 
-      allow read: if request.auth != null
-        && request.auth.token.school_id == schoolId;
-
+    // ─── L1: HOMEWORK attachments ───────────────────────────────────────
+    // Path:  homework/{schoolId}/{homeworkId}/{path=**}
+    // Currently DORMANT (Homework Attachment Workstream Phase 1 paused).
+    // Pre-emptively scoped so the workstream resumes without rule churn.
+    match /homework/{schoolId}/{homeworkId}/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolId;
       allow write: if request.auth != null
-        && request.auth.token.school_id == schoolId
-        && (
-             // (a) Same-school staff — full write across the homework folder.
-             request.auth.token.role in [
-               'Admin', 'admin',
-               'Teacher', 'teacher',
-               'Principal', 'Vice Principal',
-               'School Super Admin', 'school_super_admin',
-               'Super Admin', 'super_admin',
-               'Academic Coordinator'
-             ]
-             // (b) Original uploader — can overwrite/delete their own object.
-             || (resource != null
-                  && resource.metadata.uploadedBy == request.auth.uid)
-             // (b') New upload tagging itself with the caller's UID.
-             || (resource == null
-                  && request.resource.metadata.uploadedBy == request.auth.uid)
-           );
+                   && request.auth.token.school_id == schoolId;
     }
+
+    // ─── L2: GALLERY media (Teacher GalleryMediaUploader) ───────────────
+    // Path:  galleryMedia/{schoolId}/{albumId}/{path=**}
+    match /galleryMedia/{schoolId}/{albumId}/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+      allow write: if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+    }
+
+    // ─── L3: STORIES (Teacher-posted via StoryMediaUploader) ────────────
+    // Path:  stories/{schoolId}/{teacherId}/{path=**}
+    match /stories/{schoolId}/{teacherId}/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+      allow write: if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+    }
+
+    // ─── L4: STORIES (Admin-posted via Stories.php) ─────────────────────
+    // Path:  stories/admin/{schoolId}/{adminId}/{path=**}
+    // Distinct from L3: literal 'admin' second segment instead of a
+    // schoolId. Both patterns coexist via the OR semantic of Storage rules
+    // — a path is allowed if either matching block allows it.
+    match /stories/admin/{schoolId}/{adminId}/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+      allow write: if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+    }
+
+    // ─── L5: MESSAGES (Parent + Teacher chat attachments) ───────────────
+    // Path:  messages/{schoolId}/{conversationId}/{path=**}
+    // Phase A: same-school authenticated read AND write, NO role filter
+    // (parents legitimately write here). Conversation-membership and
+    // parent-of-this-student checks deferred (Phase 4, Firestore lookup).
+    match /messages/{schoolId}/{conversationId}/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+      allow write: if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+    }
+
+    // ─── L6: SCHOOL CONFIG (logo, holidays, academic, circulars) ────────
+    // Covers School_config::upload_logo / upload_document AND
+    // Communication.php circular attachments.
+    // Paths:
+    //   schools/{schoolId}/logo/{file=**}
+    //   schools/{schoolId}/holidays/{file=**}
+    //   schools/{schoolId}/academic/{file=**}
+    //   schools/{schoolId}/circulars/{file=**}
+    // Broad `{path=**}` covers all four sub-trees and any future additions
+    // under schools/{schoolId}/ without rule churn.
+    match /schools/{schoolId}/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+      allow write: if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+    }
+
+    // ─── L7: STUDENTS (Sis.php:1601 lowercase variant) ──────────────────
+    // Path:  Students/{schoolId}/{userId}/docs/{docLabel}
+    // Distinct from G2 below (G2 uses {schoolName}/Students/...). Both
+    // schemes are used by Sis.php for the same logical student (verified
+    // at Sis.php:3263-3264 where both are deleted in tandem).
+    match /Students/{schoolId}/{userId}/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+      allow write: if request.auth != null
+                   && request.auth.token.school_id == schoolId;
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  LEGACY {schoolName}/... PATH SCHEME
+    //  (See CRITICAL INVARIANT block at top of file.)
+    // ════════════════════════════════════════════════════════════════════
+    // The blocks below cover the older path scheme where the school
+    // identifier is the FIRST path segment rather than nested under
+    // 'schools/'. Each block uses an explicit literal second segment
+    // ('Staff', 'Students', 'Events', 'school_logos', 'holidays',
+    // 'academic') so it doesn't overlap with the modern lowercase-prefix
+    // patterns above (which use distinct literal first segments).
+
+    // ─── G1: Staff profile pics + documents ─────────────────────────────
+    // Paths written by Staff.php (admin web panel):
+    //   {schoolName}/Staff/{staffId}/Profile_pic/{filename}
+    //   {schoolName}/Staff/{staffId}/Profile_pic/thumbnail/{filename}
+    //   {schoolName}/Staff/{staffId}/Documents/{filename}
+    //   {schoolName}/Staff/{staffId}/Documents/thumbnail/{filename}
+    match /{schoolName}/Staff/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolName;
+      allow write: if request.auth != null
+                   && request.auth.token.school_id == schoolName;
+    }
+
+    // ─── G2: Student profile pics + documents ──────────────────────────
+    // Paths written by Sis.php:
+    //   {schoolName}/Students/{combinedClassPath}/{studentId}/Profile_pic/...
+    //   {schoolName}/Students/{combinedClassPath}/{studentId}/Documents/...
+    //   (plus thumbnail subfolders)
+    match /{schoolName}/Students/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolName;
+      allow write: if request.auth != null
+                   && request.auth.token.school_id == schoolName;
+    }
+
+    // ─── G3: Event gallery media ────────────────────────────────────────
+    // Path written by Schools.php gallery upload flow:
+    //   {schoolName}/Events/Media/{eventId}/{img|vid}_{ts}_{rand}.{ext}
+    match /{schoolName}/Events/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolName;
+      allow write: if request.auth != null
+                   && request.auth.token.school_id == schoolName;
+    }
+
+    // ─── G4: Legacy school logos (Schools.php::add_school) ──────────────
+    // Path written via Common_model::handleFileUpload:
+    //   {schoolName}/school_logos/school_logos.jpg
+    // Coexists with the newer L6 schools/{schoolId}/logo/... scheme.
+    match /{schoolName}/school_logos/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolName;
+      allow write: if request.auth != null
+                   && request.auth.token.school_id == schoolName;
+    }
+
+    // ─── G5: Legacy holidays document (Schools.php::add_school) ─────────
+    // Path written via Common_model::handleFileUpload:
+    //   {schoolName}/holidays/holidays.{ext}
+    // Coexists with the newer L6 schools/{schoolId}/holidays/... scheme.
+    match /{schoolName}/holidays/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolName;
+      allow write: if request.auth != null
+                   && request.auth.token.school_id == schoolName;
+    }
+
+    // ─── G6: Legacy academic document (Schools.php::add_school) ─────────
+    // Path written via Common_model::handleFileUpload:
+    //   {schoolName}/academic/academic.{ext}
+    // Coexists with the newer L6 schools/{schoolId}/academic/... scheme.
+    match /{schoolName}/academic/{path=**} {
+      allow read:  if request.auth != null
+                   && request.auth.token.school_id == schoolName;
+      allow write: if request.auth != null
+                   && request.auth.token.school_id == schoolName;
+    }
+
+    // No catch-all match block. Any path not matched above defaults to
+    // deny-by-default. New features adding Storage paths MUST add a
+    // corresponding match block (and update the smoke-test matrix) before
+    // deploying their client code. Phase B will add role-tier gating and
+    // Phase C will add MIME allowlists and size caps on top of these
+    // tenant-isolation blocks.
   }
 }
