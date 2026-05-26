@@ -1280,9 +1280,37 @@
   @media (max-width: 767px) {
     .wrap { padding: 0 18px; }
 
-    /* Hero */
-    .hero { margin: 10px; border-radius: 22px; padding: 16px 14px 20px; }
-    .hero-content { padding-top: 20px; }
+    /* ── Hero: kill the animated SVG, replace with a clean gradient ── */
+    .hero-bg-anim { display: none !important; }
+    .hero {
+      margin: 10px;
+      border-radius: 22px;
+      padding: 28px 18px 32px;
+      min-height: auto;
+      /* Warm editorial gradient matching the brand palette */
+      background:
+        radial-gradient(120% 80% at 30% 0%, rgba(224,179,106,.18), transparent 60%),
+        radial-gradient(100% 90% at 100% 100%, rgba(45,212,191,.10), transparent 65%),
+        linear-gradient(160deg, #1F1812 0%, #2A1F16 50%, #1B1410 100%);
+    }
+    .hero-content {
+      padding-top: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      text-align: center;
+    }
+    .hero-content .trust-pill {
+      display: inline-block;
+      align-self: center;
+      margin-bottom: 18px;
+    }
+    .hero-content .search-bar { margin: 0 auto; }
+    .hero-content .hero-stats {
+      justify-content: center;
+      text-align: center;
+    }
+    .hero-content .hero-stats > div { flex: 0 0 auto; }
     .hero-title {
       font-size: clamp(1.75rem, 7vw, 2.6rem);
       margin-bottom: 14px;
