@@ -145,6 +145,50 @@ class Fee_lifecycle
     ): array {
         $assigned = [];
         try {
+            // ── BUG-075 fix (2026-05-26) ────────────────────────────────
+            // Pre-read existing demand docs for this student so the write
+            // loop below can detect deterministic-demandId COLLISIONS with
+            // already-paid/partial demands.
+            //
+            // Why this matters: _demandId(studentId, periodKey, headId,
+            // headName) is deterministic on those four inputs. During
+            // reverse-promotion (Class 9 → Class 8), reassignFeesOnPromotion
+            // re-invokes assignInitialFees for the destination class's fee
+            // structure. The destination feeHeadIds match the ones that
+            // previously generated paid demands on the original admission
+            // into that class. So the newly-computed demandId here
+            // COLLIDES with the existing paid demand's docId. Pre-fix,
+            // the writeDemand call below sent paidAmount=0, balance=$amt,
+            // status='unpaid' in the merge=true payload — silently wiping
+            // the paid state on every paid demand for every promoted
+            // student.
+            //
+            // Symptom: feeReceipts + feeReceiptAllocations + accounting
+            // JEs all intact — but the demands they paid show
+            // paidAmount=0, balance=full, status='unpaid' or 'archived'.
+            // Pending Dues engine reads demand state directly → all
+            // previously-paid months appear unpaid.
+            //
+            // Fix: detect existing payment state from this pre-read; for
+            // such demands, OMIT paidAmount/balance/status from the write
+            // payload. Firestore merge=true then preserves the existing
+            // payment-state fields automatically.
+            //
+            // This is the PREVENTION fix only — it stops new corruption
+            // but does NOT restore existing damage. Recovery requires a
+            // separate backfill from feeReceiptAllocations (Phase 3, gated).
+            //
+            // Best-effort: an empty map on read failure falls back to
+            // current (pre-fix) behaviour. Never throws.
+            $existingDemands = [];
+            try {
+                foreach ($this->_demandsFor($studentId) as $did => $d) {
+                    $existingDemands[$did] = $d;
+                }
+            } catch (\Throwable $_) {
+                $existingDemands = [];
+            }
+
             $chart    = $this->fsTxn->readFeeStructure($class, $section);
             $headIds  = $this->fsTxn->readFeeHeadIds($class, $section);
             if (empty($chart)) {
@@ -187,7 +231,21 @@ class Fee_lifecycle
                             : "{$m} {$year}";
                         $demandId   = $this->_demandId($studentId, $periodKey, $headId, $headName);
 
-                        $this->fsTxn->writeDemand($demandId, [
+                        // ── BUG-075 fix (2026-05-26) ────────────────────
+                        // Detect deterministic-demandId collision with an
+                        // existing paid/partial demand. When detected,
+                        // OMIT paidAmount/balance/status from the merge
+                        // payload so the existing payment state survives.
+                        // Fresh demands (no prior, OR prior with no
+                        // payment) get the current 'unpaid' defaults
+                        // exactly as before — no regression.
+                        $prior = $existingDemands[$demandId] ?? null;
+                        $preservePayment = $prior !== null && (
+                            in_array((string)($prior['status'] ?? ''), ['paid','partial'], true)
+                            || (float)($prior['paidAmount'] ?? 0) > 0
+                        );
+
+                        $payload = [
                             'studentId'    => $studentId,
                             'studentName'  => $studentName,
                             'className'    => $class,
@@ -199,12 +257,22 @@ class Fee_lifecycle
                             'periodKey'    => $periodKey,
                             'grossAmount'  => $amt,
                             'netAmount'    => $amt,
-                            'paidAmount'   => 0.0,
-                            'balance'      => $amt,
-                            'status'       => 'unpaid',
                             'createdAt'    => $now,
                             'createdBy'    => $this->adminId,
-                        ]);
+                        ];
+                        // Only emit payment-state defaults for FRESH demands.
+                        // Existing paid/partial demands keep their
+                        // paidAmount/balance/status (preserved by Firestore
+                        // merge=true because the fields are absent from
+                        // the payload). See pre-loop docblock for full
+                        // root-cause rationale.
+                        if (!$preservePayment) {
+                            $payload['paidAmount'] = 0.0;
+                            $payload['balance']    = $amt;
+                            $payload['status']     = 'unpaid';
+                        }
+
+                        $this->fsTxn->writeDemand($demandId, $payload);
                     }
                     if (!in_array($headName, $assigned, true)) $assigned[] = $headName;
                 }
