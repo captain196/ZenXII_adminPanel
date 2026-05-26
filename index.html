@@ -1258,24 +1258,32 @@
   html, body { overflow-x: hidden; }
   img, svg, video { max-width: 100%; height: auto; }
 
-  /* ── Small/medium desktop & below (≤ 1279px) — kill animated SVG
-        The animated hero scene's text labels ("every journey starts
-        with a step" + "ZENXII · LEARN · GROW") were sized for the
-        3840×2160 viewBox and overlap with the editorial content on
-        any screen narrower than ~1280px (most 13–15" laptops). Only
-        wide desktops (1280px+) get the full animation. ───────────── */
-  @media (max-width: 1279px) {
-    .hero-bg-anim,
-    .hero > svg.hero-bg-anim,
-    svg.hero-bg-anim { display: none !important; visibility: hidden !important; }
+  /* ── Hide the SVG decorative text labels at ALL sizes ────────
+        ".svg-headline" / ".svg-headline-rule" / ".svg-subhead" inside
+        the hero SVG duplicate the editorial HTML text and were the
+        overlap source on small/medium screens. The rest of the
+        animation (school, clouds, birds, walking student, hills)
+        stays visible at every breakpoint. ────────────────────────── */
+  .hero-bg-anim .svg-headline,
+  .hero-bg-anim .svg-headline-rule,
+  .hero-bg-anim .svg-subhead { display: none !important; }
 
-    .hero {
-      min-height: auto;
-      background:
-        radial-gradient(120% 80% at 30% 0%, rgba(224,179,106,.18), transparent 60%),
-        radial-gradient(100% 90% at 100% 100%, rgba(45,212,191,.10), transparent 65%),
-        linear-gradient(160deg, #1F1812 0%, #2A1F16 50%, #1B1410 100%) !important;
+  /* ── Readable scrim behind editorial text on small/medium screens
+        Below ~1280px the SVG illustration is still showing, but the
+        clouds/hills/sky compete with the editorial typography for
+        attention. Add a soft dark vignette behind the editorial block
+        so trust-pill / title / sub / search-bar stay legible without
+        hiding the animation. ─────────────────────────────────────── */
+  @media (max-width: 1279px) {
+    .hero-content {
+      position: relative;
+      padding: 20px 18px 24px;
+      border-radius: 24px;
+      background: radial-gradient(110% 95% at 50% 50%, rgba(15,10,8,.62), rgba(15,10,8,.18) 75%, transparent 100%);
+      backdrop-filter: blur(2px);
+      -webkit-backdrop-filter: blur(2px);
     }
+    .hero { min-height: auto; }
   }
 
   /* ── Tablet & below (≤ 1023px) ─────────────────────────────── */
@@ -1299,18 +1307,15 @@
   @media (max-width: 767px) {
     .wrap { padding: 0 18px; }
 
-    /* ── Hero: kill the animated SVG, replace with a clean gradient ── */
-    .hero-bg-anim { display: none !important; }
+    /* ── Hero on mobile: animation stays visible (SVG bg + editorial
+          text on a scrim). Just adjust padding/margin for the small
+          viewport. The .hero-content scrim from the ≤1279px block
+          handles legibility. ──────────────────────────────────── */
     .hero {
       margin: 10px;
       border-radius: 22px;
-      padding: 28px 18px 32px;
+      padding: 18px 14px 22px;
       min-height: auto;
-      /* Warm editorial gradient matching the brand palette */
-      background:
-        radial-gradient(120% 80% at 30% 0%, rgba(224,179,106,.18), transparent 60%),
-        radial-gradient(100% 90% at 100% 100%, rgba(45,212,191,.10), transparent 65%),
-        linear-gradient(160deg, #1F1812 0%, #2A1F16 50%, #1B1410 100%);
     }
     .hero-content {
       padding-top: 12px;
