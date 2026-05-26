@@ -1215,4 +1215,62 @@ class MY_Controller extends CI_Controller
 
         return $studentIds;
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  SCHOOL-LOCAL DATE HELPERS
+    //
+    //  INVARIANT: these helpers exist so every "today"-style comparison in
+    //  date-sensitive multi-school flows (homework dueDate, fee-lock entry
+    //  date, attendance roll, period close, etc.) is anchored to the
+    //  school's own calendar, NOT the server's UTC clock. Server runs in
+    //  whatever zone the host provides — XAMPP defaults to UTC on Windows
+    //  and the prod host varies. A school in IST (UTC+5:30) sees its day
+    //  flip 5h30m before UTC does; using server `date('Y-m-d')` near the
+    //  midnight boundary mis-buckets the row by ±1 day.
+    //
+    //  Callers MUST use $this->_school_today() instead of raw date('Y-m-d')
+    //  in any multi-school user-visible flow. The Attendance controller
+    //  established this pattern (_get_school_timezone / _server_today at
+    //  Attendance.php:6397-6418); these helpers are the base-class lift
+    //  so Homework, Accounting, and any future controllers get the same
+    //  semantics without duplicating the schools-doc lookup.
+    //
+    //  Fail-safe: defaults to Asia/Kolkata on any error (Firestore read
+    //  failure, missing timezone field, unknown zone identifier) — never
+    //  throws, never blocks the caller. Cached per-request so repeated
+    //  calls within one HTTP request issue a single Firestore read.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** Per-request cache of the resolved DateTimeZone for the current school. */
+    private $_school_tz_cache = null;
+
+    /**
+     * School "today" (YYYY-MM-DD) in the school's configured timezone.
+     * Matches Attendance::_server_today (Attendance.php:6415-6418) so the
+     * two controllers agree on the date boundary.
+     */
+    protected function _school_today(): string
+    {
+        return (new \DateTime('now', $this->_school_tz()))->format('Y-m-d');
+    }
+
+    /**
+     * Resolve the school's DateTimeZone. Reads schools/{schoolId}.timezone
+     * once per request; defaults to Asia/Kolkata on any failure.
+     * Mirror of Attendance::_get_school_timezone (Attendance.php:6397-6409)
+     * and Admin.php:667-669 — three writers, one resolution rule.
+     */
+    private function _school_tz(): \DateTimeZone
+    {
+        if ($this->_school_tz_cache !== null) return $this->_school_tz_cache;
+        $tzName = 'Asia/Kolkata';
+        try {
+            $sdata = $this->fs->get('schools', $this->school_id);
+            $cand  = is_array($sdata) ? (string) ($sdata['timezone'] ?? '') : '';
+            if ($cand !== '' && in_array($cand, timezone_identifiers_list(), true)) {
+                $tzName = $cand;
+            }
+        } catch (\Exception $e) { /* fall through to IST default */ }
+        return $this->_school_tz_cache = new \DateTimeZone($tzName);
+    }
 }
