@@ -2354,16 +2354,26 @@ class Sis extends MY_Controller
 
     /**
      * Preview the next student ID (read-only, does NOT increment).
-     * Calls Auth API to peek at the next STU counter value.
-     * Globally unique across all schools.
+     * Routes through Id_generator's STU_PEEK path so the preview and
+     * the save-time generate() read the SAME Firestore pointer doc
+     * (collection feeCounters, doc _sys_STU). Previously read from
+     * Firestore_service::getCounter() which queried a separate
+     * SYSTEM_COUNTERS/global doc that the post-2026-04-27 migration
+     * stopped maintaining — the admission page mis-displayed STU0001
+     * while the real save would correctly produce STU0012.
+     *
+     * Firestore-only path. No RTDB, no MongoDB, no Auth API.
      */
     private function _peekNextStudentId(string $schoolId): string
     {
-        // Read counter directly from RTDB (faster, no OAuth token refresh needed)
         try {
-            // Firestore-only counter peek. Read from the Firestore system counter.
-            $counter = $this->fs->getCounter('STU');
-            return 'STU' . str_pad($counter + 1, 4, '0', STR_PAD_LEFT);
+            $this->load->library('id_generator');
+            // Id_generator::generate('<PREFIX>_PEEK') is a first-class
+            // read-only path (Id_generator.php:103-105 → _peek():591-595):
+            // reads the pointer, does NOT increment, does NOT create a
+            // claim doc, formats with canonical padding.
+            $peek = $this->id_generator->generate('STU_PEEK');
+            if (is_string($peek) && $peek !== '') return $peek;
         } catch (Exception $e) {
             log_message('error', 'peekNextStudentId failed: ' . $e->getMessage());
         }
@@ -2371,9 +2381,15 @@ class Sis extends MY_Controller
     }
 
     /**
-     * Generate the next student ID via Auth API (atomic MongoDB counter).
-     * Globally unique — no two students anywhere share the same ID.
-     * Only call this when actually saving a student (not on page load).
+     * Generate the next student ID via Id_generator (Firestore-backed
+     * atomic claim-and-pointer counter). Globally unique — no two
+     * students anywhere share the same ID. Only call this when actually
+     * saving a student (not on page load).
+     *
+     * Counter is stored in Firestore collection feeCounters
+     * (pointer doc _sys_STU + per-value claim docs _sys_STU_claim_{N}).
+     * Migrated from RTDB on 2026-04-27 (Id_generator.php:45-48).
+     * Firestore-only — no RTDB, no MongoDB, no Auth API.
      */
     private function _nextStudentId(string $schoolId): ?string
     {
