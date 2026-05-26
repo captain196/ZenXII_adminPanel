@@ -1233,6 +1233,84 @@
   @media (max-width: 880px) {
     .contact-grid { grid-template-columns: 1fr; gap: 28px; }
   }
+
+  /* ═══════════════════════════════════════════════════════════════
+     HERO TAGLINE — HTML replacement for the former in-SVG <text>
+     labels. Fully responsive via clamp()+vw units. Animation timing
+     mirrors the original 16s SVG sequence (svgHeadlineIn /
+     svgUnderlineIn / svgSubheadIn) so the in-flow narrative still
+     plays in sync with the walking-student journey scene.
+     ═══════════════════════════════════════════════════════════════ */
+  .hero-tagline {
+    text-align: center;
+    max-width: 800px;
+    margin: 0 auto 28px;
+    padding: 0 8px;
+    position: relative;
+    z-index: 1;
+  }
+  .hero-tagline-text {
+    font-family: Georgia, "Times New Roman", serif;
+    font-weight: 300;
+    font-size: clamp(1.3rem, 3.6vw, 2.6rem);
+    line-height: 1.18;
+    color: #f4e9d8;
+    letter-spacing: clamp(.02em, .35vw, .08em);
+    margin: 0;
+    text-shadow: 0 2px 16px rgba(0,0,0,.55);
+    opacity: 0;
+    transform: translateY(40px);
+    animation: htmlHeadlineIn 16s ease-in-out forwards;
+  }
+  .hero-tagline-rule {
+    display: block;
+    height: 3px;
+    width: clamp(80px, 18vw, 220px);
+    margin: 12px auto;
+    background: #E0B36A;
+    border-radius: 2px;
+    transform: scaleX(0);
+    transform-origin: center;
+    opacity: 0;
+    animation: htmlUnderlineIn 16s ease-in-out forwards;
+  }
+  .hero-tagline-sub {
+    font-family: -apple-system, "Inter", system-ui, sans-serif;
+    font-weight: 500;
+    font-size: clamp(.65rem, 1.2vw, .85rem);
+    color: #E0B36A;
+    text-transform: uppercase;
+    margin: 0;
+    text-shadow: 0 1px 8px rgba(0,0,0,.5);
+    opacity: 0;
+    letter-spacing: .08em;
+    animation: htmlSubheadIn 16s ease-in-out forwards;
+  }
+
+  @keyframes htmlHeadlineIn {
+    0%, 10%  { opacity: 0; transform: translateY(40px); }
+    22%      { opacity: 1; transform: translateY(0); }
+    100%     { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes htmlUnderlineIn {
+    0%, 14%  { transform: scaleX(0); opacity: 0; }
+    28%      { transform: scaleX(1); opacity: 1; }
+    100%     { transform: scaleX(1); opacity: 1; }
+  }
+  @keyframes htmlSubheadIn {
+    0%, 22%  { opacity: 0; letter-spacing: .08em; }
+    38%      { opacity: 1; letter-spacing: .4em; }
+    100%     { opacity: 1; letter-spacing: .4em; }
+  }
+
+  /* On very small screens the wide letter-spacing on the subhead
+     would overflow horizontally — cap it on phones. */
+  @media (max-width: 600px) {
+    .hero-tagline-sub { animation: none; opacity: 1; letter-spacing: .25em; }
+  }
+  @media (max-width: 380px) {
+    .hero-tagline-sub { letter-spacing: .15em; }
+  }
 </style>
 <script>
   /* Runs BEFORE the body parses — prevents the browser from
@@ -1455,25 +1533,22 @@
       <rect class="hero-backdrop" width="3840" height="2160" fill="#1F1812" pointer-events="none"/>
 
       <!-- Journey header — fades in during the walk, stays through the final frame -->
-      <g class="journey-header" filter="url(#textHalo)">
-        <text class="svg-headline" x="1920" y="280" text-anchor="middle"
-              font-family="Georgia, 'Times New Roman', serif"
-              font-size="120" font-weight="300" fill="#2E2A26"
-              letter-spacing="14">
-          every journey starts with a step
-        </text>
-        <line class="svg-headline-rule" x1="1700" y1="330" x2="2140" y2="330" stroke="#9E5840" stroke-width="4"/>
-        <text class="svg-subhead" x="1920" y="400" text-anchor="middle"
-              font-family="-apple-system, system-ui, sans-serif"
-              font-size="36" font-weight="500" fill="#9E5840"
-              letter-spacing="20">
-          ZENXII · LEARN · GROW
-        </text>
-      </g>
+      <!-- 'every journey starts with a step' tagline moved out of SVG
+           into HTML (.hero-tagline) below so it reflows responsively
+           at every viewport size. The original SVG <text> elements
+           had fixed positioning in a 3840x2160 viewBox which broke
+           on non-16:9 screens. -->
     </svg>
 
     <!-- Centered editorial content -->
     <div class="hero-content">
+      <!-- Responsive HTML tagline (replaces former in-SVG text) -->
+      <div class="hero-tagline" aria-hidden="true">
+        <h2 class="hero-tagline-text">every journey starts with a step</h2>
+        <span class="hero-tagline-rule"></span>
+        <p class="hero-tagline-sub">ZENXII · LEARN · GROW</p>
+      </div>
+
       <span class="trust-pill">Trusted by parents, teachers &amp; students</span>
 
       <h1 class="hero-title">
