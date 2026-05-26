@@ -1251,23 +1251,27 @@
   }
   .hero-tagline-text {
     font-family: Georgia, "Times New Roman", serif;
-    font-weight: 300;
+    font-weight: 400;
     font-size: clamp(1.3rem, 3.6vw, 2.6rem);
     line-height: 1.18;
-    color: #f4e9d8;
+    color: #2E2A26;
     letter-spacing: clamp(.02em, .35vw, .08em);
     margin: 0;
-    text-shadow: 0 2px 16px rgba(0,0,0,.55);
+    /* Single soft cream backdrop — readable on any scene area
+       without the multi-layer "glow" effect. */
+    text-shadow: 0 0 8px rgba(244,233,216,.7);
     opacity: 0;
     transform: translateY(40px);
     animation: htmlHeadlineIn 16s ease-in-out forwards;
   }
   .hero-tagline-rule {
     display: block;
-    height: 3px;
+    height: 4px;
     width: clamp(80px, 18vw, 220px);
     margin: 12px auto;
-    background: #E0B36A;
+    /* Deeper terracotta — readable on cream sky AND darker hills */
+    background: #5C2E1A;
+    box-shadow: 0 0 6px rgba(244,233,216,.6);
     border-radius: 2px;
     transform: scaleX(0);
     transform-origin: center;
@@ -1276,12 +1280,12 @@
   }
   .hero-tagline-sub {
     font-family: -apple-system, "Inter", system-ui, sans-serif;
-    font-weight: 500;
-    font-size: clamp(.65rem, 1.2vw, .85rem);
-    color: #E0B36A;
+    font-weight: 600;
+    font-size: clamp(.7rem, 1.2vw, .9rem);
+    color: #5C2E1A;
     text-transform: uppercase;
     margin: 0;
-    text-shadow: 0 1px 8px rgba(0,0,0,.5);
+    text-shadow: 0 0 6px rgba(244,233,216,.7);
     opacity: 0;
     letter-spacing: .08em;
     animation: htmlSubheadIn 16s ease-in-out forwards;
@@ -1311,6 +1315,116 @@
   @media (max-width: 380px) {
     .hero-tagline-sub { letter-spacing: .15em; }
   }
+
+  /* ═══════════════════════════════════════════════════════════════
+     PROFESSIONAL HERO REBUILD — fully fluid responsive (no patches)
+     Single source of truth for the hero's responsive behavior.
+     Works smoothly from 320px → 2560px+ via clamp()+vw+vh sizing.
+     - All text sizes fluid (no fixed-px font-sizes)
+     - All padding/gaps fluid (scales with viewport)
+     - Hero height adapts to viewport (no rigid 100vh)
+     - HTML carries text; SVG carries art (already done in tagline)
+     - Search bar wraps gracefully on narrow phones
+     - Stats flex-wrap so they never overflow
+     - Universal overflow guards at the bottom
+     Specificity: ".hero .X" beats legacy ".X" rules — no !important.
+     ═══════════════════════════════════════════════════════════════ */
+
+  /* 1. Container — fluid margin, padding, height */
+  section.hero {
+    margin: clamp(6px, 1.2vw, 14px);
+    border-radius: clamp(16px, 2vw, 28px);
+    padding: clamp(20px, 4vw, 44px) clamp(16px, 3vw, 32px);
+    min-height: min(95vh, clamp(560px, 80vh, 880px));
+  }
+  /* Short landscape phones → drop the tall min-height */
+  @media (max-height: 600px) {
+    section.hero { min-height: auto; }
+  }
+
+  /* 2. Content stack — fluid gap replaces individual margins */
+  section.hero .hero-content {
+    max-width: min(880px, 100%);
+    padding: clamp(24px, 6vh, 56px) clamp(12px, 3vw, 28px);
+    gap: clamp(16px, 3vh, 26px);
+  }
+  /* Zero per-element margins so the gap controls spacing */
+  section.hero .hero-content > .hero-tagline,
+  section.hero .hero-content > .trust-pill,
+  section.hero .hero-content > .hero-title,
+  section.hero .hero-content > .hero-sub,
+  section.hero .hero-content > .search-bar,
+  section.hero .hero-content > .hero-stats {
+    margin: 0;
+  }
+
+  /* 3. Trust pill — fluid */
+  section.hero .trust-pill {
+    font-size: clamp(.7rem, 1.2vw, .85rem);
+    padding: clamp(6px, .8vw, 8px) clamp(12px, 1.6vw, 16px);
+  }
+
+  /* 4. Title — fluid from tiny phone (1.6rem) → desktop (4.6rem) */
+  section.hero .hero-title {
+    font-size: clamp(1.6rem, 5.5vw, 4.6rem);
+    line-height: 1.08;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    hyphens: auto;
+  }
+
+  /* 5. Sub — fluid */
+  section.hero .hero-sub {
+    font-size: clamp(.92rem, 1.5vw, 1.1rem);
+    max-width: min(56ch, 100%);
+  }
+
+  /* 6. Search bar — fluid sizing, wraps on very narrow */
+  section.hero .search-bar {
+    max-width: min(620px, 100%);
+    width: 100%;
+    padding: clamp(4px, .8vw, 6px) clamp(4px, .8vw, 6px) clamp(4px, .8vw, 6px) clamp(14px, 2vw, 22px);
+  }
+  section.hero .search-bar input {
+    font-size: clamp(.85rem, 1.3vw, .95rem);
+    padding: clamp(8px, 1vw, 10px) 0;
+    min-width: 0;
+  }
+  section.hero .search-bar button {
+    font-size: clamp(.8rem, 1.1vw, .9rem);
+    padding: clamp(9px, 1.2vw, 11px) clamp(14px, 1.8vw, 22px);
+    white-space: nowrap;
+  }
+  /* Very narrow phones: search wraps to two rows for thumb-friendly target sizes */
+  @media (max-width: 420px) {
+    section.hero .search-bar { flex-wrap: wrap; gap: 6px; padding: 6px; }
+    section.hero .search-bar input { width: 100%; padding: 8px 12px; }
+    section.hero .search-bar button { width: 100%; padding: 10px 14px; }
+  }
+
+  /* 7. Stats — flex-wrap so they reflow at any width */
+  section.hero .hero-stats {
+    font-size: clamp(.78rem, 1.3vw, .95rem);
+    gap: clamp(14px, 3vw, 40px);
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  /* 8. Tagline — fluid sizing (overrides earlier tagline clamps with
+        tighter ranges so they fit alongside the editorial title) */
+  section.hero .hero-tagline-text {
+    font-size: clamp(1.1rem, 3vw, 2.6rem);
+  }
+  section.hero .hero-tagline-rule {
+    width: clamp(80px, 18vw, 220px);
+  }
+  section.hero .hero-tagline-sub {
+    font-size: clamp(.65rem, 1.1vw, .85rem);
+  }
+
+  /* 9. Universal safety nets — kill horizontal scroll and oversized media */
+  html, body { overflow-x: hidden; }
+  img, svg, video { max-width: 100%; height: auto; }
 </style>
 <script>
   /* Runs BEFORE the body parses — prevents the browser from
