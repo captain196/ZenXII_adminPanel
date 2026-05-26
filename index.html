@@ -1307,10 +1307,13 @@
     100%     { opacity: 1; letter-spacing: .4em; }
   }
 
-  /* On very small screens the wide letter-spacing on the subhead
-     would overflow horizontally — cap it on phones. */
+  /* On phones (≤600px): show ALL THREE tagline parts immediately
+     (no 16-second sequential fade-in). Previously only the subhead
+     was forced visible, which made it appear BEFORE the headline. */
   @media (max-width: 600px) {
-    .hero-tagline-sub { animation: none; opacity: 1; letter-spacing: .25em; }
+    .hero-tagline-text { animation: none; opacity: 1; transform: none; }
+    .hero-tagline-rule { animation: none; opacity: 1; transform: scaleX(1); }
+    .hero-tagline-sub  { animation: none; opacity: 1; letter-spacing: .25em; }
   }
   @media (max-width: 380px) {
     .hero-tagline-sub { letter-spacing: .15em; }
@@ -1395,11 +1398,20 @@
     padding: clamp(9px, 1.2vw, 11px) clamp(14px, 1.8vw, 22px);
     white-space: nowrap;
   }
-  /* Very narrow phones: search wraps to two rows for thumb-friendly target sizes */
-  @media (max-width: 420px) {
-    section.hero .search-bar { flex-wrap: wrap; gap: 6px; padding: 6px; }
-    section.hero .search-bar input { width: 100%; padding: 8px 12px; }
-    section.hero .search-bar button { width: 100%; padding: 10px 14px; }
+  /* All phones (≤600px): stack search input + button vertically for
+     thumb-friendly full-width targets. The horizontal pill layout
+     squishes badly even at 414–600px where icon + input + button
+     all compete for narrow space. */
+  @media (max-width: 600px) {
+    section.hero .search-bar {
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 8px;
+      border-radius: 18px;  /* less pill-like when stacked */
+    }
+    section.hero .search-bar > svg { display: none; }  /* drop the icon to save space */
+    section.hero .search-bar input  { width: 100%; padding: 10px 14px; font-size: .95rem; }
+    section.hero .search-bar button { width: 100%; padding: 12px 14px; font-size: .9rem; }
   }
 
   /* 7. Stats — flex-wrap so they reflow at any width */
