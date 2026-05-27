@@ -2155,6 +2155,24 @@ class Fees extends MY_Controller
         $yearlyFreqs = ['annual', 'yearly', 'one-time', 'onetime'];
         $byMonth = []; // monthLabel => ['totalDue' => f, 'totalPaid' => f]
         foreach ((array) $demands as $d) {
+            // SW4-companion-A (2026-05-27): skip archived demands.
+            // Archived demands represent historical state (class
+            // transitions after promotion / reverse-promotion cycles,
+            // refund reversals, manual cleanups). They must NOT be
+            // summed into the current-class dues view that drives
+            // the fees_counter per-month tiles + top-card totals,
+            // otherwise the operator sees inflated TotalFee + spurious
+            // 'Partial' tiles on months that are actually fully paid
+            // (corruption symptom reported BUG-075). Mirrors the
+            // parent app's SW4-companion-B archived-status filter on
+            // FeeFirestoreRepository.
+            //
+            // Defense-in-depth: the upstream archive operation
+            // (reassignFeesOnPromotion) is the canonical writer of
+            // status='archived'. This filter keeps the read-path
+            // stateless wrt. promotion lifecycle.
+            if (strtolower((string)($d['status'] ?? '')) === 'archived') continue;
+
             $rawPeriod = (string) ($d['period'] ?? '');
             $monthLabel = trim((string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', $rawPeriod));
             if ($monthLabel === '') continue;
