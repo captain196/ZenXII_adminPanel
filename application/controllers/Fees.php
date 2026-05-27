@@ -3892,6 +3892,15 @@ class Fees extends MY_Controller
             $totalPaid = 0;
             $totalDisc = 0;
             foreach ($demands as $d) {
+                // SW4-companion-G (2026-05-27) — skip archived demands.
+                // due_fees_table powers the admin "Due Fees Table" view.
+                // Archived demands (promotion-cycle artefacts, refund
+                // reversals) must NOT contribute to receivedFee / dueFee
+                // because totalFee comes from the current class's
+                // feeStructure — summing archived rows skews
+                // receivedFee asymmetrically. Same archived-row hygiene
+                // as SW4-A/D/E read filters.
+                if (strtolower((string)($d['status'] ?? '')) === 'archived') continue;
                 $totalNet  += (float) ($d['net_amount']      ?? 0);
                 $totalPaid += (float) ($d['paid_amount']     ?? 0);
                 $totalDisc += (float) ($d['discount_amount'] ?? 0);
@@ -6741,6 +6750,15 @@ class Fees extends MY_Controller
         $demandCounts = [];
         foreach ((array) $rawDemands as $r) {
             $d = $r['data'] ?? $r;
+            if (!is_array($d)) continue;
+            // SW4-companion-G (2026-05-27) — skip archived demands.
+            // get_demand_status drives the admin "Generate Monthly
+            // Demands" coverage panel. Archived demands from prior
+            // class assignments must NOT count as "this student has
+            // demands generated for current class" — that would
+            // mislead the operator into NOT regenerating when in
+            // fact the current-class demands may be missing.
+            if (strtolower((string)($d['status'] ?? '')) === 'archived') continue;
             $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
             if ($sid !== '') $demandCounts[$sid] = ($demandCounts[$sid] ?? 0) + 1;
         }
