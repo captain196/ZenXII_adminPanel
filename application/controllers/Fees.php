@@ -4480,20 +4480,30 @@ class Fees extends MY_Controller
         }
 
         // ────────────────────────────────────────────────────────────────
-        //  Load existing demands ONLY in the legacy inline-write path.
-        //  The bulk (batched) path skips this entirely — writes use
-        //  merge=true with deterministic doc IDs, so re-runs overwrite
-        //  the same slot idempotently without needing a pre-check.
-        //  This single change eliminates ~N×M Firestore reads (N students
-        //  × M months) from the bulk generation — the dominant
-        //  performance cost at any scale > ~3 students.
+        //  Load existing demands for BOTH inline and bulk paths.
+        //
+        //  BUG-075-class prevention (2026-05-27):
+        //  The pre-fix bulk path skipped this read and relied on
+        //  "merge=true overwrites the same slot idempotently" — which
+        //  is FALSE when the source payload below contains payment-
+        //  state defaults (paidAmount=0, balance=netAmount,
+        //  status='unpaid'). A bulk re-run against a student whose
+        //  demand IDs collided with already-paid demands silently
+        //  wiped the paid state on every collision — exactly the
+        //  BUG-075 symptom shipped from Fee_lifecycle::assignInitialFees
+        //  (fixed in 26288ac8). Re-introducing the pre-read here closes
+        //  the same hole on the demand-generator side. The cost is
+        //  one extra Firestore read per student in bulk mode (was N×M
+        //  pre-fix on inline path) — acceptable trade for correctness.
+        //  Perf can be reclaimed later via batched parallel reads if
+        //  benchmarks demand it (BUG-045-class follow-up).
         // ────────────────────────────────────────────────────────────────
 
         if (!isset($this->fsTxn)) {
             $this->load->library('Fee_firestore_txn', null, 'fsTxn');
             $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
         }
-        $existingDemands = ($batchOps !== null) ? [] : $this->fsTxn->demandsForStudent($studentId);
+        $existingDemands = $this->fsTxn->demandsForStudent($studentId);
 
         $newDemands = []; // demandId => demand row, only the rows we will create
 
@@ -4514,9 +4524,20 @@ class Fees extends MY_Controller
             $feeHeadId = (string) ($feeHeadIdByName[$feeHead] ?? '');
             $demandId  = $this->_buildDemandId($studentId, $periodKey, $feeHeadId, $feeHead);
 
-            // Idempotency pre-check — only relevant for the legacy inline
-            // path. Bulk path relies on merge=true semantics instead.
-            if ($batchOps === null && isset($existingDemands[$demandId])) {
+            // Idempotency pre-check — applies to BOTH inline and bulk
+            // paths.
+            //
+            // BUG-075-class prevention (2026-05-27): pre-fix this guard
+            // was `if ($batchOps === null && isset(...))` — bulk-path
+            // re-runs proceeded into the writeDemand payload below
+            // which carries payment-state defaults (paidAmount=0,
+            // balance=netAmount, status='unpaid'). When the
+            // deterministic demandId collided with an existing paid
+            // demand, the merge=true bulk write silently wiped the
+            // paid state. Removing the bulk-path bypass restores
+            // true idempotency: a re-run never touches an existing
+            // demand regardless of mode.
+            if (isset($existingDemands[$demandId])) {
                 $result['skipped']++;
                 continue;
             }
