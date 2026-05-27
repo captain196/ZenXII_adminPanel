@@ -4160,6 +4160,25 @@ class Fees extends MY_Controller
         foreach ($demands as $did => $d) {
             $status = $d['status'] ?? 'unpaid';
             if ($status === 'paid') continue;
+            // SW4-companion-F (2026-05-27) — skip archived demands.
+            //
+            // This is a MUTATION-class call site: the body below
+            // calls $this->fsTxn->updateDemand(...) to write
+            // fine_amount + balance onto the demand. Without this
+            // guard, an archived demand whose dueDate has passed
+            // would accrue a fine, and the recomputed balance
+            // (netAmount + fine - paidAmount) would re-introduce
+            // a non-zero balance onto a demand that the archive
+            // operation set to balance=0 — re-corrupting historical
+            // state and bleeding the demand back into pending-dues
+            // surfaces. Same archived-row hygiene principle as
+            // SW4-A/D/E read-side filters; here the stakes are
+            // higher because we are writing.
+            //
+            // Active-demand semantics unchanged: status='unpaid'
+            // and status='partial' still proceed into the fine
+            // computation exactly as before.
+            if (strtolower((string) $status) === 'archived') continue;
 
             $dueDate = $d['due_date'] ?? '';
             if ($dueDate === '' || $dueDate >= $today) continue;
