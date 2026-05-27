@@ -859,7 +859,43 @@ class Sis extends MY_Controller
             return $this->json_error('No students found in the selected class/section.');
         }
 
-        // Check target section capacity before promotion
+        // ── PM-SELECT 2026-05-26: per-student selection filter ──────────
+        // Operator can deselect rows in the preview UI; client sends only
+        // checked rows as `student_ids[]`. If the array is absent or
+        // empty, behaviour falls back to promote-all (backward compat
+        // with any pre-feature automation / direct API callers).
+        //
+        // Server-side authority is preserved by INTERSECTING with the
+        // freshly-fetched class roster — selected IDs that are not in
+        // the source class (tampered, stale, belong to another class)
+        // are silently dropped. Empty intersection blocks the promotion
+        // with a clear error so the operator knows their selection was
+        // invalid.
+        //
+        // Each ID is validated against `[A-Za-z0-9_]+` so a hostile
+        // value can never reach downstream Firestore writes or history
+        // logging — defence-in-depth even though we re-intersect.
+        $rawSelectedIds = $this->input->post('student_ids');
+        if (is_array($rawSelectedIds) && !empty($rawSelectedIds)) {
+            $cleanIds = [];
+            foreach ($rawSelectedIds as $rid) {
+                $rid = trim((string) $rid);
+                if ($rid === '') continue;
+                if (!preg_match('/^[A-Za-z0-9_]+$/', $rid)) continue;
+                $cleanIds[$rid] = true;
+            }
+            if (!empty($cleanIds)) {
+                $students = array_intersect_key($students, $cleanIds);
+            }
+            if (empty($students)) {
+                return $this->json_error(
+                    'None of the selected students were found in the source class. '
+                    . 'Refresh the preview and try again.'
+                );
+            }
+        }
+
+        // Check target section capacity before promotion (uses post-filter count)
         $newClassKey   = Firestore_service::classKey($toClass);
         $newSectionKey = Firestore_service::sectionKey($toSection);
         $targetSectionDoc = $this->fs->get('sections', $this->fs->sectionDocId($toClass, $toSection));

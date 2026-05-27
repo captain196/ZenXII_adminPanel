@@ -235,11 +235,34 @@
             <!-- Alert -->
             <div class="pm-alert" id="alertBox"><i class="fa"></i><span></span></div>
 
+            <!-- Selection toolbar (PM-SELECT 2026-05-26) ──────────────────
+                 Per-student selection support. Defaults to ALL CHECKED on
+                 preview load so the no-action default matches pre-feature
+                 "promote all" behaviour. -->
+            <div id="pmSelectBar" style="display:none; margin-top:16px; padding:10px 14px;
+                background:var(--bg3); border:1px solid var(--border); border-radius:8px;
+                display:flex; align-items:center; gap:14px; font-size:12.5px; color:var(--t2);">
+                <button class="pm-btn pm-btn-secondary" style="padding:6px 14px;" onclick="pmSelectAll()">
+                    <i class="fa fa-check-square-o"></i> Select All
+                </button>
+                <button class="pm-btn pm-btn-secondary" style="padding:6px 14px;" onclick="pmClearSel()">
+                    <i class="fa fa-square-o"></i> Clear
+                </button>
+                <span id="pmSelCounter" style="margin-left:auto; font-family:var(--font-m); font-weight:600;">
+                    Selected: <strong id="pmSelCount">0</strong> of <strong id="pmTotalCount">0</strong>
+                </span>
+            </div>
+
             <!-- Table -->
             <div style="overflow-x:auto; margin-top:16px;">
                 <table class="pm-table">
                     <thead>
                         <tr>
+                            <th style="width:36px;">
+                                <input type="checkbox" id="pmCheckAll" checked
+                                       onchange="pmToggleAll(this.checked)"
+                                       title="Select / deselect all">
+                            </th>
                             <th style="width:50px;">#</th>
                             <th>Student ID</th>
                             <th>Name</th>
@@ -315,16 +338,24 @@ function previewPromotion() {
         var tbody = document.getElementById('previewTbody');
         document.getElementById('previewCount').textContent = previewStudents.length;
         if (!previewStudents.length) {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--t3);padding:28px;">No students found in the selected class/section.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--t3);padding:28px;">No students found in the selected class/section.</td></tr>';
+            document.getElementById('pmSelectBar').style.display = 'none';
         } else {
             tbody.innerHTML = previewStudents.map(function(s, i) {
                 // 2026-05-25 — server returns already-formatted "Class 8th" / "Section A"
                 // per [[student_class_section_canonical]] (className/section are canonical
                 // full forms). Do NOT prepend "Class "/"Section " or you get "Class Class 8th".
-                return '<tr><td>' + (i+1) + '</td><td><code>' + esc(s.user_id) + '</code></td>'
+                // PM-SELECT 2026-05-26: per-row checkbox prepended. Defaults to
+                // CHECKED so no operator action keeps the pre-feature "promote
+                // all" behaviour.
+                return '<tr><td><input type="checkbox" class="pm-row-chk" value="' + esc(s.user_id) + '" checked onchange="pmUpdateCount()"></td>'
+                    + '<td>' + (i+1) + '</td><td><code>' + esc(s.user_id) + '</code></td>'
                     + '<td>' + esc(s.name) + '</td><td>' + esc(s.class) + '</td>'
                     + '<td>' + esc(s.section) + '</td></tr>';
             }).join('');
+            document.getElementById('pmSelectBar').style.display = 'flex';
+            document.getElementById('pmTotalCount').textContent = previewStudents.length;
+            pmUpdateCount();
         }
         document.getElementById('previewTitle').innerHTML =
             '<i class="fa fa-users" style="color:var(--gold);"></i> Students to Promote '
@@ -354,11 +385,45 @@ function previewPromotion() {
     });
 }
 
+// PM-SELECT 2026-05-26: per-student selection helpers.
+// Default state on preview load is ALL CHECKED — so no operator action
+// reproduces the pre-feature "promote all" semantics exactly.
+function pmSelectAll() { pmToggleAll(true);  document.getElementById('pmCheckAll').checked = true;  }
+function pmClearSel()  { pmToggleAll(false); document.getElementById('pmCheckAll').checked = false; }
+function pmToggleAll(checked) {
+    document.querySelectorAll('.pm-row-chk').forEach(function(cb) { cb.checked = checked; });
+    pmUpdateCount();
+}
+function pmUpdateCount() {
+    var sel = document.querySelectorAll('.pm-row-chk:checked').length;
+    var tot = document.querySelectorAll('.pm-row-chk').length;
+    var cEl = document.getElementById('pmSelCount');
+    if (cEl) cEl.textContent = sel;
+    // Sync the header checkbox tri-state with row selection.
+    var headChk = document.getElementById('pmCheckAll');
+    if (headChk) headChk.checked = (sel === tot && tot > 0);
+}
+function pmGetSelectedIds() {
+    return Array.from(document.querySelectorAll('.pm-row-chk:checked'))
+                .map(function(cb) { return cb.value; });
+}
+
 function executePromotion() {
     var toClass   = document.getElementById('toClass').value;
     var toSection = document.getElementById('toSection').value;
     if (!toClass || !toSection) { showAlert('Please select destination class and section.', 'error'); return; }
-    if (!confirm('Promote ' + previewStudents.length + ' student(s) to Class ' + toClass + ' / Section ' + toSection + '?')) return;
+
+    // PM-SELECT 2026-05-26: build selected-IDs list. Block zero-selection
+    // explicitly with a clear message — empty selection is operator error,
+    // not "promote all". Real promote-all is the default state (every row
+    // pre-checked) so confirming with no manual deselection still promotes
+    // everyone.
+    var selectedIds = pmGetSelectedIds();
+    if (selectedIds.length === 0) {
+        showAlert('Select at least one student to promote (or click Select All).', 'error');
+        return;
+    }
+    if (!confirm('Promote ' + selectedIds.length + ' student(s) to Class ' + toClass + ' / Section ' + toSection + '?')) return;
 
     var btn = document.getElementById('confirmBtn');
     btn.disabled = true;
@@ -371,6 +436,10 @@ function executePromotion() {
         to_section:   toSection,
         to_session:   document.getElementById('toSession').value.trim(),
     });
+    // PM-SELECT: append student_ids[] entries — server filters its roster
+    // fetch to this subset. URLSearchParams append preserves duplicate
+    // keys exactly as PHP $_POST expects for `student_ids[]` array form.
+    selectedIds.forEach(function(id) { body.append('student_ids[]', id); });
     body.append(csrfName, csrfToken);
     fetch('<?= base_url("sis/execute_promotion") ?>', {
         method: 'POST',
