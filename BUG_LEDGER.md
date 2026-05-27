@@ -1913,3 +1913,51 @@ CARRY-010 (closed 2026-05-24 — tenth controlled-remediation package + SIXTH Ph
 CARRY-011 (closed 2026-05-24 — eleventh controlled-remediation package + SEVENTH Phase 2 production-hardening; Communication historical notice migration via in-place rename preserving 5-pad numeric identity per D7.A; second bounded historical-data-migration; create-FIRST-then-delete pattern validated for atomic identity-preserving renames)
 CARRY-012 (closed 2026-05-24 — twelfth controlled-remediation package + EIGHTH Phase 2 production-hardening; SIS historical ADMISSION backfill for 7 pre-fix students; third bounded historical-data-migration; provenance-field-distinguishes-backfill pattern validated for surgical rollback; T2.1 audit-completeness now fully NORMAL)
 CARRY-013 (closed 2026-05-24 — thirteenth controlled-remediation package + FIRST production-rule-deploy in V7 lifecycle; FZ-2-CRITICAL Stage-1.A authenticated-only RTDB baseline; catastrophic anonymous full-RTDB exposure CLOSED; multi-system deploy choreography validated; pre-staged rollback + post-deploy negative-test confirmation pattern established for Stage 2/3 reuse)
+
+---
+
+## Tech-Debt — Dormant RTDB Remnants in Session Pipeline (2026-05-27, post-SW4-companion-C forensic)
+
+**Origin:** surfaced during the session-consistency forensic on School Config → Session tab (2026-05-27). Header dropdown stale-DOM bug was fixed in-thread; this entry catalogs the **separately-deferred** RTDB-removal cleanup that the same forensic identified.
+
+**Operator deferral rationale:** "defer all RTDB-removal work for a dedicated hardening phase later" — frontend stabilization prioritized over backend session-pipeline mutation.
+
+### TECH-DEBT-001 — MY_Controller session-whitelist refresh reads RTDB
+
+- **surface:** [`application/core/MY_Controller.php:175`](application/core/MY_Controller.php#L175)
+- **observed:** `$freshSessions = $this->firebase->get("Schools/{$this->school_name}/Sessions");` — RTDB read inside the session-year whitelist-miss fallback block
+- **expected:** Firestore read of `schools/{schoolId}.sessions` (the canonical source written by `School_config::add_session` and friends)
+- **source_of_expectation:** memory feedback_no_rtdb_ever.md — absolute NO-RTDB policy
+- **trigger condition:** ONLY fires when `session_year` is missing from cached `available_sessions` whitelist (rare; out-of-band session change while user is logged in)
+- **impact:** when path fires, returns empty/stale RTDB data (admin code stopped mirror-writing to that RTDB node post-Firestore migration) → falls through to `_force_logout('Invalid academic session…')`. User gets spurious logout instead of self-heal. Frequency in production: very low.
+- **risk classification:** low impact, low frequency, but a known policy violation
+- **fix_plan:** replace with `$fsSchool = $this->fs->get('schools', $this->fs->schoolId()); $freshSessions = (is_array($fsSchool['sessions'] ?? null)) ? array_values(array_filter($fsSchool['sessions'], 'is_string')) : [];` — same semantic via canonical source
+- **dependencies:** none (`$this->fs` already initialised everywhere MY_Controller is)
+- **deferred to:** dedicated RTDB-elimination hardening phase
+
+### TECH-DEBT-002 — School_config docblock historical RTDB reference
+
+- **surface:** [`application/controllers/School_config.php:21`](application/controllers/School_config.php#L21)
+- **observed:** docblock line `Schools/{school}/Config/ActiveSession     — active session string` references RTDB path no longer authoritative
+- **expected:** docblock update describing the Firestore-canonical sources (`schools/{schoolId}.currentSession` + `.sessions[]`)
+- **impact:** documentation drift only — misleads readers into thinking the RTDB path is still in play
+- **risk classification:** cosmetic
+- **fix_plan:** one-line docblock edit
+- **deferred to:** same RTDB-elimination phase as TECH-DEBT-001 (bundle to keep cleanup atomic)
+
+### TECH-DEBT-003 — Parent AuthRepository.lookupActiveSession dead-code
+
+- **surface:** [`D:/Projects/SchoolSyncParent/app/src/main/java/com/schoolsync/parent/data/repository/AuthRepository.kt:399-403`](D:/Projects/SchoolSyncParent/app/src/main/java/com/schoolsync/parent/data/repository/AuthRepository.kt#L399-L403)
+- **observed:** `lookupActiveSession(schoolCode)` method exists in working-tree-only WIP, reads `Schools/$schoolCode/Config/ActiveSession` from RTDB. Has no caller post-SW4.
+- **expected:** removed after SW4 base + companion-A land + soak passes
+- **source_of_expectation:** SW4 inline comment at AuthRepository.kt:114 — "preserved unused (dead-code) so SW4 rollback is a single atomic revert"
+- **risk classification:** dormant — zero runtime exposure since unreferenced
+- **fix_plan:** delete method after SW4 soak window closes (>= 2 weeks of clean propagation logs without rollback)
+- **deferred to:** SW4 stabilization soak completion → then bundle with TECH-DEBT-001/002 in the RTDB-elimination phase
+
+### Session-config UI stale-DOM bug — RESOLVED in-thread
+
+- **surface:** [`application/views/school_config/index.php`](application/views/school_config/index.php) — `syncSessions`, `addSession`, `deleteSession`, `setActive`, rollover handler
+- **observed pre-fix:** header `.g-sess-list` dropdown not refreshed after AJAX session-mutation responses; stale sessions in dropdown until full page reload
+- **fix shipped:** new `refreshHeaderSessList(sessions, active)` helper inserted before `archiveSession`; invoked from all 5 session-mutation handlers. Frontend-only; no backend mutation; PHP lint clean.
+- **status:** fixed-unverified — pending operator runtime soak

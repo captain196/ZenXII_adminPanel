@@ -1354,6 +1354,11 @@ window.rollExecute = function() {
             }
             renderSessions(CFG.sessions, CFG.active_session || '');
             renderClassSelects(CFG.classes || [], CFG.sessions, CFG.active_session || '');
+            // 2026-05-27 — rollover may have added a new target session
+            // to sessions[] AND/OR flipped active_session. Rebuild header
+            // dropdown so it carries the new year and the active-class
+            // lands on the right <li>.
+            refreshHeaderSessList(CFG.sessions || [], CFG.active_session || '');
             closeRolloverModal();
             if (d.summary && d.summary.errors && d.summary.errors.length) {
                 alert('Rollover finished with ' + d.summary.errors.length + ' error(s):\n\n' + d.summary.errors.slice(0, 5).join('\n'));
@@ -1597,6 +1602,60 @@ function _typeToConfirmDialog(opts) {
     });
 }
 
+/* ────────────────────────────────────────────────────────────────
+ * 2026-05-27 — refreshHeaderSessList(sessions, active)
+ *
+ * Rebuilds the global header session-switcher dropdown
+ * (`<ul.g-sess-list>`) from a fresh sessions array. Used by every
+ * session-mutation handler on this page so the header dropdown
+ * stays synchronized with both the Session-tab list AND the
+ * server-side `available_sessions` PHP userdata after AJAX calls
+ * (which previously left the dropdown DOM stale until full page
+ * reload — see "Sync from Firebase" forensic 2026-05-27).
+ *
+ * Contract preservation:
+ *   1. Click handler on each <li> mirrors the server-rendered
+ *      header.php logic at lines 1391-1404 exactly: short-circuit
+ *      on active item, POST to admin/switch_session, reload on
+ *      success. Intentional duplication; source-of-truth handler
+ *      lives in header.php for server-rendered items and the same
+ *      shape is rebuilt here for dynamically-replaced items.
+ *   2. The active item carries class `g-sess-item--active`
+ *      (CSS at header.php:519) and renders the check icon visible.
+ *   3. data-year attribute drives both the click handler and the
+ *      "latest session" computation in the New Session modal at
+ *      header.php:1411-1418, so we preserve it verbatim.
+ * ──────────────────────────────────────────────────────────────── */
+function refreshHeaderSessList(sessions, active) {
+    var headerList = document.querySelector('.g-sess-list');
+    if (!headerList) return;
+    headerList.innerHTML = '';
+    (sessions || []).forEach(function(yr) {
+        var isActive = (yr === active);
+        var li = document.createElement('li');
+        li.className = 'g-sess-item' + (isActive ? ' g-sess-item--active' : '');
+        li.dataset.year = yr;
+        li.innerHTML = '<i class="fa fa-check g-sess-check"></i> '
+                     + yr.replace(/[<>&"']/g, function(c) {
+                         return {'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c];
+                       });
+        li.addEventListener('click', function() {
+            var year = this.dataset.year;
+            if (this.classList.contains('g-sess-item--active')) {
+                var panel = document.getElementById('gSessPanel');
+                if (panel) panel.classList.remove('open');
+                return;
+            }
+            $.post(BASE_URL + 'admin/switch_session', { session_year: year })
+             .done(function(res) {
+                 if (res && res.status === 'success') window.location.reload();
+             })
+             .fail(function() { alert('Failed to switch session. Please reload the page and try again.'); });
+        });
+        headerList.appendChild(li);
+    });
+}
+
 window.archiveSession = function(sess, doArchive) {
     var verb = doArchive ? 'archive' : 'unarchive';
     if (doArchive && !confirm('Archive "' + sess + '"?\n\nIt will be hidden from default dropdowns but all data (students, marks, fees, attendance) is preserved. You can unarchive later.')) return;
@@ -1626,6 +1685,11 @@ window.deleteSession = function(sess) {
             CFG.sessions = d.sessions || [];
             renderSessions(CFG.sessions, CFG.active_session || '');
             renderClassSelects(CFG.classes || [], CFG.sessions, CFG.active_session || '');
+            // 2026-05-27 — drop the deleted session from the header
+            // dropdown DOM. Without this call the deleted year stays
+            // selectable in the header until full page reload, landing
+            // the user on a 4xx from admin/switch_session.
+            refreshHeaderSessList(CFG.sessions, CFG.active_session || '');
         }
     });
 };
@@ -1691,6 +1755,11 @@ window.syncSessions = function() {
             var act = CFG.active_session || d.active_session || '';
             renderSessions(d.sessions || [], act);
             renderClassSelects(CFG.classes || [], d.sessions || [], act);
+            // 2026-05-27 — keep header dropdown in sync with the freshly-
+            // pulled Firestore sessions array. Without this call the
+            // dropdown retains any stale <li>s (e.g. a session deleted
+            // in Firebase Console) until full page reload.
+            refreshHeaderSessList(d.sessions || [], act);
             toast(d.message || 'Sessions refreshed from Firebase.');
         } else {
             toast(d.message || 'Sync failed.', false);
@@ -1708,25 +1777,12 @@ window.addSession = function() {
             renderSessions(d.sessions, CFG.active_session || '');
             CFG.sessions = d.sessions;
             renderClassSelects(CFG.classes || [], d.sessions, CFG.active_session || '');
-
-            // Add the new session to the header dropdown so it can be switched to
-            var headerList = document.querySelector('.g-sess-list');
-            if (headerList) {
-                var existing = headerList.querySelector('[data-year="' + val + '"]');
-                if (!existing) {
-                    var li = document.createElement('li');
-                    li.className = 'g-sess-item';
-                    li.dataset.year = val;
-                    li.innerHTML = '<i class="fa fa-check g-sess-check"></i> ' + val;
-                    li.addEventListener('click', function() {
-                        var year = this.dataset.year;
-                        $.post(BASE_URL + 'admin/switch_session', { session_year: year })
-                         .done(function(res) { if (res && res.status === 'success') window.location.reload(); })
-                         .fail(function() { alert('Failed to switch session.'); });
-                    });
-                    headerList.appendChild(li);
-                }
-            }
+            // 2026-05-27 — replaces the previous inline DOM-append of a
+            // single <li> with a full rebuild via refreshHeaderSessList.
+            // Keeps the dropdown in canonical order (matches server-
+            // rendered output exactly) and shares the click-handler
+            // logic with every other session-mutation flow.
+            refreshHeaderSessList(d.sessions || [], CFG.active_session || '');
         }
     });
 };
@@ -1761,14 +1817,13 @@ window.setActive = function(sess) {
             // Sync the header session switcher without a full page reload
             var headerLabel = document.getElementById('gSessLabel');
             if (headerLabel) headerLabel.textContent = sess;
-            // Update header dropdown active state
-            document.querySelectorAll('.g-sess-item').forEach(function(item) {
-                if (item.dataset.year === sess) {
-                    item.classList.add('g-sess-item--active');
-                } else {
-                    item.classList.remove('g-sess-item--active');
-                }
-            });
+            // 2026-05-27 — full rebuild instead of class-only toggle.
+            // Active-class update is sufficient when the sessions list
+            // is unchanged, but the helper also re-binds click handlers
+            // for any DOM that was patched by other flows (deleteSession
+            // / syncSessions) since page load, so a single source of
+            // truth here removes per-handler skew.
+            refreshHeaderSessList(CFG.sessions || [], sess);
         }
     });
 };
