@@ -994,6 +994,12 @@ class School_config extends MY_Controller
                 'op'         => 'update',
                 'collection' => 'schools',
                 'docId'      => $schoolDocId,
+                // 2026-05-27 — DOC-MERGE-FIX: emit updateMask so this PATCH
+                // touches only the listed field paths. Without `merge=>true`,
+                // commitBatch sends an `update` write without updateMask,
+                // which Firestore REST treats as a full-document REPLACE —
+                // wiping every other field on schools/{schoolId}.
+                'merge'      => true,
                 'data'       => [
                     'streams'   => $existing,
                     'updatedAt' => date('c'),
@@ -2380,6 +2386,8 @@ class School_config extends MY_Controller
                 'op'         => 'update',
                 'collection' => 'schools',
                 'docId'      => $schoolDocId,
+                // 2026-05-27 — DOC-MERGE-FIX: see rationale at seed_streams above.
+                'merge'      => true,
                 'data'       => [
                     'streams'   => $allStreams,
                     'updatedAt' => date('c'),
@@ -2515,6 +2523,8 @@ class School_config extends MY_Controller
                 'op'         => 'update',
                 'collection' => 'schools',
                 'docId'      => $schoolDocId,
+                // 2026-05-27 — DOC-MERGE-FIX: see rationale at seed_streams above.
+                'merge'      => true,
                 'data'       => [
                     'streams'   => $allStreams,
                     'updatedAt' => date('c'),
@@ -2822,6 +2832,14 @@ class School_config extends MY_Controller
                 'op'         => 'update',
                 'collection' => 'schools',
                 'docId'      => $schoolDocId,
+                // 2026-05-27 — DOC-MERGE-FIX: emit updateMask so this PATCH
+                // touches only `sessions` + `updatedAt`. Without this flag,
+                // commitBatch sent a maskless `update` which Firestore REST
+                // treats as full-document REPLACE — wiping currentSession,
+                // classes, streams, profile, board, subscription, etc.
+                // Evidence: 2026-05-27 forensic, schools/SCH_D94FE8F7AD
+                // reduced to 4 fields after repeated session mutations.
+                'merge'      => true,
                 'data'       => [
                     'sessions'  => $sessions,
                     'updatedAt' => date('c'),
@@ -2931,6 +2949,11 @@ class School_config extends MY_Controller
                 'op'         => 'update',
                 'collection' => 'schools',
                 'docId'      => $schoolDocId,
+                // 2026-05-27 — DOC-MERGE-FIX: see rationale at add_session above.
+                // This PATCH must touch only `currentSession` + `updatedAt`;
+                // sessions[], classes, streams, profile, board, subscription
+                // must remain intact.
+                'merge'      => true,
                 'data'       => [
                     'currentSession' => $session,
                     'updatedAt'      => date('c'),
