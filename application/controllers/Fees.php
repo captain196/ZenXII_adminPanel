@@ -979,6 +979,16 @@ class Fees extends MY_Controller
         foreach ((array) $demandRows as $r) {
             $d = $r['data'] ?? $r;
             if (!is_array($d)) continue;
+            // SW4-companion-E (2026-05-27) — skip archived demands.
+            // Archived demands represent historical state from
+            // promotion/reverse-promotion cycles or refund
+            // reversals and must NOT inflate the dashboard's
+            // class-wise aggregates (per-class collected / due /
+            // student-set). Mirrors the filter applied to
+            // fetch_months (SW4-A, Fees.php:2160), defaulter
+            // aggregation (SW4-D), and the parent app's
+            // FeeFirestoreRepository archived-skip.
+            if (strtolower((string)($d['status'] ?? '')) === 'archived') continue;
             // Yearly demands written before the writer fix had only
             // `className`. Fall back so they bucket into the right class
             // instead of "Unknown". Empty-string also normalises to
@@ -7682,6 +7692,12 @@ class Fees extends MY_Controller
             $hasActive      = !empty($activeIds);
             foreach ((array) $demandRows as $r) {
                 $d   = $r['data'] ?? $r;
+                if (!is_array($d)) continue;
+                // SW4-companion-E (2026-05-27) — skip archived demands.
+                // Otherwise total_pending + collection_rate are
+                // inflated by promotion-cycle artefacts. See
+                // SW4-A docblock at fetch_months (Fees.php:2160).
+                if (strtolower((string)($d['status'] ?? '')) === 'archived') continue;
                 $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
                 // Skip ex-students; they shouldn't drag the rate down.
                 if ($hasActive && $sid !== '' && !isset($activeIds[$sid])) continue;
@@ -7742,6 +7758,14 @@ class Fees extends MY_Controller
 
             foreach ((array) $demandRows as $r) {
                 $d   = $r['data'] ?? $r;
+                if (!is_array($d)) continue;
+                // SW4-companion-E (2026-05-27) — skip archived demands.
+                // Archived demands carry zero or stale balance but
+                // a paranoid downstream reader could still trip them
+                // into the defaulter count. Apply the same filter as
+                // the other dashboard aggregations. See SW4-A
+                // docblock at fetch_months (Fees.php:2160).
+                if (strtolower((string)($d['status'] ?? '')) === 'archived') continue;
                 $bal = (float) ($d['balance'] ?? 0);
                 if ($bal <= 0) continue;
                 $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
