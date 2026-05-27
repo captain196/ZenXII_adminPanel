@@ -126,6 +126,21 @@ class Fee_lifecycle
         } catch (\Throwable $_) { return []; }
     }
 
+    /**
+     * BUG-076 (2026-05-27): session-independent demand fetch. Used by
+     * reassignFeesOnPromotion so the archive loop sees the student's
+     * demands regardless of which session the operator's session-selector
+     * is currently pointing at. Class/section filter inside the archive
+     * loop is what actually drives the archive decision — session never
+     * was load-bearing for archival correctness.
+     */
+    private function _demandsForAllSessions(string $studentId): array
+    {
+        try {
+            return $this->fsTxn->demandsForStudentAllSessions($studentId);
+        } catch (\Throwable $_) { return []; }
+    }
+
     // ═════════════════════════════════════════════════════════════════
     //  1. assignInitialFees
     // ═════════════════════════════════════════════════════════════════
@@ -313,7 +328,11 @@ class Fee_lifecycle
     ): array {
         $archived = 0; $preserved = 0;
         try {
-            foreach ($this->_demandsFor($studentId) as $did => $d) {
+            // BUG-076 (2026-05-27): use _demandsForAllSessions so the archive
+            // loop is not blocked by session-selector drift on the operator
+            // side. The archive decision below is purely className/section
+            // based; session was never load-bearing for correctness.
+            foreach ($this->_demandsForAllSessions($studentId) as $did => $d) {
                 $st = (string) ($d['status'] ?? 'unpaid');
                 // Only archive UNPAID demands; paid/partial demands
                 // represent real payment history.

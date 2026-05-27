@@ -732,6 +732,34 @@ class Fee_firestore_txn
     }
 
     /**
+     * BUG-076 (2026-05-27): session-independent demand fetch for a student.
+     *
+     * demandsForStudent() filters by $this->session, which is pinned to the
+     * admin's selected session at controller boot. Lifecycle events
+     * (promotion archival, soft-delete freeze, admission reversal) need to
+     * see demands wherever they live — the archive decision is driven by
+     * className/section, not session. This wrapper omits the session
+     * predicate so archive loops can iterate the student's full demand set
+     * regardless of operator session-selector drift.
+     */
+    public function demandsForStudentAllSessions(string $userId): array
+    {
+        if (!$this->ready || $userId === '') return [];
+        try {
+            $rows = $this->fs->schoolWhere(self::COL_DEMANDS, [
+                ['studentId', '==', $userId],
+            ]);
+            $out = [];
+            foreach ((array) $rows as $r) {
+                $d  = $r['data'] ?? [];
+                $id = $r['id']   ?? '';
+                if ($id !== '' && is_array($d)) $out[$id] = self::normalizeDemandDoc($d);
+            }
+            return $out;
+        } catch (\Exception $_) { return []; }
+    }
+
+    /**
      * Partial-update a demand (merge). Callers still pass snake_case keys
      * from legacy call-sites; this canonicalises every field to camelCase
      * before the Firestore write, so the stored doc is single-source.
