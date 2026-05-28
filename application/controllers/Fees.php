@@ -1182,18 +1182,54 @@ class Fees extends MY_Controller
         $existing = $this->_getClassFeeChart($class, $section);
         if (!empty($existing)) return $existing;
 
-        // Build a zero-value template from fee head names found in other
-        // class/section charts within this session — no RTDB reads.
-        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
-        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
-        $allSections = $this->fsTxn->listSectionsWithFeeChart();
-
+        $schoolFs     = $this->fs->schoolId();
         $monthlyHeads = [];
         $yearlyHeads  = [];
-        foreach ($allSections as $cs) {
+
+        // ── Chart-bootstrap fix (2026-05-28) ──────────────────────────────
+        // Previously the title template was built ONLY from other class/section
+        // charts in THIS session. That left a fresh academic session blank: the
+        // Fee Heads page saves the master head list to
+        // feeStructures/{schoolId}_{session}_titles, which this never read — so
+        // a new session with titles defined but no charts yet had nothing to
+        // show. Now:
+        //   1) PRIMARY  — read the current session's _titles master doc.
+        //   2) PLUS     — any existing class/section charts in this session.
+        //   3) FALLBACK — only if (1)+(2) are empty, inherit the most recent
+        //                 prior session's heads (ERP year-rollover).
+        // Read-only throughout: builds an in-memory zero-value template, never
+        // writes a chart, never generates demands or touches balances.
+
+        // (1) current-session master head list
+        $this->_collectHeadsFromTitlesDoc("{$schoolFs}_{$this->session_year}_titles", $monthlyHeads, $yearlyHeads);
+
+        // (2) existing class/section charts in this session
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $schoolFs, $this->session_year);
+        foreach ($this->fsTxn->listSectionsWithFeeChart() as $cs) {
             $chart = $this->fsTxn->readFeeStructure($cs['class'], $cs['section']);
             foreach ($chart['April'] ?? [] as $title => $_) $monthlyHeads[$title] = true;
             foreach ($chart['Yearly Fees'] ?? [] as $title => $_) $yearlyHeads[$title] = true;
+        }
+
+        // (3) prior-session fallback — ONLY when this session has nothing yet
+        if (empty($monthlyHeads) && empty($yearlyHeads)) {
+            $prior = $this->_priorSessionYear($this->session_year);
+            if ($prior !== '') {
+                $this->_collectHeadsFromTitlesDoc("{$schoolFs}_{$prior}_titles", $monthlyHeads, $yearlyHeads);
+                if (empty($monthlyHeads) && empty($yearlyHeads)) {
+                    // prior session may store heads only as class charts (no
+                    // _titles doc) — read them via a SEPARATE txn instance so
+                    // the request's main fsTxn session is not disturbed.
+                    $this->load->library('Fee_firestore_txn', null, 'fsTxnPrior');
+                    $this->fsTxnPrior->init($this->firebase, $this->fs, $schoolFs, $prior);
+                    foreach ($this->fsTxnPrior->listSectionsWithFeeChart() as $cs) {
+                        $chart = $this->fsTxnPrior->readFeeStructure($cs['class'], $cs['section']);
+                        foreach ($chart['April'] ?? [] as $title => $_) $monthlyHeads[$title] = true;
+                        foreach ($chart['Yearly Fees'] ?? [] as $title => $_) $yearlyHeads[$title] = true;
+                    }
+                }
+            }
         }
 
         if (empty($monthlyHeads) && empty($yearlyHeads)) return [];
@@ -1207,6 +1243,37 @@ class Fees extends MY_Controller
         $default['Yearly Fees'] = array_fill_keys(array_keys($yearlyHeads), 0);
 
         return $default;
+    }
+
+    /**
+     * Merge fee-head names from a feeStructures master/_titles doc into the
+     * monthly/yearly head sets (keyed by name → true for dedup). Read-only.
+     */
+    private function _collectHeadsFromTitlesDoc(string $docId, array &$monthly, array &$yearly): void
+    {
+        try {
+            $doc = $this->firebase->firestoreGet('feeStructures', $docId);
+            if (!is_array($doc)) return;
+            $heads = is_array($doc['feeHeads'] ?? null) ? $doc['feeHeads'] : [];
+            foreach ($heads as $h) {
+                if (!is_array($h)) continue;
+                $name = trim((string) ($h['name'] ?? ''));
+                if ($name === '') continue;
+                if ((($h['type'] ?? 'Monthly') === 'Yearly')) $yearly[$name] = true;
+                else $monthly[$name] = true;
+            }
+        } catch (\Throwable $_) {}
+    }
+
+    /** "2027-28" → "2026-27"; '' if not a valid YYYY-YY session. */
+    private function _priorSessionYear(string $session): string
+    {
+        if (!preg_match('/^(\d{4})-(\d{2})$/', $session, $m)) return '';
+        $startYear = (int) $m[1];
+        if ($startYear <= 1) return '';
+        $priorStart = $startYear - 1;
+        $priorEnd   = substr((string) ($priorStart + 1), -2);
+        return $priorStart . '-' . $priorEnd;
     }
 
     private function _getFees($class, $section)
