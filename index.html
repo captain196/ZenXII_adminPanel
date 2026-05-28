@@ -490,19 +490,94 @@
     .hero-stats { gap: 18px 24px; font-size: .88rem; }
   }
 
-  /* Responsive nav */
+  /* ── Responsive nav — hamburger below 940px ──────────────────────
+        Desktop: brand left, links + CTAs right (.hero-nav-menu is
+        display:contents so its children act as direct flex items).
+        Mobile: logo left, ZenXii centered, hamburger right; the menu
+        drops down when the hamburger is toggled (CSS-only checkbox). */
+  .hamburger { display: none; }
+  .hero-nav-menu { display: contents; }
+
   @media (max-width: 940px) {
-    .hero-nav-links { display: none; }
-  }
-  @media (max-width: 600px) {
-    .hero { margin: 8px; border-radius: 22px; padding: 14px 14px 18px; }
-    /* Mobile nav: center the ZenXii brand, hide Login + Dev access */
-    .site-nav .hero-nav,
-    .hero-nav { padding: 8px 14px; justify-content: center; }
-    .hero-nav .brand { justify-content: center; }
-    .hero-nav .brand-name { display: inline; }
-    .hero-nav-cta { display: none; }
-    .hero-nav-links { display: none; }
+    .hero-nav,
+    .site-nav .hero-nav {
+      position: relative;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 16px;
+    }
+    /* Logo stays left; ZenXii name absolutely centered; dot hidden */
+    .hero-nav .brand { justify-content: flex-start; }
+    .hero-nav .brand-name {
+      display: inline;
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      pointer-events: none;        /* taps pass through to logo/hamburger */
+      white-space: nowrap;
+      margin: 0;
+    }
+    .hero-nav .brand-dot { display: none; }
+
+    /* Hamburger button (right) */
+    .hamburger {
+      display: inline-flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 5px;
+      width: 40px; height: 40px;
+      padding: 9px;
+      cursor: pointer;
+      z-index: 3;
+      margin-left: auto;
+    }
+    .hamburger span {
+      display: block; width: 22px; height: 2px;
+      background: #f8f2ea; border-radius: 2px;
+      transition: transform .25s ease, opacity .2s ease;
+    }
+
+    /* Dropdown panel — hidden until toggled */
+    .hero-nav-menu {
+      display: none;
+      position: absolute;
+      top: 100%; left: 0; right: 0;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 6px;
+      background: rgba(15,10,8,.97);
+      backdrop-filter: blur(16px) saturate(140%);
+      -webkit-backdrop-filter: blur(16px) saturate(140%);
+      border-top: 1px solid rgba(255,255,255,.1);
+      box-shadow: 0 12px 30px rgba(0,0,0,.4);
+      padding: 12px 16px 16px;
+    }
+    .nav-toggle:checked ~ .hero-nav-menu { display: flex; }
+
+    /* Links stack vertically inside the dropdown */
+    .hero-nav-menu .hero-nav-links {
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .hero-nav-menu .hero-nav-links a {
+      padding: 11px 8px; border-radius: 8px; font-size: 1rem;
+    }
+    .hero-nav-menu .hero-nav-links a:hover { background: rgba(255,255,255,.08); }
+
+    /* CTA links inside dropdown, separated by a divider */
+    .hero-nav-menu .hero-nav-cta {
+      display: flex; flex-direction: column; gap: 8px;
+      margin-top: 8px; padding-top: 12px;
+      border-top: 1px solid rgba(255,255,255,.1);
+    }
+    .hero-nav-menu .hero-nav-cta .dev-link,
+    .hero-nav-menu .hero-nav-cta .btn-login {
+      justify-content: center; padding: 11px 14px;
+    }
+
+    /* Hamburger → X when open */
+    .nav-toggle:checked ~ .hamburger span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+    .nav-toggle:checked ~ .hamburger span:nth-child(2) { opacity: 0; }
+    .nav-toggle:checked ~ .hamburger span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
   }
   .hero-grid {
     display: grid; grid-template-columns: 1.05fr .95fr;
@@ -1477,24 +1552,35 @@
         <span class="brand-name">ZenXii</span>
         <span class="brand-dot" aria-hidden="true"></span>
       </a>
-      <div class="hero-nav-links">
-        <a href="#top" class="active">Home</a>
-        <a href="#about">About Us</a>
-        <a href="#features">Features</a>
-        <a href="#benefits">Benefits</a>
-        <a href="#blog">Blog</a>
-        <a href="#faq">FAQ</a>
-        <a href="#contact">Contact</a>
-      </div>
-      <div class="hero-nav-cta">
-        <a class="dev-link" href="superadmin/login">
-          <span>Dev access</span>
-          <span class="arr" aria-hidden="true">→</span>
-        </a>
-        <a class="btn-login" href="admin_login">
-          <span>Login</span>
-          <span class="arr" aria-hidden="true">→</span>
-        </a>
+
+      <!-- Mobile hamburger toggle (CSS-only via checkbox) -->
+      <input type="checkbox" id="navToggle" class="nav-toggle" hidden>
+      <label for="navToggle" class="hamburger" aria-label="Toggle menu">
+        <span></span><span></span><span></span>
+      </label>
+
+      <!-- display:contents on desktop (transparent wrapper); becomes the
+           dropdown panel on mobile -->
+      <div class="hero-nav-menu">
+        <div class="hero-nav-links">
+          <a href="#top" class="active">Home</a>
+          <a href="#about">About Us</a>
+          <a href="#features">Features</a>
+          <a href="#benefits">Benefits</a>
+          <a href="#blog">Blog</a>
+          <a href="#faq">FAQ</a>
+          <a href="#contact">Contact</a>
+        </div>
+        <div class="hero-nav-cta">
+          <a class="dev-link" href="superadmin/login">
+            <span>Dev access</span>
+            <span class="arr" aria-hidden="true">→</span>
+          </a>
+          <a class="btn-login" href="admin_login">
+            <span>Login</span>
+            <span class="arr" aria-hidden="true">→</span>
+          </a>
+        </div>
       </div>
     </nav>
   </header>
