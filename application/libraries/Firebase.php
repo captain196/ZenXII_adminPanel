@@ -417,9 +417,31 @@ class Firebase
 
             $token = bin2hex(random_bytes(16));
 
+            // BUG (2026-05-28): two fixes here, both confirmed via logo_storage_probe.
+            // (1) contentType: detect the real MIME so Storage serves images as
+            //     image/* instead of application/octet-stream — the latter makes
+            //     Chrome's ORB block the <img> (broken-image icon).
+            // (2) token nesting: the firebaseStorageDownloadTokens token MUST live
+            //     in the object's CUSTOM metadata (metadata.metadata), which is
+            //     where Firebase validates ?token= and where getDownloadUrl()
+            //     re-reads it. Previously it was passed at the object-resource top
+            //     level → GCS ignored it → token never stored → 403 on fetch.
+            $contentType = 'application/octet-stream';
+            if (function_exists('finfo_open')) {
+                $fi = finfo_open(FILEINFO_MIME_TYPE);
+                if ($fi) {
+                    $ct = finfo_file($fi, $localPath);
+                    finfo_close($fi);
+                    if (is_string($ct) && $ct !== '') $contentType = $ct;
+                }
+            }
+
             $this->storageBucket->upload($fh, [
                 'name'     => $remotePath,
-                'metadata' => ['firebaseStorageDownloadTokens' => $token],
+                'metadata' => [
+                    'contentType' => $contentType,
+                    'metadata'    => ['firebaseStorageDownloadTokens' => $token],
+                ],
             ]);
             // GCS SDK closes the stream internally after upload — do not fclose() here
 
