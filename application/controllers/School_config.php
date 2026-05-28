@@ -744,11 +744,17 @@ class School_config extends MY_Controller
                 continue;
             }
 
-            // Create a default "Section A" in Firestore for this class
+            // Create a default "Section A" in Firestore for this class.
+            // BUG (2026-05-28): pass $sessionYear so activation writes Section A
+            // into the TARGET session. Previously saveSection used fs->session
+            // (current viewing session), so "Activate Classes for 2027-28" while
+            // viewing 2026-27 created sections in 2026-27 instead — the existence
+            // pre-check (line ~719) already scoped to $sessionYear, so the two
+            // disagreed. Same session-divergence as the other section endpoints.
             $this->fs->saveSection($classNode, 'A', [
                 'created_at'  => date('Y-m-d H:i:s'),
                 'created_by'  => 'School_config::activate_classes',
-            ]);
+            ], $sessionYear);
             $created++;
         }
 
