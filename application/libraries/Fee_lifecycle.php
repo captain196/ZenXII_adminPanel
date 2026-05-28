@@ -401,12 +401,35 @@ class Fee_lifecycle
             }
 
             // Generate the new class's structure.
-            $this->assignInitialFees($studentId, $newClass, $newSection, $parentDbKey);
+            $regenerated = $this->assignInitialFees($studentId, $newClass, $newSection, $parentDbKey);
+
+            // BUG-076 Part 2 (2026-05-28): fail-loud guard on silent zero-
+            // demand regeneration. assignInitialFees returns [] when the
+            // destination class/section has NO fee structure in the active
+            // session — historically a silent info-level no-op. That is
+            // exactly how STU0004-11 ended up Active-in-Class-8 with zero
+            // demands: a cross-session reverse-promote regenerated against a
+            // session (2027-28) that had no Class 8 structure, generated
+            // nothing, and reported "success". Surface it at error level AND
+            // stamp the audit entry so the gap is actionable the moment it
+            // happens, instead of being discovered weeks later via phantom-
+            // dues forensics.
+            $regenCount = is_array($regenerated) ? count($regenerated) : 0;
+            if ($regenCount === 0) {
+                log_message('error',
+                    "Fee_lifecycle::reassignFeesOnPromotion — assignInitialFees generated "
+                    . "0 demands for [{$studentId}] into [{$newClass}/{$newSection}] "
+                    . "(session={$this->sessionYear}). Student may now have NO active fee "
+                    . "demands. Verify a fee structure exists for {$newClass}/{$newSection} "
+                    . "in session {$this->sessionYear}.");
+            }
 
             $this->_log('promotion_reassigned', $studentId, [
-                'old_class'  => $oldClass, 'old_section' => $oldSection,
-                'new_class'  => $newClass, 'new_section' => $newSection,
-                'archived'   => $archived, 'preserved'   => $preserved,
+                'old_class'   => $oldClass, 'old_section' => $oldSection,
+                'new_class'   => $newClass, 'new_section' => $newSection,
+                'archived'    => $archived, 'preserved'   => $preserved,
+                'regenerated' => $regenCount,
+                'regen_warning' => $regenCount === 0 ? 'NO_DESTINATION_STRUCTURE' : '',
             ]);
 
             // Defaulter recompute — old dues may resolve, new dues appear.
