@@ -1387,15 +1387,27 @@ class Fees extends MY_Controller
             }
         }
 
-        // Verify class/section exists by checking students collection.
+        // Verify class/section exists. Accept ANY of three existence proofs so
+        // the FIRST chart of a fresh academic session can be saved:
+        //   (a) students enrolled in the section, OR
+        //   (b) a fee chart already exists, OR
+        //   (c) BUG (2026-05-29): the section exists in the `sections`
+        //       collection (the authoritative config source the dropdown uses).
+        // Pre-fix this checked only (a)+(b); when setting up a NEW session a
+        // class has neither students nor a chart yet, so saving the first chart
+        // wrongly failed with "Class/section not found" even though the section
+        // was correctly configured.
         $this->load->library('Fee_firestore_txn', null, 'fsTxn');
         $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
         $roster = $this->fsTxn->listStudentsInSection($class, $section);
         if (empty($roster)) {
             $existing = $this->_getClassFeeChart($class, $section);
             if (empty($existing)) {
-                $this->_json_out(['status' => 'error', 'message' => 'Class/section not found. Please reload the page.']);
-                return;
+                $sectionExists = is_array($this->fs->get('sections', $this->fs->sectionDocId($class, $section)));
+                if (!$sectionExists) {
+                    $this->_json_out(['status' => 'error', 'message' => 'Class/section not found. Please reload the page.']);
+                    return;
+                }
             }
         }
 
