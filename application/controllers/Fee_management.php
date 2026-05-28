@@ -636,6 +636,12 @@ class Fee_management extends MY_Controller
         $now = date('Y-m-d H:i:s');
 
         $data = [
+            // BUG (2026-05-28): readers (Fees::_resolveFeeCategory, discounts
+            // view) key the category display name off `name`, but this writer
+            // only emitted `category_name` — so a saved category would resolve
+            // to no name (always falling back to keyword-guessed groups). Emit
+            // BOTH: canonical `name` for readers + `category_name` for back-compat.
+            'name'          => $name,
             'category_name' => $name,
             'description'   => $description,
             'category_type' => $type,
