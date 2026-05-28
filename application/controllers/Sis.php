@@ -849,12 +849,36 @@ class Sis extends MY_Controller
         }
 
         // Auto-register target session in Sessions list if it doesn't exist yet.
+        // BUG-056 SW1 (2026-05-26): write ONLY the sessions list. Active-session
+        // changes (currentSession) must route exclusively through
+        // School_config::set_active_session() which has lock+CAS+audit guards.
+        // Promotion adding a future session must not flip the school's
+        // globally-active session as a side effect.
         $available = $this->session->userdata('available_sessions') ?? [];
         if (!in_array($toSession, $available, true)) {
             $available[] = $toSession;
             rsort($available);
-            // Firestore-only per no-RTDB policy.
-            $this->fs->update('schools', $this->school_id, ['sessions' => $available, 'currentSession' => $toSession]);
+            // Rollback-safe: if the Firestore write fails or throws, abort
+            // promotion BEFORE any per-student work runs. No partial state,
+            // no silent continuation.
+            $written = false;
+            try {
+                $written = (bool) $this->fs->update('schools', $this->school_id, ['sessions' => $available]);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    'BUG-056-SW1: exception registering target session ['
+                    . $toSession . '] for school [' . $this->school_id
+                    . ']: ' . $e->getMessage());
+            }
+            if (!$written) {
+                log_message('error',
+                    'BUG-056-SW1: failed to register target session ['
+                    . $toSession . '] for school [' . $this->school_id
+                    . '] — aborting promotion to prevent orphan state.');
+                return $this->json_error(
+                    'Could not register the target session in school configuration. '
+                    . 'Promotion has been aborted to prevent partial state. Please retry.');
+            }
             $this->session->set_userdata('available_sessions', $available);
         }
 
@@ -863,22 +887,7 @@ class Sis extends MY_Controller
             return $this->json_error('No students found in the selected class/section.');
         }
 
-        // ── PM-SELECT 2026-05-26: per-student selection filter ──────────
-        // Operator can deselect rows in the preview UI; client sends only
-        // checked rows as `student_ids[]`. If the array is absent or
-        // empty, behaviour falls back to promote-all (backward compat
-        // with any pre-feature automation / direct API callers).
-        //
-        // Server-side authority is preserved by INTERSECTING with the
-        // freshly-fetched class roster — selected IDs that are not in
-        // the source class (tampered, stale, belong to another class)
-        // are silently dropped. Empty intersection blocks the promotion
-        // with a clear error so the operator knows their selection was
-        // invalid.
-        //
-        // Each ID is validated against `[A-Za-z0-9_]+` so a hostile
-        // value can never reach downstream Firestore writes or history
-        // logging — defence-in-depth even though we re-intersect.
+        // ── PM-SELECT 2026-05-26: per-student selection filter ──
         $rawSelectedIds = $this->input->post('student_ids');
         if (is_array($rawSelectedIds) && !empty($rawSelectedIds)) {
             $cleanIds = [];
@@ -975,35 +984,176 @@ class Sis extends MY_Controller
             $this->_recompute_section_strength($pair[0], $pair[1]);
         }
 
-        // Save promotion batch record
-        $schoolDoc = $this->fs->get('schools', $this->school_id);
-        $promotions = $schoolDoc['promotions'] ?? [];
-        $promotions[$batchId] = [
-            'session_from' => $session, 'session_to' => $toSession,
-            'promoted_at' => $now, 'promoted_by' => $adminName,
-            'from_class' => $oldClassKey, 'from_section' => $oldSectionKey,
-            'to_class' => $newClassKey, 'to_section' => $newSectionKey,
-            'count' => count($promoted),
-        ];
-        $this->fs->update('schools', $this->school_id, ['promotions' => $promotions]);
+        // ── BUG-045 Phase 1 B1 (2026-05-25): post-response shutdown handler ──
+        // Pre-fix: fee-reassignment + section-strength recompute + promotion-batch
+        // save ran SYNCHRONOUSLY post-batchMoveStudents. For 60 students this
+        // exceeded 120s PHP ceiling (4.7×). Now: write a promote_jobs/{batchId}
+        // status doc, flush response to operator immediately, then defer the
+        // heavy work to a shutdown closure that runs after Apache releases the
+        // client socket. Pattern source: FeeCollectionService.php:1465-1648.
 
-        // Reassign fees for promoted students
-        foreach ($promoted as $p) {
-            try {
-                $this->feeLifecycle->reassignFeesOnPromotion(
-                    $p['user_id'], $oldClassKey, $oldSectionKey, $newClassKey, $newSectionKey, $school_id
-                );
-            } catch (Exception $e) {
-                log_message('error', "Fee_lifecycle::reassignFeesOnPromotion failed for {$p['user_id']}: " . $e->getMessage());
-            }
+        // Out-of-band visibility: persist initial job status BEFORE response
+        // so operator (or a future status-poll endpoint) can observe progress.
+        $promoteJobDocId = "{$this->school_name}_{$batchId}";
+        try {
+            $this->firebase->firestoreSet('promote_jobs', $promoteJobDocId, [
+                'schoolId'        => $this->school_name,
+                'session'         => $session,
+                'batchId'         => $batchId,
+                'sessionFrom'     => $session,
+                'sessionTo'       => $toSession,
+                'fromClass'       => $oldClassKey,
+                'fromSection'     => $oldSectionKey,
+                'toClass'         => $newClassKey,
+                'toSection'       => $newSectionKey,
+                'expectedCount'   => count($promoted),
+                'processedCount'  => 0,
+                'failedStudents'  => [],
+                'status'          => 'deferred-fees-pending',
+                'startedAt'       => $now,
+                'promotedBy'      => $adminName,
+            ]);
+        } catch (\Exception $e) {
+            // Fail-safe: if status doc write fails, log and continue.
+            // The shutdown handler still runs; only out-of-band visibility is lost.
+            log_message('warning', "promote: promote_jobs status doc write failed for {$batchId}: " . $e->getMessage());
         }
 
-        return $this->json_success([
-            'message'  => count($promoted) . ' student(s) promoted successfully.',
-            'promoted' => $promoted,
-            'skipped'  => $skipped,
-            'batch_id' => $batchId,
+        // Build response payload BEFORE flushing.
+        $__responseJson = json_encode([
+            'status'         => 'success',
+            'message'        => count($promoted) . ' student(s) promoted successfully.',
+            'promoted'       => $promoted,
+            'skipped'        => $skipped,
+            'batch_id'       => $batchId,
+            'job_status_doc' => $promoteJobDocId,
+            'csrf_token'     => $this->security->get_csrf_hash(),
         ]);
+
+        // Apache mod_php early-response flush (mirror FCS:1481-1494).
+        // XAMPP has no fastcgi_finish_request, so combine Connection: close +
+        // Content-Length + ob_end_flush() + flush() to release the socket.
+        @set_time_limit(0);
+        @ignore_user_abort(true);
+        if (!headers_sent()) {
+            @header('Connection: close');
+            @header('Content-Type: application/json');
+            @header('Content-Length: ' . strlen($__responseJson));
+            @header('Content-Encoding: none'); // disable mod_deflate so length is honest
+        }
+        while (ob_get_level() > 0) {
+            @ob_end_flush();
+        }
+        echo $__responseJson;
+        @flush();
+        $this->output->set_output('');
+        // From here on, every line runs after the operator's browser has
+        // received the success banner. Errors below are background-only.
+
+        // Capture by-value into the closure — no $this references that might
+        // be torn down at shutdown time. Same hygiene pattern as FCS:1517-1521.
+        $__feeLifecycle    = $this->feeLifecycle;
+        $__firebase        = $this->firebase;
+        $__fs              = $this->fs;
+        $__schoolName      = $this->school_name;
+        $__schoolId        = $this->school_id;
+        $__oldClassKey     = $oldClassKey;
+        $__oldSectionKey   = $oldSectionKey;
+        $__newClassKey     = $newClassKey;
+        $__newSectionKey   = $newSectionKey;
+        $__sessionLocal    = $session;
+        $__toSessionLocal  = $toSession;
+        $__nowLocal        = $now;
+        $__adminNameLocal  = $adminName;
+        $__batchIdLocal    = $batchId;
+        $__promotedLocal   = $promoted;
+        $__touchedLocal    = $touchedSections;
+        $__jobDocId        = $promoteJobDocId;
+
+        register_shutdown_function(function () use (
+            $__feeLifecycle, $__firebase, $__fs,
+            $__schoolName, $__schoolId,
+            $__oldClassKey, $__oldSectionKey, $__newClassKey, $__newSectionKey,
+            $__sessionLocal, $__toSessionLocal, $__nowLocal, $__adminNameLocal,
+            $__batchIdLocal, $__promotedLocal, $__touchedLocal, $__jobDocId
+        ) {
+            $deferFailedStudents = [];
+            $processedCount      = 0;
+
+            // Phase D1 — reassign fees per promoted student (the ~94% cost).
+            foreach ($__promotedLocal as $p) {
+                try {
+                    $__feeLifecycle->reassignFeesOnPromotion(
+                        $p['user_id'], $__oldClassKey, $__oldSectionKey,
+                        $__newClassKey, $__newSectionKey, $__schoolId
+                    );
+                    $processedCount++;
+                } catch (\Throwable $e) {
+                    log_message('error', "promote(deferred): reassignFeesOnPromotion failed for {$p['user_id']}: " . $e->getMessage());
+                    $deferFailedStudents[] = [
+                        'user_id' => $p['user_id'],
+                        'name'    => $p['name'] ?? $p['user_id'],
+                        'reason'  => $e->getMessage(),
+                    ];
+                }
+            }
+
+            // Phase D2 — section strength recompute. Outside the foreach
+            // because it's O(touched-sections), not O(students).
+            // Note: requires controller context; rebuild a minimal Sis instance
+            // is too heavy. Instead inline the schoolWhere + fs->set pattern
+            // here (mirror of _recompute_section_strength at Sis.php:2329-2353).
+            foreach ($__touchedLocal as $pair) {
+                try {
+                    list($cKey, $sKey) = $pair;
+                    $rows = $__fs->schoolWhere('students', [
+                        ['className', '==', $cKey],
+                        ['section',   '==', $sKey],
+                        ['status',    '==', 'Active'],
+                    ]);
+                    $strength = is_array($rows) ? count($rows) : 0;
+                    $secDocId = $__fs->sectionDocId($cKey, $sKey);
+                    $__fs->set('sections', $secDocId, [
+                        'currentStrength' => $strength,
+                        'updatedAt'       => date('c'),
+                    ], true);
+                } catch (\Throwable $e) {
+                    log_message('warning', "promote(deferred): _recompute_section_strength failed for {$pair[0]}/{$pair[1]}: " . $e->getMessage());
+                }
+            }
+
+            // Phase D3 — schools.promotions batch record.
+            try {
+                $schoolDoc = $__fs->get('schools', $__schoolId);
+                $promotions = (is_array($schoolDoc) && isset($schoolDoc['promotions']) && is_array($schoolDoc['promotions']))
+                              ? $schoolDoc['promotions'] : [];
+                $promotions[$__batchIdLocal] = [
+                    'session_from' => $__sessionLocal, 'session_to' => $__toSessionLocal,
+                    'promoted_at' => $__nowLocal, 'promoted_by' => $__adminNameLocal,
+                    'from_class' => $__oldClassKey, 'from_section' => $__oldSectionKey,
+                    'to_class' => $__newClassKey, 'to_section' => $__newSectionKey,
+                    'count' => count($__promotedLocal),
+                ];
+                $__fs->update('schools', $__schoolId, ['promotions' => $promotions]);
+            } catch (\Throwable $e) {
+                log_message('warning', "promote(deferred): schools.promotions update failed for {$__batchIdLocal}: " . $e->getMessage());
+            }
+
+            // Phase D4 — final promote_jobs status update for out-of-band observability.
+            try {
+                $finalStatus = empty($deferFailedStudents) ? 'completed' : 'completed_with_errors';
+                $__firebase->firestoreSet('promote_jobs', $__jobDocId, [
+                    'status'         => $finalStatus,
+                    'processedCount' => $processedCount,
+                    'failedStudents' => $deferFailedStudents,
+                    'completedAt'    => date('c'),
+                ], true);
+            } catch (\Throwable $e) {
+                log_message('error', "promote(deferred): final promote_jobs status write failed for {$__batchIdLocal}: " . $e->getMessage());
+            }
+        });
+
+        return; // response already flushed; CI's _display() is silenced via set_output('').
     }
 
     /* ══════════════════════════════════════════════════════════════════════
