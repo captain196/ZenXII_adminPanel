@@ -1171,10 +1171,19 @@ class Sis extends MY_Controller
                     ]);
                     $strength = is_array($rows) ? count($rows) : 0;
                     $secDocId = $__fs->sectionDocId($cKey, $sKey);
-                    $__fs->set('sections', $secDocId, [
-                        'currentStrength' => $strength,
-                        'updatedAt'       => date('c'),
-                    ], true);
+                    // BUG (2026-05-28): only update strength on an EXISTING section.
+                    // set(merge=true) on a missing section created a field-less
+                    // "ghost" doc (currentStrength/updatedAt only — no schoolId/
+                    // className/section/session), which then blocked section
+                    // creation ("already exists" by docId) while being invisible
+                    // to the className+session list query. Strength recompute must
+                    // never materialize a section.
+                    if (is_array($__fs->get('sections', $secDocId))) {
+                        $__fs->set('sections', $secDocId, [
+                            'currentStrength' => $strength,
+                            'updatedAt'       => date('c'),
+                        ], true);
+                    }
                 } catch (\Throwable $e) {
                     log_message('warning', "promote(deferred): _recompute_section_strength failed for {$pair[0]}/{$pair[1]}: " . $e->getMessage());
                 }
@@ -2599,10 +2608,17 @@ class Sis extends MY_Controller
             $count = is_array($rows) ? count($rows) : 0;
 
             $sectionDocId = $this->fs->sectionDocId($ck, $sk);
-            $this->fs->set('sections', $sectionDocId, [
-                'currentStrength' => $count,
-                'updatedAt'       => date('c'),
-            ], true);
+            // BUG (2026-05-28): only update strength on an EXISTING section.
+            // set(merge=true) on a missing section created a field-less "ghost"
+            // doc that blocked section creation ("already exists") while staying
+            // invisible to the list query. Recompute must not materialize a
+            // section — that's saveSection/activate_classes' responsibility.
+            if (is_array($this->fs->get('sections', $sectionDocId))) {
+                $this->fs->set('sections', $sectionDocId, [
+                    'currentStrength' => $count,
+                    'updatedAt'       => date('c'),
+                ], true);
+            }
         } catch (\Exception $e) {
             log_message('error',
                 "G2 _recompute_section_strength({$classKey}/{$sectionKey}) failed: " . $e->getMessage()
