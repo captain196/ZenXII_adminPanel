@@ -1116,8 +1116,12 @@ class School_config extends MY_Controller
         $sectionNode = "Section {$sectionLetter}";
         $path        = "Schools/{$school}/{$sessionYear}/{$classNode}/{$sectionNode}";
 
-        // Check existence in Firestore
-        $fsDocId = $this->fs->sectionDocId($classNode, $sectionLetter);
+        // Check existence in Firestore — BUG (2026-05-28): scope to the POSTed
+        // target session, not the operator's current viewing session. Without
+        // the explicit $sessionYear, sectionDocId/saveSection used fs->session,
+        // so adding "Section A for 2027-28" wrongly checked/wrote 2026-27 →
+        // "already exists" while the (session-filtered) list showed otherwise.
+        $fsDocId = $this->fs->sectionDocId($classNode, $sectionLetter, $sessionYear);
         $fsExists = is_array($this->fs->get('sections', $fsDocId));
         if ($fsExists) {
             return $this->json_error("{$classNode} / {$sectionNode} already exists in {$sessionYear}.");
@@ -1126,7 +1130,7 @@ class School_config extends MY_Controller
         $sectionData = ['created_at' => date('Y-m-d H:i:s')];
 
         // Firestore (sole write target)
-        $this->fs->saveSection($classNode, $sectionLetter, $sectionData);
+        $this->fs->saveSection($classNode, $sectionLetter, $sectionData, $sessionYear);
 
         log_audit('Configuration', 'save_section', "{$classNode}/{$sectionNode}", "Created section {$classNode} / {$sectionNode}");
 
@@ -1163,7 +1167,8 @@ class School_config extends MY_Controller
         $classNode   = $this->_class_node_name($classKey);
         $sectionNode = "Section {$sectionLetter}";
         $path        = "Schools/{$school}/{$sessionYear}/{$classNode}/{$sectionNode}";
-        $fsDocId     = $this->fs->sectionDocId($classNode, $sectionLetter);
+        // BUG (2026-05-28): scope the lookup to the POSTed target session.
+        $fsDocId     = $this->fs->sectionDocId($classNode, $sectionLetter, $sessionYear);
 
         // Check existence in Firestore
         $fsSection = $this->fs->get('sections', $fsDocId);
@@ -1436,7 +1441,10 @@ class School_config extends MY_Controller
                     continue;
                 }
                 try {
-                    $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel);
+                    // BUG (2026-05-28): scope existence-check + write to the POSTed
+                    // target session (was fs->session) so bulk add of "all classes"
+                    // doesn't false-positive "already exists" against another session.
+                    $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel, $sessionYear);
                     if (is_array($this->fs->get('sections', $fsDocId))) {
                         // Already exists — neither created nor failed; record as skipped.
                         $skipped[] = "{$classNode} Section {$sectionLabel} (already exists)";
@@ -1448,7 +1456,7 @@ class School_config extends MY_Controller
                         ];
                         continue;
                     }
-                    $this->fs->saveSection($classNode, $sectionLabel, ['created_at' => $now]);
+                    $this->fs->saveSection($classNode, $sectionLabel, ['created_at' => $now], $sessionYear);
                     $created++;
                 } catch (\Throwable $e) {
                     $failed[] = [
@@ -1476,7 +1484,8 @@ class School_config extends MY_Controller
                     continue;
                 }
                 try {
-                    $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel);
+                    // BUG (2026-05-28): scope to the POSTed target session.
+                    $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel, $sessionYear);
                     $fsDoc   = $this->fs->get('sections', $fsDocId);
                     if (!is_array($fsDoc)) {
                         // Already gone — not an error, but record for visibility.

@@ -769,12 +769,17 @@ class Firestore_service
     /**
      * Save section info.
      */
-    public function saveSection(string $className, string $sectionName, array $data = []): bool
+    public function saveSection(string $className, string $sectionName, array $data = [], ?string $session = null): bool
     {
         $ck = self::classKey($className);
         $sk = self::sectionKey($sectionName);
+        // BUG (2026-05-28): honor an explicit target session when provided so
+        // section management can write to a session OTHER than the operator's
+        // current viewing session. Defaults to $this->session (unchanged for
+        // every existing caller that passes no session).
+        $sess = ($session !== null && $session !== '') ? $session : $this->session;
         // Android expects: {schoolId}_{session}_{className}_{section}
-        $docId = "{$this->schoolId}_{$this->session}_{$ck}_{$sk}";
+        $docId = "{$this->schoolId}_{$sess}_{$ck}_{$sk}";
 
         // Phase 2: stamp canonical classOrder/sectionCode/sectionKey alongside
         // the existing className/section so the sections collection matches
@@ -792,7 +797,7 @@ class Firestore_service
             'sectionCode'  => $cs['sectionCode'],
             'sectionKey'   => $sectionKeyComposite,
             'classTeacher' => '',
-            'session'      => $this->session,
+            'session'      => $sess,
             'studentCount' => 0,
             'updatedAt'    => date('c'),
         ], $data);
@@ -803,11 +808,14 @@ class Firestore_service
      * Build the section document ID matching Android convention:
      * {schoolId}_{session}_{Class X}_{Section Y}
      */
-    public function sectionDocId(string $className, string $sectionName): string
+    public function sectionDocId(string $className, string $sectionName, ?string $session = null): string
     {
         $ck = self::classKey($className);
         $sk = self::sectionKey($sectionName);
-        return "{$this->schoolId}_{$this->session}_{$ck}_{$sk}";
+        // BUG (2026-05-28): optional explicit target session — defaults to
+        // $this->session, so existing 2-arg callers are unaffected.
+        $sess = ($session !== null && $session !== '') ? $session : $this->session;
+        return "{$this->schoolId}_{$sess}_{$ck}_{$sk}";
     }
 
     /**
