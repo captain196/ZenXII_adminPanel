@@ -576,29 +576,22 @@
       font-weight: 500;
       text-align: left;
       color: rgba(248,242,234,.85);
+      background: transparent;
       border-bottom: 1px solid rgba(255,255,255,.05);
+      -webkit-tap-highlight-color: transparent;   /* kill mobile tap box */
     }
-    /* Override desktop's white "active" pill → minimal gold text */
-    .hero-nav-menu .hero-nav-links a.active {
+    /* No background highlight on any state — minimal. Feedback is the
+       text-color change only (gold). Override desktop's white pill. */
+    .hero-nav-menu .hero-nav-links a.active,
+    .hero-nav-menu .hero-nav-links a:hover,
+    .hero-nav-menu .hero-nav-links a:active,
+    .hero-nav-menu .hero-nav-links a:focus {
       background: transparent;
       color: #E0B36A;
     }
-    .hero-nav-menu .hero-nav-links a:hover,
-    .hero-nav-menu .hero-nav-links a:active {
-      background: rgba(255,255,255,.05);
-      color: #fff;
-    }
 
-    /* CTA buttons at the bottom, separated by a divider */
-    .hero-nav-menu .hero-nav-cta {
-      display: flex; flex-direction: column; gap: 10px;
-      margin: 0; padding: 14px 22px 4px;
-      border-top: 1px solid rgba(255,255,255,.08);
-    }
-    .hero-nav-menu .hero-nav-cta .dev-link,
-    .hero-nav-menu .hero-nav-cta .btn-login {
-      justify-content: center; padding: 12px 14px;
-    }
+    /* Dev access + Login hidden entirely on mobile */
+    .hero-nav-menu .hero-nav-cta { display: none; }
 
     /* Hamburger → X when open */
     .nav-toggle:checked ~ .hamburger span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
