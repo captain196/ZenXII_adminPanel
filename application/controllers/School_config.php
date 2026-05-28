@@ -439,7 +439,23 @@ class School_config extends MY_Controller
         $this->load->library('upload', $config);
 
         if (!$this->upload->do_upload('logo')) {
-            return $this->json_error($this->upload->display_errors('', ''));
+            // BUG diagnostic (2026-05-28): CI's "filetype not allowed" can fire
+            // even for a valid PNG when MIME detection returns something not in
+            // mimes.php for the extension. Surface the ACTUAL detected MIME so
+            // the cause is pinned (real bad file vs detection mismatch) instead
+            // of guessed. fileinfo is the same detector CI uses internally.
+            $detected = '';
+            $tmp = $_FILES['logo']['tmp_name'] ?? '';
+            if ($tmp !== '' && is_uploaded_file($tmp) && function_exists('finfo_open')) {
+                $fi = finfo_open(FILEINFO_MIME_TYPE);
+                if ($fi) { $detected = (string) finfo_file($fi, $tmp); finfo_close($fi); }
+            }
+            $err = $this->upload->display_errors('', '');
+            log_message('error',
+                "upload_logo rejected: {$err} | detected_mime=" . ($detected ?: 'unknown')
+                . " | browser_type=" . ($_FILES['logo']['type'] ?? 'n/a')
+                . " | name=" . ($_FILES['logo']['name'] ?? 'n/a'));
+            return $this->json_error($err . ($detected !== '' ? " (detected type: {$detected})" : ''));
         }
 
         $info       = $this->upload->data();
