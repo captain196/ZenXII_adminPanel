@@ -65,6 +65,12 @@ class Security_telemetry
         'ESCALATION_ATTEMPT', 'DEACTIVATED_LOGIN', 'UPLOAD_REJECTED',
         'CASCADE_PARTIAL', 'STALE_SESSION_WRITE', 'PAN_UPDATE_ATTEMPTED',
         'CROSS_TENANT_PROBE',
+        // ── V7 AUTH-C5 (2026-05-27): Super Admin login telemetry ──
+        // Emitted by Superadmin_login::authenticate(). actor.uid carries the
+        // submitted adminId (even on failure) for forensic linkage. schoolId
+        // is the synthetic 'SA_PANEL' since SA login has no school context.
+        'SA_LOGIN_SUCCESS', 'SA_LOGIN_FAILED', 'SA_LOGIN_LOCKED',
+        'SA_LOGIN_ROLE_REJECTED',
     ];
 
     const SEVERITIES = ['info', 'warning', 'error', 'critical'];

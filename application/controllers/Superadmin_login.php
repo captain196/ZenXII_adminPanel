@@ -9,6 +9,17 @@ defined('BASEPATH') OR exit('No direct script access allowed');
  *
  * Access is granted only when Role === 'Super Admin'.
  * Rate limiting stored in Firebase at RateLimit/SA/{ip} (no MySQL needed).
+ *
+ * AUTH-C2 (2026-05-27): per-account lockout state in Firestore
+ *   superadminAuthState/SA_{adminId} — 5 attempts / 30 min sliding window,
+ *   30 min lock on trip. Tracks ALL submitted adminIds (including unknown
+ *   ones) to defeat enumeration via lock-vs-no-lock signal.
+ * AUTH-C5 (2026-05-27): SA login events emitted via Security_telemetry
+ *   (security_events collection) — SA_LOGIN_SUCCESS / _FAILED / _LOCKED /
+ *   _ROLE_REJECTED. Synthetic schoolId 'SA_PANEL' since SA login is
+ *   pre-school-context.
+ * AUTH-M5 (deferred): IP rate-limit still uses RTDB RateLimit/SA/{ip} —
+ *   migration to Firestore is a separate hardening stream.
  */
 class Superadmin_login extends CI_Controller
 {
@@ -18,10 +29,28 @@ class Superadmin_login extends CI_Controller
     private const IP_MAX_FAILS  = 10;
     private const IP_WINDOW_SEC = 1800; // 30 minutes
 
+    // ── AUTH-C2 (2026-05-27): per-account lockout policy (mirrors Admin_login) ──
+    private const ACCT_MAX_FAILS  = 5;     // lock after 5 failures
+    private const ACCT_WINDOW_SEC = 1800;  // 30 min sliding window
+    private const ACCT_LOCK_SEC   = 1800;  // 30 min lock duration
+    private const FS_AUTH_STATE   = 'superadminAuthState';
+
     public function __construct()
     {
         parent::__construct();
         $this->load->library(['session', 'firebase']);
+
+        // ── AUTH-C5 (2026-05-27): SA login telemetry ──
+        // SA login has no school context until after auth, so we pass the
+        // synthetic schoolId 'SA_PANEL' to satisfy Security_telemetry's init
+        // contract. Events emitted from this controller are SA-prefixed and
+        // easily distinguishable in security_events queries.
+        $this->load->library('security_telemetry', null, 'sec_telem');
+        $this->sec_telem->init($this->firebase, 'SA_PANEL', [
+            'uid'  => '',           // unknown until authenticate() succeeds
+            'role' => 'anonymous',
+        ], '');
+
         $this->load->helper('url');
         header('Cache-Control: no-store, no-cache, must-revalidate');
         header('X-Frame-Options: DENY');
@@ -132,6 +161,20 @@ class Superadmin_login extends CI_Controller
             return;
         }
 
+        // ── AUTH-C2 per-account lockout check (Firestore) ───────────────────
+        // Must come AFTER input validation (regex + length) so a locked-doc
+        // is never written for malformed ids. Emits SA_LOGIN_LOCKED telemetry
+        // if currently locked; otherwise falls through to credential check.
+        if ($this->_is_account_locked($adminId, $now)) {
+            $this->sec_telem->emit('SA_LOGIN_LOCKED', 'warning', [
+                'admin_id' => $adminId,
+                'ip'       => $ip,
+                'reason'   => 'lock_active_at_attempt',
+            ], ['type' => 'superadmin', 'id' => $adminId]);
+            $this->_json(['status' => 'error', 'message' => 'Account temporarily locked. Try again later.']);
+            return;
+        }
+
         // ══════════════════════════════════════════════════════════════
         //  PRIMARY: Auth API (MongoDB) — resolves school + role automatically
         // ══════════════════════════════════════════════════════════════
@@ -146,6 +189,18 @@ class Superadmin_login extends CI_Controller
 
         if (empty($result['success'])) {
             $this->_record_fail($ip, $now);
+            $locked = $this->_record_account_fail($adminId, $ip, $now);
+            $this->sec_telem->emit(
+                $locked ? 'SA_LOGIN_LOCKED' : 'SA_LOGIN_FAILED',
+                $locked ? 'warning' : 'info',
+                [
+                    'admin_id' => $adminId,
+                    'ip'       => $ip,
+                    'reason'   => 'invalid_credentials',
+                    'attempts' => $this->_acct_attempts($adminId),
+                ],
+                ['type' => 'superadmin', 'id' => $adminId]
+            );
             $this->_json(['status' => 'error', 'message' => $result['message'] ?? 'Invalid credentials.']);
             return;
         }
@@ -163,6 +218,20 @@ class Superadmin_login extends CI_Controller
 
         if (!$isSuperAdmin) {
             $this->_record_fail($ip, $now);
+            $locked = $this->_record_account_fail($adminId, $ip, $now);
+            $this->sec_telem->emit(
+                $locked ? 'SA_LOGIN_LOCKED' : 'SA_LOGIN_ROLE_REJECTED',
+                'warning',
+                [
+                    'admin_id'     => $adminId,
+                    'ip'           => $ip,
+                    'mongo_role'   => $mongoRole,
+                    'fb_role'      => $fbRole,
+                    'attempts'     => $this->_acct_attempts($adminId),
+                    'lock_tripped' => $locked,
+                ],
+                ['type' => 'superadmin', 'id' => $adminId]
+            );
             $this->_json(['status' => 'error', 'message' => 'Access denied. Super Admin role required.']);
             return;
         }
@@ -176,6 +245,13 @@ class Superadmin_login extends CI_Controller
 
         // ── Success ───────────────────────────────────────────────────────────
         $this->_clear_fail($ip);
+        $this->_clear_account_fail($adminId);
+        $this->sec_telem->emit('SA_LOGIN_SUCCESS', 'info', [
+            'admin_id'      => $adminId,
+            'ip'            => $ip,
+            'mongo_role'    => $mongoRole,
+            'resolved_role' => ($mongoRole === 'super_admin') ? 'developer' : 'superadmin',
+        ], ['type' => 'superadmin', 'id' => $adminId]);
 
         // Clear any school admin session data to prevent session bleed-through
         $this->session->unset_userdata([
@@ -356,6 +432,100 @@ class Superadmin_login extends CI_Controller
         try {
             $this->firebase->update($this->_ip_path($ip), ['fails' => 0, 'windowStart' => 0]);
         } catch (Exception $e) {}
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // AUTH-C2 — Firestore-based per-account lockout (NO RTDB)
+    // Doc:    superadminAuthState/SA_{adminId}
+    // Policy: 5 attempts / 30 min sliding window → 30 min lock
+    // Scope:  All submitted adminIds tracked (including unknown ones) to
+    //         defeat enumeration via lock-vs-no-lock signal.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private function _acct_doc_id(string $adminId): string
+    {
+        // adminId already regex-validated against /[.#$\[\]\/]/ in authenticate();
+        // safe for Firestore doc-id (alphanumeric + underscore/hyphen only).
+        return 'SA_' . $adminId;
+    }
+
+    private function _is_account_locked(string $adminId, int $now): bool
+    {
+        try {
+            $doc = $this->firebase->firestoreGet(self::FS_AUTH_STATE, $this->_acct_doc_id($adminId));
+            if (!is_array($doc) || empty($doc['lockedUntil'])) return false;
+            $lockedUntil = (int) strtotime((string) $doc['lockedUntil']);
+            return $lockedUntil > $now;
+        } catch (Throwable $e) {
+            // Fail-open on read errors — same posture as IP rate-limit reader.
+            // Credentials check still gates auth; missing lockout read is not
+            // worth blocking legitimate users.
+            log_message('error', 'SA _is_account_locked read failed: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Records one failed attempt against an SA id. Returns TRUE if this
+     * increment tripped the lock (so callers emit SA_LOGIN_LOCKED telemetry).
+     */
+    private function _record_account_fail(string $adminId, string $ip, int $now): bool
+    {
+        try {
+            $docId = $this->_acct_doc_id($adminId);
+            $cur   = $this->firebase->firestoreGet(self::FS_AUTH_STATE, $docId);
+            $windowStart = (is_array($cur) && (int)($cur['windowStart'] ?? 0) > 0)
+                ? (int)$cur['windowStart'] : 0;
+
+            if (!is_array($cur) || ($now - $windowStart) > self::ACCT_WINDOW_SEC) {
+                $attempts    = 1;
+                $windowStart = $now;
+            } else {
+                $attempts = (int) ($cur['attempts'] ?? 0) + 1;
+            }
+
+            $payload = [
+                'adminId'     => $adminId,
+                'attempts'    => $attempts,
+                'windowStart' => $windowStart,
+                'lockedUntil' => null,
+                'lastFailIp'  => $ip,
+                'lastFailAt'  => date('c', $now),
+                'updatedAt'   => date('c', $now),
+            ];
+
+            $tripped = false;
+            if ($attempts >= self::ACCT_MAX_FAILS) {
+                $payload['lockedUntil'] = date('c', $now + self::ACCT_LOCK_SEC);
+                $tripped = true;
+            }
+
+            $this->firebase->firestoreSet(self::FS_AUTH_STATE, $docId, $payload, false);
+            return $tripped;
+        } catch (Throwable $e) {
+            log_message('error', 'SA _record_account_fail failed: ' . $e->getMessage());
+            return false; // fail-open — never block legitimate flow on telemetry write
+        }
+    }
+
+    private function _clear_account_fail(string $adminId): void
+    {
+        try {
+            $this->firebase->firestoreDelete(self::FS_AUTH_STATE, $this->_acct_doc_id($adminId));
+        } catch (Throwable $e) {
+            // Non-critical; lock would still expire naturally after ACCT_LOCK_SEC.
+            log_message('error', 'SA _clear_account_fail failed: ' . $e->getMessage());
+        }
+    }
+
+    private function _acct_attempts(string $adminId): int
+    {
+        try {
+            $doc = $this->firebase->firestoreGet(self::FS_AUTH_STATE, $this->_acct_doc_id($adminId));
+            return is_array($doc) ? (int) ($doc['attempts'] ?? 0) : 0;
+        } catch (Throwable $e) {
+            return 0;
+        }
     }
 
     private function _json(array $payload, int $code = 200): void
