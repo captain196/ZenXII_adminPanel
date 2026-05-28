@@ -547,7 +547,8 @@
       transition: transform .25s ease, opacity .2s ease;
     }
 
-    /* Dropdown panel — flat solid panel, no soft shadow/glow */
+    /* Dropdown panel — flat OPAQUE panel. The hero SVG's cream cloud
+       ellipses were showing through, so force a solid bg hard. */
     .hero-nav-menu {
       display: none;
       position: absolute;
@@ -557,16 +558,17 @@
       flex-direction: column;
       align-items: stretch;
       gap: 0;
-      background: #161010;                  /* solid — kills the see-through */
+      background: #161010 !important;       /* force opaque — no bleed */
       border-top: 1px solid rgba(255,255,255,.08);
       padding: 6px 0 10px;
-      z-index: 5;                           /* sit above any hero element */
+      z-index: 50;                          /* well above the hero scene */
     }
     .nav-toggle:checked ~ .hero-nav-menu { display: flex; }
 
-    /* Links as clean, left-aligned full-width rows */
+    /* Links container also opaque as a backstop layer */
     .hero-nav-menu .hero-nav-links {
       display: flex; flex-direction: column; gap: 0;
+      background: #161010;
     }
     .hero-nav-menu .hero-nav-links a {
       display: block;
