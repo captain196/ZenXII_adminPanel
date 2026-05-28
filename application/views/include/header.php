@@ -4,7 +4,7 @@
 <head>
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <title>SchoolX</title>
+    <title>ZenXii</title>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 
     <!-- CSRF tokens — must be before any scripts -->
@@ -43,35 +43,22 @@
             --border:rgba(15,118,110,.15);--brd2:rgba(15,118,110,.28);
             --t1:#0c1e38;--t2:#1a5c56;--t3:#5a9e98;--t4:#94c9c3;--sh:0 2px 16px rgba(0,0,0,.08);
         }
-        /* ── Day mode: rich golden sidebar — white text, high contrast ── */
+        /* ── Day mode: light teal-mint sidebar — matches the day theme.
+           Soft mint tint (deeper than the #f0f7f5 content bg) so the sidebar
+           reads as a distinct panel; crisper teal edge + shadow for float.
+           Text/icons/hover/active inherit the native day teal palette; only
+           --t4 is nudged so the section micro-labels stay legible on the tint. ── */
         [data-theme="day"] .main-sidebar {
-            --t1: #ffffff;
-            --t2: rgba(255,248,225,.92);
-            --t3: rgba(255,236,178,.78);
-            --t4: rgba(255,224,138,.50);
-            --bg2: #a87f1f;
-            --bg3: rgba(255,255,255,.08);
-            --bg4: rgba(255,255,255,.14);
-            --border: rgba(255,255,255,.10);
-            --brd2: rgba(255,255,255,.16);
-            /* Hover uses white so it pops on the gold bg */
-            --gold: #ffffff;
-            --gold2: rgba(255,255,255,.85);
-            --gold3: rgba(255,255,255,.65);
-            --gold-dim: rgba(255,255,255,.12);
-            --gold-ring: rgba(255,255,255,.26);
-            --gold-glow: rgba(255,255,255,.12);
-            background: linear-gradient(180deg, #b8932a 0%, #a87f1f 100%) !important;
-            border-right: none !important;
-            box-shadow: 4px 0 24px rgba(168,127,31,.28) !important;
+            --t4: #6fb3aa;
+            background: linear-gradient(180deg, #eef7f4 0%, #e1efeb 100%) !important;
+            border-right: 1px solid var(--brd2) !important;
+            box-shadow: 3px 0 18px rgba(15,118,110,.10) !important;
         }
         [data-theme="day"] .main-sidebar .g-sb-foot {
-            background: rgba(0,0,0,.14) !important;
-            border-top-color: rgba(255,255,255,.08) !important;
+            background: rgba(15,118,110,.06) !important;
+            border-top-color: var(--brd2) !important;
         }
-        [data-theme="day"] .main-sidebar::after {
-            background: linear-gradient(90deg,rgba(255,255,255,.22),rgba(255,255,255,.06),transparent);
-        }
+        /* ::after top accent + ::before dot texture inherit the base teal styling */
         /* ── Day mode: navbar search bar polish ── */
         [data-theme="day"] .g-search {
             background: #f5fbf9 !important;
@@ -200,60 +187,67 @@
         .main-sidebar{position:fixed !important;top:var(--hh) !important;left:0 !important;bottom:0 !important;width:var(--sw) !important;background:var(--bg2) !important;border-right:1px solid var(--border) !important;z-index:1038 !important;display:flex !important;flex-direction:column !important;overflow:hidden !important;transition:width var(--ease),background var(--ease) !important;}
         .main-sidebar::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--gold),rgba(15,118,110,.2),transparent);}
         .main-sidebar::before{content:'';position:absolute;inset:0;z-index:0;pointer-events:none;background-image:radial-gradient(circle,rgba(15,118,110,.04) 1px,transparent 1px);background-size:22px 22px;}
-        /* Always-visible high-contrast scrollbar. Dark near-black pill
-           sits on a light tinted rail — clearly distinguishable from
-           any page element. Arrow buttons stripped. */
-        .sidebar{flex:1 !important;overflow-y:auto !important;overflow-x:hidden !important;padding:2px 0 4px !important;position:relative !important;z-index:1 !important;scrollbar-width:thin;scrollbar-color:#1e293b #e2e8f0;}
-        .sidebar::-webkit-scrollbar{width:10px !important;height:10px !important;background:#e2e8f0 !important;}
-        .sidebar::-webkit-scrollbar-button,
-        .sidebar::-webkit-scrollbar-button:start,
-        .sidebar::-webkit-scrollbar-button:end,
-        .sidebar::-webkit-scrollbar-button:vertical:start:decrement,
-        .sidebar::-webkit-scrollbar-button:vertical:end:increment,
-        .sidebar::-webkit-scrollbar-button:vertical:start:increment,
-        .sidebar::-webkit-scrollbar-button:vertical:end:decrement{display:none !important;width:0 !important;height:0 !important;background:transparent !important;}
-        .sidebar::-webkit-scrollbar-track{background:#e2e8f0 !important;border-radius:10px !important;margin:4px 2px !important;}
-        .sidebar::-webkit-scrollbar-thumb{background:#1e293b !important;border-radius:10px !important;border:2px solid #e2e8f0 !important;background-clip:padding-box !important;min-height:40px !important;transition:background-color .15s ease !important;}
-        .sidebar::-webkit-scrollbar-thumb:hover{background:#0f172a !important;background-clip:padding-box !important;}
-        .sidebar::-webkit-scrollbar-thumb:active{background:#000000 !important;background-clip:padding-box !important;}
+        /* Sidebar scrollbar — slim, translucent overlay that sits naturally
+           on the gold (day) / navy (night) sidebar surface. Matches the
+           white-on-coloured text treatment instead of clashing with it.
+           Arrow buttons stripped; track is transparent for an airy feel. */
+        .sidebar{flex:1 !important;overflow-y:auto !important;overflow-x:hidden !important;padding:2px 0 4px !important;position:relative !important;z-index:1 !important;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.32) transparent;}
+        .sidebar::-webkit-scrollbar{width:8px !important;height:8px !important;background:transparent !important;}
+        .sidebar::-webkit-scrollbar-button{display:none !important;width:0 !important;height:0 !important;background:transparent !important;}
+        .sidebar::-webkit-scrollbar-track{background:transparent !important;margin:4px 0 !important;}
+        .sidebar::-webkit-scrollbar-thumb{background:rgba(255,255,255,.28) !important;border-radius:8px !important;border:2px solid transparent !important;background-clip:padding-box !important;min-height:40px !important;transition:background-color .18s ease !important;}
+        .sidebar::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.46) !important;background-clip:padding-box !important;}
+        .sidebar::-webkit-scrollbar-thumb:active{background:rgba(255,255,255,.62) !important;background-clip:padding-box !important;}
         .sidebar::-webkit-scrollbar-corner{background:transparent !important;}
-        /* Night theme: invert — light pill on dark rail */
-        [data-theme="night"] .sidebar{scrollbar-color:#f1f5f9 #334155;}
-        [data-theme="night"] .sidebar::-webkit-scrollbar{background:#334155 !important;}
-        [data-theme="night"] .sidebar::-webkit-scrollbar-track{background:#334155 !important;}
-        [data-theme="night"] .sidebar::-webkit-scrollbar-thumb{background:#f1f5f9 !important;border-color:#334155 !important;}
-        [data-theme="night"] .sidebar::-webkit-scrollbar-thumb:hover{background:#ffffff !important;}
-        [data-theme="night"] .sidebar::-webkit-scrollbar-thumb:active{background:#cbd5e1 !important;}
+        /* Night theme: deeper navy sidebar — slightly dimmer translucent thumb */
+        [data-theme="night"] .sidebar{scrollbar-color:rgba(255,255,255,.22) transparent;}
+        [data-theme="night"] .sidebar::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18) !important;border:2px solid transparent !important;background-clip:padding-box !important;}
+        [data-theme="night"] .sidebar::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.32) !important;background-clip:padding-box !important;}
+        [data-theme="night"] .sidebar::-webkit-scrollbar-thumb:active{background:rgba(255,255,255,.46) !important;background-clip:padding-box !important;}
+        /* Day theme: light sidebar — translucent teal thumb (white would vanish on white) */
+        [data-theme="day"] .sidebar{scrollbar-color:rgba(15,118,110,.38) transparent;}
+        [data-theme="day"] .sidebar::-webkit-scrollbar-thumb{background:rgba(15,118,110,.30) !important;border:2px solid transparent !important;background-clip:padding-box !important;}
+        [data-theme="day"] .sidebar::-webkit-scrollbar-thumb:hover{background:rgba(15,118,110,.48) !important;background-clip:padding-box !important;}
+        [data-theme="day"] .sidebar::-webkit-scrollbar-thumb:active{background:rgba(15,118,110,.64) !important;background-clip:padding-box !important;}
         .user-panel{display:none !important;}
-        .sidebar-menu{list-style:none !important;margin:0 !important;padding:0 !important;}
-        .sidebar-menu .g-sec{padding:12px 16px 4px !important;font-size:9.5px !important;font-weight:700 !important;color:var(--t4) !important;text-transform:uppercase !important;letter-spacing:1.1px !important;font-family:var(--font-m) !important;pointer-events:none !important;cursor:default !important;}
-        .sidebar-menu .g-sec:first-child{padding-top:0 !important;padding-bottom:2px !important;}
-        .sidebar-menu>li:first-child{margin-top:4px !important;}
-        .sidebar-menu>li{margin:1px 10px !important;position:relative !important;}
-        .sidebar-menu>li>a{font-family:var(--font-b) !important;font-size:13px !important;font-weight:500 !important;color:var(--t2) !important;padding:9px 12px !important;border-radius:9px !important;display:flex !important;align-items:center !important;gap:10px !important;transition:all var(--ease) !important;background:transparent !important;}
-        .sidebar-menu>li>a:hover{color:var(--gold) !important;background:var(--gold-dim) !important;border-color:var(--gold-ring) !important;}
-        .sidebar-menu>li.active>a,.sidebar-menu>li.active>a:hover{color:var(--t1) !important;background:var(--gold-dim) !important;font-weight:600 !important;}
-        .sidebar-menu>li.active>a::before{content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:22px;border-radius:0 3px 3px 0;background:var(--gold);box-shadow:0 0 8px rgba(15,118,110,.6);}
-        .sidebar-menu>li>a>.fa,.sidebar-menu>li>a>i{width:18px !important;font-size:14px !important;text-align:center !important;flex-shrink:0 !important;color:var(--t3) !important;transition:color var(--ease) !important;}
-        .sidebar-menu>li>a:hover>i,.sidebar-menu>li>a:hover>.fa,.sidebar-menu>li.active>a>i,.sidebar-menu>li.active>a>.fa{color:var(--gold) !important;}
+        .sidebar-menu{list-style:none !important;margin:0 !important;padding:6px 0 4px !important;}
+        /* Section micro-label — modern, airy, uppercase */
+        .sidebar-menu .g-sec{padding:16px 18px 6px !important;font-size:10px !important;font-weight:700 !important;color:var(--t4) !important;text-transform:uppercase !important;letter-spacing:1.4px !important;font-family:var(--font-m) !important;pointer-events:none !important;cursor:default !important;opacity:.85 !important;}
+        .sidebar-menu .g-sec:first-child{padding-top:6px !important;padding-bottom:4px !important;}
+        .sidebar-menu>li:first-child{margin-top:2px !important;}
+        .sidebar-menu>li{margin:2px 10px !important;position:relative !important;}
+        /* Item row — larger touch target, smooth radius */
+        .sidebar-menu>li>a{font-family:var(--font-b) !important;font-size:13.5px !important;font-weight:500 !important;color:var(--t2) !important;padding:10px 13px !important;border-radius:10px !important;display:flex !important;align-items:center !important;gap:11px !important;transition:background var(--ease),color var(--ease) !important;background:transparent !important;letter-spacing:-.1px !important;}
+        .sidebar-menu>li>a:hover{color:var(--t1) !important;background:var(--gold-dim) !important;}
+        .sidebar-menu li.menu-open>a{color:var(--t1) !important;}
+        /* Active — subtle filled accent + clean left bar (no glow) */
+        .sidebar-menu>li.active>a,.sidebar-menu>li.active>a:hover{color:var(--gold) !important;background:var(--gold-dim) !important;font-weight:600 !important;}
+        .sidebar-menu>li.active>a::before{content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:18px;border-radius:0 3px 3px 0;background:var(--gold);}
+        .sidebar-menu>li>a>.fa,.sidebar-menu>li>a>i{width:20px !important;font-size:15px !important;text-align:center !important;flex-shrink:0 !important;color:var(--t3) !important;transition:color var(--ease) !important;}
+        .sidebar-menu>li>a:hover>i,.sidebar-menu>li>a:hover>.fa{color:var(--t1) !important;}
+        .sidebar-menu>li.active>a>i,.sidebar-menu>li.active>a>.fa{color:var(--gold) !important;}
         .sidebar-menu>li>a>span:not(.pull-right-container):not(.g-nb){flex:1;}
         .g-nb{background:var(--rose);color:#fff;font-size:9px;font-weight:700;font-family:var(--font-m);padding:1px 5px;border-radius:5px;flex-shrink:0;}
         .g-nb.gold{background:var(--gold);color:#ffffff;}
         .sidebar-menu>li>a>.pull-right-container{margin-left:auto !important;float:none !important;}
         .sidebar-menu .fa-angle-left{font-size:11px !important;color:var(--t4) !important;transition:transform .2s !important;}
         .sidebar-menu li.menu-open>a>.pull-right-container .fa-angle-left{transform:rotate(-90deg) !important;}
-        .treeview-menu{background:transparent !important;padding:3px 0 5px 15px !important;margin:0 !important;list-style:none !important;border-left:1.5px solid rgba(15,118,110,.25) !important;margin-left:22px !important;}
+        /* Submenu — clean indent under a guide line, no dated dot bullets */
+        .treeview-menu{background:transparent !important;padding:2px 0 4px 0 !important;margin:2px 0 4px 28px !important;list-style:none !important;border-left:1.5px solid var(--border) !important;}
         .treeview-menu>li{margin:1px 0 !important;}
-        .treeview-menu>li>a{font-family:var(--font-b) !important;font-size:12.5px !important;color:var(--t3) !important;padding:6px 10px !important;border-radius:7px !important;display:flex !important;align-items:center !important;gap:7px !important;transition:all .14s !important;}
-        .treeview-menu>li>a:hover{color:var(--gold) !important;background:var(--gold-dim) !important;}
-        .treeview-menu>li.active>a{color:var(--gold) !important;font-weight:600 !important;}
-        .treeview-menu .fa-circle-o{font-size:5px !important;opacity:.45 !important;flex-shrink:0 !important;}
-        .treeview-menu>li>a:hover .fa-circle-o,.treeview-menu>li.active>a .fa-circle-o{color:var(--gold) !important;opacity:1 !important;}
-        .g-sb-foot{position:relative;z-index:1;border-top:1px solid var(--border);padding:12px 14px;display:flex;align-items:center;gap:10px;background:var(--bg2);transition:background var(--ease);}
-        .g-av{width:34px;height:34px;border-radius:9px;flex-shrink:0;background:var(--gold);display:flex;align-items:center;justify-content:center;font-family:var(--font-d);font-size:13px;font-weight:800;color:#ffffff;box-shadow:0 0 10px rgba(15,118,110,.3);}
-        .g-av-name{font-size:12.5px;font-weight:700;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;}
-        .g-av-role{font-size:10px;color:var(--t3);font-family:var(--font-m);}
-        .g-av-out{margin-left:auto;width:29px;height:29px;border-radius:7px;background:transparent;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:var(--t3);font-size:13px;cursor:pointer;transition:all var(--ease);flex-shrink:0;}
+        .treeview-menu>li>a{font-family:var(--font-b) !important;font-size:12.5px !important;font-weight:500 !important;color:var(--t3) !important;padding:7px 12px 7px 16px !important;margin-left:6px !important;border-radius:8px !important;display:flex !important;align-items:center !important;gap:8px !important;transition:background .14s,color .14s !important;}
+        .treeview-menu>li>a:hover{color:var(--t1) !important;background:var(--gold-dim) !important;}
+        .treeview-menu>li.active>a{color:var(--gold) !important;background:var(--gold-dim) !important;font-weight:600 !important;}
+        /* Sub-section divider inside a long submenu (e.g. Fees) — theme-aware,
+           subtler than the top-level .g-sec so hierarchy reads correctly. */
+        .treeview-menu .g-sub-sec{padding:9px 12px 3px 16px !important;margin-left:6px !important;font-size:9px !important;font-weight:700 !important;color:var(--t4) !important;text-transform:uppercase !important;letter-spacing:1px !important;font-family:var(--font-m) !important;opacity:.85 !important;pointer-events:none !important;list-style:none !important;}
+        .treeview-menu .g-sub-sec:first-child{padding-top:3px !important;}
+        .treeview-menu .fa-circle-o{display:none !important;}
+        .g-sb-foot{position:relative;z-index:1;border-top:1px solid var(--border);padding:12px 14px;display:flex;align-items:center;gap:11px;background:var(--bg2);transition:background var(--ease);}
+        .g-av{width:36px;height:36px;border-radius:10px;flex-shrink:0;background:var(--gold);display:flex;align-items:center;justify-content:center;font-family:var(--font-d);font-size:14px;font-weight:800;color:#ffffff;box-shadow:0 2px 8px rgba(15,118,110,.25);}
+        .g-av-name{font-size:13px;font-weight:700;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;}
+        .g-av-role{font-size:9.5px;color:var(--t3);font-family:var(--font-m);text-transform:uppercase;letter-spacing:.5px;}
+        .g-av-out{margin-left:auto;width:30px;height:30px;border-radius:8px;background:transparent;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:var(--t3);font-size:13px;cursor:pointer;transition:all var(--ease);flex-shrink:0;}
         .g-av-out:hover{background:rgba(224,92,111,.1);color:var(--rose);border-color:rgba(224,92,111,.25);}
 
         /* LAYOUT */
@@ -594,9 +588,9 @@
 <header class="main-header">
     <div class="logo">
         <a href="<?= base_url('admin') ?>" class="g-logo-link">
-            <div class="g-mark">G</div>
+            <div class="g-mark">Z</div>
             <div class="g-logotext">
-                <div class="g-logoname"><b>School</b>X</div>
+                <div class="g-logoname"><b>Zen</b>Xii</div>
                 <div class="g-logosub">
                     <?= isset($school_display_name) ? strtoupper(htmlspecialchars($school_display_name, ENT_QUOTES, 'UTF-8')) : (isset($school_name) ? strtoupper(htmlspecialchars($school_name, ENT_QUOTES, 'UTF-8')) : 'SCHOOL ERP') ?>
                     <?= isset($session_year) ? ' · ' . htmlspecialchars($session_year, ENT_QUOTES, 'UTF-8') : '' ?>
@@ -867,7 +861,7 @@
             <?php if (isset($school_features) && in_array('Student Management', $school_features) && $can('SIS')): ?>
             <li class="g-sec">Students</li>
             <li class="treeview">
-                <a href="#"><i class="fa fa-funnel-dollar fa-filter"></i><span>Admission CRM</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
+                <a href="#"><i class="fa fa-filter"></i><span>Admission CRM</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
                 <ul class="treeview-menu">
                     <li><a href="<?= base_url('sis/crm') ?>"><i class="fa fa-circle-o"></i>CRM Dashboard</a></li>
                     <li><a href="<?= base_url('sis/admission_leads') ?>"><i class="fa fa-circle-o"></i>Admission Leads</a></li>
@@ -996,37 +990,31 @@
             <li class="treeview">
                 <a href="#"><i class="fa fa-inr"></i><span>Fees</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
                 <ul class="treeview-menu">
-                    <!-- Overview -->
-                    <li><a href="<?= base_url('fees/dashboard') ?>"><i class="fa fa-dashboard"></i>Dashboard</a></li>
+                    <li><a href="<?= base_url('fees/dashboard') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
 
-                    <!-- ── Setup ── -->
-                    <li class="header" style="padding:6px 15px 2px;font-size:10px;color:#ffffff;letter-spacing:.8px;text-transform:uppercase;font-weight:700;opacity:.95;">Setup</li>
-                    <li><a href="<?= base_url('fee_management/categories') ?>"><i class="fa fa-tags"></i>Titles &amp; Categories</a></li>
-                    <li><a href="<?= base_url('fees/fees_chart') ?>"><i class="fa fa-table"></i>Fee Chart</a></li>
+                    <li class="g-sub-sec">Setup</li>
+                    <li><a href="<?= base_url('fee_management/categories') ?>"><i class="fa fa-circle-o"></i>Titles &amp; Categories</a></li>
+                    <li><a href="<?= base_url('fees/fees_chart') ?>"><i class="fa fa-circle-o"></i>Fee Chart</a></li>
 
-                    <!-- ── Billing ── -->
-                    <li class="header" style="padding:6px 15px 2px;font-size:10px;color:#ffffff;letter-spacing:.8px;text-transform:uppercase;font-weight:700;opacity:.95;">Billing</li>
-                    <li><a href="<?= base_url('fees/generate_demands') ?>"><i class="fa fa-magic"></i>Generate Demands</a></li>
-                    <li><a href="<?= base_url('fees/fees_counter') ?>"><i class="fa fa-desktop"></i>Fee Counter</a></li>
-                    <li><a href="<?= base_url('fees/fees_records') ?>"><i class="fa fa-list"></i>Records</a></li>
-                    <li><a href="<?= base_url('fees/student_ledger') ?>"><i class="fa fa-book"></i>Student Ledger</a></li>
+                    <li class="g-sub-sec">Billing</li>
+                    <li><a href="<?= base_url('fees/generate_demands') ?>"><i class="fa fa-circle-o"></i>Generate Demands</a></li>
+                    <li><a href="<?= base_url('fees/fees_counter') ?>"><i class="fa fa-circle-o"></i>Fee Counter</a></li>
+                    <li><a href="<?= base_url('fees/fees_records') ?>"><i class="fa fa-circle-o"></i>Records</a></li>
+                    <li><a href="<?= base_url('fees/student_ledger') ?>"><i class="fa fa-circle-o"></i>Student Ledger</a></li>
 
-                    <!-- ── Follow-up ── -->
-                    <li class="header" style="padding:6px 15px 2px;font-size:10px;color:#ffffff;letter-spacing:.8px;text-transform:uppercase;font-weight:700;opacity:.95;">Follow-up</li>
-                    <li><a href="<?= base_url('fees/defaulter_report') ?>"><i class="fa fa-exclamation-circle"></i>Defaulters</a></li>
-                    <li><a href="<?= base_url('fee_management/reminders') ?>"><i class="fa fa-bell"></i>Reminders</a></li>
-                    <li><a href="<?= base_url('fee_management/discounts') ?>"><i class="fa fa-percent"></i>Discounts &amp; Scholarships</a></li>
-                    <li><a href="<?= base_url('fee_management/refunds') ?>"><i class="fa fa-undo"></i>Refunds</a></li>
+                    <li class="g-sub-sec">Follow-up</li>
+                    <li><a href="<?= base_url('fees/defaulter_report') ?>"><i class="fa fa-circle-o"></i>Defaulters</a></li>
+                    <li><a href="<?= base_url('fee_management/reminders') ?>"><i class="fa fa-circle-o"></i>Reminders</a></li>
+                    <li><a href="<?= base_url('fee_management/discounts') ?>"><i class="fa fa-circle-o"></i>Discounts &amp; Scholarships</a></li>
+                    <li><a href="<?= base_url('fee_management/refunds') ?>"><i class="fa fa-circle-o"></i>Refunds</a></li>
 
-                    <!-- ── Online Payments ── -->
-                    <li class="header" style="padding:6px 15px 2px;font-size:10px;color:#ffffff;letter-spacing:.8px;text-transform:uppercase;font-weight:700;opacity:.95;">Online Payments</li>
-                    <li><a href="<?= base_url('fee_management/gateway') ?>"><i class="fa fa-credit-card"></i>Payment Gateway</a></li>
-                    <li><a href="<?= base_url('fee_management/online_payments') ?>"><i class="fa fa-mobile"></i>Online Payments</a></li>
-                    <li><a href="<?= base_url('fee_management/payment_reconciliation') ?>"><i class="fa fa-balance-scale"></i>Reconciliation</a></li>
+                    <li class="g-sub-sec">Online Payments</li>
+                    <li><a href="<?= base_url('fee_management/gateway') ?>"><i class="fa fa-circle-o"></i>Payment Gateway</a></li>
+                    <li><a href="<?= base_url('fee_management/online_payments') ?>"><i class="fa fa-circle-o"></i>Online Payments</a></li>
+                    <li><a href="<?= base_url('fee_management/payment_reconciliation') ?>"><i class="fa fa-circle-o"></i>Reconciliation</a></li>
 
-                    <!-- ── Debug ── -->
-                    <li class="header" style="padding:6px 15px 2px;font-size:10px;color:#ffffff;letter-spacing:.8px;text-transform:uppercase;font-weight:700;opacity:.95;">Debug</li>
-                    <li><a href="<?= base_url('fees/transaction_audit') ?>"><i class="fa fa-shield"></i>Transaction Audit</a></li>
+                    <li class="g-sub-sec">Debug</li>
+                    <li><a href="<?= base_url('fees/transaction_audit') ?>"><i class="fa fa-circle-o"></i>Transaction Audit</a></li>
                 </ul>
             </li>
             <?php endif; ?>
@@ -1038,7 +1026,7 @@
                     <li><a href="<?= base_url('accounting') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
                     <li><a href="<?= base_url('accounting/chart') ?>"><i class="fa fa-circle-o"></i>Chart of Accounts</a></li>
                     <li><a href="<?= base_url('accounting/ledger') ?>"><i class="fa fa-circle-o"></i>Journal Entries</a></li>
-                    <li><a href="<?= base_url('accounting/income-expense') ?>"><i class="fa fa-circle-o"></i>Income & Expense</a></li>
+                    <li><a href="<?= base_url('accounting/income-expense') ?>"><i class="fa fa-circle-o"></i>Income &amp; Expense</a></li>
                     <li><a href="<?= base_url('accounting/cash-book') ?>"><i class="fa fa-circle-o"></i>Cash Book</a></li>
                     <li><a href="<?= base_url('accounting/bank-recon') ?>"><i class="fa fa-circle-o"></i>Bank Reconciliation</a></li>
                     <li><a href="<?= base_url('accounting/reports') ?>"><i class="fa fa-circle-o"></i>Financial Reports</a></li>
