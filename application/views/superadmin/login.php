@@ -6,7 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="csrf-token" content="<?= $this->security->get_csrf_hash() ?>">
 <meta name="csrf-name"  content="<?= $this->security->get_csrf_token_name() ?>">
-<title>Super Admin — GraderIQ</title>
+<title>Super Admin — ZenXii</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -103,14 +103,35 @@ html, body {
 
 .sa-panel-top { position: relative; z-index: 1; }
 
+.sa-brand {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+}
+.sa-logo-mark {
+    width: 46px;
+    height: 46px;
+    flex-shrink: 0;
+    border-radius: 11px;
+    background: linear-gradient(135deg, var(--gold2), var(--gold3));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--serif);
+    font-size: 25px;
+    font-weight: 800;
+    color: var(--navy);
+    box-shadow: 0 6px 22px var(--gold-glow), inset 0 1px 0 rgba(255,255,255,.28);
+}
+
 .sa-wordmark {
     font-family: var(--serif);
-    font-size: 28px;
+    font-size: 27px;
     font-weight: 800;
     color: var(--t1);
     letter-spacing: -.5px;
     line-height: 1;
-    margin-bottom: 6px;
+    margin-bottom: 5px;
 }
 .sa-wordmark span { color: var(--gold); }
 
@@ -155,7 +176,46 @@ html, body {
     color: var(--gold);
 }
 
+.sa-feature-list {
+    list-style: none;
+    margin-top: 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    max-width: 260px;
+}
+.sa-feature-list li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--sans);
+    font-size: 12.5px;
+    font-weight: 400;
+    color: var(--t2);
+    line-height: 1.3;
+}
+.sa-feature-list i {
+    flex-shrink: 0;
+    width: 26px; height: 26px;
+    border-radius: 7px;
+    background: var(--gold-dim);
+    border: 1px solid var(--border);
+    color: var(--gold);
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
 .sa-panel-bottom { position: relative; z-index: 1; }
+
+.sa-copyright {
+    margin-top: 16px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--t4);
+    letter-spacing: .5px;
+}
 
 .sa-security-badge {
     display: inline-flex;
@@ -429,16 +489,26 @@ html, body {
         <div class="sa-panel-grid"></div>
 
         <div class="sa-panel-top">
-            <div class="sa-wordmark">School<span>X</span></div>
-            <div class="sa-wordmark-sub">Management Platform</div>
+            <div class="sa-brand">
+                <div class="sa-logo-mark">Z</div>
+                <div class="sa-brand-text">
+                    <div class="sa-wordmark">Zen<span>Xii</span></div>
+                    <div class="sa-wordmark-sub">Management Platform</div>
+                </div>
+            </div>
         </div>
 
         <div class="sa-panel-mid">
-            <div class="sa-big-letter">X</div>
+            <div class="sa-big-letter">Z</div>
             <div class="sa-panel-tagline">
                 Trusted by schools.<br>
                 Built for <em>administrators</em>.
             </div>
+            <ul class="sa-feature-list">
+                <li><i class="fa fa-shield-halved"></i> Bank-grade security &amp; access control</li>
+                <li><i class="fa fa-layer-group"></i> Centralized multi-school administration</li>
+                <li><i class="fa fa-chart-line"></i> Unified analytics &amp; reporting</li>
+            </ul>
         </div>
 
         <div class="sa-panel-bottom">
@@ -446,6 +516,7 @@ html, body {
                 <div class="sa-badge-dot"></div>
                 SECURE · RESTRICTED ACCESS
             </div>
+            <div class="sa-copyright">&copy; <span id="saYear"></span> ZenXii &middot; All rights reserved</div>
         </div>
     </div>
 
@@ -521,6 +592,10 @@ html, body {
 <script>
 (function () {
     'use strict';
+
+    /* Copyright year */
+    var yearEl = document.getElementById('saYear');
+    if (yearEl) yearEl.textContent = new Date().getFullYear();
 
     /* CSRF from meta tags */
     var csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
