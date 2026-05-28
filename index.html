@@ -547,7 +547,7 @@
       transition: transform .25s ease, opacity .2s ease;
     }
 
-    /* Dropdown panel — SOLID + opaque (no bleed-through), minimal list */
+    /* Dropdown panel — flat solid panel, no soft shadow/glow */
     .hero-nav-menu {
       display: none;
       position: absolute;
@@ -559,8 +559,8 @@
       gap: 0;
       background: #161010;                  /* solid — kills the see-through */
       border-top: 1px solid rgba(255,255,255,.08);
-      box-shadow: 0 18px 40px rgba(0,0,0,.55);
       padding: 6px 0 10px;
+      z-index: 5;                           /* sit above any hero element */
     }
     .nav-toggle:checked ~ .hero-nav-menu { display: flex; }
 
