@@ -822,21 +822,29 @@ class Fee_firestore_sync
         if (!$this->ready) return $result;
 
         try {
-            $path = "Schools/{$this->schoolCode}/{$this->session}/Fees/Firestore_Sync_Queue";
-            $queue = $this->firebase->get($path);
-            if (!is_array($queue)) return $result;
+            // BUG-080 (2026-05-28): read from Firestore `feeSyncRetryQueue` —
+            // the SAME collection queueForRetry() writes to. The previous
+            // implementation read an RTDB path (Schools/.../Firestore_Sync_Queue)
+            // that nothing ever wrote to, so every queued failure sat in
+            // Firestore undrained forever. Scope to this school's entries via
+            // the school_code field queueForRetry() stamps on each doc. Query
+            // limit enforces the maxEntries cap (single-field equality — no
+            // composite index required).
+            $rows = $this->firebase->firestoreQuery('feeSyncRetryQueue', [
+                ['school_code', '==', $this->schoolCode],
+            ], null, 'ASC', $maxEntries);
+            if (!is_array($rows) || empty($rows)) return $result;
 
-            $count = 0;
-            foreach ($queue as $entryId => $entry) {
-                if ($count >= $maxEntries) break;
-                if (!is_array($entry)) continue;
+            foreach ($rows as $r) {
+                $docId = (string) ($r['id'] ?? '');
+                $entry = is_array($r['data'] ?? null) ? $r['data'] : [];
+                if ($docId === '' || empty($entry)) continue;
 
                 $kind    = $entry['kind']    ?? '';
                 $payload = $entry['payload'] ?? [];
                 if ($kind === '' || !is_array($payload)) continue;
 
                 $result['attempted']++;
-                $count++;
                 $ok = false;
 
                 try {
@@ -893,11 +901,13 @@ class Fee_firestore_sync
 
                 if ($ok) {
                     $result['succeeded']++;
-                    try { $this->firebase->delete($path, $entryId); } catch (\Exception $e) {}
+                    // BUG-080: clear the drained entry from Firestore (was RTDB delete).
+                    try { $this->firebase->firestoreDelete('feeSyncRetryQueue', $docId); } catch (\Exception $e) {}
                 } else {
-                    // Bump retry count so we can detect poison entries later
+                    // BUG-080: bump retry_count on the Firestore doc (was RTDB
+                    // update) so poison entries can be detected later.
                     try {
-                        $this->firebase->update("{$path}/{$entryId}", [
+                        $this->firebase->firestoreUpdate('feeSyncRetryQueue', $docId, [
                             'retry_count'  => intval($entry['retry_count'] ?? 0) + 1,
                             'last_attempt' => date('c'),
                         ]);
