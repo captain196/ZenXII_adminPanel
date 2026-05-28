@@ -483,6 +483,76 @@ class Firebase
     }
 
     /**
+     * Delete a Storage object by its path. Best-effort: returns true on
+     * success, false if the object is missing or deletion fails (callers
+     * treat a failed cleanup as non-fatal — an orphaned file is harmless).
+     * Added 2026-05-28 for logo re-upload orphan cleanup.
+     */
+    public function deleteStorageFile(string $remotePath): bool
+    {
+        if (trim($remotePath) === '') return false;
+        try {
+            $obj = $this->storageBucket->object($remotePath);
+            if (!$obj->exists()) return false;
+            $obj->delete();
+            unset($this->_downloadTokens[$remotePath]);
+            return true;
+        } catch (\Exception $e) {
+            log_message('warning', 'Firebase::deleteStorageFile() failed for [' . $remotePath . ']: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Extract the Storage object path from a Firebase download URL.
+     * (…/o/{urlencoded-path}?…) → decoded path, or '' if not parseable.
+     * Helper for callers that stored a full download URL and need the
+     * object path to delete/replace it.
+     */
+    public function storagePathFromUrl(string $url): string
+    {
+        if (preg_match('#/o/([^?]+)#', $url, $m)) {
+            return urldecode($m[1]);
+        }
+        return '';
+    }
+
+    /**
+     * Return the raw GCS object info resource (contentType, size, metadata,
+     * …) for a Storage object, or null if missing/unavailable. Read-only.
+     */
+    public function objectInfo(string $remotePath): ?array
+    {
+        try {
+            $obj = $this->storageBucket->object($remotePath);
+            if (!$obj->exists()) return null;
+            return $obj->info();
+        } catch (\Exception $e) {
+            log_message('warning', 'Firebase::objectInfo() failed for [' . $remotePath . ']: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * List Storage object paths under a prefix (e.g. "schools/X/logo/").
+     * Returns an array of object names. Read-only; capped to avoid runaway
+     * iteration. Added 2026-05-28 for orphan-file cleanup.
+     */
+    public function listStorageFiles(string $prefix, int $max = 500): array
+    {
+        $out = [];
+        try {
+            foreach ($this->storageBucket->objects(['prefix' => $prefix]) as $obj) {
+                $out[] = $obj->name();
+                if (count($out) >= $max) break;
+            }
+        } catch (\Exception $e) {
+            log_message('warning', 'Firebase::listStorageFiles() failed for [' . $prefix . ']: ' . $e->getMessage());
+        }
+        return $out;
+    }
+
+    /**
      * Handle "Other" dropdown pattern: if main value is 'other', return the custom value.
      */
     public function handleOtherValue(string $mainValue, string $otherValue): string

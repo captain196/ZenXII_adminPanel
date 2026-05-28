@@ -463,6 +463,17 @@ class School_config extends MY_Controller
         $safe       = preg_replace('/[^A-Za-z0-9_\-]/', '_', $school);
         $remotePath = "schools/{$safe}/logo/" . $info['file_name'];
 
+        // Capture the PREVIOUS logo's Storage path BEFORE we overwrite the
+        // pointer, so we can delete the old file after the new one commits
+        // (orphan-leak cleanup — each upload uses a fresh random filename, so
+        // the old object would otherwise linger forever).
+        $prevPath = '';
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->fs->schoolId());
+            $prevUrl   = is_array($schoolDoc) ? (string)($schoolDoc['logoUrl'] ?? '') : '';
+            if ($prevUrl !== '') $prevPath = $this->firebase->storagePathFromUrl($prevUrl);
+        } catch (\Throwable $_) {}
+
         $uploaded = $this->firebase->uploadFile($localPath, $remotePath);
         @unlink($localPath);
 
@@ -474,6 +485,13 @@ class School_config extends MY_Controller
 
         // Firestore (sole write target)
         $this->fs->saveSchool(['logo_url' => $url, 'logo_updated_at' => date('Y-m-d H:i:s')]);
+
+        // Now that the new logo is committed, delete the previous file.
+        // Best-effort: a failed cleanup never fails the upload; the path
+        // guard ensures we never delete the file we just uploaded.
+        if ($prevPath !== '' && $prevPath !== $remotePath) {
+            $this->firebase->deleteStorageFile($prevPath);
+        }
 
         log_audit('Configuration', 'upload_logo', $school, 'Uploaded school logo');
 
