@@ -115,8 +115,10 @@ class MY_Superadmin_Controller extends CI_Controller
         header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
 
         // ── HSTS — only sent over HTTPS ──
+        // V7 hardening 2026-05-27: 86400 (1d) → 31536000 (1y) + preload.
+        // Preload-list submission to hstspreload.org is intentionally NOT done yet.
         if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') {
-            header('Strict-Transport-Security: max-age=86400; includeSubDomains');
+            header('Strict-Transport-Security: max-age=31536000; includeSubDomains; preload');
         }
 
         // ── Content-Security-Policy (mirrors MY_Controller's CSP) ──

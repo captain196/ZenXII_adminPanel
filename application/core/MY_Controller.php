@@ -370,9 +370,11 @@ class MY_Controller extends CI_Controller
         header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
 
         // ── HSTS — only sent over HTTPS to prevent header injection over HTTP ──
-        // After initial testing, increase max-age to 31536000 (1 year).
+        // V7 hardening 2026-05-27: 86400 (1d) → 31536000 (1y) + preload.
+        // Preload-list submission to hstspreload.org is intentionally NOT done yet;
+        // the directive merely declares eligibility.
         if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') {
-            header('Strict-Transport-Security: max-age=86400; includeSubDomains');
+            header('Strict-Transport-Security: max-age=31536000; includeSubDomains; preload');
         }
 
         // H-03 FIX: Content-Security-Policy — restrict resource loading
