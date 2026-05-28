@@ -195,10 +195,15 @@
                         <label>Target Session</label>
                         <select id="toSession">
                             <?php foreach ($session_options as $sy): ?>
-                            <option value="<?= htmlspecialchars($sy) ?>"<?= ($sy === ($next_session ?? '')) ? ' selected' : '' ?>>
-                                <?= htmlspecialchars($sy) ?><?= ($sy === $session_year) ? '  (current)' : '' ?><?= ($sy === ($next_session ?? '')) ? '  (next)' : '' ?>
+                            <option value="<?= htmlspecialchars($sy) ?>"<?= ($sy === $session_year) ? ' selected' : '' ?>>
+                                <?= htmlspecialchars($sy) ?><?= ($sy === $session_year) ? '  (current)' : '' ?>
                             </option>
                             <?php endforeach; ?>
+                            <?php if (!empty($create_session)): ?>
+                            <option value="<?= htmlspecialchars($create_session) ?>" data-create="1">
+                                + Create new session: <?= htmlspecialchars($create_session) ?>
+                            </option>
+                            <?php endif; ?>
                         </select>
                     </div>
                 </div>

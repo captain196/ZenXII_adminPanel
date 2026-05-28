@@ -765,16 +765,20 @@ class Sis extends MY_Controller
         $data['class_map']    = $this->_fs_class_map();
         $data['session_year'] = $session;
 
-        // Build session options: available sessions + computed next session
+        // Build session options. Issue B (2026-05-28): list ONLY sessions that
+        // actually exist. Previously the computed next academic year was
+        // silently appended to the list as if it were a real session, which
+        // confused operators into promoting into a non-existent (and
+        // fee-structure-less) session. The next year is now offered separately
+        // as an explicit, clearly-labeled "create new" choice the view renders
+        // distinctly; selecting it still auto-registers the session on submit
+        // via the existing BUG-056 SW1 path in execute_promotion.
         $available = $this->session->userdata('available_sessions') ?? [];
+        rsort($available);
         $parts     = explode('-', $session);
         $nextYear  = ((int)$parts[0] + 1) . '-' . substr((string)((int)$parts[0] + 2), -2);
-        if (!in_array($nextYear, $available, true)) {
-            $available[] = $nextYear;
-        }
-        rsort($available);
-        $data['session_options'] = $available;
-        $data['next_session']    = $nextYear;
+        $data['session_options'] = $available;                                       // existing only
+        $data['create_session']  = in_array($nextYear, $available, true) ? '' : $nextYear; // '' if it already exists
 
         $this->load->view('include/header');
         $this->load->view('sis/promote', $data);
