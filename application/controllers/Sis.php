@@ -2445,10 +2445,28 @@ class Sis extends MY_Controller
      */
     private function _get_tc_number(string $schoolName): string
     {
+        // Atomic per-school allocation via claim-doc CAS — closes the
+        // read-increment-write race that could hand two concurrent TCs the
+        // same number. Seeds from the legacy schools.tcCounter so numbering
+        // continues without restart (no re-issue of already-used numbers).
         $schoolDoc = $this->fs->get('schools', $this->school_id);
-        $current = (int) ($schoolDoc['tcCounter'] ?? 0);
-        $next = $current + 1;
-        $this->fs->update('schools', $this->school_id, ['tcCounter' => $next]);
+        $current   = (int) ($schoolDoc['tcCounter'] ?? 0);
+
+        $next = $this->fs->nextSchoolCounter('tc', $current);
+        if ($next <= 0) {
+            // Atomic path unavailable (transient Firestore failure). Fall
+            // back to the legacy increment so TC issuance is never hard
+            // blocked — same behaviour as before this fix, no worse.
+            $next = $current + 1;
+            log_message('warning', "Sis::_get_tc_number atomic counter unavailable; legacy fallback next={$next}");
+        }
+
+        // Mirror into schools.tcCounter (monotonic) so existing verifiers
+        // (Sis_canonical_verify / Sis_tier2_verify) stay coherent.
+        if ($next > $current) {
+            $this->fs->update('schools', $this->school_id, ['tcCounter' => $next]);
+        }
+
         $year = date('Y');
         $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', substr($schoolName, 0, 6)));
         return "TC-{$code}-{$year}-" . str_pad($next, 4, '0', STR_PAD_LEFT);
