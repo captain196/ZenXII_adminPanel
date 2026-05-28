@@ -1908,10 +1908,20 @@ class Sis extends MY_Controller
             if ($uid === '') continue;
 
             // Session enrollment check (mirrors _get_enrolled_ids).
-            $sessions = $d['sessions'] ?? null;
+            // SW-CONVERGE-STUDENTS-A (2026-05-26): canonical `session` singular
+            // takes precedence; legacy `sessions[]` array is honored ONLY when
+            // the singular field is absent/empty (back-compat for pre-convergence
+            // admission records). v7 target = singular as sole student-side
+            // authority across all filter sites.
             $session  = $d['session']  ?? null;
-            if (is_array($sessions) && !in_array($currentSession, $sessions, true)) continue;
-            if (!is_array($sessions) && is_string($session) && $session !== '' && $session !== $currentSession) continue;
+            $sessions = $d['sessions'] ?? null;
+            if (is_string($session) && $session !== '') {
+                if ($session !== $currentSession) continue;
+            } elseif (is_array($sessions) && !empty($sessions)) {
+                if (!in_array($currentSession, $sessions, true)) continue;
+            }
+            // else: no enrollment record on doc — preserve prior behavior
+            // (do not skip here; downstream filters apply).
 
             $rowStatus = (string) ($d['status'] ?? $d['Status'] ?? 'Active');
             // Always exclude hard-deleted rows from the listing.
@@ -2637,12 +2647,21 @@ class Sis extends MY_Controller
                 if (strcasecmp($rowStatus, 'Deleted') === 0) continue;
             }
 
-            // Check session enrollment: support both string and array format
-            $sessions = $d['sessions'] ?? null;
+            // Check session enrollment: canonical `session` singular takes
+            // precedence; legacy `sessions[]` array is honored ONLY when the
+            // singular field is absent/empty.
+            // SW-CONVERGE-STUDENTS-A (2026-05-26): see Sis.php:2036 for full
+            // rationale. v7 target = singular session as sole student-side
+            // authority across all filter sites.
             $session  = $d['session']  ?? null;
-
-            if (is_array($sessions) && !in_array($currentSession, $sessions, true)) continue;
-            if (!is_array($sessions) && is_string($session) && $session !== '' && $session !== $currentSession) continue;
+            $sessions = $d['sessions'] ?? null;
+            if (is_string($session) && $session !== '') {
+                if ($session !== $currentSession) continue;
+            } elseif (is_array($sessions) && !empty($sessions)) {
+                if (!in_array($currentSession, $sessions, true)) continue;
+            }
+            // else: no enrollment record on doc — preserve prior behavior
+            // (do not skip; caller may apply additional gates).
 
             $enrolledIds[$uid] = true;
         }
