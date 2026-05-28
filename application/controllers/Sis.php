@@ -926,6 +926,28 @@ class Sis extends MY_Controller
             }
         }
 
+        // BUG-076 Part 2-A (2026-05-28): destination fee-structure guard.
+        // A promotion regenerates the destination class's demands via
+        // assignInitialFees, which reads
+        // feeStructures/{schoolId}_{toSession}_{class}_{section}. If that
+        // structure is absent, regeneration silently produces nothing and the
+        // promoted students land Active-with-zero-demands (the STU0004-11
+        // incident root cause). Validate BEFORE moving any student so the
+        // promotion is all-or-nothing. Operator decision 2026-05-28: BLOCK if
+        // missing. ($school_name == school_id == SCH_xxx; classKey/sectionKey
+        // are already applied to $newClassKey/$newSectionKey — identical to
+        // the key assignInitialFees will read.)
+        $destFeeStructDocId = "{$school_name}_{$toSession}_{$newClassKey}_{$newSectionKey}";
+        $destFeeStruct      = $this->fs->get('feeStructures', $destFeeStructDocId);
+        if (!is_array($destFeeStruct) || empty($destFeeStruct['feeHeads'])) {
+            return $this->json_error(
+                "No fee structure exists for {$newClassKey} / {$newSectionKey} in session "
+                . "{$toSession}. Promotion aborted before moving any student, to prevent "
+                . "students being enrolled without fee demands. Set up the fee structure for "
+                . "this class/section in session {$toSession} first, then retry."
+            );
+        }
+
         $adminName     = $this->session->userdata('admin_name') ?? 'Admin';
         $promoted      = [];
         $now           = date('Y-m-d H:i:s');
@@ -1080,6 +1102,29 @@ class Sis extends MY_Controller
             $deferFailedStudents = [];
             $processedCount      = 0;
 
+            // BUG-076 Part 2-B (2026-05-28): session-threading. Demands for the
+            // destination class must be created in the session students are
+            // promoted INTO (toSession), not the admin's controller-boot
+            // session. Re-point the shared fsTxn + Fee_lifecycle to toSession
+            // before regeneration. The archive loop inside reassignFeesOnPromotion
+            // uses _demandsForAllSessions (session-agnostic), so only the
+            // regeneration target is affected; the boot session is restored
+            // after the loop so Phase D2/D3 (which use $__fs) are unaffected.
+            // Operator decision 2026-05-28: demands live in destination session.
+            $__sessionThreaded = ($__toSessionLocal !== '' && $__toSessionLocal !== $__sessionLocal);
+            if ($__sessionThreaded) {
+                try {
+                    $CI =& get_instance();
+                    if (isset($CI->fsTxn) && is_object($CI->fsTxn)) {
+                        $CI->fsTxn->init($__firebase, $__fs, $__schoolName, $__toSessionLocal);
+                    }
+                    $__feeLifecycle->init($__firebase, $__schoolName, $__toSessionLocal, $__adminNameLocal);
+                } catch (\Throwable $e) {
+                    log_message('error', "promote(deferred): session-thread re-point to {$__toSessionLocal} failed: " . $e->getMessage());
+                    $__sessionThreaded = false;
+                }
+            }
+
             // Phase D1 — reassign fees per promoted student (the ~94% cost).
             foreach ($__promotedLocal as $p) {
                 try {
@@ -1096,6 +1141,19 @@ class Sis extends MY_Controller
                         'reason'  => $e->getMessage(),
                     ];
                 }
+            }
+
+            // BUG-076 Part 2-B: restore the boot session on the shared fsTxn +
+            // Fee_lifecycle so subsequent Phase D2/D3 work (and any later
+            // shutdown code) operates against the original session.
+            if ($__sessionThreaded) {
+                try {
+                    $CI =& get_instance();
+                    if (isset($CI->fsTxn) && is_object($CI->fsTxn)) {
+                        $CI->fsTxn->init($__firebase, $__fs, $__schoolName, $__sessionLocal);
+                    }
+                    $__feeLifecycle->init($__firebase, $__schoolName, $__sessionLocal, $__adminNameLocal);
+                } catch (\Throwable $_) {}
             }
 
             // Phase D2 — section strength recompute. Outside the foreach
