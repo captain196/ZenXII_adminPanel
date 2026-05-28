@@ -537,41 +537,55 @@
       transition: transform .25s ease, opacity .2s ease;
     }
 
-    /* Dropdown panel — hidden until toggled */
+    /* Dropdown panel — SOLID + opaque (no bleed-through), minimal list */
     .hero-nav-menu {
       display: none;
       position: absolute;
       top: 100%; left: 0; right: 0;
       flex-direction: column;
       align-items: stretch;
-      gap: 6px;
-      background: rgba(15,10,8,.97);
-      backdrop-filter: blur(16px) saturate(140%);
-      -webkit-backdrop-filter: blur(16px) saturate(140%);
-      border-top: 1px solid rgba(255,255,255,.1);
-      box-shadow: 0 12px 30px rgba(0,0,0,.4);
-      padding: 12px 16px 16px;
+      gap: 0;
+      background: #161010;                  /* solid — kills the see-through */
+      border-top: 1px solid rgba(255,255,255,.08);
+      box-shadow: 0 18px 40px rgba(0,0,0,.55);
+      padding: 6px 0 10px;
     }
     .nav-toggle:checked ~ .hero-nav-menu { display: flex; }
 
-    /* Links stack vertically inside the dropdown */
+    /* Links as clean, left-aligned full-width rows */
     .hero-nav-menu .hero-nav-links {
-      display: flex; flex-direction: column; gap: 2px;
+      display: flex; flex-direction: column; gap: 0;
     }
     .hero-nav-menu .hero-nav-links a {
-      padding: 11px 8px; border-radius: 8px; font-size: 1rem;
+      display: block;
+      padding: 14px 22px;
+      border-radius: 0;
+      font-size: .98rem;
+      font-weight: 500;
+      text-align: left;
+      color: rgba(248,242,234,.85);
+      border-bottom: 1px solid rgba(255,255,255,.05);
     }
-    .hero-nav-menu .hero-nav-links a:hover { background: rgba(255,255,255,.08); }
+    /* Override desktop's white "active" pill → minimal gold text */
+    .hero-nav-menu .hero-nav-links a.active {
+      background: transparent;
+      color: #E0B36A;
+    }
+    .hero-nav-menu .hero-nav-links a:hover,
+    .hero-nav-menu .hero-nav-links a:active {
+      background: rgba(255,255,255,.05);
+      color: #fff;
+    }
 
-    /* CTA links inside dropdown, separated by a divider */
+    /* CTA buttons at the bottom, separated by a divider */
     .hero-nav-menu .hero-nav-cta {
-      display: flex; flex-direction: column; gap: 8px;
-      margin-top: 8px; padding-top: 12px;
-      border-top: 1px solid rgba(255,255,255,.1);
+      display: flex; flex-direction: column; gap: 10px;
+      margin: 0; padding: 14px 22px 4px;
+      border-top: 1px solid rgba(255,255,255,.08);
     }
     .hero-nav-menu .hero-nav-cta .dev-link,
     .hero-nav-menu .hero-nav-cta .btn-login {
-      justify-content: center; padding: 11px 14px;
+      justify-content: center; padding: 12px 14px;
     }
 
     /* Hamburger → X when open */
