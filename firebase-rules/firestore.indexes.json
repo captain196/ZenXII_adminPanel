@@ -1106,6 +1106,29 @@
       ]
     },
 
+    { "_comment": "SW4-companion-B (2026-05-26) — Parent app fee-demand listing excludes archived demands. Required by FeeFirestoreRepository.kt getFeeDemands / getPendingDemands / observeFeeDemands which add .whereNotEqualTo('status', 'archived') alongside the 3 equality filters (schoolId, session, studentId). Without this composite index Firestore returns FAILED_PRECONDITION on first query.",
+      "collectionGroup": "feeDemands",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "session",   "order": "ASCENDING" },
+        { "fieldPath": "studentId", "order": "ASCENDING" },
+        { "fieldPath": "status",    "order": "ASCENDING" }
+      ]
+    },
+
+    { "_comment": "SW4-companion-C (2026-05-27) — Teacher app class fee-demand observer excludes archived demands. Required by FeeFirestoreRepository.kt observeClassFeeDemands which adds .whereNotEqualTo('status', 'archived') alongside the 4 equality filters (schoolId, session, className, section). Without this composite index Firestore returns FAILED_PRECONDITION on first query, the .catch fallback emits empty, and the class summary card's per-month rollup goes blank.",
+      "collectionGroup": "feeDemands",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "session",   "order": "ASCENDING" },
+        { "fieldPath": "className", "order": "ASCENDING" },
+        { "fieldPath": "section",   "order": "ASCENDING" },
+        { "fieldPath": "status",    "order": "ASCENDING" }
+      ]
+    },
+
     { "_comment": "delete_section: timetables by sectionKey + session",
       "collectionGroup": "timetables",
       "queryScope": "COLLECTION",

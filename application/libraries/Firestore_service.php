@@ -556,6 +556,83 @@ class Firestore_service
     }
 
     // ══════════════════════════════════════════════════════════════════
+    //  ATOMIC PER-SCHOOL COUNTERS
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * Allocate the next value of a per-school sequential counter atomically.
+     *
+     * Reuses the same claim-doc compare-and-set primitive proven in
+     * Fee_firestore_txn / Id_generator: createDocument() returns false on
+     * a 409 (the claim already exists), so two concurrent callers can never
+     * be handed the same value. The pointer doc is only a fast-skip hint;
+     * the per-value claim doc is the source of truth. No composite index is
+     * required (direct doc reads/writes only — no max-claim query).
+     *
+     * @param string $kind        Counter name, scoped per school (e.g. 'tc').
+     * @param int    $seedFloor   If the stored pointer is below this, probing
+     *                            starts from here. Lets a caller adopt an
+     *                            existing legacy counter value without
+     *                            restarting (and thus without re-issuing
+     *                            already-used numbers).
+     * @param int    $maxAttempts Burst tolerance for concurrent writers /
+     *                            pointer drift.
+     * @return int   The claimed value (>= 1), or 0 if every attempt failed.
+     */
+    public function nextSchoolCounter(string $kind, int $seedFloor = 0, int $maxAttempts = 8): int
+    {
+        if (!$this->ready || $this->client === null) return 0;
+
+        $col       = self::SYSTEM_COUNTERS;
+        $pointerId = "{$this->schoolId}_{$kind}";
+
+        $base = 0;
+        try {
+            $cur  = $this->client->getDocument($col, $pointerId);
+            $base = is_array($cur) ? (int) ($cur['value'] ?? 0) : 0;
+        } catch (\Exception $_) { /* missing pointer → start at 0 */ }
+        if ($seedFloor > $base) $base = $seedFloor;
+
+        $candidate = $base;
+        for ($i = 0; $i < max(1, $maxAttempts); $i++) {
+            $candidate++;
+            $claimId = "{$this->schoolId}_{$kind}_claim_{$candidate}";
+            $created = false;
+            try {
+                $created = $this->client->createDocument($col, $claimId, [
+                    'schoolId'  => $this->schoolId,
+                    'session'   => $this->session,
+                    'kind'      => $kind,
+                    'value'     => $candidate,
+                    'claimedAt' => date('c'),
+                ]);
+            } catch (\Exception $e) {
+                log_message('error', "Firestore_service::nextSchoolCounter({$kind}) claim attempt {$i}: " . $e->getMessage());
+                $created = false;
+            }
+
+            if ($created) {
+                // Best-effort pointer advance — purely a fast-skip hint, so
+                // a failure here only costs extra probes next time, never
+                // correctness (the claim doc already guarantees uniqueness).
+                try {
+                    $this->client->setDocument($col, $pointerId, [
+                        'schoolId'  => $this->schoolId,
+                        'kind'      => $kind,
+                        'value'     => $candidate,
+                        'updatedAt' => date('c'),
+                    ], true);
+                } catch (\Exception $_) { /* non-fatal */ }
+                return $candidate;
+            }
+            // 409 — value already claimed by a concurrent writer; probe next.
+        }
+
+        log_message('error', "Firestore_service::nextSchoolCounter({$kind}) exhausted {$maxAttempts} attempts at base={$base}");
+        return 0;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
     //  SPECIFIC ENTITY HELPERS
     // ══════════════════════════════════════════════════════════════════
 
@@ -703,12 +780,17 @@ class Firestore_service
     /**
      * Save section info.
      */
-    public function saveSection(string $className, string $sectionName, array $data = []): bool
+    public function saveSection(string $className, string $sectionName, array $data = [], ?string $session = null): bool
     {
         $ck = self::classKey($className);
         $sk = self::sectionKey($sectionName);
+        // BUG (2026-05-28): honor an explicit target session when provided so
+        // section management can write to a session OTHER than the operator's
+        // current viewing session. Defaults to $this->session (unchanged for
+        // every existing caller that passes no session).
+        $sess = ($session !== null && $session !== '') ? $session : $this->session;
         // Android expects: {schoolId}_{session}_{className}_{section}
-        $docId = "{$this->schoolId}_{$this->session}_{$ck}_{$sk}";
+        $docId = "{$this->schoolId}_{$sess}_{$ck}_{$sk}";
 
         // Phase 2: stamp canonical classOrder/sectionCode/sectionKey alongside
         // the existing className/section so the sections collection matches
@@ -726,7 +808,7 @@ class Firestore_service
             'sectionCode'  => $cs['sectionCode'],
             'sectionKey'   => $sectionKeyComposite,
             'classTeacher' => '',
-            'session'      => $this->session,
+            'session'      => $sess,
             'studentCount' => 0,
             'updatedAt'    => date('c'),
         ], $data);
@@ -737,11 +819,14 @@ class Firestore_service
      * Build the section document ID matching Android convention:
      * {schoolId}_{session}_{Class X}_{Section Y}
      */
-    public function sectionDocId(string $className, string $sectionName): string
+    public function sectionDocId(string $className, string $sectionName, ?string $session = null): string
     {
         $ck = self::classKey($className);
         $sk = self::sectionKey($sectionName);
-        return "{$this->schoolId}_{$this->session}_{$ck}_{$sk}";
+        // BUG (2026-05-28): optional explicit target session — defaults to
+        // $this->session, so existing 2-arg callers are unaffected.
+        $sess = ($session !== null && $session !== '') ? $session : $this->session;
+        return "{$this->schoolId}_{$sess}_{$ck}_{$sk}";
     }
 
     /**

@@ -439,13 +439,40 @@ class School_config extends MY_Controller
         $this->load->library('upload', $config);
 
         if (!$this->upload->do_upload('logo')) {
-            return $this->json_error($this->upload->display_errors('', ''));
+            // BUG diagnostic (2026-05-28): CI's "filetype not allowed" can fire
+            // even for a valid PNG when MIME detection returns something not in
+            // mimes.php for the extension. Surface the ACTUAL detected MIME so
+            // the cause is pinned (real bad file vs detection mismatch) instead
+            // of guessed. fileinfo is the same detector CI uses internally.
+            $detected = '';
+            $tmp = $_FILES['logo']['tmp_name'] ?? '';
+            if ($tmp !== '' && is_uploaded_file($tmp) && function_exists('finfo_open')) {
+                $fi = finfo_open(FILEINFO_MIME_TYPE);
+                if ($fi) { $detected = (string) finfo_file($fi, $tmp); finfo_close($fi); }
+            }
+            $err = $this->upload->display_errors('', '');
+            log_message('error',
+                "upload_logo rejected: {$err} | detected_mime=" . ($detected ?: 'unknown')
+                . " | browser_type=" . ($_FILES['logo']['type'] ?? 'n/a')
+                . " | name=" . ($_FILES['logo']['name'] ?? 'n/a'));
+            return $this->json_error($err . ($detected !== '' ? " (detected type: {$detected})" : ''));
         }
 
         $info       = $this->upload->data();
         $localPath  = $info['full_path'];
         $safe       = preg_replace('/[^A-Za-z0-9_\-]/', '_', $school);
         $remotePath = "schools/{$safe}/logo/" . $info['file_name'];
+
+        // Capture the PREVIOUS logo's Storage path BEFORE we overwrite the
+        // pointer, so we can delete the old file after the new one commits
+        // (orphan-leak cleanup — each upload uses a fresh random filename, so
+        // the old object would otherwise linger forever).
+        $prevPath = '';
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->fs->schoolId());
+            $prevUrl   = is_array($schoolDoc) ? (string)($schoolDoc['logoUrl'] ?? '') : '';
+            if ($prevUrl !== '') $prevPath = $this->firebase->storagePathFromUrl($prevUrl);
+        } catch (\Throwable $_) {}
 
         $uploaded = $this->firebase->uploadFile($localPath, $remotePath);
         @unlink($localPath);
@@ -458,6 +485,13 @@ class School_config extends MY_Controller
 
         // Firestore (sole write target)
         $this->fs->saveSchool(['logo_url' => $url, 'logo_updated_at' => date('Y-m-d H:i:s')]);
+
+        // Now that the new logo is committed, delete the previous file.
+        // Best-effort: a failed cleanup never fails the upload; the path
+        // guard ensures we never delete the file we just uploaded.
+        if ($prevPath !== '' && $prevPath !== $remotePath) {
+            $this->firebase->deleteStorageFile($prevPath);
+        }
 
         log_audit('Configuration', 'upload_logo', $school, 'Uploaded school logo');
 
@@ -728,11 +762,17 @@ class School_config extends MY_Controller
                 continue;
             }
 
-            // Create a default "Section A" in Firestore for this class
+            // Create a default "Section A" in Firestore for this class.
+            // BUG (2026-05-28): pass $sessionYear so activation writes Section A
+            // into the TARGET session. Previously saveSection used fs->session
+            // (current viewing session), so "Activate Classes for 2027-28" while
+            // viewing 2026-27 created sections in 2026-27 instead — the existence
+            // pre-check (line ~719) already scoped to $sessionYear, so the two
+            // disagreed. Same session-divergence as the other section endpoints.
             $this->fs->saveSection($classNode, 'A', [
                 'created_at'  => date('Y-m-d H:i:s'),
                 'created_by'  => 'School_config::activate_classes',
-            ]);
+            ], $sessionYear);
             $created++;
         }
 
@@ -994,6 +1034,12 @@ class School_config extends MY_Controller
                 'op'         => 'update',
                 'collection' => 'schools',
                 'docId'      => $schoolDocId,
+                // 2026-05-27 — DOC-MERGE-FIX: emit updateMask so this PATCH
+                // touches only the listed field paths. Without `merge=>true`,
+                // commitBatch sends an `update` write without updateMask,
+                // which Firestore REST treats as a full-document REPLACE —
+                // wiping every other field on schools/{schoolId}.
+                'merge'      => true,
                 'data'       => [
                     'streams'   => $existing,
                     'updatedAt' => date('c'),
@@ -1110,8 +1156,12 @@ class School_config extends MY_Controller
         $sectionNode = "Section {$sectionLetter}";
         $path        = "Schools/{$school}/{$sessionYear}/{$classNode}/{$sectionNode}";
 
-        // Check existence in Firestore
-        $fsDocId = $this->fs->sectionDocId($classNode, $sectionLetter);
+        // Check existence in Firestore — BUG (2026-05-28): scope to the POSTed
+        // target session, not the operator's current viewing session. Without
+        // the explicit $sessionYear, sectionDocId/saveSection used fs->session,
+        // so adding "Section A for 2027-28" wrongly checked/wrote 2026-27 →
+        // "already exists" while the (session-filtered) list showed otherwise.
+        $fsDocId = $this->fs->sectionDocId($classNode, $sectionLetter, $sessionYear);
         $fsExists = is_array($this->fs->get('sections', $fsDocId));
         if ($fsExists) {
             return $this->json_error("{$classNode} / {$sectionNode} already exists in {$sessionYear}.");
@@ -1120,7 +1170,7 @@ class School_config extends MY_Controller
         $sectionData = ['created_at' => date('Y-m-d H:i:s')];
 
         // Firestore (sole write target)
-        $this->fs->saveSection($classNode, $sectionLetter, $sectionData);
+        $this->fs->saveSection($classNode, $sectionLetter, $sectionData, $sessionYear);
 
         log_audit('Configuration', 'save_section', "{$classNode}/{$sectionNode}", "Created section {$classNode} / {$sectionNode}");
 
@@ -1157,7 +1207,8 @@ class School_config extends MY_Controller
         $classNode   = $this->_class_node_name($classKey);
         $sectionNode = "Section {$sectionLetter}";
         $path        = "Schools/{$school}/{$sessionYear}/{$classNode}/{$sectionNode}";
-        $fsDocId     = $this->fs->sectionDocId($classNode, $sectionLetter);
+        // BUG (2026-05-28): scope the lookup to the POSTed target session.
+        $fsDocId     = $this->fs->sectionDocId($classNode, $sectionLetter, $sessionYear);
 
         // Check existence in Firestore
         $fsSection = $this->fs->get('sections', $fsDocId);
@@ -1430,7 +1481,10 @@ class School_config extends MY_Controller
                     continue;
                 }
                 try {
-                    $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel);
+                    // BUG (2026-05-28): scope existence-check + write to the POSTed
+                    // target session (was fs->session) so bulk add of "all classes"
+                    // doesn't false-positive "already exists" against another session.
+                    $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel, $sessionYear);
                     if (is_array($this->fs->get('sections', $fsDocId))) {
                         // Already exists — neither created nor failed; record as skipped.
                         $skipped[] = "{$classNode} Section {$sectionLabel} (already exists)";
@@ -1442,7 +1496,7 @@ class School_config extends MY_Controller
                         ];
                         continue;
                     }
-                    $this->fs->saveSection($classNode, $sectionLabel, ['created_at' => $now]);
+                    $this->fs->saveSection($classNode, $sectionLabel, ['created_at' => $now], $sessionYear);
                     $created++;
                 } catch (\Throwable $e) {
                     $failed[] = [
@@ -1470,7 +1524,8 @@ class School_config extends MY_Controller
                     continue;
                 }
                 try {
-                    $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel);
+                    // BUG (2026-05-28): scope to the POSTed target session.
+                    $fsDocId = $this->fs->sectionDocId($classNode, $sectionLabel, $sessionYear);
                     $fsDoc   = $this->fs->get('sections', $fsDocId);
                     if (!is_array($fsDoc)) {
                         // Already gone — not an error, but record for visibility.
@@ -2380,6 +2435,8 @@ class School_config extends MY_Controller
                 'op'         => 'update',
                 'collection' => 'schools',
                 'docId'      => $schoolDocId,
+                // 2026-05-27 — DOC-MERGE-FIX: see rationale at seed_streams above.
+                'merge'      => true,
                 'data'       => [
                     'streams'   => $allStreams,
                     'updatedAt' => date('c'),
@@ -2515,6 +2572,8 @@ class School_config extends MY_Controller
                 'op'         => 'update',
                 'collection' => 'schools',
                 'docId'      => $schoolDocId,
+                // 2026-05-27 — DOC-MERGE-FIX: see rationale at seed_streams above.
+                'merge'      => true,
                 'data'       => [
                     'streams'   => $allStreams,
                     'updatedAt' => date('c'),
@@ -2822,6 +2881,14 @@ class School_config extends MY_Controller
                 'op'         => 'update',
                 'collection' => 'schools',
                 'docId'      => $schoolDocId,
+                // 2026-05-27 — DOC-MERGE-FIX: emit updateMask so this PATCH
+                // touches only `sessions` + `updatedAt`. Without this flag,
+                // commitBatch sent a maskless `update` which Firestore REST
+                // treats as full-document REPLACE — wiping currentSession,
+                // classes, streams, profile, board, subscription, etc.
+                // Evidence: 2026-05-27 forensic, schools/SCH_D94FE8F7AD
+                // reduced to 4 fields after repeated session mutations.
+                'merge'      => true,
                 'data'       => [
                     'sessions'  => $sessions,
                     'updatedAt' => date('c'),
@@ -2931,6 +2998,11 @@ class School_config extends MY_Controller
                 'op'         => 'update',
                 'collection' => 'schools',
                 'docId'      => $schoolDocId,
+                // 2026-05-27 — DOC-MERGE-FIX: see rationale at add_session above.
+                // This PATCH must touch only `currentSession` + `updatedAt`;
+                // sessions[], classes, streams, profile, board, subscription
+                // must remain intact.
+                'merge'      => true,
                 'data'       => [
                     'currentSession' => $session,
                     'updatedAt'      => date('c'),

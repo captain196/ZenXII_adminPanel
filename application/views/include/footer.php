@@ -6,6 +6,10 @@
 .phone-ig input{border-radius:0 4px 4px 0!important;flex:1;min-width:0}
 /* Night mode */
 [data-theme="night"] .phone-pfx,[data-bs-theme="dark"] .phone-pfx{background:var(--bg3,#1a2540);border-color:var(--border,#2a3350);color:var(--t2,#8892aa)}
+/* Footer academic-session badge (dynamic — reflects selected session) */
+.giq-foot-sess{display:inline-flex;align-items:center;gap:5px;font-family:var(--font-m,monospace);font-size:11.5px;font-weight:600;color:var(--gold,#0a7d6b);background:rgba(10,125,107,.08);border:1px solid rgba(10,125,107,.18);border-radius:4px;padding:2px 8px;white-space:nowrap}
+.giq-foot-sess i{font-size:10px;opacity:.8}
+[data-theme="night"] .giq-foot-sess,[data-bs-theme="dark"] .giq-foot-sess{color:var(--gold,#3dd7bf);background:rgba(61,215,191,.10);border-color:rgba(61,215,191,.22)}
 </style>
 
 <footer class="main-footer giq-footer">
@@ -13,27 +17,37 @@
 
         <!-- Left: copyright -->
         <div class="giq-foot-left">
-            <div class="giq-foot-mark">G</div>
+            <div class="giq-foot-mark">Z</div>
             <div class="giq-foot-copy">
-                <!-- <strong>© <?= date('Y') ?>–<?= date('Y') + 1 ?></strong> -->
-                 <?php
-$start = date('Y');
-$end   = substr($start + 1, -2);
-?>
-
-<strong>© <?= $start . '-' . $end ?></strong>
-                <span class="giq-foot-sep">·</span>
-                <a href="https://graderiq.com/" target="_blank" rel="noopener">SchoolX</a>
+                <strong>© <?= date('Y') ?></strong>
+                <a href="https://zenxii.com/" target="_blank" rel="noopener">ZenXii Technologies</a>
                 <span class="giq-foot-sep">·</span>
                 All rights reserved.
             </div>
         </div>
 
-        <!-- Right: developer + version -->
+        <!-- Right: session + version -->
         <div class="giq-foot-right">
-            <div class="giq-foot-dev">
-                Built by <span>Ankit Prajapati</span>
-            </div>
+            <?php
+            // Resolve the active academic session robustly: prefer the view var,
+            // but fall back to the session service so the badge renders on every
+            // page — even those that load the footer without passing $session_year
+            // into view data (e.g. School_config::index). Session key is 'session'
+            // (see MY_Controller::__construct).
+            $footSess = (isset($session_year) && $session_year !== '') ? (string) $session_year : '';
+            if ($footSess === '') {
+                $CI =& get_instance();
+                if ($CI && isset($CI->session)) {
+                    $footSess = (string) $CI->session->userdata('session');
+                }
+            }
+            ?>
+            <?php if ($footSess !== ''): ?>
+                <span class="giq-foot-sess" id="giqFootSess" title="Active academic session">
+                    <i class="fa fa-calendar-o"></i>
+                    Session <?= htmlspecialchars($footSess, ENT_QUOTES, 'UTF-8') ?>
+                </span>
+            <?php endif; ?>
             <span class="giq-foot-tag">v2.0</span>
         </div>
 

@@ -126,6 +126,49 @@ class Fee_lifecycle
         } catch (\Throwable $_) { return []; }
     }
 
+    /**
+     * BUG-076 (2026-05-27): session-independent demand fetch. Used by
+     * reassignFeesOnPromotion so the archive loop sees the student's
+     * demands regardless of which session the operator's session-selector
+     * is currently pointing at. Class/section filter inside the archive
+     * loop is what actually drives the archive decision — session never
+     * was load-bearing for archival correctness.
+     */
+    private function _demandsForAllSessions(string $studentId): array
+    {
+        try {
+            return $this->fsTxn->demandsForStudentAllSessions($studentId);
+        } catch (\Throwable $_) { return []; }
+    }
+
+    /**
+     * BUG-045 Phase 1 B2 (2026-05-25): request-level fee-structure cache.
+     *
+     * Pre-fix bulk promote of N students into the same destination class
+     * called readFeeStructure + readFeeHeadIds once per student = 2N reads
+     * of the same Firestore doc. With this cache, the same class/section
+     * pair is fetched ONCE per request lifetime; subsequent students hit
+     * the in-memory cache (free).
+     *
+     * Cache key: "{classKey}_{sectionKey}" — session is fixed per
+     * Fee_firestore_txn instance, so excluded from key.
+     *
+     * Memory bound: the cache holds at most one doc per touched
+     * class/section pair per request; lifetime is one PHP request
+     * (instance is destroyed at request end).
+     *
+     * @return array ['chart' => [...], 'headIds' => [...]]
+     */
+    private $_feeStructureCache = [];
+    private function _cachedFeeStructureWithIds(string $class, string $section): array
+    {
+        $key = "{$class}_{$section}";
+        if (!isset($this->_feeStructureCache[$key])) {
+            $this->_feeStructureCache[$key] = $this->fsTxn->readFeeStructureWithIds($class, $section);
+        }
+        return $this->_feeStructureCache[$key];
+    }
+
     // ═════════════════════════════════════════════════════════════════
     //  1. assignInitialFees
     // ═════════════════════════════════════════════════════════════════
@@ -145,8 +188,33 @@ class Fee_lifecycle
     ): array {
         $assigned = [];
         try {
-            $chart    = $this->fsTxn->readFeeStructure($class, $section);
-            $headIds  = $this->fsTxn->readFeeHeadIds($class, $section);
+            // BUG-075 fix (2026-05-26): pre-read existing demands to detect
+            // already-paid demand-ids. Re-running assignInitialFees against
+            // a previously-visited class (reverse-promote, rollover) MUST
+            // NOT overwrite paidAmount/balance/status on demands that
+            // already carry a payment — the deterministic demandId formula
+            // collides with prior demands when feeHeadIds match between
+            // source and target class structures, and Firestore merge=true
+            // SET would silently reset the paid state. Best-effort read:
+            // an empty map on failure falls back to current (pre-fix)
+            // behavior of unconditional payment defaults — no regression
+            // beyond pre-fix state.
+            $existingDemands = [];
+            try {
+                foreach ($this->_demandsFor($studentId) as $did => $d) {
+                    $existingDemands[$did] = $d;
+                }
+            } catch (\Throwable $_) {
+                $existingDemands = [];
+            }
+
+            // BUG-045 Phase 1 B2+B3 (2026-05-25): use merged read (B3) wrapped
+            // in request-level cache (B2). Saves 1 RPC/student (B3 dedup) +
+            // (N-1) more RPCs when all N students promote into same target
+            // class/section (B2 cache hits).
+            $merged   = $this->_cachedFeeStructureWithIds($class, $section);
+            $chart    = $merged['chart'];
+            $headIds  = $merged['headIds'];
             if (empty($chart)) {
                 log_message('info', "Fee_lifecycle::assignInitialFees — no Firestore feeStructure for [{$class}/{$section}] student [{$studentId}]");
                 return [];
@@ -162,6 +230,15 @@ class Fee_lifecycle
             // feeDemands starts seeing this student's demands instantly.
             $months = ['April','May','June','July','August','September',
                        'October','November','December','January','February','March'];
+
+            // BUG-045 Phase 2 (2026-05-25): collect-then-batch pattern.
+            // Pre-fix wrote one Firestore PATCH per (month, feeHead) inside
+            // the loop = ~36 RPCs per student. Now we accumulate all demand
+            // payloads and emit a single :commit batched write per student.
+            // Fallback to per-doc writes if commit fails so semantics stay
+            // identical for callers that depended on partial-progress on
+            // commit-failure (rare).
+            $batchEntries = [];
             foreach ($chart as $monthOrYearly => $heads) {
                 if (!is_array($heads) || empty($heads)) continue;
                 foreach ($heads as $headName => $amount) {
@@ -187,7 +264,20 @@ class Fee_lifecycle
                             : "{$m} {$year}";
                         $demandId   = $this->_demandId($studentId, $periodKey, $headId, $headName);
 
-                        $this->fsTxn->writeDemand($demandId, [
+                        // BUG-075 fix (2026-05-26): detect existing payment
+                        // state and exclude payment fields from the merge
+                        // payload so they survive the re-write. Fresh demands
+                        // still get current defaults (unchanged behavior).
+                        // Existing paid/partial demands skip the payment-state
+                        // fields — Firestore merge=true then preserves their
+                        // paidAmount/balance/status from the prior write.
+                        $prior = $existingDemands[$demandId] ?? null;
+                        $preservePayment = $prior !== null && (
+                            in_array((string)($prior['status'] ?? ''), ['paid','partial'], true)
+                            || (float)($prior['paidAmount'] ?? 0) > 0
+                        );
+
+                        $entryData = [
                             'studentId'    => $studentId,
                             'studentName'  => $studentName,
                             'className'    => $class,
@@ -199,14 +289,36 @@ class Fee_lifecycle
                             'periodKey'    => $periodKey,
                             'grossAmount'  => $amt,
                             'netAmount'    => $amt,
-                            'paidAmount'   => 0.0,
-                            'balance'      => $amt,
-                            'status'       => 'unpaid',
                             'createdAt'    => $now,
                             'createdBy'    => $this->adminId,
-                        ]);
+                        ];
+                        // Only emit payment-state defaults for FRESH demands.
+                        // Existing paid/partial demands keep their paidAmount/
+                        // balance/status (preserved by Firestore merge=true
+                        // because the fields are absent from the payload).
+                        if (!$preservePayment) {
+                            $entryData['paidAmount'] = 0.0;
+                            $entryData['balance']    = $amt;
+                            $entryData['status']     = 'unpaid';
+                        }
+
+                        $batchEntries[] = [
+                            'op'       => 'write',
+                            'demandId' => $demandId,
+                            'data'     => $entryData,
+                        ];
                     }
                     if (!in_array($headName, $assigned, true)) $assigned[] = $headName;
+                }
+            }
+
+            // BUG-045 Phase 2: single batched commit (was ~36 PATCHes per student).
+            if (!empty($batchEntries)) {
+                if (!$this->fsTxn->commitDemandBatch($batchEntries)) {
+                    log_message('warning', "Fee_lifecycle::assignInitialFees commitDemandBatch failed for [{$studentId}]; falling back to per-doc writes");
+                    foreach ($batchEntries as $entry) {
+                        $this->fsTxn->writeDemand($entry['demandId'], $entry['data']);
+                    }
                 }
             }
 
@@ -245,7 +357,18 @@ class Fee_lifecycle
     ): array {
         $archived = 0; $preserved = 0;
         try {
-            foreach ($this->_demandsFor($studentId) as $did => $d) {
+            // BUG-045 Phase 2 (2026-05-25): collect-then-batch pattern.
+            // Pre-fix issued one Firestore PATCH per archived demand inside
+            // the loop. Now we accumulate archive ops and emit a single
+            // :commit per student. Fallback to per-doc updateDemand if the
+            // commit fails so semantics stay identical.
+            $archiveEntries = [];
+            $archivedAt = date('c');
+            // BUG-076 (2026-05-27): use _demandsForAllSessions so the archive
+            // loop is not blocked by session-selector drift on the operator
+            // side. The archive decision below is purely className/section
+            // based; session was never load-bearing for correctness.
+            foreach ($this->_demandsForAllSessions($studentId) as $did => $d) {
                 $st = (string) ($d['status'] ?? 'unpaid');
                 // Only archive UNPAID demands; paid/partial demands
                 // represent real payment history.
@@ -254,22 +377,59 @@ class Fee_lifecycle
                 if (((string) ($d['className'] ?? '')) === $newClass &&
                     ((string) ($d['section']   ?? '')) === $newSection) continue;
 
-                $this->fsTxn->updateDemand($did, [
-                    'status'        => 'archived',
-                    'archivedAt'    => date('c'),
-                    'archivedBy'    => $this->adminId,
-                    'archivedFrom'  => "{$oldClass}/{$oldSection}",
-                ]);
+                $archiveEntries[] = [
+                    'op'       => 'archive',
+                    'demandId' => $did,
+                    'data'     => [
+                        'status'        => 'archived',
+                        'archivedAt'    => $archivedAt,
+                        'archivedBy'    => $this->adminId,
+                        'archivedFrom'  => "{$oldClass}/{$oldSection}",
+                    ],
+                ];
                 $archived++;
             }
 
+            // BUG-045 Phase 2: single batched archive commit.
+            if (!empty($archiveEntries)) {
+                if (!$this->fsTxn->commitDemandBatch($archiveEntries)) {
+                    log_message('warning', "Fee_lifecycle::reassignFeesOnPromotion commitDemandBatch failed for [{$studentId}]; falling back to per-doc updates");
+                    foreach ($archiveEntries as $entry) {
+                        $this->fsTxn->updateDemand($entry['demandId'], $entry['data']);
+                    }
+                }
+            }
+
             // Generate the new class's structure.
-            $this->assignInitialFees($studentId, $newClass, $newSection, $parentDbKey);
+            $regenerated = $this->assignInitialFees($studentId, $newClass, $newSection, $parentDbKey);
+
+            // BUG-076 Part 2 (2026-05-28): fail-loud guard on silent zero-
+            // demand regeneration. assignInitialFees returns [] when the
+            // destination class/section has NO fee structure in the active
+            // session — historically a silent info-level no-op. That is
+            // exactly how STU0004-11 ended up Active-in-Class-8 with zero
+            // demands: a cross-session reverse-promote regenerated against a
+            // session (2027-28) that had no Class 8 structure, generated
+            // nothing, and reported "success". Surface it at error level AND
+            // stamp the audit entry so the gap is actionable the moment it
+            // happens, instead of being discovered weeks later via phantom-
+            // dues forensics.
+            $regenCount = is_array($regenerated) ? count($regenerated) : 0;
+            if ($regenCount === 0) {
+                log_message('error',
+                    "Fee_lifecycle::reassignFeesOnPromotion — assignInitialFees generated "
+                    . "0 demands for [{$studentId}] into [{$newClass}/{$newSection}] "
+                    . "(session={$this->sessionYear}). Student may now have NO active fee "
+                    . "demands. Verify a fee structure exists for {$newClass}/{$newSection} "
+                    . "in session {$this->sessionYear}.");
+            }
 
             $this->_log('promotion_reassigned', $studentId, [
-                'old_class'  => $oldClass, 'old_section' => $oldSection,
-                'new_class'  => $newClass, 'new_section' => $newSection,
-                'archived'   => $archived, 'preserved'   => $preserved,
+                'old_class'   => $oldClass, 'old_section' => $oldSection,
+                'new_class'   => $newClass, 'new_section' => $newSection,
+                'archived'    => $archived, 'preserved'   => $preserved,
+                'regenerated' => $regenCount,
+                'regen_warning' => $regenCount === 0 ? 'NO_DESTINATION_STRUCTURE' : '',
             ]);
 
             // Defaulter recompute — old dues may resolve, new dues appear.

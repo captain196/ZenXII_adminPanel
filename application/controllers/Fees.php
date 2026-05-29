@@ -979,6 +979,16 @@ class Fees extends MY_Controller
         foreach ((array) $demandRows as $r) {
             $d = $r['data'] ?? $r;
             if (!is_array($d)) continue;
+            // SW4-companion-E (2026-05-27) — skip archived demands.
+            // Archived demands represent historical state from
+            // promotion/reverse-promotion cycles or refund
+            // reversals and must NOT inflate the dashboard's
+            // class-wise aggregates (per-class collected / due /
+            // student-set). Mirrors the filter applied to
+            // fetch_months (SW4-A, Fees.php:2160), defaulter
+            // aggregation (SW4-D), and the parent app's
+            // FeeFirestoreRepository archived-skip.
+            if (strtolower((string)($d['status'] ?? '')) === 'archived') continue;
             // Yearly demands written before the writer fix had only
             // `className`. Fall back so they bucket into the right class
             // instead of "Unknown". Empty-string also normalises to
@@ -1172,18 +1182,54 @@ class Fees extends MY_Controller
         $existing = $this->_getClassFeeChart($class, $section);
         if (!empty($existing)) return $existing;
 
-        // Build a zero-value template from fee head names found in other
-        // class/section charts within this session — no RTDB reads.
-        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
-        $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
-        $allSections = $this->fsTxn->listSectionsWithFeeChart();
-
+        $schoolFs     = $this->fs->schoolId();
         $monthlyHeads = [];
         $yearlyHeads  = [];
-        foreach ($allSections as $cs) {
+
+        // ── Chart-bootstrap fix (2026-05-28) ──────────────────────────────
+        // Previously the title template was built ONLY from other class/section
+        // charts in THIS session. That left a fresh academic session blank: the
+        // Fee Heads page saves the master head list to
+        // feeStructures/{schoolId}_{session}_titles, which this never read — so
+        // a new session with titles defined but no charts yet had nothing to
+        // show. Now:
+        //   1) PRIMARY  — read the current session's _titles master doc.
+        //   2) PLUS     — any existing class/section charts in this session.
+        //   3) FALLBACK — only if (1)+(2) are empty, inherit the most recent
+        //                 prior session's heads (ERP year-rollover).
+        // Read-only throughout: builds an in-memory zero-value template, never
+        // writes a chart, never generates demands or touches balances.
+
+        // (1) current-session master head list
+        $this->_collectHeadsFromTitlesDoc("{$schoolFs}_{$this->session_year}_titles", $monthlyHeads, $yearlyHeads);
+
+        // (2) existing class/section charts in this session
+        $this->load->library('Fee_firestore_txn', null, 'fsTxn');
+        $this->fsTxn->init($this->firebase, $this->fs, $schoolFs, $this->session_year);
+        foreach ($this->fsTxn->listSectionsWithFeeChart() as $cs) {
             $chart = $this->fsTxn->readFeeStructure($cs['class'], $cs['section']);
             foreach ($chart['April'] ?? [] as $title => $_) $monthlyHeads[$title] = true;
             foreach ($chart['Yearly Fees'] ?? [] as $title => $_) $yearlyHeads[$title] = true;
+        }
+
+        // (3) prior-session fallback — ONLY when this session has nothing yet
+        if (empty($monthlyHeads) && empty($yearlyHeads)) {
+            $prior = $this->_priorSessionYear($this->session_year);
+            if ($prior !== '') {
+                $this->_collectHeadsFromTitlesDoc("{$schoolFs}_{$prior}_titles", $monthlyHeads, $yearlyHeads);
+                if (empty($monthlyHeads) && empty($yearlyHeads)) {
+                    // prior session may store heads only as class charts (no
+                    // _titles doc) — read them via a SEPARATE txn instance so
+                    // the request's main fsTxn session is not disturbed.
+                    $this->load->library('Fee_firestore_txn', null, 'fsTxnPrior');
+                    $this->fsTxnPrior->init($this->firebase, $this->fs, $schoolFs, $prior);
+                    foreach ($this->fsTxnPrior->listSectionsWithFeeChart() as $cs) {
+                        $chart = $this->fsTxnPrior->readFeeStructure($cs['class'], $cs['section']);
+                        foreach ($chart['April'] ?? [] as $title => $_) $monthlyHeads[$title] = true;
+                        foreach ($chart['Yearly Fees'] ?? [] as $title => $_) $yearlyHeads[$title] = true;
+                    }
+                }
+            }
         }
 
         if (empty($monthlyHeads) && empty($yearlyHeads)) return [];
@@ -1197,6 +1243,37 @@ class Fees extends MY_Controller
         $default['Yearly Fees'] = array_fill_keys(array_keys($yearlyHeads), 0);
 
         return $default;
+    }
+
+    /**
+     * Merge fee-head names from a feeStructures master/_titles doc into the
+     * monthly/yearly head sets (keyed by name → true for dedup). Read-only.
+     */
+    private function _collectHeadsFromTitlesDoc(string $docId, array &$monthly, array &$yearly): void
+    {
+        try {
+            $doc = $this->firebase->firestoreGet('feeStructures', $docId);
+            if (!is_array($doc)) return;
+            $heads = is_array($doc['feeHeads'] ?? null) ? $doc['feeHeads'] : [];
+            foreach ($heads as $h) {
+                if (!is_array($h)) continue;
+                $name = trim((string) ($h['name'] ?? ''));
+                if ($name === '') continue;
+                if ((($h['type'] ?? 'Monthly') === 'Yearly')) $yearly[$name] = true;
+                else $monthly[$name] = true;
+            }
+        } catch (\Throwable $_) {}
+    }
+
+    /** "2027-28" → "2026-27"; '' if not a valid YYYY-YY session. */
+    private function _priorSessionYear(string $session): string
+    {
+        if (!preg_match('/^(\d{4})-(\d{2})$/', $session, $m)) return '';
+        $startYear = (int) $m[1];
+        if ($startYear <= 1) return '';
+        $priorStart = $startYear - 1;
+        $priorEnd   = substr((string) ($priorStart + 1), -2);
+        return $priorStart . '-' . $priorEnd;
     }
 
     private function _getFees($class, $section)
@@ -1310,15 +1387,27 @@ class Fees extends MY_Controller
             }
         }
 
-        // Verify class/section exists by checking students collection.
+        // Verify class/section exists. Accept ANY of three existence proofs so
+        // the FIRST chart of a fresh academic session can be saved:
+        //   (a) students enrolled in the section, OR
+        //   (b) a fee chart already exists, OR
+        //   (c) BUG (2026-05-29): the section exists in the `sections`
+        //       collection (the authoritative config source the dropdown uses).
+        // Pre-fix this checked only (a)+(b); when setting up a NEW session a
+        // class has neither students nor a chart yet, so saving the first chart
+        // wrongly failed with "Class/section not found" even though the section
+        // was correctly configured.
         $this->load->library('Fee_firestore_txn', null, 'fsTxn');
         $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
         $roster = $this->fsTxn->listStudentsInSection($class, $section);
         if (empty($roster)) {
             $existing = $this->_getClassFeeChart($class, $section);
             if (empty($existing)) {
-                $this->_json_out(['status' => 'error', 'message' => 'Class/section not found. Please reload the page.']);
-                return;
+                $sectionExists = is_array($this->fs->get('sections', $this->fs->sectionDocId($class, $section)));
+                if (!$sectionExists) {
+                    $this->_json_out(['status' => 'error', 'message' => 'Class/section not found. Please reload the page.']);
+                    return;
+                }
             }
         }
 
@@ -2155,6 +2244,24 @@ class Fees extends MY_Controller
         $yearlyFreqs = ['annual', 'yearly', 'one-time', 'onetime'];
         $byMonth = []; // monthLabel => ['totalDue' => f, 'totalPaid' => f]
         foreach ((array) $demands as $d) {
+            // SW4-companion-A (2026-05-27): skip archived demands.
+            // Archived demands represent historical state (class
+            // transitions after promotion / reverse-promotion cycles,
+            // refund reversals, manual cleanups). They must NOT be
+            // summed into the current-class dues view that drives
+            // the fees_counter per-month tiles + top-card totals,
+            // otherwise the operator sees inflated TotalFee + spurious
+            // 'Partial' tiles on months that are actually fully paid
+            // (corruption symptom reported BUG-075). Mirrors the
+            // parent app's SW4-companion-B archived-status filter on
+            // FeeFirestoreRepository.
+            //
+            // Defense-in-depth: the upstream archive operation
+            // (reassignFeesOnPromotion) is the canonical writer of
+            // status='archived'. This filter keeps the read-path
+            // stateless wrt. promotion lifecycle.
+            if (strtolower((string)($d['status'] ?? '')) === 'archived') continue;
+
             $rawPeriod = (string) ($d['period'] ?? '');
             $monthLabel = trim((string) preg_replace('/\s+\d{4}(-\d{2,4})?$/', '', $rawPeriod));
             if ($monthLabel === '') continue;
@@ -3864,6 +3971,15 @@ class Fees extends MY_Controller
             $totalPaid = 0;
             $totalDisc = 0;
             foreach ($demands as $d) {
+                // SW4-companion-G (2026-05-27) — skip archived demands.
+                // due_fees_table powers the admin "Due Fees Table" view.
+                // Archived demands (promotion-cycle artefacts, refund
+                // reversals) must NOT contribute to receivedFee / dueFee
+                // because totalFee comes from the current class's
+                // feeStructure — summing archived rows skews
+                // receivedFee asymmetrically. Same archived-row hygiene
+                // as SW4-A/D/E read filters.
+                if (strtolower((string)($d['status'] ?? '')) === 'archived') continue;
                 $totalNet  += (float) ($d['net_amount']      ?? 0);
                 $totalPaid += (float) ($d['paid_amount']     ?? 0);
                 $totalDisc += (float) ($d['discount_amount'] ?? 0);
@@ -4132,6 +4248,25 @@ class Fees extends MY_Controller
         foreach ($demands as $did => $d) {
             $status = $d['status'] ?? 'unpaid';
             if ($status === 'paid') continue;
+            // SW4-companion-F (2026-05-27) — skip archived demands.
+            //
+            // This is a MUTATION-class call site: the body below
+            // calls $this->fsTxn->updateDemand(...) to write
+            // fine_amount + balance onto the demand. Without this
+            // guard, an archived demand whose dueDate has passed
+            // would accrue a fine, and the recomputed balance
+            // (netAmount + fine - paidAmount) would re-introduce
+            // a non-zero balance onto a demand that the archive
+            // operation set to balance=0 — re-corrupting historical
+            // state and bleeding the demand back into pending-dues
+            // surfaces. Same archived-row hygiene principle as
+            // SW4-A/D/E read-side filters; here the stakes are
+            // higher because we are writing.
+            //
+            // Active-demand semantics unchanged: status='unpaid'
+            // and status='partial' still proceed into the fine
+            // computation exactly as before.
+            if (strtolower((string) $status) === 'archived') continue;
 
             $dueDate = $d['due_date'] ?? '';
             if ($dueDate === '' || $dueDate >= $today) continue;
@@ -4452,20 +4587,30 @@ class Fees extends MY_Controller
         }
 
         // ────────────────────────────────────────────────────────────────
-        //  Load existing demands ONLY in the legacy inline-write path.
-        //  The bulk (batched) path skips this entirely — writes use
-        //  merge=true with deterministic doc IDs, so re-runs overwrite
-        //  the same slot idempotently without needing a pre-check.
-        //  This single change eliminates ~N×M Firestore reads (N students
-        //  × M months) from the bulk generation — the dominant
-        //  performance cost at any scale > ~3 students.
+        //  Load existing demands for BOTH inline and bulk paths.
+        //
+        //  BUG-075-class prevention (2026-05-27):
+        //  The pre-fix bulk path skipped this read and relied on
+        //  "merge=true overwrites the same slot idempotently" — which
+        //  is FALSE when the source payload below contains payment-
+        //  state defaults (paidAmount=0, balance=netAmount,
+        //  status='unpaid'). A bulk re-run against a student whose
+        //  demand IDs collided with already-paid demands silently
+        //  wiped the paid state on every collision — exactly the
+        //  BUG-075 symptom shipped from Fee_lifecycle::assignInitialFees
+        //  (fixed in 26288ac8). Re-introducing the pre-read here closes
+        //  the same hole on the demand-generator side. The cost is
+        //  one extra Firestore read per student in bulk mode (was N×M
+        //  pre-fix on inline path) — acceptable trade for correctness.
+        //  Perf can be reclaimed later via batched parallel reads if
+        //  benchmarks demand it (BUG-045-class follow-up).
         // ────────────────────────────────────────────────────────────────
 
         if (!isset($this->fsTxn)) {
             $this->load->library('Fee_firestore_txn', null, 'fsTxn');
             $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
         }
-        $existingDemands = ($batchOps !== null) ? [] : $this->fsTxn->demandsForStudent($studentId);
+        $existingDemands = $this->fsTxn->demandsForStudent($studentId);
 
         $newDemands = []; // demandId => demand row, only the rows we will create
 
@@ -4486,9 +4631,20 @@ class Fees extends MY_Controller
             $feeHeadId = (string) ($feeHeadIdByName[$feeHead] ?? '');
             $demandId  = $this->_buildDemandId($studentId, $periodKey, $feeHeadId, $feeHead);
 
-            // Idempotency pre-check — only relevant for the legacy inline
-            // path. Bulk path relies on merge=true semantics instead.
-            if ($batchOps === null && isset($existingDemands[$demandId])) {
+            // Idempotency pre-check — applies to BOTH inline and bulk
+            // paths.
+            //
+            // BUG-075-class prevention (2026-05-27): pre-fix this guard
+            // was `if ($batchOps === null && isset(...))` — bulk-path
+            // re-runs proceeded into the writeDemand payload below
+            // which carries payment-state defaults (paidAmount=0,
+            // balance=netAmount, status='unpaid'). When the
+            // deterministic demandId collided with an existing paid
+            // demand, the merge=true bulk write silently wiped the
+            // paid state. Removing the bulk-path bypass restores
+            // true idempotency: a re-run never touches an existing
+            // demand regardless of mode.
+            if (isset($existingDemands[$demandId])) {
                 $result['skipped']++;
                 continue;
             }
@@ -6673,6 +6829,15 @@ class Fees extends MY_Controller
         $demandCounts = [];
         foreach ((array) $rawDemands as $r) {
             $d = $r['data'] ?? $r;
+            if (!is_array($d)) continue;
+            // SW4-companion-G (2026-05-27) — skip archived demands.
+            // get_demand_status drives the admin "Generate Monthly
+            // Demands" coverage panel. Archived demands from prior
+            // class assignments must NOT count as "this student has
+            // demands generated for current class" — that would
+            // mislead the operator into NOT regenerating when in
+            // fact the current-class demands may be missing.
+            if (strtolower((string)($d['status'] ?? '')) === 'archived') continue;
             $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
             if ($sid !== '') $demandCounts[$sid] = ($demandCounts[$sid] ?? 0) + 1;
         }
@@ -7664,6 +7829,12 @@ class Fees extends MY_Controller
             $hasActive      = !empty($activeIds);
             foreach ((array) $demandRows as $r) {
                 $d   = $r['data'] ?? $r;
+                if (!is_array($d)) continue;
+                // SW4-companion-E (2026-05-27) — skip archived demands.
+                // Otherwise total_pending + collection_rate are
+                // inflated by promotion-cycle artefacts. See
+                // SW4-A docblock at fetch_months (Fees.php:2160).
+                if (strtolower((string)($d['status'] ?? '')) === 'archived') continue;
                 $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');
                 // Skip ex-students; they shouldn't drag the rate down.
                 if ($hasActive && $sid !== '' && !isset($activeIds[$sid])) continue;
@@ -7724,6 +7895,14 @@ class Fees extends MY_Controller
 
             foreach ((array) $demandRows as $r) {
                 $d   = $r['data'] ?? $r;
+                if (!is_array($d)) continue;
+                // SW4-companion-E (2026-05-27) — skip archived demands.
+                // Archived demands carry zero or stale balance but
+                // a paranoid downstream reader could still trip them
+                // into the defaulter count. Apply the same filter as
+                // the other dashboard aggregations. See SW4-A
+                // docblock at fetch_months (Fees.php:2160).
+                if (strtolower((string)($d['status'] ?? '')) === 'archived') continue;
                 $bal = (float) ($d['balance'] ?? 0);
                 if ($bal <= 0) continue;
                 $sid = (string) ($d['studentId'] ?? $d['student_id'] ?? '');

@@ -765,16 +765,20 @@ class Sis extends MY_Controller
         $data['class_map']    = $this->_fs_class_map();
         $data['session_year'] = $session;
 
-        // Build session options: available sessions + computed next session
+        // Build session options. Issue B (2026-05-28): list ONLY sessions that
+        // actually exist. Previously the computed next academic year was
+        // silently appended to the list as if it were a real session, which
+        // confused operators into promoting into a non-existent (and
+        // fee-structure-less) session. The next year is now offered separately
+        // as an explicit, clearly-labeled "create new" choice the view renders
+        // distinctly; selecting it still auto-registers the session on submit
+        // via the existing BUG-056 SW1 path in execute_promotion.
         $available = $this->session->userdata('available_sessions') ?? [];
+        rsort($available);
         $parts     = explode('-', $session);
         $nextYear  = ((int)$parts[0] + 1) . '-' . substr((string)((int)$parts[0] + 2), -2);
-        if (!in_array($nextYear, $available, true)) {
-            $available[] = $nextYear;
-        }
-        rsort($available);
-        $data['session_options'] = $available;
-        $data['next_session']    = $nextYear;
+        $data['session_options'] = $available;                                       // existing only
+        $data['create_session']  = in_array($nextYear, $available, true) ? '' : $nextYear; // '' if it already exists
 
         $this->load->view('include/header');
         $this->load->view('sis/promote', $data);
@@ -845,12 +849,36 @@ class Sis extends MY_Controller
         }
 
         // Auto-register target session in Sessions list if it doesn't exist yet.
+        // BUG-056 SW1 (2026-05-26): write ONLY the sessions list. Active-session
+        // changes (currentSession) must route exclusively through
+        // School_config::set_active_session() which has lock+CAS+audit guards.
+        // Promotion adding a future session must not flip the school's
+        // globally-active session as a side effect.
         $available = $this->session->userdata('available_sessions') ?? [];
         if (!in_array($toSession, $available, true)) {
             $available[] = $toSession;
             rsort($available);
-            // Firestore-only per no-RTDB policy.
-            $this->fs->update('schools', $this->school_id, ['sessions' => $available, 'currentSession' => $toSession]);
+            // Rollback-safe: if the Firestore write fails or throws, abort
+            // promotion BEFORE any per-student work runs. No partial state,
+            // no silent continuation.
+            $written = false;
+            try {
+                $written = (bool) $this->fs->update('schools', $this->school_id, ['sessions' => $available]);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    'BUG-056-SW1: exception registering target session ['
+                    . $toSession . '] for school [' . $this->school_id
+                    . ']: ' . $e->getMessage());
+            }
+            if (!$written) {
+                log_message('error',
+                    'BUG-056-SW1: failed to register target session ['
+                    . $toSession . '] for school [' . $this->school_id
+                    . '] — aborting promotion to prevent orphan state.');
+                return $this->json_error(
+                    'Could not register the target session in school configuration. '
+                    . 'Promotion has been aborted to prevent partial state. Please retry.');
+            }
             $this->session->set_userdata('available_sessions', $available);
         }
 
@@ -859,7 +887,28 @@ class Sis extends MY_Controller
             return $this->json_error('No students found in the selected class/section.');
         }
 
-        // Check target section capacity before promotion
+        // ── PM-SELECT 2026-05-26: per-student selection filter ──
+        $rawSelectedIds = $this->input->post('student_ids');
+        if (is_array($rawSelectedIds) && !empty($rawSelectedIds)) {
+            $cleanIds = [];
+            foreach ($rawSelectedIds as $rid) {
+                $rid = trim((string) $rid);
+                if ($rid === '') continue;
+                if (!preg_match('/^[A-Za-z0-9_]+$/', $rid)) continue;
+                $cleanIds[$rid] = true;
+            }
+            if (!empty($cleanIds)) {
+                $students = array_intersect_key($students, $cleanIds);
+            }
+            if (empty($students)) {
+                return $this->json_error(
+                    'None of the selected students were found in the source class. '
+                    . 'Refresh the preview and try again.'
+                );
+            }
+        }
+
+        // Check target section capacity before promotion (uses post-filter count)
         $newClassKey   = Firestore_service::classKey($toClass);
         $newSectionKey = Firestore_service::sectionKey($toSection);
         $targetSectionDoc = $this->fs->get('sections', $this->fs->sectionDocId($toClass, $toSection));
@@ -875,6 +924,28 @@ class Sis extends MY_Controller
                     "Target section {$newClassKey}/{$newSectionKey} capacity exceeded ({$currentCount}/{$maxStrength}). Cannot promote {$promotionCount} student(s)."
                 );
             }
+        }
+
+        // BUG-076 Part 2-A (2026-05-28): destination fee-structure guard.
+        // A promotion regenerates the destination class's demands via
+        // assignInitialFees, which reads
+        // feeStructures/{schoolId}_{toSession}_{class}_{section}. If that
+        // structure is absent, regeneration silently produces nothing and the
+        // promoted students land Active-with-zero-demands (the STU0004-11
+        // incident root cause). Validate BEFORE moving any student so the
+        // promotion is all-or-nothing. Operator decision 2026-05-28: BLOCK if
+        // missing. ($school_name == school_id == SCH_xxx; classKey/sectionKey
+        // are already applied to $newClassKey/$newSectionKey — identical to
+        // the key assignInitialFees will read.)
+        $destFeeStructDocId = "{$school_name}_{$toSession}_{$newClassKey}_{$newSectionKey}";
+        $destFeeStruct      = $this->fs->get('feeStructures', $destFeeStructDocId);
+        if (!is_array($destFeeStruct) || empty($destFeeStruct['feeHeads'])) {
+            return $this->json_error(
+                "No fee structure exists for {$newClassKey} / {$newSectionKey} in session "
+                . "{$toSession}. Promotion aborted before moving any student, to prevent "
+                . "students being enrolled without fee demands. Set up the fee structure for "
+                . "this class/section in session {$toSession} first, then retry."
+            );
         }
 
         $adminName     = $this->session->userdata('admin_name') ?? 'Admin';
@@ -935,35 +1006,221 @@ class Sis extends MY_Controller
             $this->_recompute_section_strength($pair[0], $pair[1]);
         }
 
-        // Save promotion batch record
-        $schoolDoc = $this->fs->get('schools', $this->school_id);
-        $promotions = $schoolDoc['promotions'] ?? [];
-        $promotions[$batchId] = [
-            'session_from' => $session, 'session_to' => $toSession,
-            'promoted_at' => $now, 'promoted_by' => $adminName,
-            'from_class' => $oldClassKey, 'from_section' => $oldSectionKey,
-            'to_class' => $newClassKey, 'to_section' => $newSectionKey,
-            'count' => count($promoted),
-        ];
-        $this->fs->update('schools', $this->school_id, ['promotions' => $promotions]);
+        // ── BUG-045 Phase 1 B1 (2026-05-25): post-response shutdown handler ──
+        // Pre-fix: fee-reassignment + section-strength recompute + promotion-batch
+        // save ran SYNCHRONOUSLY post-batchMoveStudents. For 60 students this
+        // exceeded 120s PHP ceiling (4.7×). Now: write a promote_jobs/{batchId}
+        // status doc, flush response to operator immediately, then defer the
+        // heavy work to a shutdown closure that runs after Apache releases the
+        // client socket. Pattern source: FeeCollectionService.php:1465-1648.
 
-        // Reassign fees for promoted students
-        foreach ($promoted as $p) {
-            try {
-                $this->feeLifecycle->reassignFeesOnPromotion(
-                    $p['user_id'], $oldClassKey, $oldSectionKey, $newClassKey, $newSectionKey, $school_id
-                );
-            } catch (Exception $e) {
-                log_message('error', "Fee_lifecycle::reassignFeesOnPromotion failed for {$p['user_id']}: " . $e->getMessage());
-            }
+        // Out-of-band visibility: persist initial job status BEFORE response
+        // so operator (or a future status-poll endpoint) can observe progress.
+        $promoteJobDocId = "{$this->school_name}_{$batchId}";
+        try {
+            $this->firebase->firestoreSet('promote_jobs', $promoteJobDocId, [
+                'schoolId'        => $this->school_name,
+                'session'         => $session,
+                'batchId'         => $batchId,
+                'sessionFrom'     => $session,
+                'sessionTo'       => $toSession,
+                'fromClass'       => $oldClassKey,
+                'fromSection'     => $oldSectionKey,
+                'toClass'         => $newClassKey,
+                'toSection'       => $newSectionKey,
+                'expectedCount'   => count($promoted),
+                'processedCount'  => 0,
+                'failedStudents'  => [],
+                'status'          => 'deferred-fees-pending',
+                'startedAt'       => $now,
+                'promotedBy'      => $adminName,
+            ]);
+        } catch (\Exception $e) {
+            // Fail-safe: if status doc write fails, log and continue.
+            // The shutdown handler still runs; only out-of-band visibility is lost.
+            log_message('warning', "promote: promote_jobs status doc write failed for {$batchId}: " . $e->getMessage());
         }
 
-        return $this->json_success([
-            'message'  => count($promoted) . ' student(s) promoted successfully.',
-            'promoted' => $promoted,
-            'skipped'  => $skipped,
-            'batch_id' => $batchId,
+        // Build response payload BEFORE flushing.
+        $__responseJson = json_encode([
+            'status'         => 'success',
+            'message'        => count($promoted) . ' student(s) promoted successfully.',
+            'promoted'       => $promoted,
+            'skipped'        => $skipped,
+            'batch_id'       => $batchId,
+            'job_status_doc' => $promoteJobDocId,
+            'csrf_token'     => $this->security->get_csrf_hash(),
         ]);
+
+        // Apache mod_php early-response flush (mirror FCS:1481-1494).
+        // XAMPP has no fastcgi_finish_request, so combine Connection: close +
+        // Content-Length + ob_end_flush() + flush() to release the socket.
+        @set_time_limit(0);
+        @ignore_user_abort(true);
+        if (!headers_sent()) {
+            @header('Connection: close');
+            @header('Content-Type: application/json');
+            @header('Content-Length: ' . strlen($__responseJson));
+            @header('Content-Encoding: none'); // disable mod_deflate so length is honest
+        }
+        while (ob_get_level() > 0) {
+            @ob_end_flush();
+        }
+        echo $__responseJson;
+        @flush();
+        $this->output->set_output('');
+        // From here on, every line runs after the operator's browser has
+        // received the success banner. Errors below are background-only.
+
+        // Capture by-value into the closure — no $this references that might
+        // be torn down at shutdown time. Same hygiene pattern as FCS:1517-1521.
+        $__feeLifecycle    = $this->feeLifecycle;
+        $__firebase        = $this->firebase;
+        $__fs              = $this->fs;
+        $__schoolName      = $this->school_name;
+        $__schoolId        = $this->school_id;
+        $__oldClassKey     = $oldClassKey;
+        $__oldSectionKey   = $oldSectionKey;
+        $__newClassKey     = $newClassKey;
+        $__newSectionKey   = $newSectionKey;
+        $__sessionLocal    = $session;
+        $__toSessionLocal  = $toSession;
+        $__nowLocal        = $now;
+        $__adminNameLocal  = $adminName;
+        $__batchIdLocal    = $batchId;
+        $__promotedLocal   = $promoted;
+        $__touchedLocal    = $touchedSections;
+        $__jobDocId        = $promoteJobDocId;
+
+        register_shutdown_function(function () use (
+            $__feeLifecycle, $__firebase, $__fs,
+            $__schoolName, $__schoolId,
+            $__oldClassKey, $__oldSectionKey, $__newClassKey, $__newSectionKey,
+            $__sessionLocal, $__toSessionLocal, $__nowLocal, $__adminNameLocal,
+            $__batchIdLocal, $__promotedLocal, $__touchedLocal, $__jobDocId
+        ) {
+            $deferFailedStudents = [];
+            $processedCount      = 0;
+
+            // BUG-076 Part 2-B (2026-05-28): session-threading. Demands for the
+            // destination class must be created in the session students are
+            // promoted INTO (toSession), not the admin's controller-boot
+            // session. Re-point the shared fsTxn + Fee_lifecycle to toSession
+            // before regeneration. The archive loop inside reassignFeesOnPromotion
+            // uses _demandsForAllSessions (session-agnostic), so only the
+            // regeneration target is affected; the boot session is restored
+            // after the loop so Phase D2/D3 (which use $__fs) are unaffected.
+            // Operator decision 2026-05-28: demands live in destination session.
+            $__sessionThreaded = ($__toSessionLocal !== '' && $__toSessionLocal !== $__sessionLocal);
+            if ($__sessionThreaded) {
+                try {
+                    $CI =& get_instance();
+                    if (isset($CI->fsTxn) && is_object($CI->fsTxn)) {
+                        $CI->fsTxn->init($__firebase, $__fs, $__schoolName, $__toSessionLocal);
+                    }
+                    $__feeLifecycle->init($__firebase, $__schoolName, $__toSessionLocal, $__adminNameLocal);
+                } catch (\Throwable $e) {
+                    log_message('error', "promote(deferred): session-thread re-point to {$__toSessionLocal} failed: " . $e->getMessage());
+                    $__sessionThreaded = false;
+                }
+            }
+
+            // Phase D1 — reassign fees per promoted student (the ~94% cost).
+            foreach ($__promotedLocal as $p) {
+                try {
+                    $__feeLifecycle->reassignFeesOnPromotion(
+                        $p['user_id'], $__oldClassKey, $__oldSectionKey,
+                        $__newClassKey, $__newSectionKey, $__schoolId
+                    );
+                    $processedCount++;
+                } catch (\Throwable $e) {
+                    log_message('error', "promote(deferred): reassignFeesOnPromotion failed for {$p['user_id']}: " . $e->getMessage());
+                    $deferFailedStudents[] = [
+                        'user_id' => $p['user_id'],
+                        'name'    => $p['name'] ?? $p['user_id'],
+                        'reason'  => $e->getMessage(),
+                    ];
+                }
+            }
+
+            // BUG-076 Part 2-B: restore the boot session on the shared fsTxn +
+            // Fee_lifecycle so subsequent Phase D2/D3 work (and any later
+            // shutdown code) operates against the original session.
+            if ($__sessionThreaded) {
+                try {
+                    $CI =& get_instance();
+                    if (isset($CI->fsTxn) && is_object($CI->fsTxn)) {
+                        $CI->fsTxn->init($__firebase, $__fs, $__schoolName, $__sessionLocal);
+                    }
+                    $__feeLifecycle->init($__firebase, $__schoolName, $__sessionLocal, $__adminNameLocal);
+                } catch (\Throwable $_) {}
+            }
+
+            // Phase D2 — section strength recompute. Outside the foreach
+            // because it's O(touched-sections), not O(students).
+            // Note: requires controller context; rebuild a minimal Sis instance
+            // is too heavy. Instead inline the schoolWhere + fs->set pattern
+            // here (mirror of _recompute_section_strength at Sis.php:2329-2353).
+            foreach ($__touchedLocal as $pair) {
+                try {
+                    list($cKey, $sKey) = $pair;
+                    $rows = $__fs->schoolWhere('students', [
+                        ['className', '==', $cKey],
+                        ['section',   '==', $sKey],
+                        ['status',    '==', 'Active'],
+                    ]);
+                    $strength = is_array($rows) ? count($rows) : 0;
+                    $secDocId = $__fs->sectionDocId($cKey, $sKey);
+                    // BUG (2026-05-28): only update strength on an EXISTING section.
+                    // set(merge=true) on a missing section created a field-less
+                    // "ghost" doc (currentStrength/updatedAt only — no schoolId/
+                    // className/section/session), which then blocked section
+                    // creation ("already exists" by docId) while being invisible
+                    // to the className+session list query. Strength recompute must
+                    // never materialize a section.
+                    if (is_array($__fs->get('sections', $secDocId))) {
+                        $__fs->set('sections', $secDocId, [
+                            'currentStrength' => $strength,
+                            'updatedAt'       => date('c'),
+                        ], true);
+                    }
+                } catch (\Throwable $e) {
+                    log_message('warning', "promote(deferred): _recompute_section_strength failed for {$pair[0]}/{$pair[1]}: " . $e->getMessage());
+                }
+            }
+
+            // Phase D3 — schools.promotions batch record.
+            try {
+                $schoolDoc = $__fs->get('schools', $__schoolId);
+                $promotions = (is_array($schoolDoc) && isset($schoolDoc['promotions']) && is_array($schoolDoc['promotions']))
+                              ? $schoolDoc['promotions'] : [];
+                $promotions[$__batchIdLocal] = [
+                    'session_from' => $__sessionLocal, 'session_to' => $__toSessionLocal,
+                    'promoted_at' => $__nowLocal, 'promoted_by' => $__adminNameLocal,
+                    'from_class' => $__oldClassKey, 'from_section' => $__oldSectionKey,
+                    'to_class' => $__newClassKey, 'to_section' => $__newSectionKey,
+                    'count' => count($__promotedLocal),
+                ];
+                $__fs->update('schools', $__schoolId, ['promotions' => $promotions]);
+            } catch (\Throwable $e) {
+                log_message('warning', "promote(deferred): schools.promotions update failed for {$__batchIdLocal}: " . $e->getMessage());
+            }
+
+            // Phase D4 — final promote_jobs status update for out-of-band observability.
+            try {
+                $finalStatus = empty($deferFailedStudents) ? 'completed' : 'completed_with_errors';
+                $__firebase->firestoreSet('promote_jobs', $__jobDocId, [
+                    'status'         => $finalStatus,
+                    'processedCount' => $processedCount,
+                    'failedStudents' => $deferFailedStudents,
+                    'completedAt'    => date('c'),
+                ], true);
+            } catch (\Throwable $e) {
+                log_message('error', "promote(deferred): final promote_jobs status write failed for {$__batchIdLocal}: " . $e->getMessage());
+            }
+        });
+
+        return; // response already flushed; CI's _display() is silenced via set_output('').
     }
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -1963,10 +2220,20 @@ class Sis extends MY_Controller
             if ($uid === '') continue;
 
             // Session enrollment check (mirrors _get_enrolled_ids).
-            $sessions = $d['sessions'] ?? null;
+            // SW-CONVERGE-STUDENTS-A (2026-05-26): canonical `session` singular
+            // takes precedence; legacy `sessions[]` array is honored ONLY when
+            // the singular field is absent/empty (back-compat for pre-convergence
+            // admission records). v7 target = singular as sole student-side
+            // authority across all filter sites.
             $session  = $d['session']  ?? null;
-            if (is_array($sessions) && !in_array($currentSession, $sessions, true)) continue;
-            if (!is_array($sessions) && is_string($session) && $session !== '' && $session !== $currentSession) continue;
+            $sessions = $d['sessions'] ?? null;
+            if (is_string($session) && $session !== '') {
+                if ($session !== $currentSession) continue;
+            } elseif (is_array($sessions) && !empty($sessions)) {
+                if (!in_array($currentSession, $sessions, true)) continue;
+            }
+            // else: no enrollment record on doc — preserve prior behavior
+            // (do not skip here; downstream filters apply).
 
             $rowStatus = (string) ($d['status'] ?? $d['Status'] ?? 'Active');
             // Always exclude hard-deleted rows from the listing.
@@ -2436,10 +2703,17 @@ class Sis extends MY_Controller
             $count = is_array($rows) ? count($rows) : 0;
 
             $sectionDocId = $this->fs->sectionDocId($ck, $sk);
-            $this->fs->set('sections', $sectionDocId, [
-                'currentStrength' => $count,
-                'updatedAt'       => date('c'),
-            ], true);
+            // BUG (2026-05-28): only update strength on an EXISTING section.
+            // set(merge=true) on a missing section created a field-less "ghost"
+            // doc that blocked section creation ("already exists") while staying
+            // invisible to the list query. Recompute must not materialize a
+            // section — that's saveSection/activate_classes' responsibility.
+            if (is_array($this->fs->get('sections', $sectionDocId))) {
+                $this->fs->set('sections', $sectionDocId, [
+                    'currentStrength' => $count,
+                    'updatedAt'       => date('c'),
+                ], true);
+            }
         } catch (\Exception $e) {
             log_message('error',
                 "G2 _recompute_section_strength({$classKey}/{$sectionKey}) failed: " . $e->getMessage()
@@ -2449,16 +2723,26 @@ class Sis extends MY_Controller
 
     /**
      * Preview the next student ID (read-only, does NOT increment).
-     * Calls Auth API to peek at the next STU counter value.
-     * Globally unique across all schools.
+     * Routes through Id_generator's STU_PEEK path so the preview and
+     * the save-time generate() read the SAME Firestore pointer doc
+     * (collection feeCounters, doc _sys_STU). Previously read from
+     * Firestore_service::getCounter() which queried a separate
+     * SYSTEM_COUNTERS/global doc that the post-2026-04-27 migration
+     * stopped maintaining — the admission page mis-displayed STU0001
+     * while the real save would correctly produce STU0012.
+     *
+     * Firestore-only path. No RTDB, no MongoDB, no Auth API.
      */
     private function _peekNextStudentId(string $schoolId): string
     {
-        // Read counter directly from RTDB (faster, no OAuth token refresh needed)
         try {
-            // Firestore-only counter peek. Read from the Firestore system counter.
-            $counter = $this->fs->getCounter('STU');
-            return 'STU' . str_pad($counter + 1, 4, '0', STR_PAD_LEFT);
+            $this->load->library('id_generator');
+            // Id_generator::generate('<PREFIX>_PEEK') is a first-class
+            // read-only path (Id_generator.php:103-105 → _peek():591-595):
+            // reads the pointer, does NOT increment, does NOT create a
+            // claim doc, formats with canonical padding.
+            $peek = $this->id_generator->generate('STU_PEEK');
+            if (is_string($peek) && $peek !== '') return $peek;
         } catch (Exception $e) {
             log_message('error', 'peekNextStudentId failed: ' . $e->getMessage());
         }
@@ -2466,9 +2750,15 @@ class Sis extends MY_Controller
     }
 
     /**
-     * Generate the next student ID via Auth API (atomic MongoDB counter).
-     * Globally unique — no two students anywhere share the same ID.
-     * Only call this when actually saving a student (not on page load).
+     * Generate the next student ID via Id_generator (Firestore-backed
+     * atomic claim-and-pointer counter). Globally unique — no two
+     * students anywhere share the same ID. Only call this when actually
+     * saving a student (not on page load).
+     *
+     * Counter is stored in Firestore collection feeCounters
+     * (pointer doc _sys_STU + per-value claim docs _sys_STU_claim_{N}).
+     * Migrated from RTDB on 2026-04-27 (Id_generator.php:45-48).
+     * Firestore-only — no RTDB, no MongoDB, no Auth API.
      */
     private function _nextStudentId(string $schoolId): ?string
     {
@@ -2488,10 +2778,28 @@ class Sis extends MY_Controller
      */
     private function _get_tc_number(string $schoolName): string
     {
+        // Atomic per-school allocation via claim-doc CAS — closes the
+        // read-increment-write race that could hand two concurrent TCs the
+        // same number. Seeds from the legacy schools.tcCounter so numbering
+        // continues without restart (no re-issue of already-used numbers).
         $schoolDoc = $this->fs->get('schools', $this->school_id);
-        $current = (int) ($schoolDoc['tcCounter'] ?? 0);
-        $next = $current + 1;
-        $this->fs->update('schools', $this->school_id, ['tcCounter' => $next]);
+        $current   = (int) ($schoolDoc['tcCounter'] ?? 0);
+
+        $next = $this->fs->nextSchoolCounter('tc', $current);
+        if ($next <= 0) {
+            // Atomic path unavailable (transient Firestore failure). Fall
+            // back to the legacy increment so TC issuance is never hard
+            // blocked — same behaviour as before this fix, no worse.
+            $next = $current + 1;
+            log_message('warning', "Sis::_get_tc_number atomic counter unavailable; legacy fallback next={$next}");
+        }
+
+        // Mirror into schools.tcCounter (monotonic) so existing verifiers
+        // (Sis_canonical_verify / Sis_tier2_verify) stay coherent.
+        if ($next > $current) {
+            $this->fs->update('schools', $this->school_id, ['tcCounter' => $next]);
+        }
+
         $year = date('Y');
         $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', substr($schoolName, 0, 6)));
         return "TC-{$code}-{$year}-" . str_pad($next, 4, '0', STR_PAD_LEFT);
@@ -2658,12 +2966,21 @@ class Sis extends MY_Controller
                 if (strcasecmp($rowStatus, 'Deleted') === 0) continue;
             }
 
-            // Check session enrollment: support both string and array format
-            $sessions = $d['sessions'] ?? null;
+            // Check session enrollment: canonical `session` singular takes
+            // precedence; legacy `sessions[]` array is honored ONLY when the
+            // singular field is absent/empty.
+            // SW-CONVERGE-STUDENTS-A (2026-05-26): see Sis.php:2036 for full
+            // rationale. v7 target = singular session as sole student-side
+            // authority across all filter sites.
             $session  = $d['session']  ?? null;
-
-            if (is_array($sessions) && !in_array($currentSession, $sessions, true)) continue;
-            if (!is_array($sessions) && is_string($session) && $session !== '' && $session !== $currentSession) continue;
+            $sessions = $d['sessions'] ?? null;
+            if (is_string($session) && $session !== '') {
+                if ($session !== $currentSession) continue;
+            } elseif (is_array($sessions) && !empty($sessions)) {
+                if (!in_array($currentSession, $sessions, true)) continue;
+            }
+            // else: no enrollment record on doc — preserve prior behavior
+            // (do not skip; caller may apply additional gates).
 
             $enrolledIds[$uid] = true;
         }

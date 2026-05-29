@@ -1241,6 +1241,16 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ── Super Admin per-account lockout state (AUTH-C2, 2026-05-27) ──
+    // Server-only. State managed by Superadmin_login::authenticate flow:
+    //   - read on lockout pre-check
+    //   - written on failed attempt (with sliding 30-min window)
+    //   - deleted on successful login
+    // No client read or write is ever legitimate — deny absolutely.
+    match /superadminAuthState/{docId} {
+      allow read, write: if false;
+    }
+
     // ── Deny everything else (catch-all) ─────────────────────────
     match /{document=**} {
       allow read, write: if false;

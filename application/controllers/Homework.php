@@ -1928,7 +1928,14 @@ class Homework extends MY_Controller
                   || ($authRoster === -1 && $sectionKey !== '' && $cachedTotalStudents > 0);
 
         if ($shouldLog) {
-            log_message('warning', sprintf(
+            // CI3 Log.php only recognises ERROR / DEBUG / INFO / ALL in
+            // $_levels (system/core/Log.php:106). Passing 'warning' here
+            // triggered an undefined-index PHP warning at Log.php:181 which
+            // bled HTML into the JSON API response, breaking mobile parsing.
+            // Use 'error' for high-signal observability — same convention
+            // as ACC_IDEMP_CLAIMED / ACC_JOURNAL_COMMITTED in the accounting
+            // pipeline.
+            log_message('error', sprintf(
                 'ACC_DENORM_DIVERGENCE schoolId=%s hwId=%s sec=%s'
                 . ' subCached=%d subAuth=%s subDiv=%s'
                 . ' rosterCached=%d rosterAuth=%s rosterDiv=%s',

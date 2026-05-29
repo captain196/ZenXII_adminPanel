@@ -732,6 +732,34 @@ class Fee_firestore_txn
     }
 
     /**
+     * BUG-076 (2026-05-27): session-independent demand fetch for a student.
+     *
+     * demandsForStudent() filters by $this->session, which is pinned to the
+     * admin's selected session at controller boot. Lifecycle events
+     * (promotion archival, soft-delete freeze, admission reversal) need to
+     * see demands wherever they live — the archive decision is driven by
+     * className/section, not session. This wrapper omits the session
+     * predicate so archive loops can iterate the student's full demand set
+     * regardless of operator session-selector drift.
+     */
+    public function demandsForStudentAllSessions(string $userId): array
+    {
+        if (!$this->ready || $userId === '') return [];
+        try {
+            $rows = $this->fs->schoolWhere(self::COL_DEMANDS, [
+                ['studentId', '==', $userId],
+            ]);
+            $out = [];
+            foreach ((array) $rows as $r) {
+                $d  = $r['data'] ?? [];
+                $id = $r['id']   ?? '';
+                if ($id !== '' && is_array($d)) $out[$id] = self::normalizeDemandDoc($d);
+            }
+            return $out;
+        } catch (\Exception $_) { return []; }
+    }
+
+    /**
      * Partial-update a demand (merge). Callers still pass snake_case keys
      * from legacy call-sites; this canonicalises every field to camelCase
      * before the Firestore write, so the stored doc is single-source.
@@ -796,60 +824,149 @@ class Fee_firestore_txn
     {
         if (!$this->ready || $demandId === '') return false;
         try {
-            $pick = function (array $d, array $keys, $default = '') {
-                foreach ($keys as $k) {
-                    if (array_key_exists($k, $d) && $d[$k] !== null && $d[$k] !== '') return $d[$k];
-                }
-                return $default;
-            };
-
-            $section    = (string) $pick($data, ['section']);
-            $sectionKey = (string) preg_replace('/^Section\s+/i', '', $section);
-            $period     = (string) $pick($data, ['period']);
-            $monthName  = self::periodToMonth($period);
-
-            $freq     = strtolower((string) $pick($data, ['frequency']));
-            $isYearly = in_array($freq, ['annual', 'yearly', 'one-time', 'onetime'], true)
-                        || ($monthName === 'Yearly Fees');
-            $periodType = $isYearly ? 'yearly' : 'monthly';
-
-            $classNorm = (string) $pick($data, ['className', 'class']);
-
-            // Single-source camelCase payload. Legacy snake-case inputs
-            // are consumed and never re-emitted — Firestore stays clean.
-            $doc = [
-                'schoolId'       => $this->schoolId,
-                'session'        => $this->session,
-                'demandId'       => $demandId,
-                'studentId'      => (string) $pick($data, ['studentId', 'student_id']),
-                'studentName'    => (string) $pick($data, ['studentName', 'student_name']),
-                'className'      => $classNorm,
-                'section'        => $section,
-                'sectionKey'     => $sectionKey,
-                'feeHead'        => (string) $pick($data, ['feeHead', 'fee_head']),
-                'feeHeadId'      => (string) $pick($data, ['feeHeadId']),
-                'category'       => (string) $pick($data, ['category']),
-                'frequency'      => $freq,
-                'period'         => $period,
-                'month'          => $monthName,
-                'periodKey'      => (string) $pick($data, ['periodKey', 'period_key']),
-                'periodType'     => $periodType,
-                'isYearly'       => $isYearly,
-                'grossAmount'    => (float) $pick($data, ['grossAmount', 'original_amount'], 0),
-                'discountAmount' => (float) $pick($data, ['discountAmount', 'discount_amount'], 0),
-                'fineAmount'     => (float) $pick($data, ['fineAmount', 'fine_amount'], 0),
-                'netAmount'      => (float) $pick($data, ['netAmount', 'net_amount'], 0),
-                'paidAmount'     => (float) $pick($data, ['paidAmount', 'paid_amount'], 0),
-                'balance'        => (float) $pick($data, ['balance', 'net_amount', 'netAmount'], 0),
-                'status'         => (string) $pick($data, ['status'], 'unpaid'),
-                'dueDate'        => (string) $pick($data, ['dueDate', 'due_date']),
-                'createdAt'      => (string) $pick($data, ['createdAt', 'created_at'], date('c')),
-                'createdBy'      => (string) $pick($data, ['createdBy', 'created_by']),
-                'updatedAt'      => date('c'),
-            ];
-
+            // BUG-045 Phase 2 (2026-05-25): body extracted to _buildDemandDoc()
+            // helper so single-write path (this method) and batched-write path
+            // (commitDemandBatch) share byte-identical normalization.
+            $doc = $this->_buildDemandDoc($demandId, $data);
             return (bool) $this->firebase->firestoreSet(self::COL_DEMANDS, $demandId, $doc, /* merge */ true);
         } catch (\Exception $_) { return false; }
+    }
+
+    /**
+     * BUG-045 Phase 2 (2026-05-25): demand-doc normalization extracted from
+     * writeDemand() body. Pure transformation — no Firestore I/O.
+     *
+     * Called by:
+     *   - writeDemand() (single-write path; unchanged behavior)
+     *   - commitDemandBatch() (batched-write path; new in Phase 2)
+     *
+     * Output is byte-identical to the pre-extraction writeDemand emit.
+     * Legacy snake-case inputs are consumed and never re-emitted —
+     * Firestore stays clean (single-source camelCase payload).
+     */
+    private function _buildDemandDoc(string $demandId, array $data): array
+    {
+        $pick = function (array $d, array $keys, $default = '') {
+            foreach ($keys as $k) {
+                if (array_key_exists($k, $d) && $d[$k] !== null && $d[$k] !== '') return $d[$k];
+            }
+            return $default;
+        };
+
+        $section    = (string) $pick($data, ['section']);
+        $sectionKey = (string) preg_replace('/^Section\s+/i', '', $section);
+        $period     = (string) $pick($data, ['period']);
+        $monthName  = self::periodToMonth($period);
+
+        $freq     = strtolower((string) $pick($data, ['frequency']));
+        $isYearly = in_array($freq, ['annual', 'yearly', 'one-time', 'onetime'], true)
+                    || ($monthName === 'Yearly Fees');
+        $periodType = $isYearly ? 'yearly' : 'monthly';
+
+        $classNorm = (string) $pick($data, ['className', 'class']);
+
+        // BUG-075 fix (2026-05-26): build structural fields first; emit
+        // payment-state fields (paidAmount/balance/status) ONLY when the
+        // caller explicitly provides them. Pre-fix unconditional emission
+        // with default-0 values was silently overwriting existing paid
+        // state via Firestore merge=true SET during re-runs (promote /
+        // reverse-promote re-invokes assignInitialFees against same
+        // demandId). Now: caller (assignInitialFees / payment posting /
+        // refund flow) explicitly decides whether to set these fields.
+        // Absent fields are preserved by merge=true from the prior write.
+        $doc = [
+            'schoolId'       => $this->schoolId,
+            'session'        => $this->session,
+            'demandId'       => $demandId,
+            'studentId'      => (string) $pick($data, ['studentId', 'student_id']),
+            'studentName'    => (string) $pick($data, ['studentName', 'student_name']),
+            'className'      => $classNorm,
+            'section'        => $section,
+            'sectionKey'     => $sectionKey,
+            'feeHead'        => (string) $pick($data, ['feeHead', 'fee_head']),
+            'feeHeadId'      => (string) $pick($data, ['feeHeadId']),
+            'category'       => (string) $pick($data, ['category']),
+            'frequency'      => $freq,
+            'period'         => $period,
+            'month'          => $monthName,
+            'periodKey'      => (string) $pick($data, ['periodKey', 'period_key']),
+            'periodType'     => $periodType,
+            'isYearly'       => $isYearly,
+            'grossAmount'    => (float) $pick($data, ['grossAmount', 'original_amount'], 0),
+            'discountAmount' => (float) $pick($data, ['discountAmount', 'discount_amount'], 0),
+            'fineAmount'     => (float) $pick($data, ['fineAmount', 'fine_amount'], 0),
+            'netAmount'      => (float) $pick($data, ['netAmount', 'net_amount'], 0),
+            'dueDate'        => (string) $pick($data, ['dueDate', 'due_date']),
+            'createdAt'      => (string) $pick($data, ['createdAt', 'created_at'], date('c')),
+            'createdBy'      => (string) $pick($data, ['createdBy', 'created_by']),
+            'updatedAt'      => date('c'),
+        ];
+
+        // Payment-state fields — conditionally emitted (BUG-075 fix).
+        if (array_key_exists('paidAmount', $data) || array_key_exists('paid_amount', $data)) {
+            $doc['paidAmount'] = (float) $pick($data, ['paidAmount', 'paid_amount'], 0);
+        }
+        if (array_key_exists('balance', $data)) {
+            $doc['balance'] = (float) $pick($data, ['balance'], 0);
+        }
+        if (array_key_exists('status', $data)) {
+            $doc['status'] = (string) $pick($data, ['status'], 'unpaid');
+        }
+
+        return $doc;
+    }
+
+    /**
+     * BUG-045 Phase 2 (2026-05-25): batched demand commit.
+     *
+     * Collapses N per-demand PATCH RTTs into a single atomic Firestore
+     * `:commit` RTT. Used by:
+     *   - Fee_lifecycle::assignInitialFees (N=36 typical for monthly+yearly chart)
+     *   - Fee_lifecycle::reassignFeesOnPromotion archive loop (K=12 typical)
+     *
+     * Op shape per entry:
+     *   ['op' => 'write',   'demandId' => 'X', 'data' => [...]]  // assign new
+     *   ['op' => 'archive', 'demandId' => 'Y', 'data' => [...]]  // partial update
+     *
+     * Atomicity (per Firestore :commit semantics): all ops succeed
+     * together or NONE persist. Caller falls back to per-doc writeDemand /
+     * updateDemand loop on failure (preserves existing semantics).
+     *
+     * Capped at Firestore's 500-ops-per-commit limit at call sites
+     * (per-student batches of ~48 ops are well within limit).
+     *
+     * @return bool true on commit success, false otherwise
+     */
+    public function commitDemandBatch(array $entries): bool
+    {
+        if (!$this->ready || empty($entries)) return true;
+        $ops = [];
+        foreach ($entries as $e) {
+            $did = trim((string) ($e['demandId'] ?? ''));
+            if ($did === '') continue;
+            $op  = (string) ($e['op'] ?? 'write');
+            if ($op === 'write') {
+                $doc = $this->_buildDemandDoc($did, is_array($e['data'] ?? null) ? $e['data'] : []);
+                $ops[] = [
+                    'op'         => 'update',
+                    'collection' => self::COL_DEMANDS,
+                    'docId'      => $did,
+                    'data'       => $doc,
+                    'merge'      => true,
+                ];
+            } else {
+                // 'archive' or 'update' — partial update; pass $data verbatim.
+                $ops[] = [
+                    'op'         => 'update',
+                    'collection' => self::COL_DEMANDS,
+                    'docId'      => $did,
+                    'data'       => is_array($e['data'] ?? null) ? $e['data'] : [],
+                    'merge'      => true,
+                ];
+            }
+        }
+        if (empty($ops)) return true;
+        return (bool) $this->firebase->firestoreCommitBatch($ops);
     }
 
     // ─── Session D — Demand generation helpers ──────────────────────────
@@ -917,6 +1034,54 @@ class Fee_firestore_txn
             }
             return $out;
         } catch (\Exception $_) { return []; }
+    }
+
+    /**
+     * BUG-045 Phase 1 B3 (2026-05-25): merged readFeeStructure + readFeeHeadIds.
+     *
+     * Pre-fix the two methods above hit the SAME Firestore doc
+     * (`feeStructures/{schoolId}_{session}_{className}_{section}`) in two separate
+     * firestoreGet calls — a wasted RTT per student during bulk promote where
+     * Fee_lifecycle::assignInitialFees calls BOTH back-to-back. This merged
+     * method does ONE firestoreGet and projects into both views in a single pass.
+     *
+     * Backward-compat: readFeeStructure() and readFeeHeadIds() remain unchanged
+     * for single-projection callers. New callers (Fee_lifecycle::assignInitialFees
+     * via B2 cache wrapper) use this merged method to save 1 RPC/student.
+     *
+     * @return array ['chart' => [...month maps...], 'headIds' => [name => id, ...]]
+     */
+    public function readFeeStructureWithIds(string $className, string $section): array
+    {
+        if (!$this->ready) return ['chart' => [], 'headIds' => []];
+        try {
+            $docId = "{$this->schoolId}_{$this->session}_{$className}_{$section}";
+            $doc = $this->firebase->firestoreGet(self::COL_FEE_STRUCT, $docId);
+            if (!is_array($doc) || empty($doc['feeHeads'])) return ['chart' => [], 'headIds' => []];
+
+            $months = ['April','May','June','July','August','September',
+                       'October','November','December','January','February','March'];
+            $chart = [];
+            foreach ($months as $m) $chart[$m] = [];
+            $chart['Yearly Fees'] = [];
+            $headIds = [];
+
+            foreach ((array) $doc['feeHeads'] as $h) {
+                if (!is_array($h)) continue;
+                $name = trim((string) ($h['name'] ?? ''));
+                if ($name === '') continue;
+                $amt  = (float) ($h['amount'] ?? 0);
+                $freq = strtolower((string) ($h['frequency'] ?? 'monthly'));
+                if ($freq === 'annual' || $freq === 'yearly') {
+                    $chart['Yearly Fees'][$name] = $amt;
+                } else {
+                    foreach ($months as $m) $chart[$m][$name] = $amt;
+                }
+                $fid = trim((string) ($h['feeHeadId'] ?? ''));
+                if ($fid !== '') $headIds[$name] = $fid;
+            }
+            return ['chart' => $chart, 'headIds' => $headIds];
+        } catch (\Exception $_) { return ['chart' => [], 'headIds' => []]; }
     }
 
     /**

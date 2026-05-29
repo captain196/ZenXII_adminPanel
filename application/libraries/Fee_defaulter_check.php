@@ -136,6 +136,16 @@ class Fee_defaulter_check
                 $d = is_array($row['data'] ?? null) ? $row['data'] : $row;
                 if (!is_array($d)) continue;
 
+                // SW4-companion-D (2026-05-27): skip archived demands.
+                // Archived demands represent historical state (promotion
+                // / reverse-promotion cycles, consolidation). They
+                // preserve their original balance field for audit, but
+                // must not be counted into ACTIVE dues — otherwise the
+                // 37 Class 9 archived orphans for STU0001 inflate the
+                // total by ₹37,200. Mirrors SW4-companion-A (admin
+                // fetch_months) and SW4-companion-B (parent fee repo).
+                if (strtolower((string)($d['status'] ?? '')) === 'archived') continue;
+
                 $balance = $this->_toFloat($d['balance'] ?? 0);
                 if ($balance <= self::BALANCE_EPSILON) {
                     if (!empty($d['updatedAt']) && (string)$d['updatedAt'] > $lastPaymentDate) {
@@ -585,7 +595,10 @@ class Fee_defaulter_check
                 $cat = (string) ($d['category'] ?? '');
                 if ($cat === 'Hostel' || $cat === 'Transport') continue;
                 $status = strtolower(trim((string) ($d['status'] ?? '')));
-                if ($status === 'paid') continue;
+                // SW4-companion-D (2026-05-27): archived demands excluded
+                // from active clearance computation. See main isDefaulter
+                // loop for full rationale.
+                if ($status === 'paid' || $status === 'archived') continue;
                 $balance = $this->_toFloat($d['balance'] ?? 0);
                 if ($balance > self::BALANCE_EPSILON) $totalDues += $balance;
             }
@@ -664,7 +677,8 @@ class Fee_defaulter_check
                 $d = $row['data'] ?? $row;
                 if (!is_array($d)) continue;
                 $status  = strtolower(trim((string) ($d['status'] ?? '')));
-                if ($status === 'paid') continue;
+                // SW4-companion-D (2026-05-27): archived demands excluded.
+                if ($status === 'paid' || $status === 'archived') continue;
                 $balance = $this->_toFloat($d['balance'] ?? 0);
                 if ($balance > self::BALANCE_EPSILON) $hostelDues += $balance;
             }
@@ -698,7 +712,8 @@ class Fee_defaulter_check
                 $d = $row['data'] ?? $row;
                 if (!is_array($d)) continue;
                 $status  = strtolower(trim((string) ($d['status'] ?? '')));
-                if ($status === 'paid') continue;
+                // SW4-companion-D (2026-05-27): archived demands excluded.
+                if ($status === 'paid' || $status === 'archived') continue;
                 $balance = $this->_toFloat($d['balance'] ?? 0);
                 if ($balance > self::BALANCE_EPSILON) $transportDues += $balance;
             }
