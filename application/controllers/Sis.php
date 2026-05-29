@@ -1034,9 +1034,17 @@ class Sis extends MY_Controller
             if ($oldSec === '') continue;
             $touchedSections["{$oldClassKey}|{$oldSec}"] = [$oldClassKey, $oldSec];
         }
-        foreach ($touchedSections as $pair) {
-            $this->_recompute_section_strength($pair[0], $pair[1]);
-        }
+        // BUG-045 Item 1 (perf, 2026-05-29): the synchronous section-strength
+        // recompute that used to run here was REMOVED. It duplicated the
+        // recompute already performed in the post-response shutdown handler
+        // (Phase D2 below), wasting ~6 Firestore round-trips on the operator-
+        // facing critical path for zero correctness benefit — currentStrength
+        // is informational (admission section-picker bars) and self-healing on
+        // the next lifecycle write.
+        // INVARIANT: the deferred Phase-D2 loop is now the SOLE section-strength
+        // recompute path. $touchedSections is captured into the shutdown closure
+        // ($__touchedLocal) and consumed there — do not re-add a synchronous
+        // recompute here.
 
         // ── BUG-045 Phase 1 B1 (2026-05-25): post-response shutdown handler ──
         // Pre-fix: fee-reassignment + section-strength recompute + promotion-batch
