@@ -779,6 +779,7 @@ class Sis extends MY_Controller
         $nextYear  = ((int)$parts[0] + 1) . '-' . substr((string)((int)$parts[0] + 2), -2);
         $data['session_options'] = $available;                                       // existing only
         $data['create_session']  = in_array($nextYear, $available, true) ? '' : $nextYear; // '' if it already exists
+        $data['next_session']    = $nextYear;                                        // label the next academic year "(next)" when it already exists
 
         $this->load->view('include/header');
         $this->load->view('sis/promote', $data);

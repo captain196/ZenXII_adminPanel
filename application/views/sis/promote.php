@@ -196,7 +196,7 @@
                         <select id="toSession">
                             <?php foreach ($session_options as $sy): ?>
                             <option value="<?= htmlspecialchars($sy) ?>"<?= ($sy === $session_year) ? ' selected' : '' ?>>
-                                <?= htmlspecialchars($sy) ?><?= ($sy === $session_year) ? '  (current)' : '' ?>
+                                <?= htmlspecialchars($sy) ?><?= ($sy === $session_year) ? '  (current)' : '' ?><?= ($sy === ($next_session ?? '') && $sy !== $session_year) ? '  (next)' : '' ?>
                             </option>
                             <?php endforeach; ?>
                             <?php if (!empty($create_session)): ?>
