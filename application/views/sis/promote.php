@@ -294,25 +294,38 @@
 <script>
 var csrfName  = document.querySelector('meta[name="csrf-name"]').content;
 var csrfToken = document.querySelector('meta[name="csrf-token"]').content;
-var CLASS_MAP = <?= json_encode($class_map) ?>;
+// Session-scoped section map { session: { classOrd: [sections] } }. The
+// SOURCE dropdown lists the current session's sections; the DESTINATION
+// dropdown lists ONLY the selected Target Session's sections (refreshed
+// when Target Session changes) so operators can't pick a section that
+// doesn't exist in the destination session.
+var SESSION_CLASS_MAP = <?= json_encode($session_class_map) ?>;
+var CURRENT_SESSION    = <?= json_encode($session_year) ?>;
 var previewStudents = [];
 
-function populateSections(selectEl, classOrd, includeAll) {
+function populateSections(selectEl, classOrd, includeAll, session) {
     selectEl.innerHTML = '';
     if (includeAll) selectEl.innerHTML = '<option value="all">All Sections</option>';
     else selectEl.innerHTML = '<option value="">-- Select Section --</option>';
-    if (classOrd && CLASS_MAP[classOrd]) {
-        CLASS_MAP[classOrd].forEach(function(s) {
+    var byClass = (session && SESSION_CLASS_MAP[session]) ? SESSION_CLASS_MAP[session] : {};
+    if (classOrd && byClass[classOrd]) {
+        byClass[classOrd].forEach(function(s) {
             selectEl.innerHTML += '<option value="' + esc(s) + '">Section ' + esc(s) + '</option>';
         });
     }
 }
 
 document.getElementById('fromClass').addEventListener('change', function () {
-    populateSections(document.getElementById('fromSection'), this.value, true);
+    // Source sections come from the current session.
+    populateSections(document.getElementById('fromSection'), this.value, true, CURRENT_SESSION);
 });
 document.getElementById('toClass').addEventListener('change', function () {
-    populateSections(document.getElementById('toSection'), this.value, false);
+    // Destination sections come from the selected Target Session.
+    populateSections(document.getElementById('toSection'), this.value, false, document.getElementById('toSession').value);
+});
+document.getElementById('toSession').addEventListener('change', function () {
+    // Re-derive the destination section list when the Target Session changes.
+    populateSections(document.getElementById('toSection'), document.getElementById('toClass').value, false, this.value);
 });
 
 function previewPromotion() {

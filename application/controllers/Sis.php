@@ -85,6 +85,36 @@ class Sis extends MY_Controller
         return $classMap;
     }
 
+    /**
+     * Session-scoped class→section map: { session: { classOrd: [sections] } }.
+     * Unlike _fs_class_map (which unions sections across ALL sessions), this
+     * preserves the session dimension so the promote dialog can show the
+     * SOURCE class's sections in the current session and the DESTINATION
+     * class's sections in the selected target session — instead of a
+     * session-agnostic union that offered sections not present in the target
+     * session.
+     */
+    private function _fs_session_class_map(): array
+    {
+        $sectionDocs = $this->fs->schoolWhere('sections', []);
+        $map = [];
+        foreach ($sectionDocs as $doc) {
+            $sd = $doc['data'] ?? $doc;
+            $session     = (string) ($sd['session']   ?? '');
+            $className   = (string) ($sd['className'] ?? '');
+            $sectionName = (string) ($sd['section']   ?? '');
+            if ($session === '' || $className === '' || $sectionName === '') continue;
+            $ordinal       = str_replace('Class ', '', $className);
+            $sectionLetter = str_replace('Section ', '', $sectionName);
+            if (!isset($map[$session]))            $map[$session] = [];
+            if (!isset($map[$session][$ordinal]))  $map[$session][$ordinal] = [];
+            if (!in_array($sectionLetter, $map[$session][$ordinal], true)) {
+                $map[$session][$ordinal][] = $sectionLetter;
+            }
+        }
+        return $map;
+    }
+
     /* ══════════════════════════════════════════════════════════════════════
        DASHBOARD
     ══════════════════════════════════════════════════════════════════════ */
@@ -762,8 +792,9 @@ class Sis extends MY_Controller
         $this->_require_role(self::MANAGE_ROLES, 'sis_promote');
         $session     = $this->session_year;
 
-        $data['class_map']    = $this->_fs_class_map();
-        $data['session_year'] = $session;
+        $data['class_map']         = $this->_fs_class_map();
+        $data['session_class_map'] = $this->_fs_session_class_map();
+        $data['session_year']      = $session;
 
         // Build session options. Issue B (2026-05-28): list ONLY sessions that
         // actually exist. Previously the computed next academic year was
