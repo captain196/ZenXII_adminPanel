@@ -1821,9 +1821,9 @@
       </form>
 
       <div class="hero-stats">
-        <div><strong>120+</strong> schools onboarded</div>
-        <div><strong>14</strong> cities</div>
-        <div><strong>3</strong> boards (CBSE, ICSE, State)</div>
+        <div><strong class="count-up" data-count="120" data-suffix="+">0</strong> schools onboarded</div>
+        <div><strong class="count-up" data-count="14">0</strong> cities</div>
+        <div><strong class="count-up" data-count="3">0</strong> boards (CBSE, ICSE, State)</div>
       </div>
 
     </div>
@@ -2286,10 +2286,6 @@
 
       <div class="faq">
         <details class="qa">
-          <summary>Is ZenXii available on iPhone?</summary>
-          <p>The Teacher and Parent apps currently ship on Android. iOS is on the roadmap.</p>
-        </details>
-        <details class="qa">
           <summary>How do parents reset their password?</summary>
           <p>Through the school office — the principal or school super admin resets it from the admin panel. There is no self-service OTP flow by design; this keeps password recovery in the school's trusted chain.</p>
         </details>
@@ -2298,20 +2294,8 @@
           <p>They use one login. The Parent app discovers siblings automatically from the school records.</p>
         </details>
         <details class="qa">
-          <summary>Does the platform support more than one school per account?</summary>
-          <p>Yes — the Superadmin layer is built for multi-school deployments with per-school plans and isolated data.</p>
-        </details>
-        <details class="qa">
-          <summary>Where is the data stored?</summary>
-          <p>On a secure cloud backbone. All school data is scoped to the school's tenant.</p>
-        </details>
-        <details class="qa">
           <summary>Can teachers see or edit each other's classes?</summary>
           <p>A teacher's data scope is automatically determined by their subject and class assignments. They cannot see classes they are not assigned to.</p>
-        </details>
-        <details class="qa">
-          <summary>Is there an API?</summary>
-          <p>Yes — the platform exposes an Auth API and webhook endpoints (payment intent, health check). Custom integrations can be discussed on a per-deployment basis.</p>
         </details>
       </div>
     </div>
@@ -2348,22 +2332,6 @@
           <p class="contact-note">We'll reply within 1 business day.</p>
           <div id="contactStatus" aria-live="polite"></div>
         </form>
-      </div>
-    </div>
-  </section>
-
-  <!-- CTA STRIP -->
-  <section class="block" id="demo">
-    <div class="wrap">
-      <div class="cta-strip">
-        <div>
-          <h3>See ZenXii running your school.</h3>
-          <p>A 30-minute guided tour of the admin panel, teacher app, and parent app — with your school's actual workflows in mind.</p>
-        </div>
-        <div style="display:flex; gap:10px; flex-wrap:wrap;">
-          <a class="btn btn-primary" href="mailto:yugant@zenxii.com">Book a demo</a>
-          <a class="btn btn-ghost" href="#download" style="color:white; border-color: rgba(255,255,255,.3);">Download apps</a>
-        </div>
       </div>
     </div>
   </section>
@@ -2551,6 +2519,52 @@
     }
     return false;
   }
+</script>
+
+<!-- Hero stats count-up animation -->
+<script>
+  (function () {
+    var els = document.querySelectorAll('.count-up');
+    if (!els.length) return;
+
+    function animate(el) {
+      var target = parseInt(el.getAttribute('data-count'), 10) || 0;
+      var suffix = el.getAttribute('data-suffix') || '';
+      var duration = 1400;
+      var start = null;
+
+      function step(ts) {
+        if (start === null) start = ts;
+        var progress = Math.min((ts - start) / duration, 1);
+        // easeOutCubic
+        var eased = 1 - Math.pow(1 - progress, 3);
+        el.textContent = Math.round(target * eased) + (progress === 1 ? suffix : '');
+        if (progress < 1) requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+
+    var started = false;
+    function run() {
+      if (started) return;
+      started = true;
+      els.forEach(animate);
+    }
+
+    // The hero stats fade in via the timed `heroPartIn` intro animation
+    // (opacity:0 until ~14.6s). Kick off the count-up when that fade-in
+    // begins, so the numbers climb exactly as the stats appear.
+    var statsBox = document.querySelector('.hero-stats');
+    if (statsBox) {
+      statsBox.addEventListener('animationstart', function (e) {
+        if (e.animationName === 'heroPartIn') run();
+      });
+      // Safety net in case the animation event is missed.
+      setTimeout(run, 16000);
+    } else {
+      run();
+    }
+  })();
 </script>
 
 </body>
