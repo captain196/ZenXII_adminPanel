@@ -1909,10 +1909,20 @@ class Sis extends MY_Controller
                 $thumbUrl = $url;
             }
 
-            // Firestore-only per no-RTDB policy.
-            $this->fs->updateEntity('students', $userId, [
-                "doc.{$docLabel}" => ['url' => $url, 'thumbnail' => $thumbUrl, 'uploaded_at' => date('Y-m-d H:i:s')]
-            ]);
+            // R1: write to the CANONICAL document map keys (documents + Doc) via
+            // read-modify-write — NOT the dotted "doc.{label}" literal field, which
+            // no reader sees (normalizer maps only documents<->Doc) and the REST
+            // client mis-encodes. Mirrors delete_document() + edit_student()'s
+            // Doc->documents mirror.
+            $studentDoc = $this->_getStudent($userId);
+            $docMap = is_array($studentDoc['documents'] ?? null) ? $studentDoc['documents']
+                    : (is_array($studentDoc['Doc'] ?? null) ? $studentDoc['Doc'] : []);
+            $docMap[$docLabel] = ['url' => $url, 'thumbnail' => $thumbUrl, 'uploaded_at' => date('Y-m-d H:i:s')];
+            $ok = $this->fs->updateEntity('students', $userId, ['documents' => $docMap, 'Doc' => $docMap]);
+            // R2: do not report success if the persistence write failed.
+            if (!$ok) {
+                return $this->json_error('File uploaded to storage, but saving the document record failed. Please retry.');
+            }
 
             $this->_log_history($school_id, $userId, 'DOCUMENT_UPLOAD',
                 "Document uploaded: {$docLabel}", ['doc_label' => $docLabel]
@@ -1950,7 +1960,11 @@ class Sis extends MY_Controller
         $studentDoc = $this->_getStudent($userId);
         $docMap = $studentDoc['documents'] ?? $studentDoc['Doc'] ?? [];
         unset($docMap[$docLabel]);
-        $this->fs->updateEntity('students', $userId, ['documents' => $docMap]);
+        // R4: keep BOTH canonical keys in sync (upload now dual-writes documents+Doc).
+        $ok = $this->fs->updateEntity('students', $userId, ['documents' => $docMap, 'Doc' => $docMap]);
+        if (!$ok) {
+            return $this->json_error('Could not update the document record. Please retry.');
+        }
 
         $this->_log_history($school_id, $userId, 'DOCUMENT_DELETE',
             "Document deleted: {$docLabel}", ['doc_label' => $docLabel]
