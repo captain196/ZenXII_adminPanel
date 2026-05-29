@@ -34,12 +34,6 @@
     box-shadow:0 0 14px var(--gold-glow);
 }
 .sc-tab i { font-size:13px; }
-.sc-tab-num {
-    display:inline-flex; align-items:center; justify-content:center;
-    width:18px; height:18px; border-radius:50%; font-size:10px; font-weight:700;
-    background:var(--gold-dim); color:var(--gold); line-height:1;
-}
-.sc-tab.active .sc-tab-num { background:rgba(255,255,255,.25); color:#fff; }
 
 /* ── Step Hint Banner ── */
 .sc-step-hint {
@@ -1333,37 +1327,49 @@ window.rollExecute = function() {
     if (prom) warn += '  \u2022 PROMOTE students (Class N \u2192 N+1, Class 12 \u2192 Alumni)\n';
     if (act)  warn += '  \u2022 Set ' + to + ' as the ACTIVE session\n';
     warn += '\nThis cannot be automatically reversed. Proceed?';
-    if (!confirm(warn)) return;
+    _confirmModal({
+        title: 'Execute rollover ' + from + ' → ' + to,
+        body: warn,
+        confirmText: 'Execute rollover',
+        dangerous: true
+    }).then(function(ok) {
+        if (!ok) return;
 
-    var btn = document.getElementById('rollExecBtn');
-    btn.disabled = true; btn.innerHTML = '<i class="fa fa-refresh sc-spin"></i> Rolling over...';
+        var btn = document.getElementById('rollExecBtn');
+        btn.disabled = true; btn.innerHTML = '<i class="fa fa-refresh sc-spin"></i> Rolling over...';
 
-    post('school_config/rollover_session', {
-        from_session: from, to_session: to,
-        copy_sections: copy, promote_students: prom, set_active: act,
-    }, function(d) {
-        btn.disabled = false; btn.innerHTML = '<i class="fa fa-play"></i> Execute Rollover';
-        toast(d.message, d.status === 'success');
-        if (d.status === 'success') {
-            CFG.sessions = d.sessions || CFG.sessions;
-            if (act && d.active_session) {
-                CFG.active_session = d.active_session;
-                currentSession = d.active_session;
-                var headerLabel = document.getElementById('gSessLabel');
-                if (headerLabel) headerLabel.textContent = d.active_session;
+        post('school_config/rollover_session', {
+            from_session: from, to_session: to,
+            copy_sections: copy, promote_students: prom, set_active: act,
+        }, function(d) {
+            btn.disabled = false; btn.innerHTML = '<i class="fa fa-play"></i> Execute Rollover';
+            toast(d.message, d.status === 'success');
+            if (d.status === 'success') {
+                CFG.sessions = d.sessions || CFG.sessions;
+                if (act && d.active_session) {
+                    CFG.active_session = d.active_session;
+                    currentSession = d.active_session;
+                    var headerLabel = document.getElementById('gSessLabel');
+                    if (headerLabel) headerLabel.textContent = d.active_session;
+                }
+                renderSessions(CFG.sessions, CFG.active_session || '');
+                renderClassSelects(CFG.classes || [], CFG.sessions, CFG.active_session || '');
+                // 2026-05-27 — rollover may have added a new target
+                // session to sessions[] AND/OR flipped active_session.
+                // Rebuild header dropdown so it carries the new year and
+                // the active-class lands on the right <li>.
+                refreshHeaderSessList(CFG.sessions || [], CFG.active_session || '');
+                closeRolloverModal();
+                if (d.summary && d.summary.errors && d.summary.errors.length) {
+                    // BUG-066 Wave 1: removed slice(0,5) truncation; modal body scrolls overflow.
+                    _confirmModal({
+                        title: 'Rollover finished with ' + d.summary.errors.length + ' error(s)',
+                        body: d.summary.errors.join('\n'),
+                        alertOnly: true
+                    });
+                }
             }
-            renderSessions(CFG.sessions, CFG.active_session || '');
-            renderClassSelects(CFG.classes || [], CFG.sessions, CFG.active_session || '');
-            // 2026-05-27 — rollover may have added a new target session
-            // to sessions[] AND/OR flipped active_session. Rebuild header
-            // dropdown so it carries the new year and the active-class
-            // lands on the right <li>.
-            refreshHeaderSessList(CFG.sessions || [], CFG.active_session || '');
-            closeRolloverModal();
-            if (d.summary && d.summary.errors && d.summary.errors.length) {
-                alert('Rollover finished with ' + d.summary.errors.length + ' error(s):\n\n' + d.summary.errors.slice(0, 5).join('\n'));
-            }
-        }
+        });
     });
 };
 
@@ -1602,6 +1608,107 @@ function _typeToConfirmDialog(opts) {
     });
 }
 
+/**
+ * 2026-05-26 (BUG-066 Wave 1) — Simpler confirm / info modal. Sibling of
+ * _typeToConfirmDialog for non-irreversible flows: a clean Yes/No dialog
+ * with consistent styling, ARIA modal semantics, Esc-to-cancel, Tab trap,
+ * Enter-to-confirm. opts:
+ *   - title:       string
+ *   - body:        string (newlines preserved via white-space:pre-wrap)
+ *   - confirmText: string (default 'Confirm')
+ *   - cancelText:  string (default 'Cancel')
+ *   - dangerous:   bool   (red header + red Confirm button)
+ *   - alertOnly:   bool   (hide Cancel; relabel Confirm 'OK'; Esc resolves true)
+ * Returns Promise<boolean>.
+ */
+function _confirmModal(opts) {
+    opts = opts || {};
+    return new Promise(function(resolve) {
+        var prevFocus = document.activeElement;
+        var bd = document.createElement('div');
+        bd.setAttribute('role', 'dialog');
+        bd.setAttribute('aria-modal', 'true');
+        bd.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:11000;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+        var card = document.createElement('div');
+        card.style.cssText = 'background:#fff;border-radius:14px;max-width:540px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3);';
+
+        var hdr = document.createElement('div');
+        hdr.style.cssText = 'padding:14px 18px;border-bottom:1px solid #e5e7eb;background:' + (opts.dangerous ? '#fef2f2' : '#f8fafc') + ';display:flex;align-items:center;gap:10px;';
+        var icon = document.createElement('i');
+        icon.className = 'fa ' + (opts.dangerous ? 'fa-exclamation-triangle' : 'fa-info-circle');
+        icon.style.cssText = 'font-size:20px;color:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+        hdr.appendChild(icon);
+        var title = document.createElement('h4');
+        title.style.cssText = 'margin:0;font-size:15px;font-weight:600;color:#0f172a;';
+        title.textContent = opts.title || 'Please confirm';
+        hdr.appendChild(title);
+
+        var body = document.createElement('div');
+        body.style.cssText = 'padding:18px;color:#334155;font-size:13.5px;line-height:1.55;white-space:pre-wrap;max-height:60vh;overflow-y:auto;';
+        body.textContent = opts.body || '';
+
+        var ftr = document.createElement('div');
+        ftr.style.cssText = 'padding:12px 16px;border-top:1px solid #e5e7eb;background:#f8fafc;display:flex;gap:8px;justify-content:flex-end;';
+
+        var btnCancel = null;
+        if (!opts.alertOnly) {
+            btnCancel = document.createElement('button');
+            btnCancel.type = 'button';
+            btnCancel.textContent = opts.cancelText || 'Cancel';
+            btnCancel.style.cssText = 'padding:8px 16px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;color:#475569;font-weight:500;cursor:pointer;';
+            ftr.appendChild(btnCancel);
+        }
+        var btnConfirm = document.createElement('button');
+        btnConfirm.type = 'button';
+        btnConfirm.textContent = opts.alertOnly ? 'OK' : (opts.confirmText || 'Confirm');
+        btnConfirm.style.cssText = 'padding:8px 16px;border-radius:8px;border:none;color:#fff;font-weight:600;cursor:pointer;'
+            + 'background:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+        ftr.appendChild(btnConfirm);
+
+        card.appendChild(hdr);
+        card.appendChild(body);
+        card.appendChild(ftr);
+        bd.appendChild(card);
+        document.body.appendChild(bd);
+
+        function cleanup() {
+            document.removeEventListener('keydown', onKey, true);
+            if (bd.parentNode) bd.parentNode.removeChild(bd);
+            if (prevFocus && typeof prevFocus.focus === 'function') {
+                try { prevFocus.focus(); } catch (_) {}
+            }
+        }
+        function done(v) { cleanup(); resolve(v); }
+
+        function onKey(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                done(opts.alertOnly ? true : false);
+                return;
+            }
+            if (e.key === 'Tab') {
+                var seq = btnCancel ? [btnCancel, btnConfirm] : [btnConfirm];
+                var idx = seq.indexOf(document.activeElement);
+                if (idx === -1) { e.preventDefault(); seq[0].focus(); return; }
+                e.preventDefault();
+                var nextIdx = e.shiftKey ? (idx - 1 + seq.length) % seq.length : (idx + 1) % seq.length;
+                seq[nextIdx].focus();
+            }
+            if (e.key === 'Enter' && document.activeElement === btnConfirm) {
+                e.preventDefault();
+                done(true);
+            }
+        }
+        document.addEventListener('keydown', onKey, true);
+
+        if (btnCancel) btnCancel.addEventListener('click', function() { done(false); });
+        btnConfirm.addEventListener('click', function() { done(true); });
+
+        setTimeout(function() { btnConfirm.focus(); }, 0);
+    });
+}
+
 /* ────────────────────────────────────────────────────────────────
  * 2026-05-27 — refreshHeaderSessList(sessions, active)
  *
@@ -1617,9 +1724,10 @@ function _typeToConfirmDialog(opts) {
  *   1. Click handler on each <li> mirrors the server-rendered
  *      header.php logic at lines 1391-1404 exactly: short-circuit
  *      on active item, POST to admin/switch_session, reload on
- *      success. Intentional duplication; source-of-truth handler
- *      lives in header.php for server-rendered items and the same
- *      shape is rebuilt here for dynamically-replaced items.
+ *      success. This is intentional duplication; the source-of-
+ *      truth handler lives in header.php for server-rendered
+ *      items and the same shape is rebuilt here for dynamically-
+ *      replaced items.
  *   2. The active item carries class `g-sess-item--active`
  *      (CSS at header.php:519) and renders the check icon visible.
  *   3. data-year attribute drives both the click handler and the
@@ -1628,7 +1736,7 @@ function _typeToConfirmDialog(opts) {
  * ──────────────────────────────────────────────────────────────── */
 function refreshHeaderSessList(sessions, active) {
     var headerList = document.querySelector('.g-sess-list');
-    if (!headerList) return;
+    if (!headerList) return;   // header dropdown not on this page — no-op
     headerList.innerHTML = '';
     (sessions || []).forEach(function(yr) {
         var isActive = (yr === active);
@@ -1650,7 +1758,14 @@ function refreshHeaderSessList(sessions, active) {
              .done(function(res) {
                  if (res && res.status === 'success') window.location.reload();
              })
-             .fail(function() { alert('Failed to switch session. Please reload the page and try again.'); });
+             .fail(function() {
+                 _confirmModal({
+                     title: 'Failed to switch session',
+                     body: 'The server did not respond. Please reload the page and try again.',
+                     alertOnly: true,
+                     dangerous: true
+                 });
+             });
         });
         headerList.appendChild(li);
     });
@@ -1658,39 +1773,61 @@ function refreshHeaderSessList(sessions, active) {
 
 window.archiveSession = function(sess, doArchive) {
     var verb = doArchive ? 'archive' : 'unarchive';
-    if (doArchive && !confirm('Archive "' + sess + '"?\n\nIt will be hidden from default dropdowns but all data (students, marks, fees, attendance) is preserved. You can unarchive later.')) return;
-    post('school_config/archive_session', { session: sess, archive: doArchive ? 1 : 0 }, function(d) {
-        toast(d.message, d.status === 'success');
-        if (d.status === 'success') {
-            CFG.archived_sessions = d.archived_sessions || [];
-            renderSessionsOnly(CFG.sessions || [], CFG.active_session || '');
-        }
+    function doIt() {
+        post('school_config/archive_session', { session: sess, archive: doArchive ? 1 : 0 }, function(d) {
+            toast(d.message, d.status === 'success');
+            if (d.status === 'success') {
+                CFG.archived_sessions = d.archived_sessions || [];
+                renderSessionsOnly(CFG.sessions || [], CFG.active_session || '');
+            }
+        });
+    }
+    // Unarchive bypasses confirm; archive requires confirmation per original semantics.
+    if (!doArchive) { doIt(); return; }
+    _confirmModal({
+        title: 'Archive "' + sess + '"',
+        body: 'It will be hidden from default dropdowns but all data (students, marks, fees, attendance) is preserved. You can unarchive later.',
+        confirmText: 'Archive'
+    }).then(function(ok) {
+        if (!ok) return;
+        doIt();
     });
 };
 
 window.deleteSession = function(sess) {
     var st = _sessStats[sess] || {};
     if (st.students || st.sections || st.staff) {
-        alert('Cannot delete "' + sess + '".\n\nIt still has:\n'
-            + '  • ' + (st.students || 0) + ' students\n'
-            + '  • ' + (st.classes  || 0) + ' classes / ' + (st.sections || 0) + ' sections\n'
-            + '  • ' + (st.staff    || 0) + ' staff\n\n'
-            + 'Delete or move that data first, or use Archive to keep it but hide the session.');
+        _confirmModal({
+            title: 'Cannot delete "' + sess + '"',
+            body: 'It still has:\n'
+                + '  • ' + (st.students || 0) + ' students\n'
+                + '  • ' + (st.classes  || 0) + ' classes / ' + (st.sections || 0) + ' sections\n'
+                + '  • ' + (st.staff    || 0) + ' staff\n\n'
+                + 'Delete or move that data first, or use Archive to keep it but hide the session.',
+            alertOnly: true
+        });
         return;
     }
-    if (!confirm('Delete session "' + sess + '" permanently?\n\nThis only removes it from the sessions list. The server will also refuse if any data is still linked to this session.')) return;
-    post('school_config/delete_session', { session: sess }, function(d) {
-        toast(d.message, d.status === 'success');
-        if (d.status === 'success') {
-            CFG.sessions = d.sessions || [];
-            renderSessions(CFG.sessions, CFG.active_session || '');
-            renderClassSelects(CFG.classes || [], CFG.sessions, CFG.active_session || '');
-            // 2026-05-27 — drop the deleted session from the header
-            // dropdown DOM. Without this call the deleted year stays
-            // selectable in the header until full page reload, landing
-            // the user on a 4xx from admin/switch_session.
-            refreshHeaderSessList(CFG.sessions, CFG.active_session || '');
-        }
+    _confirmModal({
+        title: 'Delete session "' + sess + '" permanently',
+        body: 'This only removes it from the sessions list. The server will also refuse if any data is still linked to this session.',
+        confirmText: 'Delete',
+        dangerous: true
+    }).then(function(ok) {
+        if (!ok) return;
+        post('school_config/delete_session', { session: sess }, function(d) {
+            toast(d.message, d.status === 'success');
+            if (d.status === 'success') {
+                CFG.sessions = d.sessions || [];
+                renderSessions(CFG.sessions, CFG.active_session || '');
+                renderClassSelects(CFG.classes || [], CFG.sessions, CFG.active_session || '');
+                // 2026-05-27 — drop the deleted session from the header
+                // dropdown DOM. Without this call the deleted year stays
+                // selectable in the header until full page reload,
+                // landing the user on a 4xx from admin/switch_session.
+                refreshHeaderSessList(CFG.sessions, CFG.active_session || '');
+            }
+        });
     });
 };
 
@@ -1757,8 +1894,8 @@ window.syncSessions = function() {
             renderClassSelects(CFG.classes || [], d.sessions || [], act);
             // 2026-05-27 — keep header dropdown in sync with the freshly-
             // pulled Firestore sessions array. Without this call the
-            // dropdown retains any stale <li>s (e.g. a session deleted
-            // in Firebase Console) until full page reload.
+            // dropdown retains any stale <li>s (e.g. a session that was
+            // deleted in Firebase Console) until full page reload.
             refreshHeaderSessList(d.sessions || [], act);
             toast(d.message || 'Sessions refreshed from Firebase.');
         } else {
@@ -1778,10 +1915,9 @@ window.addSession = function() {
             CFG.sessions = d.sessions;
             renderClassSelects(CFG.classes || [], d.sessions, CFG.active_session || '');
             // 2026-05-27 — replaces the previous inline DOM-append of a
-            // single <li> with a full rebuild via refreshHeaderSessList.
-            // Keeps the dropdown in canonical order (matches server-
-            // rendered output exactly) and shares the click-handler
-            // logic with every other session-mutation flow.
+            // single <li> with a full rebuild. Keeps the dropdown in
+            // canonical order (matches server-rendered output exactly)
+            // and shares the click-handler logic with refreshHeaderSessList.
             refreshHeaderSessList(d.sessions || [], CFG.active_session || '');
         }
     });
@@ -1805,26 +1941,33 @@ window.setActive = function(sess) {
         }
     }
     warn += 'Proceed?';
-    if (!confirm(warn)) return;
-    post('school_config/set_active_session', { session: sess }, function(d) {
-        toast(d.message, d.status === 'success');
-        if (d.status === 'success') {
-            CFG.active_session = sess;
-            currentSession = sess;
-            renderSessions(CFG.sessions || [], sess);
-            renderClassSelects(CFG.classes || [], CFG.sessions || [], sess);
+    _confirmModal({
+        title: 'Set "' + sess + '" as ACTIVE session',
+        body: warn,
+        confirmText: 'Set active',
+        dangerous: true
+    }).then(function(ok) {
+        if (!ok) return;
+        post('school_config/set_active_session', { session: sess }, function(d) {
+            toast(d.message, d.status === 'success');
+            if (d.status === 'success') {
+                CFG.active_session = sess;
+                currentSession = sess;
+                renderSessions(CFG.sessions || [], sess);
+                renderClassSelects(CFG.classes || [], CFG.sessions || [], sess);
 
-            // Sync the header session switcher without a full page reload
-            var headerLabel = document.getElementById('gSessLabel');
-            if (headerLabel) headerLabel.textContent = sess;
-            // 2026-05-27 — full rebuild instead of class-only toggle.
-            // Active-class update is sufficient when the sessions list
-            // is unchanged, but the helper also re-binds click handlers
-            // for any DOM that was patched by other flows (deleteSession
-            // / syncSessions) since page load, so a single source of
-            // truth here removes per-handler skew.
-            refreshHeaderSessList(CFG.sessions || [], sess);
-        }
+                // Sync the header session switcher without a full page reload
+                var headerLabel = document.getElementById('gSessLabel');
+                if (headerLabel) headerLabel.textContent = sess;
+                // 2026-05-27 — full rebuild instead of class-only toggle.
+                // Active-class update is sufficient when the sessions
+                // list is unchanged, but the helper also re-binds click
+                // handlers for any DOM that was patched by other flows
+                // (deleteSession / syncSessions) since page load, so a
+                // single source of truth here removes per-handler skew.
+                refreshHeaderSessList(CFG.sessions || [], sess);
+            }
+        });
     });
 };
 
@@ -2022,10 +2165,17 @@ var DEFAULT_CLASSES = [
 ];
 
 window.seedDefaultClasses = function() {
-    if (!confirm('This will replace the current class list with the standard list (1-12 + Foundational). Continue?')) return;
-    CFG.classes = DEFAULT_CLASSES.slice();
-    renderClasses(CFG.classes);
-    toast('Standard classes loaded. Click "Save Class List" to persist.');
+    _confirmModal({
+        title: 'Replace class list with standard',
+        body: 'This will replace the current class list with the standard list (1-12 + Foundational). Continue?',
+        confirmText: 'Replace',
+        dangerous: true
+    }).then(function(ok) {
+        if (!ok) return;
+        CFG.classes = DEFAULT_CLASSES.slice();
+        renderClasses(CFG.classes);
+        toast('Standard classes loaded. Click "Save Class List" to persist.');
+    });
 };
 
 window.saveClasses = function() {
@@ -2068,33 +2218,46 @@ window.saveClasses = function() {
 
 /* Issue 7: Soft delete — UI-first, server if already saved */
 window.softDeleteClass = function(key) {
-    if (!confirm('Remove this class from the list?')) return;
+    _confirmModal({
+        title: 'Remove this class from the list',
+        body: 'Removes from the working list. You can restore it later from the deleted-items view.',
+        confirmText: 'Remove',
+        dangerous: true
+    }).then(function(ok) {
+        if (!ok) return;
 
-    // Remove from local CFG immediately
-    CFG.classes = (CFG.classes || []).filter(function(c) { return c.key !== key; });
-    renderClasses(CFG.classes);
-    renderClassSelects(CFG.classes, CFG.sessions || [], CFG.active_session || '');
+        // Remove from local CFG immediately
+        CFG.classes = (CFG.classes || []).filter(function(c) { return c.key !== key; });
+        renderClasses(CFG.classes);
+        renderClassSelects(CFG.classes, CFG.sessions || [], CFG.active_session || '');
 
-    // Also delete from server (best-effort — may not exist if not yet saved)
-    post('school_config/soft_delete_class', { class_key: key }, function(d) {
-        if (d.status === 'success') {
-            toast('Class removed.');
-        }
-        // Don't show error if server says "not found" — class may have been UI-only
+        // Also delete from server (best-effort — may not exist if not yet saved)
+        post('school_config/soft_delete_class', { class_key: key }, function(d) {
+            if (d.status === 'success') {
+                toast('Class removed.');
+            }
+            // Don't show error if server says "not found" — class may have been UI-only
+        });
     });
 };
 
 window.restoreClass = function(key) {
-    if (!confirm('Restore this class?')) return;
-    post('school_config/restore_class', { class_key: key }, function(d) {
-        toast(d.message, d.status === 'success');
-        if (d.status === 'success') {
-            (CFG.classes || []).forEach(function(c) {
-                if (c.key === key) { c.deleted = false; c.deleted_at = null; }
-            });
-            renderClasses(CFG.classes || []);
-            renderClassSelects(CFG.classes || [], CFG.sessions || [], CFG.active_session || '');
-        }
+    _confirmModal({
+        title: 'Restore this class',
+        body: 'The class will be re-added to the active list.',
+        confirmText: 'Restore'
+    }).then(function(ok) {
+        if (!ok) return;
+        post('school_config/restore_class', { class_key: key }, function(d) {
+            toast(d.message, d.status === 'success');
+            if (d.status === 'success') {
+                (CFG.classes || []).forEach(function(c) {
+                    if (c.key === key) { c.deleted = false; c.deleted_at = null; }
+                });
+                renderClasses(CFG.classes || []);
+                renderClassSelects(CFG.classes || [], CFG.sessions || [], CFG.active_session || '');
+            }
+        });
     });
 };
 
@@ -2102,10 +2265,15 @@ window.restoreClass = function(key) {
 window.activateClassesInSession = function() {
     var sess = CFG.active_session || currentSession;
     if (!sess) { toast('No active session. Set one first.', false); return; }
-    if (!confirm('Create class nodes in session "' + sess + '" for all saved (non-deleted) classes?\n\nExisting class data will NOT be overwritten.')) return;
-
-    post('school_config/activate_classes', { session: sess }, function(d) {
-        toast(d.message, d.status === 'success');
+    _confirmModal({
+        title: 'Activate classes in "' + sess + '"',
+        body: 'Create class nodes in session "' + sess + '" for all saved (non-deleted) classes?\n\nExisting class data will NOT be overwritten.',
+        confirmText: 'Activate'
+    }).then(function(ok) {
+        if (!ok) return;
+        post('school_config/activate_classes', { session: sess }, function(d) {
+            toast(d.message, d.status === 'success');
+        });
     });
 };
 
@@ -2568,10 +2736,17 @@ window.addSection = function() {
 /* Keep legacy functions wired (old loadSections still used internally) */
 window.loadSections = loadAllSections;
 window.deleteSection = function(classKey, letter, sess) {
-    if (!confirm('Delete Section ' + letter + '? This cannot be undone.')) return;
-    post('school_config/delete_section', { class_key: classKey, section: letter, session: sess }, function(d) {
-        toast(d.message, d.status === 'success');
-        if (d.status === 'success') loadAllSections();
+    _confirmModal({
+        title: 'Delete Section ' + letter,
+        body: 'This cannot be undone.',
+        confirmText: 'Delete',
+        dangerous: true
+    }).then(function(ok) {
+        if (!ok) return;
+        post('school_config/delete_section', { class_key: classKey, section: letter, session: sess }, function(d) {
+            toast(d.message, d.status === 'success');
+            if (d.status === 'success') loadAllSections();
+        });
     });
 };
 
@@ -2961,48 +3136,61 @@ window.saveStream = function() {
 };
 
 window.deleteStream = function(key) {
-    if (!confirm('Delete stream "' + key + '"?')) return;
+    _confirmModal({
+        title: 'Delete stream "' + key + '"',
+        body: 'Remove this stream from the list?',
+        confirmText: 'Delete',
+        dangerous: true
+    }).then(function(ok) {
+        if (!ok) return;
 
-    // Remove from local UI immediately
-    if (!CFG.streams || Array.isArray(CFG.streams)) CFG.streams = {};
-    delete CFG.streams[key];
-    renderStreams(CFG.streams);
-    populateStreamDropdown(CFG.streams);
+        // Remove from local UI immediately
+        if (!CFG.streams || Array.isArray(CFG.streams)) CFG.streams = {};
+        delete CFG.streams[key];
+        renderStreams(CFG.streams);
+        populateStreamDropdown(CFG.streams);
 
-    // Also delete from server (best-effort — may not exist if not yet saved)
-    post('school_config/delete_stream', { stream_key: key }, function(d) {
-        if (d.status === 'success') {
-            toast('Stream deleted.');
-        }
-        // Don't show error if server says "not found" — stream may have been UI-only
+        // Also delete from server (best-effort — may not exist if not yet saved)
+        post('school_config/delete_stream', { stream_key: key }, function(d) {
+            if (d.status === 'success') {
+                toast('Stream deleted.');
+            }
+            // Don't show error if server says "not found" — stream may have been UI-only
+        });
     });
 };
 
 /* Issue 6: Seed standard streams */
 window.seedStandardStreams = function() {
-    if (!confirm('This will load standard streams (Science, Commerce, Arts, General) into the list.\nClick "Save Stream" for each to persist.')) return;
+    _confirmModal({
+        title: 'Load standard streams',
+        body: 'This will load standard streams (Science, Commerce, Arts, General) into the list.\nClick "Save Stream" for each to persist.',
+        confirmText: 'Load'
+    }).then(function(ok) {
+        if (!ok) return;
 
-    var defaults = {
-        Science:  { key: 'Science',  label: 'Science',  enabled: true },
-        Commerce: { key: 'Commerce', label: 'Commerce', enabled: true },
-        Arts:     { key: 'Arts',     label: 'Arts',     enabled: true },
-        General:  { key: 'General',  label: 'General',  enabled: true },
-    };
+        var defaults = {
+            Science:  { key: 'Science',  label: 'Science',  enabled: true },
+            Commerce: { key: 'Commerce', label: 'Commerce', enabled: true },
+            Arts:     { key: 'Arts',     label: 'Arts',     enabled: true },
+            General:  { key: 'General',  label: 'General',  enabled: true },
+        };
 
-    // Merge with existing (don't overwrite)
-    if (!CFG.streams || Array.isArray(CFG.streams)) CFG.streams = {};
-    var added = 0, skipped = 0;
-    Object.keys(defaults).forEach(function(k) {
-        if (CFG.streams[k]) { skipped++; return; }
-        CFG.streams[k] = defaults[k];
-        added++;
+        // Merge with existing (don't overwrite)
+        if (!CFG.streams || Array.isArray(CFG.streams)) CFG.streams = {};
+        var added = 0, skipped = 0;
+        Object.keys(defaults).forEach(function(k) {
+            if (CFG.streams[k]) { skipped++; return; }
+            CFG.streams[k] = defaults[k];
+            added++;
+        });
+
+        renderStreams(CFG.streams);
+        populateStreamDropdown(CFG.streams);
+        // Show save bar
+        document.getElementById('streamsSaveBar').style.display = added > 0 ? 'block' : 'none';
+        toast(added + ' stream(s) loaded. Click "Save All Streams" to persist.');
     });
-
-    renderStreams(CFG.streams);
-    populateStreamDropdown(CFG.streams);
-    // Show save bar
-    document.getElementById('streamsSaveBar').style.display = added > 0 ? 'block' : 'none';
-    toast(added + ' stream(s) loaded. Click "Save All Streams" to persist.');
 };
 
 window.saveAllStreams = function() {
@@ -3010,7 +3198,11 @@ window.saveAllStreams = function() {
     var keys = Object.keys(streams);
     if (!keys.length) { toast('No streams to save.', false); return; }
 
+    // Clear any prior failure panel before retry
+    renderBulkStreamFailures([]);
+
     var saved = 0, total = keys.length;
+    var failed = [];
     var btn = document.querySelector('#streamsSaveBar button');
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Saving...'; }
 
@@ -3018,23 +3210,73 @@ window.saveAllStreams = function() {
     function saveNext(i) {
         if (i >= keys.length) {
             if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-save"></i> Save All Streams'; }
-            document.getElementById('streamsSaveBar').style.display = 'none';
-            toast(saved + ' of ' + total + ' streams saved.');
+            // Keep save bar visible when any failed so retry is one click
+            document.getElementById('streamsSaveBar').style.display = failed.length ? 'block' : 'none';
+            renderBulkStreamFailures(failed);
+            var msg = saved + ' of ' + total + ' streams saved'
+                    + (failed.length ? ' — ' + failed.length + ' failed' : '.');
+            toast(msg, failed.length === 0);
             return;
         }
         var k = keys[i];
         var s = streams[k];
+        var streamKey   = s.key   || k;
+        var streamLabel = s.label || k;
         post('school_config/save_stream', {
-            stream_key: s.key || k,
-            label: s.label || k,
+            stream_key: streamKey,
+            label: streamLabel,
             enabled: s.enabled ? '1' : '0'
         }, function(d) {
-            if (d.status === 'success') saved++;
+            if (d && d.status === 'success') {
+                saved++;
+            } else {
+                failed.push({
+                    stream_key: streamKey,
+                    label: streamLabel,
+                    reason: (d && d.message) ? d.message : 'unknown error'
+                });
+            }
             saveNext(i + 1);
         });
     }
     saveNext(0);
 };
+
+// 2026-05-26 — partial-failure renderer for saveAllStreams (BUG-067).
+// Mirrors renderBulkSectionFailures (line 2464) + renderBulkSubjectFailures (line 2801)
+// pattern shipped 2026-05-15 Phase 3. Idempotent: empty array clears prior panel.
+function renderBulkStreamFailures(failed) {
+    var host = document.getElementById('streamsBulkFailures');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'streamsBulkFailures';
+        host.style.cssText = 'margin-top:12px;';
+        var list = document.getElementById('streamsList');
+        if (list && list.parentNode) list.parentNode.insertBefore(host, list.nextSibling);
+    }
+    if (!failed || !failed.length) { host.innerHTML = ''; return; }
+
+    var rows = '';
+    failed.forEach(function(f) {
+        var key   = esc(f.stream_key || f.streamKey || '?');
+        var label = esc(f.label      || f.name      || '');
+        var why   = esc(f.reason     || f.message   || 'unknown error');
+        rows += '<tr><td style="padding:4px 8px;">' + key + '</td>'
+              + '<td style="padding:4px 8px;color:var(--t3);">' + label + '</td>'
+              + '<td style="padding:4px 8px;color:var(--danger,#c00);">' + why + '</td></tr>';
+    });
+    host.innerHTML =
+        '<div style="border:1px solid var(--danger,#c00);border-radius:6px;padding:10px;background:rgba(192,0,0,0.06);">'
+      + '<div style="font-weight:600;margin-bottom:6px;color:var(--danger,#c00);">'
+      + '<i class="fa fa-exclamation-triangle"></i> '
+      + failed.length + ' stream(s) failed to save'
+      + '</div>'
+      + '<table style="width:100%;font-size:12px;border-collapse:collapse;">'
+      + '<thead><tr style="text-align:left;color:var(--t2);">'
+      + '<th style="padding:4px 8px;">Key</th><th style="padding:4px 8px;">Label</th><th style="padding:4px 8px;">Reason</th>'
+      + '</tr></thead>'
+      + '<tbody>' + rows + '</tbody></table></div>';
+}
 
 /* ── Escape HTML ─────────────────────────────────────────────── */
 function esc(s) {
@@ -3042,31 +3284,62 @@ function esc(s) {
 }
 
 /* ══════════ REPORT CARD TEMPLATE ══════════ */
-var selectedRcTemplate = 'classic';
+// 2026-05-26 (BUG-068) — split selected vs persisted state. Label reflects persisted only;
+// tile-click changes the in-progress selection + an orange "Selected: X (click Save to persist)"
+// suffix; Save success promotes selected → persisted and clears the suffix.
+var selectedRcTemplate  = 'classic';   // current click selection (in-progress)
+var persistedRcTemplate = 'classic';   // last server-confirmed value
+var _rcNames = { classic:'Classic', cbse:'CBSE', minimal:'Minimal', modern:'Modern', elegant:'Elegant' };
 
-function renderReportCardTemplate(tpl) {
-    selectedRcTemplate = tpl || 'classic';
+function _renderRcState() {
+    // Tile .active reflects user's current selection (immediate visual feedback on click).
     var cards = document.querySelectorAll('#rcTemplateGrid .rct-card');
     cards.forEach(function(c) {
         c.classList.toggle('active', c.dataset.tpl === selectedRcTemplate);
     });
-    var names = { classic:'Classic', cbse:'CBSE', minimal:'Minimal', modern:'Modern', elegant:'Elegant' };
-    document.getElementById('rcCurrentLabel').textContent = 'Current: ' + (names[selectedRcTemplate] || 'Classic');
+    // Label reflects PERSISTED value only — never in-progress selection.
+    var label = document.getElementById('rcCurrentLabel');
+    if (!label) return;
+    var persistedName = _rcNames[persistedRcTemplate] || 'Classic';
+    if (selectedRcTemplate !== persistedRcTemplate) {
+        var selName = _rcNames[selectedRcTemplate] || selectedRcTemplate;
+        label.innerHTML = 'Current: ' + esc(persistedName)
+            + ' <span style="color:#d97706;font-weight:600;">· Selected: '
+            + esc(selName) + ' (click Save to persist)</span>';
+    } else {
+        label.textContent = 'Current: ' + persistedName;
+    }
+}
+
+// Called by loadConfig with the server-persisted value; both selected and persisted move
+// to it, no dirty suffix. Public callers (loadConfig @ line ~1054) treat the arg as the
+// authoritative persisted template.
+function renderReportCardTemplate(persistedTpl) {
+    persistedRcTemplate = persistedTpl || 'classic';
+    selectedRcTemplate  = persistedRcTemplate;
+    _renderRcState();
 }
 
 document.getElementById('rcTemplateGrid').addEventListener('click', function(e) {
     var card = e.target.closest('.rct-card');
     if (!card) return;
-    renderReportCardTemplate(card.dataset.tpl);
+    // Tile click changes ONLY in-progress selection. Label stays at persisted value
+    // (with orange suffix when dirty) until Save success.
+    selectedRcTemplate = card.dataset.tpl || 'classic';
+    _renderRcState();
 });
 
 document.getElementById('btnSaveRcTemplate').addEventListener('click', function() {
-    post('school_config/save_report_card_template', { template: selectedRcTemplate }, function(d) {
-        CSRFT = d.csrf_token || CSRFT;
-        if (d.status === 'success') {
+    var saving = selectedRcTemplate;
+    post('school_config/save_report_card_template', { template: saving }, function(d) {
+        CSRFT = (d && d.csrf_token) ? d.csrf_token : CSRFT;
+        if (d && d.status === 'success') {
+            // Promote selected → persisted; clears the dirty suffix on next render.
+            persistedRcTemplate = saving;
+            _renderRcState();
             toast('Report card template saved!');
         } else {
-            toast(d.message || 'Failed to save template.', false);
+            toast((d && d.message) || 'Failed to save template.', false);
         }
     });
 });
