@@ -240,10 +240,7 @@
             <!-- Alert -->
             <div class="pm-alert" id="alertBox"><i class="fa"></i><span></span></div>
 
-            <!-- Selection toolbar (PM-SELECT 2026-05-26) ──────────────────
-                 Per-student selection support. Defaults to ALL CHECKED on
-                 preview load so the no-action default matches pre-feature
-                 "promote all" behaviour. -->
+            <!-- Selection toolbar (PM-SELECT 2026-05-26) -->
             <div id="pmSelectBar" style="display:none; margin-top:16px; padding:10px 14px;
                 background:var(--bg3); border:1px solid var(--border); border-radius:8px;
                 display:flex; align-items:center; gap:14px; font-size:12.5px; color:var(--t2);">
@@ -347,12 +344,7 @@ function previewPromotion() {
             document.getElementById('pmSelectBar').style.display = 'none';
         } else {
             tbody.innerHTML = previewStudents.map(function(s, i) {
-                // 2026-05-25 — server returns already-formatted "Class 8th" / "Section A"
-                // per [[student_class_section_canonical]] (className/section are canonical
-                // full forms). Do NOT prepend "Class "/"Section " or you get "Class Class 8th".
-                // PM-SELECT 2026-05-26: per-row checkbox prepended. Defaults to
-                // CHECKED so no operator action keeps the pre-feature "promote
-                // all" behaviour.
+                // PM-SELECT 2026-05-26: per-row checkbox defaults to CHECKED.
                 return '<tr><td><input type="checkbox" class="pm-row-chk" value="' + esc(s.user_id) + '" checked onchange="pmUpdateCount()"></td>'
                     + '<td>' + (i+1) + '</td><td><code>' + esc(s.user_id) + '</code></td>'
                     + '<td>' + esc(s.name) + '</td><td>' + esc(s.class) + '</td>'
@@ -390,9 +382,7 @@ function previewPromotion() {
     });
 }
 
-// PM-SELECT 2026-05-26: per-student selection helpers.
-// Default state on preview load is ALL CHECKED — so no operator action
-// reproduces the pre-feature "promote all" semantics exactly.
+// PM-SELECT 2026-05-26 helpers.
 function pmSelectAll() { pmToggleAll(true);  document.getElementById('pmCheckAll').checked = true;  }
 function pmClearSel()  { pmToggleAll(false); document.getElementById('pmCheckAll').checked = false; }
 function pmToggleAll(checked) {
@@ -404,7 +394,6 @@ function pmUpdateCount() {
     var tot = document.querySelectorAll('.pm-row-chk').length;
     var cEl = document.getElementById('pmSelCount');
     if (cEl) cEl.textContent = sel;
-    // Sync the header checkbox tri-state with row selection.
     var headChk = document.getElementById('pmCheckAll');
     if (headChk) headChk.checked = (sel === tot && tot > 0);
 }
@@ -418,11 +407,6 @@ function executePromotion() {
     var toSection = document.getElementById('toSection').value;
     if (!toClass || !toSection) { showAlert('Please select destination class and section.', 'error'); return; }
 
-    // PM-SELECT 2026-05-26: build selected-IDs list. Block zero-selection
-    // explicitly with a clear message — empty selection is operator error,
-    // not "promote all". Real promote-all is the default state (every row
-    // pre-checked) so confirming with no manual deselection still promotes
-    // everyone.
     var selectedIds = pmGetSelectedIds();
     if (selectedIds.length === 0) {
         showAlert('Select at least one student to promote (or click Select All).', 'error');
@@ -441,9 +425,6 @@ function executePromotion() {
         to_section:   toSection,
         to_session:   document.getElementById('toSession').value.trim(),
     });
-    // PM-SELECT: append student_ids[] entries — server filters its roster
-    // fetch to this subset. URLSearchParams append preserves duplicate
-    // keys exactly as PHP $_POST expects for `student_ids[]` array form.
     selectedIds.forEach(function(id) { body.append('student_ids[]', id); });
     body.append(csrfName, csrfToken);
     fetch('<?= base_url("sis/execute_promotion") ?>', {
@@ -454,7 +435,22 @@ function executePromotion() {
     .then(function(r) { return r.json(); })
     .then(function(data) {
         if (data.status === 'success') {
-            showAlert(data.message, 'success');
+            // BUG-055 fix 2026-05-25: surface partial-failure reasons to the operator.
+            // Pre-fix: success banner showed only data.message ("N student(s) promoted")
+            // and silently ignored data.skipped[]. If Dual_write reported any failure,
+            // the operator never saw it — leading to silent missing students
+            // (the STU0001-style data loss caught manually 2026-05-25).
+            var msg = data.message;
+            var alertType = 'success';
+            if (data.skipped && data.skipped.length > 0) {
+                alertType = 'error';
+                var skippedList = data.skipped.map(function(s) {
+                    return s.user_id + (s.reason ? ' (' + s.reason + ')' : '');
+                }).join(', ');
+                msg += '  ⚠ ' + data.skipped.length + ' skipped: ' + skippedList +
+                       '  — please re-promote these students or contact support.';
+            }
+            showAlert(msg, alertType);
             btn.style.display = 'none';
         } else {
             showAlert(data.message, 'error');
