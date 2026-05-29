@@ -325,7 +325,19 @@ document.getElementById('toClass').addEventListener('change', function () {
 });
 document.getElementById('toSession').addEventListener('change', function () {
     // Re-derive the destination section list when the Target Session changes.
-    populateSections(document.getElementById('toSection'), document.getElementById('toClass').value, false, this.value);
+    // UX (2026-05-29): preserve the operator's current section choice if it
+    // still exists in the newly-selected session; only clear it when the
+    // section genuinely isn't offered in that session. Prevents a forced
+    // re-pick on every session change.
+    var toSectionEl = document.getElementById('toSection');
+    var prev = toSectionEl.value;
+    populateSections(toSectionEl, document.getElementById('toClass').value, false, this.value);
+    if (prev) {
+        var stillExists = Array.prototype.some.call(toSectionEl.options, function (o) {
+            return o.value === prev;
+        });
+        if (stillExists) toSectionEl.value = prev;
+    }
 });
 
 function previewPromotion() {
