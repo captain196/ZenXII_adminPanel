@@ -787,7 +787,7 @@
                         <div class="lx-brand-icon-wrap">🏫</div>
                     </div>
                     <div class="lx-brand-text">
-                        <div class="lx-brand-name">SchoolXAdmin</div>
+                        <div class="lx-brand-name">ZenXii Admin</div>
                         <div class="lx-brand-sub">Management System</div>
                     </div>
                 </div>

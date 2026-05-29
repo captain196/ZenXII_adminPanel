@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="csrf-token" content="<?= $this->security->get_csrf_hash() ?>">
 <meta name="csrf-name"  content="<?= $this->security->get_csrf_token_name() ?>">
-<title>Student Password Reset — GraderIQ</title>
+<title>Student Password Reset — ZenXii</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <link href="https://fonts.googleapis.com/css2?family=Clash+Display:wght@400;500;600;700&family=Satoshi:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -75,7 +75,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 
 <div class="fp-card">
     <div class="fp-logo">
-        <h1><i class="fas fa-user-graduate" style="margin-right:8px;"></i>GraderIQ</h1>
+        <h1><i class="fas fa-user-graduate" style="margin-right:8px;"></i>ZenXii</h1>
         <p>Student Password Reset</p>
     </div>
 

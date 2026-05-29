@@ -4,7 +4,7 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
-<title><?= htmlspecialchars($page_title ?? 'Super Admin') ?> — GraderIQ SA</title>
+<title><?= htmlspecialchars($page_title ?? 'Super Admin') ?> — ZenXii SA</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="csrf-token" content="<?= htmlspecialchars($sa_csrf_token ?? '', ENT_QUOTES) ?>">
 <meta name="csrf-name"  content="csrf_token">
@@ -215,44 +215,45 @@ a{text-decoration:none !important;}
     letter-spacing:1.2px !important;font-family:var(--font-m) !important;pointer-events:none !important;
 }
 .sidebar-menu .g-sec:first-child{padding-top:8px !important;}
-.sidebar-menu>li{margin:1px 8px !important;position:relative !important;}
+.sidebar-menu>li{margin:2px 10px !important;position:relative !important;}
 .sidebar-menu>li>a{
-    font-family:var(--font-b) !important;font-size:13px !important;font-weight:500 !important;
-    color:var(--t2) !important;padding:8px 12px !important;border-radius:7px !important;
-    display:flex !important;align-items:center !important;gap:10px !important;
-    transition:all var(--ease) !important;background:transparent !important;
+    font-family:var(--font-b) !important;font-size:13.5px !important;font-weight:500 !important;
+    color:var(--t2) !important;padding:10px 13px !important;border-radius:9px !important;
+    display:flex !important;align-items:center !important;gap:11px !important;
+    transition:background var(--ease),color var(--ease) !important;background:transparent !important;letter-spacing:-.1px !important;
 }
 .sidebar-menu>li>a:hover{color:var(--t1) !important;background:var(--bg3) !important;}
+.sidebar-menu li.menu-open>a{color:var(--t1) !important;}
 .sidebar-menu>li.active>a,.sidebar-menu>li.active>a:hover{
     color:var(--sa4) !important;background:var(--sa-dim) !important;font-weight:600 !important;
 }
 .sidebar-menu>li.active>a::before{
     content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);
-    width:2.5px;height:20px;border-radius:0 2px 2px 0;background:var(--sa3);
+    width:3px;height:18px;border-radius:0 3px 3px 0;background:var(--sa3);
 }
 .sidebar-menu>li>a>.fa,.sidebar-menu>li>a>i{
-    width:16px !important;font-size:13.5px !important;text-align:center !important;
+    width:20px !important;font-size:15px !important;text-align:center !important;
     flex-shrink:0 !important;color:var(--t3) !important;transition:color var(--ease) !important;
 }
-.sidebar-menu>li>a:hover>i{color:var(--t2) !important;}
+.sidebar-menu>li>a:hover>i{color:var(--t1) !important;}
 .sidebar-menu>li.active>a>i{color:var(--sa4) !important;}
 .sidebar-menu>li>a>span:not(.pull-right-container){flex:1;}
 .g-nb{background:var(--rose);color:#fff;font-size:9px;font-weight:700;font-family:var(--font-m);padding:1px 5px;border-radius:4px;flex-shrink:0;}
 .sidebar-menu .fa-angle-left{font-size:10px !important;color:var(--t4) !important;transition:transform .2s !important;}
 .sidebar-menu li.menu-open>a>.pull-right-container .fa-angle-left{transform:rotate(-90deg) !important;}
 .treeview-menu{
-    background:transparent !important;padding:3px 0 4px 14px !important;
-    margin:0 !important;list-style:none !important;
-    border-left:1.5px solid var(--border) !important;margin-left:20px !important;
+    background:transparent !important;padding:2px 0 4px 0 !important;
+    margin:2px 0 4px 26px !important;list-style:none !important;
+    border-left:1.5px solid var(--border) !important;
 }
 .treeview-menu>li>a{
-    font-family:var(--font-b) !important;font-size:12.5px !important;
-    color:var(--t3) !important;padding:5px 10px !important;border-radius:6px !important;
-    display:flex !important;align-items:center !important;gap:7px !important;transition:all .12s !important;
+    font-family:var(--font-b) !important;font-size:12.5px !important;font-weight:500 !important;
+    color:var(--t3) !important;padding:7px 12px 7px 16px !important;margin-left:6px !important;border-radius:8px !important;
+    display:flex !important;align-items:center !important;gap:8px !important;transition:background .14s,color .14s !important;
 }
 .treeview-menu>li>a:hover{color:var(--t1) !important;background:var(--bg3) !important;}
-.treeview-menu>li.active>a{color:var(--sa4) !important;font-weight:600 !important;}
-.treeview-menu .fa-circle-o{font-size:5px !important;opacity:.4 !important;}
+.treeview-menu>li.active>a{color:var(--sa4) !important;background:var(--sa-dim) !important;font-weight:600 !important;}
+.treeview-menu .fa-circle-o{display:none !important;}
 /* Sidebar footer */
 .g-sb-foot{
     position:relative;z-index:1;
