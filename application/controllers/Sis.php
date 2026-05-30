@@ -1161,11 +1161,30 @@ class Sis extends MY_Controller
             // Phase D1 — reassign fees per promoted student (the ~94% cost).
             foreach ($__promotedLocal as $p) {
                 try {
-                    $__feeLifecycle->reassignFeesOnPromotion(
+                    // SIS Tier-1 fix B5 (2026-05-31): capture the return so we
+                    // can detect the silent-zero-regenerated case. The upfront
+                    // guard at L967 blocks promotion when the destination
+                    // structure is missing AT REQUEST TIME, but this deferred
+                    // loop runs later in a shutdown handler — a structure
+                    // deleted between the guard and this call (admin race,
+                    // Firestore transient, mid-loop deletion) would leave
+                    // affected students Active-with-zero-demands while the
+                    // promotion reported clean success. We now surface them
+                    // in $deferFailedStudents like a thrown failure would.
+                    $__regenResult = $__feeLifecycle->reassignFeesOnPromotion(
                         $p['user_id'], $__oldClassKey, $__oldSectionKey,
                         $__newClassKey, $__newSectionKey, $__schoolId
                     );
-                    $processedCount++;
+                    $__regenCount = is_array($__regenResult) ? (int) ($__regenResult['regenerated'] ?? 0) : 0;
+                    if ($__regenCount === 0) {
+                        $deferFailedStudents[] = [
+                            'user_id' => $p['user_id'],
+                            'name'    => $p['name'] ?? $p['user_id'],
+                            'reason'  => "Zero demands regenerated for {$__newClassKey}/{$__newSectionKey} in session {$__toSessionLocal}. Destination fee structure may have been deleted after the upfront guard ran. Verify the structure exists and re-promote this student.",
+                        ];
+                    } else {
+                        $processedCount++;
+                    }
                 } catch (\Throwable $e) {
                     log_message('error', "promote(deferred): reassignFeesOnPromotion failed for {$p['user_id']}: " . $e->getMessage());
                     $deferFailedStudents[] = [

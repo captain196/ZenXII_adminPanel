@@ -491,7 +491,17 @@ class Fee_lifecycle
         } catch (\Throwable $e) {
             log_message('error', "Fee_lifecycle::reassignFeesOnPromotion failed [{$studentId}]: " . $e->getMessage());
         }
-        return ['archived' => $archived, 'preserved' => $preserved];
+        // SIS Tier-1 fix B5 (2026-05-31): expose $regenCount in the return so
+        // the promotion caller can detect the silent-zero-regenerated case
+        // (destination structure deleted between Sis::execute_promotion's
+        // upfront guard at L967 and this per-student call). Existing fields
+        // preserved — sole caller is Sis::execute_promotion deferred handler
+        // (grep-verified). Additive change; no other consumer breaks.
+        return [
+            'archived'    => $archived,
+            'preserved'   => $preserved,
+            'regenerated' => $regenCount ?? 0,
+        ];
     }
 
     // ═════════════════════════════════════════════════════════════════
