@@ -4624,7 +4624,26 @@ class Sis extends MY_Controller
         ];
 
         // Firestore-only per no-RTDB policy.
-        try { $this->fs->saveStudent($studentId, $studentData); } catch (\Exception $e) { log_message('error', "Firestore saveStudent failed for {$studentId}: " . $e->getMessage()); }
+        // SIS Tier-1 fix B1 (2026-05-31): saveStudent must be fail-loud.
+        // Pre-fix, a Firestore failure here was logged but the enrollment
+        // continued — admin saw success while parent had no profile, the
+        // Firebase Auth account was orphaned, no fee demands were
+        // generated, and the CRM application was marked enrolled despite
+        // no underlying student record. We now abort immediately and
+        // surface the error so admin can retry cleanly; downstream Auth
+        // creation, fee assignment, sync, and ADMISSION history are all
+        // skipped, so no orphan side-effect can be left behind.
+        // saveStudent returns bool; an exception is treated as a false
+        // return so a single guard covers both failure modes.
+        $studentSaved = false;
+        try {
+            $studentSaved = (bool) $this->fs->saveStudent($studentId, $studentData);
+        } catch (\Exception $e) {
+            log_message('error', "Firestore saveStudent failed for {$studentId}: " . $e->getMessage());
+        }
+        if (!$studentSaved) {
+            return $this->json_error('Failed to create student profile in database. Please retry. If the issue persists, contact support.');
+        }
 
         $phone = trim($app['phone'] ?? '');
         if ($phone !== '') {
