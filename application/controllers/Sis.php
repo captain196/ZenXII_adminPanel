@@ -3121,6 +3121,25 @@ class Sis extends MY_Controller
                 $section   = Firestore_service::sectionKey($section);
                 $combinedClass = "{$className}/{$section}";
 
+                // SIS Tier-1 fix B6 (2026-05-31): destination fee-structure
+                // pre-flight per row, mirroring the promotion guard at
+                // Sis.php:965-974 and the enroll_student sibling above.
+                // Without this check, an imported row whose class/section
+                // has no feeStructure doc would still get a studentId
+                // consumed, saveStudent, indexes, Auth, syncStudent — and
+                // assignInitialFees would then silently return [] leaving
+                // the student Active-with-zero-demands. Block the row here,
+                // before any studentId is consumed; the row appears in the
+                // import-summary skipped list with a specific reason.
+                $destFeeStructDocId = "{$school_name}_{$session_year}_{$className}_{$section}";
+                $destFeeStruct      = $this->fs->get('feeStructures', $destFeeStructDocId);
+                if (!is_array($destFeeStruct) || empty($destFeeStruct['feeHeads'])) {
+                    $skipped[] = "Row " . ($success + $error + count($skipped) + 1)
+                        . ": {$studentName} — No fee structure for {$className}/{$section} in session {$session_year}";
+                    $error++;
+                    continue;
+                }
+
                 // Generate globally unique student ID from central counter
                 $studentId = $this->_nextStudentId($school_id);
                 if (!$studentId) {
@@ -4621,6 +4640,26 @@ class Sis extends MY_Controller
         }
         if ($sectionRaw === '') $sectionRaw = 'A';
         $section = Firestore_service::sectionKey($sectionRaw);
+
+        // SIS Tier-1 fix B6 (2026-05-31): destination fee-structure pre-flight,
+        // mirroring the promotion guard at Sis.php:965-974 (BUG-076 Part 2-A).
+        // Without this check, an enrollment whose destination class/section
+        // has no feeStructure doc — or has one with empty feeHeads — would
+        // proceed: student doc saved, Firebase Auth created, SMS dispatched,
+        // CRM marked enrolled. Then assignInitialFees would silently return
+        // [] and the student would land Active-with-zero-demands. Block here,
+        // before any Firestore write or Auth side-effect, so the operator can
+        // set up the fee structure first and retry the enrollment.
+        $destFeeStructDocId = "{$school_name}_{$session}_{$className}_{$section}";
+        $destFeeStruct      = $this->fs->get('feeStructures', $destFeeStructDocId);
+        if (!is_array($destFeeStruct) || empty($destFeeStruct['feeHeads'])) {
+            return $this->json_error(
+                "No fee structure exists for {$className} / {$section} in session "
+                . "{$session}. Enrollment aborted to prevent the student being "
+                . "created without fee demands. Set up the fee structure for this "
+                . "class/section in session {$session} first, then retry."
+            );
+        }
 
         $combinedPath = "{$className}/{$section}";
         $formattedDOB = !empty($app['dob']) ? date('d-m-Y', strtotime($app['dob'])) : '';
