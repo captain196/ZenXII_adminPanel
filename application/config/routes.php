@@ -125,7 +125,8 @@ $route['fee_concessions/revoke_concession']     = 'Fee_concessions/revoke_conces
 $route['fee_concessions/list_enrollments']      = 'Fee_concessions/list_enrollments';
 $route['fee_concessions/enroll_service']        = 'Fee_concessions/enroll_service';
 $route['fee_concessions/discontinue_service']   = 'Fee_concessions/discontinue_service';
-$route['fee_concessions/check_active_concessions'] = 'Fee_concessions/check_active_concessions';
+$route['fee_concessions/check_active_concessions']        = 'Fee_concessions/check_active_concessions';
+$route['fee_concessions/check_school_active_concessions'] = 'Fee_concessions/check_school_active_concessions';
 
 // ─── Super Admin SaaS Control Panel ──────────────────────────────────────────
 // Auth

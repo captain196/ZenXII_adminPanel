@@ -79,6 +79,31 @@
 <script src="<?= base_url() ?>tools/dist/js/demo.js"></script>
 <script src="<?= base_url() ?>tools/js/custom.js"></script>
 
+<?php
+    // Fees Exemption v2 — expose feature-flag state + base url to JS so the
+    // smart-confirm helper can decide whether to warn the operator. The
+    // helper is loaded unconditionally but is a no-op when smartConfirmEnabled
+    // is false (the default pre-cutover).
+    $this->config->load('fees_exemption_v2_flags', true);
+    $_fv2_unified   = (bool) $this->config->item('USE_UNIFIED_FEE_GEN',   'fees_exemption_v2_flags');
+    $_fv2_uiEnabled = (bool) $this->config->item('CONCESSION_UI_ENABLED', 'fees_exemption_v2_flags');
+    $_fv2_phase3    = (bool) $this->config->item('PHASE_3_CONVERGED',     'fees_exemption_v2_flags');
+?>
+<script>
+    window.BASE_URL = "<?= base_url() ?>";
+    window.FEES_V2_FLAGS = {
+        useUnifiedFeeGen:     <?= $_fv2_unified   ? 'true' : 'false' ?>,
+        concessionUiEnabled:  <?= $_fv2_uiEnabled ? 'true' : 'false' ?>,
+        phase3Converged:      <?= $_fv2_phase3    ? 'true' : 'false' ?>,
+        // Smart-confirm runs whenever EITHER (a) capture UI is on so
+        // operators can record concessions, OR (b) the unified generator
+        // is on. Suppressed entirely once Phase 3 converges (no more
+        // legacy-gen paths to warn about).
+        smartConfirmEnabled:  <?= (!$_fv2_phase3 && ($_fv2_unified || $_fv2_uiEnabled)) ? 'true' : 'false' ?>
+    };
+</script>
+<script src="<?= base_url() ?>tools/js/fees_v2_smart_confirm.js"></script>
+
 <!-- Crypto + DataTables -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
 <script src="https://cdn.datatables.net/2.0.8/js/dataTables.js"></script>

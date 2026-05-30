@@ -105,6 +105,7 @@ foreach ($cs as $row) {
         <div class="gd-card-footer">
             <button class="fm-btn fm-btn-primary" id="btnGenerate"><i class="fa fa-magic"></i> Generate Demands</button>
             <button class="fm-btn fm-btn-ghost" id="btnCancelPreview"><i class="fa fa-times"></i> Cancel</button>
+            <?php $type = 'legacy-gen'; include APPPATH . 'views/_concession_awareness_badge.php'; ?>
         </div>
     </div>
 
@@ -543,6 +544,17 @@ let GD_CSRF_HASH = '<?= $this->security->get_csrf_hash() ?>';
     }
 
     $btnGen.addEventListener('click', async () => {
+        /* Fees v2 smart-confirm — UI-only guard. No-op when feature off. */
+        if (window.feesV2 && typeof window.feesV2.confirmLegacyGen === 'function') {
+            const ok = await window.feesV2.confirmLegacyGen({
+                scope:        'school',
+                label:        'Generate Demands',
+                proceedLabel: 'Generate anyway',
+                cancelLabel:  'Cancel'
+            });
+            if (!ok) return;
+        }
+
         $btnGen.disabled = true;
         $btnGen.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Queuing&hellip;';
 

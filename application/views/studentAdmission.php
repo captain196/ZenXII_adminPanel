@@ -428,6 +428,7 @@
                             class="sa-btn sa-btn-primary">
                         <i class="fa fa-eye"></i> Preview &amp; Submit
                     </button>
+                    <?php $type = 'concession-aware'; include APPPATH . 'views/_concession_awareness_badge.php'; ?>
                 </div>
 
             </form>

@@ -284,6 +284,7 @@
                 <button class="pm-btn pm-btn-secondary" onclick="document.getElementById('previewPanel').classList.remove('show')">
                     Cancel
                 </button>
+                <?php $type = 'concession-aware'; include APPPATH . 'views/_concession_awareness_badge.php'; ?>
             </div>
         </div>
     </div>

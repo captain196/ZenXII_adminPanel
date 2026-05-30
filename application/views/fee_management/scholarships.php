@@ -161,7 +161,10 @@
 
         <div class="fm-card">
             <div class="fm-card-head">
-                <h3><i class="fa fa-award"></i> Scholarship Awards</h3>
+                <h3>
+                    <i class="fa fa-award"></i> Scholarship Awards
+                    <?php $type = 'legacy-gen'; include APPPATH . 'views/_concession_awareness_badge.php'; ?>
+                </h3>
                 <button class="fm-btn fm-btn--primary fm-btn--sm" onclick="showAwardModal()"><i class="fa fa-plus"></i> Award Scholarship</button>
             </div>
             <div class="fm-card-body fm-card-body--table">
@@ -625,6 +628,21 @@ document.addEventListener('DOMContentLoaded', function() {
     /* ── Recalc unpaid demands (after award/revoke or manual button) ── */
     window.recalcUnpaidDemands = function(studentId, studentName) {
         if (!studentId) return;
+        /* Fees v2 smart-confirm — UI-only guard. No-op when feature off. */
+        if (window.feesV2 && typeof window.feesV2.confirmLegacyGen === 'function') {
+            window.feesV2.confirmLegacyGen({
+                scope:        'student',
+                studentId:    studentId,
+                label:        'Recalc Unpaid Discounts',
+                proceedLabel: 'Recalc anyway',
+                cancelLabel:  'Cancel'
+            }).then(function(ok) { if (ok) _doRecalcUnpaidDemands(studentId, studentName); });
+            return;
+        }
+        _doRecalcUnpaidDemands(studentId, studentName);
+    };
+
+    function _doRecalcUnpaidDemands(studentId, studentName) {
         var payload = csrfData();
         payload.student_id = studentId;
         $.ajax({

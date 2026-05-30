@@ -204,6 +204,48 @@ class Fee_concessions extends MY_Controller
         return $this->json_success(['active_concessions' => $out, 'count' => count($out)]);
     }
 
+    /**
+     * School-wide active-concession count — supports the smart-confirm
+     * modal on chart-save and bulk-generate (where the operation spans
+     * many students, not a single one). Returns total count + a sample
+     * of student-ids so the operator can decide whether to proceed with
+     * the legacy path that does not apply concessions.
+     *
+     * READ-ONLY. NOT gated by CONCESSION_UI_ENABLED — same rationale as
+     * check_active_concessions.
+     */
+    public function check_school_active_concessions()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'fee_concessions_check_school');
+
+        $rows = [];
+        try {
+            $rows = $this->firebase->firestoreQuery('studentConcessions', [
+                ['schoolId', '==', $this->school_id],
+                ['status',   '==', 'active'],
+            ], null, 'ASC', 250);
+        } catch (\Throwable $e) {
+            log_message('error', 'Fee_concessions::check_school_active_concessions failed: ' . $e->getMessage());
+            return $this->json_error('Could not query concessions. Please retry.');
+        }
+
+        $byStudent = [];
+        foreach ($rows as $r) {
+            $d   = is_array($r['data'] ?? null) ? $r['data'] : [];
+            $sid = (string) ($d['studentId'] ?? '');
+            if ($sid === '') continue;
+            if (!isset($byStudent[$sid])) $byStudent[$sid] = 0;
+            $byStudent[$sid]++;
+        }
+        $sample = array_slice(array_keys($byStudent), 0, 5);
+
+        return $this->json_success([
+            'count'           => count($rows),
+            'student_count'   => count($byStudent),
+            'sample_students' => $sample,
+        ]);
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // SERVICE ENROLLMENTS (gated by SERVICE_ENROLLMENT_UI_ENABLED — Phase 3)
     // ─────────────────────────────────────────────────────────────────────
