@@ -3249,6 +3249,15 @@ class Sis extends MY_Controller
                 $this->entity_sync->syncStudent($studentId, $studentData);
                 $this->entity_sync->syncParent($studentId, $studentData);
 
+                // SIS Tier 2 carry (2026-05-30): emit ADMISSION history entry
+                // mirroring save_admission@536. Without this, students imported
+                // via the bulk-Excel path had no ADMISSION row in their History
+                // array (forensic-documented gap).
+                $this->_log_history($school_id, $studentId, 'ADMISSION',
+                    "Student admitted to {$className} / {$section} ({$session_year})",
+                    ['class' => $className, 'section' => $section, 'session' => $session_year]
+                );
+
                 $success++;
             }
 
@@ -4720,6 +4729,15 @@ class Sis extends MY_Controller
         // Firestore sync for Android apps (entity_sync loaded in constructor)
         $this->entity_sync->syncStudent($studentId, $studentData);
         $this->entity_sync->syncParent($studentId, $studentData);
+
+        // SIS Tier 2 carry (2026-05-30): emit ADMISSION history entry
+        // mirroring save_admission@536. Without this, students enrolled via
+        // the CRM-approval path had no ADMISSION row in their History array
+        // (forensic-documented gap, 7/9 students at SCH_D94FE8F7AD missing).
+        $this->_log_history($school_id, $studentId, 'ADMISSION',
+            "Student admitted to {$className} / {$section} ({$session})",
+            ['class' => $className, 'section' => $section, 'session' => $session]
+        );
 
         // Response carries the credentials separately from the user-
         // facing message so the JS can show a clean toast AND a
