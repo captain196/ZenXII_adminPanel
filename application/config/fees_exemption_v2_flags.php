@@ -16,3 +16,10 @@ defined('BASEPATH') or exit('No direct script access allowed');
 $config['USE_UNIFIED_FEE_GEN']         = false; // Phase 2 cutover: true
 $config['CONCESSION_UI_ENABLED']        = false; // Phase 2 cutover: true (in lockstep with USE_UNIFIED_FEE_GEN)
 $config['SERVICE_ENROLLMENT_UI_ENABLED'] = false; // Phase 3 cutover: true
+
+// PHASE_3_CONVERGED: drives the communication-layer badges + warning banners
+// on the legacy manual/bulk/recalc paths. While false, those paths show the
+// amber "Phase 2 — legacy gen" badge + warning banner and the smart-confirm
+// modal fires on per-student concession matches. At Phase 3 cutover this
+// single flip silences all amber UI in one place — no per-view rework.
+$config['PHASE_3_CONVERGED'] = false; // Phase 3 cutover: true

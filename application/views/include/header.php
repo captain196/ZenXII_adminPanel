@@ -1006,6 +1006,10 @@
                     <li><a href="<?= base_url('fees/defaulter_report') ?>"><i class="fa fa-circle-o"></i>Defaulters</a></li>
                     <li><a href="<?= base_url('fee_management/reminders') ?>"><i class="fa fa-circle-o"></i>Reminders</a></li>
                     <li><a href="<?= base_url('fee_management/discounts') ?>"><i class="fa fa-circle-o"></i>Discounts &amp; Scholarships</a></li>
+                    <?php $this->config->load('fees_exemption_v2_flags', true); ?>
+                    <?php if ($this->config->item('CONCESSION_UI_ENABLED', 'fees_exemption_v2_flags') || $this->config->item('SERVICE_ENROLLMENT_UI_ENABLED', 'fees_exemption_v2_flags')): ?>
+                    <li><a href="<?= base_url('fee_concessions') ?>"><i class="fa fa-circle-o"></i>Concessions &amp; Services</a></li>
+                    <?php endif; ?>
                     <li><a href="<?= base_url('fee_management/refunds') ?>"><i class="fa fa-circle-o"></i>Refunds</a></li>
 
                     <li class="g-sub-sec">Online Payments</li>

@@ -306,6 +306,38 @@ class Fee_lifecycle
         return ['specs' => $batchEntries, 'assigned' => $assigned, 'chartFound' => true];
     }
 
+    /**
+     * Phase 2 router: route through Fee_generation_service when the flag is
+     * on (concession-aware), else call buildAdmissionDemandSpecs directly
+     * (byte-identical to legacy / Phase 1 state). On any flag-read failure
+     * the legacy path is taken — fail-safe.
+     */
+    private function _routedBuildAdmissionSpecs(string $studentId, string $class, string $section): array
+    {
+        $useUnified = false;
+        $CI = function_exists('get_instance') ? get_instance() : null;
+        try {
+            if ($CI !== null && isset($CI->config)) {
+                $CI->config->load('fees_exemption_v2_flags', true);
+                $useUnified = (bool) $CI->config->item('USE_UNIFIED_FEE_GEN', 'fees_exemption_v2_flags');
+            }
+        } catch (\Throwable $_) {
+            $useUnified = false;
+        }
+
+        if (!$useUnified || $CI === null) {
+            return $this->buildAdmissionDemandSpecs($studentId, $class, $section);
+        }
+
+        if (!isset($CI->concessionReader)) $CI->load->library('Fee_concession_reader',         null, 'concessionReader');
+        if (!isset($CI->enrollmentReader)) $CI->load->library('Fee_service_enrollment_reader', null, 'enrollmentReader');
+        if (!isset($CI->genSvc))           $CI->load->library('Fee_generation_service',        null, 'genSvc');
+        $CI->concessionReader->init($this->firebase);
+        $CI->enrollmentReader->init($this->firebase);
+        $CI->genSvc->init($this, $CI->concessionReader, $CI->enrollmentReader, $this->schoolName, $this->sessionYear);
+        return $CI->genSvc->generateDemandsForStudent($studentId, $class, $section);
+    }
+
     public function assignInitialFees(
         string $studentId,
         string $class,
@@ -314,11 +346,9 @@ class Fee_lifecycle
     ): array {
         $assigned = [];
         try {
-            // Phase 1 (Fees Exemption v2 groundwork): delegate the spec build
-            // to buildAdmissionDemandSpecs so Fee_generation_service can call
-            // the same builder. assignInitialFees retains the commit + log
-            // behavior unchanged — A/B-verified byte-identical pre-cutover.
-            $built = $this->buildAdmissionDemandSpecs($studentId, $class, $section);
+            // Phase 2 router: USE_UNIFIED_FEE_GEN gates the concession-aware
+            // path; flag off = byte-identical to Phase 1 (proven 9/9 A/B).
+            $built = $this->_routedBuildAdmissionSpecs($studentId, $class, $section);
 
             if (!$built['chartFound']) {
                 log_message('info', "Fee_lifecycle::assignInitialFees — no Firestore feeStructure for [{$class}/{$section}] student [{$studentId}]");
