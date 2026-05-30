@@ -1469,8 +1469,20 @@ class Sis extends MY_Controller
                 'Section' => $stuSection,
                 'Status'  => 'TC',
             ]);
+            // SIS Wave-2 fix S2 (2026-05-31): propagate Status=TC to parent
+            // doc as well. Pre-fix, only the student doc was updated; the
+            // parent doc kept Status=Active, so the parent app continued
+            // sending fee notifications and accepting leave applications
+            // for a TC'd student. Pass the full $student (loaded via
+            // _getStudent earlier) so syncParent's no-pick full-doc rewrite
+            // (S7 known-issue) does not clobber fatherName/motherName/phone/
+            // address etc. — only the Status fields are overridden. Set
+            // both Title-Case + camelCase to defeat syncParent's ?? fallback.
+            $this->entity_sync->syncParent($userId, array_merge($student, [
+                'Status' => 'TC', 'status' => 'TC',
+            ]));
         } catch (\Exception $e) {
-            log_message('error', "entity_sync syncStudent TC failed for {$userId}: " . $e->getMessage());
+            log_message('error', "entity_sync sync TC failed for {$userId}: " . $e->getMessage());
         }
 
         // G1 — Blank current-month attendance from today onwards so the
@@ -1671,6 +1683,13 @@ class Sis extends MY_Controller
             $this->entity_sync->syncStudent($userId, [
                 'Name' => $stuName, 'Class' => $stuClass, 'Section' => $stuSection, 'Status' => 'Active',
             ]);
+            // SIS Wave-2 fix S2 (2026-05-31): propagate Status=Active to
+            // parent doc as well. Mirror image of issue_tc — full $student
+            // payload via array_merge so syncParent's full-doc rewrite (S7)
+            // does not wipe identity fields.
+            $this->entity_sync->syncParent($userId, array_merge($student, [
+                'Status' => 'Active', 'status' => 'Active',
+            ]));
         } catch (\Exception $e) {
             log_message('error', "entity_sync cancel_tc failed for {$userId}: " . $e->getMessage());
         }
