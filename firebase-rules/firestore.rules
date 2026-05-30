@@ -135,13 +135,18 @@ service cloud.firestore {
       return isStaff() || (isSameSchool() && isOwnStudent());
     }
 
-    // ── Schools (read-only for apps) ─────────────────────────────
+    // ── Schools (read-only for apps; SA-only client write) ──────
+    // Wave B2.2-F (2026-05-30): write narrowed isAdmin() -> isSuperAdmin().
+    // Blast-radius confirmed regression-free (no client of any role writes
+    // schools — Parent + Teacher apps READ-only; PHP panels via Admin SDK
+    // bypass these rules entirely). All schools writers route through the
+    // service account; the narrowing removes an unused authorization.
     match /schools/{docId} {
       allow read: if isAuth() && (
         resource.data.schoolId == request.auth.token.school_id ||
         docId == request.auth.token.school_id
       );
-      allow write: if isAdmin();
+      allow write: if isSuperAdmin();
     }
 
     // ── Sections ─────────────────────────────────────────────────
@@ -609,6 +614,27 @@ service cloud.firestore {
     match /feeReceiptIndex/{docId}   { allow read, write: if false; }
     match /feeDemandLocks/{docId}    { allow read, write: if false; }
     match /feePendingWrites/{docId}  { allow read, write: if false; }
+
+    // ── SA Firebase-Auth migration (Wave A) — server-only ────────
+    // superAdmins: developer-SA profile/metadata (no passwords; Firebase
+    // Auth holds credentials). saIpRateLimit: SA login IP throttle. Both
+    // are written/read exclusively by the PHP backend via the service
+    // account, which bypasses these rules. Explicit deny-all matches the
+    // existing default-deny — additive intent-lock, no behavioral change.
+    match /superAdmins/{docId}       { allow read, write: if false; }
+    match /saIpRateLimit/{docId}     { allow read, write: if false; }
+
+    // ── Fees Exemption v2 (Phase 0) — server-only ────────────────
+    // studentServiceEnrollments: per-student opt-in to optional services
+    // (transport/hostel/meals) with effective-date windows. Drives
+    // enrollment-aware service-fee generation from Phase 3.
+    // studentConcessions: dated, audited per-student concessions (percent
+    // / fixed / fullExempt) replacing the broken exemptedFees + dead
+    // discountHeads pair. Consumed by the unified generator from Phase 2.
+    // Both are written/read exclusively by the PHP backend via the
+    // service account; client direct access is a bug — deny explicitly.
+    match /studentServiceEnrollments/{docId} { allow read, write: if false; }
+    match /studentConcessions/{docId}         { allow read, write: if false; }
 
     // ── Fee carry-forward (Phase 9 wallet replacement) ───────────
     // Per-student doc carrying accumulated unpaid dues across
@@ -1242,6 +1268,45 @@ service cloud.firestore {
     match /superadminAuthState/{docId} {
       allow read, write: if false;
     }
+
+    // ── Wave B2.2-F (2026-05-30): Firestore-only control-plane (F3) ──
+    // Server-only collections. All writes (and reads except tenantPublic)
+    // bypass these rules via the Admin SDK service account (rules:4-6);
+    // these deny-alls are an intent-lock matching the established
+    // feeLocks/superAdmins pattern (606-611, 619-620). Additive over
+    // non-existent collections — zero current-behavior change.
+    //
+    // PERMANENT (survive B2.8): schoolControl/plans/subscriptions/invoices/
+    //   payments/revenueByPeriod/schoolSsa/tenantAudit/schoolCodeIndex/
+    //   schoolNameIndex/billingClaims + tenantPublic client-read rule.
+    // SCAFFOLDING (retired at B2.8 with the bridge): _b2_pending.
+    match /schoolControl/{docId}    { allow read, write: if false; }
+    match /plans/{docId}            { allow read, write: if false; }
+    match /subscriptions/{docId}    { allow read, write: if false; }
+    match /invoices/{docId}         { allow read, write: if false; }
+    match /payments/{docId}         { allow read, write: if false; }
+    match /revenueByPeriod/{docId}  { allow read, write: if false; }
+    match /schoolSsa/{docId}        { allow read, write: if false; }
+    match /tenantAudit/{docId}      { allow read, write: if false; }
+    match /schoolCodeIndex/{docId}  { allow read, write: if false; }
+    match /schoolNameIndex/{docId}  { allow read, write: if false; }
+    match /billingClaims/{docId}    { allow read, write: if false; }
+
+    // tenantPublic — thin client-readable mirror (name, logoUrl, activeModules,
+    // accessAllowed). Read scoped to same school; carries NO billing or money.
+    // Write is server-only (Admin SDK bypasses).
+    match /tenantPublic/{docId} {
+      allow read: if isAuth() && (
+        resource.data.schoolId == request.auth.token.school_id ||
+        docId == request.auth.token.school_id
+      );
+      allow write: if false;
+    }
+
+    // _b2_pending — MIGRATION SCAFFOLDING (retired at B2.8 with the
+    // RTDB<->Firestore bridge). Forward-reconciler marker keyed by
+    // (schoolId, op). Server-only.
+    match /_b2_pending/{docId}      { allow read, write: if false; }
 
     // ── Deny everything else (catch-all) ─────────────────────────
     match /{document=**} {

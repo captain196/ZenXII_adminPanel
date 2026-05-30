@@ -116,6 +116,16 @@ $route['fees/set_student_discount']        = 'Fees/set_student_discount';
 $route['fees/recalc_unpaid_discounts']     = 'Fees/recalc_unpaid_discounts';
 $route['fees/delete_fees_structure/(:any)'] = 'Fees/delete_fees_structure/$1';
 
+// Fees Exemption v2 (Phase 0) — admin capture for concessions + service enrollments.
+// All endpoints are flag-gated (CONCESSION_UI_ENABLED / SERVICE_ENROLLMENT_UI_ENABLED).
+$route['fee_concessions']                       = 'Fee_concessions/index';
+$route['fee_concessions/list_concessions']      = 'Fee_concessions/list_concessions';
+$route['fee_concessions/create_concession']     = 'Fee_concessions/create_concession';
+$route['fee_concessions/revoke_concession']     = 'Fee_concessions/revoke_concession';
+$route['fee_concessions/list_enrollments']      = 'Fee_concessions/list_enrollments';
+$route['fee_concessions/enroll_service']        = 'Fee_concessions/enroll_service';
+$route['fee_concessions/discontinue_service']   = 'Fee_concessions/discontinue_service';
+
 // ─── Super Admin SaaS Control Panel ──────────────────────────────────────────
 // Auth
 $route['admin_login/forgot_password']                    = 'Admin_login/forgot_password';
@@ -312,6 +322,9 @@ $route['school_config/restore_class']                   = 'School_config/restore
 $route['school_config/seed_streams']                    = 'School_config/seed_streams';
 $route['school_config/upload_document']                 = 'School_config/upload_document';
 $route['school_config/save_report_card_template']       = 'School_config/save_report_card_template';
+$route['school_config/save_report_card_config']         = 'School_config/save_report_card_config';
+$route['school_config/upload_reportcard_asset']         = 'School_config/upload_reportcard_asset';
+$route['school_config/remove_reportcard_asset']         = 'School_config/remove_reportcard_asset';
 $route['school_config/admission_payment']               = 'School_config/admission_payment_config';
 $route['school_config/save_admission_payment_config']   = 'School_config/save_admission_payment_config';
 $route['school_config/health_check']                    = 'School_config/health_check';
