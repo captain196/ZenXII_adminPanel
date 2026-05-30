@@ -1889,6 +1889,27 @@ class Sis extends MY_Controller
         }
 
         $storagePath = "Students/{$school_id}/{$userId}/docs/{$docLabel}";
+
+        // ─────────────────────────────────────────────────────────────────
+        // Storage-orphan fix (2026-05-30): delete the previous Storage
+        // object before uploading the replacement. Mirrors the proven
+        // edit_student@3434-3435 pattern via _deleteOldStorageFile. Closes
+        // the cross-path orphan case where the prior upload landed at the
+        // admission path (_uploadStudentFile: {school}/Students/{class}/...)
+        // and the re-upload lands here at the deterministic docs path;
+        // without this delete, the admission file lingers. Same-path
+        // re-uploads remain correct (delete-then-write is idempotent).
+        // ─────────────────────────────────────────────────────────────────
+        $priorStudentDoc = $this->_getStudent($userId);
+        $priorDocNode    = is_array($priorStudentDoc['documents'][$docLabel] ?? null)
+            ? $priorStudentDoc['documents'][$docLabel]
+            : (is_array($priorStudentDoc['Doc'][$docLabel] ?? null)
+                ? $priorStudentDoc['Doc'][$docLabel]
+                : []);
+        if (!empty($priorDocNode)) {
+            $this->_deleteOldStorageFile($priorDocNode);
+        }
+
         try {
             // FIXED: args were swapped (localPath, remotePath) and return is bool not URL
             $uploaded = $this->firebase->uploadFile($_FILES['document']['tmp_name'], $storagePath);
@@ -1952,6 +1973,19 @@ class Sis extends MY_Controller
         // — see memory/firestore_class_section_canonical.md.
         $studentDoc = $this->_getStudent($userId);
         $docMap = $studentDoc['documents'] ?? $studentDoc['Doc'] ?? [];
+
+        // ─────────────────────────────────────────────────────────────────
+        // Storage-orphan fix (2026-05-30): delete the Storage object BEFORE
+        // removing the Firestore reference. Mirrors the proven
+        // edit_student@3435 pattern via _deleteOldStorageFile. Without this
+        // call the Firestore entry vanished but the underlying Storage file
+        // lingered indefinitely (only cleaned at full student deletion).
+        // ─────────────────────────────────────────────────────────────────
+        $oldDocNode = $docMap[$docLabel] ?? [];
+        if (is_array($oldDocNode) && !empty($oldDocNode)) {
+            $this->_deleteOldStorageFile($oldDocNode);
+        }
+
         unset($docMap[$docLabel]);
         // R4: keep BOTH canonical keys in sync (upload now dual-writes documents+Doc).
         $ok = $this->fs->updateEntity('students', $userId, ['documents' => $docMap, 'Doc' => $docMap]);
