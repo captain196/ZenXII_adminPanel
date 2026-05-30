@@ -158,6 +158,52 @@ class Fee_concessions extends MY_Controller
         return $this->json_success(['message' => 'Concession revoked.']);
     }
 
+    /**
+     * Smart-confirm support for the legacy fee-gen UIs (manual / bulk /
+     * recalc). Returns the active concessions on file for the given student
+     * so the legacy-gen JS can warn the operator before running — Phase 2
+     * legacy paths do not yet apply these concessions (Phase 3 convergence).
+     *
+     * READ-ONLY. NOT gated by CONCESSION_UI_ENABLED — the smart-confirm
+     * must work even when the capture UI is hidden so admins are warned
+     * about pre-existing concessions on any legacy-gen attempt.
+     */
+    public function check_active_concessions()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'fee_concessions_check_active');
+
+        $userId = trim((string) $this->input->post('student_id'));
+        if ($userId === '' || !$this->safe_path_segment($userId)) return $this->json_error('Invalid student_id.');
+
+        $rows = [];
+        try {
+            $rows = $this->firebase->firestoreQuery('studentConcessions', [
+                ['schoolId',  '==', $this->school_id],
+                ['studentId', '==', $userId],
+                ['status',    '==', 'active'],
+            ], null, 'ASC', 50);
+        } catch (\Throwable $e) {
+            log_message('error', "Fee_concessions::check_active_concessions failed for {$userId}: " . $e->getMessage());
+            return $this->json_error('Could not query concessions. Please retry.');
+        }
+
+        $out = [];
+        foreach ($rows as $r) {
+            $d = is_array($r['data'] ?? null) ? $r['data'] : [];
+            $out[] = [
+                'id'            => (string) ($r['id'] ?? ''),
+                'scope'         => (string) ($d['scope'] ?? ''),
+                'target'        => (string) ($d['targetFeeHeadId'] ?? $d['targetCategory'] ?? ''),
+                'type'          => (string) ($d['type'] ?? ''),
+                'value'         => $d['value'] ?? 0,
+                'effectiveFrom' => (string) ($d['effectiveFrom'] ?? ''),
+                'effectiveTo'   => $d['effectiveTo'] ?? null,
+                'reason'        => (string) ($d['reason'] ?? ''),
+            ];
+        }
+        return $this->json_success(['active_concessions' => $out, 'count' => count($out)]);
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // SERVICE ENROLLMENTS (gated by SERVICE_ENROLLMENT_UI_ENABLED — Phase 3)
     // ─────────────────────────────────────────────────────────────────────
