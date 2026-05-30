@@ -3145,7 +3145,28 @@ class Sis extends MY_Controller
                 ];
 
                 // Firestore-only per no-RTDB policy. RTDB profile + roster mirror removed.
-                $this->fs->saveStudent($studentId, $studentData);
+                // SIS Tier-1 fix B2 (2026-05-31): saveStudent must be fail-loud
+                // per row. Pre-fix, this call had no try/catch and no return
+                // check — a Firestore failure either threw (killing the whole
+                // import mid-loop via the outer catch) or returned false
+                // silently (loop continued, row was counted as $success, but
+                // the student doc never existed). The import summary lied
+                // about which rows imported.
+                // Mirrors the B1 pattern from enroll_student@4627; the
+                // loop-shape difference is that a per-row failure increments
+                // $error and adds a $skipped[] entry then `continue`s to the
+                // next row, instead of aborting the entire import.
+                $studentSaved = false;
+                try {
+                    $studentSaved = (bool) $this->fs->saveStudent($studentId, $studentData);
+                } catch (\Exception $e) {
+                    log_message('error', "SIS import saveStudent failed for {$studentId}: " . $e->getMessage());
+                }
+                if (!$studentSaved) {
+                    $skipped[] = "Row " . ($success + $error + count($skipped) + 1) . ": {$studentName} — Firestore save failed (see log)";
+                    $error++;
+                    continue;
+                }
 
                 $phone = trim($rowData['Phone Number'] ?? '');
                 if ($phone !== '') {
