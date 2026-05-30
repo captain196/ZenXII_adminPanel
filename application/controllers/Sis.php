@@ -1778,8 +1778,21 @@ class Sis extends MY_Controller
                 'Section' => $stuSection,
                 'Status'  => 'Inactive',
             ]);
+            // SIS Wave-2 fix S3 (2026-05-31): propagate Status=Inactive to
+            // parent doc as well. Pre-fix, only the student doc was updated;
+            // the parent doc kept Status=Active, so the parent app continued
+            // sending fee/leave notifications for a withdrawn student. Pass
+            // the full $student (loaded via _getStudent at L1737) so
+            // syncParent's no-pick full-doc rewrite (S7 known-issue) does
+            // not clobber fatherName/motherName/phone/address — only the
+            // Status fields are overridden. Set both Title-Case + camelCase
+            // to defeat syncParent's ?? $data['status'] fallback. Verbatim
+            // pattern from S2 commit 059d8a66 (issue_tc/cancel_tc).
+            $this->entity_sync->syncParent($userId, array_merge($student, [
+                'Status' => 'Inactive', 'status' => 'Inactive',
+            ]));
         } catch (\Exception $e) {
-            log_message('error', "entity_sync syncStudent failed for {$userId}: " . $e->getMessage());
+            log_message('error', "entity_sync withdraw_student sync failed for {$userId}: " . $e->getMessage());
         }
 
         // Freeze fee records for withdrawn student
