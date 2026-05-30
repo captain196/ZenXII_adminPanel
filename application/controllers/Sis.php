@@ -221,14 +221,15 @@ class Sis extends MY_Controller
         // Preview next student ID
         $userId = $this->_peekNextStudentId($school_id);
 
-        // Fee structure for exemptions — read from Firestore feeStructures
-        $exemptedFees = $this->fs->schoolList('feeStructures');
-
+        // Fees Exemption v2 (P0-b): the legacy exemption-checkbox feed was
+        // removed here. The checkbox iterated schoolList('feeStructures')'s
+        // doc-FIELD names (schoolId/session/feeHeads/...) as checkbox values,
+        // so it could never store a real fee-head name. Concessions are now
+        // captured via the dedicated Fee_concessions screen (Phase 0+).
         $data['class_map']     = $classMap;
         $data['session_year']  = $session;
         $data['school_name']   = $school_name;
         $data['user_Id']       = $userId;
-        $data['exemptedFees']  = $exemptedFees;
 
         // LEAD SYSTEM — pass lead_id to view for prefill via AJAX
         $data['lead_id'] = trim($this->input->get('lead_id') ?? '');
@@ -483,18 +484,10 @@ class Sis extends MY_Controller
             }
         }
 
-        // Exempted fees
-        $exemptedFees = $this->input->post('exempted_fees_multiple');
-        if (!empty($exemptedFees) && is_array($exemptedFees)) {
-            $exemptedData = [];
-            foreach ($exemptedFees as $feeName) {
-                $feeName = trim($feeName);
-                if ($feeName !== '') $exemptedData[$feeName] = '';
-            }
-            if (!empty($exemptedData)) {
-                $this->fs->updateEntity('students', $userId, ['exemptedFees' => $exemptedData]);
-            }
-        }
+        // Fees Exemption v2 (P0-b): the exempted_fees_multiple admission write
+        // was removed. Concessions are captured via Fee_concessions (Phase 0+),
+        // applied by the unified generator (Phase 2+). Admission billing here
+        // is unchanged — assignInitialFees still runs for this student.
 
         // RTDB mirror removed per no-RTDB policy. Firestore `students` is the sole source.
 
@@ -3358,11 +3351,11 @@ class Sis extends MY_Controller
         $combinedClassPath = "{$classKey}/{$sectionKey}";
 
         if ($this->input->method() !== 'post') {
-            // Read additional subjects and exempted fees from student doc
+            // Read additional subjects from student doc.
             $data['additional_subjects'] = $existing['additionalSubjects'] ?? $existing['Additional Subjects'] ?? [];
-            $data['selected_exempted_fees'] = $existing['exemptedFees'] ?? $existing['Exempted Fees'] ?? [];
-            if (!is_array($data['selected_exempted_fees'])) $data['selected_exempted_fees'] = [];
-            $data['exemptedFees'] = $this->fs->schoolList('feeStructures');
+            // Fees Exemption v2 (P0-b): the legacy exemption-checkbox feed was
+            // removed (kept fee-head NAMES nowhere — see save_admission comment).
+            // Concessions are now managed via Fee_concessions screen.
 
             $classNumKey = null;
             if (preg_match('/\d+/', $existing['Class'] ?? '', $m)) $classNumKey = (int)$m[0];
@@ -3522,15 +3515,9 @@ class Sis extends MY_Controller
         }
         $updateData['additionalSubjects'] = $additionalSubjects;
 
-        // Exempted fees
-        $exemptedFeesData = [];
-        if (!empty($post['exempted_fees_multiple']) && is_array($post['exempted_fees_multiple'])) {
-            foreach ($post['exempted_fees_multiple'] as $fee) {
-                $fee = trim($fee);
-                if ($fee !== '') $exemptedFeesData[$fee] = "";
-            }
-        }
-        $updateData['exemptedFees'] = $exemptedFeesData;
+        // Fees Exemption v2 (P0-b): the exempted_fees_multiple edit-write was
+        // removed. Concessions are captured via Fee_concessions (Phase 0+),
+        // applied by the unified generator (Phase 2+). Edit billing unchanged.
 
         $this->fs->updateEntity('students', $userId, $updateData);
 
