@@ -155,8 +155,16 @@ class Fee_generation_ab_verify extends CI_Controller
             if (($ea['op'] ?? '') !== ($eb['op'] ?? '')) $diff[] = "{$id}: op differs ({$ea['op']} vs {$eb['op']})";
             $da = is_array($ea['data'] ?? null) ? $ea['data'] : [];
             $db = is_array($eb['data'] ?? null) ? $eb['data'] : [];
+            // Skip call-time metadata: createdAt/updatedAt are stamped via
+            // date('c') inside each invocation, so calling legacy + unified
+            // back-to-back inevitably differs by 0-N seconds depending on
+            // when each call straddles a wall-clock boundary. In production
+            // each path is called exactly ONCE per admission — same timestamp
+            // semantics — so the diff would never appear.
+            $skipFields = ['createdAt', 'updatedAt'];
             $allKeys = array_unique(array_merge(array_keys($da), array_keys($db)));
             foreach ($allKeys as $k) {
+                if (in_array($k, $skipFields, true)) continue;
                 $va = $da[$k] ?? null;
                 $vb = $db[$k] ?? null;
                 // Tolerate tiny float drift on the rounded amount fields only.
