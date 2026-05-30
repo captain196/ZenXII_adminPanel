@@ -5,6 +5,20 @@
 
 ---
 
+## Documentation set — Phase 2 (Option A)
+
+This runbook is the authoritative cutover entry-point. The full Phase 2 documentation set:
+
+| Document | Audience | Read it when |
+|---|---|---|
+| **[FEES_EXEMPTION_V2_PHASE2_CUTOVER_RUNBOOK.md](FEES_EXEMPTION_V2_PHASE2_CUTOVER_RUNBOOK.md)** *(this file)* | Engineer + Super Admin | Before, during, and after the activation window |
+| [FEES_EXEMPTION_V2_PHASE2_RELEASE_NOTE.md](FEES_EXEMPTION_V2_PHASE2_RELEASE_NOTE.md) | All admin + accounts staff | After activation, broadcast as the operator-facing announcement |
+| [FEES_EXEMPTION_V2_PHASE2_VERIFICATION_REPORT.md](FEES_EXEMPTION_V2_PHASE2_VERIFICATION_REPORT.md) | Engineering reviewer | Before sign-off; shows commit chain + A/B evidence |
+| [FEES_EXEMPTION_V2_PHASE2_BUSINESS_SCENARIOS.md](FEES_EXEMPTION_V2_PHASE2_BUSINESS_SCENARIOS.md) | Super Admin + Accounts lead | Before sign-off and during staff training — concrete before/after numbers for the three concession types and the seven operator gotchas |
+| [../memory/fees_exemption_v2_phase_2_5_chart_save_proposal.md](../memory/fees_exemption_v2_phase_2_5_chart_save_proposal.md) | Engineering | When authorizing the next phase after 7-day soak |
+
+---
+
 ## 0. Scope of this cutover
 
 What gets turned ON:
@@ -231,4 +245,4 @@ Once both signatures are present, the engineer may execute §2.
 
 ---
 
-*Runbook version: 1.1 — 2026-05-30. Revised to LOCKSTEP (Option L) per operator decision. Update on each phase cutover.*
+*Runbook version: 1.2 — 2026-05-30. Added documentation-set index. Rev 1.1 revised to LOCKSTEP (Option L) per operator decision. Update on each phase cutover.*
