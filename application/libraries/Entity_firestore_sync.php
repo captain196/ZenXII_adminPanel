@@ -392,78 +392,131 @@ class Entity_firestore_sync
         if (!$this->ready) return false;
         $docId = "{$this->schoolId}_{$studentId}";
 
-        $phone       = $data['Phone Number'] ?? $data['phoneNumber'] ?? $data['Phone'] ?? $data['phone'] ?? '';
-        $fatherName  = $data['Father Name'] ?? $data['fatherName'] ?? $data['father_name'] ?? '';
-        $motherName  = $data['Mother Name'] ?? $data['motherName'] ?? $data['mother_name'] ?? '';
-        $studentName = $data['Name'] ?? $data['name'] ?? '';
+        // SIS Wave-4 fix S7 (2026-05-31): use the same $pick helper that
+        // syncStudent uses (L270-280), so partial payloads no longer clobber
+        // existing parent-doc fields with empty strings. Pre-fix, every call
+        // built a full doc with `?? ''` fallbacks for every field; combined
+        // with merge=true _write, the empty strings still overwrote existing
+        // values. Most visible failure: toggle_status@Sis.php:1869 passed a
+        // Status-only payload and wiped fatherName/motherName/phone/address.
+        // The fix is mechanical — only WRITE a field when $pick returns a
+        // usable value; otherwise leave it absent so merge=true preserves
+        // whatever was there.
+        //
+        // Categories below (preserved in this order):
+        //   IDENTITY invariants — always written (schoolId, schoolCode, ...)
+        //   $pick-conditional fields — only written when $data provides them
+        //   CLASS-SNAPSHOT — gated like syncStudent@296 (Class OR Section)
+        //   PHONE + GUARDCONTACT — phone via $pick; guardContact via $pick
+        //     OR fallback to phone (preserves "guard defaults to phone on
+        //     new docs" behavior the original code intended)
+        //   NOTIFICATION_PREFS defaults — always-written, unchanged
+        //     (every-call-overwrites-customization is a separate concern,
+        //     out of S7 scope)
+        //
+        // S2/S3 callers (issue_tc / cancel_tc / withdraw_student) pass full
+        // $student payloads via array_merge as a defensive workaround. Those
+        // workarounds REMAIN in place per operator direction — they're
+        // belt-and-suspenders that survives future refactors of syncParent.
+        $pick = function (array $aliases) use ($data) {
+            foreach ($aliases as $key) {
+                if (!array_key_exists($key, $data)) continue;
+                $v = $data[$key];
+                if ($v === null) continue;
+                if (is_string($v) && $v === '') continue;
+                if (is_array($v) && empty($v)) continue;
+                return $v;
+            }
+            return null;
+        };
 
-        // Same canonical normalisation as syncStudent — keeps the parent
-        // doc's class/section snapshot in lockstep with the student doc.
-        $cs = self::normalizeClassSection(
-            $data['Class']   ?? $data['className'] ?? '',
-            $data['Section'] ?? $data['section']   ?? ''
-        );
-
+        // IDENTITY invariants — always written. Safe under merge: stable
+        // for the lifetime of the doc, refreshing keeps legacy docs
+        // self-healing if any field drifts.
         $doc = [
-            // Identity
-            'schoolId'      => $this->schoolId,
-            'schoolCode'    => $this->schoolCode,
-            'parentDbKey'   => $this->schoolCode,
-            'studentId'     => $studentId,
-            'userId'        => $studentId,
-            'childrenIds'   => [$studentId],
-
-            // Student reference (for quick display without fetching students collection)
-            'studentName'   => $studentName,
-            'className'     => $cs['className'],
-            'section'       => $cs['section'],
-            'classOrder'    => $cs['classOrder'],
-            'sectionCode'   => $cs['sectionCode'],
-            'rollNo'        => $data['Roll No'] ?? $data['rollNo'] ?? '',
+            'schoolId'    => $this->schoolId,
+            'schoolCode'  => $this->schoolCode,
+            'parentDbKey' => $this->schoolCode,
+            'studentId'   => $studentId,
+            'userId'      => $studentId,
+            'childrenIds' => [$studentId],
             // BUG-052 fix 2026-05-25: caller-provided session precedence
-            'session'       => $data['session'] ?? $data['Session'] ?? $this->session,
+            'session'     => $data['session'] ?? $data['Session'] ?? $this->session,
+            'updatedAt'   => date('c'),
+        ];
 
-            // Father details
-            'name'          => $fatherName,
-            'fatherName'    => $fatherName,
-            'fatherOccupation' => $data['Father Occupation'] ?? $data['fatherOccupation'] ?? '',
+        // Student reference (for quick display without fetching students collection)
+        if (($v = $pick(['Name', 'name', 'student_name'])) !== null)        $doc['studentName'] = $v;
+        if (($v = $pick(['Roll No', 'RollNo', 'rollNo'])) !== null)         $doc['rollNo']      = $v;
 
-            // Mother details
-            'motherName'    => $motherName,
-            'motherOccupation' => $data['Mother Occupation'] ?? $data['motherOccupation'] ?? '',
+        // Class & section — paired snapshot. Only normalise when at least
+        // one side is provided; otherwise we'd emit empty className/section
+        // and clobber the canonical class/section row written elsewhere
+        // (same gate as syncStudent@296-308).
+        $hasClass   = $pick(['Class',   'className']) !== null;
+        $hasSection = $pick(['Section', 'section'])   !== null;
+        if ($hasClass || $hasSection) {
+            $cs = self::normalizeClassSection(
+                $data['Class']   ?? $data['className'] ?? '',
+                $data['Section'] ?? $data['section']   ?? ''
+            );
+            $doc['className']   = $cs['className'];
+            $doc['section']     = $cs['section'];
+            $doc['classOrder']  = $cs['classOrder'];
+            $doc['sectionCode'] = $cs['sectionCode'];
+        }
 
-            // Guardian / Contact
-            'guardContact'  => $data['Guard Contact'] ?? $data['guardContact'] ?? $phone,
-            'guardRelation' => $data['Guard Relation'] ?? $data['guardRelation'] ?? 'Father',
-            'phone'         => $phone,
-            'email'         => $data['Email'] ?? $data['email'] ?? $data['Parent_email'] ?? '',
+        // Father details — `name` field is aliased to fatherName by long-
+        // standing convention (parent app reads `name` for display).
+        if (($v = $pick(['Father Name', 'fatherName', 'father_name'])) !== null) {
+            $doc['name']       = $v;
+            $doc['fatherName'] = $v;
+        }
+        if (($v = $pick(['Father Occupation', 'fatherOccupation'])) !== null) $doc['fatherOccupation'] = $v;
 
-            // Address (full structured)
-            'address'       => $data['Address'] ?? $data['address'] ?? '',
+        // Mother details
+        if (($v = $pick(['Mother Name', 'motherName', 'mother_name'])) !== null)         $doc['motherName']       = $v;
+        if (($v = $pick(['Mother Occupation', 'motherOccupation'])) !== null)            $doc['motherOccupation'] = $v;
 
-            // Profile
-            'profilePic'    => $data['Profile Pic'] ?? $data['profilePic'] ?? '',
-            'gender'        => $data['Gender'] ?? $data['gender'] ?? '',
-            'dob'           => $data['DOB'] ?? $data['dob'] ?? '',
-            'bloodGroup'    => $data['Blood Group'] ?? $data['bloodGroup'] ?? '',
-            'category'      => $data['Category'] ?? $data['category'] ?? '',
-            'religion'      => $data['Religion'] ?? $data['religion'] ?? '',
-            'nationality'   => $data['Nationality'] ?? $data['nationality'] ?? '',
-            'admissionDate' => $data['Admission Date'] ?? $data['admissionDate'] ?? '',
+        // Phone + guardian contact: phone via $pick; guardContact via $pick
+        // OR fallback to phone (preserves "default guard = phone on new
+        // docs" the original code intended via `?? $phone`).
+        $phone = $pick(['Phone Number', 'phoneNumber', 'Phone', 'phone']);
+        $guard = $pick(['Guard Contact', 'guardContact']);
+        if ($phone !== null) $doc['phone'] = $phone;
+        if ($guard !== null)        $doc['guardContact'] = $guard;
+        elseif ($phone !== null)    $doc['guardContact'] = $phone;
+        if (($v = $pick(['Guard Relation', 'guardRelation'])) !== null) $doc['guardRelation'] = $v;
 
-            // Status & metadata
-            'status'        => $data['Status'] ?? $data['status'] ?? 'Active',
-            'updatedAt'     => date('c'),
+        if (($v = $pick(['Email', 'email', 'Parent_email'])) !== null) $doc['email'] = $v;
 
-            // Communication preferences (for future features)
-            'notificationPrefs' => [
-                'attendance' => true,
-                'fees'       => true,
-                'homework'   => true,
-                'exam'       => true,
-                'circular'   => true,
-                'sms'        => false,
-            ],
+        // Address (full structured)
+        if (($v = $pick(['Address', 'address'])) !== null) $doc['address'] = $v;
+
+        // Profile
+        if (($v = $pick(['Profile Pic', 'profilePic'])) !== null)   $doc['profilePic']    = $v;
+        if (($v = $pick(['Gender', 'gender'])) !== null)            $doc['gender']        = $v;
+        if (($v = $pick(['DOB', 'dob'])) !== null)                  $doc['dob']           = $v;
+        if (($v = $pick(['Blood Group', 'bloodGroup'])) !== null)   $doc['bloodGroup']    = $v;
+        if (($v = $pick(['Category', 'category'])) !== null)        $doc['category']      = $v;
+        if (($v = $pick(['Religion', 'religion'])) !== null)        $doc['religion']      = $v;
+        if (($v = $pick(['Nationality', 'nationality'])) !== null)  $doc['nationality']   = $v;
+        if (($v = $pick(['Admission Date', 'admissionDate'])) !== null) $doc['admissionDate'] = $v;
+
+        // Status (kept conditional under S7 — pre-fix had a 'Active' default
+        // here that would clobber existing status on partial calls)
+        if (($v = $pick(['Status', 'status'])) !== null) $doc['status'] = $v;
+
+        // Communication preferences (defaults block — preserved as always-
+        // written per S7 scope: the every-call-overwrite of operator
+        // customization is a separate Tier-3 concern.)
+        $doc['notificationPrefs'] = [
+            'attendance' => true,
+            'fees'       => true,
+            'homework'   => true,
+            'exam'       => true,
+            'circular'   => true,
+            'sms'        => false,
         ];
 
         return $this->_write('parents', $docId, $doc);
