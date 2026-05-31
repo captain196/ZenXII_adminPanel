@@ -1195,6 +1195,53 @@ class Sis extends MY_Controller
                         ];
                     } else {
                         $processedCount++;
+
+                        // SIS Wave-4 fix S1 (2026-05-31): propagate the new
+                        // class/section to parent + teacher apps via entity_sync.
+                        // Pre-fix, promoted students remained on their OLD
+                        // class in the parents collection until next admin
+                        // edit triggered a re-sync — parent app showed stale
+                        // attendance/marks/fees for the old class; teacher
+                        // app's new-class roster filter excluded them.
+                        //
+                        // Sync failures are LOG-AND-CONTINUE per operator
+                        // direction (promotion + fee-regen are the PRIMARY
+                        // transactional outcomes; app sync is post-write
+                        // observability). We deliberately do NOT add
+                        // sync-only failures to $deferFailedStudents — that
+                        // queue is reserved for fee-regen failures.
+                        //
+                        // S7 (commit d19e9e0a) made syncParent safe under
+                        // partial payloads — its $pick helper preserves
+                        // identity fields when the payload omits them.
+                        // Safe to pass a narrow 5-field update here.
+                        //
+                        // entity_sync is not in the closure's `use` list;
+                        // we re-acquire it via get_instance() like the
+                        // L1161 fsTxn re-init pattern (BUG-076 Part 2-B).
+                        try {
+                            $CI =& get_instance();
+                            $entitySync = ($CI !== null && isset($CI->entity_sync)) ? $CI->entity_sync : null;
+                            if ($entitySync !== null) {
+                                $syncPayload = [
+                                    'Name'    => $p['name'] ?? $p['user_id'],
+                                    'Class'   => $__newClassKey,
+                                    'Section' => $__newSectionKey,
+                                    'Status'  => 'Active',
+                                    'session' => $__toSessionLocal,
+                                ];
+                                if (!$entitySync->syncStudent($p['user_id'], $syncPayload)) {
+                                    log_message('warning', "promote(deferred): syncStudent returned false for {$p['user_id']}");
+                                }
+                                if (!$entitySync->syncParent($p['user_id'], $syncPayload)) {
+                                    log_message('warning', "promote(deferred): syncParent returned false for {$p['user_id']}");
+                                }
+                            } else {
+                                log_message('warning', "promote(deferred): entity_sync library not accessible in shutdown context for {$p['user_id']} — app sync skipped (fee regen succeeded)");
+                            }
+                        } catch (\Throwable $eSync) {
+                            log_message('error', "promote(deferred): entity_sync threw for {$p['user_id']}: " . $eSync->getMessage());
+                        }
                     }
                 } catch (\Throwable $e) {
                     log_message('error', "promote(deferred): reassignFeesOnPromotion failed for {$p['user_id']}: " . $e->getMessage());
