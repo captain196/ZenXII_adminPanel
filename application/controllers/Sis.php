@@ -424,8 +424,14 @@ class Sis extends MY_Controller
         // ══════════════════════════════════════════════════════════════
         // 1. FIRESTORE FIRST (primary) — Student profile for Android apps
         // ══════════════════════════════════════════════════════════════
-        $this->entity_sync->syncStudent($userId, $studentData);
-        $this->entity_sync->syncParent($userId, $studentData);
+        // SIS Wave-2 S6 (2026-05-31): capture sync return so silent failure
+        // is visible in logs. Observability-only; no behavior change.
+        if (!$this->entity_sync->syncStudent($userId, $studentData)) {
+            log_message('warning', "syncStudent returned false for {$userId} (save_admission)");
+        }
+        if (!$this->entity_sync->syncParent($userId, $studentData)) {
+            log_message('warning', "syncParent returned false for {$userId} (save_admission)");
+        }
 
         // G2 — Refresh sections.currentStrength after a new admit so the
         // admission section-picker's strength bars stay accurate.
@@ -766,7 +772,10 @@ class Sis extends MY_Controller
 
         // Entity sync for Android apps
         try {
-            $this->entity_sync->syncStudent($userId, $updates);
+            // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+            if (!$this->entity_sync->syncStudent($userId, $updates)) {
+                log_message('warning', "syncStudent returned false for {$userId} (update_profile)");
+            }
         } catch (\Exception $e) {
             log_message('error', "entity_sync syncStudent failed for {$userId}: " . $e->getMessage());
         }
@@ -1463,24 +1472,23 @@ class Sis extends MY_Controller
 
         // Entity sync for Android apps
         try {
-            $this->entity_sync->syncStudent($userId, [
+            // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+            if (!$this->entity_sync->syncStudent($userId, [
                 'Name'    => $student['Name'] ?? $userId,
                 'Class'   => $stuClass,
                 'Section' => $stuSection,
                 'Status'  => 'TC',
-            ]);
-            // SIS Wave-2 fix S2 (2026-05-31): propagate Status=TC to parent
-            // doc as well. Pre-fix, only the student doc was updated; the
-            // parent doc kept Status=Active, so the parent app continued
-            // sending fee notifications and accepting leave applications
-            // for a TC'd student. Pass the full $student (loaded via
-            // _getStudent earlier) so syncParent's no-pick full-doc rewrite
-            // (S7 known-issue) does not clobber fatherName/motherName/phone/
-            // address etc. — only the Status fields are overridden. Set
-            // both Title-Case + camelCase to defeat syncParent's ?? fallback.
-            $this->entity_sync->syncParent($userId, array_merge($student, [
+            ])) {
+                log_message('warning', "syncStudent returned false for {$userId} (issue_tc)");
+            }
+            // S2 (2026-05-31) + S6 (2026-05-31): propagate Status=TC to
+            // parent doc with array_merge to preserve identity (S7 anti-
+            // pattern guard), and check the return for visibility.
+            if (!$this->entity_sync->syncParent($userId, array_merge($student, [
                 'Status' => 'TC', 'status' => 'TC',
-            ]));
+            ]))) {
+                log_message('warning', "syncParent returned false for {$userId} (issue_tc)");
+            }
         } catch (\Exception $e) {
             log_message('error', "entity_sync sync TC failed for {$userId}: " . $e->getMessage());
         }
@@ -1680,16 +1688,18 @@ class Sis extends MY_Controller
 
         // Entity sync for Android apps
         try {
-            $this->entity_sync->syncStudent($userId, [
+            // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+            if (!$this->entity_sync->syncStudent($userId, [
                 'Name' => $stuName, 'Class' => $stuClass, 'Section' => $stuSection, 'Status' => 'Active',
-            ]);
-            // SIS Wave-2 fix S2 (2026-05-31): propagate Status=Active to
-            // parent doc as well. Mirror image of issue_tc — full $student
-            // payload via array_merge so syncParent's full-doc rewrite (S7)
-            // does not wipe identity fields.
-            $this->entity_sync->syncParent($userId, array_merge($student, [
+            ])) {
+                log_message('warning', "syncStudent returned false for {$userId} (cancel_tc)");
+            }
+            // S2 + S6: parent propagation with S7-guarded array_merge + return check.
+            if (!$this->entity_sync->syncParent($userId, array_merge($student, [
                 'Status' => 'Active', 'status' => 'Active',
-            ]));
+            ]))) {
+                log_message('warning', "syncParent returned false for {$userId} (cancel_tc)");
+            }
         } catch (\Exception $e) {
             log_message('error', "entity_sync cancel_tc failed for {$userId}: " . $e->getMessage());
         }
@@ -1772,25 +1782,21 @@ class Sis extends MY_Controller
 
         // Entity sync for Android apps
         try {
-            $this->entity_sync->syncStudent($userId, [
+            // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+            if (!$this->entity_sync->syncStudent($userId, [
                 'Name'    => $student['Name'] ?? $student['name'] ?? $userId,
                 'Class'   => $stuClass,
                 'Section' => $stuSection,
                 'Status'  => 'Inactive',
-            ]);
-            // SIS Wave-2 fix S3 (2026-05-31): propagate Status=Inactive to
-            // parent doc as well. Pre-fix, only the student doc was updated;
-            // the parent doc kept Status=Active, so the parent app continued
-            // sending fee/leave notifications for a withdrawn student. Pass
-            // the full $student (loaded via _getStudent at L1737) so
-            // syncParent's no-pick full-doc rewrite (S7 known-issue) does
-            // not clobber fatherName/motherName/phone/address — only the
-            // Status fields are overridden. Set both Title-Case + camelCase
-            // to defeat syncParent's ?? $data['status'] fallback. Verbatim
-            // pattern from S2 commit 059d8a66 (issue_tc/cancel_tc).
-            $this->entity_sync->syncParent($userId, array_merge($student, [
+            ])) {
+                log_message('warning', "syncStudent returned false for {$userId} (withdraw_student)");
+            }
+            // S3 + S6: parent propagation with S7-guarded array_merge + return check.
+            if (!$this->entity_sync->syncParent($userId, array_merge($student, [
                 'Status' => 'Inactive', 'status' => 'Inactive',
-            ]));
+            ]))) {
+                log_message('warning', "syncParent returned false for {$userId} (withdraw_student)");
+            }
         } catch (\Exception $e) {
             log_message('error', "entity_sync withdraw_student sync failed for {$userId}: " . $e->getMessage());
         }
@@ -1853,8 +1859,16 @@ class Sis extends MY_Controller
         );
 
         // Firestore sync for Android apps (entity_sync loaded in constructor)
-        $this->entity_sync->syncStudent($userId, ['Status' => $newStatus]);
-        $this->entity_sync->syncParent($userId, ['Status' => $newStatus]);
+        // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+        // Note: the syncParent call below passes a Status-only payload which
+        // is the S7 known-issue (full-doc rewrite clobbers fatherName/etc.).
+        // S6 only adds return visibility; S7 fix is Wave-4 territory.
+        if (!$this->entity_sync->syncStudent($userId, ['Status' => $newStatus])) {
+            log_message('warning', "syncStudent returned false for {$userId} (toggle_status)");
+        }
+        if (!$this->entity_sync->syncParent($userId, ['Status' => $newStatus])) {
+            log_message('warning', "syncParent returned false for {$userId} (toggle_status)");
+        }
 
         // G1 — Blank current-month attendance from today onwards on
         // every status flip. For Active→Inactive this stops the % drift
@@ -3337,8 +3351,13 @@ class Sis extends MY_Controller
                 }
 
                 // Firestore sync for Android apps (entity_sync loaded in constructor)
-                $this->entity_sync->syncStudent($studentId, $studentData);
-                $this->entity_sync->syncParent($studentId, $studentData);
+                // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+                if (!$this->entity_sync->syncStudent($studentId, $studentData)) {
+                    log_message('warning', "syncStudent returned false for {$studentId} (import_students)");
+                }
+                if (!$this->entity_sync->syncParent($studentId, $studentData)) {
+                    log_message('warning', "syncParent returned false for {$studentId} (import_students)");
+                }
 
                 // SIS Tier 2 carry (2026-05-30): emit ADMISSION history entry
                 // mirroring save_admission@536. Without this, students imported
@@ -3659,8 +3678,13 @@ class Sis extends MY_Controller
 
         // Entity sync: update student in Firestore (Android apps)
         try {
-            $this->entity_sync->syncStudent($userId, $updateData);
-            $this->entity_sync->syncParent($userId, $updateData);
+            // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+            if (!$this->entity_sync->syncStudent($userId, $updateData)) {
+                log_message('warning', "syncStudent returned false for {$userId} (edit_student)");
+            }
+            if (!$this->entity_sync->syncParent($userId, $updateData)) {
+                log_message('warning', "syncParent returned false for {$userId} (edit_student)");
+            }
         } catch (\Exception $e) { log_message('error', "entity_sync syncStudent failed for {$userId}: " . $e->getMessage()); }
 
         $response = ['status' => 'success', 'message' => 'Student updated successfully'];
@@ -4857,8 +4881,13 @@ class Sis extends MY_Controller
         }
 
         // Firestore sync for Android apps (entity_sync loaded in constructor)
-        $this->entity_sync->syncStudent($studentId, $studentData);
-        $this->entity_sync->syncParent($studentId, $studentData);
+        // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+        if (!$this->entity_sync->syncStudent($studentId, $studentData)) {
+            log_message('warning', "syncStudent returned false for {$studentId} (enroll_student)");
+        }
+        if (!$this->entity_sync->syncParent($studentId, $studentData)) {
+            log_message('warning', "syncParent returned false for {$studentId} (enroll_student)");
+        }
 
         // SIS Tier 2 carry (2026-05-30): emit ADMISSION history entry
         // mirroring save_admission@536. Without this, students enrolled via
