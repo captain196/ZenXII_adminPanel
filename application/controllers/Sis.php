@@ -446,13 +446,25 @@ class Sis extends MY_Controller
         }
 
         // Fee month markers
+        // SIS Wave-2 fix F5 (2026-05-31): fail-loud guard. Pre-fix, a
+        // Firestore failure here was logged but admission continued —
+        // student would exist with no monthFee field, defaulter engine
+        // would report incorrect status, and admin would have no signal.
+        // The current ordering ALREADY puts monthFee init before Firebase
+        // Auth creation at L500+, so a fail-here abort cleanly avoids
+        // orphan-Auth side-effects (Option-3 intent achieved without
+        // reorder — current code is already correct).
+        $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
+        $monthFeeInit = [];
+        foreach ($months as $m) $monthFeeInit[$m] = 0;
+        $monthFeeOk = false;
         try {
-            $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
-            $monthFeeInit = [];
-            foreach ($months as $m) $monthFeeInit[$m] = 0;
-            $this->fs->updateEntity('students', $userId, ['monthFee' => $monthFeeInit]);
+            $monthFeeOk = (bool) $this->fs->updateEntity('students', $userId, ['monthFee' => $monthFeeInit]);
         } catch (Exception $e) {
             log_message('error', "SIS admit fee init failed for {$userId}: " . $e->getMessage());
+        }
+        if (!$monthFeeOk) {
+            return $this->json_error('Failed to initialize fee tracking for student. Please retry. The student record was not created.');
         }
 
         // Subject assignment
@@ -3270,19 +3282,33 @@ class Sis extends MY_Controller
                 $this->_update_student_index($school_name, $studentId, $studentName, $className, $section, 'Active', trim($rowData['Gender'] ?? ''));
 
                 // Initialize Month Fee markers as unpaid (0) for all 12 months
+                // SIS Wave-2 fix F5 (2026-05-31): fail-loud guard per row.
+                // Pre-fix, a Firestore failure here was logged but the loop
+                // continued — row counted as $success while student doc had
+                // no monthFee. Current ordering already places this BEFORE
+                // Firebase Auth at L3336+, so a per-row skip cleanly aborts
+                // before any Auth/sync side-effect (Option-3 intent achieved
+                // without reorder — current code is already correct).
+                $classKey   = $className;   // Already prefixed ("Class 8th")
+                $sectionKey = $section;    // Already prefixed ("Section A")
+                $studentFeePath = "Schools/{$school_name}/{$session_year}/{$classKey}/{$sectionKey}/Students/{$studentId}";
+                $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
+                $monthFeeInit = [];
+                foreach ($months as $m) {
+                    $monthFeeInit[$m] = 0;
+                }
+                $monthFeeOk = false;
                 try {
-                    $classKey   = $className;   // Already prefixed ("Class 8th")
-                    $sectionKey = $section;    // Already prefixed ("Section A")
-                    $studentFeePath = "Schools/{$school_name}/{$session_year}/{$classKey}/{$sectionKey}/Students/{$studentId}";
-                    $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
-                    $monthFeeInit = [];
-                    foreach ($months as $m) {
-                        $monthFeeInit[$m] = 0;
-                    }
                     // Firestore-only per no-RTDB policy.
-                    $this->fs->updateEntity('students', $studentId, ['monthFee' => $monthFeeInit]);
+                    $monthFeeOk = (bool) $this->fs->updateEntity('students', $studentId, ['monthFee' => $monthFeeInit]);
                 } catch (Exception $e) {
                     log_message('error', "SIS import fee init failed for {$studentId}: " . $e->getMessage());
+                }
+                if (!$monthFeeOk) {
+                    $skipped[] = "Row " . ($success + $error + count($skipped) + 1)
+                        . ": {$studentName} — monthFee init failed (see log); student doc remains without fee tracking";
+                    $error++;
+                    continue;
                 }
 
                 // Auto-assign class fees for imported student
@@ -4821,10 +4847,25 @@ class Sis extends MY_Controller
         $this->_update_student_index($school_name, $studentId, $app['student_name'] ?? '', $className, $section, 'Active', $gender);
 
         // Initialize Month Fee markers as unpaid (0) for all 12 months
+        // SIS Wave-2 fix F5 (2026-05-31): fail-loud guard. Pre-fix, a
+        // Firestore failure here was logged but enrollment continued —
+        // student doc + CRM marker + Auth + SMS all proceeded against a
+        // student with no monthFee. Current ordering already places this
+        // BEFORE Firebase Auth at L4835+, so a fail-here abort cleanly
+        // avoids orphan-Auth side-effects (Option-3 intent achieved
+        // without reorder — current code is already correct).
         $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
         $monthFeeData = array_fill_keys($months, 0);
-        // Firestore-only per no-RTDB policy.
-        try { $this->fs->updateEntity('students', $studentId, ['monthFee' => $monthFeeData]); } catch (\Exception $e) { log_message('error', "Firestore dual-write monthFee failed for {$studentId}: " . $e->getMessage()); }
+        $monthFeeOk = false;
+        try {
+            // Firestore-only per no-RTDB policy.
+            $monthFeeOk = (bool) $this->fs->updateEntity('students', $studentId, ['monthFee' => $monthFeeData]);
+        } catch (\Exception $e) {
+            log_message('error', "Firestore dual-write monthFee failed for {$studentId}: " . $e->getMessage());
+        }
+        if (!$monthFeeOk) {
+            return $this->json_error('Failed to initialize fee tracking for student. Please retry. CRM application has NOT been marked enrolled; no Firebase Auth account was created.');
+        }
 
         $history = $app['history'] ?? [];
         $history[] = ['action'=>"Enrolled as {$studentId} in {$className} {$section}",'by'=>$this->admin_name,'timestamp'=>$now];
