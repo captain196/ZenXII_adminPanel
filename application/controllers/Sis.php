@@ -512,21 +512,11 @@ class Sis extends MY_Controller
         // ══════════════════════════════════════════════════════════════
         // 2. FIREBASE AUTH — Parent app login
         // ══════════════════════════════════════════════════════════════
-        try {
-            $authEmail = Firebase::authEmail($userId);
-            $this->firebase->createFirebaseUser($authEmail, $password, [
-                'uid'         => $userId,
-                'displayName' => $name,
-            ]);
-            $this->firebase->setFirebaseClaims($userId, [
-                'role'          => 'student',
-                'school_id'     => $this->school_id,
-                'school_code'   => $this->school_code,
-                'parent_db_key' => $this->parent_db_key,
-            ]);
-        } catch (Exception $e) {
-            log_message('error', "SIS Firebase Auth create failed for {$userId}: " . $e->getMessage());
-        }
+        // SIS Wave-3 D3 (2026-05-31): consolidated via _createFirebaseAuthStudent.
+        // Return value intentionally ignored — save_admission's pre-fix
+        // behavior was silent-continue on Auth failure. B3 fix (surface
+        // Auth failure to operator) is separate Tier-2 territory.
+        $this->_createFirebaseAuthStudent($userId, $password, $name, 'SIS save_admission');
 
         // ══════════════════════════════════════════════════════════════
         // 4. POST-ADMISSION — Fees, history, leads, notifications
@@ -2490,6 +2480,64 @@ class Sis extends MY_Controller
      * Returns ['document' => url, 'thumbnail' => url] or false on failure.
      */
     /**
+     * SIS Wave-3 fix D3 (2026-05-31): consolidated Firebase Auth user creation.
+     *
+     * Replaces 3 duplicated inline blocks (save_admission L515-529,
+     * import_students L3500-3514, enroll_student L5022-5044) with a single
+     * helper. Pre-fix, each call site had its own empty-password handling
+     * (only enroll_student checked), its own success-info-log (only
+     * enroll_student emitted), and its own error-log message format (3
+     * different strings).
+     *
+     * Helper provides a UNIFORM RETURN SHAPE so each caller decides what
+     * to do on failure. Behavioral preservation at call sites:
+     *   - save_admission: ignores return (silent continue, B3 territory)
+     *   - import_students: ignores return (silent continue)
+     *   - enroll_student: captures return into $authCreated + $authError
+     *     for the existing json_success response. B3 (success-when-auth-
+     *     fails anti-pattern) is NOT touched — separate Tier-2 fix.
+     *
+     * Returns ['success' => bool, 'error' => string].
+     *   ['success' => true,  'error' => '']        Auth + claims succeeded
+     *   ['success' => false, 'error' => 'reason']  Auth or claims failed,
+     *                                              or password was empty
+     *
+     * $context is the originating method name (free-form string) — used
+     * in log lines for forensic triage. Defaults to 'sis' for safety.
+     */
+    private function _createFirebaseAuthStudent(
+        string $studentId,
+        string $password,
+        string $displayName,
+        string $context = 'sis'
+    ): array {
+        if ($password === '') {
+            $err = 'Generated password is empty.';
+            log_message('error', "{$context}: Firebase Auth create skipped for {$studentId}: {$err}");
+            return ['success' => false, 'error' => $err];
+        }
+        try {
+            $authEmail = Firebase::authEmail($studentId);
+            $this->firebase->createFirebaseUser($authEmail, $password, [
+                'uid'         => $studentId,
+                'displayName' => $displayName,
+            ]);
+            $this->firebase->setFirebaseClaims($studentId, [
+                'role'          => 'student',
+                'school_id'     => $this->school_id,
+                'school_code'   => $this->school_code,
+                'parent_db_key' => $this->parent_db_key,
+            ]);
+            log_message('info', "{$context}: Firebase Auth user created for {$studentId} (email={$authEmail}).");
+            return ['success' => true, 'error' => ''];
+        } catch (\Exception $e) {
+            $msg = $e->getMessage();
+            log_message('error', "{$context}: Firebase Auth create failed for {$studentId}: {$msg}");
+            return ['success' => false, 'error' => $msg];
+        }
+    }
+
+    /**
      * SIS Wave-3 fix DM6 (2026-05-31): per-student document quota check.
      *
      * Defaults come from application/config/sis_document_quota.php. Per-school
@@ -3497,21 +3545,12 @@ class Sis extends MY_Controller
                 }
 
                 // Create Firebase Auth user (best-effort, don't block import on failure)
-                try {
-                    $authEmail = Firebase::authEmail($studentId);
-                    $this->firebase->createFirebaseUser($authEmail, $password, [
-                        'uid'         => $studentId,
-                        'displayName' => $studentName,
-                    ]);
-                    $this->firebase->setFirebaseClaims($studentId, [
-                        'role'          => 'student',
-                        'school_id'     => $this->school_id,
-                        'school_code'   => $this->school_code,
-                        'parent_db_key' => $this->parent_db_key,
-                    ]);
-                } catch (Exception $e) {
-                    log_message('error', "SIS import Firebase Auth create failed for {$studentId}: " . $e->getMessage());
-                }
+                // SIS Wave-3 D3 (2026-05-31): consolidated via _createFirebaseAuthStudent.
+                // Return value intentionally ignored — import_students's pre-fix
+                // behavior was silent-continue per row on Auth failure. Each row
+                // becomes a separate Auth attempt; one row's failure doesn't
+                // abort the rest of the import (matches B2 per-row pattern).
+                $this->_createFirebaseAuthStudent($studentId, $password, $studentName, 'SIS import_students');
 
                 // Firestore sync for Android apps (entity_sync loaded in constructor)
                 // SIS Wave-2 S6 (2026-05-31): observability for sync return.
@@ -5019,30 +5058,18 @@ class Sis extends MY_Controller
         // retry. Enrollment side effects (Firestore docs, fees) stay in
         // place — admin can re-run a "create auth account" repair flow
         // if needed (Phase A2 will add that).
-        $authCreated = false;
-        $authError   = '';
-        try {
-            $password = $studentData['Password'] ?? '';
-            if ($password === '') {
-                throw new \RuntimeException('Generated password is empty.');
-            }
-            $authEmail = Firebase::authEmail($studentId);
-            $this->firebase->createFirebaseUser($authEmail, $password, [
-                'uid'         => $studentId,
-                'displayName' => $app['student_name'] ?? '',
-            ]);
-            $this->firebase->setFirebaseClaims($studentId, [
-                'role'          => 'student',
-                'school_id'     => $this->school_id,
-                'school_code'   => $this->school_code,
-                'parent_db_key' => $this->parent_db_key,
-            ]);
-            $authCreated = true;
-            log_message('info', "SIS enroll: Firebase Auth user created for {$studentId} (email={$authEmail}).");
-        } catch (Exception $e) {
-            $authError = $e->getMessage();
-            log_message('error', "SIS enroll Firebase Auth create failed for {$studentId}: {$authError}");
-        }
+        // SIS Wave-3 D3 (2026-05-31): consolidated via _createFirebaseAuthStudent.
+        // Preserved behavior: captures result into $authCreated + $authError
+        // for the existing json_success response below (which surfaces the
+        // failure state to the operator — but does NOT abort enrollment).
+        // The B3 issue (success-when-auth-fails) is intentionally preserved;
+        // its fix is Tier-2 territory paired with this consolidation.
+        // Note: $password is sourced from $studentData (set at L4905+);
+        // the helper's empty-password guard handles the corner case the
+        // pre-fix block guarded inline.
+        $authResult  = $this->_createFirebaseAuthStudent($studentId, $studentData['Password'] ?? '', $app['student_name'] ?? '', 'SIS enroll');
+        $authCreated = (bool) $authResult['success'];
+        $authError   = (string) $authResult['error'];
 
         // Phase A Part 1 — fire SMS with login credentials immediately
         // after a successful Firebase Auth creation. Skipped if Auth
