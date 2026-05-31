@@ -3674,6 +3674,31 @@ class Sis extends MY_Controller
 
         $this->fs->updateEntity('students', $userId, $updateData);
 
+        // SIS Wave-2 fix H1 (2026-05-31): emit PROFILE_UPDATE history entry,
+        // mirroring the canonical pattern from Sis::update_profile@736-771.
+        // Pre-fix, edit_student persisted comprehensive profile edits to
+        // Firestore but emitted no audit entry, leaving zero forensic trail
+        // for compliance reviews. Diff computed against $existing (loaded at
+        // L3499 via _getStudent). Skip 'updatedAt' (timestamp churn) and
+        // camelCase mirrors (the L3624-3669 aliasing block duplicates
+        // Title-Case keys for the Android apps — including both would
+        // double-count every change). Use === for type-safe comparison.
+        $auditDiff = [];
+        foreach ($updateData as $auditKey => $newVal) {
+            if ($auditKey === 'updatedAt') continue;
+            if ($auditKey === '' || ctype_lower($auditKey[0])) continue;
+            $oldVal = $existing[$auditKey] ?? null;
+            if ($oldVal === $newVal) continue;
+            $auditDiff[$auditKey] = ['old' => $oldVal, 'new' => $newVal];
+        }
+        if (!empty($auditDiff)) {
+            $changedKeys = array_keys($auditDiff);
+            $this->_log_history($school_id, $userId, 'PROFILE_UPDATE',
+                "Profile updated: " . implode(', ', $changedKeys),
+                ['fields' => $changedKeys, 'changes' => $auditDiff]
+            );
+        }
+
         // RTDB mirror removed per no-RTDB policy.
 
         // Entity sync: update student in Firestore (Android apps)
