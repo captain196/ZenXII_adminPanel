@@ -1964,12 +1964,20 @@ class Sis extends MY_Controller
         if (!in_array($mime, $allowedMime, true)) {
             return $this->json_error('Invalid MIME type for uploaded file.');
         }
-        // ── Fix 2: File size limit (5 MB) ─────────────────────────────────
-        if ($_FILES['document']['size'] > 5 * 1024 * 1024) {
-            return $this->json_error('File too large. Maximum allowed size is 5 MB.');
-        }
         if ($_FILES['document']['error'] !== UPLOAD_ERR_OK) {
             return $this->json_error('File upload error (code ' . $_FILES['document']['error'] . ').');
+        }
+
+        // SIS Wave-3 DM6 (2026-05-31): per-student quota check. Replaces the
+        // hardcoded 5 MB per-file check with config-driven per-file + aggregate
+        // size + doc-count caps. Per-school override at
+        // schools.{schoolId}.documentQuota takes precedence over defaults
+        // (see application/config/sis_document_quota.php). Surface the quota
+        // reason to the operator so they know exactly what limit was hit.
+        $fileBytes = (int) $_FILES['document']['size'];
+        $quota = $this->_check_doc_quota($userId, $fileBytes);
+        if (!$quota['ok']) {
+            return $this->json_error($quota['reason']);
         }
 
         $storagePath = "Students/{$school_id}/{$userId}/docs/{$docLabel}";
@@ -2015,7 +2023,16 @@ class Sis extends MY_Controller
             $studentDoc = $this->_getStudent($userId);
             $docMap = is_array($studentDoc['documents'] ?? null) ? $studentDoc['documents']
                     : (is_array($studentDoc['Doc'] ?? null) ? $studentDoc['Doc'] : []);
-            $docMap[$docLabel] = ['url' => $url, 'thumbnail' => $thumbUrl, 'uploaded_at' => date('Y-m-d H:i:s')];
+            // SIS Wave-3 DM6 (2026-05-31): record `bytes` so future quota
+            // aggregations sum accurately. Additive — readers that don't
+            // care about size ignore the field; grandfathered docs without
+            // bytes continue to render normally.
+            $docMap[$docLabel] = [
+                'url'         => $url,
+                'thumbnail'   => $thumbUrl,
+                'uploaded_at' => date('Y-m-d H:i:s'),
+                'bytes'       => $fileBytes,
+            ];
             $ok = $this->fs->updateEntity('students', $userId, ['documents' => $docMap, 'Doc' => $docMap]);
             // R2: do not report success if the persistence write failed.
             if (!$ok) {
@@ -2472,6 +2489,83 @@ class Sis extends MY_Controller
      * Upload a student file to Firebase Storage — mirrors Student.php::uploadStudentFile().
      * Returns ['document' => url, 'thumbnail' => url] or false on failure.
      */
+    /**
+     * SIS Wave-3 fix DM6 (2026-05-31): per-student document quota check.
+     *
+     * Defaults come from application/config/sis_document_quota.php. Per-school
+     * override comes from schools.{schoolId}.documentQuota.{maxDocs|maxFileBytes|
+     * maxTotalBytes} when present.
+     *
+     * Returns ['ok' => true] on pass, or ['ok' => false, 'reason' => msg] on fail.
+     * Reason is operator-facing — call sites surface it via json_error.
+     *
+     * Grandfathered docs without a `bytes` field count toward the COUNT cap
+     * but are treated as 0 in the SIZE aggregate. COUNT is the primary
+     * safeguard for grandfathered students; SIZE becomes accurate over time
+     * as docs are re-uploaded through upload_document (which now records
+     * bytes). Admission-form uploads via _uploadStudentFile do NOT yet
+     * record bytes — a residual gap deliberately left out of DM6 scope
+     * (single-issue / surgical change discipline).
+     */
+    private function _check_doc_quota(string $userId, int $newFileBytes): array
+    {
+        $this->config->load('sis_document_quota', true);
+        $defaults = $this->config->item('sis_document_quota') ?: [];
+        $defaultMaxDocs       = (int) ($defaults['max_docs']        ?? 10);
+        $defaultMaxFileBytes  = (int) ($defaults['max_file_bytes']  ?? 5 * 1024 * 1024);
+        $defaultMaxTotalBytes = (int) ($defaults['max_total_bytes'] ?? 50 * 1024 * 1024);
+
+        $schoolDoc = $this->fs->get('schools', $this->school_id) ?: [];
+        $override  = is_array($schoolDoc['documentQuota'] ?? null) ? $schoolDoc['documentQuota'] : [];
+        $maxDocs       = (int) ($override['maxDocs']       ?? $defaultMaxDocs);
+        $maxFileBytes  = (int) ($override['maxFileBytes']  ?? $defaultMaxFileBytes);
+        $maxTotalBytes = (int) ($override['maxTotalBytes'] ?? $defaultMaxTotalBytes);
+
+        // Per-file size cap (operator-tunable; default 5 MB)
+        if ($newFileBytes > $maxFileBytes) {
+            $maxMb = number_format($maxFileBytes / 1024 / 1024, 1);
+            $newMb = number_format($newFileBytes / 1024 / 1024, 1);
+            return ['ok' => false, 'reason' => "File too large ({$newMb} MB). Per-file limit is {$maxMb} MB."];
+        }
+
+        // Read student's existing document map
+        $studentDoc = $this->_getStudent($userId);
+        $docMap = is_array($studentDoc['documents'] ?? null) ? $studentDoc['documents']
+                : (is_array($studentDoc['Doc'] ?? null) ? $studentDoc['Doc'] : []);
+        $currentCount = count($docMap);
+        $currentBytes = 0;
+        foreach ($docMap as $entry) {
+            if (is_array($entry) && isset($entry['bytes'])) {
+                $currentBytes += (int) $entry['bytes'];
+            }
+        }
+
+        // Doc-count cap (new upload would push count to currentCount + 1).
+        // A same-label re-upload does NOT add to the count — it replaces an
+        // existing entry. Detect this and skip the count cap if applicable.
+        // Per-site convention: callers pass $newFileBytes only; we cannot
+        // know the doc label here, so the count check applies uniformly.
+        // Net effect: a re-upload at full count (=maxDocs) is blocked — the
+        // operator must delete-first then upload. Acceptable tradeoff for
+        // surgical scope; callers that want the smarter re-upload-aware
+        // check can do their own count-vs-replacement detection before
+        // calling _check_doc_quota.
+        if ($currentCount >= $maxDocs) {
+            return ['ok' => false, 'reason' => "Student already has {$currentCount} documents (limit: {$maxDocs}). Delete an existing document first."];
+        }
+
+        // Aggregate size cap (tracked bytes only; grandfathered docs count
+        // as 0 — see method docblock for rationale)
+        if (($currentBytes + $newFileBytes) > $maxTotalBytes) {
+            $currentMb = number_format($currentBytes / 1024 / 1024, 1);
+            $newMb     = number_format($newFileBytes / 1024 / 1024, 1);
+            $maxMb     = number_format($maxTotalBytes / 1024 / 1024, 1);
+            return ['ok' => false, 'reason' => "Student total storage: {$currentMb} MB. Cannot upload {$newMb} MB file (would exceed {$maxMb} MB limit). Delete some documents first."];
+        }
+
+        return ['ok' => true];
+    }
+
     private function _uploadStudentFile($file, $schoolName, $combinedClassPath, $studentId, $folderLabel, $type = 'document')
     {
         if (!isset($file['tmp_name']) || !is_uploaded_file($file['tmp_name'])) return false;
@@ -2479,7 +2573,18 @@ class Sis extends MY_Controller
         $ext       = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
         $allowed   = ($type === 'profile') ? ['jpg','jpeg','png','webp'] : ['jpg','jpeg','png','webp','pdf'];
         if (!in_array($ext, $allowed, true)) return false;
-        if ($file['size'] > 5 * 1024 * 1024) return false;
+
+        // SIS Wave-3 DM6 (2026-05-31): per-student quota check. Replaces the
+        // hardcoded 5 MB check below with config-driven per-file + aggregate
+        // size + doc-count caps. Per-school override at schools.{id}.documentQuota
+        // takes precedence over the config default. Returns false on quota
+        // fail (matches existing _uploadStudentFile failure convention; caller
+        // sees a false return and can choose to surface error to operator).
+        $quota = $this->_check_doc_quota($studentId, (int) $file['size']);
+        if (!$quota['ok']) {
+            log_message('warning', "Sis::_uploadStudentFile DM6 quota block for {$studentId}: " . $quota['reason']);
+            return false;
+        }
 
         // M-03 FIX: Validate MIME via finfo (don't trust client-supplied type)
         $allowedMimes = ($type === 'profile')
