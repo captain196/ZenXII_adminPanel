@@ -2820,12 +2820,29 @@ class Sis extends MY_Controller
             'changed_at'  => date('Y-m-d H:i:s'),
             'metadata'    => $metadata,
         ];
-        // Append history to student doc
-        $student = $this->_getStudent($userId);
-        $history = $student['History'] ?? [];
         $histKey = date('YmdHis') . '_' . bin2hex(random_bytes(3));
-        $history[$histKey] = $entry;
-        $this->fs->updateEntity('students', $userId, ['History' => $history]);
+
+        // SIS Wave-4 fix F2 (2026-05-31): dotted-path Firestore PATCH
+        // eliminates the read-modify-write race. Pre-fix, _log_history
+        // read the entire History map, appended the new entry locally,
+        // and wrote the full map back. Two concurrent calls each read
+        // the same starting state — the second writer's full-map write
+        // silently dropped the first writer's entry, producing audit-
+        // trail loss invisible to admins.
+        //
+        // The new write uses a single dotted field path
+        // ("History.{$histKey}"). Firestore_rest_client::updateDocument
+        // (L879-916, B2.3.2-FIX R5 nested-update support) reshapes the
+        // dotted key into a nested body + dotted updateMask
+        // (?updateMask.fieldPaths=History.{histKey}). Firestore PATCH
+        // applies the update only to that specific field path; sibling
+        // entries in the History map are preserved untouched. Two
+        // concurrent calls now write DIFFERENT field paths — zero
+        // contention, both entries persist.
+        //
+        // $histKey collision (timestamp + 6 hex random per call) remains
+        // astronomically unlikely; same risk profile as pre-fix.
+        $this->fs->updateEntity('students', $userId, ["History.{$histKey}" => $entry]);
     }
 
     /**
