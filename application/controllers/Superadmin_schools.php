@@ -16,6 +16,12 @@ require_once APPPATH . 'core/MY_Superadmin_Controller.php';
  */
 class Superadmin_schools extends MY_Superadmin_Controller
 {
+    // B1 onboarding-rollback state (set during onboard(); read by _onboard_rollback).
+    private $_ob_schcodeVal = null;
+    private $_ob_ssaVal     = null;
+    private $_ob_fbUid      = null;
+    private $_sec_telem     = null;
+
     public function __construct() { parent::__construct(); }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -24,6 +30,51 @@ class Superadmin_schools extends MY_Superadmin_Controller
     public function index()
     {
         $schools = [];
+
+        // ── B2.3.2-C: flag-gated single-source schools list ──────────────
+        if ($this->_b23c_registry_firestore_on()) {
+            $svc       = $this->_b23c_registry();
+            $tenants   = $svc->list_tenants_summary();
+            $planById  = [];
+            foreach ($svc->list_plans() as $fs) {
+                $pid = (string) ($fs['planFamilyId'] ?? '');
+                if ($pid !== '') $planById[$pid] = $fs;
+            }
+            foreach ($tenants as $t) {
+                $sid    = (string) $t['schoolId'];
+                $pfid   = (string) $t['planFamilyId'];
+                $state  = (string) $t['lifecycleState'];
+                $detail = $svc->get_tenant_detail($sid);
+                $schDoc = is_array($detail['schools'] ?? null) ? $detail['schools'] : [];
+                $cache  = is_array($schDoc['statsCache'] ?? null) ? $schDoc['statsCache'] : [];
+                $adminDis = is_array($schDoc['adminDisabled'] ?? null) ? $schDoc['adminDisabled'] : [];
+                // Canonical access-allowed → top-level legacy "status" string.
+                $topStatus = !empty($adminDis['value']) ? 'suspended' : 'active';
+                $planName  = isset($planById[$pfid]) ? (string) ($planById[$pfid]['name'] ?? '—') : '—';
+                $schools[] = [
+                    'uid'          => $sid,
+                    'name'         => $t['schoolName'] !== '' ? $t['schoolName'] : $sid,
+                    'city'         => (string) ($schDoc['city'] ?? ''),
+                    'logo_url'     => (string) ($schDoc['logoUrl'] ?? ''),
+                    'domain_id'    => (string) ($schDoc['domainIdentifier'] ?? ''),
+                    'firebase_key' => $sid,
+                    'status'       => $topStatus,
+                    'created_at'   => (string) ($schDoc['createdAt'] ?? ''),
+                    'plan_name'    => $planName,
+                    'expiry_date'  => (string) $t['subscriptionPeriodEnd'],
+                    'sub_status'   => $state,
+                    'students'     => (int) ($cache['totalStudents'] ?? $cache['total_students'] ?? 0),
+                    'staff'        => (int) ($cache['totalStaff']    ?? $cache['total_staff']    ?? 0),
+                ];
+            }
+            usort($schools, fn($a, $b) => strcmp($a['name'], $b['name']));
+            $data = ['page_title' => 'Manage Schools', 'schools' => $schools];
+            $this->load->view('superadmin/include/sa_header', $data);
+            $this->load->view('superadmin/schools/index',     $data);
+            $this->load->view('superadmin/include/sa_footer');
+            return;
+        }
+
         try {
             // System/Schools is now the PRIMARY location for all school data
             $raw = $this->firebase->get('System/Schools') ?? [];
@@ -74,12 +125,21 @@ class Superadmin_schools extends MY_Superadmin_Controller
     public function create()
     {
         $plans = [];
-        try {
-            $raw = $this->firebase->get('System/Plans') ?? [];
-            foreach ($raw as $pid => $p) {
-                $plans[$pid] = $p['name'] ?? $pid;
+
+        // ── B2.3.2-C: flag-gated single-source plan dropdown ─────────────
+        if ($this->_b23c_registry_firestore_on()) {
+            foreach ($this->_b23c_registry()->list_plans() as $fs) {
+                $pid = (string) ($fs['planFamilyId'] ?? '');
+                if ($pid !== '') $plans[$pid] = (string) ($fs['name'] ?? $pid);
             }
-        } catch (Exception $e) {}
+        } else {
+            try {
+                $raw = $this->firebase->get('System/Plans') ?? [];
+                foreach ($raw as $pid => $p) {
+                    $plans[$pid] = $p['name'] ?? $pid;
+                }
+            } catch (Exception $e) {}
+        }
 
         $data = ['page_title' => 'Onboard New School', 'plans' => $plans];
         $this->load->view('superadmin/include/sa_header', $data);
@@ -101,6 +161,23 @@ class Superadmin_schools extends MY_Superadmin_Controller
         }
         if ($code !== '' && !preg_match('/^[A-Z0-9]{3,10}$/', $code)) {
             $this->json_error('Code must be 3–10 uppercase letters/digits.'); return;
+        }
+
+        // ── B2.3.2-C: flag-gated single-source uniqueness check ──────────
+        if ($this->_b23c_registry_firestore_on()) {
+            $svc = $this->_b23c_registry();
+            $name_taken = false;
+            if ($name !== '') {
+                $nameKey    = $this->_school_name_key($name);
+                $name_taken = $svc->name_taken($nameKey);
+            }
+            $code_taken = $code !== '' && $svc->code_taken($code);
+            $this->json_success([
+                'name_taken' => $name_taken,
+                'code_taken' => $code_taken,
+                'available'  => !$name_taken && !$code_taken,
+            ]);
+            return;
         }
 
         try {
@@ -160,11 +237,28 @@ class Superadmin_schools extends MY_Superadmin_Controller
             $this->json_error('Invalid admin email address.'); return;
         }
 
-        // Auto-generate school code via Auth API (race-safe sequential)
-        $this->load->library('auth_client');
-        $school_code = $this->auth_client->generate_id('SCHCODE');
+        // ── B1: school code via Firestore Id_generator (atomic) when flag ON; ──
+        // legacy Auth API (Mongo) otherwise. Inert until onboard.schcode_firestore=ON.
+        $this->config->load('sa_migration_flags', FALSE, TRUE);
+        $saFlags         = $this->config->item('sa_migration_flags');
+        $useIdGenSchcode = is_array($saFlags) && !empty($saFlags['onboard.schcode_firestore']);
+        $useFsSsa        = is_array($saFlags) && !empty($saFlags['onboard.ssa_firebase']);
+        $this->_ob_schcodeVal = null; $this->_ob_ssaVal = null; $this->_ob_fbUid = null;
+
+        if ($useIdGenSchcode) {
+            $this->load->library('id_generator');
+            try { $school_code = $this->id_generator->safeGenerate('SCHCODE'); }
+            catch (\Throwable $e) { log_message('error', 'SA onboard: Id_generator SCHCODE failed: ' . $e->getMessage()); $school_code = ''; }
+            $this->_ob_schcodeVal = ($school_code !== '') ? ((int) $school_code - 10000) : null;
+            $this->_onboard_telem('ONBOARD_IDGEN_SOURCE', ['kind' => 'SCHCODE', 'source' => 'firestore']);
+        } else {
+            $this->load->library('auth_client');
+            $school_code = $this->auth_client->generate_id('SCHCODE');
+            $this->_onboard_telem('ONBOARD_IDGEN_SOURCE', ['kind' => 'SCHCODE', 'source' => 'mongo']);
+            $this->_onboard_telem('ONBOARD_MONGO_HIT', ['call' => 'generate_id']);
+        }
         if (empty($school_code)) {
-            $this->json_error('Failed to generate school code. Is the Auth API running?'); return;
+            $this->json_error('Failed to generate school code. Please try again.'); return;
         }
         if (!preg_match('/^[A-Za-z0-9_\-]+$/', $plan_id)) {
             $this->json_error('Invalid plan identifier.'); return;
@@ -183,8 +277,196 @@ class Superadmin_schools extends MY_Superadmin_Controller
         }
 
         // ── Availability checks ───────────────────────────────────────────────
+        $nameKey = $this->_school_name_key($name);
+
+        // ── B2.3.2-E: Firestore-canonical onboarding branch ──────────────
+        // When b2.registry_firestore=TRUE, this branch creates the 6+ canonical
+        // Firestore documents (schools, schoolControl, tenantPublic,
+        // subscriptions, schoolSsa, schoolCodeIndex, schoolNameIndex,
+        // tenantAudit) atomically via B2_registry_service::create_tenant.
+        // RTDB writes for NON-B2 surfaces — Users/Admin (tenant-admin auth,
+        // owned by B-AUTH-RES), Schools/{id}/Sessions (academic session
+        // bootstrap, owned by SW), _initialize_default_data (academic seed,
+        // per-module retirement) — REMAIN in both branches because their
+        // retirement is owned by other waves. These are HELD BRIDGES, NOT
+        // B2 dual-writes. The legacy RTDB branch below is preserved verbatim
+        // for rollback.
+        if ($this->_b23c_registry_firestore_on()) {
+            $svc = $this->_b23c_registry();
+
+            // Plan must exist in Firestore canonical
+            $planFs = $svc->get_plan($plan_id);
+            if (!is_array($planFs)) {
+                $this->json_error("Plan '{$plan_id}' not found in Firestore. Cannot create school."); return;
+            }
+            // Pre-flight uniqueness (race-safe gate is in create_tenant itself; this
+            // is the cheap pre-check for clean error messaging)
+            if ($svc->name_taken($nameKey)) {
+                $this->json_error("A school named '{$name}' already exists."); return;
+            }
+            if ($svc->code_taken($school_code)) {
+                $this->json_error("Generated school code '{$school_code}' collided. Please retry."); return;
+            }
+
+            $school_id  = $this->_generate_school_id();
+            $now        = date('Y-m-d H:i:s');
+            $grace_days = (int) ($planFs['graceDays'] ?? 7);
+            $grace_end  = date('Y-m-d', strtotime($expiry . " +{$grace_days} days"));
+            $hashed_pw  = password_hash($admin_pass, PASSWORD_BCRYPT, ['cost' => 12]);
+
+            // SSA id + Firebase Auth user (same B1 path used by the legacy branch).
+            $this->load->library('id_generator');
+            try { $admin_id = $this->id_generator->safeGenerate('SSA'); }
+            catch (\Throwable $e) {
+                log_message('error', 'SA onboard (FS): Id_generator SSA failed: ' . $e->getMessage());
+                $this->json_error('Failed to generate admin ID. Please try again.'); return;
+            }
+            $this->_ob_ssaVal = (int) substr($admin_id, 3);
+
+            $authEmail = Firebase::authEmail($admin_id);
+            $fbUser    = $this->firebase->createFirebaseUser($authEmail, $admin_pass, ['uid' => $admin_id, 'displayName' => $admin_name]);
+            if ($fbUser === null) {
+                $this->_onboard_telem('ONBOARD_SSA_FBAUTH', ['result' => 'create_failed', 'ssa' => $admin_id, 'path' => 'firestore_canonical']);
+                $this->json_error('Failed to create the admin login account. Please try again.'); return;
+            }
+            $this->_ob_fbUid = $admin_id;
+
+            $claimOk = false;
+            for ($attempt = 1; $attempt <= 2 && !$claimOk; $attempt++) {
+                $claimOk = $this->firebase->setFirebaseClaims($admin_id, [
+                    'role' => 'school_super_admin', 'school_id' => $school_id,
+                    'school_code' => $school_code, 'parent_db_key' => $school_code,
+                ]);
+                if (!$claimOk && $attempt < 2) usleep(200000);
+            }
+            if (!$claimOk) {
+                try { $this->firebase->deleteFirebaseUser($admin_id); } catch (\Throwable $e) {}
+                $this->_onboard_telem('ONBOARD_SSA_FBAUTH', ['result' => 'claims_failed', 'ssa' => $admin_id, 'path' => 'firestore_canonical']);
+                $this->json_error('Failed to set admin permissions. Please try again.'); return;
+            }
+
+            // Atomic Firestore tenant creation (the load-bearing single source of truth).
+            $tenantResult = $svc->create_tenant([
+                'schoolId'          => $school_id,
+                'schoolCode'        => (string) $school_code,
+                'schoolName'        => $name,
+                'nameKey'           => $nameKey,
+                'city'              => $city,
+                'street'            => $street,
+                'email'             => $email,
+                'phone'             => $phone,
+                'logoUrl'           => $logo_url,
+                'domainIdentifier'  => strtolower(preg_replace('/[^A-Za-z0-9]/', '', $name)),
+                'planFamilyId'      => $plan_id,
+                'planModules'       => is_array($planFs['modules'] ?? null) ? $planFs['modules'] : [],
+                'planBillingCycle'  => (string) ($planFs['billingCycle'] ?? 'annual'),
+                'periodStart'       => date('Y-m-d'),
+                'periodEnd'         => $expiry,
+                'graceEnd'          => $grace_end,
+                'primarySsaId'      => $admin_id,
+                'ssaName'           => $admin_name,
+                'ssaEmail'          => $admin_email,
+                'createdBy'         => (string) $this->sa_id,
+            ]);
+            if (empty($tenantResult['success'])) {
+                $errCode = (string) ($tenantResult['error'] ?? 'unknown');
+                // Roll back the Firebase Auth user (canonical Firestore docs
+                // either weren't written or were already rolled back by create_tenant).
+                try { $this->firebase->deleteFirebaseUser($admin_id); } catch (\Throwable $e) {}
+                $errMsg = ($errCode === 'name_taken') ? "A school named '{$name}' already exists."
+                       : (($errCode === 'code_taken') ? "School code '{$school_code}' is already in use." :
+                          'Failed to create tenant records: ' . $errCode);
+                $this->_onboard_telem('ONBOARD_RESULT', ['result' => 'failed', 'path' => 'firestore_canonical', 'error' => $errCode]);
+                $this->json_error($errMsg); return;
+            }
+
+            // ── HELD-BRIDGE WRITES (NOT B2 surface — owned by other waves) ──
+            // Users/Admin/{code}/{ssaId} — tenant-admin auth (B-AUTH-RES retirement).
+            // Still read by Admin_login for the legacy authn-record path; cannot
+            // be removed until B-AUTH-RES migrates Admin_login.
+            try {
+                $this->firebase->set("Users/Admin/{$school_code}/{$admin_id}", [
+                    'Status'      => 'Active',
+                    'Role'        => 'School Super Admin',
+                    'Name'        => $admin_name,
+                    'Email'       => $admin_email,
+                    'Credentials' => ['Id' => $admin_id, 'Password' => $hashed_pw],
+                    'Profile'     => [
+                        'name' => $admin_name, 'email' => $admin_email, 'phone' => $phone,
+                        'role' => 'school_super_admin', 'school' => $name,
+                        'school_id' => $school_code, 'firebase_id' => $school_id,
+                        'created_at' => $now, 'created_by' => $this->sa_id,
+                    ],
+                    'AccessHistory' => ['SA_LastLogin' => null, 'SA_LastLoginIP' => null, 'LoginAttempts' => 0],
+                    'Privileges'    => ['accountmanagement' => ''],
+                ]);
+            } catch (Exception $e) {
+                log_message('error', 'SA onboard (FS): Users/Admin write failed (non-fatal): ' . $e->getMessage());
+            }
+
+            // Schools/{id}/Sessions + Config/ActiveSession — session-propagation
+            // surface (SW retirement). Still read by Admin_login + MY_Controller
+            // for the session list / activeSession bootstrap; cannot be removed
+            // until SW migrates those readers.
+            try {
+                $this->firebase->set("Schools/{$school_id}/Sessions", [$session_yr]);
+                $this->firebase->set("Schools/{$school_id}/Config/ActiveSession", $session_yr);
+            } catch (Exception $e) {
+                log_message('error', 'SA onboard (FS): Sessions write failed (non-fatal): ' . $e->getMessage());
+            }
+
+            // Firestore canonical session seed. schools/{id}.sessions[] +
+            // .currentSession are the authoritative session-propagation
+            // surface read by school_config (admin web), observeSchool()
+            // (parent + teacher apps), and any future session-aware
+            // feature. Without this, a newly onboarded tenant lands with
+            // an empty Sessions tab in school_config and the SSA has to
+            // manually add the academic year they already entered into
+            // the SA wizard — a UX regression and a source of
+            // year-format drift. The RTDB writes above remain
+            // intentionally for Admin_login / MY_Controller readers
+            // until those are migrated; Firestore is authoritative.
+            try {
+                $this->firebase->firestoreUpdate('schools', $school_id, [
+                    'sessions'       => [$session_yr],
+                    'currentSession' => $session_yr,
+                    'updatedAt'      => date('c'),
+                ]);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    'SA onboard (FS): schools.sessions / currentSession Firestore write failed (non-fatal): ' . $e->getMessage());
+            }
+
+            // _initialize_default_data — academic seed (account books + fee
+            // structures). Per-module retirement (Accounting + Fees waves).
+            $this->_initialize_default_data($school_id, $session_yr, [
+                'name'       => (string) ($planFs['name']        ?? $plan_id),
+                'modules'    => is_array($planFs['modules'] ?? null) ? $planFs['modules'] : [],
+                'grace_days' => $grace_days,
+            ]);
+
+            $this->sa_log('school_onboarded', $school_id, [
+                'school_name' => $name, 'school_id' => $school_id,
+                'school_code' => $school_code, 'admin_id' => $admin_id,
+                'path' => 'firestore_canonical',
+            ]);
+            $this->_onboard_telem('ONBOARD_RESULT', [
+                'result' => 'success', 'path' => 'firestore_canonical',
+                'school_id' => $school_id, 'school_code' => $school_code,
+                'admin_id' => $admin_id,
+                'subscription_id' => (string) ($tenantResult['subscriptionId'] ?? ''),
+            ]);
+            $this->json_success([
+                'school_name' => $name,
+                'school_id'   => $school_id,
+                'school_code' => $school_code,
+                'admin_id'    => $admin_id,
+                'message'     => "School '{$name}' onboarded successfully. School ID: {$school_id}. SSA Login — School Code: {$school_code}, SSA ID: {$admin_id}.",
+            ]);
+            return;
+        }
+
         try {
-            $nameKey        = $this->_school_name_key($name);
             $existingByName = $this->firebase->get("Indexes/School_names/{$nameKey}");
             if (!empty($existingByName)) {
                 $this->json_error("A school named '{$name}' already exists."); return;
@@ -223,7 +505,7 @@ class Superadmin_schools extends MY_Superadmin_Controller
             $rollbackPaths[] = "Indexes/School_names/{$nameKey}";
         } catch (Exception $e) {
             log_message('error', 'SA onboard: Indexes/School_names write failed — ' . $e->getMessage());
-            $this->_rollback_onboard($rollbackPaths);
+            $this->_onboard_rollback($rollbackPaths, 'onboard_write_failed');
             $this->json_error('Failed to register school name index. Please try again.'); return;
         }
 
@@ -236,7 +518,7 @@ class Superadmin_schools extends MY_Superadmin_Controller
             $rollbackPaths[] = "Indexes/School_codes/{$school_code}";
         } catch (Exception $e) {
             log_message('error', 'SA onboard: Indexes/School_codes write failed — ' . $e->getMessage());
-            $this->_rollback_onboard($rollbackPaths);
+            $this->_onboard_rollback($rollbackPaths, 'onboard_write_failed');
             $this->json_error('Failed to register school code index. Please try again.'); return;
         }
 
@@ -257,7 +539,7 @@ class Superadmin_schools extends MY_Superadmin_Controller
             }
             $rollbackPaths[] = "System/Schools/{$school_id}/subscription";
         } catch (Exception $e) {
-            $this->_rollback_onboard($rollbackPaths);
+            $this->_onboard_rollback($rollbackPaths, 'onboard_write_failed');
             $this->json_error('Failed to create school subscription.'); return;
         }
 
@@ -286,7 +568,7 @@ class Superadmin_schools extends MY_Superadmin_Controller
             $rollbackPaths[] = "System/Schools/{$school_id}/profile";
         } catch (Exception $e) {
             log_message('error', 'SA onboard: profile write failed — ' . $e->getMessage());
-            $this->_rollback_onboard($rollbackPaths);
+            $this->_onboard_rollback($rollbackPaths, 'onboard_write_failed');
             $this->json_error('Failed to create school profile. Please try again.'); return;
         }
 
@@ -308,46 +590,86 @@ class Superadmin_schools extends MY_Superadmin_Controller
             $rollbackPaths[] = "System/Schools/{$school_id}";
         } catch (Exception $e) {
             log_message('error', 'SA onboard: top-level identifiers write failed — ' . $e->getMessage());
-            $this->_rollback_onboard($rollbackPaths);
+            $this->_onboard_rollback($rollbackPaths, 'onboard_write_failed');
             $this->json_error('Failed to write school identifiers. Please try again.'); return;
         }
 
         // ── 6. Auto-generate SSA ID and create admin in Firebase + MongoDB ──────────
-        // SSA ID is auto-generated via Node.js Auth API (race-safe atomic counter).
-        $ssa_result = $this->auth_client->sync_admin([
-            'adminId'           => '__AUTO_SSA__',
-            'name'              => $admin_name,
-            'email'             => $admin_email,
-            'phone'             => $phone,
-            'role'              => 'school_super_admin',
-            'roleLabel'         => 'School Super Admin',
-            'passwordHash'      => $hashed_pw,
-            'schoolId'          => $school_code,
-            'schoolCode'        => $school_id,
-            'parentDbKey'       => $school_code,
-            'createdBy'         => $this->sa_id,
-            'schoolDisplayName' => $school_name ?? '',
-        ]);
+        // B1: Firestore Id_generator + Firebase Auth (flag onboard.ssa_firebase);
+        // legacy Auth API (Mongo) otherwise. Inert until the flag is ON.
+        $ssa_result = [];
+        if ($useFsSsa) {
+            $this->load->library('id_generator');
+            try { $admin_id = $this->id_generator->safeGenerate('SSA'); }
+            catch (\Throwable $e) {
+                log_message('error', 'SA onboard: Id_generator SSA failed: ' . $e->getMessage());
+                $this->_onboard_rollback($rollbackPaths, 'ssa_idgen_failed');
+                $this->json_error('Failed to generate admin ID. Please try again.'); return;
+            }
+            $this->_ob_ssaVal = (int) substr($admin_id, 3);
 
-        // If Auth API is unavailable, generate SSA ID locally from Firebase
-        if (!empty($ssa_result['adminId'])) {
-            $admin_id = $ssa_result['adminId'];
+            // Create the Firebase Auth user (credential authority) — FAIL-CHEAP GATE.
+            $authEmail = Firebase::authEmail($admin_id);
+            $fbUser = $this->firebase->createFirebaseUser($authEmail, $admin_pass, ['uid' => $admin_id, 'displayName' => $admin_name]);
+            if ($fbUser === null) {
+                $this->_onboard_telem('ONBOARD_SSA_FBAUTH', ['result' => 'create_failed', 'ssa' => $admin_id]);
+                $this->_onboard_rollback($rollbackPaths, 'fbauth_create_failed');
+                $this->json_error('Failed to create the admin login account. Please try again.'); return;
+            }
+            $this->_ob_fbUid = $admin_id;
+
+            // Role claim — retry-then-rollback (2 attempts).
+            $claimOk = false;
+            for ($attempt = 1; $attempt <= 2 && !$claimOk; $attempt++) {
+                $claimOk = $this->firebase->setFirebaseClaims($admin_id, [
+                    'role' => 'school_super_admin', 'school_id' => $school_id,
+                    'school_code' => $school_code, 'parent_db_key' => $school_code,
+                ]);
+                if (!$claimOk && $attempt < 2) usleep(200000);
+            }
+            if (!$claimOk) {
+                $this->_onboard_telem('ONBOARD_SSA_FBAUTH', ['result' => 'claims_failed', 'ssa' => $admin_id]);
+                $this->_onboard_rollback($rollbackPaths, 'claims_failed');
+                $this->json_error('Failed to set admin permissions. Please try again.'); return;
+            }
+            $this->_onboard_telem('ONBOARD_SSA_FBAUTH', ['result' => 'created', 'ssa' => $admin_id]);
+            $this->_onboard_telem('ONBOARD_IDGEN_SOURCE', ['kind' => 'SSA', 'source' => 'firestore']);
         } else {
-            // Fallback: scan existing SSA IDs in Firebase to find next
-            $all_schools_admins = $this->firebase->get('Users/Admin') ?? [];
-            $max_ssa = 0;
-            foreach ($all_schools_admins as $key => $admins) {
-                if (!is_array($admins)) continue;
-                foreach (array_keys($admins) as $aid) {
-                    if (preg_match('/^SSA(\d+)$/', $aid, $m)) {
-                        $num = (int) $m[1];
-                        if ($num > $max_ssa) $max_ssa = $num;
+            // Legacy: Auth API auto-generates the SSA id (+ creates the Firebase Auth user server-side).
+            $this->load->library('auth_client');
+            $ssa_result = $this->auth_client->sync_admin([
+                'adminId'           => '__AUTO_SSA__',
+                'name'              => $admin_name,
+                'email'             => $admin_email,
+                'phone'             => $phone,
+                'role'              => 'school_super_admin',
+                'roleLabel'         => 'School Super Admin',
+                'passwordHash'      => $hashed_pw,
+                'schoolId'          => $school_code,
+                'schoolCode'        => $school_id,
+                'parentDbKey'       => $school_code,
+                'createdBy'         => $this->sa_id,
+                'schoolDisplayName' => $name,
+            ]);
+            $this->_onboard_telem('ONBOARD_MONGO_HIT', ['call' => 'sync_admin']);
+            if (!empty($ssa_result['adminId'])) {
+                $admin_id = $ssa_result['adminId'];
+                $this->_onboard_telem('ONBOARD_IDGEN_SOURCE', ['kind' => 'SSA', 'source' => 'mongo']);
+            } else {
+                $all_schools_admins = $this->firebase->get('Users/Admin') ?? [];
+                $max_ssa = 0;
+                foreach ($all_schools_admins as $key => $admins) {
+                    if (!is_array($admins)) continue;
+                    foreach (array_keys($admins) as $aid) {
+                        if (preg_match('/^SSA(\d+)$/', $aid, $m)) { $num = (int) $m[1]; if ($num > $max_ssa) $max_ssa = $num; }
                     }
                 }
+                $admin_id = 'SSA' . str_pad($max_ssa + 1, 4, '0', STR_PAD_LEFT);
+                $this->_onboard_telem('ONBOARD_IDGEN_SOURCE', ['kind' => 'SSA', 'source' => 'local_fallback']);
             }
-            $admin_id = 'SSA' . str_pad($max_ssa + 1, 4, '0', STR_PAD_LEFT);
         }
 
+        // ── RTDB Users/Admin write (BOTH paths; Admin_login reads this) ────────
         try {
             $result = $this->firebase->set("Users/Admin/{$school_code}/{$admin_id}", [
                 'Status'      => 'Active',
@@ -381,13 +703,13 @@ class Superadmin_schools extends MY_Superadmin_Controller
             }
             $rollbackPaths[] = "Users/Admin/{$school_code}/{$admin_id}";
         } catch (Exception $e) {
-            log_message('error', 'SA onboard: Admin account creation failed — ' . $e->getMessage());
-            $this->_rollback_onboard($rollbackPaths);
+            log_message('error', 'SA onboard: Admin account creation failed: ' . $e->getMessage());
+            $this->_onboard_rollback($rollbackPaths, 'rtdb_admin_write_failed');
             $this->json_error('Failed to create admin account. Please try again.'); return;
         }
 
-        // Sync SSA to MongoDB (best-effort) — only if Auth API didn't already create it
-        if (empty($ssa_result['adminId'])) {
+        // Legacy secondary Mongo sync — only when the Auth API path was used and didn't create it.
+        if (!$useFsSsa && empty($ssa_result['adminId'])) {
             $this->auth_client->sync_admin([
                 'adminId'           => $admin_id,
                 'name'              => $admin_name,
@@ -400,8 +722,9 @@ class Superadmin_schools extends MY_Superadmin_Controller
                 'schoolCode'        => $school_id,
                 'parentDbKey'       => $school_code,
                 'createdBy'         => $this->sa_id,
-                'schoolDisplayName' => $school_name ?? '',
+                'schoolDisplayName' => $name,
             ]);
+            $this->_onboard_telem('ONBOARD_MONGO_HIT', ['call' => 'sync_admin_secondary']);
         }
 
         $this->_initialize_default_data($school_id, $session_yr, $plan_data);
@@ -422,12 +745,31 @@ class Superadmin_schools extends MY_Superadmin_Controller
             log_message('error', 'SA onboard: Sessions write failed — ' . $e->getMessage());
         }
 
+        // Firestore canonical session seed — same fields as the Firestore
+        // branch above. Legacy-path tenants that don't have a schools/{id}
+        // doc yet will see this update fail closed (logged, non-fatal) —
+        // that's acceptable: those tenants are RTDB-only by definition and
+        // school_config will fall back to legacy read paths. For tenants
+        // that DO have a Firestore doc (post-Wave-A backfill), this keeps
+        // the canonical source of truth synchronised.
+        try {
+            $this->firebase->firestoreUpdate('schools', $school_id, [
+                'sessions'       => [$session_yr],
+                'currentSession' => $session_yr,
+                'updatedAt'      => date('c'),
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error',
+                'SA onboard (legacy): schools.sessions / currentSession Firestore write failed (non-fatal): ' . $e->getMessage());
+        }
+
         $this->sa_log('school_onboarded', $school_id, [
             'school_name' => $name,
             'school_id'   => $school_id,
             'school_code' => $school_code,
             'admin_id'    => $admin_id,
         ]);
+        $this->_onboard_telem('ONBOARD_RESULT', ['result' => 'success', 'school_id' => $school_id, 'school_code' => $school_code, 'admin_id' => $admin_id]);
         $this->json_success([
             'school_name' => $name,
             'school_id'   => $school_id,
@@ -445,6 +787,73 @@ class Superadmin_schools extends MY_Superadmin_Controller
         $school_uid  = urldecode(trim($school_uid));
         $school_name = $school_uid; // backward compat alias; replaced below with human name
         if (empty($school_uid)) { redirect('superadmin/schools'); return; }
+
+        // ── B2.3.2-C: flag-gated single-source school detail ─────────────
+        if ($this->_b23c_registry_firestore_on()) {
+            $svc    = $this->_b23c_registry();
+            $detail = $svc->get_tenant_detail($school_uid);
+            if (!is_array($detail)) { redirect('superadmin/schools'); return; }
+            $schDoc = is_array($detail['schools']       ?? null) ? $detail['schools']       : [];
+            $ctrl   = is_array($detail['schoolControl'] ?? null) ? $detail['schoolControl'] : [];
+            $subDoc = is_array($detail['subscriptionDoc'] ?? null) ? $detail['subscriptionDoc'] : [];
+            $life   = is_array($ctrl['lifecycle']    ?? null) ? $ctrl['lifecycle']    : [];
+            $subPtr = is_array($ctrl['subscription'] ?? null) ? $ctrl['subscription'] : [];
+            $adminDis = is_array($schDoc['adminDisabled'] ?? null) ? $schDoc['adminDisabled'] : [];
+            $cache  = is_array($schDoc['statsCache'] ?? null) ? $schDoc['statsCache'] : [];
+
+            $school_name = (string) ($schDoc['schoolName'] ?? $schDoc['name'] ?? $school_uid);
+            $expiry = (string) ($subDoc['periodEnd'] ?? '');
+            $topStatus = !empty($adminDis['value']) ? 'suspended' : 'active';
+            $planFid = (string) ($subPtr['planId'] ?? '');
+            $planName = '—';
+            if ($planFid !== '') {
+                $pf = $svc->get_plan($planFid);
+                if (is_array($pf)) $planName = (string) ($pf['name'] ?? $planFid);
+            }
+
+            $school = [
+                'profile' => [
+                    'name'              => $school_name,
+                    'city'              => (string) ($schDoc['city']             ?? ''),
+                    'street'            => (string) ($schDoc['street']           ?? ''),
+                    'email'             => (string) ($schDoc['email']            ?? ''),
+                    'phone'             => (string) ($schDoc['phone']            ?? ''),
+                    'logo_url'          => (string) ($schDoc['logoUrl']          ?? ''),
+                    'school_code'       => (string) ($schDoc['schoolCode']       ?? ''),
+                    'domain_identifier' => (string) ($schDoc['domainIdentifier'] ?? ''),
+                    'firebase_key'      => $school_uid,
+                    'status'            => $topStatus,
+                    'created_at'        => (string) ($schDoc['createdAt'] ?? ''),
+                    'created_by'        => (string) ($schDoc['createdBy'] ?? 'SA'),
+                ],
+                'subscription' => [
+                    'plan_id'     => $planFid,
+                    'plan_name'   => $planName,
+                    'expiry_date' => $expiry,
+                    'status'      => (string) ($life['state'] ?? 'inactive'),
+                ],
+                'stats_cache' => [
+                    'total_students' => (int) ($cache['totalStudents'] ?? $cache['total_students'] ?? 0),
+                    'total_staff'    => (int) ($cache['totalStaff']    ?? $cache['total_staff']    ?? 0),
+                    'last_updated'   => (string) ($cache['lastUpdated'] ?? $cache['last_updated'] ?? 'Never'),
+                ],
+            ];
+            $plans = [];
+            foreach ($svc->list_plans() as $fs) {
+                $pid = (string) ($fs['planFamilyId'] ?? '');
+                if ($pid !== '') $plans[$pid] = (string) ($fs['name'] ?? $pid);
+            }
+            $data = [
+                'page_title' => 'School — ' . $school_name,
+                'school_uid' => $school_uid,
+                'school'     => $school,
+                'plans'      => $plans,
+            ];
+            $this->load->view('superadmin/include/sa_header', $data);
+            $this->load->view('superadmin/schools/view',      $data);
+            $this->load->view('superadmin/include/sa_footer');
+            return;
+        }
 
         try {
             // System/Schools is the PRIMARY and only location for school data
@@ -539,6 +948,18 @@ class Superadmin_schools extends MY_Superadmin_Controller
         // Map to subscription status values MY_Controller understands
         $sub_status = ($new_status === 'active') ? 'Active' : ucfirst($new_status);
 
+        // ── B2.3.2-C: flag-gated single-source status toggle ─────────────
+        if ($this->_b23c_registry_firestore_on()) {
+            $svc = $this->_b23c_registry();
+            $tenant = $svc->get_tenant_detail($school_name);
+            if (!is_array($tenant)) { $this->json_error('School not found.'); return; }
+            $ok = $svc->set_admin_disabled($school_name, $new_status, (string) ($this->sa_id ?? ''));
+            if (!$ok) { $this->json_error('Failed to update school status.'); return; }
+            $this->sa_log('school_status_changed', $school_name, ['new_status' => $new_status]);
+            $this->json_success(['message' => "School status updated to '{$new_status}'."]);
+            return;
+        }
+
         try {
             // Verify school exists before updating
             $existing = $this->firebase->get("System/Schools/{$school_name}/profile/school_id");
@@ -604,6 +1025,25 @@ class Superadmin_schools extends MY_Superadmin_Controller
             'updated_by'        => $this->sa_id,
         ];
 
+        // ── B2.3.2-C: flag-gated single-source profile patch ─────────────
+        if ($this->_b23c_registry_firestore_on()) {
+            $nowIso = date('c');
+            $ok = $this->_b23c_registry()->update_school_profile($school_name, [
+                'city'             => $city,
+                'street'           => $street,
+                'email'            => $email,
+                'phone'            => $phone,
+                'logoUrl'          => $logo_url,
+                'domainIdentifier' => $domain_id,
+                'updatedAt'        => $nowIso,
+                'updatedBy'        => (string) $this->sa_id,
+            ]);
+            if (!$ok) { $this->json_error('Failed to update profile.'); return; }
+            $this->sa_log('school_profile_updated', $school_name);
+            $this->json_success(['message' => 'School profile updated.']);
+            return;
+        }
+
         try {
             // Write to canonical location (System/Schools is PRIMARY)
             $this->firebase->update("System/Schools/{$school_name}/profile",  $profileData);
@@ -641,6 +1081,23 @@ class Superadmin_schools extends MY_Superadmin_Controller
         }
         if (strtotime($expiry_date) < time()) {
             $this->json_error('Expiry date cannot be in the past.'); return;
+        }
+
+        // ── B2.3.2-C: flag-gated single-source plan assignment ───────────
+        if ($this->_b23c_registry_firestore_on()) {
+            $svc    = $this->_b23c_registry();
+            $tenant = $svc->get_tenant_detail($school_name);
+            if (!is_array($tenant)) { $this->json_error('School not found.'); return; }
+            $plan   = $svc->get_plan($plan_id);
+            if (!is_array($plan))   { $this->json_error('Plan not found.'); return; }
+            $plan_name = (string) ($plan['name'] ?? $plan_id);
+            $ok = $svc->assign_plan_to_school(
+                $school_name, $plan_id, $expiry_date, (string) ($this->sa_id ?? '')
+            );
+            if (!$ok) { $this->json_error('Failed to assign plan.'); return; }
+            $this->sa_log('plan_assigned', $school_name, ['plan_id' => $plan_id, 'expiry' => $expiry_date]);
+            $this->json_success(['message' => "Plan '{$plan_name}' assigned. Expires {$expiry_date}."]);
+            return;
         }
 
         try {
@@ -715,14 +1172,20 @@ class Superadmin_schools extends MY_Superadmin_Controller
                 log_message('error', 'refresh_school_stats: students Firestore query failed: ' . $e->getMessage());
             }
 
-            // Staff count — RTDB iteration retained (out of R1 scope; the
-            // staff/teacher migration has its own roadmap).
-            $total_staff  = 0;
-            $sessionKeys  = $this->firebase->shallow_get($session_root) ?? [];
-            foreach ($sessionKeys as $sessionKey) {
-                if (!preg_match('/^\d{4}-/', $sessionKey)) continue;
-                $teachers    = $this->firebase->shallow_get("{$session_root}/{$sessionKey}/Teachers") ?? [];
-                $total_staff = max($total_staff, count($teachers));
+            // Staff count — Firestore canonical, mirroring the R1 student
+            // migration above. The legacy RTDB walk
+            // (`Schools/{name}/{session}/Teachers`) no longer exists in the
+            // current architecture; staff are written to the Firestore
+            // `staff` collection by Entity_firestore_sync and queryable by
+            // `schoolId`.
+            $total_staff = 0;
+            try {
+                $staffRows = $this->firebase->firestoreQuery('staff', [
+                    ['schoolId', '==', $school_name],
+                ]);
+                $total_staff = is_array($staffRows) ? count($staffRows) : 0;
+            } catch (\Exception $e) {
+                log_message('error', 'refresh_school_stats: staff Firestore query failed: ' . $e->getMessage());
             }
 
             $cacheData = [
@@ -731,8 +1194,16 @@ class Superadmin_schools extends MY_Superadmin_Controller
                 'last_updated'   => date('Y-m-d H:i:s'),
             ];
 
-            // Write to System/Schools — PRIMARY location
-            $this->firebase->update("System/Schools/{$school_name}/stats_cache",  $cacheData);
+            // ── B2.3.2-C: flag-gated single-source stats-cache write ─────
+            if ($this->_b23c_registry_firestore_on()) {
+                $this->_b23c_registry()->update_stats_cache($school_name, [
+                    'totalStudents' => $total_students,
+                    'totalStaff'    => $total_staff,
+                ]);
+            } else {
+                // Write to System/Schools — PRIMARY location
+                $this->firebase->update("System/Schools/{$school_name}/stats_cache",  $cacheData);
+            }
 
             // M-05 FIX: Audit log for stats refresh
             $this->sa_log('school_stats_refreshed', $school_name, $cacheData);
@@ -1025,10 +1496,18 @@ class Superadmin_schools extends MY_Superadmin_Controller
         // which writes it to the correct System/Schools/{school_id}/profile node.
         // For existing schools (edit profile), update_profile() handles the Firebase write.
         if (!empty($school_name) && strpos($school_name, 'temp') !== 0) {
-            try {
-                $this->firebase->update("System/Schools/{$school_name}/profile", ['logo_url' => $logo_url]);
-            } catch (Exception $e) {
-                log_message('error', 'SA upload_logo: Firebase update failed — ' . $e->getMessage());
+            // ── B2.3.2-C: flag-gated single-source logo URL write ────────
+            if ($this->_b23c_registry_firestore_on()) {
+                $this->_b23c_registry()->update_school_profile($school_name, [
+                    'logoUrl'   => $logo_url,
+                    'updatedAt' => date('c'),
+                ]);
+            } else {
+                try {
+                    $this->firebase->update("System/Schools/{$school_name}/profile", ['logo_url' => $logo_url]);
+                } catch (Exception $e) {
+                    log_message('error', 'SA upload_logo: Firebase update failed — ' . $e->getMessage());
+                }
             }
         }
 
@@ -1063,6 +1542,33 @@ class Superadmin_schools extends MY_Superadmin_Controller
     // ─────────────────────────────────────────────────────────────────────────
     // PRIVATE: Generate a unique school ID (SCH_XXXXXX format)
     // ─────────────────────────────────────────────────────────────────────────
+    /**
+     * B2.3.2-C: single-source check for the b2.registry_firestore atomic
+     * co-cutover flag. Cached per-request via static. Returns FALSE during
+     * the build phase. Same contract as the helpers in MY_Controller,
+     * Admin_login, and Superadmin_plans.
+     */
+    private function _b23c_registry_firestore_on(): bool
+    {
+        static $cached = null;
+        if ($cached === null) {
+            $this->config->load('b2_migration_flags', FALSE, TRUE);
+            $flags  = $this->config->item('b2_migration_flags') ?: [];
+            $cached = !empty($flags['b2.registry_firestore']);
+        }
+        return $cached;
+    }
+
+    /**
+     * B2.3.2-C helper: lazy-load + bind the B2_registry_service. Idempotent.
+     */
+    private function _b23c_registry()
+    {
+        $this->load->library('b2_registry_service');
+        $this->b2_registry_service->init($this->firebase);
+        return $this->b2_registry_service;
+    }
+
     private function _generate_school_id(): string
     {
         for ($attempt = 0; $attempt < 5; $attempt++) {
@@ -1109,5 +1615,43 @@ class Superadmin_schools extends MY_Superadmin_Controller
                 log_message('error', "SA onboard rollback failed for {$path}: " . $e->getMessage());
             }
         }
+    }
+
+    // ── B1: onboarding telemetry (lazy Security_telemetry; best-effort, never throws) ──
+    private function _onboard_telem(string $event, array $detail): void
+    {
+        try {
+            if ($this->_sec_telem === null) {
+                $this->load->library('security_telemetry', null, 'sec_telem');
+                $this->sec_telem->init($this->firebase, 'SA_PANEL', ['uid' => $this->sa_id ?? '', 'role' => 'developer'], '');
+                $this->_sec_telem = $this->sec_telem;
+            }
+            $subjectId = (string) ($detail['school_id'] ?? ($detail['ssa'] ?? ''));
+            $this->_sec_telem->emit($event, 'info', $detail, ['type' => 'school', 'id' => $subjectId]);
+        } catch (\Throwable $e) {
+            log_message('error', 'onboard telem failed: ' . $e->getMessage());
+        }
+    }
+
+    // ── B1: unified onboarding rollback — undoes Firebase Auth user + id-generator ──
+    // claims + RTDB paths in safe order. SSA claim is released only if the Firebase
+    // Auth user was deleted (else burned + ONBOARD_ROLLBACK_INCOMPLETE alert).
+    private function _onboard_rollback(array $paths, string $reason): void
+    {
+        if ($this->_ob_fbUid !== null) {
+            $deleted = $this->firebase->deleteFirebaseUser($this->_ob_fbUid);
+            if ($deleted && $this->_ob_ssaVal !== null) {
+                try { $this->id_generator->releaseClaim('SSA', $this->_ob_ssaVal); } catch (\Throwable $e) {}
+            } elseif (!$deleted) {
+                $this->_onboard_telem('ONBOARD_ROLLBACK_INCOMPLETE', ['uid' => $this->_ob_fbUid, 'reason' => 'fbauth_delete_failed']);
+            }
+        } elseif ($this->_ob_ssaVal !== null) {
+            try { $this->id_generator->releaseClaim('SSA', $this->_ob_ssaVal); } catch (\Throwable $e) {}
+        }
+        if ($this->_ob_schcodeVal !== null) {
+            try { $this->id_generator->releaseClaim('SCHCODE', $this->_ob_schcodeVal); } catch (\Throwable $e) {}
+        }
+        $this->_rollback_onboard($paths);
+        $this->_onboard_telem('ONBOARD_RESULT', ['result' => 'rollback', 'reason' => $reason]);
     }
 }

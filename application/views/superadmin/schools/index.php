@@ -4,7 +4,8 @@
     <h1><i class="fa fa-building" style="color:var(--sa3);margin-right:10px;font-size:20px;"></i>Manage Schools</h1>
     <ol class="breadcrumb">
         <li><a href="<?= base_url('superadmin/dashboard') ?>">Dashboard</a></li>
-        <li class="active">Schools</li>
+        <li><a href="<?= base_url('superadmin/schools') ?>">School Management</a></li>
+        <li class="active">All Schools</li>
     </ol>
 </section>
 

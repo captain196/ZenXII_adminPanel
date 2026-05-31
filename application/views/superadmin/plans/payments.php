@@ -7,8 +7,8 @@ $plans   = $plans   ?? [];
     <h1><i class="fa fa-money" style="color:var(--sa3);margin-right:10px;font-size:20px;"></i>Billing &amp; Payments</h1>
     <ol class="breadcrumb">
         <li><a href="<?= base_url('superadmin/dashboard') ?>">Dashboard</a></li>
-        <li><a href="<?= base_url('superadmin/plans') ?>">Plans</a></li>
-        <li class="active">Payments</li>
+        <li><a href="<?= base_url('superadmin/plans') ?>">Plans &amp; Billing</a></li>
+        <li class="active">Billing</li>
     </ol>
 </section>
 

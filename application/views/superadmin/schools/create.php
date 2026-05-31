@@ -4,8 +4,8 @@
     <h1><i class="fa fa-plus-circle" style="color:var(--sa3);margin-right:10px;font-size:20px;"></i>Onboard New School</h1>
     <ol class="breadcrumb">
         <li><a href="<?= base_url('superadmin/dashboard') ?>">Dashboard</a></li>
-        <li><a href="<?= base_url('superadmin/schools') ?>">Schools</a></li>
-        <li class="active">Onboard</li>
+        <li><a href="<?= base_url('superadmin/schools') ?>">School Management</a></li>
+        <li class="active">Onboard School</li>
     </ol>
 </section>
 
@@ -265,21 +265,24 @@
         </div>
         <div class="box-body" style="font-size:12.5px;color:var(--t2);line-height:1.8;">
             <div style="margin-bottom:12px;">
-                <div style="font-size:10px;font-weight:700;color:var(--sa3);margin-bottom:6px;font-family:var(--font-m);letter-spacing:.5px;">FIREBASE NODES</div>
+                <div style="font-size:10px;font-weight:700;color:var(--sa3);margin-bottom:6px;font-family:var(--font-m);letter-spacing:.5px;">FIRESTORE COLLECTIONS</div>
                 <ul style="margin:0;padding-left:16px;">
-                    <li><code style="font-size:11px;">System/Schools/{school_id}</code> — subscription &amp; stats</li>
-                    <li><code style="font-size:11px;">Indexes/School_codes/{code}</code> — login fast-path lookup</li>
-                    <li><code style="font-size:11px;">Users/Admin/{code}/{id}</code> — first admin account</li>
-                    <li><code style="font-size:11px;">Schools/{name}/{session}</code> — session data root</li>
-                    <li>Default account heads &amp; fee titles</li>
+                    <li><code style="font-size:11px;">schools/{schoolId}</code> — tenant profile, logo, statsCache</li>
+                    <li><code style="font-size:11px;">schoolControl/{schoolId}</code> — lifecycle state, subscription pointer, admin-disable flag</li>
+                    <li><code style="font-size:11px;">subscriptions/{subscriptionId}</code> — plan, period start/end, billing</li>
+                    <li><code style="font-size:11px;">schoolCodeIndex/{code}</code> — login fast-path lookup</li>
+                    <li><code style="font-size:11px;">schoolNameIndex/{slug}</code> — name uniqueness lookup</li>
+                    <li><code style="font-size:11px;">schoolSsa/{ssaId}</code> — primary Super Admin pointer</li>
+                    <li><code style="font-size:11px;">tenantPublic/{schoolId}</code> — public-readable activeModules mirror</li>
+                    <li>Default fee categories &amp; account heads (Firestore)</li>
                 </ul>
             </div>
             <div>
                 <div style="font-size:10px;font-weight:700;color:var(--sa3);margin-bottom:6px;font-family:var(--font-m);letter-spacing:.5px;">ADMIN LOGIN CREDENTIALS</div>
                 <ul style="margin:0;padding-left:16px;">
-                    <li>School ID → the code you set</li>
-                    <li>Admin ID → the login ID you set</li>
-                    <li>Password → as entered (bcrypt-hashed)</li>
+                    <li>School Code → the 5-digit code you set above (universal, unique)</li>
+                    <li>Admin ID → auto-minted SSA id (e.g. <code>SSA0003</code>)</li>
+                    <li>Password → as entered, stored via Firebase Auth</li>
                 </ul>
             </div>
         </div>
@@ -320,6 +323,20 @@ $(function(){
         if (n === 4) buildReview();
         $('html,body').animate({scrollTop: $('.box-body').offset().top - 80}, 200);
     }
+
+    // Direct step-indicator navigation. The top breadcrumb chips
+    // (.sa-step) carry cursor:pointer to signal clickability, but had
+    // no click handler — so the only way forward was via the per-step
+    // Next button, which fires required-field validation. SA wants to
+    // be able to inspect/jump freely; final required-field validation
+    // still happens on the Submit handler at the end of step 4 (and
+    // the per-step Next buttons retain their guards for users who
+    // prefer the linear flow). Clicking a chip just jumps — no toast,
+    // no validation, no scroll-lock.
+    $('.sa-step').on('click', function(){
+        var n = parseInt($(this).data('step'), 10);
+        if (n >= 1 && n <= 4) goToStep(n);
+    });
 
     // ── Real-time availability check ──────────────────────────────────────────
     var nameTimer, codeTimer;

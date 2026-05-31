@@ -84,7 +84,8 @@
       <i class="fa fa-bug" style="color:var(--sa);margin-right:8px;"></i>Debug Testing Panel
     </h1>
     <ol class="breadcrumb">
-      <li><a href="<?= base_url('superadmin/dashboard') ?>">SA Home</a></li>
+      <li><a href="<?= base_url('superadmin/dashboard') ?>">Dashboard</a></li>
+      <li><a href="<?= base_url('superadmin/monitor') ?>">System</a></li>
       <li class="active">Debug Panel</li>
     </ol>
   </section>

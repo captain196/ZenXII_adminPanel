@@ -3,7 +3,7 @@
     <h1><i class="fa fa-calendar-check-o" style="color:var(--sa3);margin-right:10px;font-size:20px;"></i>Subscription Tracking</h1>
     <ol class="breadcrumb">
         <li><a href="<?= base_url('superadmin/dashboard') ?>">Dashboard</a></li>
-        <li><a href="<?= base_url('superadmin/plans') ?>">Plans</a></li>
+        <li><a href="<?= base_url('superadmin/plans') ?>">Plans &amp; Billing</a></li>
         <li class="active">Subscriptions</li>
     </ol>
 </section>

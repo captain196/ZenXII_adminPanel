@@ -23,35 +23,45 @@ class Superadmin extends MY_Superadmin_Controller
         $expiry_alerts = [];
 
         try {
-            $cached = $this->firebase->get('System/Stats/Summary');
-            if (is_array($cached) && !empty($cached['total_schools'])) {
-                $summary = $cached;
+            // B2.3.2-C: when registry is Firestore-authoritative, bypass the
+            // RTDB summary cache (NO RTDB policy) and live-compute from the
+            // canonical schools/schoolControl/subscriptions surface. Cache
+            // skip is acceptable — tenant count is small and Firestore
+            // queries are sub-second.
+            if ($this->_b23_registry_firestore_on()) {
+                $summary       = $this->_compute_summary_firestore();
+                $expiry_alerts = $this->_expiry_alerts_firestore();
             } else {
-                $summary = $this->_compute_summary();
-                $this->firebase->set('System/Stats/Summary', $summary);
-            }
+                $cached = $this->firebase->get('System/Stats/Summary');
+                if (is_array($cached) && !empty($cached['total_schools'])) {
+                    $summary = $cached;
+                } else {
+                    $summary = $this->_compute_summary();
+                    $this->firebase->set('System/Stats/Summary', $summary);
+                }
 
-            // Expiry alerts — always live (needs accurate timing, small payload)
-            $schools = $this->firebase->get('System/Schools') ?? [];
-            foreach ($schools as $name => $schoolData) {
-                if (!is_array($schoolData)) continue;
-                $sub     = is_array($schoolData['subscription'] ?? null) ? $schoolData['subscription'] : [];
-                $saP     = is_array($schoolData['profile']     ?? null) ? $schoolData['profile']     : [];
-                $endDate = $sub['expiry_date'] ?? ($sub['duration']['endDate'] ?? '');
-                if ($endDate && strtotime($endDate) !== false) {
-                    $days = (int)ceil((strtotime($endDate) - time()) / 86400);
-                    if ($days >= 0 && $days <= 15) {
-                        $expiry_alerts[] = [
-                            'uid'         => $name,
-                            'name'        => $saP['name']      ?? $name,
-                            'expiry_date' => $endDate,
-                            'days_left'   => $days,
-                            'plan_name'   => $sub['plan_name'] ?? '—',
-                        ];
+                // Expiry alerts — always live (needs accurate timing, small payload)
+                $schools = $this->firebase->get('System/Schools') ?? [];
+                foreach ($schools as $name => $schoolData) {
+                    if (!is_array($schoolData)) continue;
+                    $sub     = is_array($schoolData['subscription'] ?? null) ? $schoolData['subscription'] : [];
+                    $saP     = is_array($schoolData['profile']     ?? null) ? $schoolData['profile']     : [];
+                    $endDate = $sub['expiry_date'] ?? ($sub['duration']['endDate'] ?? '');
+                    if ($endDate && strtotime($endDate) !== false) {
+                        $days = (int)ceil((strtotime($endDate) - time()) / 86400);
+                        if ($days >= 0 && $days <= 15) {
+                            $expiry_alerts[] = [
+                                'uid'         => $name,
+                                'name'        => $saP['name']      ?? $name,
+                                'expiry_date' => $endDate,
+                                'days_left'   => $days,
+                                'plan_name'   => $sub['plan_name'] ?? '—',
+                            ];
+                        }
                     }
                 }
+                usort($expiry_alerts, fn($a, $b) => $a['days_left'] - $b['days_left']);
             }
-            usort($expiry_alerts, fn($a, $b) => $a['days_left'] - $b['days_left']);
         } catch (Exception $e) {
             log_message('error', 'SA Dashboard: ' . $e->getMessage());
         }
@@ -298,5 +308,122 @@ class Superadmin extends MY_Superadmin_Controller
             'recent_regs'    => $recent_regs,
             'last_refreshed' => date('Y-m-d\TH:i:sP'), // ISO 8601 with local timezone offset for JS Date parsing
         ];
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // B2.3.2-C helpers (flag-gated Firestore-canonical paths)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private function _b23_registry_firestore_on(): bool
+    {
+        static $cached = null;
+        if ($cached === null) {
+            $this->config->load('b2_migration_flags', FALSE, TRUE);
+            $flags  = $this->config->item('b2_migration_flags') ?: [];
+            $cached = !empty($flags['b2.registry_firestore']);
+        }
+        return $cached;
+    }
+
+    private function _b23_registry()
+    {
+        $this->load->library('b2_registry_service');
+        $this->b2_registry_service->init($this->firebase);
+        return $this->b2_registry_service;
+    }
+
+    /**
+     * Firestore-canonical dashboard summary. Mirrors the shape of
+     * _compute_summary() but sources every value from the B2 canonical
+     * surface (schools + schoolControl + subscriptions + payments).
+     * Never writes back to the RTDB cache — caller must skip the cache
+     * write path when this branch is taken (NO RTDB policy).
+     */
+    private function _compute_summary_firestore(): array
+    {
+        $svc     = $this->_b23_registry();
+        $tenants = $svc->list_tenants_summary();
+
+        $thirty_ago = date('Y-m-d', strtotime('-30 days'));
+        $total_schools  = 0;
+        $active_schools = 0;
+        $total_students = 0;
+        $total_staff    = 0;
+        $recent_regs    = 0;
+
+        foreach ($tenants as $t) {
+            $total_schools++;
+            if (strtolower((string) ($t['lifecycleState'] ?? '')) === 'active') $active_schools++;
+            $total_students += (int) ($t['totalStudents'] ?? 0);
+            $total_staff    += (int) ($t['totalStaff']    ?? 0);
+        }
+
+        // Recent registrations — list_tenants_summary doesn't return
+        // createdAt; pull the schools collection directly for this single
+        // aggregate. Cheap (one query, small N).
+        try {
+            $schoolsRaw = $this->firebase->firestoreQuery('schools', []);
+            if (is_array($schoolsRaw)) {
+                foreach ($schoolsRaw as $row) {
+                    $data = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+                    $id   = (string) ($row['id'] ?? $data['__firestoreId'] ?? '');
+                    if (!preg_match('/^SCH_[A-Z0-9]+$/', $id)) continue;
+                    $created = (string) ($data['createdAt'] ?? '');
+                    if ($created !== '' && substr($created, 0, 10) >= $thirty_ago) $recent_regs++;
+                }
+            }
+        } catch (\Throwable $e) { /* best-effort */ }
+
+        // Revenue — paid payments via canonical accessor.
+        $total_revenue = 0.0;
+        foreach ($svc->list_paid_payments() as $p) {
+            $total_revenue += (float) ($p['amount'] ?? 0);
+        }
+
+        return [
+            'total_schools'  => $total_schools,
+            'active_schools' => $active_schools,
+            'total_students' => $total_students,
+            'total_staff'    => $total_staff,
+            'total_revenue'  => $total_revenue,
+            'recent_regs'    => $recent_regs,
+            'last_refreshed' => date('Y-m-d\TH:i:sP'),
+        ];
+    }
+
+    /**
+     * Firestore-canonical expiry alerts (≤15 days remaining) — reads
+     * subscription period-end via list_tenants_summary which already
+     * resolves the subscriptionId pointer to the subscriptions doc.
+     */
+    private function _expiry_alerts_firestore(): array
+    {
+        $svc     = $this->_b23_registry();
+        $tenants = $svc->list_tenants_summary();
+
+        // Build planFamilyId → planName map once (small N).
+        $planMap = [];
+        foreach ($svc->list_plans() as $pf) {
+            $pid = (string) ($pf['planFamilyId'] ?? '');
+            if ($pid !== '') $planMap[$pid] = (string) ($pf['name'] ?? $pid);
+        }
+
+        $out = [];
+        foreach ($tenants as $t) {
+            $endDate = (string) ($t['subscriptionPeriodEnd'] ?? '');
+            if ($endDate === '' || strtotime($endDate) === false) continue;
+            $days = (int) ceil((strtotime($endDate) - time()) / 86400);
+            if ($days < 0 || $days > 15) continue;
+            $planFid = (string) ($t['planFamilyId'] ?? '');
+            $out[] = [
+                'uid'         => (string) ($t['schoolId'] ?? ''),
+                'name'        => (string) ($t['schoolName'] ?? $t['schoolId'] ?? ''),
+                'expiry_date' => $endDate,
+                'days_left'   => $days,
+                'plan_name'   => $planMap[$planFid] ?? ($planFid !== '' ? $planFid : '—'),
+            ];
+        }
+        usort($out, fn($a, $b) => $a['days_left'] - $b['days_left']);
+        return $out;
     }
 }

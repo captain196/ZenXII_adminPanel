@@ -439,16 +439,30 @@ label,.control-label{
 .dt-buttons .dt-button:hover{background:var(--bg4) !important;color:var(--t1) !important;}
 
 /* ── PAGE HEADER ── */
-.content-header{padding:22px 24px 0 !important;display:block !important;}
+/* Force the H1 and breadcrumb to stack vertically (H1 first, breadcrumb beneath,
+   both left-aligned). AdminLTE 2 ships a floated/positioned breadcrumb at the
+   top-right of .content-header; these rules override it consistently across
+   every SA page. */
+.content-header{
+    padding:22px 24px 0 !important;
+    display:block !important;
+    position:relative !important;
+}
 .content-header h1{
     font-family:var(--font-b) !important;font-size:20px !important;
     font-weight:700 !important;color:var(--t1) !important;
-    letter-spacing:-.3px;line-height:1.3;float:none !important;
+    letter-spacing:-.3px;line-height:1.3;
+    float:none !important;display:block !important;width:100% !important;
+    margin:0 0 4px !important;
 }
 .content-header .breadcrumb{
-    background:transparent !important;padding:4px 0 0 !important;margin:0 !important;
+    background:transparent !important;
+    padding:0 !important;margin:0 !important;
     float:none !important;display:block !important;
+    position:static !important;top:auto !important;right:auto !important;
+    width:100% !important;text-align:left !important;clear:both !important;
 }
+.content-header .breadcrumb>li{display:inline-block !important;float:none !important;}
 .content-header .breadcrumb>li>a{color:var(--sa3) !important;font-size:12.5px !important;}
 .content-header .breadcrumb>li.active{color:var(--t3) !important;font-size:12.5px !important;}
 .content-header .breadcrumb>li+li::before{color:var(--t4) !important;}

@@ -12,7 +12,8 @@ $school_login_count  = $school_login_count  ?? 0;
     <h1><i class="fa fa-heartbeat" style="color:var(--sa3);margin-right:10px;font-size:20px;"></i>System Monitor</h1>
     <ol class="breadcrumb">
         <li><a href="<?= base_url('superadmin/dashboard') ?>">Dashboard</a></li>
-        <li class="active">Monitor</li>
+        <li><a href="<?= base_url('superadmin/monitor') ?>">System</a></li>
+        <li class="active">System Monitor</li>
     </ol>
 </section>
 

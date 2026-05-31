@@ -1961,3 +1961,55 @@ CARRY-013 (closed 2026-05-24 — thirteenth controlled-remediation package + FIR
 - **observed pre-fix:** header `.g-sess-list` dropdown not refreshed after AJAX session-mutation responses; stale sessions in dropdown until full page reload
 - **fix shipped:** new `refreshHeaderSessList(sessions, active)` helper inserted before `archiveSession`; invoked from all 5 session-mutation handlers. Frontend-only; no backend mutation; PHP lint clean.
 - **status:** fixed-unverified — pending operator runtime soak
+
+## H-LIFECYCLE — Tenant suspension enforcement on Firestore + mobile apps (2026-05-31, deferred from B2.3.2-FIX)
+
+**Origin:** surfaced during B2.3.2-FIX browser smoke B9/B10 walkthrough (status-toggle round-trip on `ZZ B1 Soak Test`). Operator asked whether suspending/deactivating a tenant blocks data access from (a) admin web, (b) parent Android app, (c) teacher Android app. Audit found a real two-surface gap — out of B2.3.2-FIX scope. Operator decision (2026-05-31, choice **A**): file as separate hardening cycle, do NOT expand B2.3.2-FIX scope, run after B2.3.2-FIX reaches module-completion status.
+
+**Status:** triaged — deferred (gated on B2.3.2-FIX module-completion + 7-day soak + commit).
+
+**Audit findings:**
+
+| Surface | State | Evidence |
+|---|---|---|
+| Admin Panel — login gate | ✅ HARDENED | `Admin_login::check_credentials` calls `B2_registry_service::login_access_view($schoolId, $now)` (Admin_login.php:365). When `allowed=false`, redirects to login with "Subscription is not active. Please contact support." |
+| Admin Panel — per-request gate | ✅ HARDENED (with 5-min latency carry) | `MY_Controller::__construct` calls `lifecycle_access()` every 5 min via `sub_check_ts` session timestamp (MY_Controller.php:216-265). On `allowed=false` → `_force_logout()`. Carry: up to 5 min between suspend and forced logout — acceptable; tightening to 60s adds Firestore read load. |
+| Firestore Security Rules | ⚠️ GAP | `firestore.rules` enforces tenant isolation via `isSameSchool()` checking `schoolId == request.auth.token.school_id` only (lines 25-93). NO `get('schoolControl/{schoolId}')` check on `lifecycle.state`. A logged-in mobile user with a valid Firebase Auth token (typical 1h TTL) can still read+write Firestore data after the tenant is suspended. |
+| Parent Android (`captain196/ZenXII_Parent`) — reactive logout | ❓ UNAUDITED | Out-of-repo. Per `[[session_propagation_crosssystem]]` memory, parent app uses `observeSchool()` realtime listener for session propagation. That listener could also detect `lifecycle.state != active/grace` or `adminDisabled.value == true` and call `FirebaseAuth.signOut()` — but unverified in this repo. |
+| Teacher Android (`captain196/ZenXII_Teacher`) — reactive logout | ❓ UNAUDITED | Same pattern as Parent. Per `[[session_propagation_crosssystem]]`, teacher app's `observeSchool()` was the surface that fixed session propagation 2026-05-29 (commit `5756377`, branch `ankit/my_teacherFeature`, not pushed). Adding lifecycle-state side-channel to the same listener is a natural extension. |
+
+**Three-phase fix plan (delivered when B2.3.2-FIX reaches module-completion):**
+
+### H1 — Firestore Rules lifecycle gate
+
+- **Scope:** add `get('schoolControl/{schoolId}')` inside the common access helpers; gate `isSameSchool()` / `isSameSchoolWrite()` / `isAdmin()` / `isStaff()` on `lifecycle.state in ['active','grace']`.
+- **Single point of change:** introduce a new helper `tenantActive(schoolId)` that all existing helpers compose with via `&&`. Avoids per-collection rewriting (~140 rules sites).
+- **Risk:** MEDIUM — bug here locks every legitimate user out. Adds 1 doc read per Firestore op (cost concern at scale).
+- **Verifier strategy:**
+  - Firestore Rules unit tests via `@firebase/rules-unit-testing` (scripts/firestore_rules_test.js — exists per `[[firebase_storage_rules]]`-style file in repo) for all 4 lifecycle states × all 12 main collections (read + write).
+  - End-to-end probe: PHP CLI script suspends ZZ B1 → mock client reads via simulated mobile JWT → expects PERMISSION_DENIED.
+- **Rollout:** stage in dedicated Firestore project first; promote to prod after 24h soak with 0 false-denials.
+- **Rollback:** revert rules file + redeploy via existing deploy pipeline. Single-file revert.
+
+### H2 — Parent app reactive logout (`captain196/ZenXII_Parent`)
+
+- **Scope:** in the existing `observeSchool()` flow (collect/subscribe to `schools/{id}`), also surface `schoolControl/{id}.lifecycle.state` + `schools/{id}.adminDisabled.value`. On state transition into `suspended | past_due | expired` OR `adminDisabled.value == true`, call `FirebaseAuth.getInstance().signOut()` and navigate to login with toast: "Your school's subscription is no longer active. Please contact support."
+- **Risk:** LOW — isolated change, well-understood listener.
+- **Verifier strategy:** on-device manual test: log in → admin suspends from SA panel → app receives listener update → forced logout within Firestore listener latency (~1–3 s).
+- **Rollout:** Phase 6A-style 1-tap feature flag, then full rollout.
+
+### H3 — Teacher app reactive logout (`captain196/ZenXII_Teacher`)
+
+- Mirror H2 in Teacher app. Same listener-extension pattern that fixed session propagation 2026-05-29.
+
+**Sequencing:**
+- H1 → H2 → H3 (Rules first so mobile clients have a defense-in-depth even before mobile changes ship).
+- Each phase soaks ≥ 48h before the next.
+
+**Operator gate / authorization status:**
+- This cycle is GATED on B2.3.2-FIX module-completion status (currently HELD pending B11-B13 + 7-day soak + clean commit per `[[feedback_commit_on_module_completion]]`).
+- A dedicated H-LIFECYCLE plan covering all 5 items (Firestore Rules · Parent reactive logout · Teacher reactive logout · verifier strategy · rollout/rollback plan) will be delivered on B2.3.2-FIX module-close, per operator's 2026-05-31 instruction.
+
+**Why this matters (impact):**
+- Without H1, a suspended/non-paying tenant's mobile users retain full Firestore read/write capability for up to the Firebase Auth token lifetime (~1 h). For a billing-driven SaaS this is a revenue-protection gap.
+- Without H2/H3, even with H1 shipped, suspended-tenant mobile users see opaque PERMISSION_DENIED errors instead of a clean logout flow — bad UX and confusing support tickets.
