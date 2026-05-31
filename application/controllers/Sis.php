@@ -1434,6 +1434,13 @@ class Sis extends MY_Controller
         }
 
         $tcNo      = $this->_get_tc_number($school_name);
+        // SIS Wave-3 fix F4 (2026-05-31): _get_tc_number now returns '' when
+        // the atomic claim is unavailable (previously it silently fell back
+        // to stale-mirror math, risking duplicate TC numbers). Surface the
+        // failure to the operator instead of writing a TC with empty number.
+        if ($tcNo === '') {
+            return $this->json_error('Could not allocate a TC number atomically (Firestore counter unavailable). Please retry in a moment. If the issue persists, contact support.');
+        }
         $adminName = $this->session->userdata('admin_name') ?? 'Admin';
         $tcKey     = 'TC_' . date('YmdHis') . '_' . bin2hex(random_bytes(4));
         $tcData    = [
@@ -2850,17 +2857,42 @@ class Sis extends MY_Controller
 
         $next = $this->fs->nextSchoolCounter('tc', $current);
         if ($next <= 0) {
-            // Atomic path unavailable (transient Firestore failure). Fall
-            // back to the legacy increment so TC issuance is never hard
-            // blocked — same behaviour as before this fix, no worse.
-            $next = $current + 1;
-            log_message('warning', "Sis::_get_tc_number atomic counter unavailable; legacy fallback next={$next}");
+            // SIS Wave-3 fix F4 (2026-05-31): the previous fallback computed
+            // $current + 1 from a possibly-stale schools.tcCounter mirror
+            // without claim-doc verification. If a prior call's mirror-write
+            // had failed silently, the mirror was stale and this fallback
+            // could compute a number ALREADY ISSUED by an earlier atomic
+            // claim — duplicate TC. We now abort TC issuance instead. Atomic
+            // unavailability is rare and operator-retryable; better to block
+            // briefly than to issue a duplicate. Caller (issue_tc) must
+            // check for empty return and surface a json_error.
+            log_message('error',
+                "Sis::_get_tc_number atomic counter unavailable; TC issuance aborted to prevent duplicate-number race from stale-mirror fallback. " .
+                "Retry the operation; if persistent, investigate feeCounters/{$this->school_id}_tc pointer doc.");
+            return '';
         }
 
         // Mirror into schools.tcCounter (monotonic) so existing verifiers
         // (Sis_canonical_verify / Sis_tier2_verify) stay coherent.
+        // SIS Wave-3 fix F4: capture return + ERROR log on failure. Pre-fix,
+        // a silent failure here left the mirror stale, which contributed to
+        // the duplicate-number window in the (now-removed) fallback path.
+        // The atomic claim doc remains the source of truth; mirror failure
+        // does NOT block the current TC issuance (the claim is already
+        // recorded) but the next-call's duplicate-number risk via fallback
+        // is now closed (fallback removed above).
         if ($next > $current) {
-            $this->fs->update('schools', $this->school_id, ['tcCounter' => $next]);
+            $mirrorOk = false;
+            try {
+                $mirrorOk = (bool) $this->fs->update('schools', $this->school_id, ['tcCounter' => $next]);
+            } catch (\Throwable $e) {
+                log_message('error', "Sis::_get_tc_number mirror update threw for tcCounter={$next}: " . $e->getMessage());
+            }
+            if (!$mirrorOk) {
+                log_message('error',
+                    "Sis::_get_tc_number mirror update returned false; schools.tcCounter is now stale relative to atomic claim ({$next}). " .
+                    "Verifiers may report drift until next successful mirror write. The atomic claim doc feeCounters/{$this->school_id}_tc_claim_{$next} remains authoritative.");
+            }
         }
 
         $year = date('Y');
