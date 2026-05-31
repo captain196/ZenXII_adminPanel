@@ -576,6 +576,23 @@ class B2_registry_service
                 'lifecycle.computedAt' => time(),
                 'updatedAt'            => $nowIso,
             ]);
+            // H-LIFECYCLE H1.5 — fan out lifecycle.state to the
+            // client-readable mirror collection so mobile apps
+            // (Parent + Teacher) can subscribe and detect transitions
+            // in seconds for reactive logout. schoolControl is
+            // deny-all to clients; tenantPublic is the canonical
+            // public-mirror surface (same pattern as activeModules).
+            // Non-fatal on failure — the lifecycle write to
+            // schoolControl above is authoritative; mirror staleness
+            // is detected by B2_runtime_verify probe #19.
+            try {
+                $this->firebase->firestoreUpdate('tenantPublic', $schoolId, [
+                    'lifecycleState' => $newState,
+                    'mirroredAt'     => $nowIso,
+                ]);
+            } catch (\Throwable $e) {
+                log_message('error', 'B2_registry_service::write_lifecycle_state tenantPublic fan-out failed (non-fatal): ' . $e->getMessage());
+            }
             $auditId = 'B2_LIFECYCLE_' . $schoolId . '_' . time() . '_' . substr(bin2hex(random_bytes(3)), 0, 6);
             try {
                 $this->firebase->firestoreSet('tenantAudit', $auditId, [
@@ -938,6 +955,23 @@ class B2_registry_service
         } catch (\Throwable $e) {
             log_message('error', 'B2_registry_service::set_admin_disabled schools update failed: ' . $e->getMessage());
             return false;
+        }
+
+        // H-LIFECYCLE H1.5 — fan out adminDisabled.value to the
+        // client-readable tenantPublic mirror (paired with the
+        // lifecycleState mirror written by write_lifecycle_state
+        // below). Mobile apps watch tenantPublic for either signal
+        // and force-logout on transition. Non-fatal on failure;
+        // schools.adminDisabled remains authoritative for the SA
+        // detail page and lifecycle.state remains authoritative for
+        // billing/access gates.
+        try {
+            $this->firebase->firestoreUpdate('tenantPublic', $schoolId, [
+                'adminDisabled' => $disabled,
+                'mirroredAt'    => $nowIso,
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'B2_registry_service::set_admin_disabled tenantPublic fan-out failed (non-fatal): ' . $e->getMessage());
         }
 
         // Keep schoolControl/{id}.lifecycle.state in sync with the toggle

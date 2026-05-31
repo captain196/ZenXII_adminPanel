@@ -357,6 +357,58 @@ class B2_runtime_verify extends CI_Controller
             'check'  => function () { return ['OK', 'nested-map write verified']; },
         ]);
 
+        // ── W5 (H-LIFECYCLE H1.5): tenantPublic mirror fan-out probe ──
+        // Confirms that write_lifecycle_state() and set_admin_disabled()
+        // both fan out to tenantPublic/{id}.lifecycleState + .adminDisabled
+        // — the public-mirror surface that mobile apps subscribe to for
+        // reactive logout (H2/H3). Drift here would silently break the
+        // mobile-side gate, so this probe is part of the H1 pre-deploy
+        // gate. Restores the test tenant to its original state on exit.
+        $this->_probe('write_rt: tenantPublic_lifecycle_mirror_fanout (H-LIFECYCLE H1.5)', function () use ($svc, $TEST) {
+            // Snapshot original state for revert.
+            $origCtrl = $this->firebase->firestoreGet('schoolControl', $TEST) ?: [];
+            $origLife = is_array($origCtrl['lifecycle'] ?? null) ? $origCtrl['lifecycle'] : [];
+            $origState = (string) ($origLife['state'] ?? 'active');
+            $origSchPub = $this->firebase->firestoreGet('tenantPublic', $TEST) ?: [];
+            $origAd = !empty($origSchPub['adminDisabled']);
+
+            // Step 1: write a non-default lifecycle state and confirm fan-out.
+            $okL = $svc->write_lifecycle_state($TEST, 'expiring_soon', 'verifier_probe_h1');
+            if (!$okL) throw new \Exception('write_lifecycle_state returned false');
+            $pubAfterLife = $this->firebase->firestoreGet('tenantPublic', $TEST) ?: [];
+            $mState = (string) ($pubAfterLife['lifecycleState'] ?? '');
+            if ($mState !== 'expiring_soon') {
+                throw new \Exception("tenantPublic.lifecycleState fan-out failed: got '{$mState}' expected 'expiring_soon'");
+            }
+
+            // Step 2: toggle adminDisabled via set_admin_disabled('inactive') and confirm fan-out.
+            $okA = $svc->set_admin_disabled($TEST, 'inactive', 'verifier_probe_h1');
+            if (!$okA) throw new \Exception('set_admin_disabled returned false');
+            $pubAfterAd = $this->firebase->firestoreGet('tenantPublic', $TEST) ?: [];
+            $mAd = !empty($pubAfterAd['adminDisabled']);
+            if (!$mAd) {
+                throw new \Exception("tenantPublic.adminDisabled fan-out failed: got false expected true");
+            }
+
+            // Step 3: revert to original state. Order matters — re-enable
+            // admin first so write_lifecycle_state can land cleanly.
+            $svc->set_admin_disabled($TEST, 'active', 'verifier_probe_h1_revert');
+            $svc->write_lifecycle_state($TEST, $origState !== '' ? $origState : 'active', 'verifier_probe_h1_revert');
+
+            // Verify revert landed.
+            $pubFinal = $this->firebase->firestoreGet('tenantPublic', $TEST) ?: [];
+            if ((string)($pubFinal['lifecycleState'] ?? '') !== ($origState !== '' ? $origState : 'active')) {
+                throw new \Exception('revert lifecycleState did not land');
+            }
+            if (!empty($pubFinal['adminDisabled']) !== $origAd) {
+                throw new \Exception('revert adminDisabled did not land');
+            }
+            return [];
+        }, [
+            'expect' => 'tenantPublic.{lifecycleState,adminDisabled} mirror both write paths; revert clean',
+            'check'  => function () { return ['OK', 'mirror fan-out verified both directions']; },
+        ]);
+
         $this->_print_report();
         // Hard gate: any verdict other than OK, OR any PHP warning, fails.
         $nonOk = 0;

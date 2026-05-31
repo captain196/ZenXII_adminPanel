@@ -1,0 +1,16 @@
+{
+  "name": "zenxii-firestore-rules-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Firebase Rules Unit Tests for H-LIFECYCLE H1 lifecycle gate (and future rule layers).",
+  "scripts": {
+    "test": "firebase emulators:exec --only firestore --project=zenxii-rules-test \"jest --runInBand --forceExit\"",
+    "test:watch": "firebase emulators:exec --only firestore --project=zenxii-rules-test \"jest --watch\""
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^3.0.4",
+    "firebase-admin": "^12.3.0",
+    "firebase-tools": "^13.35.1",
+    "jest": "^29.7.0"
+  }
+}
