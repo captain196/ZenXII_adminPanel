@@ -4172,9 +4172,23 @@ class Sis extends MY_Controller
         $rawExempted = $studentData['exemptedFees'] ?? $studentData['Exempted Fees'] ?? [];
         $exemptedFees = is_array($rawExempted) ? $rawExempted : [];
 
-        $discountData = $studentData['Discount'] ?? $studentData['discount'] ?? null;
-        $totalDiscount   = isset($discountData['totalDiscount'])   ? (float)$discountData['totalDiscount']   : 0;
-        $currentDiscount = isset($discountData['currentDiscount']) ? (float)$discountData['currentDiscount'] : 0;
+        // 2026-06-02: Firestore-only — read the canonical
+        // studentDiscounts/{schoolId}_{userId} doc that Fees::submit_discount,
+        // Fees::set_student_discount, and Fee_management::apply_discount all
+        // write to. The legacy embedded students.{id}.Discount path was
+        // verified to have zero active writers + zero readers + zero
+        // production data across all tenants (audit 2026-05-29..2026-06-02)
+        // and is no longer kept as a fallback per the Firestore-only
+        // convergence policy. Field map: canonical onDemandDiscount -> view's
+        // "Current Discount"; canonical totalDiscount -> view's "Total".
+        // Legacy PascalCase 'OnDemandDiscount' is still tolerated for any
+        // doc written by Fee_management::apply_discount before Fix #3
+        // landed; with zero such docs in production it's a no-op today.
+        $discountDoc = $this->fs->get('studentDiscounts', "{$this->fs->schoolId()}_{$userId}");
+        $totalDiscount   = is_array($discountDoc) ? (float) ($discountDoc['totalDiscount'] ?? 0) : 0;
+        $currentDiscount = is_array($discountDoc)
+            ? (float) ($discountDoc['onDemandDiscount'] ?? $discountDoc['OnDemandDiscount'] ?? 0)
+            : 0;
 
         $feesJson = $this->_getFees($class, $section);
         $feesData = json_decode($feesJson, true);

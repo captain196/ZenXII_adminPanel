@@ -50,8 +50,11 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
             <div class="sp-hero-info">
                 <h1 class="sp-hero-name"><?= htmlspecialchars($student['Name'] ?? 'Unknown') ?></h1>
                 <p class="sp-hero-sub">
-                    Class <?= htmlspecialchars($class ?? 'N/A') ?> &bull;
-                    Section <?= htmlspecialchars($section ?? 'N/A') ?>
+                    <?php // $class / $section already carry the "Class " / "Section " prefix
+                          // via Firestore_service::classKey()/sectionKey() in the controller —
+                          // don't prepend it again or you get "Class Class 8th". ?>
+                    <?= htmlspecialchars($class ?: 'N/A') ?> &bull;
+                    <?= htmlspecialchars($section ?: 'N/A') ?>
                 </p>
                 <div class="sp-badges">
                     <span class="sp-badge sp-badge-gold"><?= htmlspecialchars($student['User Id'] ?? '') ?></span>
@@ -633,7 +636,7 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
             })
             .then(function (r) { return r.json(); })
             .then(function (data) {
-                if (data.status === 'success') { alert('Discount applied!'); window.location.reload(); }
+                if (data.success === true) { alert('Discount applied!'); window.location.reload(); }
                 else { alert('Error: ' + (data.message || 'Unknown error')); }
             })
             .catch(function () { alert('Failed to apply discount.'); })

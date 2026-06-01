@@ -1041,7 +1041,11 @@ class Fee_management extends MY_Controller
             // Write to student's Discount node - maintain history
             $historyKey = $discId . '_' . date('Ymd_His');
             $updateData = [
-                'OnDemandDiscount' => $discountAmount,
+                // 2026-05-29: normalized PascalCase -> camelCase to match the
+                // canonical key used by every reader (Sis::student_profile,
+                // Fees::submit_discount, Fees::set_student_discount,
+                // FeeCollectionService) and by submit/set writers in Fees.php.
+                'onDemandDiscount' => $discountAmount,
                 'totalDiscount'    => $newTotal,
                 'last_policy_id'   => $discId,
                 'last_policy_name' => $discName,
