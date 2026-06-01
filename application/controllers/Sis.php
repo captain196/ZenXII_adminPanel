@@ -5726,22 +5726,63 @@ class Sis extends MY_Controller
 
     private function _getFees($className, $section)
     {
-        // Read fee structure from Firestore (docId includes session)
+        // Read fee structure from Firestore (docId includes session).
         $feeDocId = $this->fs->sectionDocId($className, $section);
         $feeDoc = $this->fs->get('feeStructures', $feeDocId);
-        $feesData = $feeDoc['heads'] ?? $feeDoc ?? [];
-        if (!empty($feesData) && is_array($feesData)) {
-            $formattedFees = [];
-            $monthlyTotals = [];
-            foreach ($feesData as $month => $fees) {
-                if (is_array($fees)) {
-                    $formattedFees[$month] = $fees;
-                    $monthlyTotals[$month] = array_sum($fees);
+        if (!is_array($feeDoc) || empty($feeDoc)) {
+            return json_encode(["fees"=>[],"monthlyTotals"=>[]]);
+        }
+
+        $formattedFees = [];
+
+        // Canonical 2026+ schema: a flat `feeHeads` array, each item
+        // carrying { name, amount, frequency: 'monthly'|'annual' }.
+        // Project monthly heads across the 12 academic-year months
+        // (Apr–Mar) and bucket annual heads under the "Yearly Fees"
+        // key, so the existing student-profile view — which expects
+        // a { 'Yearly Fees' | <MonthName> => { title => amount } }
+        // map — renders correctly without any view changes.
+        if (!empty($feeDoc['feeHeads']) && is_array($feeDoc['feeHeads'])) {
+            $months = ['April','May','June','July','August','September',
+                       'October','November','December','January','February','March'];
+            foreach ($feeDoc['feeHeads'] as $head) {
+                if (!is_array($head)) continue;
+                $name = trim((string)($head['name'] ?? ''));
+                if ($name === '') continue;
+                $amt  = (float)($head['amount'] ?? 0);
+                $freq = strtolower((string)($head['frequency'] ?? 'monthly'));
+                if ($freq === 'annual' || $freq === 'yearly') {
+                    $formattedFees['Yearly Fees'][$name] = $amt;
+                } else {
+                    foreach ($months as $m) {
+                        $formattedFees[$m][$name] = $amt;
+                    }
                 }
             }
-            return json_encode(["fees"=>$formattedFees,"monthlyTotals"=>$monthlyTotals,"overallTotal"=>array_sum($monthlyTotals)]);
+        } else {
+            // Pre-2026 legacy shape: heads.<Month>.<Title> = amount, or
+            // the same map at the doc root. Retained so a school that
+            // hasn't yet been migrated to the feeHeads schema still
+            // renders.
+            $feesData = $feeDoc['heads'] ?? $feeDoc;
+            if (is_array($feesData)) {
+                foreach ($feesData as $month => $fees) {
+                    if (is_array($fees)) {
+                        $formattedFees[$month] = $fees;
+                    }
+                }
+            }
         }
-        return json_encode(["fees"=>[],"monthlyTotals"=>[]]);
+
+        $monthlyTotals = [];
+        foreach ($formattedFees as $month => $row) {
+            $monthlyTotals[$month] = array_sum(array_map('floatval', $row));
+        }
+        return json_encode([
+            "fees"          => $formattedFees,
+            "monthlyTotals" => $monthlyTotals,
+            "overallTotal"  => array_sum($monthlyTotals),
+        ]);
     }
 
     private function _getSundays($year, $month)
