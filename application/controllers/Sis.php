@@ -5212,6 +5212,125 @@ class Sis extends MY_Controller
     }
 
     /**
+     * SIS Tier-2 fix B3 (post-soak 2026-06-01): retry Firebase Auth
+     * creation for a student whose original enrollment left an
+     * orphan-Auth row (enroll_student returned json_success with
+     * auth_created=false because Firebase Auth creation failed but
+     * the student profile + fee assignments succeeded).
+     *
+     * Pre-fix: operator saw the warning modal but had no in-app
+     * repair flow — only tech-support escalation could create the
+     * missing Auth account. This endpoint re-runs the same
+     * _createFirebaseAuthStudent helper used at enrollment, with no
+     * password rotation, no operator override, and no auto-notify
+     * (operator hand-delivers credentials from the json_success
+     * payload).
+     *
+     * Q-decisions locked 2026-05-31:
+     *   Q1 Option 1 — helper call only, no getFirebaseUserByEmail
+     *      pre-check (deferred Option 2)
+     *   Q2 MANAGE_ROLES gate (parity with change_status)
+     *   Q3 NO force-rotate — does NOT set mustChangePassword
+     *   Q4 Reuse stored password silently — no operator override
+     *   Q5 No auto-notify — silent JSON-only return
+     *   Q7 Password exposed in json_success (parity with
+     *      enroll_student credentials panel)
+     *
+     * Idempotent retry semantics inherited from
+     * _createFirebaseAuthStudent: on duplicate email Kreait throws,
+     * Firebase::createFirebaseUser silently catches and returns null,
+     * setFirebaseClaims then idempotently overwrites the 4-key
+     * claim set, helper returns success=true honestly.
+     *
+     * Known carry per Q-pre-4: the AUTH_REPAIR audit entry lands in
+     * legacy students.History map (not studentHistory collection)
+     * until History Canonicalization ships as Slot 4. Visible in
+     * admin History UI; invisible to studentHistory-only readers.
+     *
+     * POST  /sis/repair_auth  OR  /admission_crm/repair_auth
+     *   user_id (required)
+     *
+     * Returns json_success with credentials-panel shape mirroring
+     * enroll_student, OR json_error on any pre-flight failure or
+     * helper-reported Auth-create failure.
+     */
+    public function repair_student_auth()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'sis_repair_auth');
+
+        if (strtolower((string) $this->input->method()) !== 'post') {
+            return $this->json_error('POST required.');
+        }
+
+        $userId = trim((string) $this->input->post('user_id', TRUE));
+        if ($userId === '') {
+            return $this->json_error('user_id is required.');
+        }
+        if (!$this->safe_path_segment($userId)) {
+            return $this->json_error('Invalid user_id.');
+        }
+
+        $student = $this->_getStudent($userId);
+        if (!is_array($student) || empty($student)) {
+            return $this->json_error('Student not found.');
+        }
+
+        $status = (string) ($student['Status'] ?? $student['status'] ?? '');
+        if (in_array($status, ['Withdrawn', 'Inactive'], true)) {
+            return $this->json_error(
+                'Cannot repair Auth for a withdrawn/inactive student.'
+            );
+        }
+
+        // Q4: reuse stored password silently. Q3: no force-rotate.
+        // Fallback chain: students.{id}.Password → _generatePassword
+        // (Name, DOB) for legacy rows missing Password (pre-B1 rows).
+        // If both empty we abort rather than write an empty-password
+        // Auth account (which the helper would reject anyway).
+        $password = (string) ($student['Password'] ?? '');
+        if ($password === '') {
+            $password = $this->_generatePassword(
+                (string) ($student['Name'] ?? ''),
+                (string) ($student['DOB'] ?? $student['dob'] ?? '')
+            );
+        }
+        if ($password === '') {
+            return $this->json_error(
+                'No password available to retry: student record has no stored password and Name/DOB are missing.'
+            );
+        }
+
+        $displayName = (string) ($student['Name'] ?? $userId);
+        $result = $this->_createFirebaseAuthStudent(
+            $userId,
+            $password,
+            $displayName,
+            'SIS repair'
+        );
+        if (!($result['success'] ?? false)) {
+            return $this->json_error(
+                'Failed to repair Firebase Auth account: ' . ($result['error'] ?? 'unknown error')
+            );
+        }
+
+        $school_id = $this->parent_db_key;
+        $this->_log_history(
+            $school_id,
+            $userId,
+            'AUTH_REPAIR',
+            'Firebase Auth account repaired by ' . ($this->admin_name ?? 'system'),
+            ['context' => 'SIS repair']
+        );
+
+        return $this->json_success([
+            'user_id'      => $userId,
+            'password'     => $password,
+            'auth_created' => true,
+            'message'      => "Firebase Auth account repaired for {$userId}.",
+        ]);
+    }
+
+    /**
      * GET — list section letters that exist for a given class in the
      * current session. Used by the enrollment JS to let admin pick which
      * section to enroll a CRM application into instead of silently

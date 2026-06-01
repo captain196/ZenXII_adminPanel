@@ -77,6 +77,22 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
                     href="<?= base_url('sis/history/' . urlencode($student['User Id'] ?? '')) ?>">
                     <i class="fa fa-history"></i> History
                 </a>
+                <?php
+                // SIS Tier-2 fix B3 (post-soak 2026-06-01): role-gated
+                // Repair-Login surface for orphan Firebase Auth rows.
+                // Gate mirrors Sis::MANAGE_ROLES (Q2: Front Office
+                // included for parity with change_status). Server
+                // enforces the same role gate; client gate is UX-only
+                // defense-in-depth.
+                $b3_repair_roles = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Front Office'];
+                if (in_array($admin_role ?? '', $b3_repair_roles, true)):
+                ?>
+                <button class="sp-btn sp-btn-ghost" id="repairAuthBtn"
+                    data-user-id="<?= htmlspecialchars($student['User Id'] ?? '', ENT_QUOTES) ?>"
+                    style="border-color:#d97706;color:#d97706;">
+                    <i class="fa fa-key"></i> Repair Login
+                </button>
+                <?php endif; ?>
             </div>
         </div>
 
@@ -624,6 +640,50 @@ if (!empty($student['Doc']) && is_array($student['Doc'])) {
             .finally(function () {
                 discBtn.disabled = false;
                 discBtn.innerHTML = '<i class="fa fa-check"></i> Apply Discount';
+            });
+        });
+    }
+
+    // SIS Tier-2 fix B3 (post-soak 2026-06-01): Repair-Login handler.
+    // POSTs user_id only; server reuses the stored password silently
+    // (Q4). On success the returned password is shown to the operator
+    // for manual delivery to the parent (Q5+Q7). Button is gated to
+    // MANAGE_ROLES at PHP render time + at the controller endpoint.
+    var repairBtn = document.getElementById('repairAuthBtn');
+    if (repairBtn) {
+        repairBtn.addEventListener('click', function () {
+            var userId = repairBtn.getAttribute('data-user-id') || '';
+            if (!userId) { alert('No user id on the button — refresh the page and retry.'); return; }
+            if (!confirm('Repair the Firebase Auth account for ' + userId + '?\n\nThis re-runs Firebase Auth creation using the stored password.\nNo password rotation. Parent will be required to set a new password on first login.')) {
+                return;
+            }
+            repairBtn.disabled = true;
+            var origHtml = repairBtn.innerHTML;
+            repairBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Repairing...';
+            var payload = new URLSearchParams();
+            payload.append(csrfName, csrfToken);
+            payload.append('user_id', userId);
+            fetch('<?= base_url("sis/repair_auth") ?>', {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+                body:    payload
+            })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                if (data && data.status === 'success') {
+                    alert('Firebase Auth account repaired for ' + userId + '.\n\nPassword: ' + (data.password || '(unchanged)') + '\n\nShare with the parent securely. They will be required to set a new password on first login.');
+                    repairBtn.disabled = false;
+                    repairBtn.innerHTML = origHtml;
+                } else {
+                    alert('Repair failed: ' + ((data && data.message) ? data.message : 'unknown error'));
+                    repairBtn.disabled = false;
+                    repairBtn.innerHTML = origHtml;
+                }
+            })
+            .catch(function (e) {
+                alert('Network error during repair: ' + (e && e.message ? e.message : 'unknown'));
+                repairBtn.disabled = false;
+                repairBtn.innerHTML = origHtml;
             });
         });
     }

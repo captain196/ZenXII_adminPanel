@@ -531,6 +531,13 @@ $route['admission_crm/update_stage']            = 'Sis/update_stage';
 $route['admission_crm/approve_application']     = 'Sis/approve_application';
 $route['admission_crm/reject_application']      = 'Sis/reject_application';
 $route['admission_crm/enroll_student']          = 'Sis/enroll_student';
+// SIS Tier-2 fix B3 (post-soak 2026-06-01): Auth-repair endpoint for
+// orphan Firebase Auth rows. Two aliases — admission_crm/* for the
+// enrollment-credentials modal in admission_crm/applications.php, and
+// sis/* for the student profile hero button. Both target the same
+// repair_student_auth() controller method.
+$route['admission_crm/repair_auth']             = 'Sis/repair_student_auth';
+$route['sis/repair_auth']                       = 'Sis/repair_student_auth';
 $route['admission_crm/waitlist']                = 'Sis/waitlist';
 $route['admission_crm/fetch_waitlist']          = 'Sis/fetch_waitlist';
 $route['admission_crm/add_to_waitlist']         = 'Sis/add_to_waitlist';

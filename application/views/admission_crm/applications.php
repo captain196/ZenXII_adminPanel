@@ -647,6 +647,13 @@ function showEnrollmentCredentials(c) {
       +     '<p style="margin:0 0 12px;font-size:12px;color:#6b7280;line-height:1.5;">'
       +       statusTxt
       +     '</p>'
+      +     // SIS Tier-2 fix B3 (post-soak 2026-06-01): conditional repair
+      +     // button surfaces only on Auth-create failure. data-user-id is
+      +     // the only payload the handler sends; server re-reads stored
+      +     // password from the student doc (Q4 — no client-side password).
+      +     (!c.authCreated
+      +        ? '<div style="margin:0 0 12px;"><button class="ac-btn ac-btn-primary" style="background:#d97706;border-color:#d97706;" id="repairAuthInModalBtn" data-user-id="' + esc(c.studentId) + '" onclick="repairAuthAccount()"><i class="fa fa-wrench"></i> Repair Auth Account</button></div>'
+      +        : '')
       +     '<p style="margin:0 0 16px;font-size:11px;color:#9ca3af;line-height:1.5;">'
       +       'The parent will be required to set a new password on first login. SMS delivery of these credentials will be added in the next phase.'
       +     '</p>'
@@ -674,6 +681,45 @@ function copyCred(id) {
         try { document.execCommand('copy'); showAlert('Copied to clipboard', 'success'); } catch(e) {}
         document.body.removeChild(ta);
     }
+}
+
+// SIS Tier-2 fix B3 (post-soak 2026-06-01): retry Firebase Auth creation
+// for a student whose enrollment landed an orphan-Auth row. Reads user_id
+// from the modal button's data-user-id attribute (NOT from a captured
+// closure variable — keeps the handler resilient if the button is
+// re-rendered) and POSTs to admission_crm/repair_auth. Server reuses the
+// stored password silently (Q4); the response includes the password for
+// the operator to hand-deliver (Q5+Q7). On success the credentials modal
+// is removed; on failure the button is re-enabled so the operator can
+// retry without re-opening the enrollment dialog.
+function repairAuthAccount() {
+    var btn = document.getElementById('repairAuthInModalBtn');
+    if (!btn) return;
+    var userId = btn.getAttribute('data-user-id') || '';
+    if (!userId) { showAlert('No user id on the button — refresh the page and retry.', 'error'); return; }
+    btn.disabled = true;
+    var origHtml = btn.innerHTML;
+    btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Repairing...';
+    fetch(BASE + 'admission_crm/repair_auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+        body: new URLSearchParams({ user_id: userId }).toString()
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+        if (d && d.status === 'success') {
+            var modal = document.getElementById('credModal');
+            if (modal) modal.remove();
+            showAlert((d.message || 'Firebase Auth account repaired.') + ' New password: ' + (d.password || '(unchanged)') + ' — share securely with the parent.', 'success');
+        } else {
+            btn.disabled = false; btn.innerHTML = origHtml;
+            showAlert((d && d.message) ? d.message : 'Repair failed (unknown error).', 'error');
+        }
+    })
+    .catch(function(e) {
+        btn.disabled = false; btn.innerHTML = origHtml;
+        showAlert('Network error during repair: ' + (e && e.message ? e.message : 'unknown'), 'error');
+    });
 }
 
 function addWaitlist(id) {
