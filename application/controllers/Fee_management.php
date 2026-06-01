@@ -2904,19 +2904,28 @@ class Fee_management extends MY_Controller
 
     /**
      * Resolve the active session for a school (used by parent-app API
-     * endpoints + the webhook, which have no CI session). Reads
-     * schoolConfig/{schoolName}_activeSession from Firestore. Returns
-     * '' if the doc is missing or malformed — callers treat '' as a
-     * hard failure and reject the request.
+     * endpoints + the webhook, which have no CI session).
+     *
+     * SC-0b (Session Convergence Phase 0b — 2026-06-02): Reads
+     * schools/{id}.currentSession from Firestore as the sole authority.
+     * Returns '' on missing/error — callers treat '' as a hard failure
+     * and reject the request with HTTP 400. No fallback to legacy orphan
+     * collection (schoolConfig/{name}_activeSession), no fallback to PHP
+     * session, no synthetic derivation. Fail-closed per NEW-Q12.
      */
     private function _resolve_active_session(string $schoolName): string
     {
         if ($schoolName === '') return '';
         try {
-            $cfg = $this->firebase->firestoreGet('schoolConfig', "{$schoolName}_activeSession");
-            if (is_array($cfg) && !empty($cfg['session'])) return (string) $cfg['session'];
+            $doc = $this->firebase->firestoreGet('schools', $schoolName);
+            if (is_array($doc) && !empty($doc['currentSession'])) {
+                return (string) $doc['currentSession'];
+            }
+            log_message('error',
+                "SC-0b: Fee_management::_resolve_active_session — schools/{$schoolName}.currentSession missing or empty");
         } catch (\Exception $e) {
-            log_message('error', "_resolve_active_session: Firestore read failed for {$schoolName}: " . $e->getMessage());
+            log_message('error',
+                "SC-0b: Fee_management::_resolve_active_session FS read failed for {$schoolName}: " . $e->getMessage());
         }
         return '';
     }

@@ -73,22 +73,31 @@ class Ptm extends MY_Controller
 
     /**
      * Resolve the active session for a school during an app-API request
-     * (no admin session available). Reads from the school's settings doc.
-     * Falls back to current calendar session if the lookup fails.
+     * (no admin session available).
+     *
+     * SC-0b (Session Convergence Phase 0b — 2026-06-02): Reads
+     * schools/{id}.currentSession from Firestore as the sole authority.
+     * Returns '' on missing/error — caller (constructor L55-60) treats
+     * empty as a 400-error and aborts the request. No fallback to legacy
+     * schools.active_session or schools.session fields. No synthetic
+     * calendar-based fallback (Apr-Mar Indian academic year — DELETED
+     * per NEW-Q12 fail-closed mandate). No PHP-session fallback.
      */
     private function _resolve_active_session_for_app(string $schoolName): string
     {
         if ($schoolName === '') return '';
         try {
             $doc = $this->firebase->firestoreGet('schools', $schoolName);
-            $session = (string) ($doc['active_session'] ?? $doc['session'] ?? '');
-            if ($session !== '') return $session;
-        } catch (\Exception $_) { /* fall through */ }
-        // Calendar fallback: April–March year cycle (Indian academic year).
-        $y = (int) date('Y');
-        $m = (int) date('n');
-        if ($m >= 4) return $y . '-' . substr((string) ($y + 1), -2);
-        return ($y - 1) . '-' . substr((string) $y, -2);
+            if (is_array($doc) && !empty($doc['currentSession'])) {
+                return (string) $doc['currentSession'];
+            }
+            log_message('error',
+                "SC-0b: Ptm::_resolve_active_session_for_app — schools/{$schoolName}.currentSession missing or empty");
+        } catch (\Exception $e) {
+            log_message('error',
+                "SC-0b: Ptm::_resolve_active_session_for_app FS read failed for {$schoolName}: " . $e->getMessage());
+        }
+        return '';
     }
 
     private function _require_admin(): void
