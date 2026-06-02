@@ -1754,7 +1754,10 @@ function refreshHeaderSessList(sessions, active) {
                 if (panel) panel.classList.remove('open');
                 return;
             }
-            $.post(BASE_URL + 'admin/switch_session', { session_year: year })
+            // SC-Step6 (2026-06-02): repointed from admin/switch_session
+            // (retired) to canonical school_config/set_active_session.
+            // Body param renamed session_year → session per endpoint contract.
+            $.post(BASE_URL + 'school_config/set_active_session', { session: year })
              .done(function(res) {
                  if (res && res.status === 'success') window.location.reload();
              })

@@ -29,6 +29,17 @@ class School_config extends MY_Controller
     /** Only Admin/Principal may configure school settings */
     private const ADMIN_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal'];
 
+    /**
+     * SC-Step6 (2026-06-02): superset of ADMIN_ROLES that may set the
+     * active session view. Mirrors Admin::VIEW_ROLES exactly so that
+     * after Step 6 retires Admin::switch_session, all 14 roles that
+     * could previously switch via the header dropdown retain that
+     * capability via school_config/set_active_session. Used ONLY by
+     * set_active_session's role gate; the rest of School_config's
+     * mutating endpoints remain ADMIN_ROLES-gated.
+     */
+    private const VIEW_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Academic Coordinator', 'HR Manager', 'Accountant', 'Front Office', 'Class Teacher', 'Teacher', 'Librarian', 'Transport Manager', 'Hostel Warden'];
+
     public function __construct()
     {
         parent::__construct();
@@ -3040,7 +3051,14 @@ class School_config extends MY_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function set_active_session()
     {
-        $this->_require_role(self::ADMIN_ROLES, 'school_config_set_active_session');
+        // SC-Step6 (2026-06-02): widened from ADMIN_ROLES to VIEW_ROLES to
+        // preserve the capability that all 14 logged-in roles previously
+        // had via Admin::switch_session (now retired). Defense-in-depth:
+        // the School Config UI tab visibility remains separately gated;
+        // lower roles can't reach the "Set Active" button in that tab.
+        // The header dropdown's session switcher (every authenticated
+        // admin page) is the primary caller of this widened gate.
+        $this->_require_role(self::VIEW_ROLES, 'school_config_set_active_session');
         $school  = $this->school_name;
         $session = trim((string) $this->input->post('session', TRUE));
 

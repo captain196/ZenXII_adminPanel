@@ -1387,7 +1387,13 @@
                 panel.classList.remove('open');
                 return;
             }
-            $.post(BASE_URL + 'admin/switch_session', { session_year: year })
+            // SC-Step6 (2026-06-02): repointed from admin/switch_session
+            // (retired) to canonical school_config/set_active_session.
+            // Body param renamed session_year → session per School_config
+            // endpoint contract. set_active_session was widened from
+            // ADMIN_ROLES to VIEW_ROLES in the same commit to preserve
+            // the header dropdown's switching capability for all 14 roles.
+            $.post(BASE_URL + 'school_config/set_active_session', { session: year })
              .done(function (res) {
                  if (res && res.status === 'success') { window.location.reload(); }
              })
@@ -1431,12 +1437,20 @@
             createBtn.disabled = true;
             createBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Creating\u2026';
 
-            $.post(BASE_URL + 'admin/create_session', { session_year: year })
+            // SC-Step6 (2026-06-02): repointed from admin/create_session
+            // (retired) to canonical school_config/add_session +
+            // school_config/set_active_session. Preserves the original
+            // "Create & Switch" UX via 2 sequential POSTs (D2=a operator
+            // decision). Body param renamed session_year → session per
+            // School_config endpoint contract. UI button visibility is
+            // separately SA-only-gated upstream (D3=b — header markup
+            // shows gSessNewBtn only to Super Admin role).
+            $.post(BASE_URL + 'school_config/add_session', { session: year })
              .done(function (res) {
                  if (res && res.status === 'success') {
                      $('#gCreateSessModal').modal('hide');
                      // Switch to the newly created session then reload
-                     $.post(BASE_URL + 'admin/switch_session', { session_year: year })
+                     $.post(BASE_URL + 'school_config/set_active_session', { session: year })
                       .always(function () { window.location.reload(); });
                  } else {
                      errBox.textContent = (res && res.message) || 'Failed to create session.';
