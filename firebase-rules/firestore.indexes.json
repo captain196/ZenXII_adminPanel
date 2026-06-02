@@ -779,6 +779,25 @@
       ]
     },
     {
+      "_comment": "History Canonicalization (2026-06-02): Sis::history admin UI reader. Required for firestoreQuery('studentHistory', [['schoolId','==',X],['studentId','==',Y]], 'changed_at', 'DESC'). Without this composite index Firestore returns FAILED_PRECONDITION on first query, breaking admin History page immediately at cutover.",
+      "collectionGroup": "studentHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "changed_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "galleryAlbums",
       "queryScope": "COLLECTION",
       "fields": [

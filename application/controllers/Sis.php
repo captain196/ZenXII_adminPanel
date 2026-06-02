@@ -2160,18 +2160,27 @@ class Sis extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'sis_history');
         if (empty($userId) || !$this->safe_path_segment($userId)) show_404();
 
-        $school_id = $this->parent_db_key;
-        // Firestore-first read, RTDB fallback
         $student = $this->_getStudent($userId);
         if (empty($student)) show_404();
 
-        $studentDoc = $this->_getStudent($userId);
-        $history = $studentDoc['History'] ?? [];
-        if (!is_array($history)) $history = [];
-
-        uasort($history, fn($a, $b) =>
-            strcmp($b['changed_at'] ?? '', $a['changed_at'] ?? '')
-        );
+        // History Canonicalization (2026-06-02): read from canonical
+        // studentHistory collection (firestoreQuery composite index:
+        // schoolId ASC + studentId ASC + changed_at DESC). Replaces
+        // legacy students.{id}.History map read which is now retired
+        // (writer cutover this same commit).
+        $history = [];
+        try {
+            $rows = $this->firebase->firestoreQuery('studentHistory', [
+                ['schoolId',  '==', $this->school_id],
+                ['studentId', '==', $userId],
+            ], 'changed_at', 'DESC', 5000);
+            foreach ($rows as $r) {
+                $d = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+                if (!empty($d)) $history[] = $d;
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "Sis::history studentHistory query failed for {$userId}: " . $e->getMessage());
+        }
 
         $data['student'] = $student;
         $data['history'] = $history;
@@ -2863,7 +2872,16 @@ class Sis extends MY_Controller
     }
 
     /**
-     * Append an entry to the student's History log.
+     * Append an entry to the canonical studentHistory collection.
+     *
+     * History Canonicalization (2026-06-02): D3.B cutover landing.
+     * Writes one document per history event keyed
+     * {schoolId}_{userId}_{histKey}. Replaces the prior dotted-path
+     * PATCH on students.{id}.History map (F2, 47913a6f, 2026-05-31).
+     *
+     * createDocument is idempotent (fails-if-exists); $histKey
+     * collision (timestamp + 6 hex random) remains astronomically
+     * unlikely — same risk profile as the legacy-map writer.
      */
     private function _log_history(
         string $schoolId,
@@ -2873,36 +2891,26 @@ class Sis extends MY_Controller
         array  $metadata = []
     ): void {
         $adminName = $this->session->userdata('admin_name') ?? 'System';
-        $entry = [
+        $histKey   = date('YmdHis') . '_' . bin2hex(random_bytes(3));
+        $docId     = $schoolId . '_' . $userId . '_' . $histKey;
+        $data = [
+            'schoolId'    => $schoolId,
+            'studentId'   => $userId,
+            'histKey'     => $histKey,
             'action'      => $action,
             'description' => $description,
             'changed_by'  => $adminName,
             'changed_at'  => date('Y-m-d H:i:s'),
             'metadata'    => $metadata,
         ];
-        $histKey = date('YmdHis') . '_' . bin2hex(random_bytes(3));
-
-        // SIS Wave-4 fix F2 (2026-05-31): dotted-path Firestore PATCH
-        // eliminates the read-modify-write race. Pre-fix, _log_history
-        // read the entire History map, appended the new entry locally,
-        // and wrote the full map back. Two concurrent calls each read
-        // the same starting state — the second writer's full-map write
-        // silently dropped the first writer's entry, producing audit-
-        // trail loss invisible to admins.
-        //
-        // The new write uses a single dotted field path
-        // ("History.{$histKey}"). Firestore_rest_client::updateDocument
-        // (L879-916, B2.3.2-FIX R5 nested-update support) reshapes the
-        // dotted key into a nested body + dotted updateMask
-        // (?updateMask.fieldPaths=History.{histKey}). Firestore PATCH
-        // applies the update only to that specific field path; sibling
-        // entries in the History map are preserved untouched. Two
-        // concurrent calls now write DIFFERENT field paths — zero
-        // contention, both entries persist.
-        //
-        // $histKey collision (timestamp + 6 hex random per call) remains
-        // astronomically unlikely; same risk profile as pre-fix.
-        $this->fs->updateEntity('students', $userId, ["History.{$histKey}" => $entry]);
+        try {
+            $ok = $this->firebase->firestoreCreate('studentHistory', $docId, $data);
+            if (!$ok) {
+                log_message('error', "Sis::_log_history studentHistory create returned false: {$docId} action={$action}");
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "Sis::_log_history studentHistory write failed: {$docId} action={$action} err=" . $e->getMessage());
+        }
     }
 
     /**

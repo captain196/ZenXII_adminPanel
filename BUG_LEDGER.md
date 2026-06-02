@@ -2090,3 +2090,21 @@ CARRY-013 (closed 2026-05-24 — thirteenth controlled-remediation package + FIR
 **Why this matters (impact):**
 - Without H1, a suspended/non-paying tenant's mobile users retain full Firestore read/write capability for up to the Firebase Auth token lifetime (~1 h). For a billing-driven SaaS this is a revenue-protection gap.
 - Without H2/H3, even with H1 shipped, suspended-tenant mobile users see opaque PERMISSION_DENIED errors instead of a clean logout flow — bad UX and confusing support tickets.
+
+## CARRY (2026-06-02): History Canonicalization truth-up
+
+CARRY-009 / CARRY-010 (declared D3.B 2026-05-25 in commit f146a215)
+were paper-only; load-bearing writer + reader code never landed. F2
+(commit 47913a6f, 2026-05-31) explicitly OUT-OF-SCOPE'd the migration.
+
+Truth-up shipped today: Sis::history reader + Sis::_log_history writer
++ studentHistory composite index landed as one atomic commit on
+ankit/my-feature, pre-execution HEAD 4f8542b4.
+
+Backfill of 96 orphan map entries into canonical studentHistory
+collection completed earlier in the same operator-driven session
+(SCH_D94FE8F7AD; 100 scanned / 96 created / 4 pre-existing skipped /
+0 failed; post-verify 0 missing).
+
+Step 5 (legacy students.History field SCHEDULED_RETIREMENT) remains
+HELD — not authorized in this cutover.
