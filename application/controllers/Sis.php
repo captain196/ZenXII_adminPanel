@@ -879,43 +879,56 @@ class Sis extends MY_Controller
         if (!$this->safe_path_segment($toClass))   return $this->json_error('Invalid destination class.');
         if (!$this->safe_path_segment($toSection))  return $this->json_error('Invalid destination section.');
 
-        // Validate toSession format (YYYY-YY) — reject arbitrary strings
+        // SC-Step9 Part A (Session Convergence — 2026-06-02): fail-loud
+        // validation. Pre-Step-9 silently fell back to $session on malformed
+        // to_session, masking input bugs. Per NEW-Q12 fail-closed mandate,
+        // reject malformed input with HTTP 400 so callers can correct it.
+        // The empty-string default to current session (L870) still applies
+        // BEFORE this check — UI sending empty to_session for same-session
+        // promotion is unaffected.
         if (!preg_match('/^\d{4}-\d{2}$/', $toSession)) {
-            $toSession = $session;
+            return $this->json_error(
+                "Invalid target session format. Expected YYYY-YY (e.g. 2026-27), got: "
+                . substr($toSession, 0, 32),
+                400
+            );
         }
 
-        // Auto-register target session in Sessions list if it doesn't exist yet.
-        // BUG-056 SW1 (2026-05-26): write ONLY the sessions list. Active-session
-        // changes (currentSession) must route exclusively through
-        // School_config::set_active_session() which has lock+CAS+audit guards.
-        // Promotion adding a future session must not flip the school's
-        // globally-active session as a side effect.
+        // SC-Step9 Part B (Session Convergence — 2026-06-02): route
+        // session-add through canonical Session_lifecycle library per
+        // operator-locked EX-C(b) decision. The library applies the SAME
+        // lock + Firestore __updateTime CAS that School_config's canonical
+        // lifecycle writers use, with cross-controller serialization
+        // preserved via the shared lock-file path. Pre-Step-9 inline
+        // fs->update at L902 was the LAST unhardened session writer in
+        // the codebase; Step 9 closes it.
+        //
+        // BUG-056-SW1 invariant PRESERVED: promotion writes ONLY sessions[],
+        // never currentSession. Active-session changes route exclusively
+        // through School_config::set_active_session. The library's
+        // add_session() method has no path to currentSession.
         $available = $this->session->userdata('available_sessions') ?? [];
         if (!in_array($toSession, $available, true)) {
-            $available[] = $toSession;
-            rsort($available);
-            // Rollback-safe: if the Firestore write fails or throws, abort
-            // promotion BEFORE any per-student work runs. No partial state,
-            // no silent continuation.
-            $written = false;
-            try {
-                $written = (bool) $this->fs->update('schools', $this->school_id, ['sessions' => $available]);
-            } catch (\Throwable $e) {
+            $this->load->library('Session_lifecycle', null, 'session_lifecycle');
+            $libResult = $this->session_lifecycle->add_session(
+                $this->school_id,
+                $toSession,
+                (string) $this->admin_id,
+                'promotion'
+            );
+            if (!$libResult['success']) {
                 log_message('error',
-                    'BUG-056-SW1: exception registering target session ['
-                    . $toSession . '] for school [' . $this->school_id
-                    . ']: ' . $e->getMessage());
-            }
-            if (!$written) {
-                log_message('error',
-                    'BUG-056-SW1: failed to register target session ['
-                    . $toSession . '] for school [' . $this->school_id
+                    'SC-Step9: Session_lifecycle::add_session failed for promotion '
+                    . 'target=[' . $toSession . '] school=[' . $this->school_id
+                    . '] error=[' . ($libResult['error'] ?? 'unknown')
                     . '] — aborting promotion to prevent orphan state.');
                 return $this->json_error(
                     'Could not register the target session in school configuration. '
                     . 'Promotion has been aborted to prevent partial state. Please retry.');
             }
-            $this->session->set_userdata('available_sessions', $available);
+            // Refresh PHP userdata cache from the post-write canonical sessions[]
+            // returned by the library (includes the new session, sorted).
+            $this->session->set_userdata('available_sessions', $libResult['sessions']);
         }
 
         $students = $this->_get_students_in_class($fromClass, $fromSection, $session);
