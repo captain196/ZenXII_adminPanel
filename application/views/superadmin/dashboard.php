@@ -1,26 +1,44 @@
 <?php
+/**
+ * B2.3.4-A Phase 1B — Super Admin Dashboard Hub.
+ *
+ * Locked design baseline: docs/design/B2_3_4_A_Analytics_Design_Locked.md
+ * Q-A1 (12-month default), Q-A2 (high-signal feed), Q-A3 (active=H1),
+ * Q-A4 (MRR includes trialing), Q-A5 (D/W/M selector), Q-A6 (ZenXii palette),
+ * Q-A7 (Firestore saved searches), Q-A8 (CSV+Excel), Q-A9 (KPI→spoke nav),
+ * Q-A10 (alerts persist until resolved).
+ */
 $summary         = $summary         ?? [];
 $recent_activity = $recent_activity ?? [];
 $expiry_alerts   = $expiry_alerts   ?? [];
+$hub             = $hub             ?? [];
 
-$total_schools   = $summary['total_schools']   ?? 0;
-$active_schools  = $summary['active_schools']  ?? 0;
-$total_students  = $summary['total_students']  ?? 0;
-$total_staff     = $summary['total_staff']     ?? 0;
-$total_revenue   = $summary['total_revenue']   ?? 0;
-$recent_regs     = $summary['recent_regs']     ?? 0;
-$last_refreshed_raw = $summary['last_refreshed'] ?? '';
-// Format for display: parse ISO string from Firebase → human-readable local date/time
-if ($last_refreshed_raw && ($ts = strtotime($last_refreshed_raw)) !== false) {
-    $last_refreshed = date('d/m/Y, H:i:s', $ts);
-} else {
-    $last_refreshed = 'Never';
-}
+// Headline KPIs sourced from B2_analytics_service (Phase 1B canonical).
+// Falls back to the legacy $summary array if analytics service didn't
+// initialise (defensive — see Superadmin::dashboard error path).
+$kpi = is_array($hub['kpi'] ?? null) ? $hub['kpi'] : [
+    'total_schools' => $summary['total_schools'] ?? 0,
+    'active_schools' => $summary['active_schools'] ?? 0,
+    'total_students' => $summary['total_students'] ?? 0,
+    'total_staff'    => $summary['total_staff']    ?? 0,
+    'mrr'            => 0,
+    'active_subscriptions' => 0,
+];
 
-$active_pct = $total_schools > 0 ? round(($active_schools / $total_schools) * 100) : 0;
+$alerts          = is_array($hub['alerts'] ?? null) ? $hub['alerts'] : [];
+$top_schools     = is_array($hub['top_schools'] ?? null) ? $hub['top_schools'] : [];
+$expiring_soon   = is_array($hub['expiring_soon'] ?? null) ? $hub['expiring_soon'] : [];
+$feed_activity   = is_array($hub['recent_activity'] ?? null) ? $hub['recent_activity'] : [];
+$saved_searches  = is_array($hub['saved_searches'] ?? null) ? $hub['saved_searches'] : [];
+$ts_growth       = is_array($hub['time_series']['schools_growth'] ?? null) ? $hub['time_series']['schools_growth'] : [];
+$ts_revenue      = is_array($hub['time_series']['revenue'] ?? null) ? $hub['time_series']['revenue'] : [];
+$generated_at_iso = (string) ($hub['generated_at'] ?? '');
+
+$active_pct = ($kpi['total_schools'] ?? 0) > 0
+    ? round(($kpi['active_schools'] / $kpi['total_schools']) * 100)
+    : 0;
 ?>
 
-<!-- Page Header -->
 <section class="content-header">
     <h1><i class="fa fa-th-large" style="color:var(--sa3);margin-right:10px;font-size:20px;"></i>Dashboard</h1>
     <ol class="breadcrumb">
@@ -28,560 +46,380 @@ $active_pct = $total_schools > 0 ? round(($active_schools / $total_schools) * 10
     </ol>
 </section>
 
-<!-- Chart.js 4.4 -->
+<!-- Chart.js 4.4 (also loaded by Reports spoke; idempotent) -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
 
 <section class="content" style="padding:20px 24px;">
 
-    <!-- Refresh Banner -->
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding:10px 16px;background:var(--sa-dim);border:1px solid var(--sa-ring);border-radius:10px;flex-wrap:wrap;gap:8px;">
-        <span style="font-size:12px;color:var(--t3);font-family:var(--font-m);">
-            <i class="fa fa-clock-o" style="margin-right:5px;color:var(--sa3);"></i>
-            Stats last refreshed: <strong id="lastRefreshed" style="color:var(--t2);"><?= htmlspecialchars($last_refreshed) ?></strong>
+  <!-- ═══ Refresh row + generated timestamp ═══ -->
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;padding:9px 16px;background:var(--sa-dim);border:1px solid var(--sa-ring);border-radius:10px;flex-wrap:wrap;gap:8px;">
+    <span style="font-size:12px;color:var(--t3);font-family:var(--font-m);">
+      <i class="fa fa-clock-o" style="margin-right:5px;color:var(--sa3);"></i>
+      Hub data as of <strong id="hubGeneratedAt" style="color:var(--t2);"><?= htmlspecialchars($generated_at_iso ?: '—') ?></strong>
+    </span>
+    <button class="btn btn-primary btn-sm" id="hubRefreshBtn" style="font-size:11.5px;padding:5px 14px;">
+      <i class="fa fa-refresh" id="hubRefreshIcon"></i> Refresh Hub
+    </button>
+  </div>
+
+  <!-- ═══ ALERT BANNER (Q-A10 persist until resolved) ═══ -->
+  <div id="alertBanner" style="margin-bottom:18px;<?= empty($alerts) ? 'display:none;' : '' ?>">
+    <?php if (!empty($alerts)): ?>
+    <div style="padding:10px 14px;background:rgba(245,158,11,0.08);border:1px solid var(--amber, #f59e0b);border-left:3px solid var(--amber, #f59e0b);border-radius:8px;font-size:12.5px;color:var(--t1);">
+      <i class="fa fa-exclamation-triangle" style="color:var(--amber, #f59e0b);margin-right:6px;"></i>
+      <strong><?= count($alerts) ?> open alert<?= count($alerts) === 1 ? '' : 's' ?></strong>
+      <span style="margin-left:10px;color:var(--t3);">
+        <?php
+        $counts = [];
+        foreach ($alerts as $a) {
+            $t = (string) ($a['alertType'] ?? 'unknown');
+            $counts[$t] = ($counts[$t] ?? 0) + 1;
+        }
+        $bits = [];
+        foreach ($counts as $t => $n) $bits[] = "{$n} " . str_replace('_', ' ', $t);
+        echo htmlspecialchars(implode(' · ', $bits));
+        ?>
+      </span>
+      <span style="float:right;">
+        <button class="btn btn-default btn-xs" id="alertsRegenerateBtn"><i class="fa fa-repeat"></i> Re-scan</button>
+        <button class="btn btn-default btn-xs" id="alertsExpandBtn"><i class="fa fa-list-ul"></i> View</button>
+      </span>
+      <div id="alertsExpandBody" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+        <?php foreach ($alerts as $a): ?>
+        <div data-alert-id="<?= htmlspecialchars((string) ($a['alertId'] ?? '')) ?>" style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;">
+          <?php
+          $sev = (string) ($a['severity'] ?? 'info');
+          $sevColor = ['info' => 'var(--sa3)', 'warn' => 'var(--amber, #f59e0b)', 'critical' => 'var(--rose, #ef4444)'][$sev] ?? 'var(--t3)';
+          ?>
+          <i class="fa fa-circle" style="color:<?= $sevColor ?>;font-size:8px;"></i>
+          <span style="flex:1;"><strong><?= htmlspecialchars(str_replace('_', ' ', (string) ($a['alertType'] ?? ''))) ?></strong>
+            <?php $tgt = $a['affectedTenants'][0] ?? ''; ?>
+            <?php if ($tgt !== ''): ?> — <a href="<?= base_url('superadmin/schools/view/' . urlencode($tgt)) ?>" style="color:var(--sa3);"><?= htmlspecialchars($tgt) ?></a><?php endif; ?>
+          </span>
+          <button class="btn btn-default btn-xs sa-alert-dismiss" data-alert-id="<?= htmlspecialchars((string) ($a['alertId'] ?? '')) ?>"><i class="fa fa-check"></i> Dismiss</button>
+        </div>
+        <?php endforeach; ?>
+      </div>
+    </div>
+    <?php endif; ?>
+  </div>
+
+  <!-- ═══ 6 KPI tiles (Q-A9 click → spoke) ═══ -->
+  <div class="row" style="margin-bottom:24px;">
+    <?php
+    $tiles = [
+        ['label' => 'Total Schools',         'val' => number_format($kpi['total_schools']),         'icon' => 'fa-building',     'href' => 'superadmin/schools'],
+        ['label' => 'Active Schools',        'val' => number_format($kpi['active_schools']) . " <span style='font-size:12px;color:var(--t3);'>({$active_pct}%)</span>", 'icon' => 'fa-check-circle', 'href' => 'superadmin/dashboard/schools-search?state=active'],
+        ['label' => 'Total Students',        'val' => number_format($kpi['total_students']),        'icon' => 'fa-users',        'href' => 'superadmin/dashboard/cross-school'],
+        ['label' => 'Total Staff',           'val' => number_format($kpi['total_staff']),           'icon' => 'fa-user-md',      'href' => 'superadmin/dashboard/cross-school'],
+        ['label' => 'MRR',                   'val' => '₹' . number_format($kpi['mrr'], 0, '.', ','), 'icon' => 'fa-inr',          'href' => 'superadmin/dashboard/revenue'],
+        ['label' => 'Active Subscriptions',  'val' => number_format($kpi['active_subscriptions']),  'icon' => 'fa-id-card-o',    'href' => 'superadmin/dashboard/revenue'],
+    ];
+    foreach ($tiles as $t): ?>
+    <div class="col-md-4 col-sm-6" style="margin-bottom:14px;">
+      <a href="<?= base_url($t['href']) ?>" style="text-decoration:none;display:block;">
+        <div class="sa-stat" style="border-radius:10px;cursor:pointer;transition:transform .15s, border-color .15s;" onmouseover="this.style.transform='translateY(-2px)';this.style.borderColor='var(--sa3)';" onmouseout="this.style.transform='';this.style.borderColor='';">
+          <div class="sa-stat-icon purple" style="background:rgba(124,58,237,0.12);color:var(--sa3);">
+            <i class="fa <?= $t['icon'] ?>"></i>
+          </div>
+          <div style="flex:1;">
+            <div class="sa-stat-label" style="font-size:11.5px;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;"><?= htmlspecialchars($t['label']) ?></div>
+            <div class="sa-stat-val" style="font-size:24px;font-weight:700;color:var(--t1);font-family:var(--font-d);"><?= $t['val'] ?></div>
+          </div>
+        </div>
+      </a>
+    </div>
+    <?php endforeach; ?>
+  </div>
+
+  <!-- ═══ 2 time-series charts ═══ -->
+  <div class="row" style="margin-bottom:24px;">
+    <div class="col-md-6" style="margin-bottom:14px;">
+      <div class="box">
+        <div class="box-header"><i class="fa fa-line-chart" style="color:var(--sa3);margin-right:8px;"></i><span class="box-title">School Growth (last 12 months)</span></div>
+        <div class="box-body" style="padding:14px 16px;">
+          <canvas id="schoolGrowthChart" height="120"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6" style="margin-bottom:14px;">
+      <div class="box">
+        <div class="box-header"><i class="fa fa-money" style="color:var(--green, #22c55e);margin-right:8px;"></i><span class="box-title">Revenue Trend (last 12 months)</span></div>
+        <div class="box-body" style="padding:14px 16px;">
+          <canvas id="revenueTrendChart" height="120"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Quick search + saved filter pills ═══ -->
+  <div class="box" style="margin-bottom:24px;">
+    <div class="box-body" style="padding:14px 16px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <div style="position:relative;flex:1;min-width:240px;">
+          <input type="text" id="hubQuickSearch" class="form-control" placeholder="Quick search by school name, code, or city..." autocomplete="off" style="height:38px;padding-left:34px;">
+          <i class="fa fa-search" style="position:absolute;left:12px;top:12px;color:var(--t3);"></i>
+          <div id="hubQuickSearchDropdown" style="position:absolute;top:100%;left:0;right:0;z-index:9000;display:none;background:var(--bg2);border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;max-height:280px;overflow-y:auto;"></div>
+        </div>
+        <a href="<?= base_url('superadmin/dashboard/schools-search') ?>" class="btn btn-default btn-sm" style="font-size:12px;">
+          <i class="fa fa-sliders"></i> Advanced
+        </a>
+      </div>
+      <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+        <span style="font-size:11px;color:var(--t3);font-family:var(--font-m);text-transform:uppercase;letter-spacing:.5px;">Saved:</span>
+        <a href="<?= base_url('superadmin/dashboard/schools-search?state=active&plan=Premium') ?>" class="btn btn-default btn-xs">Active + Premium</a>
+        <a href="<?= base_url('superadmin/dashboard/schools-search?expiring=30') ?>" class="btn btn-default btn-xs">Expiring 30d</a>
+        <a href="<?= base_url('superadmin/dashboard/schools-search?state=past_due') ?>" class="btn btn-default btn-xs">Past Due</a>
+        <a href="<?= base_url('superadmin/dashboard/schools-search?plan=Free') ?>" class="btn btn-default btn-xs">Free Tier</a>
+        <span id="userSavedPills" style="display:flex;gap:6px;flex-wrap:wrap;">
+          <?php foreach ($saved_searches as $ss): ?>
+          <a href="<?= base_url('superadmin/dashboard/schools-search?saved=' . urlencode((string) ($ss['slug'] ?? ''))) ?>" class="btn btn-default btn-xs" style="background:var(--sa-dim);border-color:var(--sa-ring);">
+            <?php if (!empty($ss['isPinned'])): ?><i class="fa fa-thumb-tack"></i> <?php endif; ?>
+            <?= htmlspecialchars((string) ($ss['name'] ?? '')) ?>
+          </a>
+          <?php endforeach; ?>
         </span>
-        <button class="btn btn-primary btn-sm" id="refreshStatsBtn" style="font-size:11.5px;padding:5px 14px;">
-            <i class="fa fa-refresh" id="refreshIcon"></i> Refresh Stats
-        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ 3 widgets row ═══ -->
+  <div class="row">
+
+    <!-- Recent Activity (Q-A2 high-signal only) -->
+    <div class="col-md-4" style="margin-bottom:18px;">
+      <div class="box">
+        <div class="box-header"><i class="fa fa-history" style="color:var(--sa3);margin-right:8px;"></i><span class="box-title">Recent Activity</span></div>
+        <div class="box-body" style="padding:8px 0;">
+          <?php if (empty($feed_activity)): ?>
+          <div style="padding:14px 16px;color:var(--t3);font-size:12px;text-align:center;">No recent high-signal activity.</div>
+          <?php else: ?>
+          <?php foreach ($feed_activity as $a): ?>
+          <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:flex-start;">
+            <div style="width:30px;flex-shrink:0;">
+              <?php
+              $iconMap = [
+                  'b2_onboard' => 'fa-plus-circle',
+                  'b2_lifecycle_transition' => 'fa-exchange',
+                  'b2_admin_toggle' => 'fa-toggle-on',
+                  'b2_plan_change' => 'fa-tags',
+                  'b2_payment_received' => 'fa-money',
+                  'b2_payment_failed' => 'fa-times-circle',
+                  'b2_refund' => 'fa-undo',
+              ];
+              $action = (string) ($a['action'] ?? '');
+              $icon = $iconMap[$action] ?? 'fa-circle';
+              ?>
+              <i class="fa <?= $icon ?>" style="color:var(--sa3);font-size:14px;"></i>
+            </div>
+            <div style="flex:1;">
+              <div style="font-size:12.5px;color:var(--t1);"><?= htmlspecialchars(str_replace('_', ' ', $action)) ?></div>
+              <div style="font-size:11px;color:var(--t3);font-family:var(--font-m);">
+                <?php
+                $sid = (string) ($a['schoolId'] ?? '');
+                $ts = (string) ($a['ts'] ?? '');
+                $tsHuman = $ts !== '' ? date('d M H:i', strtotime($ts)) : '—';
+                echo htmlspecialchars($sid . ' · ' . $tsHuman);
+                ?>
+              </div>
+            </div>
+          </div>
+          <?php endforeach; ?>
+          <?php endif; ?>
+        </div>
+      </div>
     </div>
 
-    <!-- ── KPI Cards (6) ── -->
-    <div class="row" style="margin-bottom:24px;">
-
-        <!-- Total Schools -->
-        <div class="col-xs-6 col-sm-4 col-lg-2" style="margin-bottom:16px;">
-            <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:18px 16px;position:relative;overflow:hidden;">
-                <div style="position:absolute;top:-10px;right:-10px;width:60px;height:60px;border-radius:50%;background:rgba(139,92,246,.10);"></div>
-                <div style="font-size:11px;color:var(--t3);font-family:var(--font-m);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">Total Schools</div>
-                <div id="statTotalSchools" style="font-size:26px;font-weight:800;color:var(--t1);font-family:var(--font-d);line-height:1;"><?= number_format($total_schools) ?></div>
-                <div style="margin-top:8px;font-size:10.5px;color:var(--t4);">
-                    <i class="fa fa-building" style="color:#8b5cf6;margin-right:3px;"></i> All time
-                </div>
+    <!-- Top Schools by Students -->
+    <div class="col-md-4" style="margin-bottom:18px;">
+      <div class="box">
+        <div class="box-header"><i class="fa fa-trophy" style="color:var(--sa3);margin-right:8px;"></i><span class="box-title">Top Schools</span></div>
+        <div class="box-body" style="padding:8px 0;">
+          <?php if (empty($top_schools)): ?>
+          <div style="padding:14px 16px;color:var(--t3);font-size:12px;text-align:center;">No tenants yet.</div>
+          <?php else: ?>
+          <?php foreach ($top_schools as $i => $t): ?>
+          <a href="<?= base_url('superadmin/schools/view/' . urlencode((string) ($t['schoolId'] ?? ''))) ?>" style="text-decoration:none;display:block;">
+            <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;">
+              <div style="width:24px;height:24px;background:var(--sa-dim);border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--sa3);font-weight:700;font-size:11px;flex-shrink:0;"><?= $i + 1 ?></div>
+              <div style="flex:1;">
+                <div style="font-size:12.5px;color:var(--t1);font-weight:600;"><?= htmlspecialchars((string) ($t['schoolName'] ?? $t['schoolId'] ?? '')) ?></div>
+                <div style="font-size:11px;color:var(--t3);font-family:var(--font-m);"><?= number_format((int) ($t['totalStudents'] ?? 0)) ?> students · <?= number_format((int) ($t['totalStaff'] ?? 0)) ?> staff</div>
+              </div>
             </div>
+          </a>
+          <?php endforeach; ?>
+          <?php endif; ?>
         </div>
-
-        <!-- Active Schools -->
-        <div class="col-xs-6 col-sm-4 col-lg-2" style="margin-bottom:16px;">
-            <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:18px 16px;position:relative;overflow:hidden;">
-                <div style="position:absolute;top:-10px;right:-10px;width:60px;height:60px;border-radius:50%;background:rgba(34,197,94,.10);"></div>
-                <div style="font-size:11px;color:var(--t3);font-family:var(--font-m);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">Active Schools</div>
-                <div id="statActiveSchools" style="font-size:26px;font-weight:800;color:var(--t1);font-family:var(--font-d);line-height:1;"><?= number_format($active_schools) ?></div>
-                <div style="margin-top:8px;font-size:10.5px;color:var(--t4);">
-                    <i class="fa fa-check-circle" style="color:#22c55e;margin-right:3px;"></i>
-                    <span id="statActivePct"><?= $active_pct ?>%</span> of total
-                </div>
-            </div>
-        </div>
-
-        <!-- Total Students -->
-        <div class="col-xs-6 col-sm-4 col-lg-2" style="margin-bottom:16px;">
-            <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:18px 16px;position:relative;overflow:hidden;">
-                <div style="position:absolute;top:-10px;right:-10px;width:60px;height:60px;border-radius:50%;background:rgba(59,130,246,.10);"></div>
-                <div style="font-size:11px;color:var(--t3);font-family:var(--font-m);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">Total Students</div>
-                <div id="statTotalStudents" style="font-size:26px;font-weight:800;color:var(--t1);font-family:var(--font-d);line-height:1;"><?= number_format($total_students) ?></div>
-                <div style="margin-top:8px;font-size:10.5px;color:var(--t4);">
-                    <i class="fa fa-users" style="color:#3b82f6;margin-right:3px;"></i> Across all schools
-                </div>
-            </div>
-        </div>
-
-        <!-- Total Teachers -->
-        <div class="col-xs-6 col-sm-4 col-lg-2" style="margin-bottom:16px;">
-            <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:18px 16px;position:relative;overflow:hidden;">
-                <div style="position:absolute;top:-10px;right:-10px;width:60px;height:60px;border-radius:50%;background:rgba(20,184,166,.10);"></div>
-                <div style="font-size:11px;color:var(--t3);font-family:var(--font-m);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">Total Teachers</div>
-                <div id="statTotalStaff" style="font-size:26px;font-weight:800;color:var(--t1);font-family:var(--font-d);line-height:1;"><?= number_format($total_staff) ?></div>
-                <div style="margin-top:8px;font-size:10.5px;color:var(--t4);">
-                    <i class="fa fa-user-tie" style="color:#14b8a6;margin-right:3px;"></i> Staff across schools
-                </div>
-            </div>
-        </div>
-
-        <!-- Total Revenue -->
-        <div class="col-xs-6 col-sm-4 col-lg-2" style="margin-bottom:16px;">
-            <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:18px 16px;position:relative;overflow:hidden;">
-                <div style="position:absolute;top:-10px;right:-10px;width:60px;height:60px;border-radius:50%;background:rgba(245,158,11,.10);"></div>
-                <div style="font-size:11px;color:var(--t3);font-family:var(--font-m);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">Total Revenue</div>
-                <div id="statRevenue" style="font-size:22px;font-weight:800;color:var(--t1);font-family:var(--font-d);line-height:1;">₹<?= number_format($total_revenue) ?></div>
-                <div style="margin-top:8px;font-size:10.5px;color:var(--t4);">
-                    <i class="fa fa-money" style="color:#f59e0b;margin-right:3px;"></i> Paid payments
-                </div>
-            </div>
-        </div>
-
-        <!-- New Schools (30d) -->
-        <div class="col-xs-6 col-sm-4 col-lg-2" style="margin-bottom:16px;">
-            <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:18px 16px;position:relative;overflow:hidden;">
-                <div style="position:absolute;top:-10px;right:-10px;width:60px;height:60px;border-radius:50%;background:rgba(99,102,241,.10);"></div>
-                <div style="font-size:11px;color:var(--t3);font-family:var(--font-m);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">New Schools</div>
-                <div id="statRecentRegs" style="font-size:26px;font-weight:800;color:var(--t1);font-family:var(--font-d);line-height:1;"><?= number_format($recent_regs) ?></div>
-                <div style="margin-top:8px;font-size:10.5px;color:var(--t4);">
-                    <i class="fa fa-calendar-plus-o" style="color:#6366f1;margin-right:3px;"></i> Last 30 days
-                </div>
-            </div>
-        </div>
-
-    </div><!-- /.row KPIs -->
-
-    <!-- ── Charts Row 1 ── -->
-    <div class="row" style="margin-bottom:24px;">
-
-        <!-- School Status Doughnut -->
-        <div class="col-md-4" style="margin-bottom:20px;">
-            <div class="box" style="margin-bottom:0;height:100%;">
-                <div class="box-header">
-                    <i class="fa fa-pie-chart" style="color:var(--sa3);margin-right:8px;"></i>
-                    <span class="box-title">School Status Distribution</span>
-                </div>
-                <div class="box-body" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:240px;">
-                    <div style="position:relative;width:200px;height:200px;">
-                        <canvas id="statusChart" width="200" height="200"></canvas>
-                        <div id="statusChartCenter" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;">
-                            <div id="statusChartTotal" style="font-size:22px;font-weight:800;color:var(--t1);font-family:var(--font-d);">—</div>
-                            <div style="font-size:10px;color:var(--t3);font-family:var(--font-m);">Schools</div>
-                        </div>
-                    </div>
-                </div>
-                <div class="box-footer" id="statusLegend" style="display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px;"></div>
-            </div>
-        </div>
-
-        <!-- Revenue Trend Bar -->
-        <div class="col-md-8" style="margin-bottom:20px;">
-            <div class="box" style="margin-bottom:0;height:100%;">
-                <div class="box-header">
-                    <i class="fa fa-bar-chart" style="color:var(--sa3);margin-right:8px;"></i>
-                    <span class="box-title">Revenue Trend (Last 6 Months)</span>
-                </div>
-                <div class="box-body" style="min-height:240px;display:flex;align-items:center;">
-                    <canvas id="revenueChart" style="width:100%;max-height:220px;"></canvas>
-                </div>
-            </div>
-        </div>
-
-    </div><!-- /.row charts1 -->
-
-    <!-- ── Charts Row 2 ── -->
-    <div class="row" style="margin-bottom:24px;">
-
-        <!-- Plan Distribution Doughnut -->
-        <div class="col-md-4" style="margin-bottom:20px;">
-            <div class="box" style="margin-bottom:0;height:100%;">
-                <div class="box-header">
-                    <i class="fa fa-tags" style="color:var(--sa3);margin-right:8px;"></i>
-                    <span class="box-title">Plan Distribution</span>
-                </div>
-                <div class="box-body" style="display:flex;align-items:center;justify-content:center;min-height:220px;">
-                    <div style="width:180px;height:180px;">
-                        <canvas id="planChart" width="180" height="180"></canvas>
-                    </div>
-                </div>
-                <div class="box-footer" id="planLegend" style="display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px;"></div>
-            </div>
-        </div>
-
-        <!-- Top Schools by Students -->
-        <div class="col-md-8" style="margin-bottom:20px;">
-            <div class="box" style="margin-bottom:0;height:100%;">
-                <div class="box-header">
-                    <i class="fa fa-trophy" style="color:var(--sa3);margin-right:8px;"></i>
-                    <span class="box-title">Top Schools by Students</span>
-                </div>
-                <div class="box-body" style="min-height:220px;display:flex;align-items:center;">
-                    <canvas id="topSchoolsChart" style="width:100%;max-height:200px;"></canvas>
-                </div>
-            </div>
-        </div>
-
-    </div><!-- /.row charts2 -->
-
-    <!-- ── Info Row ── -->
-    <div class="row" style="margin-bottom:24px;">
-
-        <!-- Subscription Expiry Alerts -->
-        <div class="col-md-5" style="margin-bottom:20px;">
-            <div class="box box-danger" style="margin-bottom:0;">
-                <div class="box-header">
-                    <i class="fa fa-exclamation-triangle" style="color:var(--rose);margin-right:8px;"></i>
-                    <span class="box-title">Subscription Expiry Alerts</span>
-                    <span class="label label-danger" style="float:right;margin-top:2px;"><?= count($expiry_alerts) ?> expiring</span>
-                </div>
-                <div class="box-body" style="padding:0 !important;max-height:300px;overflow-y:auto;">
-                    <?php if(empty($expiry_alerts)): ?>
-                    <div style="padding:32px;text-align:center;color:var(--t3);">
-                        <i class="fa fa-check-circle" style="font-size:28px;opacity:.3;display:block;margin-bottom:8px;color:#22c55e;"></i>
-                        No subscriptions expiring in the next 15 days
-                    </div>
-                    <?php else: ?>
-                    <ul style="list-style:none;margin:0;padding:0;">
-                        <?php foreach($expiry_alerts as $a): ?>
-                        <li style="padding:11px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;">
-                            <div style="min-width:0;">
-                                <div style="font-size:13px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><?= htmlspecialchars($a['name']) ?></div>
-                                <div style="font-size:11px;color:var(--t3);font-family:var(--font-m);">
-                                    <?= htmlspecialchars($a['plan_name'] ?? '—') ?> · Expires <?= htmlspecialchars($a['expiry_date']) ?>
-                                </div>
-                            </div>
-                            <span class="label <?= $a['days_left'] <= 3 ? 'label-danger' : ($a['days_left'] <= 7 ? 'label-warning' : 'label-info') ?>" style="flex-shrink:0;">
-                                <?= $a['days_left'] ?> day<?= $a['days_left'] != 1 ? 's' : '' ?>
-                            </span>
-                        </li>
-                        <?php endforeach; ?>
-                    </ul>
-                    <?php endif; ?>
-                </div>
-                <div class="box-footer">
-                    <a href="<?= base_url('superadmin/plans/subscriptions') ?>" class="btn btn-default btn-xs">
-                        <i class="fa fa-calendar-check-o"></i> View All Subscriptions
-                    </a>
-                </div>
-            </div>
-        </div>
-
-        <!-- Recent SA Activity -->
-        <div class="col-md-7" style="margin-bottom:20px;">
-            <div class="box box-primary" style="margin-bottom:0;">
-                <div class="box-header">
-                    <i class="fa fa-history" style="color:var(--sa3);margin-right:8px;"></i>
-                    <span class="box-title">Recent SA Activity</span>
-                    <span style="float:right;font-size:11px;color:var(--t3);font-family:var(--font-m);margin-top:3px;">Today</span>
-                </div>
-                <div class="box-body" style="padding:0 !important;max-height:300px;overflow-y:auto;">
-                    <?php if(empty($recent_activity)): ?>
-                    <div style="padding:32px;text-align:center;color:var(--t3);">
-                        <i class="fa fa-list-alt" style="font-size:28px;opacity:.3;display:block;margin-bottom:8px;"></i>
-                        No activity recorded today
-                    </div>
-                    <?php else: ?>
-                    <ul style="list-style:none;margin:0;padding:0;">
-                        <?php foreach($recent_activity as $log): ?>
-                        <li style="padding:10px 16px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:10px;">
-                            <div style="width:7px;height:7px;border-radius:50%;background:var(--sa3);flex-shrink:0;margin-top:5px;"></div>
-                            <div style="flex:1;min-width:0;">
-                                <div style="font-size:12.5px;color:var(--t1);font-weight:500;">
-                                    <span style="color:var(--sa3);font-family:var(--font-m);"><?= htmlspecialchars($log['action'] ?? 'action') ?></span>
-                                    <?php if(!empty($log['school_uid'])): ?>
-                                    <span style="color:var(--t3);font-size:11px;"> — <?= htmlspecialchars($log['school_uid']) ?></span>
-                                    <?php endif; ?>
-                                </div>
-                                <div style="font-size:11px;color:var(--t3);margin-top:2px;">
-                                    by <strong style="color:var(--t2);"><?= htmlspecialchars($log['sa_name'] ?? 'SA') ?></strong>
-                                    · <?= htmlspecialchars(substr($log['timestamp'] ?? '', 11, 8)) ?>
-                                </div>
-                            </div>
-                        </li>
-                        <?php endforeach; ?>
-                    </ul>
-                    <?php endif; ?>
-                </div>
-                <div class="box-footer">
-                    <a href="<?= base_url('superadmin/monitor') ?>" class="btn btn-default btn-xs">
-                        <i class="fa fa-heartbeat"></i> Full Activity Log
-                    </a>
-                </div>
-            </div>
-        </div>
-
-    </div><!-- /.row info -->
-
-    <!-- ── Recent Registrations ── -->
-    <div class="box" style="margin-bottom:24px;">
-        <div class="box-header">
-            <i class="fa fa-plus-circle" style="color:var(--sa3);margin-right:8px;"></i>
-            <span class="box-title">Recent Registrations <span style="font-size:11px;color:var(--t3);font-weight:400;">(Last 30 days)</span></span>
-        </div>
-        <div class="box-body" style="padding:0;overflow-x:auto;">
-            <table class="table table-hover" style="margin:0;min-width:600px;">
-                <thead>
-                    <tr style="background:var(--bg3);">
-                        <th style="padding:10px 14px;font-size:11px;color:var(--t3);font-family:var(--font-m);border-bottom:1px solid var(--border);">SCHOOL</th>
-                        <th style="padding:10px 14px;font-size:11px;color:var(--t3);font-family:var(--font-m);border-bottom:1px solid var(--border);">CODE</th>
-                        <th style="padding:10px 14px;font-size:11px;color:var(--t3);font-family:var(--font-m);border-bottom:1px solid var(--border);">PLAN</th>
-                        <th style="padding:10px 14px;font-size:11px;color:var(--t3);font-family:var(--font-m);border-bottom:1px solid var(--border);">STATUS</th>
-                        <th style="padding:10px 14px;font-size:11px;color:var(--t3);font-family:var(--font-m);border-bottom:1px solid var(--border);">REGISTERED</th>
-                        <th style="padding:10px 14px;font-size:11px;color:var(--t3);font-family:var(--font-m);border-bottom:1px solid var(--border);">ACTION</th>
-                    </tr>
-                </thead>
-                <tbody id="recentRegsBody">
-                    <tr><td colspan="6" style="text-align:center;padding:28px;color:var(--t3);">
-                        <i class="fa fa-spinner fa-spin"></i> Loading...
-                    </td></tr>
-                </tbody>
-            </table>
-        </div>
-        <div class="box-footer">
-            <a href="<?= base_url('superadmin/schools') ?>" class="btn btn-default btn-xs">
-                <i class="fa fa-building"></i> All Schools
-            </a>
-        </div>
+      </div>
     </div>
 
-    <!-- ── Quick Actions ── -->
-    <div class="box" style="margin-bottom:0;">
-        <div class="box-header">
-            <i class="fa fa-bolt" style="color:var(--sa3);margin-right:8px;"></i>
-            <span class="box-title">Quick Actions</span>
-        </div>
-        <div class="box-body">
-            <div style="display:flex;gap:12px;flex-wrap:wrap;">
-                <a href="<?= base_url('superadmin/schools/create') ?>" class="btn btn-primary">
-                    <i class="fa fa-plus"></i> Onboard New School
-                </a>
-                <a href="<?= base_url('superadmin/plans') ?>" class="btn btn-default">
-                    <i class="fa fa-tags"></i> Manage Plans
-                </a>
-                <a href="<?= base_url('superadmin/plans/subscriptions') ?>" class="btn btn-default">
-                    <i class="fa fa-calendar-check-o"></i> Subscriptions
-                </a>
-                <a href="<?= base_url('superadmin/plans/payments') ?>" class="btn btn-default">
-                    <i class="fa fa-money"></i> Payments
-                </a>
-                <a href="<?= base_url('superadmin/reports') ?>" class="btn btn-default">
-                    <i class="fa fa-bar-chart"></i> Reports
-                </a>
-                <a href="<?= base_url('superadmin/backups') ?>" class="btn btn-default">
-                    <i class="fa fa-database"></i> Backups
-                </a>
-                <a href="<?= base_url('superadmin/monitor') ?>" class="btn btn-default">
-                    <i class="fa fa-heartbeat"></i> Monitor
-                </a>
+    <!-- Expiring Soon -->
+    <div class="col-md-4" style="margin-bottom:18px;">
+      <div class="box">
+        <div class="box-header"><i class="fa fa-calendar-times-o" style="color:var(--amber, #f59e0b);margin-right:8px;"></i><span class="box-title">Expiring Soon (30 days)</span></div>
+        <div class="box-body" style="padding:8px 0;">
+          <?php if (empty($expiring_soon)): ?>
+          <div style="padding:14px 16px;color:var(--t3);font-size:12px;text-align:center;">No tenants expiring in the next 30 days.</div>
+          <?php else: ?>
+          <?php foreach ($expiring_soon as $t): ?>
+          <a href="<?= base_url('superadmin/schools/view/' . urlencode((string) ($t['schoolId'] ?? ''))) ?>" style="text-decoration:none;display:block;">
+            <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;">
+              <div style="flex:1;">
+                <div style="font-size:12.5px;color:var(--t1);font-weight:600;"><?= htmlspecialchars((string) ($t['schoolName'] ?? $t['schoolId'] ?? '')) ?></div>
+                <div style="font-size:11px;color:var(--t3);font-family:var(--font-m);">
+                  <?php
+                  $end = (string) ($t['subscriptionPeriodEnd'] ?? '');
+                  $endTs = $end !== '' ? strtotime($end) : 0;
+                  $days = $endTs > 0 ? max(0, (int) ceil(($endTs - time()) / 86400)) : 0;
+                  echo htmlspecialchars($end . ' · in ' . $days . ' day' . ($days === 1 ? '' : 's'));
+                  ?>
+                </div>
+              </div>
+              <span class="label" style="background:var(--amber, #f59e0b);color:#fff;font-size:10px;font-weight:600;"><?= $days ?>d</span>
             </div>
+          </a>
+          <?php endforeach; ?>
+          <?php endif; ?>
         </div>
+      </div>
     </div>
+
+  </div>
+
+  <!-- ═══ Navigation to spokes ═══ -->
+  <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:16px;">
+    <a href="<?= base_url('superadmin/dashboard/statistics') ?>" class="btn btn-default"><i class="fa fa-bar-chart"></i> Statistics</a>
+    <a href="<?= base_url('superadmin/dashboard/schools-search') ?>" class="btn btn-default"><i class="fa fa-search"></i> School Search</a>
+    <a href="<?= base_url('superadmin/dashboard/revenue') ?>" class="btn btn-default"><i class="fa fa-line-chart"></i> Revenue Reports</a>
+    <a href="<?= base_url('superadmin/dashboard/cross-school') ?>" class="btn btn-default"><i class="fa fa-th"></i> Cross-School</a>
+    <a href="<?= base_url('superadmin/reports') ?>" class="btn btn-default"><i class="fa fa-history"></i> Activity Reports</a>
+  </div>
 
 </section>
 
 <script>
-(function(){
+$(function(){
+  // ── Phase 1B Hub interactivity ─────────────────────────────────
 
-/* ── helpers ── */
-function fmt(n){ return parseInt(n||0).toLocaleString('en-IN'); }
-function fmtMoney(n){ return '₹'+parseFloat(n||0).toLocaleString('en-IN',{minimumFractionDigits:0,maximumFractionDigits:0}); }
-function escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  // ── Time-series charts ──
+  var gradient = function(ctx, color, alpha) {
+    var grad = ctx.createLinearGradient(0, 0, 0, 200);
+    grad.addColorStop(0, color);
+    grad.addColorStop(1, 'rgba(124,58,237,0)');
+    return grad;
+  };
 
-var PALETTE = ['#8b5cf6','#22c55e','#eab308','#ef4444','#6b7280','#3b82f6','#f97316','#14b8a6','#ec4899','#6366f1'];
-var statusColors = { active:'#22c55e', grace:'#eab308', expired:'#ef4444', suspended:'#6b7280', inactive:'#9ca3af' };
-var statusLabels = { active:'Active', grace:'Grace Period', expired:'Expired', suspended:'Suspended', inactive:'Inactive' };
+  var growthData = <?= json_encode($ts_growth) ?>;
+  var revenueData = <?= json_encode($ts_revenue) ?>;
 
-/* ── Chart instances ── */
-var chartStatus    = null;
-var chartRevenue   = null;
-var chartPlan      = null;
-var chartTopSchool = null;
-
-function getTextColor(){
-    return getComputedStyle(document.documentElement).getPropertyValue('--t2').trim() || '#9ca3af';
-}
-function getGridColor(){
-    return getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || 'rgba(255,255,255,.08)';
-}
-
-/* ── Build legend pill ── */
-function buildLegend(container, labels, colors){
-    var html = labels.map(function(l,i){
-        return '<span style="font-size:10.5px;padding:2px 8px;border-radius:10px;background:'+colors[i]+'22;color:'+colors[i]+';border:1px solid '+colors[i]+'44;font-family:var(--font-m);">'+escHtml(l)+'</span>';
-    }).join('');
-    document.getElementById(container).innerHTML = html;
-}
-
-/* ── Status Doughnut ── */
-function buildStatusChart(counts){
-    var labels = [], data = [], colors = [];
-    Object.keys(counts).forEach(function(k){
-        if(counts[k] > 0){
-            labels.push(statusLabels[k] || k);
-            data.push(counts[k]);
-            colors.push(statusColors[k] || '#9ca3af');
-        }
+  var growthCtx = document.getElementById('schoolGrowthChart');
+  var growthChart = null;
+  if (growthCtx) {
+    growthChart = new Chart(growthCtx, {
+      type: 'bar',
+      data: {
+        labels: growthData.map(d => d.period),
+        datasets: [
+          { label: 'Total Schools', data: growthData.map(d => d.totalSchools), backgroundColor: 'rgba(124,58,237,0.6)', borderColor: '#7c3aed', borderWidth: 1 },
+          { label: 'New Schools',  data: growthData.map(d => d.newSchoolsCount), backgroundColor: 'rgba(34,197,94,0.5)', borderColor: '#22c55e', borderWidth: 1 }
+        ]
+      },
+      options: { responsive:true, maintainAspectRatio:true, plugins:{legend:{display:true,position:'bottom',labels:{font:{size:11}}}}, scales:{ x:{ticks:{font:{size:10}}}, y:{beginAtZero:true,ticks:{font:{size:10}}}} }
     });
-    var total = data.reduce(function(a,b){ return a+b; }, 0);
-    document.getElementById('statusChartTotal').textContent = total;
+  }
 
-    var ctx = document.getElementById('statusChart').getContext('2d');
-    if(chartStatus) chartStatus.destroy();
-    chartStatus = new Chart(ctx, {
-        type: 'doughnut',
-        data: { labels: labels, datasets: [{ data: data, backgroundColor: colors, borderWidth: 2, borderColor: 'transparent', hoverOffset: 4 }] },
-        options: {
-            cutout: '70%',
-            plugins: { legend: { display: false }, tooltip: { callbacks: {
-                label: function(c){ return ' '+c.label+': '+c.raw+' ('+Math.round(c.raw/total*100)+'%)'; }
-            }}},
-            animation: { duration: 600 }
-        }
+  var revCtx = document.getElementById('revenueTrendChart');
+  var revChart = null;
+  if (revCtx) {
+    revChart = new Chart(revCtx, {
+      type: 'line',
+      data: {
+        labels: revenueData.map(d => d.period),
+        datasets: [
+          { label: 'MRR (₹)', data: revenueData.map(d => d.mrr), borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.15)', tension: 0.3, fill: true },
+          { label: 'Revenue Collected (₹)', data: revenueData.map(d => d.totalRevenue), borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,0.10)', tension: 0.3, fill: false }
+        ]
+      },
+      options: { responsive:true, maintainAspectRatio:true, plugins:{legend:{display:true,position:'bottom',labels:{font:{size:11}}}}, scales:{ x:{ticks:{font:{size:10}}}, y:{beginAtZero:true,ticks:{font:{size:10}}}} }
     });
-    buildLegend('statusLegend', labels, colors);
-}
+  }
 
-/* ── Revenue Bar ── */
-function buildRevenueChart(monthsObj){
-    var labels = Object.keys(monthsObj).map(function(k){
-        var d = new Date(k+'-01');
-        return d.toLocaleDateString('en-IN',{month:'short',year:'2-digit'});
-    });
-    var data = Object.values(monthsObj).map(parseFloat);
-
-    var ctx = document.getElementById('revenueChart').getContext('2d');
-    if(chartRevenue) chartRevenue.destroy();
-    chartRevenue = new Chart(ctx, {
-        type: 'bar',
-        data: { labels: labels, datasets: [{
-            label: 'Revenue (₹)',
-            data: data,
-            backgroundColor: 'rgba(139,92,246,.65)',
-            borderColor:     'rgba(139,92,246,1)',
-            borderWidth: 1,
-            borderRadius: 5,
-        }]},
-        options: {
-            responsive: true, maintainAspectRatio: true,
-            plugins: { legend: { display: false }, tooltip: { callbacks: {
-                label: function(c){ return ' '+fmtMoney(c.raw); }
-            }}},
-            scales: {
-                x: { ticks:{ color: getTextColor(), font:{size:11} }, grid:{ color: getGridColor() } },
-                y: { ticks:{ color: getTextColor(), font:{size:11}, callback: function(v){ return fmtMoney(v); } }, grid:{ color: getGridColor() } }
-            },
-            animation: { duration: 600 }
-        }
-    });
-}
-
-/* ── Plan Doughnut ── */
-function buildPlanChart(planCounts){
-    var labels = Object.keys(planCounts);
-    var data   = Object.values(planCounts);
-    var colors = labels.map(function(_,i){ return PALETTE[i % PALETTE.length]; });
-
-    var ctx = document.getElementById('planChart').getContext('2d');
-    if(chartPlan) chartPlan.destroy();
-    chartPlan = new Chart(ctx, {
-        type: 'doughnut',
-        data: { labels: labels, datasets: [{ data: data, backgroundColor: colors, borderWidth: 2, borderColor: 'transparent', hoverOffset: 4 }] },
-        options: {
-            cutout: '60%',
-            plugins: { legend: { display: false }, tooltip: { callbacks: {
-                label: function(c){ return ' '+c.label+': '+c.raw+' school'+(c.raw!=1?'s':''); }
-            }}},
-            animation: { duration: 600 }
-        }
-    });
-    buildLegend('planLegend', labels, colors);
-}
-
-/* ── Top Schools Horizontal Bar ── */
-function buildTopSchoolsChart(rows){
-    var labels = rows.map(function(r){ return r.name; });
-    var data   = rows.map(function(r){ return r.count; });
-    var colors = labels.map(function(_,i){ return PALETTE[i % PALETTE.length]; });
-
-    var ctx = document.getElementById('topSchoolsChart').getContext('2d');
-    if(chartTopSchool) chartTopSchool.destroy();
-    chartTopSchool = new Chart(ctx, {
-        type: 'bar',
-        data: { labels: labels, datasets: [{
-            label: 'Students',
-            data: data,
-            backgroundColor: colors,
-            borderRadius: 4,
-        }]},
-        options: {
-            indexAxis: 'y',
-            responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { display: false }, tooltip: { callbacks: {
-                label: function(c){ return ' '+fmt(c.raw)+' students'; }
-            }}},
-            scales: {
-                x: { ticks:{ color: getTextColor(), font:{size:11} }, grid:{ color: getGridColor() } },
-                y: { ticks:{ color: getTextColor(), font:{size:11}, maxRotation:0 }, grid:{ color:'transparent' } }
-            },
-            animation: { duration: 600 }
-        }
-    });
-}
-
-/* ── Recent Registrations table ── */
-function renderRecentRegs(rows){
-    if(!rows || !rows.length){
-        document.getElementById('recentRegsBody').innerHTML =
-            '<tr><td colspan="6" style="text-align:center;padding:28px;color:var(--t3);">No new schools registered in the last 30 days.</td></tr>';
-        return;
-    }
-    var statusCls = { active:'label-success', grace:'label-warning', expired:'label-danger', suspended:'label-default', inactive:'label-default' };
-    var html = rows.map(function(r){
-        var cls = statusCls[r.status] || 'label-default';
-        return '<tr>'
-            +'<td style="padding:10px 14px;"><strong>'+escHtml(r.name)+'</strong>'+(r.city?'<br><small style="color:var(--t3);">'+escHtml(r.city)+'</small>':'')+'</td>'
-            +'<td style="padding:10px 14px;"><code style="font-size:11px;">'+escHtml(r.school_code||'—')+'</code></td>'
-            +'<td style="padding:10px 14px;">'+escHtml(r.plan_name||'—')+'</td>'
-            +'<td style="padding:10px 14px;"><span class="label '+cls+'">'+escHtml(r.status||'Inactive')+'</span></td>'
-            +'<td style="padding:10px 14px;font-size:12px;">'+escHtml((r.created_at||'').substring(0,10))+'</td>'
-            +'<td style="padding:10px 14px;">'
-            +'<a href="'+BASE_URL+'superadmin/schools/view/'+encodeURIComponent(r.uid||'')+'" class="btn btn-default btn-xs"><i class="fa fa-eye"></i></a>'
-            +'</td>'
-            +'</tr>';
-    }).join('');
-    document.getElementById('recentRegsBody').innerHTML = html;
-}
-
-/* ── Load all chart data ── */
-function loadCharts(){
-    // $.post(BASE_URL+'superadmin/dashboard/charts', {}, function(r){
-        var csrf = {};
-        csrf['<?= $this->security->get_csrf_token_name() ?>'] = '<?= $this->security->get_csrf_hash() ?>';
-        $.post(BASE_URL+'superadmin/dashboard/charts', csrf, function(r){
-        if(r.status !== 'success') return;
-        buildStatusChart(r.status_counts   || {});
-        buildRevenueChart(r.revenue_months  || {});
-        buildPlanChart(r.plan_counts        || {});
-        buildTopSchoolsChart(r.school_students || []);
-        renderRecentRegs(r.recent_regs      || []);
-    }, 'json').fail(function(){
-        document.getElementById('recentRegsBody').innerHTML =
-            '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--t3);">Failed to load data.</td></tr>';
-    });
-}
-
-/* ── Refresh Stats button ── */
-$('#refreshStatsBtn').on('click', function(){
-    var $btn  = $(this).prop('disabled', true);
-    var $icon = $('#refreshIcon').addClass('fa-spin');
-
+  // ── Refresh Hub via AJAX ──
+  $('#hubRefreshBtn').on('click', function(){
+    var $btn = $(this).prop('disabled', true);
+    $('#hubRefreshIcon').addClass('fa-spin');
     $.ajax({
-        url:  BASE_URL + 'superadmin/dashboard/refresh_stats',
-        type: 'POST',
-        success: function(r){
-            if(r.status === 'success'){
-                var d = r;
-                $('#statTotalSchools').text(fmt(d.total_schools));
-                $('#statActiveSchools').text(fmt(d.active_schools));
-                $('#statTotalStudents').text(fmt(d.total_students));
-                $('#statTotalStaff').text(fmt(d.total_staff));
-                $('#statRevenue').text(fmtMoney(d.total_revenue));
-                $('#statRecentRegs').text(fmt(d.recent_regs));
-                var ts = d.last_refreshed;
-                $('#lastRefreshed').text(ts ? new Date(ts).toLocaleString() : '');
-                var pct = d.total_schools > 0 ? Math.round(d.active_schools / d.total_schools * 100) : 0;
-                $('#statActivePct').text(pct + '%');
-                loadCharts();
-                if(typeof saToast === 'function') saToast('Stats refreshed.', 'success');
-            } else {
-                if(typeof saToast === 'function') saToast(r.message || 'Refresh failed.', 'error');
-            }
-        },
-        error: function(){ if(typeof saToast === 'function') saToast('Server error.', 'error'); },
-        complete: function(){ $btn.prop('disabled', false); $icon.removeClass('fa-spin'); }
+      url: BASE_URL + 'superadmin/dashboard/hub_data',
+      type: 'GET',
+      success: function(r){
+        if (r.status !== 'success') { saToast(r.message || 'Refresh failed.', 'error'); return; }
+        // Reload page to re-render Hub HTML (simpler than client-side rebuild for Phase 1B).
+        location.reload();
+      },
+      error: function(){ saToast('Refresh failed.', 'error'); },
+      complete: function(){ $btn.prop('disabled', false); $('#hubRefreshIcon').removeClass('fa-spin'); }
     });
+  });
+
+  // ── Alert banner controls ──
+  $('#alertsExpandBtn').on('click', function(){
+    $('#alertsExpandBody').slideToggle(150);
+  });
+
+  $('#alertsRegenerateBtn').on('click', function(){
+    var $btn = $(this).prop('disabled', true);
+    $.post(BASE_URL + 'superadmin/dashboard/alerts_regenerate', {}, function(r){
+      if (r.status === 'success') {
+        saToast('Re-scanned: ' + (r.generated||0) + ' new, ' + (r.skipped||0) + ' existing.', 'info');
+        setTimeout(function(){ location.reload(); }, 800);
+      } else { saToast(r.message || 'Re-scan failed.', 'error'); }
+      $btn.prop('disabled', false);
+    }, 'json').fail(function(){ saToast('Re-scan failed.', 'error'); $btn.prop('disabled', false); });
+  });
+
+  $(document).on('click', '.sa-alert-dismiss', function(){
+    var alertId = $(this).data('alert-id');
+    var $row = $(this).closest('[data-alert-id]');
+    if (!alertId) return;
+    $.post(BASE_URL + 'superadmin/dashboard/alert_dismiss', { alert_id: alertId }, function(r){
+      if (r.status === 'success') {
+        $row.fadeOut(200, function(){ $row.remove(); });
+        saToast('Alert dismissed.', 'success');
+      } else { saToast(r.message || 'Dismiss failed.', 'error'); }
+    }, 'json').fail(function(){ saToast('Dismiss failed.', 'error'); });
+  });
+
+  // ── Quick search type-ahead ──
+  var quickSearchTimer = null;
+  var $quickInput = $('#hubQuickSearch');
+  var $quickDropdown = $('#hubQuickSearchDropdown');
+  $quickInput.on('input', function(){
+    var q = $.trim($(this).val());
+    clearTimeout(quickSearchTimer);
+    if (q.length < 2) { $quickDropdown.hide().empty(); return; }
+    quickSearchTimer = setTimeout(function(){
+      $.get(BASE_URL + 'superadmin/dashboard/quick_search', { q: q }, function(r){
+        if (r.status !== 'success' || !Array.isArray(r.rows)) { $quickDropdown.hide(); return; }
+        if (r.rows.length === 0) {
+          $quickDropdown.html('<div style="padding:10px 14px;font-size:12px;color:var(--t3);">No matches for "' + escHtml(q) + '"</div>').show();
+          return;
+        }
+        var html = '';
+        r.rows.forEach(function(t){
+          html += '<a href="' + BASE_URL + 'superadmin/schools/view/' + encodeURIComponent(t.schoolId || '') + '" style="display:block;padding:9px 14px;border-bottom:1px solid var(--border);text-decoration:none;color:var(--t1);">';
+          html += '<div style="font-size:12.5px;font-weight:600;">' + escHtml(t.schoolName || t.schoolId || '') + '</div>';
+          html += '<div style="font-size:11px;color:var(--t3);font-family:var(--font-m);">' + escHtml((t.schoolCode || '?') + ' · ' + (t.city || '—') + ' · ' + (t.lifecycleState || '—')) + '</div>';
+          html += '</a>';
+        });
+        $quickDropdown.html(html).show();
+      }, 'json').fail(function(){ $quickDropdown.hide(); });
+    }, 300);
+  });
+  $(document).on('click', function(e){
+    if (!$(e.target).closest('#hubQuickSearch, #hubQuickSearchDropdown').length) $quickDropdown.hide();
+  });
+  function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
 });
-
-/* ── Re-render charts when theme changes (MutationObserver on body class) ── */
-var _themeObserver = new MutationObserver(function(){
-    if(chartRevenue)   { chartRevenue.options.scales.x.ticks.color   = getTextColor(); chartRevenue.options.scales.x.grid.color   = getGridColor(); chartRevenue.options.scales.y.ticks.color   = getTextColor(); chartRevenue.options.scales.y.grid.color   = getGridColor(); chartRevenue.update('none'); }
-    if(chartTopSchool) { chartTopSchool.options.scales.x.ticks.color = getTextColor(); chartTopSchool.options.scales.x.grid.color = getGridColor(); chartTopSchool.options.scales.y.ticks.color = getTextColor(); chartTopSchool.update('none'); }
-});
-_themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class','data-theme'] });
-
-/* ── Init ── */
-$(function(){ loadCharts(); });
-
-})();
 </script>

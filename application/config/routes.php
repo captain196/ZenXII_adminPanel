@@ -155,6 +155,23 @@ $route['superadmin/dashboard/refresh_stats']            = 'Superadmin/refresh_st
 $route['superadmin/dashboard/charts']                   = 'Superadmin/dashboard_charts';
 $route['superadmin/dashboard/search']                   = 'Superadmin/search';
 
+// ── B2.3.4-A Dashboard Analytics — Hub AJAX endpoints (Phase 1B) ──
+$route['superadmin/dashboard/hub_data']                 = 'Superadmin/hub_data';
+$route['superadmin/dashboard/quick_search']             = 'Superadmin/quick_search';
+$route['superadmin/dashboard/saved_search_save']        = 'Superadmin/saved_search_save';
+$route['superadmin/dashboard/saved_search_delete']      = 'Superadmin/saved_search_delete';
+$route['superadmin/dashboard/alert_dismiss']            = 'Superadmin/alert_dismiss';
+$route['superadmin/dashboard/alerts_regenerate']        = 'Superadmin/alerts_regenerate';
+
+// ── B2.3.4-A Spokes (Superadmin_analytics controller — Phase 1C+) ──
+$route['superadmin/dashboard/statistics']               = 'Superadmin_analytics/statistics';
+$route['superadmin/dashboard/statistics_data']          = 'Superadmin_analytics/statistics_data';
+$route['superadmin/dashboard/drilldown']                = 'Superadmin_analytics/drilldown';
+$route['superadmin/dashboard/schools-search']           = 'Superadmin_analytics/schools_search';
+$route['superadmin/dashboard/revenue']                  = 'Superadmin_analytics/revenue';
+$route['superadmin/dashboard/cross-school']             = 'Superadmin_analytics/cross_school';
+$route['superadmin/dashboard/tenant/(:any)']            = 'Superadmin_analytics/tenant_detail/$1';
+
 // Schools
 $route['superadmin/schools']                            = 'Superadmin_schools/index';
 $route['superadmin/schools/create']                     = 'Superadmin_schools/create';

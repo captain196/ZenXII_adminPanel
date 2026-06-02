@@ -77,16 +77,156 @@ class Superadmin extends MY_Superadmin_Controller
             }
         } catch (Exception $e) { /* non-critical */ }
 
+        // B2.3.4-A Phase 1B — augment Hub data with analytics service
+        // payload. Tolerant of missing analytics service (initial bring-up
+        // window) — falls back to pre-Phase-1B widgets if anything throws.
+        $hub_analytics = [
+            'kpi'             => null,
+            'time_series'     => ['schools_growth' => [], 'revenue' => []],
+            'recent_activity' => [],
+            'top_schools'     => [],
+            'expiring_soon'   => [],
+            'alerts'          => [],
+            'saved_searches'  => [],
+            'mrr'             => 0,
+            'active_subscriptions' => 0,
+        ];
+        try {
+            $this->load->library('b2_analytics_service');
+            $this->b2_analytics_service->init($this->firebase);
+            $hub_analytics = $this->b2_analytics_service->get_hub_payload(
+                (string) ($this->sa_id ?? '')
+            );
+            $hub_analytics['mrr'] = $hub_analytics['kpi']['mrr'] ?? 0;
+            $hub_analytics['active_subscriptions'] = $hub_analytics['kpi']['active_subscriptions'] ?? 0;
+        } catch (\Throwable $e) {
+            log_message('error', 'SA Dashboard: analytics payload failed: ' . $e->getMessage());
+        }
+
         $data = [
             'page_title'      => 'Super Admin Dashboard',
             'summary'         => $summary,
             'recent_activity' => $recent_activity,
             'expiry_alerts'   => array_slice($expiry_alerts, 0, 8),
+            'hub'             => $hub_analytics,
+            'sa_id'           => (string) ($this->sa_id ?? ''),
         ];
 
         $this->load->view('superadmin/include/sa_header', $data);
         $this->load->view('superadmin/dashboard',         $data);
         $this->load->view('superadmin/include/sa_footer');
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // B2.3.4-A Phase 1B — Hub AJAX endpoints
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // GET  /superadmin/dashboard/hub_data — full Hub payload refresh
+    public function hub_data()
+    {
+        try {
+            $this->load->library('b2_analytics_service');
+            $this->b2_analytics_service->init($this->firebase);
+            $this->json_success($this->b2_analytics_service->get_hub_payload(
+                (string) ($this->sa_id ?? '')
+            ));
+        } catch (\Throwable $e) {
+            log_message('error', 'SA hub_data: ' . $e->getMessage());
+            $this->json_error('Hub data fetch failed: ' . $e->getMessage());
+        }
+    }
+
+    // GET  /superadmin/dashboard/quick_search?q=...
+    public function quick_search()
+    {
+        $q = trim((string) ($this->input->get('q', TRUE) ?? ''));
+        if (mb_strlen($q) < 2) {
+            $this->json_success(['rows' => []]); return;
+        }
+        try {
+            $this->load->library('b2_analytics_service');
+            $this->b2_analytics_service->init($this->firebase);
+            $rows = $this->b2_analytics_service->quick_search($q, 8);
+            $this->json_success(['rows' => $rows]);
+        } catch (\Throwable $e) {
+            log_message('error', 'SA quick_search: ' . $e->getMessage());
+            $this->json_error('Quick search failed.');
+        }
+    }
+
+    // POST /superadmin/dashboard/saved_search_save
+    public function saved_search_save()
+    {
+        $name = trim((string) ($this->input->post('name', TRUE) ?? ''));
+        $filtersJson = (string) ($this->input->post('filters', TRUE) ?? '{}');
+        $sortJson = (string) ($this->input->post('sort', TRUE) ?? '{}');
+        $filters = json_decode($filtersJson, true);
+        $sort    = json_decode($sortJson, true);
+        if ($name === '' || !is_array($filters)) {
+            $this->json_error('name + filters required'); return;
+        }
+        try {
+            $this->load->library('b2_analytics_service');
+            $this->b2_analytics_service->init($this->firebase);
+            $id = $this->b2_analytics_service->save_search(
+                (string) ($this->sa_id ?? ''), $name, $filters, is_array($sort) ? $sort : []
+            );
+            $this->json_success(['id' => $id]);
+        } catch (\Throwable $e) {
+            log_message('error', 'SA saved_search_save: ' . $e->getMessage());
+            $this->json_error('Save failed.');
+        }
+    }
+
+    // POST /superadmin/dashboard/saved_search_delete
+    public function saved_search_delete()
+    {
+        $slug = trim((string) ($this->input->post('slug', TRUE) ?? ''));
+        if ($slug === '') { $this->json_error('slug required'); return; }
+        try {
+            $this->load->library('b2_analytics_service');
+            $this->b2_analytics_service->init($this->firebase);
+            $ok = $this->b2_analytics_service->delete_saved_search(
+                (string) ($this->sa_id ?? ''), $slug
+            );
+            $this->json_success(['deleted' => $ok]);
+        } catch (\Throwable $e) {
+            log_message('error', 'SA saved_search_delete: ' . $e->getMessage());
+            $this->json_error('Delete failed.');
+        }
+    }
+
+    // POST /superadmin/dashboard/alert_dismiss
+    public function alert_dismiss()
+    {
+        $alertId = trim((string) ($this->input->post('alert_id', TRUE) ?? ''));
+        $reason  = trim((string) ($this->input->post('reason', TRUE) ?? 'manual'));
+        if ($alertId === '') { $this->json_error('alert_id required'); return; }
+        try {
+            $this->load->library('b2_analytics_service');
+            $this->b2_analytics_service->init($this->firebase);
+            $ok = $this->b2_analytics_service->resolve_alert(
+                $alertId, (string) ($this->sa_id ?? ''), $reason
+            );
+            $this->json_success(['resolved' => $ok]);
+        } catch (\Throwable $e) {
+            log_message('error', 'SA alert_dismiss: ' . $e->getMessage());
+            $this->json_error('Dismiss failed.');
+        }
+    }
+
+    // POST /superadmin/dashboard/alerts_regenerate
+    public function alerts_regenerate()
+    {
+        try {
+            $this->load->library('b2_analytics_service');
+            $this->b2_analytics_service->init($this->firebase);
+            $result = $this->b2_analytics_service->generate_alerts();
+            $this->json_success($result);
+        } catch (\Throwable $e) {
+            log_message('error', 'SA alerts_regenerate: ' . $e->getMessage());
+            $this->json_error('Regenerate failed.');
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
