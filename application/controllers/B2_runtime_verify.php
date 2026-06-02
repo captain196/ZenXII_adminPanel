@@ -305,13 +305,26 @@ class B2_runtime_verify extends CI_Controller
         ]);
 
         // ── W3: set_admin_disabled (suspend writes adminDisabled AND lifecycle.state) ──
+        // 2026-06-02 SAFE-REVERT FIX: pre-fix used set_admin_disabled('active', ...)
+        // on revert, which unconditionally wrote adminDisabled.value=false on BOTH
+        // schools/{id} and tenantPublic/{id}. If the operator had set the tenant
+        // disabled via a path that wrote tenantPublic.adminDisabled=true while
+        // leaving schools.adminDisabled.value=false (out-of-sync schema-drift
+        // state), the early-bail at schools.adminDisabled.value would miss the
+        // operator state and the 'active' revert would silently clobber the
+        // tenantPublic mirror. Post-fix snapshots BOTH surfaces and restores
+        // each byte-for-byte via firestoreUpdate.
         $this->_probe('write_rt: set_admin_disabled (composite write — adminDisabled + lifecycle)', function () use ($svc, $TEST) {
-            $beforeSch = $this->firebase->firestoreGet('schools', $TEST);
-            $beforeCtrl = $this->firebase->firestoreGet('schoolControl', $TEST);
-            $origDisabled = (bool) (($beforeSch['adminDisabled'] ?? [])['value'] ?? false);
-            $origLifeState = (string) (($beforeCtrl['lifecycle'] ?? [])['state'] ?? 'active');
-            if ($origDisabled) {
-                // Tenant already suspended; skip with explicit message
+            $beforeSch  = $this->firebase->firestoreGet('schools',       $TEST) ?: [];
+            $beforeCtrl = $this->firebase->firestoreGet('schoolControl', $TEST) ?: [];
+            $beforePub  = $this->firebase->firestoreGet('tenantPublic',  $TEST) ?: [];
+            $origDisabledStruct = $beforeSch['adminDisabled'] ?? null;
+            $origDisabledFlag   = (bool) ($origDisabledStruct['value'] ?? false);
+            $origLifeState      = (string) (($beforeCtrl['lifecycle'] ?? [])['state'] ?? 'active');
+            $origPubAd          = !empty($beforePub['adminDisabled']);
+            if ($origDisabledFlag) {
+                // Tenant already suspended on schools surface; skip exercise but
+                // do NOT mutate anything — preserves operator state regardless.
                 throw new \Exception('test tenant already suspended; cannot exercise the round-trip safely');
             }
             $ok1 = $svc->set_admin_disabled($TEST, 'suspended', 'rt_probe');
@@ -322,13 +335,16 @@ class B2_runtime_verify extends CI_Controller
             $midLifeState = (string) (($midCtrl['lifecycle'] ?? [])['state'] ?? '');
             if (!$midAdminVal) throw new \Exception('adminDisabled.value did not flip to true');
             if ($midLifeState !== 'suspended') throw new \Exception("lifecycle.state did not flip to suspended; got '{$midLifeState}'");
-            // Revert
-            $svc->set_admin_disabled($TEST, 'active', 'rt_probe');
-            $svc->write_lifecycle_state($TEST, $origLifeState, 'rt_probe_revert');
+            // SAFE REVERT — restore EXACT pre-probe snapshot via direct writes.
+            if ($origDisabledStruct !== null) {
+                $this->firebase->firestoreUpdate('schools', $TEST, ['adminDisabled' => $origDisabledStruct]);
+            }
+            $this->firebase->firestoreUpdate('tenantPublic', $TEST, ['adminDisabled' => $origPubAd]);
+            $svc->write_lifecycle_state($TEST, $origLifeState, 'rt_probe_restore');
             return [];
         }, [
-            'expect' => 'adminDisabled + lifecycle.state both flip to suspended; revert clean',
-            'check'  => function () { return ['OK', 'composite write verified']; },
+            'expect' => 'adminDisabled + lifecycle.state both flip to suspended; revert restores EXACT pre-probe snapshot',
+            'check'  => function () { return ['OK', 'composite write verified; snapshot-restore on revert']; },
         ]);
 
         // ── W4: update_stats_cache (nested map: statsCache.{totalStudents, totalStaff, lastUpdated}) ──
@@ -365,12 +381,20 @@ class B2_runtime_verify extends CI_Controller
         // mobile-side gate, so this probe is part of the H1 pre-deploy
         // gate. Restores the test tenant to its original state on exit.
         $this->_probe('write_rt: tenantPublic_lifecycle_mirror_fanout (H-LIFECYCLE H1.5)', function () use ($svc, $TEST) {
-            // Snapshot original state for revert.
+            // 2026-06-02 SAFE-REVERT FIX: pre-fix revert used
+            // set_admin_disabled('active', ...) unconditionally — this would
+            // overwrite tenantPublic.adminDisabled=true (operator-set state)
+            // with false, silently clobbering the operator's intentional
+            // disable. The post-fix snapshots EXACT pre-probe state on BOTH
+            // schools and tenantPublic surfaces, and restores via direct
+            // firestoreUpdate to preserve the snapshot byte-for-byte.
             $origCtrl = $this->firebase->firestoreGet('schoolControl', $TEST) ?: [];
             $origLife = is_array($origCtrl['lifecycle'] ?? null) ? $origCtrl['lifecycle'] : [];
             $origState = (string) ($origLife['state'] ?? 'active');
             $origSchPub = $this->firebase->firestoreGet('tenantPublic', $TEST) ?: [];
             $origAd = !empty($origSchPub['adminDisabled']);
+            $origSch = $this->firebase->firestoreGet('schools', $TEST) ?: [];
+            $origDisabledStruct = $origSch['adminDisabled'] ?? null;
 
             // Step 1: write a non-default lifecycle state and confirm fan-out.
             $okL = $svc->write_lifecycle_state($TEST, 'expiring_soon', 'verifier_probe_h1');
@@ -390,10 +414,14 @@ class B2_runtime_verify extends CI_Controller
                 throw new \Exception("tenantPublic.adminDisabled fan-out failed: got false expected true");
             }
 
-            // Step 3: revert to original state. Order matters — re-enable
-            // admin first so write_lifecycle_state can land cleanly.
-            $svc->set_admin_disabled($TEST, 'active', 'verifier_probe_h1_revert');
-            $svc->write_lifecycle_state($TEST, $origState !== '' ? $origState : 'active', 'verifier_probe_h1_revert');
+            // Step 3: SAFE REVERT — restore EXACT pre-probe snapshot via
+            // direct writes (bypasses set_admin_disabled's unconditional
+            // false write). This preserves operator-set state byte-for-byte.
+            if ($origDisabledStruct !== null) {
+                $this->firebase->firestoreUpdate('schools', $TEST, ['adminDisabled' => $origDisabledStruct]);
+            }
+            $this->firebase->firestoreUpdate('tenantPublic', $TEST, ['adminDisabled' => $origAd]);
+            $svc->write_lifecycle_state($TEST, $origState !== '' ? $origState : 'active', 'verifier_probe_h1_restore');
 
             // Verify revert landed.
             $pubFinal = $this->firebase->firestoreGet('tenantPublic', $TEST) ?: [];
@@ -401,7 +429,7 @@ class B2_runtime_verify extends CI_Controller
                 throw new \Exception('revert lifecycleState did not land');
             }
             if (!empty($pubFinal['adminDisabled']) !== $origAd) {
-                throw new \Exception('revert adminDisabled did not land');
+                throw new \Exception('revert adminDisabled did not land (expected ' . ($origAd ? 'true' : 'false') . ')');
             }
             return [];
         }, [

@@ -33,6 +33,19 @@ $saved_searches  = is_array($hub['saved_searches'] ?? null) ? $hub['saved_search
 $ts_growth       = is_array($hub['time_series']['schools_growth'] ?? null) ? $hub['time_series']['schools_growth'] : [];
 $ts_revenue      = is_array($hub['time_series']['revenue'] ?? null) ? $hub['time_series']['revenue'] : [];
 $generated_at_iso = (string) ($hub['generated_at'] ?? '');
+// 2026-06-02 IST display fix. Pre-fix showed the raw ISO 8601 string
+// (server-local Europe/Berlin +02:00); operator works in IST. Convert
+// using the embedded offset → Asia/Kolkata.
+$generated_at_ist = '—';
+if ($generated_at_iso !== '') {
+    try {
+        $dtHub = new \DateTime($generated_at_iso);
+        $dtHub->setTimezone(new \DateTimeZone('Asia/Kolkata'));
+        $generated_at_ist = $dtHub->format('Y-m-d H:i:s') . ' IST';
+    } catch (\Throwable $eHub) {
+        $generated_at_ist = $generated_at_iso; // best-effort fallback
+    }
+}
 
 $active_pct = ($kpi['total_schools'] ?? 0) > 0
     ? round(($kpi['active_schools'] / $kpi['total_schools']) * 100)
@@ -55,7 +68,7 @@ $active_pct = ($kpi['total_schools'] ?? 0) > 0
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;padding:9px 16px;background:var(--sa-dim);border:1px solid var(--sa-ring);border-radius:10px;flex-wrap:wrap;gap:8px;">
     <span style="font-size:12px;color:var(--t3);font-family:var(--font-m);">
       <i class="fa fa-clock-o" style="margin-right:5px;color:var(--sa3);"></i>
-      Hub data as of <strong id="hubGeneratedAt" style="color:var(--t2);"><?= htmlspecialchars($generated_at_iso ?: '—') ?></strong>
+      Hub data as of <strong id="hubGeneratedAt" style="color:var(--t2);" data-iso="<?= htmlspecialchars($generated_at_iso) ?>"><?= htmlspecialchars($generated_at_ist) ?></strong>
     </span>
     <button class="btn btn-primary btn-sm" id="hubRefreshBtn" style="font-size:11.5px;padding:5px 14px;">
       <i class="fa fa-refresh" id="hubRefreshIcon"></i> Refresh Hub

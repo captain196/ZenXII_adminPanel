@@ -1866,10 +1866,397 @@ class B2_analytics_service
         return count($buckets) - 1;
     }
 
-    /** Phase 1G per-tenant deep dive composite. */
-    public function get_tenant_detail_bundle(string $schoolId): array
+    // ──────────────────────────────────────────────────────────────
+    // PHASE 1G — PER-TENANT DEEP DIVE SPOKE
+    //
+    // Inverted view of Phase 1F: one tenant × all metrics × time axis
+    // (vs Phase 1F's all tenants × all metrics × current snapshot).
+    //
+    // STRICT ISOLATION CONTRACT: every per-tenant query filters at the
+    // Firestore layer by `schoolId == $schoolId`, not in PHP. Defense-
+    // in-depth against cross-tenant leakage. Probes 35-37 verify this.
+    //
+    // Read sources (all per-tenant slices, no fleet data):
+    //   schools/{schoolId}, schoolControl/{schoolId},
+    //   subscriptions/{subId via pointer}, plans/{planId},
+    //   payments filtered by schoolId, tenantAudit filtered by schoolId,
+    //   analyticsRollups.tenantsRollup[] historical lookup,
+    //   analyticsAlerts filtered by affectedTenants contains schoolId.
+    //
+    // Phase 3 reuse: same accessors with rules-enforced scope=own school.
+    // ──────────────────────────────────────────────────────────────
+
+    const TENANT_DETAIL_DEFAULT_DAYS  = 30;
+    const TENANT_DETAIL_DEFAULT_TREND = 12;
+    const TENANT_DETAIL_TIMELINE_CAP  = 50;
+    const TENANT_DETAIL_PAYMENTS_CAP  = 10;
+
+    /**
+     * Composite per-tenant deep dive payload.
+     *
+     * @param string $schoolId    canonical SCH_xxx id (controller pre-validated)
+     * @param int    $daysWindow  activity window (7|30|90)
+     * @param int    $monthsTrend time-series window (3|6|12)
+     *
+     * Returns ['_error' => 'tenant_not_found'] when schoolId resolves to
+     * no `schools/{id}` doc.  Otherwise returns full 11-key composite.
+     */
+    public function get_tenant_detail_bundle(string $schoolId, int $daysWindow = 30, int $monthsTrend = 12): array
     {
-        return ['_phase' => '1G_pending', 'schoolId' => $schoolId];
+        $daysWindow  = in_array($daysWindow,  [7, 30, 90], true) ? $daysWindow  : self::TENANT_DETAIL_DEFAULT_DAYS;
+        $monthsTrend = in_array($monthsTrend, [3, 6, 12], true) ? $monthsTrend : self::TENANT_DETAIL_DEFAULT_TREND;
+
+        if (!$this->ready || !preg_match('/^SCH_[A-Z0-9]+$/', $schoolId)) {
+            return ['_error' => 'invalid_schoolid', 'schoolId' => $schoolId];
+        }
+
+        $identity = $this->get_tenant_identity($schoolId);
+        if (empty($identity) || !isset($identity['schoolId'])) {
+            return ['_error' => 'tenant_not_found', 'schoolId' => $schoolId];
+        }
+
+        return [
+            'schoolId'       => $schoolId,
+            'daysWindow'     => $daysWindow,
+            'monthsTrend'    => $monthsTrend,
+            'identity'       => $identity,
+            'kpis'           => $this->get_tenant_kpis($schoolId, $daysWindow),
+            'time_series'    => $this->get_tenant_time_series($schoolId, $monthsTrend),
+            'subscription'   => $this->get_tenant_subscription_info($schoolId),
+            'payments'       => $this->get_tenant_payment_history($schoolId, self::TENANT_DETAIL_PAYMENTS_CAP),
+            'activity'       => $this->get_tenant_activity_timeline($schoolId, $daysWindow, self::TENANT_DETAIL_TIMELINE_CAP),
+            'stats_health'   => $this->get_tenant_stats_health($schoolId),
+            'alerts'         => $this->get_tenant_alerts($schoolId),
+            'generated_at'   => date('c'),
+        ];
+    }
+
+    /**
+     * Identity card payload — name, code, plan, lifecycle, dates, SSA.
+     * Returns empty array when the schools/{id} doc is missing.
+     *
+     * 2026-06-02 DEFECT FIX: adminDisabled resolution hardened.
+     * Pre-fix used `(bool) ($school['adminDisabled'] ?? $ctrl['adminDisabled'] ?? false)`
+     * which evaluated a non-empty Array (pre-existing schema drift on some
+     * schoolControl docs — see Phase 1H schema-cleanup backlog) as TRUE,
+     * producing a phantom "DISABLED" badge on tenants the H1 rule clears
+     * as active. Post-fix:
+     *   1. Reads tenantPublic/{id}.adminDisabled FIRST — this is the
+     *      canonical H1.5 mirror (operator design lock); same source the
+     *      runtime H1 verifier consumes.
+     *   2. Falls back to schoolControl then schools when mirror missing.
+     *   3. STRICT === true comparison — non-bool values (Array, string,
+     *      int) are treated as not-disabled, eliminating the schema-drift
+     *      attack surface.
+     */
+    public function get_tenant_identity(string $schoolId): array
+    {
+        if (!$this->ready) return [];
+        $school = $this->firebase->firestoreGet('schools', $schoolId);
+        if (!is_array($school) || empty($school)) return [];
+        $ctrl = $this->firebase->firestoreGet('schoolControl', $schoolId);
+        $ctrl = is_array($ctrl) ? $ctrl : [];
+        $public = $this->firebase->firestoreGet('tenantPublic', $schoolId);
+        $public = is_array($public) ? $public : [];
+        // H1.5 canonical priority order. Strict === true bool check.
+        $adminDisabled = false;
+        foreach ([$public, $ctrl, $school] as $src) {
+            if (array_key_exists('adminDisabled', $src) && $src['adminDisabled'] === true) {
+                $adminDisabled = true;
+                break;
+            }
+        }
+        $sub  = is_array($ctrl['subscription'] ?? null) ? $ctrl['subscription'] : [];
+        $life = is_array($ctrl['lifecycle']    ?? null) ? $ctrl['lifecycle']    : [];
+        $planMap = $this->load_plan_price_map();
+        $pfid = (string) ($sub['planId'] ?? '');
+        $planName = ($pfid !== '' && isset($planMap[$pfid])) ? (string) $planMap[$pfid]['name'] : '— No Plan';
+        $schoolName = (string) ($school['schoolName'] ?? $school['name'] ?? '');
+        $row = [
+            'schoolId'         => $schoolId,
+            'schoolName'       => $schoolName,
+            'schoolCode'       => (string) ($school['schoolCode']       ?? ''),
+            'domainIdentifier' => (string) ($school['domainIdentifier'] ?? ''),
+            'city'             => (string) ($school['city']             ?? ''),
+            'region'           => (string) ($school['state']            ?? $school['region'] ?? ''),
+            'createdAt'        => (string) ($school['createdAt']        ?? ''),
+            'primarySsaId'     => (string) ($school['primarySsaId']     ?? ''),
+            'logoUrl'          => (string) ($school['logoUrl']          ?? ''),
+            'planFamilyId'     => $pfid,
+            'planName'         => $planName,
+            'lifecycleState'   => (string) ($life['state']              ?? ''),
+            'adminDisabled'    => $adminDisabled,
+            'subscriptionId'   => (string) ($sub['subscriptionId']      ?? ''),
+        ];
+        $row['isTestTenant'] = $this->is_test_tenant($row);
+        return $row;
+    }
+
+    /** 5 KPI tile values for the tenant. */
+    public function get_tenant_kpis(string $schoolId, int $daysWindow): array
+    {
+        if (!$this->ready) return [];
+        $school = $this->firebase->firestoreGet('schools', $schoolId);
+        $cache = is_array($school['statsCache'] ?? null) ? $school['statsCache']
+                : (is_array($school['stats'] ?? null) ? $school['stats'] : []);
+        $totalStudents = (int) ($cache['totalStudents'] ?? $cache['total_students'] ?? 0);
+        $totalStaff    = (int) ($cache['totalStaff']    ?? $cache['total_staff']    ?? 0);
+        $lastUpd = (string) ($cache['lastUpdated'] ?? $cache['last_updated'] ?? '');
+        $dataAgeHours = null;
+        if ($lastUpd !== '') {
+            $ts = strtotime($lastUpd);
+            if ($ts > 0) $dataAgeHours = (int) floor((time() - $ts) / 3600);
+        }
+        // MRR via per-tenant revenue allocation (reuse Phase 1F accessor)
+        $revenue = $this->get_per_tenant_revenue_contribution();
+        $mrr = (float) ($revenue[$schoolId] ?? 0);
+        // Activity = audit count for this tenant in window
+        $activityCount = $this->_count_tenant_audit_in_window($schoolId, $daysWindow);
+        return [
+            'students'        => $totalStudents,
+            'staff'           => $totalStaff,
+            'mrr'             => $mrr,
+            'activity_count'  => $activityCount,
+            'window_days'     => $daysWindow,
+            'data_age_hours'  => $dataAgeHours,
+        ];
+    }
+
+    /**
+     * Time-series for this tenant: students + staff + audit events per month
+     * across the last N months. Tenant absent from a rollup = 0 baseline.
+     */
+    public function get_tenant_time_series(string $schoolId, int $months = 12): array
+    {
+        $out = [];
+        for ($i = $months - 1; $i >= 0; $i--) {
+            $periodKey = date('Y-m', strtotime("first day of -{$i} months"));
+            $doc = $this->ready ? $this->firebase->firestoreGet('analyticsRollups', $periodKey) : null;
+            $tenantRow = null;
+            if (is_array($doc) && is_array($doc['tenantsRollup'] ?? null)) {
+                foreach ($doc['tenantsRollup'] as $r) {
+                    if (is_array($r) && (string) ($r['schoolId'] ?? '') === $schoolId) {
+                        $tenantRow = $r; break;
+                    }
+                }
+            }
+            // Audit events for this tenant in this month
+            $monthStart = strtotime($periodKey . '-01');
+            $monthEnd   = strtotime('last day of ' . $periodKey) + 86399;
+            $auditCount = $this->_count_tenant_audit_in_range($schoolId, $monthStart, $monthEnd);
+            $out[] = [
+                'period'        => $periodKey,
+                'totalStudents' => $tenantRow !== null ? (int) ($tenantRow['totalStudents'] ?? 0) : 0,
+                'totalStaff'    => $tenantRow !== null ? (int) ($tenantRow['totalStaff']    ?? 0) : 0,
+                'auditCount'    => $auditCount,
+            ];
+        }
+        return $out;
+    }
+
+    /** Resolve subscription details for this tenant. */
+    public function get_tenant_subscription_info(string $schoolId): array
+    {
+        if (!$this->ready) return [];
+        $ctrl = $this->firebase->firestoreGet('schoolControl', $schoolId);
+        $sub  = is_array($ctrl['subscription'] ?? null) ? $ctrl['subscription'] : [];
+        $subId = (string) ($sub['subscriptionId'] ?? '');
+        $out = [
+            'subscriptionId' => $subId,
+            'status'         => (string) ($sub['status']  ?? ''),
+            'planId'         => (string) ($sub['planId']  ?? ''),
+            'planName'       => '',
+            'price'          => 0.0,
+            'billingCycle'   => '',
+            'periodStart'    => '',
+            'periodEnd'      => '',
+            'graceEnd'       => '',
+        ];
+        if ($subId !== '') {
+            try {
+                $subDoc = $this->firebase->firestoreGet('subscriptions', $subId);
+                if (is_array($subDoc)) {
+                    $out['periodStart'] = (string) ($subDoc['periodStart'] ?? '');
+                    $out['periodEnd']   = (string) ($subDoc['periodEnd']   ?? '');
+                    $out['graceEnd']    = (string) ($subDoc['graceEnd']    ?? '');
+                    if (empty($out['status'])) $out['status'] = (string) ($subDoc['status'] ?? '');
+                }
+            } catch (\Throwable $e) { /* defensive */ }
+        }
+        $planMap = $this->load_plan_price_map();
+        if ($out['planId'] !== '' && isset($planMap[$out['planId']])) {
+            $out['planName']     = (string) $planMap[$out['planId']]['name'];
+            $out['price']        = (float)  $planMap[$out['planId']]['price'];
+            $out['billingCycle'] = (string) $planMap[$out['planId']]['billingCycle'];
+        }
+        return $out;
+    }
+
+    /**
+     * Payment history for this tenant, newest first, capped at $limit.
+     * STRICT isolation: queries `payments` with `schoolId == $schoolId` filter
+     * at Firestore layer.
+     */
+    public function get_tenant_payment_history(string $schoolId, int $limit = 10): array
+    {
+        if (!$this->ready) return [];
+        // Reuse registry helper which uses Firestore-layer filter + handles
+        // legacy school_uid fallback. Sort already DESC by createdAt.
+        $rows = $this->registry()->list_payments_for_school($schoolId);
+        if (!is_array($rows)) return [];
+        $out = [];
+        $sumLifetime = 0.0;
+        foreach ($rows as $r) {
+            $sumLifetime += (float) ($r['amount'] ?? $r['totalAmount'] ?? 0);
+            if (count($out) >= $limit) continue;
+            $out[] = [
+                'paidAt'    => (string) ($r['paidAt']     ?? $r['createdAt'] ?? ''),
+                'amount'    => (float)  ($r['amount']     ?? $r['totalAmount'] ?? 0),
+                'method'    => (string) ($r['method']     ?? $r['paymentMethod'] ?? '—'),
+                'reference' => (string) ($r['reference']  ?? $r['transactionId'] ?? ''),
+                'planName'  => (string) ($r['planName']   ?? ''),
+            ];
+        }
+        return ['rows' => $out, 'lifetime_total' => $sumLifetime, 'total_count' => count($rows)];
+    }
+
+    /**
+     * Activity timeline (audit feed) for this tenant in the last N days,
+     * capped at $limit. STRICT isolation via Firestore-layer schoolId filter.
+     */
+    public function get_tenant_activity_timeline(string $schoolId, int $daysWindow = 30, int $limit = 50): array
+    {
+        if (!$this->ready) return [];
+        $cut = date('c', time() - $daysWindow * 86400);
+        try {
+            $rows = $this->firebase->firestoreQuery('tenantAudit', [
+                ['schoolId', '==', $schoolId],
+                ['ts', '>=', $cut],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'B2_analytics_service::get_tenant_activity_timeline failed: ' . $e->getMessage());
+            return [];
+        }
+        if (!is_array($rows)) return [];
+        $out = [];
+        foreach ($rows as $row) {
+            $d = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+            $out[] = [
+                'ts'      => (string) ($d['ts']      ?? ''),
+                'actor'   => (string) ($d['actor']   ?? $d['actorId'] ?? ''),
+                'action'  => (string) ($d['action']  ?? ''),
+                'target'  => (string) ($d['target']  ?? ''),
+                'notes'   => (string) ($d['notes']   ?? ''),
+            ];
+        }
+        usort($out, fn($a, $b) => strcmp((string) $b['ts'], (string) $a['ts']));
+        return array_slice($out, 0, $limit);
+    }
+
+    /** Stats freshness details for this tenant. */
+    public function get_tenant_stats_health(string $schoolId): array
+    {
+        if (!$this->ready) return [];
+        $school = $this->firebase->firestoreGet('schools', $schoolId);
+        if (!is_array($school)) return [];
+        $cache = is_array($school['statsCache'] ?? null) ? $school['statsCache']
+                : (is_array($school['stats'] ?? null) ? $school['stats'] : []);
+        $upd = (string) ($cache['lastUpdated'] ?? $cache['last_updated'] ?? '');
+        $ts = $upd !== '' ? strtotime($upd) : 0;
+        $hours = $ts > 0 ? (int) floor((time() - $ts) / 3600) : null;
+        return [
+            'lastUpdated'  => $upd,
+            'hoursAgo'     => $hours,
+            'source'       => 'statsCache',
+            'students'     => (int) ($cache['totalStudents'] ?? $cache['total_students'] ?? 0),
+            'staff'        => (int) ($cache['totalStaff']    ?? $cache['total_staff']    ?? 0),
+            'isStale'      => $hours !== null && $hours > 168, // >7 days
+        ];
+    }
+
+    /**
+     * Open alerts that target this tenant.
+     * STRICT isolation via Firestore array-contains query.
+     */
+    public function get_tenant_alerts(string $schoolId): array
+    {
+        if (!$this->ready) return [];
+        try {
+            $rows = $this->firebase->firestoreQuery('analyticsAlerts', [
+                ['state', '==', 'open'],
+                ['affectedTenants', 'array-contains', $schoolId],
+            ]);
+        } catch (\Throwable $e) {
+            // Fallback: some Firestore wrappers may not support array-contains;
+            // pull open alerts and filter in PHP as defensive safety net.
+            try {
+                $rows = $this->firebase->firestoreQuery('analyticsAlerts', [['state', '==', 'open']]);
+                if (is_array($rows)) {
+                    $rows = array_filter($rows, function ($r) use ($schoolId) {
+                        $d = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+                        $tenants = is_array($d['affectedTenants'] ?? null) ? $d['affectedTenants'] : [];
+                        return in_array($schoolId, $tenants, true);
+                    });
+                }
+            } catch (\Throwable $e2) {
+                return [];
+            }
+        }
+        if (!is_array($rows)) return [];
+        $out = [];
+        foreach ($rows as $row) {
+            $d = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+            $out[] = [
+                'alertId'    => (string) ($row['id']         ?? $d['alertId'] ?? ''),
+                'alertType'  => (string) ($d['alertType']    ?? ''),
+                'severity'   => (string) ($d['severity']     ?? 'info'),
+                'createdAt'  => (string) ($d['createdAt']    ?? ''),
+                'triggerData' => is_array($d['triggerData'] ?? null) ? $d['triggerData'] : [],
+            ];
+        }
+        return $out;
+    }
+
+    // ── Phase 1G internals ──────────────────────────────────────────
+
+    /**
+     * Count tenantAudit rows for $schoolId in last $daysWindow days.
+     * STRICT Firestore-layer filter (no PHP filter pass).
+     */
+    private function _count_tenant_audit_in_window(string $schoolId, int $daysWindow): int
+    {
+        if (!$this->ready) return 0;
+        $cut = date('c', time() - max(1, $daysWindow) * 86400);
+        try {
+            $rows = $this->firebase->firestoreQuery('tenantAudit', [
+                ['schoolId', '==', $schoolId],
+                ['ts', '>=', $cut],
+            ]);
+            return is_array($rows) ? count($rows) : 0;
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Count tenantAudit rows for $schoolId between two epoch timestamps.
+     */
+    private function _count_tenant_audit_in_range(string $schoolId, int $startTs, int $endTs): int
+    {
+        if (!$this->ready) return 0;
+        if ($startTs <= 0 || $endTs <= 0) return 0;
+        $from = date('c', $startTs);
+        $to   = date('c', $endTs);
+        try {
+            $rows = $this->firebase->firestoreQuery('tenantAudit', [
+                ['schoolId', '==', $schoolId],
+                ['ts', '>=', $from],
+                ['ts', '<=', $to],
+            ]);
+            return is_array($rows) ? count($rows) : 0;
+        } catch (\Throwable $e) {
+            return 0;
+        }
     }
 
     // ──────────────────────────────────────────────────────────────

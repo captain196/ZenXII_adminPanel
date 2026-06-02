@@ -107,7 +107,19 @@ $noPayments = $total_revenue_window <= 0 && count($payRow) === 0;
     <span class="spacer"></span>
     <span class="lbl">Currency: <?= $h($cur) ?></span>
     <span class="lbl">·</span>
-    <span class="lbl">Generated <?= $h(substr((string) ($payload['generated_at'] ?? date('c')), 11, 8)) ?> UTC</span>
+    <?php
+    // 2026-06-02 IST display fix. Pre-fix labeled server-local time as
+    // "UTC" which was wrong (server emits +02:00 offsets). Convert to
+    // Asia/Kolkata for the operator's IST timezone.
+    $rvIso = (string) ($payload['generated_at'] ?? date('c'));
+    $rvIst = substr($rvIso, 11, 8);
+    try {
+        $dtRv = new \DateTime($rvIso);
+        $dtRv->setTimezone(new \DateTimeZone('Asia/Kolkata'));
+        $rvIst = $dtRv->format('H:i:s');
+    } catch (\Throwable $eRv) {}
+    ?>
+    <span class="lbl">Generated <?= $h($rvIst) ?> IST</span>
   </div>
 
   <!-- ── SECTION 1: HEADLINE KPIs ──────────────────────────────── -->

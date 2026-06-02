@@ -30,6 +30,19 @@ $avgAge          = (int) ($payload['avg_tenant_age_days'] ?? 0);
 $net30           = (int) ($payload['net_new_30d'] ?? 0);
 $net90           = (int) ($payload['net_new_90d'] ?? 0);
 $generatedAtIso  = (string) ($payload['generated_at'] ?? '');
+// 2026-06-02 IST display fix. Pre-fix showed the raw ISO 8601 string
+// (server-local Europe/Berlin +02:00); operator works in IST. Convert
+// using the embedded offset → Asia/Kolkata.
+$generatedAtIst = '—';
+if ($generatedAtIso !== '') {
+    try {
+        $dtSt = new \DateTime($generatedAtIso);
+        $dtSt->setTimezone(new \DateTimeZone('Asia/Kolkata'));
+        $generatedAtIst = $dtSt->format('Y-m-d H:i:s') . ' IST';
+    } catch (\Throwable $eSt) {
+        $generatedAtIst = $generatedAtIso;
+    }
+}
 
 $totalSchools = end($onboardedSeries)['totalSchools'] ?? 0;
 $activeCount  = array_sum(array_intersect_key($lifecycleDist, array_flip(['active','trialing','expiring_soon','grace'])));
@@ -52,7 +65,7 @@ $activePct    = $totalSchools > 0 ? round(($activeCount / $totalSchools) * 100) 
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;padding:9px 16px;background:var(--sa-dim);border:1px solid var(--sa-ring);border-radius:10px;flex-wrap:wrap;gap:8px;">
     <span style="font-size:12px;color:var(--t3);font-family:var(--font-m);">
       <i class="fa fa-clock-o" style="margin-right:5px;color:var(--sa3);"></i>
-      Stats as of <strong style="color:var(--t2);" id="statsGeneratedAt"><?= htmlspecialchars($generatedAtIso ?: '—') ?></strong>
+      Stats as of <strong style="color:var(--t2);" id="statsGeneratedAt" data-iso="<?= htmlspecialchars($generatedAtIso) ?>"><?= htmlspecialchars($generatedAtIst) ?></strong>
       &nbsp;·&nbsp; Range:
     </span>
     <div style="display:flex;gap:6px;align-items:center;">

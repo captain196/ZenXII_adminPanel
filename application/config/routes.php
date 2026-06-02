@@ -180,6 +180,10 @@ $route['superadmin/dashboard/cross-school']             = 'Superadmin_analytics/
 // ── B2.3.4-A Phase 1F — Cross-School Summaries spoke AJAX + export endpoints ──
 $route['superadmin/dashboard/cross-school/data']        = 'Superadmin_analytics/cross_school_data';
 $route['superadmin/dashboard/cross-school/export']      = 'Superadmin_analytics/cross_school_export';
+// ── B2.3.4-A Phase 1G — Per-Tenant Deep Dive AJAX + export endpoints ──
+// IMPORTANT: these two sub-routes MUST appear BEFORE the tenant/(:any) catch-all
+$route['superadmin/dashboard/tenant/(:any)/data']       = 'Superadmin_analytics/tenant_detail_data/$1';
+$route['superadmin/dashboard/tenant/(:any)/export']     = 'Superadmin_analytics/tenant_detail_export/$1';
 $route['superadmin/dashboard/tenant/(:any)']            = 'Superadmin_analytics/tenant_detail/$1';
 
 // Schools

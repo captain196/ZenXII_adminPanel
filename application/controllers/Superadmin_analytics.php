@@ -426,7 +426,235 @@ class Superadmin_analytics extends MY_Superadmin_Controller
         }
     }
 
-    public function tenant_detail() { $this->_phase_pending('Per-Tenant Deep Dive', '1G'); }
+    // ─────────────────────────────────────────────────────────────────────
+    // PHASE 1G — PER-TENANT DEEP DIVE SPOKE
+    // GET /superadmin/dashboard/tenant/{schoolId}?days=30&months=12
+    // ─────────────────────────────────────────────────────────────────────
+    public function tenant_detail($schoolId = '')
+    {
+        $schoolId = (string) $schoolId;
+        [$days, $months] = $this->_normalize_tenant_detail_params();
+
+        // STRICT validation: schoolId pattern check happens here, in service,
+        // AND Firestore-layer filter on per-tenant queries. Defense in depth.
+        if (!preg_match('/^SCH_[A-Z0-9]+$/', $schoolId)) {
+            $this->_render_tenant_error('invalid_schoolid', $schoolId);
+            return;
+        }
+
+        $payload = [];
+        try {
+            $payload = $this->b2_analytics_service->get_tenant_detail_bundle($schoolId, $days, $months);
+        } catch (\Throwable $e) {
+            log_message('error', 'SA tenant_detail: ' . $e->getMessage());
+            $this->_render_tenant_error('exception', $schoolId);
+            return;
+        }
+
+        if (isset($payload['_error'])) {
+            $this->_render_tenant_error($payload['_error'], $schoolId);
+            return;
+        }
+
+        $data = [
+            'page_title'  => 'Tenant Deep Dive — ' . $schoolId,
+            'payload'     => $payload,
+            'schoolId'    => $schoolId,
+            'daysWindow'  => $days,
+            'monthsTrend' => $months,
+        ];
+        $this->load->view('superadmin/include/sa_header', $data);
+        $this->load->view('superadmin/analytics/tenant_detail', $data);
+        $this->load->view('superadmin/include/sa_footer');
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // GET /superadmin/dashboard/tenant/{schoolId}/data
+    // AJAX refresh endpoint.
+    // ─────────────────────────────────────────────────────────────────────
+    public function tenant_detail_data($schoolId = '')
+    {
+        $schoolId = (string) $schoolId;
+        if (!preg_match('/^SCH_[A-Z0-9]+$/', $schoolId)) {
+            $this->json_error('Invalid schoolId', 400);
+            return;
+        }
+        [$days, $months] = $this->_normalize_tenant_detail_params();
+        try {
+            $payload = $this->b2_analytics_service->get_tenant_detail_bundle($schoolId, $days, $months);
+            if (isset($payload['_error'])) { $this->json_error('Tenant not found', 404); return; }
+            $this->json_success($payload);
+        } catch (\Throwable $e) {
+            log_message('error', 'SA tenant_detail_data: ' . $e->getMessage());
+            $this->json_error('Tenant detail fetch failed.');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // GET /superadmin/dashboard/tenant/{schoolId}/export?section=...&format=csv|xlsx
+    // ─────────────────────────────────────────────────────────────────────
+    public function tenant_detail_export($schoolId = '')
+    {
+        $schoolId = (string) $schoolId;
+        if (!preg_match('/^SCH_[A-Z0-9]+$/', $schoolId)) {
+            $this->json_error('Invalid schoolId', 400);
+            return;
+        }
+        $section = strtolower((string) ($this->input->get('section', TRUE) ?? 'identity'));
+        $format  = strtolower((string) ($this->input->get('format',  TRUE) ?? 'csv'));
+        $allowedSections = ['identity', 'kpis', 'timeseries', 'subscription', 'payments', 'activity'];
+        if (!in_array($section, $allowedSections, true)) $section = 'identity';
+        if (!in_array($format, ['csv', 'xlsx'], true)) $format = 'csv';
+        [$days, $months] = $this->_normalize_tenant_detail_params();
+
+        try {
+            $payload = $this->b2_analytics_service->get_tenant_detail_bundle($schoolId, $days, $months);
+            if (isset($payload['_error'])) { $this->json_error('Tenant not found', 404); return; }
+            [$headers, $rows, $filenameBase] = $this->_build_tenant_detail_export_section($section, $payload, $schoolId, $days, $months);
+            $filename = $filenameBase . '_' . $schoolId . '_' . date('Y-m-d');
+            if ($format === 'csv') {
+                $this->_stream_csv($filename . '.csv', $headers, $rows);
+            } else {
+                $this->load->library('b2_xlsx_export');
+                $this->b2_xlsx_export->open(ucfirst($section));
+                $this->b2_xlsx_export->write_header($headers);
+                foreach ($rows as $r) $this->b2_xlsx_export->write_row($r);
+                $this->b2_xlsx_export->stream_to_browser($filename . '.xlsx');
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'SA tenant_detail_export: ' . $e->getMessage());
+            $this->json_error('Export failed.');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // PHASE 1G internals — param normalization + error render + export shape
+    // ─────────────────────────────────────────────────────────────────────
+    private function _normalize_tenant_detail_params(): array
+    {
+        $days = (int) ($this->input->get('days', TRUE) ?? 30);
+        if (!in_array($days, [7, 30, 90], true)) $days = 30;
+        $months = (int) ($this->input->get('months', TRUE) ?? 12);
+        if (!in_array($months, [3, 6, 12], true)) $months = 12;
+        return [$days, $months];
+    }
+
+    private function _render_tenant_error(string $errorCode, string $schoolId): void
+    {
+        $messages = [
+            'invalid_schoolid' => 'The school ID format is invalid. Expected pattern SCH_xxxxxx.',
+            'tenant_not_found' => 'No tenant found for the provided school ID.',
+            'exception'        => 'An unexpected error occurred. The error has been logged.',
+        ];
+        $data = [
+            'page_title' => 'Tenant Deep Dive — Error',
+            'errorCode'  => $errorCode,
+            'errorMsg'   => $messages[$errorCode] ?? 'Unknown error.',
+            'schoolId'   => $schoolId,
+        ];
+        $this->load->view('superadmin/include/sa_header', $data);
+        $this->load->view('superadmin/analytics/_tenant_error', $data);
+        $this->load->view('superadmin/include/sa_footer');
+    }
+
+    private function _build_tenant_detail_export_section(string $section, array $payload, string $schoolId, int $days, int $months): array
+    {
+        $id = is_array($payload['identity'] ?? null) ? $payload['identity'] : [];
+        switch ($section) {
+            case 'kpis':
+                $kpi = is_array($payload['kpis'] ?? null) ? $payload['kpis'] : [];
+                $headers = ['KPI', 'Value', 'Window', 'Notes'];
+                $rows = [
+                    ['Students',     (int) ($kpi['students']       ?? 0), 'current', 'schools.statsCache.totalStudents'],
+                    ['Staff',        (int) ($kpi['staff']          ?? 0), 'current', 'schools.statsCache.totalStaff'],
+                    ['MRR (INR)',    round((float) ($kpi['mrr']    ?? 0), 2), 'current', 'per-tenant revenue allocation'],
+                    ['Activity',     (int) ($kpi['activity_count'] ?? 0), $days . 'd', 'tenantAudit count for this tenant in window'],
+                    ['Data Age (h)', ($kpi['data_age_hours'] ?? null) === null ? '—' : (int) $kpi['data_age_hours'], 'current', 'hours since statsCache.lastUpdated'],
+                ];
+                return [$headers, $rows, 'tenant_kpis'];
+
+            case 'timeseries':
+                $ts = is_array($payload['time_series'] ?? null) ? $payload['time_series'] : [];
+                $headers = ['Period', 'Total Students', 'Total Staff', 'Audit Events'];
+                $rows = [];
+                foreach ($ts as $r) {
+                    $rows[] = [
+                        (string) ($r['period']        ?? ''),
+                        (int)    ($r['totalStudents'] ?? 0),
+                        (int)    ($r['totalStaff']    ?? 0),
+                        (int)    ($r['auditCount']    ?? 0),
+                    ];
+                }
+                return [$headers, $rows, 'tenant_timeseries'];
+
+            case 'subscription':
+                $sub = is_array($payload['subscription'] ?? null) ? $payload['subscription'] : [];
+                $headers = ['Field', 'Value'];
+                $rows = [
+                    ['Subscription ID', (string) ($sub['subscriptionId'] ?? '')],
+                    ['Status',          (string) ($sub['status']         ?? '')],
+                    ['Plan ID',         (string) ($sub['planId']         ?? '')],
+                    ['Plan Name',       (string) ($sub['planName']       ?? '')],
+                    ['Price (INR)',     round((float) ($sub['price']     ?? 0), 2)],
+                    ['Billing Cycle',   (string) ($sub['billingCycle']   ?? '')],
+                    ['Period Start',    (string) ($sub['periodStart']    ?? '')],
+                    ['Period End',      (string) ($sub['periodEnd']      ?? '')],
+                    ['Grace End',       (string) ($sub['graceEnd']       ?? '')],
+                ];
+                return [$headers, $rows, 'tenant_subscription'];
+
+            case 'payments':
+                $pay = is_array($payload['payments'] ?? null) ? $payload['payments'] : [];
+                $rowsIn = is_array($pay['rows'] ?? null) ? $pay['rows'] : [];
+                $headers = ['Date', 'Amount (INR)', 'Method', 'Reference', 'Plan Name'];
+                $rows = [];
+                foreach ($rowsIn as $r) {
+                    $rows[] = [
+                        (string) ($r['paidAt']    ?? ''),
+                        round((float) ($r['amount'] ?? 0), 2),
+                        (string) ($r['method']    ?? ''),
+                        (string) ($r['reference'] ?? ''),
+                        (string) ($r['planName']  ?? ''),
+                    ];
+                }
+                return [$headers, $rows, 'tenant_payments'];
+
+            case 'activity':
+                $act = is_array($payload['activity'] ?? null) ? $payload['activity'] : [];
+                $headers = ['Timestamp', 'Actor', 'Action', 'Target', 'Notes'];
+                $rows = [];
+                foreach ($act as $r) {
+                    $rows[] = [
+                        (string) ($r['ts']     ?? ''),
+                        (string) ($r['actor']  ?? ''),
+                        (string) ($r['action'] ?? ''),
+                        (string) ($r['target'] ?? ''),
+                        (string) ($r['notes']  ?? ''),
+                    ];
+                }
+                return [$headers, $rows, 'tenant_activity'];
+
+            case 'identity':
+            default:
+                $headers = ['Field', 'Value'];
+                $rows = [
+                    ['School ID',           (string) ($id['schoolId']         ?? $schoolId)],
+                    ['School Name',         (string) ($id['schoolName']       ?? '')],
+                    ['School Code',         (string) ($id['schoolCode']       ?? '')],
+                    ['Domain',              (string) ($id['domainIdentifier'] ?? '')],
+                    ['City',                (string) ($id['city']             ?? '')],
+                    ['Region / State',      (string) ($id['region']           ?? '')],
+                    ['Created At',          (string) ($id['createdAt']        ?? '')],
+                    ['Primary SSA',         (string) ($id['primarySsaId']     ?? '')],
+                    ['Plan Family',         (string) ($id['planFamilyId']     ?? '')],
+                    ['Plan Name',           (string) ($id['planName']         ?? '')],
+                    ['Lifecycle State',     (string) ($id['lifecycleState']   ?? '')],
+                    ['Admin Disabled',      !empty($id['adminDisabled']) ? 'yes' : 'no'],
+                    ['Is Test Tenant',      !empty($id['isTestTenant'])  ? 'yes' : 'no'],
+                ];
+                return [$headers, $rows, 'tenant_identity'];
+        }
+    }
 
     // ─────────────────────────────────────────────────────────────────────
     // PHASE 1F internals — param normalization + per-section export shape
