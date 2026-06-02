@@ -1181,6 +1181,15 @@ class B2_registry_service
         $periodEnd     = (string) ($args['periodEnd']         ?? '');
         $graceEnd      = (string) ($args['graceEnd']          ?? '');
         $billingCycle  = (string) ($args['planBillingCycle']  ?? 'annual');
+        // SC-Step8 (Session Convergence — 2026-06-02): accept sessionYear so
+        // the initial sessions[] + currentSession seed lands ATOMICALLY in
+        // the schools doc creation below, eliminating the pre-Step-8 race
+        // where create_tenant succeeded but Superadmin_schools::onboard's
+        // separate firestoreUpdate at L430 could fail, leaving a tenant
+        // with no session state. When absent/empty, the schools doc is
+        // created without these fields (preserves backward compatibility
+        // for any caller that doesn't pass sessionYear yet).
+        $sessionYear   = (string) ($args['sessionYear']       ?? '');
 
         $entitlements  = [];
         foreach ($planModules as $m => $enabled) {
@@ -1232,25 +1241,35 @@ class B2_registry_service
         // ── Phase 2: atomic data batch ──────────────────────────────────
         $ops = [];
 
+        // SC-Step8: schools doc payload — sessions[] + currentSession now
+        // populated atomically WITHIN the create_tenant batch when sessionYear
+        // is provided. Eliminates the pre-Step-8 "tenant exists but has no
+        // sessions" failure mode that the separate Superadmin_schools::onboard
+        // L430 firestoreUpdate was vulnerable to.
+        $schoolsData = [
+            'schoolId'         => $schoolId,
+            'schoolCode'       => $schoolCode,
+            'schoolName'       => $schoolName,
+            'name'             => $schoolName,
+            'city'             => (string) ($args['city']             ?? ''),
+            'street'           => (string) ($args['street']           ?? ''),
+            'email'            => (string) ($args['email']            ?? ''),
+            'phone'            => (string) ($args['phone']            ?? ''),
+            'logoUrl'          => (string) ($args['logoUrl']          ?? ''),
+            'domainIdentifier' => (string) ($args['domainIdentifier'] ?? ''),
+            'primarySsaId'     => $primarySsaId,
+            'adminDisabled'    => ['value' => false, 'reason' => '', 'actor' => $createdBy, 'updatedAt' => $nowIso],
+            'statsCache'       => ['totalStudents' => 0, 'totalStaff' => 0, 'lastUpdated' => $nowIso],
+            'createdAt'        => $nowIso,
+            'createdBy'        => $createdBy,
+            'updatedAt'        => $nowIso,
+        ];
+        if ($sessionYear !== '') {
+            $schoolsData['sessions']       = [$sessionYear];
+            $schoolsData['currentSession'] = $sessionYear;
+        }
         $ops[] = ['op' => 'set', 'collection' => 'schools', 'docId' => $schoolId, 'merge' => false,
-            'data' => [
-                'schoolId'         => $schoolId,
-                'schoolCode'       => $schoolCode,
-                'schoolName'       => $schoolName,
-                'name'             => $schoolName,
-                'city'             => (string) ($args['city']             ?? ''),
-                'street'           => (string) ($args['street']           ?? ''),
-                'email'            => (string) ($args['email']            ?? ''),
-                'phone'            => (string) ($args['phone']            ?? ''),
-                'logoUrl'          => (string) ($args['logoUrl']          ?? ''),
-                'domainIdentifier' => (string) ($args['domainIdentifier'] ?? ''),
-                'primarySsaId'     => $primarySsaId,
-                'adminDisabled'    => ['value' => false, 'reason' => '', 'actor' => $createdBy, 'updatedAt' => $nowIso],
-                'statsCache'       => ['totalStudents' => 0, 'totalStaff' => 0, 'lastUpdated' => $nowIso],
-                'createdAt'        => $nowIso,
-                'createdBy'        => $createdBy,
-                'updatedAt'        => $nowIso,
-            ],
+            'data' => $schoolsData,
         ];
 
         $ops[] = ['op' => 'set', 'collection' => 'schoolControl', 'docId' => $schoolId, 'merge' => false,

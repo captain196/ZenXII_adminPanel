@@ -346,6 +346,12 @@ class Superadmin_schools extends MY_Superadmin_Controller
             }
 
             // Atomic Firestore tenant creation (the load-bearing single source of truth).
+            // SC-Step8 (Session Convergence — 2026-06-02): sessionYear is now
+            // passed INTO create_tenant so the schools/{id} doc lands with
+            // sessions[$session_yr] + currentSession atomically as part of the
+            // same B2 6+ doc batch. Removes the pre-Step-8 race window where
+            // the separate firestoreUpdate (formerly at L430) could fail after
+            // create_tenant succeeded, leaving a tenant with no session state.
             $tenantResult = $svc->create_tenant([
                 'schoolId'          => $school_id,
                 'schoolCode'        => (string) $school_code,
@@ -367,6 +373,7 @@ class Superadmin_schools extends MY_Superadmin_Controller
                 'ssaName'           => $admin_name,
                 'ssaEmail'          => $admin_email,
                 'createdBy'         => (string) $this->sa_id,
+                'sessionYear'       => $session_yr,
             ]);
             if (empty($tenantResult['success'])) {
                 $errCode = (string) ($tenantResult['error'] ?? 'unknown');
@@ -404,38 +411,14 @@ class Superadmin_schools extends MY_Superadmin_Controller
                 log_message('error', 'SA onboard (FS): Users/Admin write failed (non-fatal): ' . $e->getMessage());
             }
 
-            // Schools/{id}/Sessions + Config/ActiveSession — session-propagation
-            // surface (SW retirement). Still read by Admin_login + MY_Controller
-            // for the session list / activeSession bootstrap; cannot be removed
-            // until SW migrates those readers.
-            try {
-                $this->firebase->set("Schools/{$school_id}/Sessions", [$session_yr]);
-                $this->firebase->set("Schools/{$school_id}/Config/ActiveSession", $session_yr);
-            } catch (Exception $e) {
-                log_message('error', 'SA onboard (FS): Sessions write failed (non-fatal): ' . $e->getMessage());
-            }
-
-            // Firestore canonical session seed. schools/{id}.sessions[] +
-            // .currentSession are the authoritative session-propagation
-            // surface read by school_config (admin web), observeSchool()
-            // (parent + teacher apps), and any future session-aware
-            // feature. Without this, a newly onboarded tenant lands with
-            // an empty Sessions tab in school_config and the SSA has to
-            // manually add the academic year they already entered into
-            // the SA wizard — a UX regression and a source of
-            // year-format drift. The RTDB writes above remain
-            // intentionally for Admin_login / MY_Controller readers
-            // until those are migrated; Firestore is authoritative.
-            try {
-                $this->firebase->firestoreUpdate('schools', $school_id, [
-                    'sessions'       => [$session_yr],
-                    'currentSession' => $session_yr,
-                    'updatedAt'      => date('c'),
-                ]);
-            } catch (\Throwable $e) {
-                log_message('error',
-                    'SA onboard (FS): schools.sessions / currentSession Firestore write failed (non-fatal): ' . $e->getMessage());
-            }
+            // SC-Step8 (Session Convergence — 2026-06-02): RTDB Sessions +
+            // Config/ActiveSession writes RETIRED. Admin_login is Firestore-
+            // canonical (SW2 2026-05-26); MY_Controller is Firestore-canonical
+            // (SC-Step5 dfcd8bbc). The schools/{id}.sessions[] + currentSession
+            // seed is now ATOMIC within the B2 create_tenant batch above
+            // (sessionYear arg passed). The pre-Step-8 separate firestoreUpdate
+            // here is removed — its atomicity is now inherited from create_tenant.
+            // POST-CLEAN-2 (mark RTDB session paths inert) is unblocked by this.
 
             // LOGO-1 (post-B3 2026-06-02): promote the temp-FS logo URL
             // that upload_logo() returned to a canonical Firebase Storage
@@ -741,28 +724,21 @@ class Superadmin_schools extends MY_Superadmin_Controller
         $this->_initialize_default_data($school_id, $session_yr, $plan_data);
 
         // ── 8. Persist available sessions list + active session ─────────
-        // Login reads Schools/{school_id}/Sessions to populate the session switcher.
-        // Without this, login computes session from system date, ignoring the onboarded year.
-        try {
-            $result = $this->firebase->set("Schools/{$school_id}/Sessions", [$session_yr]);
-            if ($result === false) {
-                throw new \Exception("Failed to write to Schools/{$school_id}/Sessions");
-            }
-            $result = $this->firebase->set("Schools/{$school_id}/Config/ActiveSession", $session_yr);
-            if ($result === false) {
-                throw new \Exception("Failed to write to Schools/{$school_id}/Config/ActiveSession");
-            }
-        } catch (Exception $e) {
-            log_message('error', 'SA onboard: Sessions write failed — ' . $e->getMessage());
-        }
+        // SC-Step8 (Session Convergence — 2026-06-02): RTDB Sessions +
+        // Config/ActiveSession writes RETIRED from the legacy branch too
+        // (D1=b — Firestore-first consistency across both onboarding paths).
+        // Admin_login + MY_Controller are Firestore-canonical post-SW2 +
+        // SC-Step5; no runtime reader of the RTDB session path remains.
+        // The standalone Firestore session-seed BELOW stays — the legacy
+        // branch does not go through B2 create_tenant, so this write is
+        // not redundant with the FS-canonical branch's atomic create.
 
-        // Firestore canonical session seed — same fields as the Firestore
-        // branch above. Legacy-path tenants that don't have a schools/{id}
-        // doc yet will see this update fail closed (logged, non-fatal) —
-        // that's acceptable: those tenants are RTDB-only by definition and
-        // school_config will fall back to legacy read paths. For tenants
-        // that DO have a Firestore doc (post-Wave-A backfill), this keeps
-        // the canonical source of truth synchronised.
+        // Firestore canonical session seed. Legacy-path tenants that don't
+        // have a schools/{id} doc yet will see this update fail closed
+        // (logged, non-fatal) — those tenants are RTDB-only by definition
+        // and school_config will fall back to legacy read paths. For
+        // tenants that DO have a Firestore doc (post-Wave-A backfill),
+        // this keeps the canonical source of truth synchronised.
         try {
             $this->firebase->firestoreUpdate('schools', $school_id, [
                 'sessions'       => [$session_yr],
