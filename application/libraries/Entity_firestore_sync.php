@@ -87,7 +87,26 @@ class Entity_firestore_sync
 
         // Always write identity/status fields (Android SchoolDoc expects these)
         $doc['schoolCode']      = $this->schoolCode;
-        $doc['currentSession']  = $this->session;
+
+        // SC-Step1 (Session Convergence — 2026-06-02): DEMOTE currentSession
+        // write to "write only if absent" per Q7 verdict. syncSchool is a
+        // profile-sync operation, not a session lifecycle operation.
+        // Defense-in-depth alignment with Firestore_service::saveSchool DEMOTE
+        // (currently zero production callers; kept consistent for any future
+        // restoration). Active session changes flow exclusively through
+        // School_config::set_active_session (sole canonical writer).
+        try {
+            $existing = $this->firebase->firestoreGet('schools', $docId);
+            if (!is_array($existing) || empty($existing['currentSession'])) {
+                $doc['currentSession'] = $this->session;  // defensive seed
+            }
+            // else: populated — DO NOT include currentSession in $doc (preserve canonical)
+        } catch (\Exception $e) {
+            log_message('error',
+                "SC-Step1: Entity_firestore_sync::syncSchool currentSession DEMOTE read failed for {$docId}: " . $e->getMessage());
+            // Conservative: do NOT include currentSession on read failure (fail-safe)
+        }
+
         $doc['status']          = $profileData['status'] ?? 'active';
 
         return $this->_write('schools', $docId, $doc);
