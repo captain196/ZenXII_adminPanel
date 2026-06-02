@@ -3343,10 +3343,33 @@ class School_config extends MY_Controller
             ]);
         }
 
-        // Write the `running` intent before any mutation.
+        // ── SC-Step7 (Session Convergence — 2026-06-02): brief lock + CAS ──
+        // Write the `running` intent + target-session-add in ONE batched
+        // commit under ONE brief `sessions` lock. Stage B (long-running
+        // students/sections work BELOW this block) runs UNLOCKED per D1=B.
+        // Re-read INSIDE lock for freshest sessions[] + __updateTime so
+        // concurrent add_session writes are not silently clobbered.
         $now = date('c');
+        $rolloverStartLock = $this->_config_lock_acquire('sessions');
+        if ($rolloverStartLock === null) {
+            log_message('error',
+                "ACC_CONCURRENT_REJECTED endpoint=school_config/rollover_session "
+                . "stage=intent_start schoolId={$this->school_id} actor={$this->admin_id} "
+                . "reason=lock_timeout key={$intentKey}");
+            return $this->json_error(
+                'Another session-management operation is in progress. Please retry in a few seconds.', 409);
+        }
         try {
-            $this->fs->update('schools', $schoolId, [
+            // Re-read INSIDE lock for freshest sessions[] + __updateTime
+            $fsSchoolFresh = $this->firebase->firestoreGet('schools', $schoolId);
+            if (!is_array($fsSchoolFresh)) $fsSchoolFresh = [];
+            $sessions = (is_array($fsSchoolFresh['sessions'] ?? null))
+                ? array_values(array_filter($fsSchoolFresh['sessions'], 'is_string'))
+                : $sessions; // fall back to pre-lock value if FS read returned nothing
+            $startUpdateTime = (string) ($fsSchoolFresh['__updateTime'] ?? '');
+
+            // Build batched payload: intent-running + (sessions[] add if needed)
+            $startData = [
                 'rolloverIntents.' . $intentKey => [
                     'status'     => 'running',
                     'from'       => $from,
@@ -3356,24 +3379,45 @@ class School_config extends MY_Controller
                     'attempt'    => (int) (($prior['attempt'] ?? 0)) + 1,
                 ],
                 'updatedAt' => $now,
-            ]);
-        } catch (\Throwable $e) {
-            log_message('error',
-                "ACC_ROLLOVER_INTENT_WRITE_FAILED schoolId={$this->school_id} "
-                . "key={$intentKey} err=" . $e->getMessage());
-            return $this->json_error('Could not record rollover intent. Retry.', 500);
+            ];
+            if (!in_array($to, $sessions, true)) {
+                $sessions[] = $to;
+                sort($sessions);
+                $startData['sessions'] = $sessions;
+            }
+
+            $ops = [[
+                'op'         => 'update',
+                'collection' => 'schools',
+                'docId'      => $schoolId,
+                'merge'      => true,
+                'data'       => $startData,
+            ]];
+            if ($startUpdateTime !== '') {
+                $ops[0]['precondition'] = ['updateTime' => $startUpdateTime];
+            }
+            $committed = false;
+            try {
+                $committed = (bool) $this->firebase->firestoreCommitBatch($ops);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "ACC_ROLLOVER_INTENT_WRITE_FAILED schoolId={$this->school_id} "
+                    . "key={$intentKey} err=" . $e->getMessage());
+            }
+            if (!$committed) {
+                log_message('error',
+                    "ACC_CONCURRENT_REJECTED endpoint=school_config/rollover_session "
+                    . "stage=intent_start schoolId={$this->school_id} actor={$this->admin_id} "
+                    . "reason=cas_failed key={$intentKey}");
+                return $this->json_error('Could not record rollover intent. Retry.', 500);
+            }
+        } finally {
+            $this->_config_lock_release($rolloverStartLock);
         }
 
         log_message('error',
             "ACC_ROLLOVER_START schoolId={$this->school_id} from={$from} to={$to} "
             . "actor={$this->admin_id} resuming=" . ($resuming ? '1' : '0'));
-
-        // Ensure target session is in the list
-        if (!in_array($to, $sessions, true)) {
-            $sessions[] = $to;
-            sort($sessions);
-            $this->fs->update('schools', $schoolId, ['sessions' => $sessions, 'updatedAt' => date('c')]);
-        }
 
         $summary = [
             'sections_copied'   => 0,
@@ -3595,14 +3639,62 @@ class School_config extends MY_Controller
         }
 
         // ── Optionally set target as active ────────────────────────────
+        // SC-Step7 (Session Convergence — 2026-06-02): brief lock + CAS
+        // around the optional setActive currentSession write. Stage B
+        // (above) ran unlocked; here we re-acquire briefly. PHP userdata
+        // refreshed AFTER FS commit confirms (D3). On lock-busy or CAS
+        // failure, log + continue (rollover itself completed; the
+        // activation is a secondary effect — caller can manually
+        // activate via header dropdown if needed).
         if ($setActive) {
-            $this->fs->update('schools', $schoolId, ['currentSession' => $to, 'updatedAt' => date('c')]);
-            $this->session->set_userdata([
-                'session'         => $to,
-                'current_session' => $to,
-                'session_year'    => $to,
-            ]);
-            $this->session_year = $to;
+            $setActiveLock = $this->_config_lock_acquire('sessions');
+            if ($setActiveLock === null) {
+                log_message('error',
+                    "ACC_CONCURRENT_REJECTED endpoint=school_config/rollover_session "
+                    . "stage=set_active schoolId={$this->school_id} actor={$this->admin_id} "
+                    . "reason=lock_timeout target={$to}");
+            } else {
+                try {
+                    $fsSchoolActive = $this->firebase->firestoreGet('schools', $schoolId);
+                    $activeUpdateTime = is_array($fsSchoolActive)
+                        ? (string) ($fsSchoolActive['__updateTime'] ?? '')
+                        : '';
+                    $ops = [[
+                        'op'         => 'update',
+                        'collection' => 'schools',
+                        'docId'      => $schoolId,
+                        'merge'      => true,
+                        'data'       => ['currentSession' => $to, 'updatedAt' => date('c')],
+                    ]];
+                    if ($activeUpdateTime !== '') {
+                        $ops[0]['precondition'] = ['updateTime' => $activeUpdateTime];
+                    }
+                    $activeCommitted = false;
+                    try {
+                        $activeCommitted = (bool) $this->firebase->firestoreCommitBatch($ops);
+                    } catch (\Throwable $e) {
+                        log_message('error',
+                            "ACC_ROLLOVER_SETACTIVE_FAILED schoolId={$this->school_id} "
+                            . "target={$to} err=" . $e->getMessage());
+                    }
+                    if (!$activeCommitted) {
+                        log_message('error',
+                            "ACC_CONCURRENT_REJECTED endpoint=school_config/rollover_session "
+                            . "stage=set_active schoolId={$this->school_id} "
+                            . "actor={$this->admin_id} reason=cas_failed target={$to}");
+                    } else {
+                        // Userdata refresh AFTER FS commit confirms (D3)
+                        $this->session->set_userdata([
+                            'session'         => $to,
+                            'current_session' => $to,
+                            'session_year'    => $to,
+                        ]);
+                        $this->session_year = $to;
+                    }
+                } finally {
+                    $this->_config_lock_release($setActiveLock);
+                }
+            }
         }
 
         // Phase 1 (2026-05-15) — finalise the rollover intent.
@@ -3618,23 +3710,59 @@ class School_config extends MY_Controller
             : 'completed';
         $summary['partial_failure'] = ($intentStatus === 'partial');
 
-        try {
-            $this->fs->update('schools', $schoolId, [
-                'rolloverIntents.' . $intentKey => [
-                    'status'        => $intentStatus,
-                    'from'          => $from,
-                    'to'            => $to,
-                    'started_at'    => $now,
-                    'completed_at'  => date('c'),
-                    'started_by'    => $this->admin_id,
-                    'summary'       => $summary,
-                ],
-                'updatedAt' => date('c'),
-            ]);
-        } catch (\Throwable $e) {
+        // SC-Step7 (Session Convergence — 2026-06-02): brief lock + CAS
+        // around the intent-completion write. If lock-busy or CAS fails,
+        // log and continue — the rollover itself succeeded; the intent
+        // record is an observability artifact for retry/idempotency.
+        $finaliseLock = $this->_config_lock_acquire('sessions');
+        if ($finaliseLock === null) {
             log_message('error',
-                "ACC_ROLLOVER_INTENT_FINALISE_FAILED schoolId={$this->school_id} "
-                . "key={$intentKey} err=" . $e->getMessage());
+                "ACC_CONCURRENT_REJECTED endpoint=school_config/rollover_session "
+                . "stage=intent_finalise schoolId={$this->school_id} actor={$this->admin_id} "
+                . "reason=lock_timeout key={$intentKey}");
+        } else {
+            try {
+                $fsSchoolFin = $this->firebase->firestoreGet('schools', $schoolId);
+                $finUpdateTime = is_array($fsSchoolFin)
+                    ? (string) ($fsSchoolFin['__updateTime'] ?? '')
+                    : '';
+                $ops = [[
+                    'op'         => 'update',
+                    'collection' => 'schools',
+                    'docId'      => $schoolId,
+                    'merge'      => true,
+                    'data'       => [
+                        'rolloverIntents.' . $intentKey => [
+                            'status'        => $intentStatus,
+                            'from'          => $from,
+                            'to'            => $to,
+                            'started_at'    => $now,
+                            'completed_at'  => date('c'),
+                            'started_by'    => $this->admin_id,
+                            'summary'       => $summary,
+                        ],
+                        'updatedAt' => date('c'),
+                    ],
+                ]];
+                if ($finUpdateTime !== '') {
+                    $ops[0]['precondition'] = ['updateTime' => $finUpdateTime];
+                }
+                try {
+                    $finCommitted = (bool) $this->firebase->firestoreCommitBatch($ops);
+                    if (!$finCommitted) {
+                        log_message('error',
+                            "ACC_CONCURRENT_REJECTED endpoint=school_config/rollover_session "
+                            . "stage=intent_finalise schoolId={$this->school_id} "
+                            . "actor={$this->admin_id} reason=cas_failed key={$intentKey}");
+                    }
+                } catch (\Throwable $e) {
+                    log_message('error',
+                        "ACC_ROLLOVER_INTENT_FINALISE_FAILED schoolId={$this->school_id} "
+                        . "key={$intentKey} err=" . $e->getMessage());
+                }
+            } finally {
+                $this->_config_lock_release($finaliseLock);
+            }
         }
 
         log_message('error',
@@ -3691,18 +3819,35 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid session format.');
         }
 
-        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
-        if (!is_array($fsSchool)) $fsSchool = [];
+        // ── SC-Step7 (Session Convergence — 2026-06-02): lock + CAS ──
+        // Pre-Step-7: read-modify-write on sessions[] without serialization.
+        // A concurrent add_session, archive_session, or rollover_session
+        // could have its sessions[] mutation silently overwritten by
+        // delete_session's write-back of stale state.
+        // Post-Step-7: lock-held window is kept short (per D2=A):
+        //   1. Initial validation + dependency sweep happen OUTSIDE lock
+        //      (dep sweep can take time; no FS mutation yet so no race).
+        //   2. Acquire `sessions` lock briefly.
+        //   3. Re-read schools doc for fresh sessions[] + currentSession +
+        //      archivedSessions + __updateTime.
+        //   4. Re-validate (target still in sessions[] + still not active).
+        //   5. firestoreCommitBatch with merge + __updateTime precondition.
+        //   6. Userdata refresh AFTER successful FS commit (D3).
+        //   7. Release lock in finally.
 
-        $sessions = (is_array($fsSchool['sessions'] ?? null))
-            ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
+        // STAGE 1 (outside lock) — pre-validation
+        $fsSchoolPre = $this->fs->get('schools', $this->fs->schoolId());
+        if (!is_array($fsSchoolPre)) $fsSchoolPre = [];
+
+        $sessionsPre = (is_array($fsSchoolPre['sessions'] ?? null))
+            ? array_values(array_filter($fsSchoolPre['sessions'], 'is_string'))
             : [];
-        $active = (string) ($fsSchool['currentSession'] ?? '');
+        $activePre = (string) ($fsSchoolPre['currentSession'] ?? '');
 
-        if (!in_array($session, $sessions, true)) {
+        if (!in_array($session, $sessionsPre, true)) {
             return $this->json_error("Session {$session} is not in the sessions list.");
         }
-        if ($session === $active) {
+        if ($session === $activePre) {
             return $this->json_error("Cannot delete the active session. Set a different session as active first.");
         }
 
@@ -3714,6 +3859,10 @@ class School_config extends MY_Controller
         // The legacy `blockers[]` string list is retained for backward
         // compat; the new `dependencies` object exposes per-collection
         // counts that UI can render as a structured breakdown.
+        //
+        // SC-Step7: dependency sweep runs OUTSIDE lock (D2=A) — it can
+        // take time (9 collection counts) and acquiring the lock around
+        // it would block other session-lifecycle ops unnecessarily.
         $deps = $this->_dep_count_safe([
             ['key' => 'students',           'collection' => 'students',           'filters' => [['session', '==', $session]], 'label' => 'student(s)'],
             ['key' => 'sections',           'collection' => 'sections',           'filters' => [['session', '==', $session]], 'label' => 'section(s)'],
@@ -3741,26 +3890,89 @@ class School_config extends MY_Controller
             );
         }
 
-        // ── Remove from sessions list ──────────────────────────────────
-        $sessions = array_values(array_filter($sessions, fn($s) => $s !== $session));
-        $update = [
-            'sessions'  => $sessions,
-            'updatedAt' => date('c'),
-        ];
-        // If the deleted session was archived, clean that flag too.
-        if (is_array($fsSchool['archivedSessions'] ?? null)) {
-            $arch = array_values(array_filter($fsSchool['archivedSessions'], 'is_string'));
-            $update['archivedSessions'] = array_values(array_filter($arch, fn($s) => $s !== $session));
+        // STAGE 2 — lock + CAS commit
+        $lock = $this->_config_lock_acquire('sessions');
+        if ($lock === null) {
+            log_message('error',
+                "ACC_CONCURRENT_REJECTED endpoint=school_config/delete_session "
+                . "schoolId={$this->school_id} actor={$this->admin_id} "
+                . "reason=lock_timeout target={$session}");
+            return $this->json_error(
+                'Another session-management operation is in progress. Please retry in a few seconds.', 409);
         }
-        $this->fs->update('schools', $this->fs->schoolId(), $update);
-        $this->session->set_userdata('available_sessions', $sessions);
+        try {
+            // Re-read INSIDE the lock for freshest state + __updateTime
+            $schoolDocId = $this->fs->schoolId();
+            $fsSchool    = $this->firebase->firestoreGet('schools', $schoolDocId);
+            if (!is_array($fsSchool)) $fsSchool = [];
+            $sessions    = (is_array($fsSchool['sessions'] ?? null))
+                ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
+                : [];
+            $active      = (string) ($fsSchool['currentSession'] ?? '');
+            $updateTime  = (string) ($fsSchool['__updateTime'] ?? '');
 
-        log_audit('Configuration', 'delete_session', $session, "Deleted empty session {$session}");
+            // Re-validate against fresh state — concurrent set_active_session
+            // or add/delete could have changed sessions[] or currentSession
+            // between Stage 1 read and lock acquisition.
+            if (!in_array($session, $sessions, true)) {
+                return $this->json_error("Session {$session} is not in the sessions list.");
+            }
+            if ($session === $active) {
+                return $this->json_error("Cannot delete the active session. Set a different session as active first.");
+            }
 
-        $this->json_success([
-            'message'  => "Session {$session} deleted.",
-            'sessions' => $sessions,
-        ]);
+            // Build update payload — filtered sessions + filtered archivedSessions
+            $sessionsAfter = array_values(array_filter($sessions, fn($s) => $s !== $session));
+            $payload = [
+                'sessions'  => $sessionsAfter,
+                'updatedAt' => date('c'),
+            ];
+            if (is_array($fsSchool['archivedSessions'] ?? null)) {
+                $arch = array_values(array_filter($fsSchool['archivedSessions'], 'is_string'));
+                $payload['archivedSessions'] = array_values(array_filter($arch, fn($s) => $s !== $session));
+            }
+
+            // CAS commit
+            $ops = [[
+                'op'         => 'update',
+                'collection' => 'schools',
+                'docId'      => $schoolDocId,
+                'merge'      => true,
+                'data'       => $payload,
+            ]];
+            if ($updateTime !== '') {
+                $ops[0]['precondition'] = ['updateTime' => $updateTime];
+            }
+            $committed = false;
+            try {
+                $committed = (bool) $this->firebase->firestoreCommitBatch($ops);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "ACC_SESSION_DELETE_COMMIT_FAILED schoolId={$this->school_id} "
+                    . "target={$session} actor={$this->admin_id} err=" . $e->getMessage());
+            }
+            if (!$committed) {
+                log_message('error',
+                    "ACC_CONCURRENT_REJECTED endpoint=school_config/delete_session "
+                    . "schoolId={$this->school_id} actor={$this->admin_id} "
+                    . "reason=cas_failed target={$session}");
+                return $this->json_error(
+                    'Another administrator updated school configuration during your request. '
+                    . 'Please reload the page and retry.', 409);
+            }
+
+            // Userdata refresh AFTER successful FS commit (D3)
+            $this->session->set_userdata('available_sessions', $sessionsAfter);
+
+            log_audit('Configuration', 'delete_session', $session, "Deleted empty session {$session}");
+
+            $this->json_success([
+                'message'  => "Session {$session} deleted.",
+                'sessions' => $sessionsAfter,
+            ]);
+        } finally {
+            $this->_config_lock_release($lock);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -3779,60 +3991,110 @@ class School_config extends MY_Controller
             return $this->json_error('Invalid session format.');
         }
 
-        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
-        if (!is_array($fsSchool)) $fsSchool = [];
-
-        $sessions = (is_array($fsSchool['sessions'] ?? null))
-            ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
-            : [];
-        $active = (string) ($fsSchool['currentSession'] ?? '');
-
-        if (!in_array($session, $sessions, true)) {
-            return $this->json_error("Session {$session} is not in the sessions list.");
-        }
-        if ($doArchive && $session === $active) {
-            // 2026-05-15 Phase 2 — structured rejection telemetry for
-            // governance audits. Pairs with set_active_session's archive
-            // rejection (added in Phase 1) — together they enforce the
-            // invariant: an archived session is never simultaneously
-            // active.
+        // ── SC-Step7 (Session Convergence — 2026-06-02): lock + CAS ──
+        // Pre-Step-7: read-modify-write on archivedSessions[] without
+        // serialization. A race with concurrent set_active_session could
+        // violate the invariant "an archived session is never the active
+        // session" (an admin archives session X while another admin
+        // activates X — both reads see X as non-active, both writes
+        // commit, end state has X both archived AND active).
+        // Post-Step-7: same `sessions` lock + Firestore __updateTime CAS
+        // pattern as add_session / set_active_session / sync_sessions.
+        // Validation is performed outside the lock (D2=A); re-validation
+        // happens inside the lock against fresh state before CAS commit.
+        $lock = $this->_config_lock_acquire('sessions');
+        if ($lock === null) {
             log_message('error',
-                "ACC_SESSION_ARCHIVE_REJECTED schoolId={$this->school_id} "
-                . "actor={$this->admin_id} target={$session} reason=is_active_session");
-            return $this->json_error("Cannot archive the active session. Set a different session as active first.");
+                "ACC_CONCURRENT_REJECTED endpoint=school_config/archive_session "
+                . "schoolId={$this->school_id} actor={$this->admin_id} "
+                . "reason=lock_timeout target={$session}");
+            return $this->json_error(
+                'Another session-management operation is in progress. Please retry in a few seconds.', 409);
         }
+        try {
+            // Re-read INSIDE the lock for freshest state + __updateTime
+            $schoolDocId = $this->fs->schoolId();
+            $fsSchool    = $this->firebase->firestoreGet('schools', $schoolDocId);
+            if (!is_array($fsSchool)) $fsSchool = [];
+            $sessions    = (is_array($fsSchool['sessions'] ?? null))
+                ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
+                : [];
+            $active      = (string) ($fsSchool['currentSession'] ?? '');
+            $archived    = (is_array($fsSchool['archivedSessions'] ?? null))
+                ? array_values(array_filter($fsSchool['archivedSessions'], 'is_string'))
+                : [];
+            $updateTime  = (string) ($fsSchool['__updateTime'] ?? '');
 
-        $archived = (is_array($fsSchool['archivedSessions'] ?? null))
-            ? array_values(array_filter($fsSchool['archivedSessions'], 'is_string'))
-            : [];
+            // Re-validate against fresh state
+            if (!in_array($session, $sessions, true)) {
+                return $this->json_error("Session {$session} is not in the sessions list.");
+            }
+            if ($doArchive && $session === $active) {
+                log_message('error',
+                    "ACC_SESSION_ARCHIVE_REJECTED schoolId={$this->school_id} "
+                    . "actor={$this->admin_id} target={$session} reason=is_active_session");
+                return $this->json_error("Cannot archive the active session. Set a different session as active first.");
+            }
 
-        if ($doArchive) {
-            if (!in_array($session, $archived, true)) $archived[] = $session;
-            sort($archived);
-            $msg = "Session {$session} archived. It will be hidden from default dropdowns but data is preserved.";
+            if ($doArchive) {
+                if (!in_array($session, $archived, true)) $archived[] = $session;
+                sort($archived);
+                $msg = "Session {$session} archived. It will be hidden from default dropdowns but data is preserved.";
+                $auditMsg = "Archived session {$session}";
+                $telemEvent = 'ACC_SESSION_ARCHIVED';
+            } else {
+                $archived = array_values(array_filter($archived, fn($s) => $s !== $session));
+                $msg = "Session {$session} unarchived.";
+                $auditMsg = "Unarchived session {$session}";
+                $telemEvent = 'ACC_SESSION_UNARCHIVED';
+            }
+
+            // CAS commit via firestoreCommitBatch with merge + precondition
+            $ops = [[
+                'op'         => 'update',
+                'collection' => 'schools',
+                'docId'      => $schoolDocId,
+                'merge'      => true,
+                'data'       => [
+                    'archivedSessions' => $archived,
+                    'updatedAt'        => date('c'),
+                ],
+            ]];
+            if ($updateTime !== '') {
+                $ops[0]['precondition'] = ['updateTime' => $updateTime];
+            }
+            $committed = false;
+            try {
+                $committed = (bool) $this->firebase->firestoreCommitBatch($ops);
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "ACC_SESSION_ARCHIVE_COMMIT_FAILED schoolId={$this->school_id} "
+                    . "target={$session} actor={$this->admin_id} err=" . $e->getMessage());
+            }
+            if (!$committed) {
+                log_message('error',
+                    "ACC_CONCURRENT_REJECTED endpoint=school_config/archive_session "
+                    . "schoolId={$this->school_id} actor={$this->admin_id} "
+                    . "reason=cas_failed target={$session}");
+                return $this->json_error(
+                    'Another administrator updated school configuration during your request. '
+                    . 'Please reload the page and retry.', 409);
+            }
+
+            // Audit + telemetry AFTER successful FS commit (D3)
             log_message('error',
-                "ACC_SESSION_ARCHIVED schoolId={$this->school_id} actor={$this->admin_id} target={$session}");
-        } else {
-            $archived = array_values(array_filter($archived, fn($s) => $s !== $session));
-            $msg = "Session {$session} unarchived.";
-            log_message('error',
-                "ACC_SESSION_UNARCHIVED schoolId={$this->school_id} actor={$this->admin_id} target={$session}");
+                "{$telemEvent} schoolId={$this->school_id} actor={$this->admin_id} target={$session}");
+            log_audit('Configuration', 'archive_session', $session, $auditMsg);
+
+            $this->json_success([
+                'message'           => $msg,
+                'archived_sessions' => $archived,
+                'session'           => $session,
+                'archived'          => $doArchive,
+            ]);
+        } finally {
+            $this->_config_lock_release($lock);
         }
-
-        $this->fs->update('schools', $this->fs->schoolId(), [
-            'archivedSessions' => $archived,
-            'updatedAt'        => date('c'),
-        ]);
-
-        log_audit('Configuration', 'archive_session', $session,
-            $doArchive ? "Archived session {$session}" : "Unarchived session {$session}");
-
-        $this->json_success([
-            'message'           => $msg,
-            'archived_sessions' => $archived,
-            'session'           => $session,
-            'archived'          => $doArchive,
-        ]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
