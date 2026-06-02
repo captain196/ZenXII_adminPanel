@@ -173,6 +173,9 @@ $route['superadmin/dashboard/schools-search/data']      = 'Superadmin_analytics/
 $route['superadmin/dashboard/schools-search/options']   = 'Superadmin_analytics/schools_search_options';
 $route['superadmin/dashboard/schools-search/export']    = 'Superadmin_analytics/schools_search_export';
 $route['superadmin/dashboard/revenue']                  = 'Superadmin_analytics/revenue';
+// ── B2.3.4-A Phase 1E — Revenue Reports spoke AJAX + export endpoints ──
+$route['superadmin/dashboard/revenue/data']             = 'Superadmin_analytics/revenue_data';
+$route['superadmin/dashboard/revenue/export']           = 'Superadmin_analytics/revenue_export';
 $route['superadmin/dashboard/cross-school']             = 'Superadmin_analytics/cross_school';
 $route['superadmin/dashboard/tenant/(:any)']            = 'Superadmin_analytics/tenant_detail/$1';
 

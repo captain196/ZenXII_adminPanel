@@ -1168,6 +1168,302 @@ class B2_analytics_service
     }
 
     // ──────────────────────────────────────────────────────────────
+    // PHASE 1E — REVENUE REPORTS SPOKE
+    //
+    // Canonical revenue-numbers surface. Used by the Revenue Reports
+    // spoke and (post-Revenue Center, Phase 2) becomes the read-only
+    // half of revenue while Phase 2 adds the write half.
+    //
+    // Read sources:
+    //   * analyticsRollups/{YYYY-MM}   — pre-computed monthly series
+    //   * subscriptions + plans        — live MRR derivation
+    //   * payments                     — payment history + recent feed
+    //   * list_tenants_summary()       — tenant labels + at-risk class
+    //
+    // Phase 2 swap-point: when invoices/{id} collection ships, the
+    // sources below switch from `payments` and `subscriptions` to
+    // `invoices`, with public signatures unchanged. Comments mark
+    // each swap-point inline.
+    //
+    // INR-only assumption hard-coded in Phase 1E (single-currency
+    // ERP at current scale). Multi-currency requires Phase 1H/2.
+    // ──────────────────────────────────────────────────────────────
+
+    const REVENUE_CURRENCY = 'INR';
+    const REVENUE_DEFAULT_WINDOW_MONTHS = 12;
+
+    /**
+     * Composite revenue overview — Hub for the Phase 1E view.
+     *
+     * @param int $monthsBack  3 | 6 | 12 | 24 (caller-validated)
+     */
+    public function get_revenue_overview(int $monthsBack = 12): array
+    {
+        $monthsBack = max(1, min(36, $monthsBack));
+        $daysWindow = $monthsBack * 30;
+        $mrr = $this->compute_mrr_from_subscriptions();
+        $arr = $this->compute_arr();
+        $totalRevenueWindow = $this->get_total_revenue_in_window($daysWindow);
+        $tenantsCount = $this->ready ? count($this->registry()->list_tenants_summary()) : 0;
+        $activeTenantsCount = 0;
+        foreach ($this->ready ? $this->registry()->list_tenants_summary() : [] as $t) {
+            if (in_array(strtolower((string) ($t['lifecycleState'] ?? '')), self::ALLOWED_LIFECYCLE_STATES, true)) {
+                $activeTenantsCount++;
+            }
+        }
+        $arpu = $this->get_arpu($activeTenantsCount, $totalRevenueWindow);
+        $outstandingResult = $this->get_outstanding_receivables();
+        return [
+            'monthsBack'             => $monthsBack,
+            'currency'               => self::REVENUE_CURRENCY,
+            'headline_kpi'           => [
+                'mrr'                  => $mrr,
+                'arr'                  => $arr,
+                'total_revenue_window' => $totalRevenueWindow,
+                'arpu'                 => $arpu,
+                'outstanding_amount'   => $outstandingResult['amount'],
+                'outstanding_count'    => $outstandingResult['count'],
+                'active_tenants'       => $activeTenantsCount,
+                'total_tenants'        => $tenantsCount,
+                'window_days'          => $daysWindow,
+            ],
+            'time_series_mrr'        => $this->get_time_series_revenue($monthsBack),
+            'time_series_payments'   => $this->get_time_series_payments_volume($monthsBack),
+            'revenue_by_plan'        => $this->get_revenue_by_plan(),
+            'recent_payments'        => $this->get_recent_payments(10),
+            'at_risk_tenants'        => $this->get_at_risk_tenants(),
+            'lost_mrr_by_state'      => $this->get_lost_mrr_by_state(),
+            'generated_at'           => date('c'),
+        ];
+    }
+
+    /** ARR = MRR × 12 (industry-standard SaaS convention). */
+    public function compute_arr(): float
+    {
+        return $this->compute_mrr_from_subscriptions() * 12.0;
+    }
+
+    /**
+     * Total revenue collected within the trailing N days, summed from the
+     * `payments` collection.
+     *
+     * Phase 2 swap-point: when `invoices` ships, this method will sum
+     * `invoices.amount` where `status = paid AND paidAt in window`.
+     */
+    public function get_total_revenue_in_window(int $daysBack): float
+    {
+        if (!$this->ready) return 0.0;
+        $cut = time() - max(1, $daysBack) * 86400;
+        $rows = $this->ready ? $this->registry()->list_payments() : [];
+        $sum = 0.0;
+        foreach ($rows as $r) {
+            $paidAt = (string) ($r['paidAt'] ?? $r['createdAt'] ?? '');
+            $ts = $paidAt !== '' ? strtotime($paidAt) : 0;
+            if ($ts <= 0 || $ts < $cut) continue;
+            $amt = (float) ($r['amount'] ?? $r['totalAmount'] ?? 0);
+            $sum += $amt;
+        }
+        return $sum;
+    }
+
+    /**
+     * ARPU = total revenue in window ÷ active tenant count.
+     * Returns 0.0 if no active tenants (avoid div-by-zero).
+     */
+    public function get_arpu(int $activeTenantsCount, float $totalRevenueWindow): float
+    {
+        if ($activeTenantsCount <= 0) return 0.0;
+        return $totalRevenueWindow / $activeTenantsCount;
+    }
+
+    /**
+     * Outstanding receivables — tenants whose `subscriptionPeriodEnd`
+     * is in the past AND lifecycle state is `grace` or `past_due`,
+     * priced at one billing cycle of the assigned plan.
+     */
+    public function get_outstanding_receivables(): array
+    {
+        if (!$this->ready) return ['amount' => 0.0, 'count' => 0, 'tenants' => []];
+        $plans = $this->load_plan_price_map();
+        $tenants = $this->registry()->list_tenants_summary();
+        $amount = 0.0; $count = 0; $rows = [];
+        $now = time();
+        foreach ($tenants as $t) {
+            $state = strtolower((string) ($t['lifecycleState'] ?? ''));
+            if (!in_array($state, ['grace', 'past_due'], true)) continue;
+            $end = (string) ($t['subscriptionPeriodEnd'] ?? '');
+            $ts = $end !== '' ? strtotime($end) : 0;
+            if ($ts <= 0 || $ts >= $now) continue;
+            $pfid = (string) ($t['planFamilyId'] ?? '');
+            $price = ($pfid !== '' && isset($plans[$pfid])) ? (float) $plans[$pfid]['price'] : 0.0;
+            $rows[] = [
+                'schoolId'    => $t['schoolId'] ?? '',
+                'schoolName'  => $t['schoolName'] ?? '',
+                'city'        => $t['city'] ?? '',
+                'planName'    => ($pfid !== '' && isset($plans[$pfid])) ? $plans[$pfid]['name'] : '— No Plan',
+                'state'       => $state,
+                'periodEnd'   => $end,
+                'daysOverdue' => max(0, (int) floor(($now - $ts) / 86400)),
+                'amount'      => $price,
+            ];
+            $amount += $price;
+            $count++;
+        }
+        usort($rows, fn($a, $b) => $b['daysOverdue'] - $a['daysOverdue']);
+        return ['amount' => $amount, 'count' => $count, 'tenants' => $rows];
+    }
+
+    /**
+     * Revenue grouped by plan family — donut + table data.
+     *
+     * @return array  [['planName', 'mrr', 'arr', 'tenants', 'avgPerTenant', 'sharePct'], ...]
+     */
+    public function get_revenue_by_plan(): array
+    {
+        if (!$this->ready) return [];
+        $plans = $this->load_plan_price_map();
+        $subs = $this->firebase->firestoreQuery('subscriptions', []);
+        if (!is_array($subs)) return [];
+        $byPlan = [];
+        foreach ($subs as $row) {
+            $data = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+            $status = strtolower((string) ($data['status'] ?? ''));
+            if (!in_array($status, ['active', 'trialing', 'grace'], true)) continue;
+            $planId = (string) ($data['planId'] ?? '');
+            if ($planId === '' || !isset($plans[$planId])) continue;
+            $price = (float) $plans[$planId]['price'];
+            $cycle = strtolower((string) $plans[$planId]['billingCycle']);
+            $months = self::BILLING_CYCLE_MONTHS[$cycle] ?? 12;
+            if ($months <= 0) continue;
+            $name = (string) $plans[$planId]['name'];
+            if (!isset($byPlan[$name])) {
+                $byPlan[$name] = ['planName' => $name, 'mrr' => 0.0, 'arr' => 0.0,
+                                  'tenants' => 0, 'avgPerTenant' => 0.0, 'sharePct' => 0.0];
+            }
+            $byPlan[$name]['mrr']     += $price / $months;
+            $byPlan[$name]['tenants'] += 1;
+        }
+        // Compute derived fields
+        $totalMrr = array_sum(array_column($byPlan, 'mrr'));
+        foreach ($byPlan as &$row) {
+            $row['arr']          = $row['mrr'] * 12.0;
+            $row['avgPerTenant'] = $row['tenants'] > 0 ? $row['mrr'] / $row['tenants'] : 0.0;
+            $row['sharePct']     = $totalMrr > 0 ? ($row['mrr'] / $totalMrr) * 100.0 : 0.0;
+        }
+        unset($row);
+        usort($byPlan, fn($a, $b) => $b['mrr'] <=> $a['mrr']);
+        return array_values($byPlan);
+    }
+
+    /**
+     * Most recent N payments, newest first, enriched with school name.
+     */
+    public function get_recent_payments(int $limit = 10): array
+    {
+        if (!$this->ready) return [];
+        $rows = $this->registry()->list_payments();
+        if (!is_array($rows)) return [];
+        $tenantsByid = [];
+        foreach ($this->registry()->list_tenants_summary() as $t) {
+            $tenantsByid[(string) ($t['schoolId'] ?? '')] = $t;
+        }
+        $out = [];
+        foreach ($rows as $r) {
+            $sid = (string) ($r['schoolId'] ?? $r['school_uid'] ?? '');
+            $tenant = $tenantsByid[$sid] ?? [];
+            $out[] = [
+                'paidAt'      => (string) ($r['paidAt'] ?? $r['createdAt'] ?? ''),
+                'schoolId'    => $sid,
+                'schoolName'  => (string) ($tenant['schoolName'] ?? $sid),
+                'planName'    => (string) ($r['planName'] ?? ''),
+                'amount'      => (float)  ($r['amount']   ?? $r['totalAmount'] ?? 0),
+                'method'      => (string) ($r['method']   ?? $r['paymentMethod'] ?? '—'),
+                'reference'   => (string) ($r['reference']?? $r['transactionId']  ?? ''),
+            ];
+            if (count($out) >= $limit) break;
+        }
+        return $out;
+    }
+
+    /**
+     * Tenants in at-risk lifecycle states: `past_due`, `grace`, `expiring_soon`.
+     * Returns enriched rows including plan and overdue days.
+     */
+    public function get_at_risk_tenants(): array
+    {
+        if (!$this->ready) return [];
+        $plans = $this->load_plan_price_map();
+        $tenants = $this->registry()->list_tenants_summary();
+        $rows = [];
+        $now = time();
+        foreach ($tenants as $t) {
+            $state = strtolower((string) ($t['lifecycleState'] ?? ''));
+            if (!in_array($state, ['past_due', 'grace', 'expiring_soon'], true)) continue;
+            $end = (string) ($t['subscriptionPeriodEnd'] ?? '');
+            $ts = $end !== '' ? strtotime($end) : 0;
+            $daysToOrFrom = $ts > 0 ? (int) floor(($ts - $now) / 86400) : null;
+            $pfid = (string) ($t['planFamilyId'] ?? '');
+            $price = ($pfid !== '' && isset($plans[$pfid])) ? (float) $plans[$pfid]['price'] : 0.0;
+            $cycle = ($pfid !== '' && isset($plans[$pfid])) ? strtolower((string) $plans[$pfid]['billingCycle']) : 'annual';
+            $months = self::BILLING_CYCLE_MONTHS[$cycle] ?? 12;
+            $atRiskMrr = $months > 0 ? $price / $months : 0.0;
+            $rows[] = [
+                'schoolId'   => $t['schoolId'] ?? '',
+                'schoolName' => $t['schoolName'] ?? '',
+                'city'       => $t['city'] ?? '',
+                'planName'   => ($pfid !== '' && isset($plans[$pfid])) ? $plans[$pfid]['name'] : '— No Plan',
+                'state'      => $state,
+                'periodEnd'  => $end,
+                'daysToEnd'  => $daysToOrFrom,
+                'atRiskMrr'  => $atRiskMrr,
+            ];
+        }
+        // Sort: past_due first, then grace, then expiring_soon; within group by daysToEnd asc
+        $sevRank = ['past_due' => 0, 'grace' => 1, 'expiring_soon' => 2];
+        usort($rows, function ($a, $b) use ($sevRank) {
+            $ra = $sevRank[$a['state']] ?? 99;
+            $rb = $sevRank[$b['state']] ?? 99;
+            if ($ra !== $rb) return $ra - $rb;
+            return (int) ($a['daysToEnd'] ?? 0) - (int) ($b['daysToEnd'] ?? 0);
+        });
+        return $rows;
+    }
+
+    /**
+     * Lost MRR aggregated by terminal lifecycle states
+     * (past_due, suspended, expired). For each state returns total
+     * MRR that would be collected if those tenants resumed normally.
+     */
+    public function get_lost_mrr_by_state(): array
+    {
+        if (!$this->ready) return [];
+        $plans = $this->load_plan_price_map();
+        $tenants = $this->registry()->list_tenants_summary();
+        $out = ['past_due' => 0.0, 'suspended' => 0.0, 'expired' => 0.0];
+        foreach ($tenants as $t) {
+            $state = strtolower((string) ($t['lifecycleState'] ?? ''));
+            if (!isset($out[$state])) continue;
+            $pfid = (string) ($t['planFamilyId'] ?? '');
+            if ($pfid === '' || !isset($plans[$pfid])) continue;
+            $price = (float) $plans[$pfid]['price'];
+            $cycle = strtolower((string) $plans[$pfid]['billingCycle']);
+            $months = self::BILLING_CYCLE_MONTHS[$cycle] ?? 12;
+            if ($months <= 0) continue;
+            $out[$state] += $price / $months;
+        }
+        return $out;
+    }
+
+    /**
+     * Payment volume time-series from `analyticsRollups` monthly docs.
+     * @return array  [['period' => 'YYYY-MM', 'totalRevenue' => float, 'paidPaymentsCount' => int], ...]
+     */
+    public function get_time_series_payments_volume(int $months = 12): array
+    {
+        return $this->_load_monthly_rollups_series($months, ['totalRevenue', 'paidPaymentsCount']);
+    }
+
+    // ──────────────────────────────────────────────────────────────
     // STUBS — come online in later phases
     // ──────────────────────────────────────────────────────────────
 

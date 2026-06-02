@@ -259,10 +259,94 @@ class B2_analytics_verify extends CI_Controller
         }
         @unlink($tmpXlsx);
 
+        // ─────────────────────────────────────────────────────────────
+        // PHASE 1E PROBES — Revenue Reports spoke
+        // ─────────────────────────────────────────────────────────────
+
+        // ── Probe 16: ARR derivation correctness ──
+        echo "\n[16] compute_arr() == 12 × MRR\n";
+        $arr = $this->svc->compute_arr();
+        $expectedArr = $mrr * 12.0;
+        $this->assert("compute_arr() returns numeric", is_numeric($arr), 'arr=' . number_format($arr, 2));
+        $this->assert("ARR == MRR × 12 within 0.01",
+            abs($arr - $expectedArr) < 0.01, 'arr=' . number_format($arr, 2) . ' expected=' . number_format($expectedArr, 2));
+
+        // ── Probe 17: Total revenue window numeric + zero-payment graceful ──
+        echo "\n[17] get_total_revenue_in_window() numeric + zero-payment graceful\n";
+        $rev365 = $this->svc->get_total_revenue_in_window(365);
+        $this->assert("get_total_revenue_in_window(365) returns numeric",
+            is_numeric($rev365), 'rev365=' . number_format($rev365, 2));
+        $this->assert("get_total_revenue_in_window(365) >= 0", $rev365 >= 0);
+        $rev0 = $this->svc->get_total_revenue_in_window(0);
+        $this->assert("zero-window equivalent (1-day) returns ≥ 0 (no crash)",
+            is_numeric($rev0) && $rev0 >= 0, 'rev=' . number_format($rev0, 2));
+
+        // ── Probe 18: Revenue-by-plan reconciles to total MRR ──
+        echo "\n[18] get_revenue_by_plan() sum == compute_mrr_from_subscriptions()\n";
+        $planRev = $this->svc->get_revenue_by_plan();
+        $sumPlanMrr = 0.0;
+        foreach ($planRev as $p) $sumPlanMrr += (float) ($p['mrr'] ?? 0);
+        $this->assert("Σ revenue_by_plan.mrr == compute_mrr_from_subscriptions() within 0.01",
+            abs($sumPlanMrr - $mrr) < 0.01,
+            'sum=' . number_format($sumPlanMrr, 2) . ' mrr=' . number_format($mrr, 2));
+        if (!empty($planRev)) {
+            $sumShare = 0.0;
+            foreach ($planRev as $p) $sumShare += (float) ($p['sharePct'] ?? 0);
+            $this->assert("Σ sharePct ≈ 100 within 0.1", abs($sumShare - 100.0) < 0.1,
+                'sumShare=' . number_format($sumShare, 2));
+        } else {
+            $this->skip("sharePct sum check", "no plans with active subscriptions");
+        }
+
+        // ── Probe 19: At-risk tenants match lifecycle distribution ──
+        echo "\n[19] get_at_risk_tenants() matches sum of past_due+grace+expiring_soon\n";
+        $atRisk = $this->svc->get_at_risk_tenants();
+        $expectedAtRisk = (int) (($lcDist['past_due'] ?? 0)
+                               + ($lcDist['grace']    ?? 0)
+                               + ($lcDist['expiring_soon'] ?? 0));
+        $this->assert("count(at_risk_tenants) == past_due+grace+expiring_soon",
+            count($atRisk) === $expectedAtRisk,
+            'got=' . count($atRisk) . ' expected=' . $expectedAtRisk);
+
+        // ── Probe 20: Outstanding receivables consistency ──
+        echo "\n[20] get_outstanding_receivables() — amount ≥ 0 + count matches in-state tenants\n";
+        $out = $this->svc->get_outstanding_receivables();
+        $this->assert("returns array with amount/count/tenants",
+            is_array($out) && isset($out['amount'], $out['count'], $out['tenants']));
+        $this->assert("amount >= 0", ($out['amount'] ?? -1) >= 0,
+            'amount=' . number_format((float) ($out['amount'] ?? 0), 2));
+        $this->assert("count matches len(tenants)",
+            (int) ($out['count'] ?? -1) === count((array) ($out['tenants'] ?? [])));
+
+        // ── Probe 21: get_revenue_overview() composite contract ──
+        echo "\n[21] get_revenue_overview(12) composite contract\n";
+        $ov = $this->svc->get_revenue_overview(12);
+        $requiredKeys = ['monthsBack', 'currency', 'headline_kpi', 'time_series_mrr',
+                         'time_series_payments', 'revenue_by_plan', 'recent_payments',
+                         'at_risk_tenants', 'lost_mrr_by_state', 'generated_at'];
+        $missing = array_diff($requiredKeys, array_keys($ov));
+        $this->assert("overview returns all 10 required keys", empty($missing),
+            empty($missing) ? 'all present' : 'missing=' . implode(',', $missing));
+        $this->assert("headline_kpi includes mrr/arr/total_revenue_window/arpu/outstanding_amount",
+            isset($ov['headline_kpi']['mrr'], $ov['headline_kpi']['arr'],
+                  $ov['headline_kpi']['total_revenue_window'], $ov['headline_kpi']['arpu'],
+                  $ov['headline_kpi']['outstanding_amount']));
+        $this->assert("currency == 'INR' (single-currency lock)",
+            ($ov['currency'] ?? '') === 'INR');
+
+        // ── Probe 22: get_recent_payments() + get_time_series_payments_volume() shape ──
+        echo "\n[22] Recent payments + payments-volume time-series shape\n";
+        $recent = $this->svc->get_recent_payments(10);
+        $this->assert("get_recent_payments returns array", is_array($recent),
+            'count=' . count($recent));
+        $payVol = $this->svc->get_time_series_payments_volume(12);
+        $this->assert("get_time_series_payments_volume(12) returns 12 rows",
+            count($payVol) === 12, 'rows=' . count($payVol));
+        $this->assert("each row has period + totalRevenue + paidPaymentsCount keys",
+            !empty($payVol) && isset($payVol[0]['period'], $payVol[0]['totalRevenue'], $payVol[0]['paidPaymentsCount']));
+
         // ── Remaining probes still pending later-phase delivery ──
-        echo "\n[16-19] Probes pending later-phase delivery:\n";
-        $this->skip("Time-series resolution selector (daily/weekly/monthly)", "Phase 1H polish");
-        $this->skip("KPI tile click navigation targets", "Phase 1B Hub UI (manual)");
+        echo "\n[23-24] Probes pending later-phase delivery:\n";
         $this->skip("Per-tenant aggregation = global", "Phase 1G per-tenant deep dive");
         $this->skip("Cross-school rollup reconciliation", "Phase 1F cross-school metrics");
 

@@ -281,9 +281,177 @@ class Superadmin_analytics extends MY_Superadmin_Controller
         }
     }
 
-    public function revenue()       { $this->_phase_pending('Revenue Reports', '1E'); }
+    // ─────────────────────────────────────────────────────────────────────
+    // PHASE 1E — REVENUE REPORTS SPOKE
+    // GET /superadmin/dashboard/revenue?months={3|6|12|24}
+    // ─────────────────────────────────────────────────────────────────────
+    public function revenue()
+    {
+        $monthsBack = (int) ($this->input->get('months', TRUE) ?? 12);
+        if (!in_array($monthsBack, [3, 6, 12, 24], true)) $monthsBack = 12;
+
+        $payload = [];
+        try {
+            $payload = $this->b2_analytics_service->get_revenue_overview($monthsBack);
+        } catch (\Throwable $e) {
+            log_message('error', 'SA revenue: ' . $e->getMessage());
+        }
+
+        $data = [
+            'page_title' => 'Revenue Reports — Super Admin',
+            'payload'    => $payload,
+            'monthsBack' => $monthsBack,
+        ];
+        $this->load->view('superadmin/include/sa_header', $data);
+        $this->load->view('superadmin/analytics/revenue', $data);
+        $this->load->view('superadmin/include/sa_footer');
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // GET /superadmin/dashboard/revenue/data?months={3|6|12|24}
+    // AJAX refresh endpoint.
+    // ─────────────────────────────────────────────────────────────────────
+    public function revenue_data()
+    {
+        $monthsBack = (int) ($this->input->get('months', TRUE) ?? 12);
+        if (!in_array($monthsBack, [3, 6, 12, 24], true)) $monthsBack = 12;
+        try {
+            $this->json_success($this->b2_analytics_service->get_revenue_overview($monthsBack));
+        } catch (\Throwable $e) {
+            log_message('error', 'SA revenue_data: ' . $e->getMessage());
+            $this->json_error('Revenue fetch failed.');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // GET /superadmin/dashboard/revenue/export?section=overview|timeseries|plans|payments|atrisk&format=csv|xlsx&months=12
+    // ─────────────────────────────────────────────────────────────────────
+    public function revenue_export()
+    {
+        $section = strtolower((string) ($this->input->get('section', TRUE) ?? 'overview'));
+        $format  = strtolower((string) ($this->input->get('format',  TRUE) ?? 'csv'));
+        $monthsBack = (int) ($this->input->get('months', TRUE) ?? 12);
+        if (!in_array($section, ['overview', 'timeseries', 'plans', 'payments', 'atrisk'], true)) $section = 'overview';
+        if (!in_array($format, ['csv', 'xlsx'], true)) $format = 'csv';
+        if (!in_array($monthsBack, [3, 6, 12, 24], true)) $monthsBack = 12;
+
+        try {
+            $payload = $this->b2_analytics_service->get_revenue_overview($monthsBack);
+            [$headers, $rows, $filenameBase] = $this->_build_revenue_export_section($section, $payload, $monthsBack);
+            $filename = $filenameBase . '_' . date('Y-m-d');
+            if ($format === 'csv') {
+                $this->_stream_csv($filename . '.csv', $headers, $rows);
+            } else {
+                $this->load->library('b2_xlsx_export');
+                $this->b2_xlsx_export->open(ucfirst($section));
+                $this->b2_xlsx_export->write_header($headers);
+                foreach ($rows as $r) $this->b2_xlsx_export->write_row($r);
+                $this->b2_xlsx_export->stream_to_browser($filename . '.xlsx');
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'SA revenue_export: ' . $e->getMessage());
+            $this->json_error('Export failed.');
+        }
+    }
+
     public function cross_school()  { $this->_phase_pending('Cross-School Summaries', '1F'); }
     public function tenant_detail() { $this->_phase_pending('Per-Tenant Deep Dive', '1G'); }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // PHASE 1E internals — per-section export shape
+    // ─────────────────────────────────────────────────────────────────────
+    private function _build_revenue_export_section(string $section, array $payload, int $monthsBack): array
+    {
+        $cur = (string) ($payload['currency'] ?? 'INR');
+        $kpi = is_array($payload['headline_kpi'] ?? null) ? $payload['headline_kpi'] : [];
+
+        switch ($section) {
+            case 'timeseries':
+                $headers = ['Period', 'MRR', 'Total Revenue', 'Paid Payments Count'];
+                $mrr = is_array($payload['time_series_mrr'] ?? null) ? $payload['time_series_mrr'] : [];
+                $pay = is_array($payload['time_series_payments'] ?? null) ? $payload['time_series_payments'] : [];
+                // Join by period — both series have identical length and order.
+                $rows = [];
+                $payByPeriod = [];
+                foreach ($pay as $p) $payByPeriod[(string) ($p['period'] ?? '')] = $p;
+                foreach ($mrr as $m) {
+                    $period = (string) ($m['period'] ?? '');
+                    $p = $payByPeriod[$period] ?? [];
+                    $rows[] = [
+                        $period,
+                        (float) ($m['mrr'] ?? 0),
+                        (float) ($p['totalRevenue'] ?? 0),
+                        (int)   ($p['paidPaymentsCount'] ?? 0),
+                    ];
+                }
+                return [$headers, $rows, 'revenue_timeseries'];
+
+            case 'plans':
+                $headers = ['Plan', 'MRR (' . $cur . ')', 'ARR (' . $cur . ')', 'Tenants', 'Avg per Tenant', 'Share %'];
+                $rows = [];
+                foreach ((array) ($payload['revenue_by_plan'] ?? []) as $p) {
+                    $rows[] = [
+                        (string) ($p['planName'] ?? ''),
+                        round((float) ($p['mrr'] ?? 0), 2),
+                        round((float) ($p['arr'] ?? 0), 2),
+                        (int)   ($p['tenants'] ?? 0),
+                        round((float) ($p['avgPerTenant'] ?? 0), 2),
+                        round((float) ($p['sharePct'] ?? 0), 2),
+                    ];
+                }
+                return [$headers, $rows, 'revenue_by_plan'];
+
+            case 'payments':
+                $headers = ['Date', 'School ID', 'School Name', 'Plan', 'Amount (' . $cur . ')', 'Method', 'Reference'];
+                $rows = [];
+                foreach ((array) ($payload['recent_payments'] ?? []) as $p) {
+                    $rows[] = [
+                        (string) ($p['paidAt']     ?? ''),
+                        (string) ($p['schoolId']   ?? ''),
+                        (string) ($p['schoolName'] ?? ''),
+                        (string) ($p['planName']   ?? ''),
+                        round((float) ($p['amount'] ?? 0), 2),
+                        (string) ($p['method']     ?? ''),
+                        (string) ($p['reference']  ?? ''),
+                    ];
+                }
+                return [$headers, $rows, 'recent_payments'];
+
+            case 'atrisk':
+                $headers = ['School ID', 'School Name', 'City', 'Plan', 'State', 'Period End',
+                            'Days To/From End', 'At-Risk MRR (' . $cur . ')'];
+                $rows = [];
+                foreach ((array) ($payload['at_risk_tenants'] ?? []) as $p) {
+                    $rows[] = [
+                        (string) ($p['schoolId']   ?? ''),
+                        (string) ($p['schoolName'] ?? ''),
+                        (string) ($p['city']       ?? ''),
+                        (string) ($p['planName']   ?? ''),
+                        (string) ($p['state']      ?? ''),
+                        (string) ($p['periodEnd']  ?? ''),
+                        (int)    ($p['daysToEnd']  ?? 0),
+                        round((float) ($p['atRiskMrr'] ?? 0), 2),
+                    ];
+                }
+                return [$headers, $rows, 'revenue_at_risk'];
+
+            case 'overview':
+            default:
+                $headers = ['KPI', 'Value', 'Currency', 'Period', 'Notes'];
+                $win = "trailing {$monthsBack} months";
+                $rows = [
+                    ['MRR',                    round((float) ($kpi['mrr'] ?? 0), 2),                  $cur, 'current',  'Includes trialing per Q-A4'],
+                    ['ARR',                    round((float) ($kpi['arr'] ?? 0), 2),                  $cur, 'current',  '= MRR × 12'],
+                    ['Total Revenue (window)', round((float) ($kpi['total_revenue_window'] ?? 0), 2), $cur, $win,       'Sum of payments.amount in window'],
+                    ['ARPU',                   round((float) ($kpi['arpu'] ?? 0), 2),                 $cur, $win,       'Total revenue ÷ active tenant count'],
+                    ['Outstanding Amount',     round((float) ($kpi['outstanding_amount'] ?? 0), 2),   $cur, 'current',  'Σ subscription price (one cycle) for grace+past_due tenants'],
+                    ['Outstanding Tenants',    (int) ($kpi['outstanding_count'] ?? 0),                '',   'current',  'Count of tenants in grace/past_due with periodEnd in the past'],
+                    ['Active Tenants',         (int) ($kpi['active_tenants'] ?? 0),                   '',   'current',  'Tenants in {active, trialing, expiring_soon, grace}'],
+                    ['Total Tenants',          (int) ($kpi['total_tenants'] ?? 0),                    '',   'current',  'All tenants registered in canonical surface'],
+                ];
+                return [$headers, $rows, 'revenue_overview'];
+        }
+    }
 
     // ─────────────────────────────────────────────────────────────────────
     // PHASE 1D internals
