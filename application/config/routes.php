@@ -177,6 +177,9 @@ $route['superadmin/dashboard/revenue']                  = 'Superadmin_analytics/
 $route['superadmin/dashboard/revenue/data']             = 'Superadmin_analytics/revenue_data';
 $route['superadmin/dashboard/revenue/export']           = 'Superadmin_analytics/revenue_export';
 $route['superadmin/dashboard/cross-school']             = 'Superadmin_analytics/cross_school';
+// ── B2.3.4-A Phase 1F — Cross-School Summaries spoke AJAX + export endpoints ──
+$route['superadmin/dashboard/cross-school/data']        = 'Superadmin_analytics/cross_school_data';
+$route['superadmin/dashboard/cross-school/export']      = 'Superadmin_analytics/cross_school_export';
 $route['superadmin/dashboard/tenant/(:any)']            = 'Superadmin_analytics/tenant_detail/$1';
 
 // Schools

@@ -354,8 +354,163 @@ class Superadmin_analytics extends MY_Superadmin_Controller
         }
     }
 
-    public function cross_school()  { $this->_phase_pending('Cross-School Summaries', '1F'); }
+    // ─────────────────────────────────────────────────────────────────────
+    // PHASE 1F — CROSS-SCHOOL SUMMARIES SPOKE
+    // GET /superadmin/dashboard/cross-school?days=30&months=12&metric=activity_volume&include_test=0
+    // ─────────────────────────────────────────────────────────────────────
+    public function cross_school()
+    {
+        [$days, $months, $metric, $includeTest] = $this->_normalize_cross_school_params();
+        $payload = [];
+        try {
+            $payload = $this->b2_analytics_service->get_cross_school_summary($days, $months, $metric, $includeTest);
+        } catch (\Throwable $e) {
+            log_message('error', 'SA cross_school: ' . $e->getMessage());
+        }
+        $data = [
+            'page_title'  => 'Cross-School Summaries — Super Admin',
+            'payload'     => $payload,
+            'daysWindow'  => $days,
+            'monthsTrend' => $months,
+            'metricKey'   => $metric,
+            'includeTest' => $includeTest,
+        ];
+        $this->load->view('superadmin/include/sa_header', $data);
+        $this->load->view('superadmin/analytics/cross_school', $data);
+        $this->load->view('superadmin/include/sa_footer');
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // GET /superadmin/dashboard/cross-school/data
+    // AJAX endpoint — period / metric / include-test toggle change.
+    // ─────────────────────────────────────────────────────────────────────
+    public function cross_school_data()
+    {
+        [$days, $months, $metric, $includeTest] = $this->_normalize_cross_school_params();
+        try {
+            $this->json_success($this->b2_analytics_service->get_cross_school_summary($days, $months, $metric, $includeTest));
+        } catch (\Throwable $e) {
+            log_message('error', 'SA cross_school_data: ' . $e->getMessage());
+            $this->json_error('Cross-school fetch failed.');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // GET /superadmin/dashboard/cross-school/export?section=overview|leaderboards|compare&format=csv|xlsx&days=30&months=12&metric=...&include_test=0
+    // ─────────────────────────────────────────────────────────────────────
+    public function cross_school_export()
+    {
+        $section = strtolower((string) ($this->input->get('section', TRUE) ?? 'compare'));
+        $format  = strtolower((string) ($this->input->get('format',  TRUE) ?? 'csv'));
+        if (!in_array($section, ['overview', 'leaderboards', 'compare'], true)) $section = 'compare';
+        if (!in_array($format, ['csv', 'xlsx'], true)) $format = 'csv';
+
+        [$days, $months, $metric, $includeTest] = $this->_normalize_cross_school_params();
+
+        try {
+            $payload = $this->b2_analytics_service->get_cross_school_summary($days, $months, $metric, $includeTest);
+            [$headers, $rows, $filenameBase] = $this->_build_cross_school_export_section($section, $payload, $metric, $days, $months);
+            $filename = $filenameBase . '_' . date('Y-m-d');
+            if ($format === 'csv') {
+                $this->_stream_csv($filename . '.csv', $headers, $rows);
+            } else {
+                $this->load->library('b2_xlsx_export');
+                $this->b2_xlsx_export->open(ucfirst($section));
+                $this->b2_xlsx_export->write_header($headers);
+                foreach ($rows as $r) $this->b2_xlsx_export->write_row($r);
+                $this->b2_xlsx_export->stream_to_browser($filename . '.xlsx');
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'SA cross_school_export: ' . $e->getMessage());
+            $this->json_error('Export failed.');
+        }
+    }
+
     public function tenant_detail() { $this->_phase_pending('Per-Tenant Deep Dive', '1G'); }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // PHASE 1F internals — param normalization + per-section export shape
+    // ─────────────────────────────────────────────────────────────────────
+    private function _normalize_cross_school_params(): array
+    {
+        $days = (int) ($this->input->get('days', TRUE) ?? 30);
+        if (!in_array($days, [7, 30, 90], true)) $days = 30;
+        $months = (int) ($this->input->get('months', TRUE) ?? 12);
+        if (!in_array($months, [3, 6, 12], true)) $months = 12;
+        $metric = (string) ($this->input->get('metric', TRUE) ?? 'activity_volume');
+        $allowedMetrics = ['activity_volume', 'student_growth', 'staff_growth',
+                           'data_freshness_hours', 'revenue_contribution'];
+        if (!in_array($metric, $allowedMetrics, true)) $metric = 'activity_volume';
+        $includeTest = (string) ($this->input->get('include_test', TRUE) ?? '0');
+        $includeTest = in_array($includeTest, ['1', 'true', 'yes'], true);
+        return [$days, $months, $metric, $includeTest];
+    }
+
+    private function _build_cross_school_export_section(string $section, array $payload,
+                                                          string $metric, int $days, int $months): array
+    {
+        switch ($section) {
+            case 'overview':
+                $kpi = is_array($payload['fleet_kpi'] ?? null) ? $payload['fleet_kpi'] : [];
+                $headers = ['KPI', 'Value', 'Window', 'Notes'];
+                $rows = [
+                    ['Total Audit Events',     (int) ($kpi['total_audit_events']  ?? 0), "{$days}d", 'Σ tenantAudit rows in window across in-scope tenants'],
+                    ['Avg Activity / Tenant',  (int) ($kpi['avg_activity_tenant'] ?? 0), "{$days}d", 'total_audit_events ÷ in_scope_count'],
+                    ['Total Student Δ',        (int) ($kpi['total_student_delta'] ?? 0), '3mo',      'Σ per-tenant growth deltas from analyticsRollups'],
+                    ['Stale Tenants',          (int) ($kpi['stale_tenants_count'] ?? 0) . ' / ' . (int) ($kpi['stale_tenants_total'] ?? 0), 'current', '>7 days since statsCache.lastUpdated'],
+                    ['Cross-Tenant MRR (avg)', round((float) ($kpi['cross_tenant_mrr'] ?? 0), 2), 'current', 'MRR ÷ active in-scope tenants (INR)'],
+                    ['In-Scope Tenants',       (int) ($kpi['in_scope_count']      ?? 0), 'current', 'Excludes test tenants unless include_test=1'],
+                ];
+                return [$headers, $rows, 'cross_school_overview'];
+
+            case 'leaderboards':
+                $headers = ['Direction', 'Rank', 'School ID', 'School Name', 'Plan', 'Metric Value', 'Is Test Tenant'];
+                $rows = [];
+                foreach ((array) ($payload['leaderboard_top'] ?? []) as $i => $r) {
+                    $rows[] = ['TOP', ($i + 1), $r['schoolId'] ?? '', $r['schoolName'] ?? '',
+                               $r['planName'] ?? '', self::_metric_value($r, $metric),
+                               !empty($r['isTestTenant']) ? 'yes' : 'no'];
+                }
+                foreach ((array) ($payload['leaderboard_bottom'] ?? []) as $i => $r) {
+                    $rows[] = ['BOTTOM', ($i + 1), $r['schoolId'] ?? '', $r['schoolName'] ?? '',
+                               $r['planName'] ?? '', self::_metric_value($r, $metric),
+                               !empty($r['isTestTenant']) ? 'yes' : 'no'];
+                }
+                return [$headers, $rows, 'cross_school_leaderboards_' . $metric];
+
+            case 'compare':
+            default:
+                $headers = ['School ID', 'School Name', 'Code', 'City', 'Plan', 'Lifecycle',
+                            'Is Test Tenant', 'Activity ('.$days.'d)', 'Student Δ', 'Staff Δ',
+                            'Data Age (h)', 'Revenue (INR/mo)'];
+                $rows = [];
+                foreach ((array) ($payload['comparative_matrix'] ?? []) as $r) {
+                    $rows[] = [
+                        (string) ($r['schoolId']             ?? ''),
+                        (string) ($r['schoolName']           ?? ''),
+                        (string) ($r['schoolCode']           ?? ''),
+                        (string) ($r['city']                 ?? ''),
+                        (string) ($r['planName']             ?? ''),
+                        (string) ($r['lifecycleState']       ?? ''),
+                        !empty($r['isTestTenant']) ? 'yes' : 'no',
+                        (int)    ($r['activity_volume']      ?? 0),
+                        (int)    ($r['student_delta']        ?? 0),
+                        (int)    ($r['staff_delta']          ?? 0),
+                        $r['data_freshness_hours'] === null ? '—' : (int) $r['data_freshness_hours'],
+                        round((float) ($r['revenue_contribution'] ?? 0), 2),
+                    ];
+                }
+                return [$headers, $rows, 'cross_school_compare'];
+        }
+    }
+
+    private static function _metric_value(array $row, string $metric)
+    {
+        $v = $row[$metric] ?? null;
+        if ($v === null) return '—';
+        if (in_array($metric, ['revenue_contribution'], true)) return round((float) $v, 2);
+        return is_numeric($v) ? (is_float($v) ? round($v, 2) : (int) $v) : (string) $v;
+    }
 
     // ─────────────────────────────────────────────────────────────────────
     // PHASE 1E internals — per-section export shape

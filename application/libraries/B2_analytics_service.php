@@ -1464,13 +1464,406 @@ class B2_analytics_service
     }
 
     // ──────────────────────────────────────────────────────────────
-    // STUBS — come online in later phases
+    // PHASE 1F — CROSS-SCHOOL SUMMARIES SPOKE
+    //
+    // Canonical fleet-comparison surface. Per-tenant accessors here
+    // are reused (un-inverted) by Phase 1G per-tenant deep dive.
+    //
+    // Read sources:
+    //   * analyticsRollups/{YYYY-MM}.tenantsRollup[]  — per-tenant aggregates
+    //   * tenantAudit                                 — activity volume
+    //   * list_tenants_summary()                      — labels + lifecycle
+    //   * plans + subscriptions                       — revenue contribution
+    //
+    // Operator-locked constraint (Phase 1F authorization 2026-06-02):
+    // exclude test/soak/synthetic tenants from default rankings; mark
+    // them with a non-prod badge when they ARE shown (toggle).
+    //
+    // Predicate evidence tiers for is_test_tenant():
+    //   Tier 1  — explicit field schools/{id}.isTestTenant=true (future-proof)
+    //   Tier 2  — schoolName starts with "ZZ " (operator convention)
+    //   Tier 3  — schoolName contains test|soak|demo|synthetic|sandbox|
+    //             staging|validation|qa keyword (case-insensitive)
+    //   Tier 4  — schoolCode is all-zero placeholder pattern
     // ──────────────────────────────────────────────────────────────
 
-    /** Phase 1F cross-school engagement metrics. */
-    public function get_cross_school_summary(): array
+    const CROSS_SCHOOL_DEFAULT_DAYS  = 30;
+    const CROSS_SCHOOL_DEFAULT_TREND = 12;
+    const CROSS_SCHOOL_LEADERBOARD_SIZE = 5;
+    const TEST_TENANT_KEYWORDS = ['test', 'soak', 'demo', 'synthetic', 'sandbox', 'staging', 'validation', 'qa'];
+
+    /**
+     * Predicate: is this tenant a test / soak / synthetic / onboarding-
+     * validation tenant whose presence would distort fleet metrics?
+     *
+     * Layered evidence (first match wins):
+     *   Tier 1  — explicit isTestTenant=true field on schools doc
+     *   Tier 2  — name starts with "ZZ " operator convention
+     *   Tier 3  — name contains a keyword from TEST_TENANT_KEYWORDS
+     *   Tier 4  — schoolCode is all-zero placeholder (rare)
+     *
+     * @param array $tenantSummary  enriched row from list_tenants_summary()
+     *                              or an analyticsRollups.tenantsRollup row.
+     *                              MAY be the raw schools doc data.
+     */
+    public function is_test_tenant(array $tenantSummary): bool
     {
-        return ['_phase' => '1F_pending'];
+        // Tier 1: explicit field (future-proof against operator backfilling
+        // an isTestTenant flag on tenants).
+        if (!empty($tenantSummary['isTestTenant'])) return true;
+        $name = (string) ($tenantSummary['schoolName'] ?? $tenantSummary['name'] ?? '');
+        if ($name === '') return false;
+        // Tier 2: "ZZ " operator convention (e.g., "ZZ B1 Soak Test").
+        if (strpos($name, 'ZZ ') === 0) return true;
+        // Tier 3: keyword match (case-insensitive whole-word).
+        $kw = implode('|', array_map('preg_quote', self::TEST_TENANT_KEYWORDS));
+        if (preg_match('/\\b(' . $kw . ')\\b/i', $name)) return true;
+        // Tier 4: schoolCode all-zero placeholder.
+        $code = (string) ($tenantSummary['schoolCode'] ?? '');
+        if ($code !== '' && preg_match('/^0+$/', $code)) return true;
+        return false;
+    }
+
+    /**
+     * Composite cross-school summary payload.
+     *
+     * @param int    $daysWindow  engagement window for activity (7|30|90).
+     * @param int    $monthsTrend growth window for student/staff deltas (3|6|12).
+     * @param string $metricKey   metric driving leaderboards + matrix sort.
+     * @param bool   $includeTest include test tenants in scope (default: false).
+     */
+    public function get_cross_school_summary(int $daysWindow = 30, int $monthsTrend = 12,
+                                              string $metricKey = 'activity_volume',
+                                              bool $includeTest = false): array
+    {
+        $daysWindow  = in_array($daysWindow,  [7, 30, 90], true) ? $daysWindow  : self::CROSS_SCHOOL_DEFAULT_DAYS;
+        $monthsTrend = in_array($monthsTrend, [3, 6, 12], true) ? $monthsTrend : self::CROSS_SCHOOL_DEFAULT_TREND;
+        $allowedMetrics = ['activity_volume', 'student_growth', 'staff_growth',
+                           'data_freshness_hours', 'revenue_contribution'];
+        if (!in_array($metricKey, $allowedMetrics, true)) $metricKey = 'activity_volume';
+
+        if (!$this->ready) {
+            return ['daysWindow' => $daysWindow, 'monthsTrend' => $monthsTrend,
+                    'metricKey' => $metricKey, 'includeTest' => $includeTest,
+                    'fleet_kpi' => [], 'leaderboard_top' => [], 'leaderboard_bottom' => [],
+                    'comparative_matrix' => [], 'engagement_distribution' => [],
+                    'test_tenant_count' => 0, 'production_tenant_count' => 0,
+                    'generated_at' => date('c')];
+        }
+
+        $matrix = $this->get_comparative_matrix($daysWindow, $monthsTrend);
+        $scoped = $includeTest ? $matrix : array_values(array_filter($matrix, fn($r) => !($r['isTestTenant'] ?? false)));
+        $testCount = count($matrix) - count($scoped);
+
+        return [
+            'daysWindow'              => $daysWindow,
+            'monthsTrend'             => $monthsTrend,
+            'metricKey'               => $metricKey,
+            'includeTest'             => $includeTest,
+            'fleet_kpi'               => $this->get_fleet_kpi_snapshot($daysWindow, $includeTest),
+            'leaderboard_top'         => $this->get_engagement_leaderboard($metricKey, $scoped, self::CROSS_SCHOOL_LEADERBOARD_SIZE, 'desc'),
+            'leaderboard_bottom'      => $this->get_engagement_leaderboard($metricKey, $scoped, self::CROSS_SCHOOL_LEADERBOARD_SIZE, 'asc'),
+            'comparative_matrix'      => $matrix,
+            'engagement_distribution' => $this->get_engagement_distribution($metricKey, $scoped),
+            'test_tenant_count'       => $testCount,
+            'production_tenant_count' => count($scoped),
+            'generated_at'            => date('c'),
+        ];
+    }
+
+    /** Fleet-level KPI tiles. */
+    public function get_fleet_kpi_snapshot(int $daysWindow = 30, bool $includeTest = false): array
+    {
+        if (!$this->ready) return [];
+        $tenants = $this->registry()->list_tenants_summary();
+        $prodTenants = $includeTest ? $tenants : array_values(array_filter($tenants, fn($t) => !$this->is_test_tenant($t)));
+        $totalAudit = 0;
+        $byTenant = $this->get_per_tenant_activity_volume($daysWindow);
+        foreach ($prodTenants as $t) {
+            $sid = (string) ($t['schoolId'] ?? '');
+            $totalAudit += (int) ($byTenant[$sid] ?? 0);
+        }
+        $avgPerTenant = count($prodTenants) > 0 ? (int) round($totalAudit / count($prodTenants)) : 0;
+        $totalStudentDelta = 0;
+        foreach ($this->get_per_tenant_growth_deltas(3) as $sid => $delta) {
+            $tenant = array_filter($prodTenants, fn($t) => ($t['schoolId'] ?? '') === $sid);
+            if (empty($tenant)) continue;
+            $totalStudentDelta += (int) ($delta['student_delta'] ?? 0);
+        }
+        $stale = $this->get_stale_stats_tenants(7);
+        $staleProd = $includeTest ? $stale : array_values(array_filter($stale, function ($r) use ($prodTenants) {
+            $sid = $r['schoolId'] ?? '';
+            foreach ($prodTenants as $t) if (($t['schoolId'] ?? '') === $sid) return true;
+            return false;
+        }));
+        // 2026-06-02 DEFECT FIX: scope-consistent MRR. Pre-fix used
+        // unscoped compute_mrr_from_subscriptions() (fleet-wide numerator)
+        // divided by prod-scoped denominator — over-attributed test-tenant
+        // revenue to the prod-tenant denominator. Post-fix sums per-tenant
+        // revenue contributions ONLY for the in-scope (filtered) tenant set,
+        // matching the denominator.
+        $revenuePerTenant = $this->get_per_tenant_revenue_contribution();
+        $scopedMrr = 0.0;
+        foreach ($prodTenants as $t) {
+            $scopedMrr += (float) ($revenuePerTenant[$t['schoolId'] ?? ''] ?? 0);
+        }
+        $activeProd = array_filter($prodTenants, fn($t) => in_array(strtolower((string) ($t['lifecycleState'] ?? '')), self::ALLOWED_LIFECYCLE_STATES, true));
+        $perTenantMrr = count($activeProd) > 0 ? $scopedMrr / count($activeProd) : 0.0;
+        return [
+            'total_audit_events'    => $totalAudit,
+            'avg_activity_tenant'   => $avgPerTenant,
+            'total_student_delta'   => $totalStudentDelta,
+            'stale_tenants_count'   => count($staleProd),
+            'stale_tenants_total'   => count($prodTenants),
+            'cross_tenant_mrr'      => $perTenantMrr,
+            'scoped_mrr_total'      => $scopedMrr,
+            'window_days'           => $daysWindow,
+            'in_scope_count'        => count($prodTenants),
+        ];
+    }
+
+    /**
+     * Per-tenant activity volume in window — windowed scan of tenantAudit.
+     * @return array<schoolId => int>
+     */
+    private $_activity_cache = null;
+    public function get_per_tenant_activity_volume(int $daysWindow): array
+    {
+        $cacheKey = 'days_' . $daysWindow;
+        if (is_array($this->_activity_cache) && isset($this->_activity_cache[$cacheKey])) {
+            return $this->_activity_cache[$cacheKey];
+        }
+        if (!$this->ready) return [];
+        $cut = date('c', time() - ($daysWindow * 86400));
+        $rows = $this->firebase->firestoreQuery('tenantAudit', [['ts', '>=', $cut]]);
+        $out = [];
+        if (is_array($rows)) {
+            foreach ($rows as $r) {
+                $d = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+                $sid = (string) ($d['schoolId'] ?? '');
+                if ($sid === '') continue;
+                $out[$sid] = ($out[$sid] ?? 0) + 1;
+            }
+        }
+        if (!is_array($this->_activity_cache)) $this->_activity_cache = [];
+        $this->_activity_cache[$cacheKey] = $out;
+        return $out;
+    }
+
+    /**
+     * Per-tenant growth deltas: latest rollup vs N months ago.
+     * Tenant absent from earlier rollup = 0 baseline (genuine net-new).
+     * @return array<schoolId => ['student_delta' => int, 'staff_delta' => int]>
+     */
+    public function get_per_tenant_growth_deltas(int $monthsTrend): array
+    {
+        if (!$this->ready) return [];
+        $current = date('Y-m');
+        $past = date('Y-m', strtotime("first day of -{$monthsTrend} months"));
+        $curDoc = $this->firebase->firestoreGet('analyticsRollups', $current);
+        $oldDoc = $this->firebase->firestoreGet('analyticsRollups', $past);
+        $curMap = $this->_tenants_rollup_map($curDoc);
+        $oldMap = $this->_tenants_rollup_map($oldDoc);
+        $sids = array_unique(array_merge(array_keys($curMap), array_keys($oldMap)));
+        $out = [];
+        foreach ($sids as $sid) {
+            $cur = $curMap[$sid] ?? ['students' => 0, 'staff' => 0];
+            $old = $oldMap[$sid] ?? ['students' => 0, 'staff' => 0];
+            $out[$sid] = [
+                'student_delta' => (int) $cur['students'] - (int) $old['students'],
+                'staff_delta'   => (int) $cur['staff']    - (int) $old['staff'],
+            ];
+        }
+        return $out;
+    }
+
+    private function _tenants_rollup_map($doc): array
+    {
+        if (!is_array($doc) || !is_array($doc['tenantsRollup'] ?? null)) return [];
+        $out = [];
+        foreach ($doc['tenantsRollup'] as $t) {
+            if (!is_array($t)) continue;
+            $sid = (string) ($t['schoolId'] ?? '');
+            if ($sid === '') continue;
+            $out[$sid] = ['students' => (int) ($t['totalStudents'] ?? 0),
+                          'staff'    => (int) ($t['totalStaff']    ?? 0)];
+        }
+        return $out;
+    }
+
+    /**
+     * Per-tenant data-freshness in hours (now - statsCache.lastUpdated).
+     * @return array<schoolId => int|null>  null = no timestamp recorded
+     */
+    public function get_per_tenant_freshness(): array
+    {
+        if (!$this->ready) return [];
+        $out = [];
+        foreach ($this->registry()->list_tenants_summary() as $t) {
+            $sid = (string) ($t['schoolId'] ?? '');
+            $upd = (string) ($t['statsLastUpdated'] ?? '');
+            if ($upd === '') { $out[$sid] = null; continue; }
+            $ts = strtotime($upd);
+            $out[$sid] = $ts > 0 ? (int) floor((time() - $ts) / 3600) : null;
+        }
+        return $out;
+    }
+
+    /**
+     * Per-tenant revenue contribution: MRR allocated to each tenant.
+     * @return array<schoolId => float>
+     */
+    public function get_per_tenant_revenue_contribution(): array
+    {
+        if (!$this->ready) return [];
+        $plans = $this->load_plan_price_map();
+        $out = [];
+        foreach ($this->registry()->list_tenants_summary() as $t) {
+            $sid = (string) ($t['schoolId'] ?? '');
+            $pfid = (string) ($t['planFamilyId'] ?? '');
+            if ($pfid === '' || !isset($plans[$pfid])) { $out[$sid] = 0.0; continue; }
+            $price = (float) $plans[$pfid]['price'];
+            $cycle = strtolower((string) $plans[$pfid]['billingCycle']);
+            $months = self::BILLING_CYCLE_MONTHS[$cycle] ?? 12;
+            $out[$sid] = $months > 0 ? $price / $months : 0.0;
+        }
+        return $out;
+    }
+
+    /**
+     * Comparative matrix: one row per tenant with all metrics as columns.
+     * @return array  per-tenant rows enriched with isTestTenant flag.
+     */
+    public function get_comparative_matrix(int $daysWindow = 30, int $monthsTrend = 12): array
+    {
+        if (!$this->ready) return [];
+        $tenants = $this->registry()->list_tenants_summary();
+        $activity = $this->get_per_tenant_activity_volume($daysWindow);
+        $growth   = $this->get_per_tenant_growth_deltas($monthsTrend);
+        $fresh    = $this->get_per_tenant_freshness();
+        $revenue  = $this->get_per_tenant_revenue_contribution();
+        $plans    = $this->load_plan_price_map();
+        $out = [];
+        foreach ($tenants as $t) {
+            $sid = (string) ($t['schoolId'] ?? '');
+            $pfid = (string) ($t['planFamilyId'] ?? '');
+            $planName = ($pfid !== '' && isset($plans[$pfid])) ? $plans[$pfid]['name'] : '— No Plan';
+            $out[] = [
+                'schoolId'             => $sid,
+                'schoolName'           => (string) ($t['schoolName'] ?? ''),
+                'schoolCode'           => (string) ($t['schoolCode'] ?? ''),
+                'city'                 => (string) ($t['city'] ?? ''),
+                'planName'             => $planName,
+                'lifecycleState'       => (string) ($t['lifecycleState'] ?? ''),
+                'isTestTenant'         => $this->is_test_tenant($t),
+                'activity_volume'      => (int) ($activity[$sid] ?? 0),
+                'student_delta'        => (int) ($growth[$sid]['student_delta'] ?? 0),
+                'staff_delta'          => (int) ($growth[$sid]['staff_delta']    ?? 0),
+                'data_freshness_hours' => $fresh[$sid] ?? null,
+                'revenue_contribution' => (float) ($revenue[$sid] ?? 0),
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Leaderboard: top/bottom N tenants by chosen metric.
+     * Operates on a pre-filtered scope (already excludes test tenants
+     * unless includeTest=true at the composite layer). Excludes tenants
+     * with null/zero values from "bottom" rankings since they distort
+     * the ranking ("no data" is not the same as "lowest activity").
+     */
+    public function get_engagement_leaderboard(string $metricKey, array $scopedMatrix,
+                                                int $limit = 5, string $direction = 'desc'): array
+    {
+        if (!in_array($direction, ['asc', 'desc'], true)) $direction = 'desc';
+        $rows = $scopedMatrix;
+        if ($direction === 'asc') {
+            // For ascending (bottom rankings) exclude null + zero values
+            // to avoid surfacing tenants with no data as "worst performers".
+            $rows = array_values(array_filter($rows, function ($r) use ($metricKey) {
+                $v = $r[$metricKey] ?? null;
+                return $v !== null && $v > 0;
+            }));
+        }
+        usort($rows, function ($a, $b) use ($metricKey, $direction) {
+            $va = $a[$metricKey] ?? null; $vb = $b[$metricKey] ?? null;
+            if ($va === null) return 1;
+            if ($vb === null) return -1;
+            $cmp = ($va <=> $vb);
+            return $direction === 'desc' ? -$cmp : $cmp;
+        });
+        return array_slice($rows, 0, $limit);
+    }
+
+    /**
+     * Engagement distribution: bucket-count histogram of tenants
+     * by the chosen metric. Buckets vary per metric.
+     */
+    public function get_engagement_distribution(string $metricKey, array $scopedMatrix): array
+    {
+        $buckets = $this->_distribution_buckets_for($metricKey);
+        $counts = array_fill(0, count($buckets), 0);
+        foreach ($scopedMatrix as $row) {
+            $v = $row[$metricKey] ?? null;
+            if ($v === null) continue;
+            $idx = $this->_bucket_index($v, $buckets);
+            $counts[$idx]++;
+        }
+        $labels = array_map(fn($b) => $b['label'], $buckets);
+        return ['labels' => $labels, 'counts' => $counts, 'metric' => $metricKey];
+    }
+
+    private function _distribution_buckets_for(string $metric): array
+    {
+        switch ($metric) {
+            case 'student_growth':
+            case 'staff_growth':
+                return [
+                    ['min' => -INF, 'max' => -10, 'label' => '< −10'],
+                    ['min' => -9,   'max' => -1,  'label' => '−9 to −1'],
+                    ['min' => 0,    'max' => 0,   'label' => '0'],
+                    ['min' => 1,    'max' => 9,   'label' => '+1 to +9'],
+                    ['min' => 10,   'max' => 49,  'label' => '+10 to +49'],
+                    ['min' => 50,   'max' => INF, 'label' => '+50+'],
+                ];
+            case 'data_freshness_hours':
+                return [
+                    ['min' => 0,   'max' => 1,    'label' => '0–1h'],
+                    ['min' => 2,   'max' => 6,    'label' => '2–6h'],
+                    ['min' => 7,   'max' => 24,   'label' => '7–24h'],
+                    ['min' => 25,  'max' => 168,  'label' => '1–7d'],
+                    ['min' => 169, 'max' => INF,  'label' => '>7d'],
+                ];
+            case 'revenue_contribution':
+                return [
+                    ['min' => 0,    'max' => 0,    'label' => '0'],
+                    ['min' => 1,    'max' => 999,  'label' => '< ₹1K'],
+                    ['min' => 1000, 'max' => 4999, 'label' => '₹1K–5K'],
+                    ['min' => 5000, 'max' => 9999, 'label' => '₹5K–10K'],
+                    ['min' => 10000,'max' => INF,  'label' => '>₹10K'],
+                ];
+            case 'activity_volume':
+            default:
+                return [
+                    ['min' => 0,    'max' => 0,    'label' => '0'],
+                    ['min' => 1,    'max' => 10,   'label' => '1–10'],
+                    ['min' => 11,   'max' => 50,   'label' => '11–50'],
+                    ['min' => 51,   'max' => 100,  'label' => '51–100'],
+                    ['min' => 101,  'max' => 500,  'label' => '101–500'],
+                    ['min' => 501,  'max' => INF,  'label' => '500+'],
+                ];
+        }
+    }
+
+    private function _bucket_index($value, array $buckets): int
+    {
+        $value = is_numeric($value) ? (float) $value : 0;
+        foreach ($buckets as $i => $b) {
+            $min = $b['min']; $max = $b['max'];
+            if ($value >= $min && $value <= $max) return $i;
+        }
+        return count($buckets) - 1;
     }
 
     /** Phase 1G per-tenant deep dive composite. */

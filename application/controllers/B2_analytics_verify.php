@@ -345,10 +345,164 @@ class B2_analytics_verify extends CI_Controller
         $this->assert("each row has period + totalRevenue + paidPaymentsCount keys",
             !empty($payVol) && isset($payVol[0]['period'], $payVol[0]['totalRevenue'], $payVol[0]['paidPaymentsCount']));
 
-        // ── Remaining probes still pending later-phase delivery ──
-        echo "\n[23-24] Probes pending later-phase delivery:\n";
-        $this->skip("Per-tenant aggregation = global", "Phase 1G per-tenant deep dive");
-        $this->skip("Cross-school rollup reconciliation", "Phase 1F cross-school metrics");
+        // ─────────────────────────────────────────────────────────────
+        // PHASE 1F PROBES — Cross-School Summaries spoke
+        // ─────────────────────────────────────────────────────────────
+
+        // ── Probe 23: is_test_tenant() tiered predicate correctness ──
+        echo "\n[23] is_test_tenant() tiered evidence predicate\n";
+        $cases = [
+            [['schoolName' => 'ZZ B1 Soak Test'],         true,  'Tier 2 — ZZ prefix'],
+            [['schoolName' => 'ZZ Production'],            true,  'Tier 2 — ZZ prefix (any suffix)'],
+            [['schoolName' => 'IIT Kanpur'],               false, 'Production (no signal)'],
+            [['schoolName' => 'My Test School'],           true,  'Tier 3 — test keyword'],
+            [['schoolName' => 'Demo Academy'],             true,  'Tier 3 — demo keyword'],
+            [['schoolName' => 'Soak Validation School'],   true,  'Tier 3 — soak + validation'],
+            [['schoolName' => 'Real School', 'isTestTenant' => true], true, 'Tier 1 — explicit flag wins'],
+            [['schoolName' => 'School A', 'schoolCode' => '0000'],   true, 'Tier 4 — all-zero code'],
+            [['schoolName' => 'School A', 'schoolCode' => '10001'],  false, 'Production code'],
+        ];
+        foreach ($cases as [$input, $expected, $label]) {
+            $got = $this->svc->is_test_tenant($input);
+            $this->assert("is_test_tenant({$label}) = " . ($expected ? 'true' : 'false'),
+                $got === $expected, 'got=' . ($got ? 'true' : 'false'));
+        }
+
+        // ── Probe 24: Cross-school composite contract ──
+        echo "\n[24] get_cross_school_summary() composite contract\n";
+        $cs = $this->svc->get_cross_school_summary(30, 12, 'activity_volume', false);
+        $requiredKeys = ['daysWindow', 'monthsTrend', 'metricKey', 'includeTest',
+                         'fleet_kpi', 'leaderboard_top', 'leaderboard_bottom',
+                         'comparative_matrix', 'engagement_distribution',
+                         'test_tenant_count', 'production_tenant_count', 'generated_at'];
+        $missing = array_diff($requiredKeys, array_keys($cs));
+        $this->assert("12 required keys present", empty($missing),
+            empty($missing) ? 'all present' : 'missing=' . implode(',', $missing));
+        $this->assert("metricKey echoed back == 'activity_volume'",
+            ($cs['metricKey'] ?? '') === 'activity_volume');
+        $this->assert("includeTest defaults to false", ($cs['includeTest'] ?? null) === false);
+
+        // ── Probe 25: Test-tenant exclusion math ──
+        echo "\n[25] Default scope excludes test tenants; toggle includes them\n";
+        $excluded = $this->svc->get_cross_school_summary(30, 12, 'activity_volume', false);
+        $included = $this->svc->get_cross_school_summary(30, 12, 'activity_volume', true);
+        $excludedCount = (int) ($excluded['production_tenant_count'] ?? -1);
+        $includedCount = count((array) ($included['comparative_matrix'] ?? []));
+        $kpiTotal = (int) ($kpi['total_schools'] ?? -1);
+        $this->assert("includeTest=true matrix count == total tenants",
+            $includedCount === $kpiTotal,
+            "incl={$includedCount} total={$kpiTotal}");
+        $this->assert("includeTest=false production_tenant_count <= total tenants",
+            $excludedCount >= 0 && $excludedCount <= $kpiTotal,
+            "prod={$excludedCount} total={$kpiTotal}");
+        $testCount = (int) ($excluded['test_tenant_count'] ?? 0);
+        $this->assert("test_tenant_count + production_tenant_count == total tenants",
+            $excludedCount + $testCount === $kpiTotal,
+            "prod={$excludedCount} test={$testCount} total={$kpiTotal}");
+
+        // ── Probe 26: Comparative matrix shape ──
+        echo "\n[26] get_comparative_matrix() row shape\n";
+        $matrix = $this->svc->get_comparative_matrix(30, 12);
+        $this->assert("matrix row count == total tenants",
+            count($matrix) === $kpiTotal,
+            'rows=' . count($matrix) . ' total=' . $kpiTotal);
+        if (!empty($matrix)) {
+            $first = $matrix[0];
+            $requiredCols = ['schoolId', 'schoolName', 'planName', 'lifecycleState',
+                             'isTestTenant', 'activity_volume', 'student_delta',
+                             'staff_delta', 'data_freshness_hours', 'revenue_contribution'];
+            $missingCols = array_diff($requiredCols, array_keys($first));
+            $this->assert("each row has all 10 metric columns", empty($missingCols),
+                empty($missingCols) ? 'all present' : 'missing=' . implode(',', $missingCols));
+        }
+
+        // ── Probe 27: Leaderboard semantics + exclusion ──
+        echo "\n[27] get_engagement_leaderboard() semantics\n";
+        $scopedMatrix = array_values(array_filter($matrix, fn($r) => !($r['isTestTenant'] ?? false)));
+        $lbTop = $this->svc->get_engagement_leaderboard('activity_volume', $scopedMatrix, 5, 'desc');
+        $lbBot = $this->svc->get_engagement_leaderboard('activity_volume', $scopedMatrix, 5, 'asc');
+        $this->assert("top leaderboard size <= 5", count($lbTop) <= 5,
+            'top_size=' . count($lbTop));
+        $this->assert("bottom leaderboard size <= 5", count($lbBot) <= 5,
+            'bot_size=' . count($lbBot));
+        // Top sort: descending by activity
+        $topMonotonic = true; $prev = PHP_INT_MAX;
+        foreach ($lbTop as $r) {
+            $v = (int) ($r['activity_volume'] ?? 0);
+            if ($v > $prev) { $topMonotonic = false; break; }
+            $prev = $v;
+        }
+        $this->assert("top leaderboard non-increasing", $topMonotonic);
+        // Bottom excludes zero values
+        $bottomNoZero = true;
+        foreach ($lbBot as $r) {
+            if ((int) ($r['activity_volume'] ?? 0) === 0) { $bottomNoZero = false; break; }
+        }
+        $this->assert("bottom leaderboard excludes zero values", $bottomNoZero);
+
+        // ── Probe 28: Engagement distribution integrity ──
+        echo "\n[28] get_engagement_distribution() bucket integrity\n";
+        $dist = $this->svc->get_engagement_distribution('activity_volume', $scopedMatrix);
+        $this->assert("returns labels + counts + metric",
+            isset($dist['labels'], $dist['counts'], $dist['metric']));
+        $sumCounts = array_sum($dist['counts'] ?? []);
+        $this->assert("Σ bucket counts == scoped tenant count",
+            $sumCounts === count($scopedMatrix),
+            "sum={$sumCounts} scoped=" . count($scopedMatrix));
+        $this->assert("labels count == counts count",
+            count($dist['labels'] ?? []) === count($dist['counts'] ?? []));
+
+        // ── Probe 29: Fleet KPI cross_tenant_mrr scope consistency ──
+        // 2026-06-02 DEFECT FIX verification: the numerator and denominator
+        // of cross_tenant_mrr must use the SAME tenant scope. Pre-fix used
+        // fleet-wide MRR ÷ prod-scoped count which over-attributed test
+        // tenant revenue.
+        echo "\n[29] cross_tenant_mrr scope consistency (numerator + denominator align)\n";
+        $kpiExcl = $this->svc->get_fleet_kpi_snapshot(30, false);
+        $kpiIncl = $this->svc->get_fleet_kpi_snapshot(30, true);
+        $matrixAll = $this->svc->get_comparative_matrix(30, 12);
+        $prodRows = array_values(array_filter($matrixAll, fn($r) => !($r['isTestTenant'] ?? false)));
+        // Σ revenue_contribution over prod-scoped rows == scoped_mrr_total when includeTest=false
+        $expectedScopedMrr = 0.0;
+        foreach ($prodRows as $r) $expectedScopedMrr += (float) ($r['revenue_contribution'] ?? 0);
+        $this->assert("excl(test): scoped_mrr_total == Σ revenue_contribution over prod rows",
+            abs(($kpiExcl['scoped_mrr_total'] ?? -1) - $expectedScopedMrr) < 0.01,
+            'scoped=' . number_format((float) ($kpiExcl['scoped_mrr_total'] ?? 0), 2)
+            . ' expected=' . number_format($expectedScopedMrr, 2));
+        // Σ revenue_contribution over ALL rows == scoped_mrr_total when includeTest=true
+        $expectedFleetMrr = 0.0;
+        foreach ($matrixAll as $r) $expectedFleetMrr += (float) ($r['revenue_contribution'] ?? 0);
+        $this->assert("incl(test): scoped_mrr_total == Σ revenue_contribution over all rows",
+            abs(($kpiIncl['scoped_mrr_total'] ?? -1) - $expectedFleetMrr) < 0.01,
+            'scoped=' . number_format((float) ($kpiIncl['scoped_mrr_total'] ?? 0), 2)
+            . ' expected=' . number_format($expectedFleetMrr, 2));
+        // Total fleet MRR should match compute_mrr_from_subscriptions
+        $this->assert("Σ revenue_contribution over all rows == compute_mrr_from_subscriptions()",
+            abs($expectedFleetMrr - $mrr) < 0.01,
+            'sum_all=' . number_format($expectedFleetMrr, 2)
+            . ' compute_mrr=' . number_format($mrr, 2));
+        // cross_tenant_mrr formula: scoped_mrr_total / active_count
+        $activeProd = 0;
+        foreach ($prodRows as $r) {
+            if (in_array(strtolower((string) ($r['lifecycleState'] ?? '')), B2_analytics_service::ALLOWED_LIFECYCLE_STATES, true)) $activeProd++;
+        }
+        $expectedPerTenant = $activeProd > 0 ? $expectedScopedMrr / $activeProd : 0.0;
+        $this->assert("excl(test): cross_tenant_mrr == scoped_mrr_total / active_in_scope_count",
+            abs(($kpiExcl['cross_tenant_mrr'] ?? -1) - $expectedPerTenant) < 0.01,
+            'got=' . number_format((float) ($kpiExcl['cross_tenant_mrr'] ?? 0), 2)
+            . ' expected=' . number_format($expectedPerTenant, 2));
+        // Scope-mismatch DEFECT guard: when test tenants exist + are excluded,
+        // scoped_mrr_total must be strictly LESS than compute_mrr_from_subscriptions
+        // (the fleet-wide number). If they were equal we'd have either no
+        // test tenants OR a regression of the pre-fix scope-mismatch behavior.
+        $testCount = (int) ($kpiExcl['in_scope_count'] ?? 0) === count($matrixAll) ? 0 : (count($matrixAll) - (int) ($kpiExcl['in_scope_count'] ?? 0));
+        if ($testCount > 0) {
+            $this->assert("DEFECT GUARD: scoped_mrr_total < compute_mrr_from_subscriptions when tests exist + excluded",
+                $expectedScopedMrr < $mrr - 0.01,
+                'scoped=' . number_format($expectedScopedMrr, 2) . ' fleet=' . number_format($mrr, 2));
+        } else {
+            $this->skip("Defect guard (test tenants present)", "no test tenants in this fixture");
+        }
 
         // ── Summary ──
         echo "\n═══════════════════════════════════════════════════════════════════\n";
