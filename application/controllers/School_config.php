@@ -2670,62 +2670,168 @@ class School_config extends MY_Controller
     {
         $this->_require_role(self::ADMIN_ROLES, 'school_config_sync_sessions');
 
-        $fsSchool = $this->fs->get('schools', $this->fs->schoolId());
-        if (!is_array($fsSchool)) $fsSchool = [];
+        // ── SC-Step3 (Session Convergence — 2026-06-02): lock + CAS ──
+        // sync_sessions is a reconciliation read-modify-write. Pre-Step-3:
+        // stale-read + write had a race window that could clobber a
+        // concurrent add_session/delete_session/archive_session commit
+        // (race class identical to SC-Step2 on switch_session).
+        // Post-Step-3: same `sessions` filesystem lock + Firestore
+        // __updateTime CAS precondition as the canonical lifecycle
+        // writers. PHP userdata refresh occurs INSIDE the lock AFTER
+        // successful FS commit (D1 — matches SC-Step2 ordering).
+        //
+        // Hot-path optimization: most calls don't need to write (sessions
+        // already populated + active in list). Those calls bypass the
+        // lock+CAS overhead entirely; only the auto-seed branch acquires.
 
-        $sessions = (is_array($fsSchool['sessions'] ?? null))
-            ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
+        // Pre-read (BEFORE lock) for early-exit on no-write case.
+        $fsSchoolPre = $this->fs->get('schools', $this->fs->schoolId());
+        if (!is_array($fsSchoolPre)) $fsSchoolPre = [];
+        $sessionsPre = (is_array($fsSchoolPre['sessions'] ?? null))
+            ? array_values(array_filter($fsSchoolPre['sessions'], 'is_string'))
             : [];
-
-        $activeSess = !empty($fsSchool['currentSession'])
-                        ? (string) $fsSchool['currentSession']
+        $activeSess  = !empty($fsSchoolPre['currentSession'])
+                        ? (string) $fsSchoolPre['currentSession']
                         : (string) $this->session_year;
 
-        // Auto-seed: if sessions list is empty but we have a valid active
-        // session, seed it. Also ensure active session is always present.
-        $didSeed = false;
+        $needsWrite = false;
         if (!empty($activeSess) && preg_match('/^\d{4}-\d{2}$/', $activeSess)) {
-            if (empty($sessions)) {
-                $sessions = [$activeSess];
-                $didSeed  = true;
-            } elseif (!in_array($activeSess, $sessions, true)) {
-                $sessions[] = $activeSess;
-                sort($sessions);
-                $didSeed = true;
-            }
-            if ($didSeed) {
-                $this->fs->update('schools', $this->fs->schoolId(), [
-                    'sessions'  => $sessions,
-                    'updatedAt' => date('c'),
-                ]);
+            if (empty($sessionsPre) || !in_array($activeSess, $sessionsPre, true)) {
+                $needsWrite = true;
             }
         }
 
-        if (empty($sessions)) {
+        // ── Hot-path: no write needed — refresh userdata + return ──
+        if (!$needsWrite) {
+            if (!empty($sessionsPre)) {
+                $this->session->set_userdata('available_sessions', $sessionsPre);
+            }
+            if (empty($sessionsPre)) {
+                $this->json_success([
+                    'sessions'       => [],
+                    'active_session' => $activeSess,
+                    'synced'         => false,
+                    'message'        => 'No sessions configured and no active session detected. Add a session to begin.',
+                ]);
+                return;
+            }
+            $archivedSess = (is_array($fsSchoolPre['archivedSessions'] ?? null))
+                                ? array_values(array_filter($fsSchoolPre['archivedSessions'], 'is_string'))
+                                : [];
             $this->json_success([
-                'sessions'       => [],
-                'active_session' => $activeSess,
-                'synced'         => false,
-                'message'        => 'No sessions configured and no active session detected. Add a session to begin.',
+                'sessions'          => $sessionsPre,
+                'active_session'    => $activeSess,
+                'archived_sessions' => $archivedSess,
+                'synced'            => true,
+                'message'           => 'PHP session synced from Firestore. Header dropdown will update on next render.',
             ]);
             return;
         }
 
-        $this->session->set_userdata('available_sessions', $sessions);
+        // ── Write needed: acquire lock + re-read + CAS commit ──
+        $lock = $this->_config_lock_acquire('sessions');
+        if ($lock === null) {
+            log_message('error',
+                "ACC_CONCURRENT_REJECTED endpoint=school_config/sync_sessions "
+                . "schoolId={$this->school_id} actor={$this->admin_id} "
+                . "reason=lock_timeout activeSess={$activeSess}");
+            $this->json_error(
+                'Another session-management operation is in progress. Please retry in a few seconds.', 409);
+            return;
+        }
+        try {
+            // Re-read INSIDE the lock for freshest sessions[] + __updateTime
+            $schoolDocId = $this->fs->schoolId();
+            $fsSchool    = $this->firebase->firestoreGet('schools', $schoolDocId);
+            if (!is_array($fsSchool)) $fsSchool = [];
+            $sessions    = (is_array($fsSchool['sessions'] ?? null))
+                ? array_values(array_filter($fsSchool['sessions'], 'is_string'))
+                : [];
+            $activeFresh = !empty($fsSchool['currentSession'])
+                            ? (string) $fsSchool['currentSession']
+                            : (string) $this->session_year;
+            $updateTime  = (string) ($fsSchool['__updateTime'] ?? '');
 
-        $archivedSess = (is_array($fsSchool['archivedSessions'] ?? null))
-                            ? array_values(array_filter($fsSchool['archivedSessions'], 'is_string'))
-                            : [];
+            // Re-evaluate auto-seed predicate against fresh state.
+            // If another writer added the session between pre-read and
+            // this fresh-read, didSeed stays false and we fall through
+            // to userdata refresh + success response — idempotent.
+            $didSeed = false;
+            if (!empty($activeFresh) && preg_match('/^\d{4}-\d{2}$/', $activeFresh)) {
+                if (empty($sessions)) {
+                    $sessions = [$activeFresh];
+                    $didSeed  = true;
+                } elseif (!in_array($activeFresh, $sessions, true)) {
+                    $sessions[] = $activeFresh;
+                    sort($sessions);
+                    $didSeed = true;
+                }
+            }
 
-        $this->json_success([
-            'sessions'          => $sessions,
-            'active_session'    => $activeSess,
-            'archived_sessions' => $archivedSess,
-            'synced'            => true,
-            'message'           => $didSeed
-                ? "Sessions list seeded with active session {$activeSess}."
-                : 'PHP session synced from Firestore. Header dropdown will update on next render.',
-        ]);
+            if ($didSeed) {
+                $ops = [[
+                    'op'         => 'update',
+                    'collection' => 'schools',
+                    'docId'      => $schoolDocId,
+                    'merge'      => true,
+                    'data'       => [
+                        'sessions'  => $sessions,
+                        'updatedAt' => date('c'),
+                    ],
+                ]];
+                if ($updateTime !== '') {
+                    $ops[0]['precondition'] = ['updateTime' => $updateTime];
+                }
+                $committed = false;
+                try {
+                    $committed = (bool) $this->firebase->firestoreCommitBatch($ops);
+                } catch (\Throwable $e) {
+                    log_message('error',
+                        "ACC_SESSION_SYNC_COMMIT_FAILED endpoint=school_config/sync_sessions "
+                        . "schoolId={$this->school_id} session={$activeFresh} "
+                        . "actor={$this->admin_id} err=" . $e->getMessage());
+                }
+                if (!$committed) {
+                    log_message('error',
+                        "ACC_CONCURRENT_REJECTED endpoint=school_config/sync_sessions "
+                        . "schoolId={$this->school_id} actor={$this->admin_id} "
+                        . "reason=cas_failed");
+                    $this->json_error(
+                        'Another administrator updated school configuration during your request. '
+                        . 'Please reload the page and retry.', 409);
+                    return;
+                }
+            }
+
+            // PHP userdata refresh — D1: AFTER successful FS commit
+            if (empty($sessions)) {
+                $this->json_success([
+                    'sessions'       => [],
+                    'active_session' => $activeFresh,
+                    'synced'         => false,
+                    'message'        => 'No sessions configured and no active session detected. Add a session to begin.',
+                ]);
+                return;
+            }
+
+            $this->session->set_userdata('available_sessions', $sessions);
+
+            $archivedSess = (is_array($fsSchool['archivedSessions'] ?? null))
+                                ? array_values(array_filter($fsSchool['archivedSessions'], 'is_string'))
+                                : [];
+
+            $this->json_success([
+                'sessions'          => $sessions,
+                'active_session'    => $activeFresh,
+                'archived_sessions' => $archivedSess,
+                'synced'            => true,
+                'message'           => $didSeed
+                    ? "Sessions list seeded with active session {$activeFresh}."
+                    : 'PHP session synced from Firestore. Header dropdown will update on next render.',
+            ]);
+        } finally {
+            $this->_config_lock_release($lock);
+        }
     }
 
     // 2026-05-15 Phase 3 — /school_config/csrf_token endpoint removed.
