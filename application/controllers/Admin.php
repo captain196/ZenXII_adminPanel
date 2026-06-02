@@ -105,7 +105,8 @@ class Admin extends MY_Controller
         $this->load->library('dashboard_cache');
         $cacheKey = 'dashboard_data_' . ($role ?? '');
         $cacheAge = null;
-        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge);
+        // SC-Step4: session-keyed — prevents cross-session cache reuse after switch_session.
+        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge, $this->session_year);
         if ($cached !== null) {
             log_message('debug', "DASHBOARD_CACHE HIT key={$cacheKey} school={$this->school_name} age=" . ($cacheAge === null ? 'unknown' : $cacheAge) . 's');
             echo json_encode($cached);
@@ -220,7 +221,8 @@ class Admin extends MY_Controller
             'calendar_events'   => [],
         ];
 
-        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600);
+        // SC-Step4: session-keyed cache write.
+        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600, $this->session_year);
         echo json_encode($payload);
     }
 
@@ -240,7 +242,8 @@ class Admin extends MY_Controller
         $this->load->library('dashboard_cache');
         $cacheKey = 'dashboard_charts_' . ($role ?? '');
         $cacheAge = null;
-        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge);
+        // SC-Step4: session-keyed — fee_defaulters/monthly_fees/top_defaulters scoped by session.
+        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge, $this->session_year);
         if ($cached !== null) {
             log_message('debug', "DASHBOARD_CACHE HIT key={$cacheKey} school={$this->school_name} age=" . ($cacheAge === null ? 'unknown' : $cacheAge) . 's');
             echo json_encode($cached);
@@ -450,7 +453,8 @@ class Admin extends MY_Controller
             'calendar_events'   => $calendarEvents,
         ];
 
-        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600);
+        // SC-Step4: session-keyed cache write.
+        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600, $this->session_year);
         echo json_encode($payload);
     }
 
@@ -469,7 +473,8 @@ class Admin extends MY_Controller
         $this->load->library('dashboard_cache');
         $cacheKey = 'dashboard_activity_' . ($role ?? '');
         $cacheAge = null;
-        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge);
+        // SC-Step4: session-keyed — recent activity feed scoped by session view.
+        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge, $this->session_year);
         if ($cached !== null) {
             log_message('debug', "DASHBOARD_CACHE HIT key={$cacheKey} school={$this->school_name} age=" . ($cacheAge === null ? 'unknown' : $cacheAge) . 's');
             echo json_encode($cached);
@@ -560,7 +565,8 @@ class Admin extends MY_Controller
         $activity = array_slice($activity, 0, 10);
 
         $payload = ['activity' => $activity];
-        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600);
+        // SC-Step4: session-keyed cache write.
+        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600, $this->session_year);
         echo json_encode($payload);
     }
 
@@ -839,9 +845,14 @@ class Admin extends MY_Controller
             $this->load->library('dashboard_cache');
             // Manual path uses current admin role; cron doesn't have one, so
             // clear the whole dashboard_activity cache for this school.
+            // SC-Step4: session-keyed invalidation — clears the activity cache
+            // for the actor's current session view. Cron-context invalidation
+            // (when role/session may be absent) is a pre-existing gap not
+            // addressed by Step 4.
             $this->dashboard_cache->invalidate(
                 $schoolId,
-                'dashboard_activity_' . ($this->admin_role ?? '')
+                'dashboard_activity_' . ($this->admin_role ?? ''),
+                $this->session_year
             );
         } catch (\Exception $e) { /* non-fatal */ }
 

@@ -32,9 +32,21 @@ class Dashboard_cache
         }
     }
 
-    private function k(string $schoolId, string $name): string
+    /**
+     * Build the cache key. SC-Step4 (Session Convergence — 2026-06-02):
+     * accepts an optional $sessionYear. When provided, the session is
+     * inserted between schoolId and name, isolating cached payloads
+     * per academic session. When null (e.g., for school-level
+     * subscription_info), key construction is identical to pre-Step-4.
+     */
+    private function k(string $schoolId, string $name, ?string $sessionYear = null): string
     {
-        return $this->prefix . preg_replace('/[^A-Za-z0-9_]/', '_', $schoolId . '_' . $name);
+        $parts = [$schoolId];
+        if ($sessionYear !== null && $sessionYear !== '') {
+            $parts[] = $sessionYear;
+        }
+        $parts[] = $name;
+        return $this->prefix . preg_replace('/[^A-Za-z0-9_]/', '_', implode('_', $parts));
     }
 
     /**
@@ -42,11 +54,18 @@ class Dashboard_cache
      * Optional $ageOut receives the cache entry age in seconds (or null on
      * miss / when unavailable — e.g., legacy files written before writtenAt
      * was stored).
+     *
+     * SC-Step4: $sessionYear optionally tags the cache key with the
+     * academic session so cross-session cache collisions cannot occur.
+     * Callers that hold session-dependent payloads (dashboard_data,
+     * dashboard_charts, dashboard_activity, tasks_*) MUST pass it; the
+     * sole exception is school-level subscription_info which is
+     * session-agnostic.
      */
-    public function get(string $schoolId, string $name, ?int &$ageOut = null)
+    public function get(string $schoolId, string $name, ?int &$ageOut = null, ?string $sessionYear = null)
     {
         $ageOut = null;
-        $key = $this->k($schoolId, $name);
+        $key = $this->k($schoolId, $name, $sessionYear);
         if ($this->apcuOk) {
             $ok = false;
             $env = apcu_fetch($key, $ok);
@@ -70,10 +89,12 @@ class Dashboard_cache
 
     /**
      * Store a value for $ttl seconds. Silently drops if serialisation fails.
+     *
+     * SC-Step4: $sessionYear optionally tags the cache key. See get() docblock.
      */
-    public function set(string $schoolId, string $name, $value, int $ttl = 30): void
+    public function set(string $schoolId, string $name, $value, int $ttl = 30, ?string $sessionYear = null): void
     {
-        $key = $this->k($schoolId, $name);
+        $key = $this->k($schoolId, $name, $sessionYear);
         $now = time();
         $env = ['exp' => $now + max(1, $ttl), 'writtenAt' => $now, 'val' => $value];
         if ($this->apcuOk) {
@@ -85,9 +106,14 @@ class Dashboard_cache
         @file_put_contents($this->fileDir . '/' . $key . '.json', $json, LOCK_EX);
     }
 
-    public function invalidate(string $schoolId, string $name): void
+    /**
+     * Invalidate a cached entry.
+     *
+     * SC-Step4: $sessionYear optionally tags the cache key. See get() docblock.
+     */
+    public function invalidate(string $schoolId, string $name, ?string $sessionYear = null): void
     {
-        $key = $this->k($schoolId, $name);
+        $key = $this->k($schoolId, $name, $sessionYear);
         if ($this->apcuOk) { @apcu_delete($key); return; }
         @unlink($this->fileDir . '/' . $key . '.json');
     }
