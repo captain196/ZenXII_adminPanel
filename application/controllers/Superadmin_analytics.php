@@ -107,13 +107,264 @@ class Superadmin_analytics extends MY_Superadmin_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // PHASE 1D-1G placeholders. Operator hitting these gets a "coming soon"
-    // page rather than a hard 404, with backlink to the Hub.
+    // PHASE 1D — SCHOOL SEARCH SPOKE
+    // GET /superadmin/dashboard/schools-search
+    //
+    // URL parameter contract (must remain stable — Phase 1C drill-down
+    // chart links and saved-search persistence both depend on it):
+    //   q={string}                     free text
+    //   states=active,grace            CSV
+    //   plans=Premium,Standard         CSV
+    //   cities=Kanpur,Delhi            CSV
+    //   regions=Uttar Pradesh          CSV
+    //   students_min=int  students_max=int
+    //   staff_min=int     staff_max=int
+    //   created_from=YYYY-MM-DD  created_to=YYYY-MM-DD
+    //   expiry_from=YYYY-MM-DD   expiry_to=YYYY-MM-DD
+    //   sort=schoolName       order=asc|desc
+    //   page=int              page_size=25|50|100
+    //   saved=<slug>          apply a saved search (overrides above)
+    //   view=card|table       preferred view mode
     // ─────────────────────────────────────────────────────────────────────
-    public function schools_search() { $this->_phase_pending('School Search', '1D'); }
-    public function revenue()        { $this->_phase_pending('Revenue Reports', '1E'); }
-    public function cross_school()   { $this->_phase_pending('Cross-School Summaries', '1F'); }
-    public function tenant_detail()  { $this->_phase_pending('Per-Tenant Deep Dive', '1G'); }
+    public function schools_search()
+    {
+        // Apply saved-search if requested; otherwise read filters from query string.
+        $saved = trim((string) ($this->input->get('saved', TRUE) ?? ''));
+        $filters = []; $sort = []; $savedMeta = null;
+        if ($saved !== '') {
+            $applied = $this->b2_analytics_service->apply_saved_search($this->sa_id, $saved);
+            if (is_array($applied)) {
+                $filters   = is_array($applied['filters'] ?? null) ? $applied['filters'] : [];
+                $sort      = is_array($applied['sort']    ?? null) ? $applied['sort']    : [];
+                $savedMeta = ['slug' => $saved, 'name' => $applied['name'] ?? ''];
+            }
+        }
+        // Filters from query string (apply when no saved search, or saved
+        // search returned null/empty).
+        if (empty($filters)) {
+            $filters = $this->_read_search_filters_from_query();
+        }
+        if (empty($sort)) {
+            $sort = [
+                'field' => (string) ($this->input->get('sort',  TRUE) ?? 'schoolName'),
+                'order' => (string) ($this->input->get('order', TRUE) ?? 'asc'),
+            ];
+        }
+        $page     = max(1, (int) ($this->input->get('page', TRUE) ?? 1));
+        $pageSize = $this->_normalize_page_size((int) ($this->input->get('page_size', TRUE) ?? 25));
+        $view     = in_array((string) $this->input->get('view', TRUE), ['card', 'table'], true)
+                    ? (string) $this->input->get('view', TRUE) : 'card';
+
+        $payload = ['rows' => [], 'total' => 0, 'page' => $page, 'pageSize' => $pageSize,
+                    'pageCount' => 0, 'sort' => $sort, 'filters_applied' => $filters];
+        $options = [];
+        $savedList = [];
+        try {
+            $payload   = $this->b2_analytics_service->search_schools($filters, $sort, $page, $pageSize);
+            $options   = $this->b2_analytics_service->search_schools_options();
+            $savedList = $this->b2_analytics_service->list_saved_searches($this->sa_id);
+        } catch (\Throwable $e) {
+            log_message('error', 'SA schools_search: ' . $e->getMessage());
+        }
+
+        $data = [
+            'page_title'     => 'School Search — Super Admin',
+            'payload'        => $payload,
+            'options'        => $options,
+            'saved_searches' => $savedList,
+            'saved_meta'     => $savedMeta,
+            'filters'        => $filters,
+            'sort'           => $sort,
+            'view_mode'      => $view,
+        ];
+        $this->load->view('superadmin/include/sa_header', $data);
+        $this->load->view('superadmin/analytics/schools_search', $data);
+        $this->load->view('superadmin/include/sa_footer');
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST /superadmin/dashboard/schools-search/data
+    // AJAX endpoint — filter change, pagination, sort change.
+    // Returns the same payload as the GET render, JSON-serialised.
+    // ─────────────────────────────────────────────────────────────────────
+    public function schools_search_data()
+    {
+        $filters = $this->_read_search_filters_from_request();
+        $sort = [
+            'field' => (string) ($this->input->post_get('sort')  ?: 'schoolName'),
+            'order' => (string) ($this->input->post_get('order') ?: 'asc'),
+        ];
+        $page     = max(1, (int) ($this->input->post_get('page') ?: 1));
+        $pageSize = $this->_normalize_page_size((int) ($this->input->post_get('page_size') ?: 25));
+        try {
+            $payload = $this->b2_analytics_service->search_schools($filters, $sort, $page, $pageSize);
+            $this->json_success(['payload' => $payload]);
+        } catch (\Throwable $e) {
+            log_message('error', 'SA schools_search_data: ' . $e->getMessage());
+            $this->json_error('Search failed.');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // GET /superadmin/dashboard/schools-search/options
+    // Returns filter dropdown values for the sidebar UI.
+    // ─────────────────────────────────────────────────────────────────────
+    public function schools_search_options()
+    {
+        try {
+            $this->json_success(['options' => $this->b2_analytics_service->search_schools_options()]);
+        } catch (\Throwable $e) {
+            log_message('error', 'SA schools_search_options: ' . $e->getMessage());
+            $this->json_error('Options fetch failed.');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // GET /superadmin/dashboard/schools-search/export?format=csv|xlsx
+    // Streams the full filtered result set as CSV or XLSX. Pagination
+    // ignored: the export always returns every matched row (capped at
+    // SEARCH_PAGE_SIZE_MAX defensively).
+    // ─────────────────────────────────────────────────────────────────────
+    public function schools_search_export()
+    {
+        $format = strtolower((string) ($this->input->get('format', TRUE) ?? 'csv'));
+        if (!in_array($format, ['csv', 'xlsx'], true)) $format = 'csv';
+
+        $filters = $this->_read_search_filters_from_query();
+        $sort = [
+            'field' => (string) ($this->input->get('sort',  TRUE) ?? 'schoolName'),
+            'order' => (string) ($this->input->get('order', TRUE) ?? 'asc'),
+        ];
+        try {
+            $payload = $this->b2_analytics_service->search_schools(
+                $filters,
+                $sort,
+                1,
+                B2_analytics_service::SEARCH_PAGE_SIZE_MAX
+            );
+            $rows = $payload['rows'] ?? [];
+
+            $headers = ['School ID', 'School Name', 'Code', 'City', 'Region',
+                        'Plan', 'Lifecycle', 'Students', 'Staff',
+                        'Primary SSA', 'Created', 'Expiry'];
+            $dataRows = [];
+            foreach ($rows as $r) {
+                $dataRows[] = [
+                    (string) ($r['schoolId']              ?? ''),
+                    (string) ($r['schoolName']            ?? ''),
+                    (string) ($r['schoolCode']            ?? ''),
+                    (string) ($r['city']                  ?? ''),
+                    (string) ($r['region']                ?? ''),
+                    (string) ($r['planName']              ?? ''),
+                    (string) ($r['lifecycleState']        ?? ''),
+                    (int)    ($r['totalStudents']         ?? 0),
+                    (int)    ($r['totalStaff']            ?? 0),
+                    (string) ($r['primarySsaId']          ?? ''),
+                    (string) ($r['createdAt']             ?? ''),
+                    (string) ($r['subscriptionPeriodEnd'] ?? ''),
+                ];
+            }
+
+            $filename = 'schools_search_' . date('Y-m-d');
+            if ($format === 'csv') {
+                $this->_stream_csv($filename . '.csv', $headers, $dataRows);
+            } else {
+                $this->load->library('b2_xlsx_export');
+                $this->b2_xlsx_export->open('Schools');
+                $this->b2_xlsx_export->write_header($headers);
+                foreach ($dataRows as $r) $this->b2_xlsx_export->write_row($r);
+                $this->b2_xlsx_export->stream_to_browser($filename . '.xlsx');
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'SA schools_search_export: ' . $e->getMessage());
+            $this->json_error('Export failed.');
+        }
+    }
+
+    public function revenue()       { $this->_phase_pending('Revenue Reports', '1E'); }
+    public function cross_school()  { $this->_phase_pending('Cross-School Summaries', '1F'); }
+    public function tenant_detail() { $this->_phase_pending('Per-Tenant Deep Dive', '1G'); }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // PHASE 1D internals
+    // ─────────────────────────────────────────────────────────────────────
+
+    private function _normalize_page_size(int $n): int
+    {
+        $allowed = [25, 50, 100];
+        if (in_array($n, $allowed, true)) return $n;
+        if ($n >= 100) return 1000; // "All" pass-through (capped in service)
+        return 25;
+    }
+
+    private function _read_search_filters_from_query(): array
+    {
+        $g = function (string $k) { return $this->input->get($k, TRUE); };
+        return $this->_assemble_filters([
+            'q'             => $g('q'),
+            'states'        => $g('states'),
+            'plans'         => $g('plans'),
+            'cities'        => $g('cities'),
+            'regions'       => $g('regions'),
+            'students_min'  => $g('students_min'),
+            'students_max'  => $g('students_max'),
+            'staff_min'     => $g('staff_min'),
+            'staff_max'     => $g('staff_max'),
+            'created_from'  => $g('created_from'),
+            'created_to'    => $g('created_to'),
+            'expiry_from'   => $g('expiry_from'),
+            'expiry_to'     => $g('expiry_to'),
+        ]);
+    }
+
+    private function _read_search_filters_from_request(): array
+    {
+        $g = function (string $k) { return $this->input->post_get($k); };
+        return $this->_assemble_filters([
+            'q'             => $g('q'),
+            'states'        => $g('states'),
+            'plans'         => $g('plans'),
+            'cities'        => $g('cities'),
+            'regions'       => $g('regions'),
+            'students_min'  => $g('students_min'),
+            'students_max'  => $g('students_max'),
+            'staff_min'     => $g('staff_min'),
+            'staff_max'     => $g('staff_max'),
+            'created_from'  => $g('created_from'),
+            'created_to'    => $g('created_to'),
+            'expiry_from'   => $g('expiry_from'),
+            'expiry_to'     => $g('expiry_to'),
+        ]);
+    }
+
+    private function _assemble_filters(array $raw): array
+    {
+        $out = [];
+        foreach ($raw as $k => $v) {
+            if ($v === null) continue;
+            $v = trim((string) $v);
+            if ($v === '') continue;
+            $out[$k] = $v; // service-side _csv_to_array handles CSV → array
+        }
+        return $out;
+    }
+
+    private function _stream_csv(string $filename, array $headers, array $rows): void
+    {
+        $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', $filename);
+        if ($safe === '' || $safe === null) $safe = 'schools_search.csv';
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="' . $safe . '"');
+        header('Cache-Control: max-age=0, no-cache, must-revalidate');
+        header('Pragma: no-cache');
+        // UTF-8 BOM so Excel honours encoding when double-clicking the file.
+        echo "\xEF\xBB\xBF";
+        $out = fopen('php://output', 'w');
+        fputcsv($out, $headers);
+        foreach ($rows as $r) fputcsv($out, $r);
+        fclose($out);
+        exit;
+    }
 
     private function _phase_pending(string $spoke, string $phaseId): void
     {

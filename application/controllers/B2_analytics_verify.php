@@ -134,20 +134,141 @@ class B2_analytics_verify extends CI_Controller
         $this->assert("list_open_alerts returns array", is_array($open),
             'open_count=' . count($open));
 
-        // ── Probes 8–15 (skipped until later phases) ──
-        echo "\n[8-15] Probes pending later-phase delivery:\n";
-        $this->skip("search_schools(filters)", "Phase 1D faceted search not built");
-        $this->skip("Saved searches CRUD round-trip", "Phase 1D (operator-write surface)");
-        $this->skip("Time-series resolution selector (daily/weekly/monthly)", "Phase 1B Hub charts");
-        $this->skip("CSV export shape", "Phase 1H export service");
-        $this->skip("Excel multi-sheet export", "Phase 1H export service");
-        $this->skip("KPI tile click navigation targets", "Phase 1B Hub UI");
+        // ─────────────────────────────────────────────────────────────
+        // PHASE 1D PROBES — School Search spoke
+        // ─────────────────────────────────────────────────────────────
+
+        // ── Probe 8: search_schools(empty) returns full tenant set ──
+        echo "\n[8] search_schools(empty) returns all tenants\n";
+        $base = $this->svc->search_schools([], [], 1, 1000);
+        $totalAll = (int) ($base['total'] ?? -1);
+        $this->assert("search_schools([]) returns array", is_array($base));
+        $this->assert("search_schools([]) total == kpi.total_schools",
+            $totalAll === (int) ($kpi['total_schools'] ?? -1),
+            "search.total={$totalAll} kpi.total={$kpi['total_schools']}");
+        $this->assert("search_schools([]) rows count <= pageSize",
+            count($base['rows'] ?? []) <= ($base['pageSize'] ?? 0));
+
+        // ── Probe 9: single-filter (states) reduces correctly ──
+        echo "\n[9] search_schools(state filter) reduces correctly\n";
+        $activeOnly = $this->svc->search_schools(['states' => 'active'], [], 1, 1000);
+        $lifeDist = $this->svc->get_lifecycle_distribution();
+        $expectedActive = (int) ($lifeDist['active'] ?? 0);
+        $this->assert("search_schools(states=active).total == lifecycle.active",
+            (int) ($activeOnly['total'] ?? -1) === $expectedActive,
+            "got=" . ($activeOnly['total'] ?? '?') . " expected={$expectedActive}");
+        $badRow = 0;
+        foreach ($activeOnly['rows'] ?? [] as $r) {
+            if (strtolower((string) ($r['lifecycleState'] ?? '')) !== 'active') $badRow++;
+        }
+        $this->assert("0 non-active rows in filtered set", $badRow === 0,
+            $badRow === 0 ? 'all rows match filter' : "{$badRow} rows violate state filter");
+
+        // ── Probe 10: multi-filter combines AND across categories ──
+        echo "\n[10] search_schools(multi-filter) combines AND across categories\n";
+        $combo = $this->svc->search_schools(
+            ['states' => 'active,trialing,grace,expiring_soon', 'students_min' => 0], [], 1, 1000);
+        $this->assert("multi-filter result <= unfiltered total",
+            (int) ($combo['total'] ?? 0) <= $totalAll,
+            "combo={$combo['total']} all={$totalAll}");
+        $this->assert("multi-filter row count matches reported total",
+            (int) ($combo['total'] ?? -1) === count($combo['rows'] ?? []),
+            "rows=" . count($combo['rows'] ?? []) . " total=" . ($combo['total'] ?? '?'));
+
+        // ── Probe 11: pagination integrity ──
+        echo "\n[11] Pagination integrity (page 1 + page 2 = full set, no dups)\n";
+        $p1 = $this->svc->search_schools([], [], 1, 1);
+        $p2 = $this->svc->search_schools([], [], 2, 1);
+        $ids1 = array_map(fn($r) => $r['schoolId'] ?? '', $p1['rows'] ?? []);
+        $ids2 = array_map(fn($r) => $r['schoolId'] ?? '', $p2['rows'] ?? []);
+        $overlap = array_intersect($ids1, $ids2);
+        $this->assert("page 1 + page 2 have no overlap", count($overlap) === 0,
+            count($overlap) === 0 ? 'no dups' : count($overlap) . ' overlapping rows');
+        if ($totalAll >= 2) {
+            $this->assert("page 1 size 1 returns 1 row", count($ids1) === 1);
+            $this->assert("page 2 size 1 returns 1 row", count($ids2) === 1);
+        } else {
+            $this->skip("page 1+2 row-count check", "tenant count < 2");
+        }
+
+        // ── Probe 12: sort correctness (totalStudents desc) ──
+        echo "\n[12] Sort: totalStudents desc returns largest first\n";
+        $sorted = $this->svc->search_schools([], ['field' => 'totalStudents', 'order' => 'desc'], 1, 1000);
+        $prev = PHP_INT_MAX; $sortFail = 0;
+        foreach ($sorted['rows'] ?? [] as $r) {
+            $v = (int) ($r['totalStudents'] ?? 0);
+            if ($v > $prev) $sortFail++;
+            $prev = $v;
+        }
+        $this->assert("rows non-increasing by totalStudents", $sortFail === 0,
+            $sortFail === 0 ? 'sorted correctly' : "{$sortFail} out-of-order rows");
+
+        // ── Probe 13: search_schools_options() exposes facet values ──
+        echo "\n[13] search_schools_options() populated\n";
+        $opts = $this->svc->search_schools_options();
+        $this->assert("options.states is array", is_array($opts['states'] ?? null),
+            'count=' . count((array) ($opts['states'] ?? [])));
+        $this->assert("options.plans is array", is_array($opts['plans'] ?? null),
+            'count=' . count((array) ($opts['plans'] ?? [])));
+        $this->assert("options.students_max >= 0", ($opts['students_max'] ?? -1) >= 0,
+            'max=' . ($opts['students_max'] ?? '?'));
+
+        // ── Probe 14: Saved-search CRUD round-trip + apply ──
+        echo "\n[14] Saved-search CRUD + apply round-trip (Q-A7)\n";
+        $testUser = 'B2_VERIFIER_TEST';
+        $testFilters = ['states' => 'active', 'q' => 'kanpur'];
+        $testSort = ['field' => 'schoolName', 'order' => 'asc'];
+        $savedId = $this->svc->save_search($testUser, 'verifier-test', $testFilters, $testSort);
+        $this->assert("save_search returns doc id", $savedId !== null, 'id=' . ($savedId ?? 'null'));
+        $list = $this->svc->list_saved_searches($testUser);
+        $found = false;
+        foreach ($list as $ss) { if (($ss['slug'] ?? '') === 'verifier-test') { $found = true; break; } }
+        $this->assert("list_saved_searches sees the new entry", $found);
+        $applied = $this->svc->apply_saved_search($testUser, 'verifier-test');
+        $this->assert("apply_saved_search returns filters",
+            is_array($applied) && isset($applied['filters']['states']),
+            'states=' . (($applied['filters']['states'] ?? '') ?: '?'));
+        $deleted = $this->svc->delete_saved_search($testUser, 'verifier-test');
+        $this->assert("delete_saved_search returns true", $deleted === true);
+
+        // ── Probe 15: XLSX export writer produces valid OOXML package ──
+        echo "\n[15] XLSX export: writer produces valid OOXML package\n";
+        $CI =& get_instance();
+        if (!isset($CI->b2_xlsx_export)) $CI->load->library('b2_xlsx_export');
+        $CI->b2_xlsx_export->open('TestSheet');
+        $CI->b2_xlsx_export->write_header(['A', 'B', 'C']);
+        $CI->b2_xlsx_export->write_row(['x', 1, 2.5]);
+        $CI->b2_xlsx_export->write_row(['y', 3, 4.5]);
+        $tmpXlsx = $CI->b2_xlsx_export->save_to_temp();
+        $this->assert("XLSX temp file exists", file_exists($tmpXlsx),
+            file_exists($tmpXlsx) ? ('size=' . filesize($tmpXlsx)) : 'missing');
+        $zip = new \ZipArchive();
+        $rc = $zip->open($tmpXlsx);
+        $this->assert("XLSX is a valid ZIP", $rc === true, "rc={$rc}");
+        if ($rc === true) {
+            $hasWb = $zip->locateName('xl/workbook.xml') !== false;
+            $hasSheet = $zip->locateName('xl/worksheets/sheet1.xml') !== false;
+            $hasContentTypes = $zip->locateName('[Content_Types].xml') !== false;
+            $this->assert("XLSX contains workbook.xml + sheet1.xml + [Content_Types].xml",
+                $hasWb && $hasSheet && $hasContentTypes,
+                ($hasWb ? '' : '-wb ') . ($hasSheet ? '' : '-sheet ') . ($hasContentTypes ? '' : '-ctypes'));
+            $sheetXml = $zip->getFromName('xl/worksheets/sheet1.xml');
+            $this->assert("sheet1.xml contains expected data cell 'x'",
+                $sheetXml !== false && strpos($sheetXml, '>x<') !== false);
+            $zip->close();
+        }
+        @unlink($tmpXlsx);
+
+        // ── Remaining probes still pending later-phase delivery ──
+        echo "\n[16-19] Probes pending later-phase delivery:\n";
+        $this->skip("Time-series resolution selector (daily/weekly/monthly)", "Phase 1H polish");
+        $this->skip("KPI tile click navigation targets", "Phase 1B Hub UI (manual)");
         $this->skip("Per-tenant aggregation = global", "Phase 1G per-tenant deep dive");
         $this->skip("Cross-school rollup reconciliation", "Phase 1F cross-school metrics");
 
         // ── Summary ──
         echo "\n═══════════════════════════════════════════════════════════════════\n";
-        printf("Phase 1A L0 verifier:  PASS=%d  FAIL=%d  SKIPPED-LATER=%d\n",
+        printf("L0 verifier (Phase 1A-1D):  PASS=%d  FAIL=%d  SKIPPED-LATER=%d\n",
             $this->pass, $this->fail, $this->skip);
         echo ($this->fail === 0 ? "GATE: ✅ PASS (foundation green)\n"
                                 : "GATE: ❌ FAIL\n");

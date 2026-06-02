@@ -168,6 +168,10 @@ $route['superadmin/dashboard/statistics']               = 'Superadmin_analytics/
 $route['superadmin/dashboard/statistics_data']          = 'Superadmin_analytics/statistics_data';
 $route['superadmin/dashboard/drilldown']                = 'Superadmin_analytics/drilldown';
 $route['superadmin/dashboard/schools-search']           = 'Superadmin_analytics/schools_search';
+// ── B2.3.4-A Phase 1D — School Search spoke AJAX + export endpoints ──
+$route['superadmin/dashboard/schools-search/data']      = 'Superadmin_analytics/schools_search_data';
+$route['superadmin/dashboard/schools-search/options']   = 'Superadmin_analytics/schools_search_options';
+$route['superadmin/dashboard/schools-search/export']    = 'Superadmin_analytics/schools_search_export';
 $route['superadmin/dashboard/revenue']                  = 'Superadmin_analytics/revenue';
 $route['superadmin/dashboard/cross-school']             = 'Superadmin_analytics/cross_school';
 $route['superadmin/dashboard/tenant/(:any)']            = 'Superadmin_analytics/tenant_detail/$1';

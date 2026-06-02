@@ -824,14 +824,352 @@ class B2_analytics_service
     }
 
     // ──────────────────────────────────────────────────────────────
-    // STUBS — come online in later phases
+    // PHASE 1D — FACETED SCHOOL SEARCH SPOKE
+    //
+    // Canonical schools-query surface. Used by the School Search spoke
+    // and (post-Revenue Center, Phase 2) the invoice-generation scoping
+    // layer. Filter semantics locked in design package §1.3.
+    //
+    // Implementation strategy:
+    //   1. Pull the canonical tenant set via list_tenants_summary().
+    //   2. Enrich each row with fields not in the summary view
+    //      (createdAt, state/region, adminDisabled, domainIdentifier).
+    //   3. Apply the filter predicate set (AND semantics across fields,
+    //      OR semantics within multi-value array filters).
+    //   4. Sort by the requested sort key (default: schoolName ASC).
+    //   5. Compute pagination metadata, slice for the requested page.
+    //
+    // Read budget at current 3-tenant scale: 1 query on schools + 1 on
+    // schoolControl + per-tenant subscription point-lookups (~6 reads
+    // per page-load). Phase 1H adds composite-index recommendations
+    // before the tenant count climbs.
     // ──────────────────────────────────────────────────────────────
 
-    /** Phase 1D faceted search. */
-    public function search_schools(array $filters): array
+    /** Cap on the maximum page_size accepted from the client (defensive). */
+    const SEARCH_PAGE_SIZE_MAX = 1000;
+
+    /** Per-request cache of the enriched tenant set keyed by signature. */
+    private $_enriched_tenants_cache = null;
+
+    /**
+     * Faceted school search.
+     *
+     * @param array $filters  see design package §1.3 — keys:
+     *      q (string), states (array<string>), plans (array<string>),
+     *      cities (array<string>), regions (array<string>),
+     *      students_min (int), students_max (int),
+     *      staff_min (int), staff_max (int),
+     *      created_from (Y-m-d), created_to (Y-m-d),
+     *      expiry_from (Y-m-d), expiry_to (Y-m-d).
+     * @param array $sort     ['field' => 'schoolName', 'order' => 'asc'|'desc']
+     * @param int   $page     1-indexed page number.
+     * @param int   $pageSize 25 / 50 / 100; capped at SEARCH_PAGE_SIZE_MAX.
+     *
+     * @return array{
+     *   rows: array<int, array>,
+     *   total: int,
+     *   page: int,
+     *   pageSize: int,
+     *   pageCount: int,
+     *   sort: array,
+     *   filters_applied: array
+     * }
+     */
+    public function search_schools(array $filters = [], array $sort = [], int $page = 1, int $pageSize = 25): array
     {
-        return ['rows' => [], 'total' => 0, '_phase' => '1D_pending'];
+        $page = max(1, $page);
+        $pageSize = max(1, min(self::SEARCH_PAGE_SIZE_MAX, $pageSize));
+        $sort = $this->_normalize_sort($sort);
+
+        if (!$this->ready) {
+            return ['rows' => [], 'total' => 0, 'page' => $page, 'pageSize' => $pageSize,
+                    'pageCount' => 0, 'sort' => $sort, 'filters_applied' => $filters];
+        }
+
+        $all = $this->_load_enriched_tenants();
+        $filtered = [];
+        foreach ($all as $row) {
+            if ($this->_match_filters($row, $filters)) $filtered[] = $row;
+        }
+
+        $this->_sort_rows($filtered, $sort);
+
+        $total = count($filtered);
+        $pageCount = $total > 0 ? (int) ceil($total / $pageSize) : 0;
+        $sliceFrom = ($page - 1) * $pageSize;
+        $pageRows = array_slice($filtered, $sliceFrom, $pageSize);
+        $pageRows = array_map([$this, '_attach_action_urls'], $pageRows);
+
+        return [
+            'rows'            => $pageRows,
+            'total'           => $total,
+            'page'            => $page,
+            'pageSize'        => $pageSize,
+            'pageCount'       => $pageCount,
+            'sort'            => $sort,
+            'filters_applied' => $filters,
+        ];
     }
+
+    /**
+     * Filter dropdown values for the sidebar UI: lifecycle states present
+     * in the data, plan family names from the canonical plans collection,
+     * cities present in tenant set, regions/state values present, and
+     * computed min/max ranges for the student/staff sliders.
+     */
+    public function search_schools_options(): array
+    {
+        if (!$this->ready) {
+            return ['states' => [], 'plans' => [], 'cities' => [], 'regions' => [],
+                    'students_max' => 0, 'staff_max' => 0,
+                    'created_min' => '', 'expiry_max' => ''];
+        }
+        $tenants = $this->_load_enriched_tenants();
+        $states = []; $cities = []; $regions = [];
+        $maxStudents = 0; $maxStaff = 0;
+        $minCreated = null; $maxExpiry = null;
+        foreach ($tenants as $t) {
+            $s = strtolower((string) ($t['lifecycleState'] ?? ''));
+            if ($s !== '') $states[$s] = true;
+            $c = trim((string) ($t['city'] ?? ''));
+            if ($c !== '') $cities[$c] = true;
+            $r = trim((string) ($t['region'] ?? ''));
+            if ($r !== '') $regions[$r] = true;
+            $maxStudents = max($maxStudents, (int) ($t['totalStudents'] ?? 0));
+            $maxStaff    = max($maxStaff,    (int) ($t['totalStaff']    ?? 0));
+            $cAt = (string) ($t['createdAt'] ?? '');
+            if ($cAt !== '' && ($minCreated === null || strcmp($cAt, $minCreated) < 0)) $minCreated = $cAt;
+            $eAt = (string) ($t['subscriptionPeriodEnd'] ?? '');
+            if ($eAt !== '' && ($maxExpiry === null || strcmp($eAt, $maxExpiry) > 0)) $maxExpiry = $eAt;
+        }
+        // Plan options: every plan in the plans collection (so the operator
+        // can search for plans even if no tenant currently subscribes).
+        $plans = [];
+        $planMap = $this->load_plan_price_map();
+        foreach ($planMap as $key => $entry) {
+            // load_plan_price_map indexes by BOTH planFamilyId and full id;
+            // de-dupe on name.
+            $name = (string) ($entry['name'] ?? '');
+            if ($name !== '') $plans[$name] = true;
+        }
+        ksort($states); ksort($cities); ksort($regions); ksort($plans);
+        return [
+            'states'        => array_keys($states),
+            'plans'         => array_keys($plans),
+            'cities'        => array_keys($cities),
+            'regions'       => array_keys($regions),
+            'students_max'  => $maxStudents,
+            'staff_max'     => $maxStaff,
+            'created_min'   => $minCreated ?? '',
+            'expiry_max'    => $maxExpiry ?? '',
+        ];
+    }
+
+    /**
+     * Resolve a saved-search slug to its persisted filter+sort payload.
+     * Used by the schools_search controller when ?saved=<slug> is present.
+     */
+    public function apply_saved_search(string $userId, string $slug): ?array
+    {
+        if (!$this->ready || $userId === '' || $slug === '') return null;
+        $docId = $userId . '_' . $slug;
+        $doc = $this->firebase->firestoreGet('analyticsSavedSearches', $docId);
+        if (!is_array($doc) || empty($doc)) return null;
+        return [
+            'filters' => is_array($doc['filters'] ?? null) ? $doc['filters'] : [],
+            'sort'    => is_array($doc['sort']    ?? null) ? $doc['sort']    : [],
+            'name'    => (string) ($doc['name']   ?? ''),
+            'slug'    => $slug,
+        ];
+    }
+
+    // ── Phase 1D internals ──────────────────────────────────────────
+
+    private function _load_enriched_tenants(): array
+    {
+        if ($this->_enriched_tenants_cache !== null) return $this->_enriched_tenants_cache;
+        $base = $this->registry()->list_tenants_summary();
+        // Pull full schools docs once to harvest createdAt / state /
+        // adminDisabled / domainIdentifier (fields not present in summary).
+        $rawSchools = $this->firebase->firestoreQuery('schools', []);
+        $byId = [];
+        if (is_array($rawSchools)) {
+            foreach ($rawSchools as $row) {
+                $data = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+                $sid = (string) ($row['id'] ?? $data['__firestoreId'] ?? '');
+                if ($sid === '') continue;
+                $byId[$sid] = $data;
+            }
+        }
+        // schoolControl read for adminDisabled (defense-in-depth alignment
+        // with H1 server-side rule); tolerant to missing docs.
+        $rawCtrls = $this->firebase->firestoreQuery('schoolControl', []);
+        $ctrlsById = [];
+        if (is_array($rawCtrls)) {
+            foreach ($rawCtrls as $row) {
+                $data = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+                $sid = (string) ($data['schoolId'] ?? $row['id'] ?? $data['__firestoreId'] ?? '');
+                if ($sid !== '') $ctrlsById[$sid] = $data;
+            }
+        }
+        $out = [];
+        foreach ($base as $row) {
+            $sid = (string) ($row['schoolId'] ?? '');
+            $sData = $byId[$sid] ?? [];
+            $cData = $ctrlsById[$sid] ?? [];
+            $row['createdAt']         = (string) ($sData['createdAt'] ?? '');
+            $row['region']            = (string) ($sData['state'] ?? $sData['region'] ?? '');
+            $row['adminDisabled']     = (bool)   ($sData['adminDisabled'] ?? $cData['adminDisabled'] ?? false);
+            $row['domainIdentifier']  = (string) ($sData['domainIdentifier'] ?? '');
+            // Resolve plan name once.
+            $planMap = $this->load_plan_price_map();
+            $pfid = (string) ($row['planFamilyId'] ?? '');
+            $row['planName'] = ($pfid !== '' && isset($planMap[$pfid]))
+                ? (string) $planMap[$pfid]['name']
+                : '— No Plan';
+            $out[] = $row;
+        }
+        $this->_enriched_tenants_cache = $out;
+        return $out;
+    }
+
+    private function _match_filters(array $row, array $f): bool
+    {
+        // 1. Free-text — substring across name/code/city/domain/sid.
+        $q = trim((string) ($f['q'] ?? ''));
+        if ($q !== '') {
+            $needle = strtolower($q);
+            $hay = strtolower(implode(' ', [
+                (string) ($row['schoolName']       ?? ''),
+                (string) ($row['schoolCode']       ?? ''),
+                (string) ($row['city']             ?? ''),
+                (string) ($row['domainIdentifier'] ?? ''),
+                (string) ($row['schoolId']         ?? ''),
+                (string) ($row['region']           ?? ''),
+            ]));
+            if (strpos($hay, $needle) === false) return false;
+        }
+
+        // 2. Lifecycle states (multi-value OR).
+        $states = self::_csv_to_array($f['states'] ?? []);
+        if (!empty($states)) {
+            $rs = strtolower((string) ($row['lifecycleState'] ?? ''));
+            $statesL = array_map('strtolower', $states);
+            if (!in_array($rs, $statesL, true)) return false;
+        }
+
+        // 3. Plans (by name; multi-value OR).
+        $plans = self::_csv_to_array($f['plans'] ?? []);
+        if (!empty($plans)) {
+            $rp = (string) ($row['planName'] ?? '');
+            if (!in_array($rp, $plans, true)) return false;
+        }
+
+        // 4. Cities (case-insensitive multi-value OR).
+        $cities = self::_csv_to_array($f['cities'] ?? []);
+        if (!empty($cities)) {
+            $rc = strtolower(trim((string) ($row['city'] ?? '')));
+            $citiesL = array_map(fn($c) => strtolower(trim((string) $c)), $cities);
+            if (!in_array($rc, $citiesL, true)) return false;
+        }
+
+        // 5. Regions (case-insensitive multi-value OR).
+        $regions = self::_csv_to_array($f['regions'] ?? []);
+        if (!empty($regions)) {
+            $rr = strtolower(trim((string) ($row['region'] ?? '')));
+            $regionsL = array_map(fn($r) => strtolower(trim((string) $r)), $regions);
+            if (!in_array($rr, $regionsL, true)) return false;
+        }
+
+        // 6. Student count range.
+        $stu = (int) ($row['totalStudents'] ?? 0);
+        if (isset($f['students_min']) && $f['students_min'] !== '' && $stu < (int) $f['students_min']) return false;
+        if (isset($f['students_max']) && $f['students_max'] !== '' && $stu > (int) $f['students_max']) return false;
+
+        // 7. Staff count range.
+        $staff = (int) ($row['totalStaff'] ?? 0);
+        if (isset($f['staff_min']) && $f['staff_min'] !== '' && $staff < (int) $f['staff_min']) return false;
+        if (isset($f['staff_max']) && $f['staff_max'] !== '' && $staff > (int) $f['staff_max']) return false;
+
+        // 8. Created date range. createdAt may be ISO 8601 or Y-m-d.
+        $cAt = (string) ($row['createdAt'] ?? '');
+        if (!empty($f['created_from'])) {
+            $ts = $cAt !== '' ? strtotime($cAt) : 0;
+            $cmp = strtotime($f['created_from']);
+            if ($ts === 0 || ($cmp !== false && $ts < $cmp)) return false;
+        }
+        if (!empty($f['created_to'])) {
+            $ts = $cAt !== '' ? strtotime($cAt) : 0;
+            // inclusive end-of-day
+            $cmp = strtotime($f['created_to'] . ' 23:59:59');
+            if ($ts === 0 || ($cmp !== false && $ts > $cmp)) return false;
+        }
+
+        // 9. Expiry date range.
+        $eAt = (string) ($row['subscriptionPeriodEnd'] ?? '');
+        if (!empty($f['expiry_from'])) {
+            $ts = $eAt !== '' ? strtotime($eAt) : 0;
+            $cmp = strtotime($f['expiry_from']);
+            if ($ts === 0 || ($cmp !== false && $ts < $cmp)) return false;
+        }
+        if (!empty($f['expiry_to'])) {
+            $ts = $eAt !== '' ? strtotime($eAt) : 0;
+            $cmp = strtotime($f['expiry_to'] . ' 23:59:59');
+            if ($ts === 0 || ($cmp !== false && $ts > $cmp)) return false;
+        }
+
+        return true;
+    }
+
+    private function _normalize_sort(array $sort): array
+    {
+        $allowed = ['schoolName', 'schoolCode', 'totalStudents', 'totalStaff',
+                    'createdAt', 'subscriptionPeriodEnd', 'lifecycleState'];
+        $field = (string) ($sort['field'] ?? 'schoolName');
+        if (!in_array($field, $allowed, true)) $field = 'schoolName';
+        $order = strtolower((string) ($sort['order'] ?? 'asc'));
+        if (!in_array($order, ['asc', 'desc'], true)) $order = 'asc';
+        return ['field' => $field, 'order' => $order];
+    }
+
+    private function _sort_rows(array &$rows, array $sort): void
+    {
+        $field = $sort['field']; $desc = ($sort['order'] === 'desc');
+        $numeric = in_array($field, ['totalStudents', 'totalStaff'], true);
+        usort($rows, function ($a, $b) use ($field, $desc, $numeric) {
+            $va = $a[$field] ?? null; $vb = $b[$field] ?? null;
+            $cmp = $numeric ? ((int) $va) <=> ((int) $vb)
+                            : strcasecmp((string) $va, (string) $vb);
+            return $desc ? -$cmp : $cmp;
+        });
+    }
+
+    private function _attach_action_urls(array $row): array
+    {
+        $sid = (string) ($row['schoolId'] ?? '');
+        $row['_detail_url']       = $sid !== '' ? site_url('superadmin/schools/view/' . $sid) : '';
+        $row['_subscription_url'] = $sid !== '' ? site_url('superadmin/schools/view/' . $sid) . '#subscription' : '';
+        $row['_analytics_url']    = $sid !== '' ? site_url('superadmin/dashboard/tenant/' . $sid) : '';
+        return $row;
+    }
+
+    /**
+     * Accept either array or comma-separated string for multi-value filters.
+     * URL-encoded multi-values arrive as CSV via $_GET; saved-search docs
+     * persist as actual arrays.
+     */
+    private static function _csv_to_array($val): array
+    {
+        if (is_array($val)) return array_values(array_filter(array_map('trim', $val), fn($v) => $v !== ''));
+        if (is_string($val) && trim($val) !== '') {
+            return array_values(array_filter(array_map('trim', explode(',', $val)), fn($v) => $v !== ''));
+        }
+        return [];
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // STUBS — come online in later phases
+    // ──────────────────────────────────────────────────────────────
 
     /** Phase 1F cross-school engagement metrics. */
     public function get_cross_school_summary(): array
