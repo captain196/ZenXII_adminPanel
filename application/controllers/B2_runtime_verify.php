@@ -437,6 +437,97 @@ class B2_runtime_verify extends CI_Controller
             'check'  => function () { return ['OK', 'mirror fan-out verified both directions']; },
         ]);
 
+        // ── W6: login_access_view adminDisabled enforcement (2026-06-02 SECURITY) ──
+        // Verifies that the Admin_login gate correctly blocks adminDisabled
+        // tenants, covering 4 explicit scenarios:
+        //   1. active + enabled  → allowed=true
+        //   2. active + disabled → allowed=false   ← NEW behavior post-fix
+        //   3. suspended         → allowed=false
+        //   4. expired           → allowed=false
+        //
+        // Uses byte-for-byte save-and-restore for every mutation (same pattern
+        // as W3+W5 post-fix) to guarantee operator-set state survives the probe
+        // run.
+        $this->_probe('access_gate: login_access_view enforces adminDisabled (4 scenarios)', function () use ($svc, $TEST) {
+            // ── Snapshot ALL mutable surfaces ──
+            $origSch  = $this->firebase->firestoreGet('schools',       $TEST) ?: [];
+            $origCtrl = $this->firebase->firestoreGet('schoolControl', $TEST) ?: [];
+            $origPub  = $this->firebase->firestoreGet('tenantPublic',  $TEST) ?: [];
+            $origDisabledStruct = $origSch['adminDisabled'] ?? null;
+            $origPubAd          = !empty($origPub['adminDisabled']);
+            $origLifeState      = (string) (($origCtrl['lifecycle'] ?? [])['state'] ?? 'active');
+            $subPtr             = (string) (($origCtrl['subscription'] ?? [])['subscriptionId'] ?? '');
+            $origSub            = $subPtr !== '' ? $this->firebase->firestoreGet('subscriptions', $subPtr) : null;
+            $origPeriodEnd      = is_array($origSub) ? (string) ($origSub['periodEnd'] ?? '') : '';
+
+            $now = time();
+            $failures = [];
+
+            try {
+                // ── Scenario 1: active + enabled → allowed=true ──
+                $this->firebase->firestoreUpdate('schools',      $TEST, ['adminDisabled' => ['value' => false, 'reason' => '', 'actor' => 'rt_probe_w6', 'updatedAt' => date('c')]]);
+                $this->firebase->firestoreUpdate('tenantPublic', $TEST, ['adminDisabled' => false]);
+                $this->firebase->firestoreUpdate('schoolControl', $TEST, ['lifecycle' => ['state' => 'active', 'updatedAt' => date('c')]]);
+                $v1 = $svc->login_access_view($TEST, $now);
+                if (empty($v1['allowed'])) {
+                    $failures[] = 'S1 active+enabled: gate denied (expected allowed=true), got state=' . ($v1['state'] ?? '?') . ' adminDisabled=' . (($v1['adminDisabled'] ?? false) ? 'true' : 'false');
+                }
+
+                // ── Scenario 2: active + disabled → allowed=false (NEW post-fix) ──
+                $this->firebase->firestoreUpdate('schools',      $TEST, ['adminDisabled' => ['value' => true, 'reason' => 'rt_probe', 'actor' => 'rt_probe_w6', 'updatedAt' => date('c')]]);
+                $this->firebase->firestoreUpdate('tenantPublic', $TEST, ['adminDisabled' => true]);
+                $this->firebase->firestoreUpdate('schoolControl', $TEST, ['lifecycle' => ['state' => 'active', 'updatedAt' => date('c')]]);
+                $v2 = $svc->login_access_view($TEST, $now);
+                if (!empty($v2['allowed'])) {
+                    $failures[] = 'S2 active+disabled: gate ALLOWED login (expected blocked)';
+                }
+                if (($v2['adminDisabled'] ?? false) !== true) {
+                    $failures[] = 'S2 active+disabled: response.adminDisabled was not true (was ' . (($v2['adminDisabled'] ?? false) ? 'true' : 'false') . ')';
+                }
+
+                // ── Scenario 3: suspended (regardless of adminDisabled) ──
+                $this->firebase->firestoreUpdate('schools',      $TEST, ['adminDisabled' => ['value' => false, 'reason' => '', 'actor' => 'rt_probe_w6', 'updatedAt' => date('c')]]);
+                $this->firebase->firestoreUpdate('tenantPublic', $TEST, ['adminDisabled' => false]);
+                $this->firebase->firestoreUpdate('schoolControl', $TEST, ['lifecycle' => ['state' => 'suspended', 'updatedAt' => date('c')]]);
+                $v3 = $svc->login_access_view($TEST, $now);
+                if (!empty($v3['allowed'])) {
+                    $failures[] = 'S3 suspended: gate ALLOWED login (expected blocked by lifecycle)';
+                }
+
+                // ── Scenario 4: expired (periodEnd in past) ──
+                if ($subPtr !== '' && is_array($origSub)) {
+                    $this->firebase->firestoreUpdate('schools',      $TEST, ['adminDisabled' => ['value' => false, 'reason' => '', 'actor' => 'rt_probe_w6', 'updatedAt' => date('c')]]);
+                    $this->firebase->firestoreUpdate('tenantPublic', $TEST, ['adminDisabled' => false]);
+                    $this->firebase->firestoreUpdate('schoolControl', $TEST, ['lifecycle' => ['state' => 'active', 'updatedAt' => date('c')]]);
+                    $this->firebase->firestoreUpdate('subscriptions', $subPtr, ['periodEnd' => '2024-01-01']);
+                    $v4 = $svc->login_access_view($TEST, $now);
+                    if (!empty($v4['allowed'])) {
+                        $failures[] = 'S4 expired: gate ALLOWED login (expected blocked by periodEnd)';
+                    }
+                }
+            } finally {
+                // ── SAFE RESTORE: byte-for-byte snapshot replay ──
+                if ($origDisabledStruct !== null) {
+                    $this->firebase->firestoreUpdate('schools', $TEST, ['adminDisabled' => $origDisabledStruct]);
+                } else {
+                    $this->firebase->firestoreUpdate('schools', $TEST, ['adminDisabled' => ['value' => false, 'reason' => '', 'actor' => 'rt_probe_restore', 'updatedAt' => date('c')]]);
+                }
+                $this->firebase->firestoreUpdate('tenantPublic',  $TEST, ['adminDisabled' => $origPubAd]);
+                $svc->write_lifecycle_state($TEST, $origLifeState !== '' ? $origLifeState : 'active', 'rt_probe_w6_restore');
+                if ($subPtr !== '' && $origPeriodEnd !== '') {
+                    $this->firebase->firestoreUpdate('subscriptions', $subPtr, ['periodEnd' => $origPeriodEnd]);
+                }
+            }
+
+            if (!empty($failures)) {
+                throw new \Exception('Gate enforcement failures: ' . implode(' | ', $failures));
+            }
+            return [];
+        }, [
+            'expect' => '4-scenario enforcement: only active+enabled passes; all others blocked',
+            'check'  => function () { return ['OK', '4 scenarios verified; snapshot-restore complete']; },
+        ]);
+
         $this->_print_report();
         // Hard gate: any verdict other than OK, OR any PHP warning, fails.
         $nonOk = 0;

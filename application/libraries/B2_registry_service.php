@@ -208,16 +208,55 @@ class B2_registry_service
         $graceEndTs  = ($graceEnd  !== '') ? (int) strtotime($graceEnd  . ' 23:59:59')
                                             : ($periodEndTs > 0 ? $periodEndTs + (7 * 86400) : 0);
 
+        // 2026-06-02 SECURITY FIX: adminDisabled enforcement at the web login
+        // gate. Pre-fix this function only checked lifecycle.state + periodEnd
+        // and ignored both schools.adminDisabled.value AND tenantPublic.
+        // adminDisabled. Operator-disabled tenants could authenticate through
+        // the web login flow despite the SA UI and Phase 1G surfaces correctly
+        // showing the disabled badge. Firestore Rules (H1.5 mobile gate)
+        // already blocked these — only the PHP-side web flow had the gap.
+        //
+        // Read priority matches Phase 1G's get_tenant_identity():
+        //   1. tenantPublic.adminDisabled (H1.5 canonical mirror — operator
+        //      design lock; same source mobile clients read)
+        //   2. schools.adminDisabled.value (audit-log Array struct's value
+        //      field; falls back when mirror is missing)
+        // STRICT === true check; non-bool (Array without .value=true) or
+        // missing → defaults to false (not disabled).
+        $adminDisabled = false;
+        try {
+            $pub = $this->firebase->firestoreGet('tenantPublic', $schoolId);
+            if (is_array($pub) && (($pub['adminDisabled'] ?? null) === true)) {
+                $adminDisabled = true;
+            } else {
+                $sch = $this->firebase->firestoreGet('schools', $schoolId);
+                if (is_array($sch) && is_array($sch['adminDisabled'] ?? null)
+                    && (($sch['adminDisabled']['value'] ?? false) === true)) {
+                    $adminDisabled = true;
+                }
+            }
+        } catch (\Throwable $e) {
+            // Defensive: on read failure, do NOT silently allow. Treat as
+            // disabled (fail-closed) to err on the safe side for the gate.
+            log_message('error',
+                'B2_registry_service::login_access_view adminDisabled read failed schoolId=['
+                . $schoolId . '] err=' . $e->getMessage()
+            );
+            $adminDisabled = true;
+        }
+
         $allowed = in_array($state, self::ACCESS_LIFECYCLE_STATES, true)
                  && $periodEndTs > 0
-                 && $periodEndTs >= $now;
+                 && $periodEndTs >= $now
+                 && !$adminDisabled;
 
         return [
-            'known'       => true,
-            'allowed'     => $allowed,
-            'state'       => $state,
-            'periodEndTs' => $periodEndTs,
-            'graceEndTs'  => $graceEndTs,
+            'known'         => true,
+            'allowed'       => $allowed,
+            'state'         => $state,
+            'periodEndTs'   => $periodEndTs,
+            'graceEndTs'    => $graceEndTs,
+            'adminDisabled' => $adminDisabled,
         ];
     }
 
