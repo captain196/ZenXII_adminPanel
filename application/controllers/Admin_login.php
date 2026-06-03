@@ -6,56 +6,72 @@ defined('BASEPATH') or exit('No direct script access allowed');
  * Extends CI_Controller (NOT MY_Controller — avoids auth redirect loop).
  *
  * ╔══════════════════════════════════════════════════════════════════╗
+ * ║  WAVE C (2026-06-03) — Firebase Auth + Firestore-only cutover    ║
+ * ╠══════════════════════════════════════════════════════════════════╣
+ * ║  Credential authority   : Firebase Auth (signInWithEmail)        ║
+ * ║  Authorization (role)   : Firebase Auth custom claims            ║
+ * ║  Authorization (status) : Firestore staff/{schoolId}_{adminId}   ║
+ * ║  Lockout state          : Firestore adminAuthState/{adminId}     ║
+ * ║  Per-IP rate limit      : Firestore adminIpRateLimit/{ip}        ║
+ * ║  Subscription gate      : B2_registry_service::login_access_view ║
+ * ║                                                                  ║
+ * ║  Removed (legacy paths)                                          ║
+ * ║   - Node/Mongo Auth API PRIMARY credential check                  ║
+ * ║   - RTDB direct-login fallback helper                            ║
+ * ║   - RTDB Users/Admin scan helper                                 ║
+ * ║   - RTDB schoolCode->schoolId resolver helper                    ║
+ * ║   - RTDB-backed IP rate-limit + lockout helpers                  ║
+ * ║   - Logout RTDB AccessHistory write                              ║
+ * ║                                                                  ║
+ * ║  Out of scope (intentional — separate workstreams)               ║
+ * ║   - Password reset: auth_client retained for forgot/verify/reset ║
+ * ║   - Student password reset (same)                                ║
+ * ║   - Wave D claim-writer centralisation                           ║
+ * ╠══════════════════════════════════════════════════════════════════╣
  * ║  SECURITY MEASURES                                               ║
- * ╠══════════════════════════════════════════════════════════════════╣
- * ║  [S-01]  POST-only enforcement on check_credentials             ║
+ * ║  [S-01]  POST-only enforcement on check_credentials              ║
  * ║  [S-02]  Input length + format validation                        ║
- * ║  [S-03]  Firebase path injection blocked (/ . # $ [ ] chars)    ║
+ * ║  [S-03]  Path injection guard (alphanumeric + - _ only)          ║
  * ║  [S-04]  Generic error messages — no user/school enumeration     ║
- * ║  [S-05]  Timing-safe credential flow — dummy hash on miss        ║
- * ║  [S-06]  Per-account brute-force lockout (5 attempts / 30 min)  ║
- * ║  [S-07]  Per-IP rate limiting (20 fails / 15 min across any ID) ║
- * ║  [S-08]  Password length capped at 72 chars (bcrypt DoS guard)  ║
- * ║  [S-09]  password_hash / password_verify + plain-text migration ║
- * ║  [S-10]  Session fixation prevented — sess_regenerate(TRUE)     ║
- * ║  [S-11]  All session keys cleared on logout + Firebase updated  ║
- * ║  [S-12]  Security + no-cache headers on every response          ║
- * ║  [S-13]  Log injection prevented — inputs sanitised before log  ║
- * ║  [S-14]  Subscription status + date gating at login time        ║
- * ║  [S-15]  School ID resolved via Indexes/School_codes index      ║
- * ╠══════════════════════════════════════════════════════════════════╣
- * ║  AUDIT FIXES (this revision)                                     ║
- * ║  [A-01]  Lockout check moved BEFORE bcrypt — saves CPU on lock  ║
- * ║  [A-02]  SESSION_KEYS includes 'login_csrf' — no ghost keys     ║
+ * ║  [S-06]  Per-account lockout (5 fails / 30 min) — Firestore      ║
+ * ║  [S-07]  Per-IP rate limit (20 fails / 15 min) — Firestore       ║
+ * ║  [S-08]  Password length capped at 72 chars (bcrypt DoS guard)   ║
+ * ║  [S-10]  Session fixation prevented — sess_regenerate(TRUE)      ║
+ * ║  [S-11]  All session keys cleared on logout                      ║
+ * ║  [S-12]  Security + no-cache headers on every response           ║
+ * ║  [S-13]  Log injection prevented — inputs sanitised before log   ║
+ * ║  [S-14]  Subscription status + date gating at login time         ║
  * ╚══════════════════════════════════════════════════════════════════╝
  */
 class Admin_login extends CI_Controller
 {
-    // ── Dummy bcrypt hash — timing-safe flow when admin not found (S-05) ─
-    private const DUMMY_HASH = '$2y$10$usesomesillystringfore2uDLvp1Ii2e./U9C8sBjqp8I/p7';
-
     // ── Input limits (S-02 / S-08) ────────────────────────────────────────
     private const MAX_ADMIN_ID_LEN  = 32;
     private const MAX_PASSWORD_LEN  = 72;  // bcrypt silently ignores beyond 72
 
-    // ── Per-IP rate limit (S-07) ──────────────────────────────────────────
+    // ── Per-IP rate limit (S-07) — Firestore-backed ──────────────────────
     private const IP_MAX_FAILS  = 20;   // max fails from one IP
     private const IP_WINDOW_SEC = 900;  // 15-minute sliding window
 
+    // ── Wave C: per-account lockout (S-06) — Firestore-canonical ─────────
+    private const ACCT_MAX_FAILS      = 5;
+    private const ACCT_LOCK_SEC       = 1800;  // 30 min
+    private const FS_ADMIN_AUTH_STATE = 'adminAuthState';
+    private const FS_ADMIN_IP_RL      = 'adminIpRateLimit';
+
     // ── Single source of truth for ALL session keys ───────────────────────
     // Must stay in sync with MY_Controller::SESSION_KEYS.
-    // [A-02] 'login_csrf' included so logout clears it cleanly.
     public const SESSION_KEYS = [
         'admin_id',
-        'school_id',              // now SCH_XXXXXX
-        'school_code',            // login code
+        'school_id',              // SCH_XXXXXX (Firestore canonical)
+        'school_code',            // numeric login code (back-compat)
         'admin_role',
         'admin_name',
         'session',
         'current_session',
         'session_year',
         'schoolName',
-        'school_display_name',    // human-readable name
+        'school_display_name',
         'school_features',
         'available_sessions',
         'subscription_expiry',
@@ -71,6 +87,17 @@ class Admin_login extends CI_Controller
         parent::__construct();
         $this->load->library('session');
         $this->load->library('firebase');
+
+        // Wave C (2026-06-03): security telemetry for ADMIN_LOGIN_* events.
+        // Admin login has no school context until after auth resolves the
+        // claim-derived schoolId; use synthetic 'ADMIN_PANEL' to satisfy
+        // Security_telemetry's init contract (mirrors Superadmin_login).
+        $this->load->library('security_telemetry', null, 'sec_telem');
+        $this->sec_telem->init($this->firebase, 'ADMIN_PANEL', [
+            'uid'  => '',
+            'role' => 'anonymous',
+        ], '');
+
         $this->load->helper('url');
 
         // [S-12] Security + no-cache headers on every response
@@ -95,7 +122,7 @@ class Admin_login extends CI_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    //  CHECK CREDENTIALS
+    //  CHECK CREDENTIALS — Wave C: Firebase Auth + Firestore-only
     // ─────────────────────────────────────────────────────────────────────
     public function check_credentials(): void
     {
@@ -104,9 +131,8 @@ class Admin_login extends CI_Controller
             redirect('admin_login');
         }
 
-        $now      = time();
-        $firebase = $this->firebase;
-        $ip       = $this->_get_real_ip();
+        $now = time();
+        $ip  = $this->_get_real_ip();
 
         // ── [S-02] Read + length-validate inputs ──────────────────────────
         $rawAdminId  = (string) $this->input->post('admin_id');
@@ -128,89 +154,152 @@ class Admin_login extends CI_Controller
         $adminId  = trim($rawAdminId);
         $password = $rawPassword;
 
-        // [S-03] Firebase path injection guard
+        // [S-03] Path injection guard
         if (! $this->_is_safe_id($adminId)) {
             $this->session->set_flashdata('error', 'Invalid credentials.');
             redirect('admin_login');
         }
 
-        // ══════════════════════════════════════════════════════════════
-        //  LOCAL-DEV FIREBASE-DIRECT LOGIN (auto-resolves school from adminId)
-        //  When the Auth API is unreachable (Node service down, Render asleep),
-        //  fall back to reading admin record straight from Firebase RTDB.
-        //  If a matching school is found for the adminId, the call below
-        //  always redirects (success → /admin, fail → /admin_login with error)
-        //  so control never returns past it.
-        // ══════════════════════════════════════════════════════════════
-        $autoSchoolCode = $this->_findSchoolForAdmin($adminId);
-        if ($autoSchoolCode !== null) {
-            $this->_firebase_fallback_login($adminId, $autoSchoolCode, $password, $ip, $now);
-            // unreachable — _firebase_fallback_login redirects in all branches.
-        }
-
-        // ══════════════════════════════════════════════════════════════
-        //  PRIMARY: Call Auth API (MongoDB lookup — schoolCode resolved automatically)
-        // ══════════════════════════════════════════════════════════════
-        $this->load->library('auth_client');
-        $result = $this->auth_client->web_login($adminId, '', $password, $ip);
-
-        if (!empty($result['unavailable'])) {
-            log_message('error', 'Auth API unavailable — cannot login without it');
-            $this->session->set_flashdata('error', 'Authentication service is temporarily unavailable. Please try again shortly.');
+        // [S-07] Per-IP rate limit (Firestore-canonical)
+        if ($this->_admin_ip_blocked($ip, $now)) {
+            $this->session->set_flashdata('error', 'Too many login attempts. Please try again later.');
             redirect('admin_login');
         }
 
-        if (empty($result['success'])) {
-            $message = $result['message'] ?? 'Invalid credentials. Please try again.';
-            $this->session->set_flashdata('error', $message);
+        // [S-06] Per-account lockout enforcement (Firestore-canonical).
+        // Wave C follow-up (2026-06-03): _record_admin_account_fail writes
+        // lockedUntil to adminAuthState/{adminId} after ACCT_MAX_FAILS, but
+        // the original cutover (ae605392) did not read/enforce it here.
+        // This block blocks the Firebase Auth call while a lockout window
+        // is in force, mirroring the IP-rate-limit gate above.
+        if ($this->_admin_account_locked($adminId, $now)) {
+            $this->sec_telem->emit('ADMIN_LOGIN_LOCKED', 'warning', [
+                'admin_id' => $adminId,
+                'ip'       => $ip,
+                'reason'   => 'still_locked',
+            ], ['type' => 'school_admin', 'id' => $adminId]);
+            $this->session->set_flashdata('error', 'Account locked. Please try again later.');
             redirect('admin_login');
         }
 
         // ══════════════════════════════════════════════════════════════
-        //  AUTH API SUCCESS — extract data and set session
+        //  WAVE C: Firebase-Auth-first admin login (sole credential authority).
+        //  _try_firebase_admin_login() emits success + redirects on a valid
+        //  Firebase Auth credential. Falls through (returns) only on failure.
         // ══════════════════════════════════════════════════════════════
-        $userData     = $result['user']         ?? [];
-        $subscription = $result['subscription'] ?? [];
-        $sessions     = $result['sessions']     ?? [];
+        $this->_try_firebase_admin_login($adminId, $password, $ip, $now);
 
-        // MongoDB: schoolId = login code (10005), schoolCode = Firebase key (SCH_XXXXXX)
-        $school_login_code   = $userData['schoolId']    ?? '';   // login code — for Users/Admin/{code}/
-        $school_firebase_key = $userData['schoolCode']  ?? '';   // Firebase key — for Schools/{key}/, System/Schools/{key}/
-        $displayName         = $result['displayName']   ?? $school_firebase_key;
-        $adminName           = $userData['name']        ?? '';
+        // Reached here means Firebase Auth rejected (or claims/status check failed).
+        // Record per-IP + per-account fails, emit telemetry, return to login form.
+        $this->_record_admin_ip_fail($ip, $now);
+        $locked = $this->_record_admin_account_fail($adminId, $ip, $now);
 
-        // Phase 2A — block login if staff record is Inactive. (No-op for non-staff admins.)
-        $this->_assert_staff_active($school_firebase_key, $adminId);
+        $this->sec_telem->emit(
+            $locked ? 'ADMIN_LOGIN_LOCKED' : 'ADMIN_LOGIN_FAILED',
+            $locked ? 'warning' : 'info',
+            ['admin_id' => $adminId, 'ip' => $ip, 'reason' => 'firebase_auth_rejected'],
+            ['type' => 'school_admin', 'id' => $adminId]
+        );
 
-        // Role: use Firebase profile's Role (e.g. "Super Admin", "School Super Admin")
-        // which is what the rest of the PHP app expects
-        $firebaseProfile = $result['firebaseProfile'] ?? [];
-        $adminRole       = $firebaseProfile['Role']   ?? $userData['role'] ?? '';
+        $this->session->set_flashdata('error', $locked
+            ? 'Too many failed attempts. Account locked for 30 minutes.'
+            : 'Invalid credentials. Please try again.');
+        redirect('admin_login');
+    }
 
-        // Subscription timestamps
-        $endDate     = $subscription['endDate']  ?? '';
-        $endTs       = ($endDate !== '') ? (int) strtotime($endDate . ' 23:59:59') : $now + 86400;
-        $graceEndRaw = $subscription['graceEnd'] ?? '';
-        $graceEndTs  = ($graceEndRaw !== '' && strtotime($graceEndRaw) !== false)
-            ? (int) strtotime($graceEndRaw . ' 23:59:59')
-            : $endTs + (7 * 86400);
-        $daysRemaining = (int) ceil(($endTs - $now) / 86400);
-        $subWarning    = ($daysRemaining <= 7)
+    // ─────────────────────────────────────────────────────────────────────
+    //  WAVE C — Firebase-Auth-first admin login.
+    //  Credential authority: Firebase Auth (signInWithEmail).
+    //  Authorization: Firebase Auth custom claims + Firestore staff.status.
+    //  Emits ADMIN_LOGIN_SUCCESS + redirects on success; returns on failure.
+    // ─────────────────────────────────────────────────────────────────────
+    private function _try_firebase_admin_login(string $adminId, string $password, string $ip, int $now): void
+    {
+        // Step 1: Credential check via Firebase Auth.
+        $email  = Firebase::authEmail($adminId);
+        $signIn = $this->firebase->signInWithEmail($email, $password);
+        if ($signIn === null) {
+            return; // Caller falls through to lockout + ADMIN_LOGIN_FAILED telemetry.
+        }
+
+        // Step 2: Extract uid + custom claims from sign-in result.
+        $uid    = $this->_signin_uid($signIn, $adminId);
+        $claims = $this->_signin_claims($signIn, $uid);
+
+        // Wave C admin-claims schema (canonical post-backfill):
+        //   role         : machine label (SA) OR display string (staff legacy)
+        //   roleLabel    : display string (always populated post-backfill)
+        //   schoolId     : Firestore SCH_* key
+        //   schoolCode   : numeric login code
+        //   parentDbKey  : legacy alias of schoolCode (back-compat — retirement deferred to Wave E)
+        $schoolId   = (string) ($claims['schoolId']   ?? '');
+        $schoolCode = (string) ($claims['schoolCode'] ?? '');
+        $roleLabel  = (string) ($claims['roleLabel']  ?? '');
+        $roleRaw    = (string) ($claims['role']       ?? '');
+
+        if ($schoolId === '' || $roleRaw === '') {
+            $this->sec_telem->emit('ADMIN_LOGIN_AUTHZ_MISSING', 'warning', [
+                'admin_id'     => $adminId,
+                'ip'           => $ip,
+                'has_schoolId' => $schoolId !== '',
+                'has_role'     => $roleRaw  !== '',
+            ], ['type' => 'school_admin', 'id' => $adminId]);
+            return;
+        }
+
+        // Step 3: Firestore staff status check (canonical Active/Inactive).
+        try {
+            $staffDoc = $this->firebase->firestoreGet('staff', $schoolId . '_' . $adminId);
+        } catch (\Throwable $e) {
+            log_message('error', 'Wave C: staff status read failed for ' . $adminId . ': ' . $e->getMessage());
+            $staffDoc = null;
+        }
+        if (!is_array($staffDoc) || empty($staffDoc)) {
+            $this->sec_telem->emit('ADMIN_LOGIN_AUTHZ_MISSING', 'warning', [
+                'admin_id' => $adminId,
+                'ip'       => $ip,
+                'reason'   => 'staff_doc_absent',
+                'schoolId' => $schoolId,
+            ], ['type' => 'school_admin', 'id' => $adminId]);
+            return;
+        }
+        $rawStatus = (string) ($staffDoc['status'] ?? $staffDoc['Status'] ?? 'Active');
+        if (strcasecmp(trim($rawStatus), 'Active') !== 0) {
+            $this->sec_telem->emit('ADMIN_LOGIN_AUTHZ_INACTIVE', 'warning', [
+                'admin_id' => $adminId,
+                'ip'       => $ip,
+                'schoolId' => $schoolId,
+                'status'   => $rawStatus,
+            ], ['type' => 'school_admin', 'id' => $adminId]);
+            $this->session->set_flashdata('error', 'Account deactivated. Contact admin.');
+            redirect('admin_login');
+        }
+
+        // Step 4: Subscription / lifecycle gate (existing B2_registry_service — Firestore-canonical).
+        $this->load->library('B2_registry_service');
+        $this->b2_registry_service->init($this->firebase);
+        $view = $this->b2_registry_service->login_access_view($schoolId, $now);
+
+        if (empty($view['known'])) {
+            $this->session->set_flashdata('error', 'Subscription record not found. Please contact support.');
+            redirect('admin_login');
+        }
+        if (empty($view['allowed'])) {
+            $this->session->set_flashdata('error', 'Subscription is not active. Please contact support.');
+            redirect('admin_login');
+        }
+
+        $endTs         = (int) ($view['periodEndTs'] ?? 0);
+        $graceEndTs    = (int) ($view['graceEndTs']  ?? 0);
+        $endDate       = ($endTs > 0) ? date('Y-m-d', $endTs) : '';
+        $daysRemaining = ($endTs > 0) ? (int) ceil(($endTs - $now) / 86400) : 0;
+        $subWarning    = ($endTs > 0 && $daysRemaining <= 7)
             ? "Subscription expires in {$daysRemaining} day(s) on {$endDate}. Please renew soon."
             : null;
 
-        $financialYear     = $sessions['active']    ?? '';
-        $availableSessions = $sessions['available']  ?? [];
-        $schoolFeatures    = $subscription['features'] ?? [];
-
-        // Update Firebase access history (fire-and-forget for audit trail)
-        $firebase->update("Users/Admin/{$school_login_code}/{$adminId}/AccessHistory", [
-            'LastLogin'     => date('c', $now),
-            'LoginIP'       => $ip,
-            'LoginAttempts' => 0,
-            'LockedUntil'   => null,
-            'IsLoggedIn'    => true,
-        ]);
+        // Step 5: Establish session.
+        $this->_clear_admin_ip_block($ip);
+        $this->_clear_admin_account_fail($adminId, $schoolId);
 
         // [S-10] Prevent session fixation
         $this->session->sess_regenerate(TRUE);
@@ -218,300 +307,315 @@ class Admin_login extends CI_Controller
         // Clear any SA panel session to prevent session bleed-through
         $this->session->unset_userdata(['sa_id', 'sa_name', 'sa_role', 'sa_email', 'sa_csrf_token']);
 
-        // [S-11] Store all session data — identical keys as before
+        $adminName    = (string) ($staffDoc['name'] ?? $staffDoc['Name'] ?? $adminId);
+        $displayRole  = $roleLabel !== '' ? $roleLabel : $roleRaw;
+
+        // [S-11] Store session data (mirrors legacy session-shape contract).
         $this->session->set_userdata([
             'admin_id'               => $adminId,
-            'school_id'              => $school_firebase_key,   // SCH_XXXXXX — used for Schools/{id}/ paths
-            'school_code'            => $school_login_code,     // 10005 — used for Users/Admin/{code}/ paths
-            'admin_role'             => $adminRole,
+            'school_id'              => $schoolId,         // SCH_XXXXXX (Firestore canonical)
+            'school_code'            => $schoolCode,       // numeric login code (back-compat)
+            'admin_role'             => $displayRole,
             'admin_name'             => $adminName,
-            'session'                => $financialYear,
-            'current_session'        => $financialYear,
-            'session_year'           => $financialYear,
-            'schoolName'             => $school_firebase_key,
-            'school_display_name'    => $displayName,
-            'school_features'        => $schoolFeatures,
-            'available_sessions'     => $availableSessions,
             'subscription_expiry'    => $endTs,
             'subscription_grace_end' => $graceEndTs,
             'subscription_warning'   => $subWarning,
             'sub_check_ts'           => 0,
         ]);
 
+        // Hydrate session-derived fields from schools/{schoolId} Firestore doc.
+        $this->_hydrate_admin_session_from_school($schoolId);
+
         // [RBAC] Cache role permissions in session
         $this->load->helper('rbac');
-        $rbacPerms = load_role_permissions($firebase, $school_firebase_key, $adminRole);
+        $rbacPerms = load_role_permissions($this->firebase, $schoolId, $displayRole);
         $this->session->set_userdata('rbac_permissions', $rbacPerms);
 
-        // Forced-change-password gate (admin-driven reset flow).
-        $mustChange = (bool) $this->firebase->getCustomClaim($adminId, 'must_change_password', false);
-        $this->session->set_userdata('must_change_password', $mustChange);
+        $this->sec_telem->emit('ADMIN_LOGIN_SUCCESS', 'info', [
+            'admin_id'    => $adminId,
+            'ip'          => $ip,
+            'auth_source' => 'firebase',
+            'schoolId'    => $schoolId,
+            'role'        => $roleRaw,
+        ], ['type' => 'school_admin', 'id' => $adminId]);
 
         log_message('info',
-            'Login OK (auth-api) admin=' . $this->_log_safe($adminId)
-            . ' school=' . $this->_log_safe($school_login_code)
-            . ' schoolId=' . $this->_log_safe($school_firebase_key)
-            . ' source=' . ($result['source'] ?? 'unknown')
+            'Login OK (firebase-auth) admin=' . $this->_log_safe($adminId)
+            . ' school=' . $this->_log_safe($schoolCode)
+            . ' schoolId=' . $this->_log_safe($schoolId)
+            . ' uid=' . $this->_log_safe($uid)
             . ' ip=' . $ip
         );
 
-        redirect($mustChange ? 'admin_users/change_my_password' : 'admin/index');
+        redirect('admin/index');
+    }
+
+    /**
+     * Extract the authenticated uid from the Kreait SignInResult.
+     * Falls back to adminId if the structure is opaque.
+     */
+    private function _signin_uid($signIn, string $adminId): string
+    {
+        try {
+            if (is_object($signIn) && method_exists($signIn, 'data')) {
+                $d = $signIn->data();
+                if (is_array($d) && !empty($d['localId'])) {
+                    return (string) $d['localId'];
+                }
+            }
+        } catch (\Throwable $e) {
+            /* fall through */
+        }
+        return $adminId;
+    }
+
+    /**
+     * Extract custom claims from the SignInResult's ID token (JWT payload).
+     * Firebase puts custom claims as top-level fields in the JWT payload
+     * alongside standard claims (iat, exp, sub, etc.); we decode the JWT
+     * and filter out the standard fields to return only the custom claims.
+     *
+     * If extraction fails for any reason, returns an empty array — the
+     * caller will then emit ADMIN_LOGIN_AUTHZ_MISSING and fall through to error.
+     */
+    private function _signin_claims($signIn, string $uid): array
+    {
+        if (!is_object($signIn)) return [];
+
+        $idToken = '';
+        // Kreait SignInResult exposes idToken() returning string|null.
+        if (method_exists($signIn, 'idToken')) {
+            try { $idToken = (string) $signIn->idToken(); } catch (\Throwable $e) { /* try fallback */ }
+        }
+        // Fallback: data() array key 'idToken'.
+        if ($idToken === '' && method_exists($signIn, 'data')) {
+            try {
+                $d = $signIn->data();
+                if (is_array($d) && !empty($d['idToken'])) {
+                    $idToken = (string) $d['idToken'];
+                }
+            } catch (\Throwable $e) { /* fall through */ }
+        }
+        if ($idToken === '') return [];
+
+        // JWT has 3 base64url-encoded segments separated by '.' — payload is segment 2.
+        $parts = explode('.', $idToken);
+        if (count($parts) !== 3) return [];
+
+        try {
+            $payload = json_decode(base64_decode(strtr($parts[1], '-_', '+/')), true);
+            if (!is_array($payload)) return [];
+
+            // Filter standard JWT + Firebase reserved claims; keep custom ones.
+            static $standard = [
+                'iss', 'aud', 'sub', 'iat', 'exp', 'auth_time', 'nbf',
+                'firebase', 'email', 'email_verified', 'user_id', 'name', 'picture', 'phone_number',
+            ];
+            $claims = [];
+            foreach ($payload as $k => $v) {
+                if (!in_array($k, $standard, true)) {
+                    $claims[$k] = $v;
+                }
+            }
+            return $claims;
+        } catch (\Throwable $e) {
+            log_message('warning', 'Wave C: ID-token claims decode failed for ' . $uid . ': ' . $e->getMessage());
+            return [];
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    //  FIREBASE FALLBACK LOGIN (DEPRECATED)
-    //  Kept for emergency use only. Auth API is the sole auth path.
-    //  The admin login flow no longer calls this — it shows an error instead.
+    //  WAVE C: Firestore-canonical IP rate limit (replaces RTDB _is_ip_blocked)
     // ─────────────────────────────────────────────────────────────────────
-    private function _firebase_fallback_login(
-        string $adminId,
-        string $schoolId,
-        string $password,
-        string $ip,
-        int    $now
-    ): void {
-        $firebase = $this->firebase;
-
-        // Per-IP rate limit
-        if ($this->_is_ip_blocked($ip, $now, $firebase)) {
-            $this->session->set_flashdata('error', 'Too many login attempts. Please try again later.');
-            redirect('admin_login');
+    private function _admin_ip_blocked(string $ip, int $now): bool
+    {
+        try {
+            $doc = $this->firebase->firestoreGet(self::FS_ADMIN_IP_RL, $this->_ip_doc_id($ip));
+        } catch (\Throwable $e) {
+            return false; // fail-open on Firestore error (don't lock honest users out)
         }
+        if (!is_array($doc)) return false;
 
-        // Resolve school
-        $schoolId_resolved = $this->_resolveSchoolId($schoolId);
+        $windowStart = (int) ($doc['windowStart'] ?? 0);
+        if ($now - $windowStart > self::IP_WINDOW_SEC) return false;
 
-        // Fetch admin record
-        $adminData = null;
-        if ($schoolId_resolved !== null) {
-            $raw = $firebase->get("Users/Admin/{$schoolId}/{$adminId}");
-            $adminData = is_array($raw) ? $raw : null;
+        return (int) ($doc['fails'] ?? 0) >= self::IP_MAX_FAILS;
+    }
+
+    private function _record_admin_ip_fail(string $ip, int $now): void
+    {
+        $docId = $this->_ip_doc_id($ip);
+        try {
+            $cur = $this->firebase->firestoreGet(self::FS_ADMIN_IP_RL, $docId);
+        } catch (\Throwable $e) {
+            $cur = null;
         }
-
-        // Per-account lockout
-        if ($adminData !== null) {
-            $accessHistory = $adminData['AccessHistory'] ?? [];
-            $lockedUntil   = isset($accessHistory['LockedUntil'])
-                ? (int) strtotime((string) $accessHistory['LockedUntil'])
-                : 0;
-            if ($lockedUntil > 0 && $now >= $lockedUntil) {
-                $firebase->update("Users/Admin/{$schoolId}/{$adminId}/AccessHistory",
-                    ['LoginAttempts' => 0, 'LockedUntil' => null]);
-                $lockedUntil = 0;
-            }
-            if ($lockedUntil > $now) {
-                $minutes = (int) ceil(($lockedUntil - $now) / 60);
-                $this->session->set_flashdata('error',
-                    "Account temporarily locked. Try again in {$minutes} minute(s).");
-                redirect('admin_login');
-            }
-        }
-
-        // ── Password verification ──
-        // PRIMARY: Firebase Auth via identitytoolkit REST.
-        // TRANSITIONAL FALLBACK: RTDB bcrypt — for admins whose Firebase Auth
-        // password is not yet in sync. On RTDB success, we lazy-migrate the
-        // password into Firebase Auth so subsequent logins take the primary path.
-        // TODO: remove the RTDB fallback once migration of existing admins is verified.
-        $credentialsValid = false;
-        $authSource       = 'none';
-
-        $adminEmail = $adminData !== null
-            ? (string) ($adminData['Profile']['email'] ?? $adminData['Email'] ?? '')
-            : '';
-        $emailValid = $adminEmail !== '' && filter_var($adminEmail, FILTER_VALIDATE_EMAIL);
-
-        // Path 1: Firebase Auth (primary)
-        if ($adminData !== null && $emailValid) {
-            $fbResult = $firebase->verifyEmailPassword($adminEmail, $password);
-            if (!empty($fbResult['ok'])) {
-                $credentialsValid = true;
-                $authSource       = 'firebase_auth';
-            }
-        }
-
-        // Path 2: RTDB bcrypt (transitional fallback)
-        if (! $credentialsValid && $adminData !== null && $schoolId_resolved !== null) {
-            $storedHash = (string) ($adminData['Credentials']['Password'] ?? '');
-            // Normalise Node-bcrypt prefix ($2b$) to PHP-bcrypt ($2y$).
-            if (strncmp($storedHash, '$2b$', 4) === 0) {
-                $storedHash = '$2y$' . substr($storedHash, 4);
-            }
-            if ($storedHash !== '' && password_verify($password, $storedHash)) {
-                $credentialsValid = true;
-                $authSource       = 'rtdb_bcrypt_legacy';
-            } elseif (strlen($storedHash) !== 60
-                && strpos($storedHash, '$2y$') !== 0 && strpos($storedHash, '$2a$') !== 0
-                && $password === $storedHash) {
-                // Legacy plaintext-password upgrade — re-hash and accept.
-                $newHash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
-                $firebase->update("Users/Admin/{$schoolId}/{$adminId}/Credentials", ['Password' => $newHash]);
-                $credentialsValid = true;
-                $authSource       = 'rtdb_bcrypt_plaintext_upgrade';
-            }
-
-            // Lazy-migrate into Firebase Auth (best-effort) on RTDB success.
-            if ($credentialsValid && $emailValid) {
-                try {
-                    $existingFb = $this->firebase->getFirebaseUser($adminId);
-                    if ($existingFb !== null) {
-                        $this->firebase->updateFirebaseUser($adminId, ['password' => $password]);
-                    } else {
-                        $this->firebase->createFirebaseUser($adminEmail, $password, [
-                            'uid'         => $adminId,
-                            'displayName' => $adminData['Name'] ?? $adminId,
-                        ]);
-                    }
-                    log_message('info', 'Admin_login lazy-migrated to Firebase Auth: ' . $this->_log_safe($adminId));
-                } catch (\Exception $e) {
-                    log_message('error', 'Admin_login lazy-migration failed for '
-                        . $this->_log_safe($adminId) . ': ' . $e->getMessage());
-                }
-            }
+        if (!is_array($cur) || ($now - (int) ($cur['windowStart'] ?? 0)) > self::IP_WINDOW_SEC) {
+            $payload = ['ip' => $ip, 'windowStart' => $now, 'fails' => 1, 'updatedAt' => date('c', $now)];
         } else {
-            // Timing-safe dummy verify when admin record is missing.
-            password_verify($password, self::DUMMY_HASH);
+            $payload = [
+                'ip'          => $ip,
+                'windowStart' => (int) ($cur['windowStart'] ?? $now),
+                'fails'       => (int) ($cur['fails'] ?? 0) + 1,
+                'updatedAt'   => date('c', $now),
+            ];
+        }
+        try {
+            $this->firebase->firestoreSet(self::FS_ADMIN_IP_RL, $docId, $payload);
+        } catch (\Throwable $e) {
+            log_message('error', 'Wave C: admin IP rate-limit write failed: ' . $e->getMessage());
+        }
+    }
+
+    private function _clear_admin_ip_block(string $ip): void
+    {
+        try {
+            $this->firebase->firestoreSet(self::FS_ADMIN_IP_RL, $this->_ip_doc_id($ip), [
+                'ip'          => $ip,
+                'fails'       => 0,
+                'windowStart' => 0,
+                'updatedAt'   => date('c'),
+            ]);
+        } catch (\Throwable $e) {
+            /* best-effort cleanup */
+        }
+    }
+
+    /** Firestore-safe docId for an IP address (replaces dots/colons with hyphens). */
+    private function _ip_doc_id(string $ip): string
+    {
+        return str_replace(['.', ':'], '-', $ip);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  WAVE C: Firestore-canonical per-account lockout (replaces RTDB)
+    // ─────────────────────────────────────────────────────────────────────
+    /**
+     * Per-account lockout check (Wave C follow-up — 2026-06-03).
+     *
+     * Reads adminAuthState/{adminId}.lockedUntil and returns true if it
+     * still resolves to a future timestamp. Used by check_credentials to
+     * block Firebase Auth sign-in while a lockout window is in force.
+     *
+     * Fail-open on Firestore read errors (don't lock honest users out
+     * of admin if Firestore is flaky) — mirrors _admin_ip_blocked.
+     */
+    private function _admin_account_locked(string $adminId, int $now): bool
+    {
+        try {
+            $doc = $this->firebase->firestoreGet(self::FS_ADMIN_AUTH_STATE, $this->_acct_doc_id($adminId));
+        } catch (\Throwable $e) {
+            return false; // fail-open
+        }
+        if (!is_array($doc)) return false;
+        $lockedUntilRaw = $doc['lockedUntil'] ?? null;
+        if (empty($lockedUntilRaw) || !is_string($lockedUntilRaw)) return false;
+        $lockedUntilTs = (int) strtotime($lockedUntilRaw);
+        return $lockedUntilTs > 0 && $lockedUntilTs > $now;
+    }
+
+    /**
+     * Record a failed admin login attempt. Returns true if this attempt
+     * crossed the lockout threshold (caller emits ADMIN_LOGIN_LOCKED).
+     */
+    private function _record_admin_account_fail(string $adminId, string $ip, int $now): bool
+    {
+        $docId = $this->_acct_doc_id($adminId);
+        try {
+            $cur = $this->firebase->firestoreGet(self::FS_ADMIN_AUTH_STATE, $docId);
+        } catch (\Throwable $e) {
+            $cur = null;
+        }
+        $attempts = (int) (is_array($cur) ? ($cur['attempts'] ?? 0) : 0) + 1;
+        $payload  = [
+            'adminId'    => $adminId,
+            'attempts'   => $attempts,
+            'lastFailIp' => $ip,
+            'lastFailAt' => date('c', $now),
+            'updatedAt'  => date('c', $now),
+        ];
+        $locked = false;
+        if ($attempts >= self::ACCT_MAX_FAILS) {
+            $payload['lockedUntil'] = date('c', $now + self::ACCT_LOCK_SEC);
+            $locked = true;
+        }
+        try {
+            $this->firebase->firestoreSet(self::FS_ADMIN_AUTH_STATE, $docId, $payload);
+        } catch (\Throwable $e) {
+            log_message('error', 'Wave C: admin account-fail write failed: ' . $e->getMessage());
+        }
+        return $locked;
+    }
+
+    private function _clear_admin_account_fail(string $adminId, string $schoolId): void
+    {
+        try {
+            $this->firebase->firestoreSet(self::FS_ADMIN_AUTH_STATE, $this->_acct_doc_id($adminId), [
+                'adminId'     => $adminId,
+                'schoolId'    => $schoolId,
+                'attempts'    => 0,
+                'lockedUntil' => null,
+                'lastLoginAt' => date('c'),
+                'updatedAt'   => date('c'),
+            ]);
+        } catch (\Throwable $e) {
+            /* best-effort cleanup */
+        }
+    }
+
+    /** Firestore-safe docId for an adminId (alphanumeric + hyphens/underscores only). */
+    private function _acct_doc_id(string $adminId): string
+    {
+        return preg_replace('/[^A-Za-z0-9_-]/', '_', $adminId);
+    }
+
+    /**
+     * Hydrate session-derived fields (session/current_session/session_year/
+     * schoolName/school_display_name/school_features/available_sessions) from
+     * the schools/{schoolId} Firestore doc + B2 entitlement reader for
+     * school_features. Best-effort — defaults are safe if any read fails.
+     */
+    private function _hydrate_admin_session_from_school(string $schoolId): void
+    {
+        try {
+            $schoolDoc = $this->firebase->firestoreGet('schools', $schoolId);
+        } catch (\Throwable $e) {
+            $schoolDoc = null;
+        }
+        if (!is_array($schoolDoc)) $schoolDoc = [];
+
+        $name = (string) ($schoolDoc['name'] ?? $schoolDoc['display_name'] ?? $schoolDoc['schoolName'] ?? '');
+
+        $sessions = $schoolDoc['sessions'] ?? [];
+        if (!is_array($sessions)) $sessions = [];
+        $sessions = array_values(array_filter($sessions, 'is_string'));
+        rsort($sessions);
+
+        $currentSession = (string) ($schoolDoc['currentSession'] ?? '');
+        if ($currentSession === '' && !empty($sessions)) {
+            $currentSession = $sessions[0];
         }
 
-        if (! $credentialsValid) {
-            $this->_record_ip_fail($ip, $now, $firebase);
-            if ($adminData !== null) {
-                $this->_record_account_fail($adminId, $schoolId, $adminData, $firebase, $now);
-            }
-            $this->session->set_flashdata('error', 'Invalid credentials. Please try again.');
-            redirect('admin_login');
-        }
+        // Wave C hotfix (2026-06-03): features live in tenantPublic/{schoolId}.activeModules
+        // (canonical B2 entitlement reader), NOT on the schools/{id} doc. The original
+        // cutover (ae605392) read schools/{id}.features which doesn't exist — left
+        // school_features empty, hiding all feature-gated sidebar items. B2_registry_service
+        // is already initialized in _try_firebase_admin_login above; reuse it here.
+        // Returns snake_case machine keys; MY_Controller::_normalize_features() maps
+        // them to Title Case sidebar labels + adds core defaults.
+        $this->load->library('B2_registry_service');
+        $this->b2_registry_service->init($this->firebase);
+        $features = $this->b2_registry_service->get_features($schoolId);
 
-        // Legacy RTDB Status guard — only blocks on EXPLICIT "Inactive".
-        // Treats missing/empty as Active because most staff records (STA*) have
-        // never had this RTDB field set; only SSA accounts and a few legacy
-        // admins do. The canonical Active/Inactive decision is now made by
-        // _assert_staff_active() below using Firestore staff.status.
-        $rtdbStatus = trim((string) ($adminData['Status'] ?? ''));
-        if ($rtdbStatus !== '' && strcasecmp($rtdbStatus, 'Inactive') === 0) {
-            $this->session->set_flashdata('error', 'Account deactivated. Contact admin.');
-            redirect('admin_login');
-        }
-
-        // Phase 2A — Firestore-canonical staff status check (post-Phase-1 toggle aware).
-        $this->_assert_staff_active($schoolId_resolved, $adminId);
-
-        // Subscription check
-        $subscription = null;
-        foreach (["System/Schools/{$schoolId_resolved}/subscription",
-                  "Users/Schools/{$schoolId_resolved}/subscription"] as $subPath) {
-            $subscription = $firebase->get($subPath);
-            if ($subscription && is_array($subscription)) break;
-            $subscription = null;
-        }
-        if (! $subscription || ! is_array($subscription)) {
-            $this->session->set_flashdata('error', 'Subscription record not found. Please contact support.');
-            redirect('admin_login');
-        }
-        $status  = (string) ($subscription['status'] ?? 'Inactive');
-        $duration = is_array($subscription['duration'] ?? null) ? $subscription['duration'] : [];
-        $endDate = trim((string) ($duration['endDate'] ?? ''));
-        if (!in_array($status, ['Active', 'Grace_Period'], true)) {
-            $this->session->set_flashdata('error', 'Subscription is not active. Please contact support.');
-            redirect('admin_login');
-        }
-        $parsedEndDate = ($endDate !== '') ? strtotime($endDate) : false;
-        if ($parsedEndDate === false || $parsedEndDate < $now) {
-            $this->session->set_flashdata('error',
-                'Subscription expired on ' . htmlspecialchars($endDate, ENT_QUOTES, 'UTF-8')
-                . '. Please contact our team to renew.');
-            redirect('admin_login');
-        }
-
-        $endTs       = (int) strtotime($endDate . ' 23:59:59');
-        $graceEndRaw = trim((string)($subscription['grace_end'] ?? ''));
-        $graceEndTs  = ($graceEndRaw !== '' && strtotime($graceEndRaw) !== false)
-            ? (int) strtotime($graceEndRaw . ' 23:59:59') : $endTs + (7 * 86400);
-        $daysRemaining = (int) ceil(($endTs - $now) / 86400);
-        $subWarning    = ($daysRemaining <= 7)
-            ? "Subscription expires in {$daysRemaining} day(s) on {$endDate}. Please renew soon." : null;
-
-        $this->_clear_ip_fails($ip, $firebase);
-        $firebase->update("Users/Admin/{$schoolId}/{$adminId}/AccessHistory", [
-            'LastLogin' => date('c', $now), 'LoginIP' => $ip,
-            'LoginAttempts' => 0, 'LockedUntil' => null, 'IsLoggedIn' => true,
-        ]);
-
-        $this->session->sess_regenerate(TRUE);
-
-        // Sessions
-        $month = (int) date('m', $now);
-        $year  = (int) date('Y', $now);
-        $computedSession = ($month >= 4)
-            ? $year . '-' . substr($year + 1, -2)
-            : ($year - 1) . '-' . substr($year, -2);
-        $storedSessions = $firebase->get("Schools/{$schoolId_resolved}/Sessions");
-        $availableSessions = (is_array($storedSessions) && !empty($storedSessions))
-            ? array_values(array_unique(array_filter($storedSessions, 'is_string'))) : [];
-        if (!in_array($computedSession, $availableSessions, true)) {
-            $availableSessions[] = $computedSession;
-            $firebase->set("Schools/{$schoolId_resolved}/Sessions", $availableSessions);
-        }
-        rsort($availableSessions);
-        $activeSession = $firebase->get("Schools/{$schoolId_resolved}/Config/ActiveSession");
-        $financialYear = (!empty($activeSession) && is_string($activeSession)
-            && in_array($activeSession, $availableSessions, true))
-            ? $activeSession : $availableSessions[0];
-
-        // Features
-        $schoolFeatures = [];
-        foreach (["System/Schools/{$schoolId_resolved}/subscription/features",
-                  "Users/Schools/{$schoolId_resolved}/subscription/features"] as $fp) {
-            $featuresRaw = $firebase->get($fp);
-            if (is_array($featuresRaw) && !empty($featuresRaw)) {
-                $schoolFeatures = array_values($featuresRaw); break;
-            }
-        }
-
-        // Display name
-        $displayName = '';
-        foreach (["System/Schools/{$schoolId_resolved}/profile",
-                  "Users/Schools/{$schoolId_resolved}/profile"] as $pp) {
-            $profileData = $firebase->get($pp);
-            if (is_array($profileData)) {
-                $displayName = $profileData['school_name'] ?? $profileData['name'] ?? '';
-                if (!empty($displayName)) break;
-            }
-        }
-        if (empty($displayName) && strpos($schoolId_resolved, 'SCH_') !== 0) $displayName = $schoolId_resolved;
-        if (empty($displayName)) $displayName = $schoolId_resolved;
-
-        $this->session->unset_userdata(['sa_id', 'sa_name', 'sa_role', 'sa_email', 'sa_csrf_token']);
         $this->session->set_userdata([
-            'admin_id' => $adminId, 'school_id' => $schoolId_resolved,
-            'school_code' => $schoolId,
-            'admin_role' => $adminData['Role'] ?? $adminData['Profile']['role'] ?? '',
-            'admin_name' => $adminData['Name'] ?? $adminData['Profile']['name'] ?? '',
-            'session' => $financialYear, 'current_session' => $financialYear,
-            'session_year' => $financialYear, 'schoolName' => $schoolId_resolved,
-            'school_display_name' => $displayName, 'school_features' => $schoolFeatures,
-            'available_sessions' => $availableSessions,
-            'subscription_expiry' => $endTs, 'subscription_grace_end' => $graceEndTs,
-            'subscription_warning' => $subWarning, 'sub_check_ts' => 0,
+            'session'             => $currentSession,
+            'current_session'     => $currentSession,
+            'session_year'        => $currentSession,
+            'schoolName'          => $schoolId,                                     // legacy: holds SCH_* key
+            'school_display_name' => $name !== '' ? $name : $schoolId,
+            'school_features'     => $features,
+            'available_sessions'  => $sessions,
         ]);
-
-        $this->load->helper('rbac');
-        $adminRole = $adminData['Role'] ?? $adminData['Profile']['role'] ?? '';
-        // FIX: $school_firebase_key was undefined here; the Firebase key is $schoolId_resolved.
-        $rbacPerms = load_role_permissions($firebase, $schoolId_resolved, $adminRole);
-        $this->session->set_userdata('rbac_permissions', $rbacPerms);
-
-        // Forced-change-password gate (admin-driven reset flow).
-        $mustChange = (bool) $this->firebase->getCustomClaim($adminId, 'must_change_password', false);
-        $this->session->set_userdata('must_change_password', $mustChange);
-
-        log_message('info',
-            'Login OK admin=' . $this->_log_safe($adminId)
-            . ' school=' . $this->_log_safe($schoolId)
-            . ' source=' . $authSource
-            . ' ip=' . $ip);
-
-        redirect($mustChange ? 'admin_users/change_my_password' : 'admin/index');
     }
 
     /**
@@ -519,9 +623,12 @@ class Admin_login extends CI_Controller
      * Inactive. Reads `staff/{schoolFirebaseKey}_{userId}` from Firestore
      * and rejects on any status other than "Active" (case-insensitive).
      *
+     * Wave C note: the primary status check is now embedded in
+     * _try_firebase_admin_login() above; this helper is retained for any
+     * other callers that gate on staff status (none today; defence-in-depth).
+     *
      * Skipped silently when no staff doc is present (e.g., legacy admin
-     * accounts without a Firestore mirror) — credentials check already ran,
-     * so this is a defence-in-depth gate, not the primary auth.
+     * accounts without a Firestore mirror).
      */
     private function _assert_staff_active(string $schoolFirebaseKey, string $userId): void
     {
@@ -532,17 +639,13 @@ class Admin_login extends CI_Controller
             $staffDoc = $this->firebase->firestoreGet('staff', $docId);
         } catch (\Throwable $e) {
             log_message('error', 'Staff status guard read failed for ' . $userId . ': ' . $e->getMessage());
-            // Fail-open: don't lock the user out of admin if Firestore is flaky.
-            return;
+            return; // fail-open
         }
 
         if (!is_array($staffDoc) || empty($staffDoc)) {
-            // No staff doc — either a non-staff admin account, or legacy.
-            // Don't block; the primary auth already verified credentials.
-            return;
+            return; // no staff doc — non-staff admin account, or legacy
         }
 
-        // Read camelCase first (canonical), fall back to PascalCase for legacy docs.
         $rawStatus = (string) ($staffDoc['status'] ?? $staffDoc['Status'] ?? 'Active');
         if (strcasecmp(trim($rawStatus), 'Active') !== 0) {
             log_message('info', 'Login blocked — staff status=' . $rawStatus . ' user=' . $this->_log_safe($userId));
@@ -556,15 +659,9 @@ class Admin_login extends CI_Controller
     // ─────────────────────────────────────────────────────────────────────
     public function logout(): void
     {
-        $adminId    = $this->session->userdata('admin_id');
-        $schoolCode = $this->session->userdata('school_code');
-
-        if ($adminId && $schoolCode && $this->_is_safe_id((string)$adminId) && $this->_is_safe_id((string)$schoolCode)) {
-            $this->firebase->update(
-                "Users/Admin/{$schoolCode}/{$adminId}/AccessHistory",
-                ['IsLoggedIn' => false, 'LoginIP' => null]
-            );
-        }
+        // Wave C: legacy RTDB AccessHistory write removed. Audit is now
+        // captured by ADMIN_LOGIN_SUCCESS telemetry (Firestore security_events)
+        // + Firebase Auth's own lastSignInTime field.
 
         // [S-11] Clear ALL keys — no ghost data
         $this->session->unset_userdata(self::SESSION_KEYS);
@@ -582,7 +679,7 @@ class Admin_login extends CI_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    //  GET  /admin_login/forgot_password
+    //  GET  /admin_login/forgot_password   (out of Wave C scope — auth_client retained)
     // ─────────────────────────────────────────────────────────────────────
     public function forgot_password(): void
     {
@@ -668,21 +765,14 @@ class Admin_login extends CI_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    //  Student Password Reset (parent email → select account → reset)
+    //  Student Password Reset   (out of Wave C scope — auth_client retained)
     // ─────────────────────────────────────────────────────────────────────
 
-    /**
-     * Show student forgot password page.
-     */
     public function student_forgot_password(): void
     {
         $this->load->view('student_forgot_password');
     }
 
-    /**
-     * POST /admin_login/student_send_otp
-     * Parent enters email → OTP sent → returns list of associated student accounts.
-     */
     public function student_send_otp(): void
     {
         if ($this->input->method() !== 'post') { redirect('admin_login'); return; }
@@ -704,10 +794,6 @@ class Admin_login extends CI_Controller
         ]);
     }
 
-    /**
-     * POST /admin_login/student_verify_otp
-     * Parent submits email + OTP + selected student userId.
-     */
     public function student_verify_otp(): void
     {
         if ($this->input->method() !== 'post') { redirect('admin_login'); return; }
@@ -732,16 +818,12 @@ class Admin_login extends CI_Controller
         ]);
     }
 
-    /**
-     * POST /admin_login/student_reset_password
-     * Reset password for the selected student account.
-     */
     public function student_reset_password(): void
     {
         if ($this->input->method() !== 'post') { redirect('admin_login'); return; }
 
-        $userId     = trim((string) $this->input->post('user_id', TRUE));
-        $resetToken = trim((string) $this->input->post('reset_token', TRUE));
+        $userId      = trim((string) $this->input->post('user_id', TRUE));
+        $resetToken  = trim((string) $this->input->post('reset_token', TRUE));
         $newPassword = (string) $this->input->post('new_password', FALSE);
 
         if (empty($userId) || empty($resetToken) || empty($newPassword)) {
@@ -782,7 +864,6 @@ class Admin_login extends CI_Controller
 
     /**
      * [S-12] Emit all security + no-cache headers.
-     * Centralised here so both __construct and any future public methods use it.
      */
     private function _send_security_headers(): void
     {
@@ -795,134 +876,8 @@ class Admin_login extends CI_Controller
     }
 
     /**
-     * [S-15] Resolve school identifier from a login code.
-     *
-     * 1. New path: Indexes/School_codes/{code} → SCH_XXXXXX
-     * 2. Legacy fallback: School_ids/{code} → school_name (pre-migration schools)
-     *
-     * Returns the resolved identifier (SCH_XXXXXX or school_name) or null.
-     */
-    /**
-     * Find the schoolCode (e.g. "10001") whose Users/Admin/{schoolCode}/{adminId}
-     * record exists in Firebase. Returns null if not found.
-     *
-     * Used by check_credentials() to enable Firebase-direct login when the
-     * Node Auth API is unreachable. Reads Users/Admin top-level once and
-     * scans children for the adminId — single RTDB read, ~O(schools).
-     */
-    private function _findSchoolForAdmin(string $adminId): ?string
-    {
-        $firebase = $this->firebase;
-        $allAdmins = $firebase->get('Users/Admin');
-        if (!is_array($allAdmins)) {
-            return null;
-        }
-        foreach ($allAdmins as $key => $admins) {
-            if (!is_array($admins)) continue;
-            if (isset($admins[$adminId]) && is_array($admins[$adminId])) {
-                return (string) $key;
-            }
-        }
-        return null;
-    }
-
-    private function _resolveSchoolId(string $schoolCode): ?string
-    {
-        $firebase = $this->firebase;
-
-        // ── New architecture: Indexes/School_codes/{code} → SCH_XXXXXX ──
-        $schoolId = $firebase->get("Indexes/School_codes/{$schoolCode}");
-        if ($schoolId && is_array($schoolId)) {
-            $schoolId = reset($schoolId);
-        }
-        if ($schoolId && is_string($schoolId) && strpos(trim($schoolId), 'SCH_') === 0) {
-            return trim($schoolId);
-        }
-
-        // ── Legacy fallback: School_ids/{code} → school_name ──
-        $schoolName = $firebase->get("School_ids/{$schoolCode}");
-        if ($schoolName && is_array($schoolName)) {
-            $schoolName = reset($schoolName);
-        }
-        if ($schoolName && is_string($schoolName) && trim($schoolName) !== '' && $schoolName !== 'Count') {
-            return trim($schoolName);
-        }
-
-        return null;
-    }
-
-    /**
-     * [S-06] [A-01] Record a failed attempt on a specific account.
-     * Lock after 5 failures for 30 minutes.
-     */
-    private function _record_account_fail(
-        string $adminId,
-        string $schoolId,
-        array  $adminData,
-        object $firebase,
-        int    $now
-    ): void {
-        $path     = "Users/Admin/{$schoolId}/{$adminId}/AccessHistory";
-        $attempts = (int) ($adminData['AccessHistory']['LoginAttempts'] ?? 0) + 1;
-        $update   = ['LoginAttempts' => $attempts];
-
-        if ($attempts >= 5) {
-            $update['LockedUntil'] = date('c', $now + 1800);
-        }
-
-        $firebase->update($path, $update);
-    }
-
-    /**
-     * [S-07] Returns TRUE if this IP has exceeded the rate limit.
-     */
-    private function _is_ip_blocked(string $ip, int $now, object $firebase): bool
-    {
-        $record = $firebase->get($this->_ip_path($ip));
-        if (! is_array($record)) return false;
-
-        $windowStart = (int) ($record['windowStart'] ?? 0);
-        if ($now - $windowStart > self::IP_WINDOW_SEC) return false;
-
-        return (int) ($record['fails'] ?? 0) >= self::IP_MAX_FAILS;
-    }
-
-    /**
-     * [S-07] Record one failure for this IP.
-     */
-    private function _record_ip_fail(string $ip, int $now, object $firebase): void
-    {
-        $path   = $this->_ip_path($ip);
-        $record = $firebase->get($path);
-
-        if (! is_array($record) || ($now - (int)($record['windowStart'] ?? 0)) > self::IP_WINDOW_SEC) {
-            $firebase->update($path, ['windowStart' => $now, 'fails' => 1]);
-        } else {
-            $firebase->update($path, ['fails' => (int)($record['fails'] ?? 0) + 1]);
-        }
-    }
-
-    /**
-     * [S-07] Clear IP fail counter on successful login.
-     */
-    private function _clear_ip_fails(string $ip, object $firebase): void
-    {
-        $firebase->update($this->_ip_path($ip), ['fails' => 0, 'windowStart' => 0]);
-    }
-
-    /**
-     * [S-07] Firebase-safe path for an IP address.
-     * Replaces . and : (IPv4/IPv6 chars) with hyphens.
-     */
-    private function _ip_path(string $ip): string
-    {
-        $safeIp = str_replace(['.', ':'], '-', $ip);
-        return "RateLimit/Login/{$safeIp}";
-    }
-
-    /**
-     * [S-03] Returns TRUE if value is safe to use as a Firebase path segment.
-     * Allows: letters, digits, hyphens, underscores only (no spaces — for IDs).
+     * [S-03] Returns TRUE if value is safe to use as a path segment / docId.
+     * Allows: letters, digits, hyphens, underscores only.
      */
     private function _is_safe_id(string $value): bool
     {

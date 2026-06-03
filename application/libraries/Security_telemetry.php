@@ -71,6 +71,51 @@ class Security_telemetry
         // is the synthetic 'SA_PANEL' since SA login has no school context.
         'SA_LOGIN_SUCCESS', 'SA_LOGIN_FAILED', 'SA_LOGIN_LOCKED',
         'SA_LOGIN_ROLE_REJECTED',
+        // ── Wave C (2026-06-03): school-admin login telemetry ──
+        // Emitted by Admin_login::check_credentials + _try_firebase_admin_login.
+        // ADMIN_LOGIN_SUCCESS      — Firebase Auth signIn + Firestore staff.status=Active
+        // ADMIN_LOGIN_FAILED       — signInWithEmail rejected by Firebase Auth
+        // ADMIN_LOGIN_LOCKED       — per-account lockout threshold reached (Firestore adminAuthState)
+        // ADMIN_LOGIN_AUTHZ_MISSING — signed in but customClaims missing schoolId/role OR staff doc absent
+        // ADMIN_LOGIN_AUTHZ_INACTIVE — signed in + claims present but staff.status != Active
+        'ADMIN_LOGIN_SUCCESS', 'ADMIN_LOGIN_FAILED', 'ADMIN_LOGIN_LOCKED',
+        'ADMIN_LOGIN_AUTHZ_MISSING', 'ADMIN_LOGIN_AUTHZ_INACTIVE',
+        // ── Wave A A2.1 (2026-05-28): SA-login authorization dual-read telemetry ──
+        // Emitted by Superadmin_login authz resolution (Firestore-first, RTDB fallback).
+        // SA_AUTHZ_PATH      — which store authorized (path=firestore|rtdb_fallback, +reason)
+        // SA_AUTHZ_DIVERGENCE — Firestore decision != RTDB decision (must stay 0)
+        // SA_AUTHZ_DOC_MISSING — superAdmins doc absent for an authenticated SA
+        'SA_AUTHZ_PATH', 'SA_AUTHZ_DIVERGENCE', 'SA_AUTHZ_DOC_MISSING',
+        // ── Wave B1 (2026-05-29): onboarding convergence (Mongo removal) ──
+        // Emitted by Superadmin_schools::onboard().
+        // ONBOARD_IDGEN_SOURCE — code/SSA id source (firestore|mongo|local_fallback)
+        // ONBOARD_SSA_FBAUTH   — SSA Firebase Auth provisioning (created|claims_failed|create_failed)
+        // ONBOARD_MONGO_HIT    — any residual auth_client call from onboard (expect 0 post-cutover)
+        // ONBOARD_RESULT       — onboarding outcome (success|rollback +reason)
+        // ONBOARD_ROLLBACK_INCOMPLETE — rollback deleteFirebaseUser failed (carries uid; expect 0)
+        'ONBOARD_IDGEN_SOURCE', 'ONBOARD_SSA_FBAUTH', 'ONBOARD_MONGO_HIT',
+        'ONBOARD_RESULT', 'ONBOARD_ROLLBACK_INCOMPLETE',
+        // ── Wave B2.2-F F4 (2026-05-30): Firestore-only control-plane telemetry ──
+        // PERMANENT (survive B2.8):
+        //   B2_BILLING_CLAIM         — Billing_integrity claim outcome (claimed|dedup|in_progress|reclaimed|conflict|released)
+        //   B2_BILLING_RECLAIM       — CAS reclaim of stale/failed payment claim
+        //   B2_BILLING_WRITE         — invoice/payment commitBatch outcome + claim linkage
+        //   B2_LIFECYCLE_TRANSITION  — schoolControl.lifecycle.state changed (from->to, trigger)
+        //   B2_ENTITLEMENT_RECOMPUTE — schoolControl.entitlements rewritten (changed modules)
+        //   B2_RECONCILE             — invariant sweep (scanned, healed, drift)
+        //   B2_RULES_DEPLOY          — firestore.rules deploy audit (additive blocks)
+        //   B2_READ_PARITY           — Firestore-vs-RTDB reader parity mismatch count (B2.5 soak)
+        // SCAFFOLDING (retired at B2.8 with the bridge):
+        //   B2_BRIDGE_COMPENSATE     — Firestore shadow-write failed; _b2_pending marker left
+        //   B2_BACKFILL              — B2.4 backfill per-tenant outcome
+        //   B2_REGISTRY_WRITE        — dual-write shadow emit (B2.3)
+        //   B2_REGISTRY_READ         — dual-read source taken (B2.5)
+        //   B2_ROLLBACK              — flag flipped OFF / writer reverted
+        'B2_BILLING_CLAIM', 'B2_BILLING_RECLAIM', 'B2_BILLING_WRITE',
+        'B2_LIFECYCLE_TRANSITION', 'B2_ENTITLEMENT_RECOMPUTE',
+        'B2_RECONCILE', 'B2_RULES_DEPLOY', 'B2_READ_PARITY',
+        'B2_BRIDGE_COMPENSATE', 'B2_BACKFILL',
+        'B2_REGISTRY_WRITE', 'B2_REGISTRY_READ', 'B2_ROLLBACK',
     ];
 
     const SEVERITIES = ['info', 'warning', 'error', 'critical'];

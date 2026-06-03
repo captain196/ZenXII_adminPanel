@@ -1,0 +1,3 @@
+# Per-run inventory snapshots — local-only artifacts; never committed.
+# Re-runnable from scripts/admin_inventory_c0.js. Safe to delete.
+*.json
