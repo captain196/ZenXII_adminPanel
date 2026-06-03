@@ -576,7 +576,7 @@ var BASE_URL = '<?= base_url() ?>';
 <header class="main-header">
     <div class="logo">
         <a class="g-logo-link" href="<?= base_url('superadmin/dashboard') ?>">
-            <img src="<?= base_url('uploads/zenxii_brand/logo_wide.png') ?>" alt="ZenXii" class="g-mark" style="width:32px;height:32px;object-fit:contain;border-radius:6px;">
+            <img src="<?= base_url('Designs/zenxii_logo_2.png') ?>" alt="ZenXii" class="g-mark" style="width:32px;height:32px;object-fit:contain;border-radius:50%;background:transparent;box-shadow:none;">
             <div class="g-logotext">
                 <div class="g-logoname">ZenXii</div>
                 <div class="g-logosub">Super Admin</div>

@@ -113,15 +113,17 @@ html, body {
     height: 46px;
     flex-shrink: 0;
     border-radius: 11px;
-    background: linear-gradient(135deg, var(--gold2), var(--gold3));
+    background: transparent;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-family: var(--serif);
-    font-size: 25px;
-    font-weight: 800;
-    color: var(--navy);
-    box-shadow: 0 6px 22px var(--gold-glow), inset 0 1px 0 rgba(255,255,255,.28);
+    overflow: hidden;
+}
+.sa-logo-mark img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
 }
 
 .sa-wordmark {
@@ -490,7 +492,7 @@ html, body {
 
         <div class="sa-panel-top">
             <div class="sa-brand">
-                <div class="sa-logo-mark">Z</div>
+                <div class="sa-logo-mark"><img src="<?= base_url('Designs/zenxii_logo_2.png') ?>" alt="ZenXii"></div>
                 <div class="sa-brand-text">
                     <div class="sa-wordmark">Zen<span>Xii</span></div>
                     <div class="sa-wordmark-sub">Management Platform</div>

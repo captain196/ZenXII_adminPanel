@@ -785,7 +785,7 @@
                 <div class="lx-brand">
                     <div class="lx-brand-mark">
                         <div class="lx-brand-icon-wrap" style="background:transparent;padding:0;">
-                            <img src="<?= base_url('uploads/zenxii_brand/logo_wide.png') ?>" alt="ZenXii" style="width:100%;height:100%;object-fit:contain;display:block;">
+                            <img src="<?= base_url('Designs/zenxii_logo_2.png') ?>" alt="ZenXii" style="width:100%;height:100%;object-fit:contain;display:block;">
                         </div>
                     </div>
                     <div class="lx-brand-text">

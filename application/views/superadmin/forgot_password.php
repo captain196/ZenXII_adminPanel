@@ -53,7 +53,8 @@ body{background:var(--navy);color:var(--t1);font-family:var(--font-s);min-height
 
 <div class="fp-card">
     <div class="fp-logo">
-        <h1><i class="fas fa-shield-halved" style="margin-right:8px;"></i>ZenXii</h1>
+        <img src="<?= base_url('Designs/zenxii_logo_2.png') ?>" alt="ZenXii" style="width:64px;height:64px;object-fit:contain;display:block;margin:0 auto 10px;">
+        <h1>ZenXii</h1>
         <p>Password Reset</p>
     </div>
 

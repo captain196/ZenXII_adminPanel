@@ -105,7 +105,7 @@
         .g-logosub{font-family:var(--font-m);font-size:9px;color:var(--t3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;}
         .main-header .logo-mini{display:none !important;}
         /* sidebar-toggle now lives inside .logo — style it there */
-        .main-header .logo .sidebar-toggle{flex-shrink:0 !important;width:30px !important;height:30px !important;border-radius:7px !important;display:flex !important;align-items:center !important;justify-content:center !important;border:1px solid rgba(15,118,110,.25) !important;color:var(--t3) !important;font-size:13px !important;margin:0 !important;transition:all var(--ease) !important;background:rgba(15,118,110,.06) !important;}
+        .main-header .logo .sidebar-toggle{flex-shrink:0 !important;width:30px !important;height:30px !important;border-radius:7px !important;display:flex !important;align-items:center !important;justify-content:center !important;border:1px solid rgba(15,118,110,.25) !important;color:var(--t3) !important;font-size:13px !important;margin:0 0 0 12px !important;transition:all var(--ease) !important;background:rgba(15,118,110,.06) !important;}
         .main-header .logo .sidebar-toggle:hover{background:rgba(15,118,110,.15) !important;color:var(--gold) !important;border-color:rgba(15,118,110,.4) !important;}
         .main-header .navbar{background:transparent !important;border:none !important;box-shadow:none !important;min-height:var(--hh) !important;margin-left:var(--sw) !important;padding:0 18px !important;display:flex !important;align-items:center !important;flex:1 !important;transition:margin-left var(--ease) !important;}
         .sidebar-toggle{width:34px !important;height:34px !important;border-radius:8px !important;background:transparent !important;border:1px solid var(--border) !important;display:inline-flex !important;align-items:center !important;justify-content:center !important;color:var(--t3) !important;font-size:13px !important;margin-right:16px !important;flex-shrink:0;transition:all var(--ease) !important;}
@@ -588,7 +588,7 @@
 <header class="main-header">
     <div class="logo">
         <a href="<?= base_url('admin') ?>" class="g-logo-link">
-            <img src="<?= base_url('uploads/zenxii_brand/logo_wide.png') ?>" alt="ZenXii" class="g-mark" style="width:32px;height:32px;object-fit:contain;border-radius:6px;">
+            <img src="<?= base_url('Designs/zenxii_logo_2.png') ?>" alt="ZenXii" class="g-mark" style="width:44px;height:44px;object-fit:contain;border-radius:50%;background:transparent;box-shadow:none;">
             <div class="g-logotext">
                 <div class="g-logoname">ZenXii</div>
                 <div class="g-logosub">

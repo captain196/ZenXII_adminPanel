@@ -486,7 +486,6 @@
       <div class="err">
         <h1>Feature not found</h1>
         <p>This page doesn't exist or the link is broken.</p>
-        <a class="btn" href="index.html#features">Back to all features</a>
       </div>
     `;
   } else {
@@ -520,9 +519,6 @@
           </div>
           <div class="feature-grid">
             ${f.bullets.map(b => `<div class="feature-item"><span class="dot"></span><span class="text">${esc(b)}</span></div>`).join("")}
-          </div>
-          <div class="cta-row">
-            <a class="btn" href="index.html#features">← Back to all features</a>
           </div>
         </div>
 
