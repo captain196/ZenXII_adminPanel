@@ -5,7 +5,10 @@ require_once APPPATH . 'core/MY_Superadmin_Controller.php';
 
 /**
  * Superadmin_admins
- * Manage developer super admin accounts (stored at Users/Admin/Our Panel/).
+ * Manage developer super admin accounts.
+ *   - Credentials  : Firebase Auth (login authenticates here).
+ *   - Profile/metadata : Firestore `superAdmins/{SUPxxxx}` (password-free).
+ *   - No RTDB, no MongoDB/Auth API (Wave A convergence).
  * Only accessible by users with sa_role = 'developer'.
  */
 class Superadmin_admins extends MY_Superadmin_Controller
@@ -13,7 +16,6 @@ class Superadmin_admins extends MY_Superadmin_Controller
     public function __construct()
     {
         parent::__construct();
-        $this->load->library('auth_client');
 
         // Only developers can manage other super admins
         if ($this->sa_role !== 'developer') {
@@ -37,35 +39,39 @@ class Superadmin_admins extends MY_Superadmin_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // AJAX: Fetch all developer admins
+    // AJAX: Fetch all developer admins (from Firestore superAdmins)
     // ─────────────────────────────────────────────────────────────────────────
 
     public function fetch()
     {
-        $raw = $this->firebase->get('Users/Admin/Our Panel');
         $admins = [];
-
-        if (is_array($raw)) {
-            foreach ($raw as $id => $data) {
-                if (!is_array($data)) continue;
+        try {
+            foreach ((array) $this->firebase->firestoreQuery('superAdmins') as $row) {
+                $id = (string) ($row['id'] ?? '');
+                $d  = is_array($row['data'] ?? null) ? $row['data'] : $row;
+                if ($id === '' && isset($d['superAdminId'])) $id = (string) $d['superAdminId'];
+                if ($id === '') continue;
+                $ah = is_array($d['accessHistory'] ?? null) ? $d['accessHistory'] : [];
                 $admins[] = [
                     'admin_id'   => $id,
-                    'name'       => $data['Name'] ?? $data['Profile']['name'] ?? $id,
-                    'email'      => $data['Email'] ?? $data['Profile']['email'] ?? '',
-                    'status'     => $data['Status'] ?? 'Active',
-                    'created_at' => $data['Profile']['created_at'] ?? $data['Created On'] ?? '',
-                    'last_login' => $data['AccessHistory']['SA_LastLogin'] ?? $data['SA_LastLogin'] ?? '',
+                    'name'       => $d['name'] ?? $id,
+                    'email'      => $d['email'] ?? '',
+                    'status'     => $d['status'] ?? 'Active',
+                    'created_at' => $d['createdAt'] ?? '',
+                    'last_login' => $ah['lastLogin'] ?? '',
                     'is_current' => ($id === $this->sa_id),
-                    'is_primary' => !empty($data['is_primary']),
+                    'is_primary' => !empty($d['isPrimary']),
                 ];
             }
+        } catch (\Throwable $e) {
+            log_message('error', 'SA fetch superAdmins failed: ' . $e->getMessage());
         }
 
         $this->json_success(['admins' => $admins]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // AJAX POST: Create a new developer super admin
+    // AJAX POST: Create a new developer super admin (Firebase Auth + Firestore)
     // ─────────────────────────────────────────────────────────────────────────
 
     public function create()
@@ -75,98 +81,79 @@ class Superadmin_admins extends MY_Superadmin_Controller
         $phone    = trim($this->input->post('phone'));
         $password = $this->input->post('password');
 
-        // ── Validate ──
         if (empty($name) || empty($password)) {
             $this->json_error('Name and Password are required.');
         }
-
-        // Password strength: min 8 chars, must have upper + lower + digit
         if (strlen($password) < 8 || !preg_match('/[A-Z]/', $password) ||
             !preg_match('/[a-z]/', $password) || !preg_match('/[0-9]/', $password)) {
             $this->json_error('Password must be at least 8 characters with uppercase, lowercase, and a number.');
         }
-
         if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             $this->json_error('Invalid email format.');
         }
-
-        // Name: basic sanitization
         $name = htmlspecialchars(strip_tags($name), ENT_QUOTES, 'UTF-8');
         if (strlen($name) > 100) {
             $this->json_error('Name must be 100 characters or less.');
         }
 
-        // ── Auto-generate next SUP ID ──
-        $all = $this->firebase->get('Users/Admin/Our Panel');
+        // Next SUP id: scan the canonical Firestore superAdmins, and also the legacy
+        // RTDB Our Panel (transition-safety, so we never reuse a legacy id). The RTDB
+        // read here is id-safety only and is dropped once Our Panel is retired.
         $max_num = 0;
-        if (is_array($all)) {
-            foreach (array_keys($all) as $key) {
-                if (preg_match('/^SUP(\d+)$/', $key, $m)) {
-                    $num = (int) $m[1];
-                    if ($num > $max_num) $max_num = $num;
-                }
+        try {
+            foreach ((array) $this->firebase->firestoreQuery('superAdmins') as $row) {
+                $rid = (string) ($row['id'] ?? ($row['data']['superAdminId'] ?? ''));
+                if (preg_match('/^SUP(\d+)$/', $rid, $m)) { $max_num = max($max_num, (int) $m[1]); }
+            }
+        } catch (\Throwable $e) { /* fall through to legacy scan */ }
+        $legacy = $this->firebase->get('Users/Admin/Our Panel');
+        if (is_array($legacy)) {
+            foreach (array_keys($legacy) as $key) {
+                if (preg_match('/^SUP(\d+)$/', $key, $m)) { $max_num = max($max_num, (int) $m[1]); }
             }
         }
-        $admin_id = 'SUP' . str_pad($max_num + 1, 4, '0', STR_PAD_LEFT);
+        $admin_id  = 'SUP' . str_pad($max_num + 1, 4, '0', STR_PAD_LEFT);
+        $authEmail = Firebase::authEmail($admin_id);
+        $nowIso    = date('c');
 
-        // ── Hash password & save ──
-        $hashed = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
-        $now    = date('Y-m-d H:i:s');
+        // ── Credential authority: create the Firebase Auth user + role claim ──
+        $fbUser = $this->firebase->createFirebaseUser($authEmail, $password, [
+            'uid' => $admin_id, 'displayName' => $name,
+        ]);
+        if ($fbUser === null) {
+            $this->json_error('Failed to create the Firebase Auth login account. Admin not created.');
+        }
+        $this->firebase->setFirebaseClaims($admin_id, ['role' => 'super_admin']);
 
-        $data = [
-            'Status'      => 'Active',
-            'Name'        => $name,
-            'Email'       => $email,
-            'Credentials' => [
-                'Id'       => $admin_id,
-                'Password' => $hashed,
-            ],
-            'Profile'     => [
-                'name'       => $name,
-                'email'      => $email,
-                'phone'      => $phone,
-                'role'       => 'developer',
-                'created_at' => $now,
-                'created_by' => $this->sa_id,
-            ],
-            'AccessHistory' => [
-                'SA_LastLogin'   => null,
-                'SA_LastLoginIP' => null,
-                'LoginAttempts'  => 0,
-            ],
-            'Privileges'  => [
-                'accountmanagement' => '',
-            ],
-            'Role'        => 'Super Admin',
-        ];
-
-        $result = $this->firebase->set('Users/Admin/Our Panel/' . $admin_id, $data);
-
-        if ($result === null || $result === false) {
-            $this->json_error('Failed to create admin. Firebase write error.');
+        // ── Canonical profile in Firestore (password-free; mirrors A1 schema) ──
+        $ok = $this->firebase->firestoreSet('superAdmins', $admin_id, [
+            'superAdminId'        => $admin_id,
+            'name'                => $name,
+            'email'               => $email,
+            'status'              => 'Active',
+            'role'                => 'super_admin',
+            'isPrimary'           => false,
+            'phone'               => $phone,
+            'createdAt'           => $nowIso,
+            'createdBy'           => $this->sa_id,
+            'firebaseUid'         => $admin_id,
+            'authProvider'        => 'firebase',
+            'accessHistory'       => ['lastLogin' => null, 'lastLoginIp' => null],
+            'migratedToFirestore' => true,
+            'migratedAt'          => $nowIso,
+            'source'              => 'sa_create',
+        ], false);
+        if ($ok === false) {
+            // Roll back the Firebase Auth user so we don't leave an orphan credential.
+            $this->firebase->deleteFirebaseUser($admin_id);
+            $this->json_error('Failed to write the admin profile. Admin not created.');
         }
 
-        // ── Sync to MongoDB via Auth API (best-effort) ──
-        $sync = $this->auth_client->sync_admin([
-            'adminId'      => $admin_id,
-            'name'         => $name,
-            'email'        => $email,
-            'phone'        => $phone,
-            'role'         => 'super_admin',
-            'passwordHash' => $hashed,
-            'createdBy'    => $this->sa_id,
+        $this->sa_log('Created developer admin', '', ['new_admin_id' => $admin_id, 'store' => 'firebase+firestore']);
+        $this->json_success([
+            'message'  => 'Super Admin "' . $admin_id . '" created. They can log in with this ID and the password you set.',
+            'admin_id' => $admin_id,
         ]);
-        $mongo_ok = !empty($sync['success']);
-
-        $this->sa_log('Created developer admin', '', [
-            'new_admin_id' => $admin_id,
-            'mongodb_sync' => $mongo_ok ? 'ok' : 'failed',
-        ]);
-        $msg = 'Super Admin "' . $admin_id . '" created successfully.';
-        if (!$mongo_ok) {
-            $msg .= ' (Warning: MongoDB sync failed — login via Firebase will still work)';
-        }
-        $this->json_success(['message' => $msg, 'admin_id' => $admin_id]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -179,33 +166,24 @@ class Superadmin_admins extends MY_Superadmin_Controller
         if (empty($admin_id)) {
             $this->json_error('Admin ID is required.');
         }
-
-        // Cannot deactivate yourself
         if ($admin_id === $this->sa_id) {
             $this->json_error('You cannot deactivate your own account.');
         }
 
-        $existing = $this->firebase->get('Users/Admin/Our Panel/' . $admin_id);
+        $existing = $this->firebase->firestoreGet('superAdmins', $admin_id);
         if (empty($existing) || !is_array($existing)) {
             $this->json_error('Admin not found.');
         }
-
-        if (!empty($existing['is_primary'])) {
+        if (!empty($existing['isPrimary'])) {
             $this->json_error('The primary super admin cannot be deactivated.');
         }
 
-        $current = $existing['Status'] ?? 'Active';
+        $current    = $existing['status'] ?? 'Active';
         $new_status = ($current === 'Active') ? 'Inactive' : 'Active';
 
-        $this->firebase->update('Users/Admin/Our Panel/' . $admin_id, ['Status' => $new_status]);
-
-        // ── Sync status to MongoDB ──
-        $this->auth_client->sync_admin([
-            'adminId' => $admin_id,
-            'name'    => $existing['Name'] ?? '',
-            'email'   => $existing['Email'] ?? '',
-            'role'    => $new_status === 'Active' ? 'super_admin' : 'inactive',
-        ]);
+        // Firebase Auth disables/enables login; Firestore carries the status field.
+        $this->firebase->updateFirebaseUser($admin_id, ['disabled' => ($new_status === 'Inactive')]);
+        $this->firebase->firestoreSet('superAdmins', $admin_id, ['status' => $new_status], true);
 
         $this->sa_log('Toggled admin status', '', [
             'target_admin' => $admin_id,
@@ -220,7 +198,7 @@ class Superadmin_admins extends MY_Superadmin_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // AJAX POST: Reset password
+    // AJAX POST: Reset password (Firebase Auth — the credential authority)
     // ─────────────────────────────────────────────────────────────────────────
 
     public function reset_password()
@@ -231,27 +209,23 @@ class Superadmin_admins extends MY_Superadmin_Controller
         if (empty($admin_id) || empty($new_password)) {
             $this->json_error('Admin ID and new password are required.');
         }
-
-        // Password strength
         if (strlen($new_password) < 8 || !preg_match('/[A-Z]/', $new_password) ||
             !preg_match('/[a-z]/', $new_password) || !preg_match('/[0-9]/', $new_password)) {
             $this->json_error('Password must be at least 8 characters with uppercase, lowercase, and a number.');
         }
 
-        $existing = $this->firebase->get('Users/Admin/Our Panel/' . $admin_id);
+        $existing = $this->firebase->firestoreGet('superAdmins', $admin_id);
         if (empty($existing) || !is_array($existing)) {
             $this->json_error('Admin not found.');
         }
 
-        $hashed = password_hash($new_password, PASSWORD_BCRYPT, ['cost' => 12]);
-        $this->firebase->update('Users/Admin/Our Panel/' . $admin_id . '/Credentials', [
-            'Password' => $hashed,
-        ]);
+        // Credential authority = Firebase Auth (SA login authenticates here). uid == admin_id.
+        $fbUser = $this->firebase->updateFirebaseUser($admin_id, ['password' => $new_password]);
+        if ($fbUser === null) {
+            $this->json_error('Failed to update the login credential (Firebase Auth). Password unchanged - please retry.');
+        }
 
-        // ── Sync to MongoDB ──
-        $this->auth_client->reset_password($admin_id, '', $hashed, 'super_admin');
-
-        $this->sa_log('Reset admin password', '', ['target_admin' => $admin_id]);
+        $this->sa_log('Reset admin password', '', ['target_admin' => $admin_id, 'store' => 'firebase']);
         $this->json_success(['message' => 'Password for "' . $admin_id . '" has been reset.']);
     }
 
@@ -273,32 +247,20 @@ class Superadmin_admins extends MY_Superadmin_Controller
         if (strlen($name) > 100) {
             $this->json_error('Name must be 100 characters or less.');
         }
-
         if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             $this->json_error('Invalid email format.');
         }
 
-        $existing = $this->firebase->get('Users/Admin/Our Panel/' . $admin_id);
+        $existing = $this->firebase->firestoreGet('superAdmins', $admin_id);
         if (empty($existing) || !is_array($existing)) {
             $this->json_error('Admin not found.');
         }
 
-        $this->firebase->update('Users/Admin/Our Panel/' . $admin_id, [
-            'Name'  => $name,
-            'Email' => $email,
-        ]);
-        $this->firebase->update('Users/Admin/Our Panel/' . $admin_id . '/Profile', [
+        $this->firebase->firestoreSet('superAdmins', $admin_id, [
             'name'  => $name,
             'email' => $email,
-        ]);
-
-        // ── Sync to MongoDB ──
-        $this->auth_client->sync_admin([
-            'adminId' => $admin_id,
-            'name'    => $name,
-            'email'   => $email,
-            'role'    => 'super_admin',
-        ]);
+        ], true);
+        $this->firebase->updateFirebaseUser($admin_id, ['displayName' => $name]);
 
         $this->sa_log('Updated admin profile', '', ['target_admin' => $admin_id]);
         $this->json_success(['message' => 'Profile updated for "' . $admin_id . '".']);
@@ -314,24 +276,21 @@ class Superadmin_admins extends MY_Superadmin_Controller
         if (empty($admin_id)) {
             $this->json_error('Admin ID is required.');
         }
-
         if ($admin_id === $this->sa_id) {
             $this->json_error('You cannot delete your own account.');
         }
 
-        $existing = $this->firebase->get('Users/Admin/Our Panel/' . $admin_id);
+        $existing = $this->firebase->firestoreGet('superAdmins', $admin_id);
         if (empty($existing) || !is_array($existing)) {
             $this->json_error('Admin not found.');
         }
-
-        if (!empty($existing['is_primary'])) {
+        if (!empty($existing['isPrimary'])) {
             $this->json_error('The primary super admin cannot be deleted.');
         }
 
-        $this->firebase->delete('Users/Admin/Our Panel', $admin_id);
-
-        // ── Delete from MongoDB ──
-        $this->auth_client->delete_admin($admin_id, '', 'super_admin');
+        // Remove the Firebase Auth login + the Firestore profile.
+        $this->firebase->deleteFirebaseUser($admin_id);
+        $this->firebase->firestoreDelete('superAdmins', $admin_id);
 
         $this->sa_log('Deleted developer admin', '', ['deleted_admin' => $admin_id]);
         $this->json_success(['message' => 'Admin "' . $admin_id . '" has been deleted.']);
