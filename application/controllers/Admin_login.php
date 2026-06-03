@@ -572,8 +572,8 @@ class Admin_login extends CI_Controller
     /**
      * Hydrate session-derived fields (session/current_session/session_year/
      * schoolName/school_display_name/school_features/available_sessions) from
-     * the schools/{schoolId} Firestore doc. Best-effort — defaults are safe
-     * if the read fails.
+     * the schools/{schoolId} Firestore doc + B2 entitlement reader for
+     * school_features. Best-effort — defaults are safe if any read fails.
      */
     private function _hydrate_admin_session_from_school(string $schoolId): void
     {
@@ -596,9 +596,16 @@ class Admin_login extends CI_Controller
             $currentSession = $sessions[0];
         }
 
-        $features = $schoolDoc['features'] ?? $schoolDoc['school_features'] ?? [];
-        if (!is_array($features)) $features = [];
-        $features = array_values($features);
+        // Wave C hotfix (2026-06-03): features live in tenantPublic/{schoolId}.activeModules
+        // (canonical B2 entitlement reader), NOT on the schools/{id} doc. The original
+        // cutover (ae605392) read schools/{id}.features which doesn't exist — left
+        // school_features empty, hiding all feature-gated sidebar items. B2_registry_service
+        // is already initialized in _try_firebase_admin_login above; reuse it here.
+        // Returns snake_case machine keys; MY_Controller::_normalize_features() maps
+        // them to Title Case sidebar labels + adds core defaults.
+        $this->load->library('B2_registry_service');
+        $this->b2_registry_service->init($this->firebase);
+        $features = $this->b2_registry_service->get_features($schoolId);
 
         $this->session->set_userdata([
             'session'             => $currentSession,
