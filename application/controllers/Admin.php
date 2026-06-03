@@ -105,7 +105,8 @@ class Admin extends MY_Controller
         $this->load->library('dashboard_cache');
         $cacheKey = 'dashboard_data_' . ($role ?? '');
         $cacheAge = null;
-        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge);
+        // SC-Step4: session-keyed — prevents cross-session cache reuse after switch_session.
+        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge, $this->session_year);
         if ($cached !== null) {
             log_message('debug', "DASHBOARD_CACHE HIT key={$cacheKey} school={$this->school_name} age=" . ($cacheAge === null ? 'unknown' : $cacheAge) . 's');
             echo json_encode($cached);
@@ -220,7 +221,8 @@ class Admin extends MY_Controller
             'calendar_events'   => [],
         ];
 
-        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600);
+        // SC-Step4: session-keyed cache write.
+        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600, $this->session_year);
         echo json_encode($payload);
     }
 
@@ -240,7 +242,8 @@ class Admin extends MY_Controller
         $this->load->library('dashboard_cache');
         $cacheKey = 'dashboard_charts_' . ($role ?? '');
         $cacheAge = null;
-        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge);
+        // SC-Step4: session-keyed — fee_defaulters/monthly_fees/top_defaulters scoped by session.
+        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge, $this->session_year);
         if ($cached !== null) {
             log_message('debug', "DASHBOARD_CACHE HIT key={$cacheKey} school={$this->school_name} age=" . ($cacheAge === null ? 'unknown' : $cacheAge) . 's');
             echo json_encode($cached);
@@ -450,7 +453,8 @@ class Admin extends MY_Controller
             'calendar_events'   => $calendarEvents,
         ];
 
-        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600);
+        // SC-Step4: session-keyed cache write.
+        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600, $this->session_year);
         echo json_encode($payload);
     }
 
@@ -469,7 +473,8 @@ class Admin extends MY_Controller
         $this->load->library('dashboard_cache');
         $cacheKey = 'dashboard_activity_' . ($role ?? '');
         $cacheAge = null;
-        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge);
+        // SC-Step4: session-keyed — recent activity feed scoped by session view.
+        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge, $this->session_year);
         if ($cached !== null) {
             log_message('debug', "DASHBOARD_CACHE HIT key={$cacheKey} school={$this->school_name} age=" . ($cacheAge === null ? 'unknown' : $cacheAge) . 's');
             echo json_encode($cached);
@@ -560,7 +565,8 @@ class Admin extends MY_Controller
         $activity = array_slice($activity, 0, 10);
 
         $payload = ['activity' => $activity];
-        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600);
+        // SC-Step4: session-keyed cache write.
+        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600, $this->session_year);
         echo json_encode($payload);
     }
 
@@ -839,9 +845,14 @@ class Admin extends MY_Controller
             $this->load->library('dashboard_cache');
             // Manual path uses current admin role; cron doesn't have one, so
             // clear the whole dashboard_activity cache for this school.
+            // SC-Step4: session-keyed invalidation — clears the activity cache
+            // for the actor's current session view. Cron-context invalidation
+            // (when role/session may be absent) is a pre-existing gap not
+            // addressed by Step 4.
             $this->dashboard_cache->invalidate(
                 $schoolId,
-                'dashboard_activity_' . ($this->admin_role ?? '')
+                'dashboard_activity_' . ($this->admin_role ?? ''),
+                $this->session_year
             );
         } catch (\Exception $e) { /* non-fatal */ }
 
@@ -1235,110 +1246,6 @@ class Admin extends MY_Controller
         } else {
             $this->json_error('Update failed.', 500);
         }
-    }
-
-    // =========================================================================
-    //  SESSION MANAGEMENT
-    // =========================================================================
-
-    /**
-     * POST: Switch the active academic session for the current user.
-     * The new year must already exist in the user's available_sessions list
-     * (whitelist check prevents path injection and cross-school access).
-     */
-    public function switch_session(): void
-    {
-        // All logged-in roles can switch session — it only changes their own
-        // PHP session view, not the school's global active session.
-        $this->_require_role(self::VIEW_ROLES);
-        if ($this->input->method() !== 'post') {
-            $this->json_error('Method not allowed.', 405);
-        }
-
-        $new_year = trim((string) $this->input->post('session_year'));
-
-        if (!preg_match('/^\d{4}-\d{2}$/', $new_year)) {
-            $this->json_error('Invalid session year format.', 400);
-        }
-
-        // Whitelist — must be in this school's available sessions
-        $available = $this->session->userdata('available_sessions') ?? [];
-        if (!in_array($new_year, $available, true)) {
-            $this->json_error('Session not available for your school.', 403);
-        }
-
-        // Update all three key aliases so every controller/view stays in sync
-        $this->session->set_userdata([
-            'session'         => $new_year,  // MY_Controller reads this
-            'current_session' => $new_year,  // Account controller reads this
-            'session_year'    => $new_year,  // Account_model reads this
-        ]);
-
-        // Persist active session to Firestore
-        try {
-            $this->fs->update('schools', $this->school_id, ['currentSession' => $new_year]);
-        } catch (Exception $e) {
-            log_message('error', 'switch_session: ActiveSession persist failed — ' . $e->getMessage());
-        }
-
-        log_message('info',
-            "Session switched to [{$new_year}] admin=[{$this->admin_id}] school=[{$this->school_name}]"
-        );
-        $this->json_success(['session_year' => $new_year]);
-    }
-
-    /**
-     * POST: Create a new academic session year in Firebase.
-     * Restricted to Super Admin role.
-     */
-    public function create_session(): void
-    {
-        // Only Super Admin can create new academic sessions
-        $this->_require_role(['Super Admin']);
-        if ($this->input->method() !== 'post') {
-            $this->json_error('Method not allowed.', 405);
-        }
-
-        $new_year = trim((string) $this->input->post('session_year'));
-
-        if (!preg_match('/^\d{4}-\d{2}$/', $new_year)) {
-            $this->json_error('Invalid format. Use YYYY-YY (e.g. 2026-27).', 400);
-        }
-
-        // Validate YY matches YYYY+1 (e.g. 2026-27 is valid, 2026-99 is not)
-        [$yearPart, $yyPart] = explode('-', $new_year);
-        $expectedYY = substr((string)((int)$yearPart + 1), -2);
-        if ($yyPart !== $expectedYY) {
-            $this->json_error(
-                "Year mismatch: {$yearPart}-{$yyPart} should be {$yearPart}-{$expectedYY}.", 400
-            );
-        }
-
-        $available = $this->session->userdata('available_sessions') ?? [];
-        if (in_array($new_year, $available, true)) {
-            $this->json_error('This session already exists.', 409);
-        }
-
-        // Create session in Firestore schools document
-        $available[] = $new_year;
-        rsort($available);
-
-        $written = $this->fs->update('schools', $this->school_id, [
-            'sessions'       => $available,
-            'currentSession' => $new_year,
-        ]);
-
-        if (!$written) {
-            $this->json_error('Could not create session. Please try again.', 503);
-        }
-
-        // Update PHP session only after Firebase confirms the write
-        $this->session->set_userdata('available_sessions', $available);
-
-        log_message('info',
-            "New session [{$new_year}] created by admin=[{$this->admin_id}] school=[{$this->school_name}]"
-        );
-        $this->json_success(['session_year' => $new_year, 'available_sessions' => $available]);
     }
 
     /**

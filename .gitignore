@@ -15,6 +15,11 @@ application/sessions/*
 application/cache/token_*.json
 application/cache/firebase_circuit.json
 application/cache/ops_students_*
+# Runtime cache artifacts — regenerated at runtime, must never be committed.
+# firebase_auth/ holds the live OAuth access token (a secret); dashboard/ holds
+# per-tenant dashboard caches that churn on every load.
+application/cache/firebase_auth/
+application/cache/dashboard/
 
 # Log files
 application/logs/*.php

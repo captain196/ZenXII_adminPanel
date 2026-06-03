@@ -230,194 +230,134 @@ class Schools extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'view_school_profile');
         $school_name = $this->school_name;
 
-        // BUG FIX #8 — cast to array defensively
-        $schoolData = $this->firebase->get('System/Schools/' . $school_name);
-        if (!$schoolData || !is_array($schoolData)) {
-            $schoolData = [];
+        // ── SP-01 (post-LOGO-1 2026-06-02): Firestore-canonical reads ──
+        // Pre-SP-01: this method read 5 RTDB paths (System/Schools/{name},
+        // System/Plans/{id}, System/Payments, Users/Schools/{name},
+        // Schools/{name}/Config/Profile) — all empty post-Firestore migration,
+        // so the page rendered blank. Post-SP-01: 3 Firestore reads
+        // (schools/{id} + schoolControl/{id} + systemPlans/{planId}) + a
+        // camelCase → Title Case remap pass that preserves the view's
+        // existing Title Case API. No view changes required.
+        //
+        // Field mappings (per pre-flight 2026-06-01 against live data):
+        //   schools/{id}.name              → 'School Name'
+        //   schools/{id}.logoUrl           → 'Logo'
+        //   schools/{id}.street            → 'Address'
+        //   schools/{id}.phone/mobile/email/website/city/state/pincode → Title Case
+        //   schools/{id}.principal         → 'School Principal'
+        //   schools/{id}.affiliationBoard  → 'Affiliated To' (legacy fallback: 'board')
+        //   schools/{id}.affiliationNo     → 'Affiliation Number'
+        //   Field names match Firestore_service::saveSchool canonical schema —
+        //   the only writer for these fields (used by School_config::save_profile).
+        //   schoolControl/{id}.subscription.planId → look up systemPlans/{planId}.name
+        //   schoolControl/{id}.subscription.periodStart/periodEnd  → duration.startDate/endDate
+        //   schoolControl/{id}.subscription.billingCycle           → payment.billingCycle
+        //   schoolControl/{id}.lifecycle.state                     → subscription.status + payment.paymentStatus
+        //   schoolControl/{id}.billingSummary.lastPaymentAmount    → payment.lastPaymentAmount
+        //   schoolControl/{id}.billingSummary.lastPaymentDate      → payment.lastPaymentDate
+        //   systemPlans/{planId}.price                             → subscription.amount.totalAmount
+        //   systemPlans/{planId}.features                          → subscription.features
+        $school_id = $this->school_id;
+
+        $schoolDoc     = $this->fs->get('schools', $school_id) ?? [];
+        $schoolControl = $this->fs->get('schoolControl', $school_id) ?? [];
+        if (!is_array($schoolDoc))     $schoolDoc     = [];
+        if (!is_array($schoolControl)) $schoolControl = [];
+
+        $sub  = is_array($schoolControl['subscription']   ?? null) ? $schoolControl['subscription']   : [];
+        $life = is_array($schoolControl['lifecycle']      ?? null) ? $schoolControl['lifecycle']      : [];
+        $bill = is_array($schoolControl['billingSummary'] ?? null) ? $schoolControl['billingSummary'] : [];
+
+        // Plan lookup (preserves the pre-SP-01 systemPlans pattern)
+        $planData = [];
+        $planId   = (string) ($sub['planId'] ?? '');
+        if ($planId !== '') {
+            try {
+                $pd = $this->fs->get('systemPlans', $planId);
+                if (is_array($pd)) $planData = $pd;
+            } catch (\Exception $e) {
+                log_message('error', "SP-01: systemPlans/{$planId} read failed: " . $e->getMessage());
+            }
         }
-        $schoolData = (array)$schoolData;
 
-        // ── Flatten onboarding profile sub-node into top-level Title Case keys ──
-        // Onboarding writes to System/Schools/{id}/profile with lowercase keys.
-        // The view (schoolprofile.php) expects Title Case keys at the top level.
-        $onboardProfile = is_array($schoolData['profile'] ?? null) ? $schoolData['profile'] : [];
-        if (!empty($onboardProfile)) {
-            $onboardMap = [
-                'school_name' => 'School Name',
-                'name'        => 'School Name',
-                'city'        => 'City',
-                'street'      => 'Address',
-                'email'       => 'Email',
-                'phone'       => 'Phone Number',
-                'logo_url'    => 'Logo',
-                'state'       => 'State',
-                'pincode'     => 'Pincode',
-                'website'     => 'Website',
-            ];
-            foreach ($onboardMap as $srcKey => $destKey) {
-                if (empty($schoolData[$destKey]) && !empty($onboardProfile[$srcKey])) {
-                    $schoolData[$destKey] = $onboardProfile[$srcKey];
-                }
-            }
-            // Also map title-case keys from save_profile dual-write
-            foreach (['School Name', 'City', 'Address', 'Email', 'Phone Number', 'Logo',
-                       'State', 'Pincode', 'Website', 'School Principal', 'Affiliated To',
-                       'Affiliation Number'] as $tk) {
-                if (empty($schoolData[$tk]) && !empty($onboardProfile[$tk])) {
-                    $schoolData[$tk] = $onboardProfile[$tk];
-                }
+        // Build $schoolData with Title Case keys (view contract preserved)
+        $schoolData = [];
+        $fsToTitle = [
+            'name'              => 'School Name',
+            'logoUrl'           => 'Logo',
+            'street'            => 'Address',
+            'phone'             => 'Phone Number',
+            'mobile'            => 'Mobile Number',
+            'email'             => 'Email',
+            'website'           => 'Website',
+            'city'              => 'City',
+            'state'             => 'State',
+            'pincode'           => 'Pincode',
+            'principal'         => 'School Principal',
+            'affiliationBoard'  => 'Affiliated To',
+            'affiliationNo'     => 'Affiliation Number',
+        ];
+        foreach ($fsToTitle as $fsKey => $titleKey) {
+            if (!empty($schoolDoc[$fsKey])) {
+                $schoolData[$titleKey] = $schoolDoc[$fsKey];
             }
         }
+        // Legacy fallback: affiliationBoard may have been written under 'board'
+        // by older onboarding paths (saveSchool@L745 accepts both).
+        if (empty($schoolData['Affiliated To']) && !empty($schoolDoc['board'])) {
+            $schoolData['Affiliated To'] = $schoolDoc['board'];
+        }
 
-        // ── Normalize subscription field names ──────────────────────────────
-        // Onboarding writes plan_name (snake_case); view expects planName (camelCase)
-        $sub = is_array($schoolData['subscription'] ?? null) ? $schoolData['subscription'] : [];
-        if (!empty($sub)) {
-            if (empty($sub['planName']) && !empty($sub['plan_name'])) {
-                $schoolData['subscription']['planName'] = $sub['plan_name'];
-            }
-            // Legacy stores plan name at subscription.Plan.Name
-            if (empty($schoolData['subscription']['planName']) && !empty($sub['Plan']['Name'])) {
-                $schoolData['subscription']['planName'] = $sub['Plan']['Name'];
-            }
+        // Subscription block — schoolControl + systemPlans
+        $periodStart  = (string) ($sub['periodStart']  ?? '');
+        $periodEnd    = (string) ($sub['periodEnd']    ?? '');
+        $billingCycle = (string) ($sub['billingCycle'] ?? 'annual');
+        $planName     = (string) ($planData['name']    ?? '');
+        $planPrice    = (float)  ($planData['price']   ?? 0);
 
-            // ── Compute periodInMonths from start/end dates if missing ──
-            $subStart = $sub['duration']['startDate'] ?? null;
-            $subEnd   = $sub['duration']['endDate']   ?? null;
-            if (empty($sub['duration']['periodInMonths']) && $subStart && $subEnd) {
-                $d1 = new DateTime($subStart);
-                $d2 = new DateTime($subEnd);
+        // Compute periodInMonths from start/end dates
+        $periodInMonths = 0;
+        if ($periodStart && $periodEnd) {
+            try {
+                $d1 = new DateTime($periodStart);
+                $d2 = new DateTime($periodEnd);
                 $diff = $d1->diff($d2);
-                $schoolData['subscription']['duration']['periodInMonths'] = $diff->y * 12 + $diff->m;
-            }
-
-            // ── Fetch plan pricing if amount fields are missing ──────────
-            if (empty($sub['amount']['totalAmount']) && !empty($sub['plan_id'])) {
-                // Firestore-first plan read, RTDB fallback
-                $planData = null;
-                try {
-                    $planData = $this->fs->get('systemPlans', $sub['plan_id']);
-                } catch (\Exception $e) {}
-                if (empty($planData)) {
-                    $planData = $this->firebase->get('System/Plans/' . $sub['plan_id']);
-                }
-                if (is_array($planData) && !empty($planData['price'])) {
-                    $price   = (float)$planData['price'];
-                    $billing = $planData['billing_cycle'] ?? 'annual';
-                    $months  = $schoolData['subscription']['duration']['periodInMonths']
-                             ?? ($billing === 'monthly' ? 1 : ($billing === 'quarterly' ? 3 : 12));
-                    $monthly = ($billing === 'monthly') ? $price
-                             : (($billing === 'quarterly') ? round($price / 3, 2)
-                             : round($price / 12, 2));
-                    $schoolData['subscription']['amount'] = [
-                        'totalAmount' => $price,
-                        'monthly'     => $monthly,
-                    ];
-                }
-            }
-
-            // ── Map last_payment fields from subscription to payment node ─
-            // Onboarding/SA syncs last_payment_date & last_payment_amount
-            // onto subscription (snake_case), but the view reads from
-            // payment.lastPaymentAmount / lastPaymentDate (camelCase).
-            if (empty($schoolData['payment']) || !is_array($schoolData['payment'])) {
-                $schoolData['payment'] = [];
-            }
-            if (empty($schoolData['payment']['lastPaymentAmount'])) {
-                $schoolData['payment']['lastPaymentAmount'] = $sub['last_payment_amount'] ?? 0;
-            }
-            if (empty($schoolData['payment']['lastPaymentDate'])) {
-                $lpd = $sub['last_payment_date'] ?? '';
-                $schoolData['payment']['lastPaymentDate'] = $lpd ?: '—';
-            }
-
-            // ── Fetch latest payment record for method & extra details ────
-            if (empty($schoolData['payment']['paymentMethod']) || $schoolData['payment']['paymentMethod'] === '—') {
-                $allPayments = $this->firebase->get('System/Payments') ?? [];
-                if (is_array($allPayments)) {
-                    $latestPay = null;
-                    foreach ($allPayments as $pid => $p) {
-                        if (!is_array($p)) continue;
-                        if (($p['school_uid'] ?? '') !== $school_name) continue;
-                        if ($latestPay === null
-                            || ($p['created_at'] ?? '') > ($latestPay['created_at'] ?? '')) {
-                            $latestPay = $p;
-                        }
-                    }
-                    if ($latestPay) {
-                        if (empty($schoolData['payment']['lastPaymentAmount']) || $schoolData['payment']['lastPaymentAmount'] == 0) {
-                            $schoolData['payment']['lastPaymentAmount'] = $latestPay['amount'] ?? 0;
-                        }
-                        if (empty($schoolData['payment']['lastPaymentDate']) || $schoolData['payment']['lastPaymentDate'] === '—') {
-                            // Try paid_date → invoice_date → created_at as fallbacks
-                            $schoolData['payment']['lastPaymentDate'] = !empty($latestPay['paid_date'])
-                                ? $latestPay['paid_date']
-                                : (!empty($latestPay['invoice_date'])
-                                    ? $latestPay['invoice_date']
-                                    : (!empty($latestPay['created_at'])
-                                        ? substr($latestPay['created_at'], 0, 10)
-                                        : '—'));
-                        }
-                        // Status (paid/pending/overdue) is more useful than billing_cycle as "Method"
-                        $schoolData['payment']['paymentStatus']  = $latestPay['status'] ?? '—';
-                        $schoolData['payment']['billingCycle']    = $latestPay['billing_cycle'] ?? '—';
-                        $schoolData['payment']['paymentMethod']   = ucfirst($latestPay['status'] ?? '—');
-                    }
-                }
-            }
+                $periodInMonths = $diff->y * 12 + $diff->m;
+            } catch (\Throwable $e) {}
+        }
+        if ($periodInMonths === 0) {
+            $periodInMonths = ($billingCycle === 'monthly')   ? 1
+                            : (($billingCycle === 'quarterly') ? 3 : 12);
         }
 
-        // Legacy fallback: schools that were not fully migrated to System/Schools
-        // still have their data at Users/Schools/{school_name}.
-        if (empty($schoolData['School Name'])) {
-            $legacy = $this->firebase->get('Users/Schools/' . $school_name);
-            if (is_array($legacy) && !empty($legacy)) {
-                foreach ($legacy as $k => $v) {
-                    if (!isset($schoolData[$k]) || (is_string($schoolData[$k]) && $schoolData[$k] === '')) {
-                        $schoolData[$k] = $v;
-                    }
-                }
-            }
-        }
+        $monthlyAmount = ($billingCycle === 'monthly') ? $planPrice
+                       : (($billingCycle === 'quarterly') ? round($planPrice / 3, 2)
+                       : round($planPrice / 12, 2));
 
-        // Normalize field name differences between legacy and view expectations
-        if (empty($schoolData['School Principal']) && !empty($schoolData['Principal Name'])) {
-            $schoolData['School Principal'] = $schoolData['Principal Name'];
-        }
+        $schoolData['subscription'] = [
+            'planName' => $planName,
+            'status'   => (string) ($life['state'] ?? ''),
+            'duration' => [
+                'startDate'      => $periodStart,
+                'endDate'        => $periodEnd,
+                'periodInMonths' => $periodInMonths,
+            ],
+            'amount' => [
+                'totalAmount' => $planPrice,
+                'monthly'     => $monthlyAmount,
+            ],
+            'features' => is_array($planData['features'] ?? null) ? $planData['features'] : [],
+        ];
 
-        // ── Merge School Config profile data if present ──────────────────
-        // School_config writes to Schools/{school}/Config/Profile with
-        // different field names. Map them to the canonical field names so
-        // edits made in School Config show up on this profile page.
-        $configProfile = $this->firebase->get("Schools/{$school_name}/Config/Profile");
-        if (is_array($configProfile) && !empty($configProfile)) {
-            $configToCanonical = [
-                'display_name'      => 'School Name',
-                'address'           => 'Address',
-                'phone'             => 'Phone Number',
-                'email'             => 'Email',
-                'website'           => 'Website',
-                'principal_name'    => 'School Principal',
-                'affiliation_board' => 'Affiliated To',
-                'affiliation_no'    => 'Affiliation Number',
-                'logo_url'          => 'Logo',
-                'city'              => 'City',
-                'state'             => 'State',
-                'pincode'           => 'Pincode',
-            ];
-            foreach ($configToCanonical as $cfgKey => $canonKey) {
-                if (!empty($configProfile[$cfgKey]) && empty($schoolData[$canonKey])) {
-                    $schoolData[$canonKey] = $configProfile[$cfgKey];
-                }
-            }
-            // Document URLs stored in Config/Profile by document upload feature
-            if (!empty($configProfile['holidays_calendar']) && empty($schoolData['Holidays'])) {
-                $schoolData['Holidays'] = $configProfile['holidays_calendar'];
-            }
-            if (!empty($configProfile['academic_calendar']) && empty($schoolData['Academic calendar'])) {
-                $schoolData['Academic calendar'] = $configProfile['academic_calendar'];
-            }
-        }
+        // Payment block — schoolControl.billingSummary + lifecycle.state
+        $lifecycleState = (string) ($life['state'] ?? '');
+        $schoolData['payment'] = [
+            'lastPaymentAmount' => $bill['lastPaymentAmount'] ?? 0,
+            'lastPaymentDate'   => $bill['lastPaymentDate']   ?? '—',
+            'paymentStatus'     => $lifecycleState !== '' ? $lifecycleState : '—',
+            'billingCycle'      => $billingCycle,
+            'paymentMethod'     => $lifecycleState !== '' ? ucfirst($lifecycleState) : '—',
+        ];
 
         // ── Final fallback: use session display name if School Name still empty ─
         if (empty($schoolData['School Name']) && !empty($this->school_display_name)) {

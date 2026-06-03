@@ -14,7 +14,8 @@ $cache      = $school['stats_cache']  ?? [];
     </h1>
     <ol class="breadcrumb">
         <li><a href="<?= base_url('superadmin/dashboard') ?>">Dashboard</a></li>
-        <li><a href="<?= base_url('superadmin/schools') ?>">Schools</a></li>
+        <li><a href="<?= base_url('superadmin/schools') ?>">School Management</a></li>
+        <li><a href="<?= base_url('superadmin/schools') ?>">All Schools</a></li>
         <li class="active"><?= htmlspecialchars($profile['name'] ?? $school_uid) ?></li>
     </ol>
 </section>
@@ -213,20 +214,48 @@ $cache      = $school['stats_cache']  ?? [];
                     </div>
                 </div>
                 <div style="font-size:10.5px;color:var(--t3);font-family:var(--font-m);margin-top:10px;text-align:center;">
-                    Last updated: <?= htmlspecialchars($cache['last_updated'] ?? 'Never') ?>
+                    Last updated: <span id="cacheLastUpdated"><?= htmlspecialchars($cache['last_updated'] ?? 'Never') ?></span>
                 </div>
             </div>
         </div>
 
         <!-- Status Toggle -->
+        <?php
+        // Disable the button whose target status equals the current status
+        // so the SA can't "activate an already-active school" etc. The
+        // currently-active state button shows a checkmark + " (current)"
+        // tag and is muted, signalling read-only state at a glance.
+        $curStatus = strtolower((string) ($profile['status'] ?? 'inactive'));
+        // `action` is the verb shown on the button when it's the available
+        // ACTION (e.g. "Activate"); `state` is the past participle shown
+        // when it's the CURRENT state (e.g. "Activated"). UX nit, but it
+        // makes the "(current)" tag unambiguous — a button labelled
+        // "Activate (current)" reads as an action that's already current,
+        // which is confusing.
+        $stBtns = [
+            'active'    => ['class' => 'btn-success', 'icon' => 'fa-check', 'action' => 'Activate',   'state' => 'Activated'],
+            'inactive'  => ['class' => 'btn-warning', 'icon' => 'fa-pause', 'action' => 'Deactivate', 'state' => 'Deactivated'],
+            'suspended' => ['class' => 'btn-danger',  'icon' => 'fa-ban',   'action' => 'Suspend',    'state' => 'Suspended'],
+        ];
+        ?>
         <div class="box box-danger">
             <div class="box-header"><i class="fa fa-toggle-on" style="color:var(--rose);margin-right:8px;"></i><span class="box-title">Access Control</span></div>
             <div class="box-body">
                 <p style="font-size:12.5px;color:var(--t2);margin-bottom:12px;">Change this school's access status. Deactivating will immediately lock out all school admins.</p>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                    <button class="btn btn-success btn-sm sa-st-btn" data-status="active"><i class="fa fa-check"></i> Activate</button>
-                    <button class="btn btn-warning btn-sm sa-st-btn" data-status="inactive"><i class="fa fa-pause"></i> Deactivate</button>
-                    <button class="btn btn-danger btn-sm sa-st-btn" data-status="suspended"><i class="fa fa-ban"></i> Suspend</button>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;" id="saStatusBtnRow">
+                    <?php foreach ($stBtns as $target => $cfg):
+                        $isCurrent = ($curStatus === $target);
+                        $cls = 'btn btn-sm sa-st-btn ' . $cfg['class'];
+                        if ($isCurrent) $cls .= ' active';
+                        // Past participle when current ("Activated"), action verb otherwise ("Activate").
+                        $btnLabel = $isCurrent ? $cfg['state'] : $cfg['action'];
+                    ?>
+                    <button class="<?= $cls ?>" data-status="<?= $target ?>" data-label="<?= htmlspecialchars($cfg['action']) ?>"
+                            <?= $isCurrent ? 'disabled aria-pressed="true" title="Current state"' : '' ?>>
+                        <i class="fa <?= $cfg['icon'] ?>"></i> <?= htmlspecialchars($btnLabel) ?>
+                        <?php if ($isCurrent): ?><span style="font-size:10px;opacity:.85;margin-left:4px;">(current)</span><?php endif; ?>
+                    </button>
+                    <?php endforeach; ?>
                 </div>
             </div>
         </div>
@@ -311,15 +340,29 @@ $cache      = $school['stats_cache']  ?? [];
 
 <script>
 $(function(){
-    // Save profile
+    // Save profile. The Firestore round-trip is fast on local (~200ms),
+    // so without a minimum spinner duration the user often misses the
+    // visual feedback — the button flickers spinner → original almost
+    // instantly. We hold the spinner for a fixed minimum (700ms) so the
+    // "Saving…" state is always perceptible.
     $('#profileForm').on('submit', function(e){
         e.preventDefault();
-        var $btn = $('#saveProfileBtn').prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Saving...');
+        var $btn   = $('#saveProfileBtn');
+        var origHtml = '<i class="fa fa-save"></i> Save Profile';
+        var startT = Date.now();
+        $btn.prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> Saving...');
+        function restore(){
+            var wait = Math.max(0, 700 - (Date.now() - startT));
+            setTimeout(function(){
+                $btn.prop('disabled',false).html(origHtml);
+            }, wait);
+        }
         $.ajax({ url: BASE_URL+'superadmin/schools/update_profile', type:'POST', data:$(this).serialize(),
             success: function(r){
                 saToast(r.message || (r.status==='success'?'Saved.':'Error'), r.status);
-                $btn.prop('disabled',false).html('<i class="fa fa-save"></i> Save Profile');
-            }, error:function(){ saToast('Server error.','error'); $btn.prop('disabled',false).html('<i class="fa fa-save"></i> Save Profile'); }
+                restore();
+            },
+            error: function(){ saToast('Server error.','error'); restore(); }
         });
     });
 
@@ -372,15 +415,46 @@ $(function(){
 
     function escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-    // Status toggle
-    $('.sa-st-btn').on('click', function(){
-        var status = $(this).data('status');
-        var label  = {active:'activate',inactive:'deactivate',suspended:'suspend'}[status];
-        if(!confirm('Are you sure you want to '+label+' this school?')) return;
+    // Status toggle. While the AJAX is in flight, lock the whole button
+    // row (no spam-click, no accidental click on a sibling state) and
+    // show a spinner on the clicked button with action text ("Suspending…"
+    // etc). On success the page reloads, which re-renders the row with
+    // the new "(current)" disabled button — so we don't manually restore.
+    $('#saStatusBtnRow').on('click', '.sa-st-btn', function(){
+        var $btn   = $(this);
+        if ($btn.prop('disabled')) return; // already current state
+        var status = $btn.data('status');
+        var label  = String($btn.data('label') || status);
+        var verb   = {active:'activate', inactive:'deactivate', suspended:'suspend'}[status] || 'change';
+        var gerund = {active:'Activating', inactive:'Deactivating', suspended:'Suspending'}[status] || 'Updating';
+        if(!confirm('Are you sure you want to '+verb+' this school?')) return;
+
+        // Lock the whole row so the sibling buttons aren't clickable.
+        var $row    = $('#saStatusBtnRow');
+        var $others = $row.find('.sa-st-btn').not($btn);
+        var origBtnHtml = $btn.html();
+        $btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> ' + gerund + '…');
+        $others.prop('disabled', true).addClass('sa-st-locked');
+
+        function restore(){
+            $btn.prop('disabled', false).html(origBtnHtml);
+            $others.prop('disabled', false).removeClass('sa-st-locked');
+        }
+
         $.ajax({ url: BASE_URL+'superadmin/schools/toggle_status', type:'POST',
             data:{ school_uid:'<?= addslashes($school_uid) ?>', status:status },
-            success:function(r){ saToast(r.message, r.status); if(r.status==='success') setTimeout(function(){location.reload();},1000); },
-            error:function(){ saToast('Server error.','error'); }
+            success:function(r){
+                saToast(r.message, r.status);
+                if(r.status === 'success'){
+                    // Keep buttons locked through the reload so user sees
+                    // a stable "in-progress" state until the new page
+                    // paints with the new (current) disabled button.
+                    setTimeout(function(){ location.reload(); }, 800);
+                } else {
+                    restore();
+                }
+            },
+            error:function(){ saToast('Server error.','error'); restore(); }
         });
     });
 
@@ -416,7 +490,27 @@ $(function(){
         });
     });
 
-    // Refresh stats
+    // Refresh stats. Update ALL three readouts on success — including
+    // the timestamp (which had no id before, so prior refreshes left
+    // the panel looking unchanged when counts happened to be 0/0).
+    // Also flash the panel border briefly so the user can't miss the
+    // visual confirmation even when the numbers themselves haven't
+    // changed (e.g. tenant with 0 students/0 staff like ZZ B1).
+    function fmtIST(iso){
+        if(!iso) return 'Never';
+        var d = new Date(iso);
+        if(isNaN(d.getTime())){
+            // Server may return "Y-m-d H:i:s" instead of ISO 8601 —
+            // treat it as IST wall-clock and display verbatim.
+            return iso + ' IST';
+        }
+        return d.toLocaleString('en-IN', {
+            timeZone:'Asia/Kolkata',
+            day:'2-digit', month:'short', year:'numeric',
+            hour:'2-digit', minute:'2-digit', second:'2-digit',
+            hour12:true
+        }) + ' IST';
+    }
     $('#refreshSchoolStatsBtn').on('click', function(){
         var $btn=$(this).prop('disabled',true);
         $('#refreshSchoolIcon').addClass('fa-spin');
@@ -426,8 +520,18 @@ $(function(){
                 if(r.status==='success'){
                     $('#cacheStudents').text(parseInt(r.total_students||0).toLocaleString('en-IN'));
                     $('#cacheStaff').text(parseInt(r.total_staff||0).toLocaleString('en-IN'));
+                    $('#cacheLastUpdated').text(fmtIST(r.last_updated));
+                    // Brief border flash on the parent box so the user
+                    // gets clear visual feedback even when counts didn't
+                    // change.
+                    var $box = $('#refreshSchoolStatsBtn').closest('.box');
+                    $box.css('transition','box-shadow .3s ease, border-color .3s ease')
+                        .css({'box-shadow':'0 0 0 2px var(--sa3, #7c3aed)','border-color':'var(--sa3, #7c3aed)'});
+                    setTimeout(function(){ $box.css({'box-shadow':'','border-color':''}); }, 900);
                     saToast('Stats refreshed.','success');
-                } else { saToast(r.message,'error'); }
+                } else {
+                    saToast(r.message || 'Refresh failed.','error');
+                }
             },
             error:function(){ saToast('Server error.','error'); },
             complete:function(){ $btn.prop('disabled',false); $('#refreshSchoolIcon').removeClass('fa-spin'); }

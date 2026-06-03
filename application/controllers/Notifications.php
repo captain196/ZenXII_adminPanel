@@ -46,7 +46,10 @@ class Notifications extends MY_Controller
         $this->load->library('dashboard_cache');
         $cacheKey = 'tasks_' . ($this->admin_id ?? 'anon') . '_' . ($this->admin_role ?? '');
         $cacheAge = null;
-        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge);
+        // SC-Step4: session-keyed — tasks payload aggregates session-scoped
+        // checks (attendance/payroll/fees/accounting), so cross-session reuse
+        // would surface wrong-session pending counts.
+        $cached = $this->dashboard_cache->get($this->school_name, $cacheKey, $cacheAge, $this->session_year);
         if ($cached !== null) {
             log_message('debug', "DASHBOARD_CACHE HIT key={$cacheKey} school={$this->school_name} age=" . ($cacheAge === null ? 'unknown' : $cacheAge) . 's');
             echo json_encode($cached);
@@ -130,7 +133,8 @@ class Notifications extends MY_Controller
             'alerts' => array_slice($alerts, 0, self::MAX_ALERTS),
             'ts'     => date('c'),
         ];
-        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600);
+        // SC-Step4: session-keyed cache write.
+        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600, $this->session_year);
         echo json_encode($payload);
     }
 
@@ -169,7 +173,9 @@ class Notifications extends MY_Controller
         try {
             $this->load->library('dashboard_cache');
             $cacheKey = 'tasks_' . ($adminId ?? 'anon') . '_' . ($this->admin_role ?? '');
-            $this->dashboard_cache->invalidate($this->school_name, $cacheKey);
+            // SC-Step4: session-keyed invalidation — clears only the current
+            // session's cache. Other sessions' caches naturally expire via TTL.
+            $this->dashboard_cache->invalidate($this->school_name, $cacheKey, $this->session_year);
         } catch (\Exception $e) { /* non-fatal */ }
 
         $this->json_success(['message' => 'Alert dismissed.']);

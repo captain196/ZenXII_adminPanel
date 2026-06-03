@@ -215,44 +215,45 @@ a{text-decoration:none !important;}
     letter-spacing:1.2px !important;font-family:var(--font-m) !important;pointer-events:none !important;
 }
 .sidebar-menu .g-sec:first-child{padding-top:8px !important;}
-.sidebar-menu>li{margin:1px 8px !important;position:relative !important;}
+.sidebar-menu>li{margin:2px 10px !important;position:relative !important;}
 .sidebar-menu>li>a{
-    font-family:var(--font-b) !important;font-size:13px !important;font-weight:500 !important;
-    color:var(--t2) !important;padding:8px 12px !important;border-radius:7px !important;
-    display:flex !important;align-items:center !important;gap:10px !important;
-    transition:all var(--ease) !important;background:transparent !important;
+    font-family:var(--font-b) !important;font-size:13.5px !important;font-weight:500 !important;
+    color:var(--t2) !important;padding:10px 13px !important;border-radius:9px !important;
+    display:flex !important;align-items:center !important;gap:11px !important;
+    transition:background var(--ease),color var(--ease) !important;background:transparent !important;letter-spacing:-.1px !important;
 }
 .sidebar-menu>li>a:hover{color:var(--t1) !important;background:var(--bg3) !important;}
+.sidebar-menu li.menu-open>a{color:var(--t1) !important;}
 .sidebar-menu>li.active>a,.sidebar-menu>li.active>a:hover{
     color:var(--sa4) !important;background:var(--sa-dim) !important;font-weight:600 !important;
 }
 .sidebar-menu>li.active>a::before{
     content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);
-    width:2.5px;height:20px;border-radius:0 2px 2px 0;background:var(--sa3);
+    width:3px;height:18px;border-radius:0 3px 3px 0;background:var(--sa3);
 }
 .sidebar-menu>li>a>.fa,.sidebar-menu>li>a>i{
-    width:16px !important;font-size:13.5px !important;text-align:center !important;
+    width:20px !important;font-size:15px !important;text-align:center !important;
     flex-shrink:0 !important;color:var(--t3) !important;transition:color var(--ease) !important;
 }
-.sidebar-menu>li>a:hover>i{color:var(--t2) !important;}
+.sidebar-menu>li>a:hover>i{color:var(--t1) !important;}
 .sidebar-menu>li.active>a>i{color:var(--sa4) !important;}
 .sidebar-menu>li>a>span:not(.pull-right-container){flex:1;}
 .g-nb{background:var(--rose);color:#fff;font-size:9px;font-weight:700;font-family:var(--font-m);padding:1px 5px;border-radius:4px;flex-shrink:0;}
 .sidebar-menu .fa-angle-left{font-size:10px !important;color:var(--t4) !important;transition:transform .2s !important;}
 .sidebar-menu li.menu-open>a>.pull-right-container .fa-angle-left{transform:rotate(-90deg) !important;}
 .treeview-menu{
-    background:transparent !important;padding:3px 0 4px 14px !important;
-    margin:0 !important;list-style:none !important;
-    border-left:1.5px solid var(--border) !important;margin-left:20px !important;
+    background:transparent !important;padding:2px 0 4px 0 !important;
+    margin:2px 0 4px 26px !important;list-style:none !important;
+    border-left:1.5px solid var(--border) !important;
 }
 .treeview-menu>li>a{
-    font-family:var(--font-b) !important;font-size:12.5px !important;
-    color:var(--t3) !important;padding:5px 10px !important;border-radius:6px !important;
-    display:flex !important;align-items:center !important;gap:7px !important;transition:all .12s !important;
+    font-family:var(--font-b) !important;font-size:12.5px !important;font-weight:500 !important;
+    color:var(--t3) !important;padding:7px 12px 7px 16px !important;margin-left:6px !important;border-radius:8px !important;
+    display:flex !important;align-items:center !important;gap:8px !important;transition:background .14s,color .14s !important;
 }
 .treeview-menu>li>a:hover{color:var(--t1) !important;background:var(--bg3) !important;}
-.treeview-menu>li.active>a{color:var(--sa4) !important;font-weight:600 !important;}
-.treeview-menu .fa-circle-o{font-size:5px !important;opacity:.4 !important;}
+.treeview-menu>li.active>a{color:var(--sa4) !important;background:var(--sa-dim) !important;font-weight:600 !important;}
+.treeview-menu .fa-circle-o{display:none !important;}
 /* Sidebar footer */
 .g-sb-foot{
     position:relative;z-index:1;
@@ -438,16 +439,30 @@ label,.control-label{
 .dt-buttons .dt-button:hover{background:var(--bg4) !important;color:var(--t1) !important;}
 
 /* ── PAGE HEADER ── */
-.content-header{padding:22px 24px 0 !important;display:block !important;}
+/* Force the H1 and breadcrumb to stack vertically (H1 first, breadcrumb beneath,
+   both left-aligned). AdminLTE 2 ships a floated/positioned breadcrumb at the
+   top-right of .content-header; these rules override it consistently across
+   every SA page. */
+.content-header{
+    padding:22px 24px 0 !important;
+    display:block !important;
+    position:relative !important;
+}
 .content-header h1{
     font-family:var(--font-b) !important;font-size:20px !important;
     font-weight:700 !important;color:var(--t1) !important;
-    letter-spacing:-.3px;line-height:1.3;float:none !important;
+    letter-spacing:-.3px;line-height:1.3;
+    float:none !important;display:block !important;width:100% !important;
+    margin:0 0 4px !important;
 }
 .content-header .breadcrumb{
-    background:transparent !important;padding:4px 0 0 !important;margin:0 !important;
+    background:transparent !important;
+    padding:0 !important;margin:0 !important;
     float:none !important;display:block !important;
+    position:static !important;top:auto !important;right:auto !important;
+    width:100% !important;text-align:left !important;clear:both !important;
 }
+.content-header .breadcrumb>li{display:inline-block !important;float:none !important;}
 .content-header .breadcrumb>li>a{color:var(--sa3) !important;font-size:12.5px !important;}
 .content-header .breadcrumb>li.active{color:var(--t3) !important;font-size:12.5px !important;}
 .content-header .breadcrumb>li+li::before{color:var(--t4) !important;}
@@ -668,9 +683,43 @@ var BASE_URL = '<?= base_url() ?>';
             </li>
 
             <li class="g-sec">Analytics</li>
+            <?php
+            // 2026-06-03 Phase 1H H1.P0.c: B2.3.4-A Dashboard Analytics spoke
+            // navigation. Detects active spoke via URI segment to highlight
+            // the right entry. Tenant Detail (Phase 1G) is per-tenant, no
+            // direct sidebar entry — discovery via School Search row action,
+            // Hub Top Schools widget, or Cross-School matrix row.
+            $_uri = $this->uri->uri_string();
+            $_isAnalytics = strpos($_uri, 'superadmin/dashboard/') === 0
+                          && (strpos($_uri, '/statistics') !== false
+                              || strpos($_uri, '/schools-search') !== false
+                              || strpos($_uri, '/revenue') !== false
+                              || strpos($_uri, '/cross-school') !== false
+                              || strpos($_uri, '/tenant/') !== false);
+            ?>
+            <li class="treeview <?= $_isAnalytics ? 'active menu-open' : '' ?>">
+                <a href="#">
+                    <i class="fa fa-bar-chart"></i><span>Dashboard Analytics</span>
+                    <span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span>
+                </a>
+                <ul class="treeview-menu" <?= $_isAnalytics ? 'style="display:block;"' : '' ?>>
+                    <li class="<?= strpos($_uri, '/statistics')     !== false ? 'active' : '' ?>">
+                        <a href="<?= base_url('superadmin/dashboard/statistics') ?>"><i class="fa fa-circle-o"></i> Statistics</a>
+                    </li>
+                    <li class="<?= strpos($_uri, '/schools-search') !== false ? 'active' : '' ?>">
+                        <a href="<?= base_url('superadmin/dashboard/schools-search') ?>"><i class="fa fa-circle-o"></i> School Search</a>
+                    </li>
+                    <li class="<?= strpos($_uri, '/revenue')        !== false ? 'active' : '' ?>">
+                        <a href="<?= base_url('superadmin/dashboard/revenue') ?>"><i class="fa fa-circle-o"></i> Revenue Reports</a>
+                    </li>
+                    <li class="<?= strpos($_uri, '/cross-school')   !== false ? 'active' : '' ?>">
+                        <a href="<?= base_url('superadmin/dashboard/cross-school') ?>"><i class="fa fa-circle-o"></i> Cross-School Summary</a>
+                    </li>
+                </ul>
+            </li>
             <li class="<?= ($this->router->fetch_class() === 'superadmin_reports') ? 'active' : '' ?>">
                 <a href="<?= base_url('superadmin/reports') ?>">
-                    <i class="fa fa-bar-chart"></i><span>Global Reports</span>
+                    <i class="fa fa-file-text-o"></i><span>Global Reports</span>
                 </a>
             </li>
 

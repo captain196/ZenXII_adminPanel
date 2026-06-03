@@ -183,17 +183,35 @@ class MY_Controller extends CI_Controller
 
             // ── Session year whitelist check ─────────────────────────────
             // If session_year is not in the cached whitelist, refresh from
-            // Firebase before forcing logout — another admin may have added
-            // a new session since this user logged in.
+            // canonical Firestore before forcing logout — another admin may
+            // have added a new session since this user logged in.
+            //
+            // SC-Step5 (Session Convergence — 2026-06-02): reads canonical
+            // schools/{id}.sessions[] from Firestore via firestoreGet.
+            // Pre-Step-5 read RTDB Schools/{name}/Sessions which became
+            // stale on tenants where School_config::add_session and SC-Step3
+            // sync_sessions (post Steps 1-3 canonical writers) wrote only
+            // to Firestore. Admin_login bootstrap already uses this same
+            // Firestore source (SW2-migrated 2026-05-26). After Step 5,
+            // the runtime admin-web RTDB session-list reader is gone;
+            // remaining RTDB writers (Superadmin_schools::onboard L412+L747)
+            // are slated for retirement in Step 8.
             $available = $this->available_sessions;
             if (!empty($available) && is_array($available)
                 && !in_array($this->session_year, $available, true)) {
-                // Refresh from Firebase
-                $freshSessions = $this->firebase->get("Schools/{$this->school_name}/Sessions");
-                if (is_array($freshSessions)) {
-                    $freshSessions = array_values(array_filter($freshSessions, 'is_string'));
-                    $this->session->set_userdata('available_sessions', $freshSessions);
-                    $this->available_sessions = $freshSessions;
+                // Refresh from Firestore canonical authority
+                $freshSessions = null;
+                try {
+                    $schoolDoc = $this->firebase->firestoreGet('schools', $this->school_id);
+                    if (is_array($schoolDoc) && is_array($schoolDoc['sessions'] ?? null)) {
+                        $freshSessions = array_values(array_filter($schoolDoc['sessions'], 'is_string'));
+                        $this->session->set_userdata('available_sessions', $freshSessions);
+                        $this->available_sessions = $freshSessions;
+                    }
+                } catch (\Throwable $e) {
+                    log_message('error',
+                        "SC-Step5: MY_Controller whitelist refresh from Firestore failed for "
+                        . "schoolId={$this->school_id}: " . $e->getMessage());
                 }
                 // Re-check after refresh
                 if (!empty($freshSessions) && !in_array($this->session_year, $freshSessions, true)) {

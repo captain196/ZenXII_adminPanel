@@ -697,11 +697,34 @@ class FirestoreRestClient
      */
     private function encodeFieldPath(string $name): string
     {
-        if (preg_match('/^[a-zA-Z_][a-zA-Z_0-9]*$/', $name)) {
-            return $name;
+        // B2.3.2-FIX R5 — treat dots as nested-path separators (Firestore
+        // FieldPath semantics). Each segment is encoded independently:
+        //   - simple identifier → unquoted
+        //   - anything else      → backtick-quoted with `\` and `` ` `` escaped
+        // The whole-string backtick-wrap (pre-R5) made Firestore treat
+        // `lifecycle.reason` as ONE literal field name with a dot in it,
+        // which silently created top-level junk fields instead of updating
+        // the nested map.
+        if (strpos($name, '.') === false) {
+            // Single-segment fast path.
+            if (preg_match('/^[a-zA-Z_][a-zA-Z_0-9]*$/', $name)) {
+                return $name;
+            }
+            $escaped = str_replace(['\\', '`'], ['\\\\', '\\`'], $name);
+            return '`' . $escaped . '`';
         }
-        $escaped = str_replace(['\\', '`'], ['\\\\', '\\`'], $name);
-        return '`' . $escaped . '`';
+        // Multi-segment: nested path.
+        $parts = explode('.', $name);
+        $encoded = [];
+        foreach ($parts as $part) {
+            if (preg_match('/^[a-zA-Z_][a-zA-Z_0-9]*$/', $part)) {
+                $encoded[] = $part;
+            } else {
+                $escaped = str_replace(['\\', '`'], ['\\\\', '\\`'], $part);
+                $encoded[] = '`' . $escaped . '`';
+            }
+        }
+        return implode('.', $encoded);
     }
 
     private function buildUpdateMask(array $data): string
@@ -885,8 +908,44 @@ class FirestoreRestClient
     {
         if ($this->_blockWrite('UPDATE', "$collection/$docId")) return false;
         $safeDocId = rawurlencode($docId);
+
+        // B2.3.2-FIX R5 — nested-update support. Firestore REST PATCH expects
+        // the BODY shaped as nested maps and the updateMask field paths
+        // dotted (e.g. mask 'lifecycle.state' targets the nested state field
+        // inside the lifecycle map). The legacy code path keyed the body by
+        // the dotted form too, which Firestore stored as LITERAL top-level
+        // field names (e.g. a field called 'lifecycle.state' with a dot in
+        // its name) while leaving the nested 'lifecycle' map untouched.
+        // The mask paths stay dotted; the body is now reshaped from flat
+        // dotted-key input to a nested map structure. Non-dotted keys are
+        // unchanged. Backward-compatible with existing non-dotted callers.
+        $bodyFields = [];
+        foreach ($data as $k => $v) {
+            $key = (string) $k;
+            if (strpos($key, '.') === false) {
+                $bodyFields[$key] = $v;
+                continue;
+            }
+            $parts = explode('.', $key);
+            $ref = &$bodyFields;
+            foreach ($parts as $i => $part) {
+                if ($i === count($parts) - 1) {
+                    $ref[$part] = $v;
+                } else {
+                    if (!isset($ref[$part]) || !is_array($ref[$part])) {
+                        $ref[$part] = [];
+                    }
+                    $ref = &$ref[$part];
+                }
+            }
+            unset($ref);
+        }
+
         $fields = [];
-        foreach ($data as $k => $v) $fields[$k] = $this->encode($v);
+        foreach ($bodyFields as $k => $v) $fields[$k] = $this->encode($v);
+        // Mask continues to use the ORIGINAL dotted keys — Firestore PATCH
+        // applies the update only to the masked nested paths, leaving sibling
+        // fields in the nested map intact.
         $maskParams = $this->buildUpdateMask($data);
         $url = $this->baseUrl() . "/$collection/$safeDocId?$maskParams";
         $r = $this->request('PATCH', $url, ['fields' => $fields]);

@@ -3,6 +3,7 @@
     <h1><i class="fa fa-user-secret" style="color:var(--sa3);margin-right:10px;font-size:20px;"></i>Super Admin Management</h1>
     <ol class="breadcrumb">
         <li><a href="<?= base_url('superadmin/dashboard') ?>">Dashboard</a></li>
+        <li><a href="<?= base_url('superadmin/admins') ?>">Admin Access</a></li>
         <li class="active">Super Admins</li>
     </ol>
 </section>

@@ -116,6 +116,18 @@ $route['fees/set_student_discount']        = 'Fees/set_student_discount';
 $route['fees/recalc_unpaid_discounts']     = 'Fees/recalc_unpaid_discounts';
 $route['fees/delete_fees_structure/(:any)'] = 'Fees/delete_fees_structure/$1';
 
+// Fees Exemption v2 (Phase 0) — admin capture for concessions + service enrollments.
+// All endpoints are flag-gated (CONCESSION_UI_ENABLED / SERVICE_ENROLLMENT_UI_ENABLED).
+$route['fee_concessions']                       = 'Fee_concessions/index';
+$route['fee_concessions/list_concessions']      = 'Fee_concessions/list_concessions';
+$route['fee_concessions/create_concession']     = 'Fee_concessions/create_concession';
+$route['fee_concessions/revoke_concession']     = 'Fee_concessions/revoke_concession';
+$route['fee_concessions/list_enrollments']      = 'Fee_concessions/list_enrollments';
+$route['fee_concessions/enroll_service']        = 'Fee_concessions/enroll_service';
+$route['fee_concessions/discontinue_service']   = 'Fee_concessions/discontinue_service';
+$route['fee_concessions/check_active_concessions']        = 'Fee_concessions/check_active_concessions';
+$route['fee_concessions/check_school_active_concessions'] = 'Fee_concessions/check_school_active_concessions';
+
 // ─── Super Admin SaaS Control Panel ──────────────────────────────────────────
 // Auth
 $route['admin_login/forgot_password']                    = 'Admin_login/forgot_password';
@@ -142,6 +154,37 @@ $route['superadmin/dashboard']                          = 'Superadmin/dashboard'
 $route['superadmin/dashboard/refresh_stats']            = 'Superadmin/refresh_stats';
 $route['superadmin/dashboard/charts']                   = 'Superadmin/dashboard_charts';
 $route['superadmin/dashboard/search']                   = 'Superadmin/search';
+
+// ── B2.3.4-A Dashboard Analytics — Hub AJAX endpoints (Phase 1B) ──
+$route['superadmin/dashboard/hub_data']                 = 'Superadmin/hub_data';
+$route['superadmin/dashboard/quick_search']             = 'Superadmin/quick_search';
+$route['superadmin/dashboard/saved_search_save']        = 'Superadmin/saved_search_save';
+$route['superadmin/dashboard/saved_search_delete']      = 'Superadmin/saved_search_delete';
+$route['superadmin/dashboard/alert_dismiss']            = 'Superadmin/alert_dismiss';
+$route['superadmin/dashboard/alerts_regenerate']        = 'Superadmin/alerts_regenerate';
+
+// ── B2.3.4-A Spokes (Superadmin_analytics controller — Phase 1C+) ──
+$route['superadmin/dashboard/statistics']               = 'Superadmin_analytics/statistics';
+$route['superadmin/dashboard/statistics_data']          = 'Superadmin_analytics/statistics_data';
+$route['superadmin/dashboard/drilldown']                = 'Superadmin_analytics/drilldown';
+$route['superadmin/dashboard/schools-search']           = 'Superadmin_analytics/schools_search';
+// ── B2.3.4-A Phase 1D — School Search spoke AJAX + export endpoints ──
+$route['superadmin/dashboard/schools-search/data']      = 'Superadmin_analytics/schools_search_data';
+$route['superadmin/dashboard/schools-search/options']   = 'Superadmin_analytics/schools_search_options';
+$route['superadmin/dashboard/schools-search/export']    = 'Superadmin_analytics/schools_search_export';
+$route['superadmin/dashboard/revenue']                  = 'Superadmin_analytics/revenue';
+// ── B2.3.4-A Phase 1E — Revenue Reports spoke AJAX + export endpoints ──
+$route['superadmin/dashboard/revenue/data']             = 'Superadmin_analytics/revenue_data';
+$route['superadmin/dashboard/revenue/export']           = 'Superadmin_analytics/revenue_export';
+$route['superadmin/dashboard/cross-school']             = 'Superadmin_analytics/cross_school';
+// ── B2.3.4-A Phase 1F — Cross-School Summaries spoke AJAX + export endpoints ──
+$route['superadmin/dashboard/cross-school/data']        = 'Superadmin_analytics/cross_school_data';
+$route['superadmin/dashboard/cross-school/export']      = 'Superadmin_analytics/cross_school_export';
+// ── B2.3.4-A Phase 1G — Per-Tenant Deep Dive AJAX + export endpoints ──
+// IMPORTANT: these two sub-routes MUST appear BEFORE the tenant/(:any) catch-all
+$route['superadmin/dashboard/tenant/(:any)/data']       = 'Superadmin_analytics/tenant_detail_data/$1';
+$route['superadmin/dashboard/tenant/(:any)/export']     = 'Superadmin_analytics/tenant_detail_export/$1';
+$route['superadmin/dashboard/tenant/(:any)']            = 'Superadmin_analytics/tenant_detail/$1';
 
 // Schools
 $route['superadmin/schools']                            = 'Superadmin_schools/index';
@@ -313,6 +356,9 @@ $route['school_config/restore_class']                   = 'School_config/restore
 $route['school_config/seed_streams']                    = 'School_config/seed_streams';
 $route['school_config/upload_document']                 = 'School_config/upload_document';
 $route['school_config/save_report_card_template']       = 'School_config/save_report_card_template';
+$route['school_config/save_report_card_config']         = 'School_config/save_report_card_config';
+$route['school_config/upload_reportcard_asset']         = 'School_config/upload_reportcard_asset';
+$route['school_config/remove_reportcard_asset']         = 'School_config/remove_reportcard_asset';
 $route['school_config/admission_payment']               = 'School_config/admission_payment_config';
 $route['school_config/save_admission_payment_config']   = 'School_config/save_admission_payment_config';
 $route['school_config/health_check']                    = 'School_config/health_check';
@@ -518,6 +564,13 @@ $route['admission_crm/update_stage']            = 'Sis/update_stage';
 $route['admission_crm/approve_application']     = 'Sis/approve_application';
 $route['admission_crm/reject_application']      = 'Sis/reject_application';
 $route['admission_crm/enroll_student']          = 'Sis/enroll_student';
+// SIS Tier-2 fix B3 (post-soak 2026-06-01): Auth-repair endpoint for
+// orphan Firebase Auth rows. Two aliases — admission_crm/* for the
+// enrollment-credentials modal in admission_crm/applications.php, and
+// sis/* for the student profile hero button. Both target the same
+// repair_student_auth() controller method.
+$route['admission_crm/repair_auth']             = 'Sis/repair_student_auth';
+$route['sis/repair_auth']                       = 'Sis/repair_student_auth';
 $route['admission_crm/waitlist']                = 'Sis/waitlist';
 $route['admission_crm/fetch_waitlist']          = 'Sis/fetch_waitlist';
 $route['admission_crm/add_to_waitlist']         = 'Sis/add_to_waitlist';

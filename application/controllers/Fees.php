@@ -1750,6 +1750,16 @@ class Fees extends MY_Controller
                 'source'              => 'fees_counter_inline',
             ], ['className' => $class, 'section' => $section]);
 
+            // Structured discount-write log (2026-05-29) — see submit_discount
+            // for full rationale. set_student_discount's contract is
+            // SET_REPLACE: newTotal = amount + scholAmt by construction.
+            $prevTotal    = is_array($existing) ? (float) ($existing['totalDiscount']    ?? 0) : 0;
+            $prevOnDemand = is_array($existing) ? (float) ($existing['onDemandDiscount'] ?? 0) : 0;
+            log_message('info', sprintf(
+                'ACC_DISCOUNT_WRITE source=fees_counter_inline user=%s prevTotal=%s prevOnDemand=%s prevSchol=%s newTotal=%s newOnDemand=%s newSchol=%s',
+                $userId, $prevTotal, $prevOnDemand, $scholAmt, ($amount + $scholAmt), $amount, $scholAmt
+            ));
+
             // Refresh defaulter snapshot so dashboards reflect the new
             // outstanding balance immediately.
             try {
@@ -1785,6 +1795,10 @@ class Fees extends MY_Controller
         $class    = trim($this->input->post('class'));
         $section  = trim($this->input->post('section'));
         $discount = $this->input->post('discount');
+        // Optional — not surfaced in the current profile form. Accepted so a
+        // future UI iteration (or a bulk-grant script / API caller) can
+        // populate it without another schema change.
+        $reason   = trim((string) ($this->input->post('reason') ?? ''));
 
         if (empty($userId) || empty($class) || empty($section) || $discount === false || $discount === '') {
             $this->_json_out(['success' => false, 'message' => 'Missing required fields.']);
@@ -1815,7 +1829,26 @@ class Fees extends MY_Controller
                 'scholarshipDiscount' => $scholAmt,
                 'totalDiscount'       => $new,
                 'appliedAt'           => $now,
+                'appliedBy'           => $this->admin_name ?? 'admin',
+                'source'              => 'profile_managerial_grant',
+                'reason'              => $reason,
             ], ['className' => $class, 'section' => $section]);
+
+            // Structured discount-write log (2026-05-29). The cross-writer
+            // equality `total == onDemand + schol` is NOT an invariant —
+            // submit_discount, apply_discount, and the receipt path all
+            // break it BY CONSTRUCTION on legitimate operations (writer
+            // audit 2026-05-29). We log every write here with a writer
+            // label and prev/new values so an offline reconciliation can
+            // attribute drift to its causing writer, rather than asserting
+            // a runtime invariant that would fire on >90% of legitimate
+            // writes. submit_discount's own contract is ADDITIVE_ONDEMAND:
+            // newTotal = prevTotal + delta.
+            $prevOnDemand = is_array($existing) ? (int) ($existing['onDemandDiscount'] ?? 0) : 0;
+            log_message('info', sprintf(
+                'ACC_DISCOUNT_WRITE source=profile_managerial_grant user=%s prevTotal=%d prevOnDemand=%d prevSchol=%s delta=%d newTotal=%d newOnDemand=%d newSchol=%s',
+                $userId, $curTotal, $prevOnDemand, $scholAmt, (int) $discount, $new, (int) $discount, $scholAmt
+            ));
 
             // Refresh defaulter status from demand data.
             try {

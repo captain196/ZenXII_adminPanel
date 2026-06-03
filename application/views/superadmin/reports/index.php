@@ -3,7 +3,8 @@
     <h1><i class="fa fa-bar-chart" style="color:var(--sa3);margin-right:10px;font-size:20px;"></i>Global Reports</h1>
     <ol class="breadcrumb">
         <li><a href="<?= base_url('superadmin/dashboard') ?>">Dashboard</a></li>
-        <li class="active">Reports</li>
+        <li><a href="<?= base_url('superadmin/reports') ?>">Analytics</a></li>
+        <li class="active">Global Reports</li>
     </ol>
 </section>
 
@@ -25,9 +26,6 @@
             <div class="box-header">
                 <i class="fa fa-users" style="color:var(--sa3);margin-right:8px;"></i>
                 <span class="box-title">Student Distribution Across Schools</span>
-                <button class="btn btn-default btn-xs" style="float:right;" id="loadStudentsBtn">
-                    <i class="fa fa-refresh" id="studentsIcon"></i> Load
-                </button>
             </div>
             <div class="box-body" style="padding:0 !important;">
                 <table class="table sa-table-simple" id="studentsTable" style="margin:0;">
@@ -52,9 +50,6 @@
             <div class="box-header">
                 <i class="fa fa-money" style="color:var(--green);margin-right:8px;"></i>
                 <span class="box-title">Revenue Summary</span>
-                <button class="btn btn-default btn-xs" style="float:right;" id="loadRevenueBtn">
-                    <i class="fa fa-refresh" id="revenueIcon"></i> Load
-                </button>
             </div>
             <div class="box-body" style="padding:0 !important;">
                 <table class="table sa-table-simple" id="revenueTable" style="margin:0;">
@@ -103,7 +98,6 @@
                     <div class="box-header">
                         <i class="fa fa-pie-chart" style="color:var(--sa3);margin-right:8px;"></i>
                         <span class="box-title">Plan Distribution</span>
-                        <button class="btn btn-default btn-xs" style="float:right;" id="loadPlansBtn"><i class="fa fa-refresh" id="plansIcon"></i> Load</button>
                     </div>
                     <div class="box-body">
                         <div id="planDistChart" style="height:200px;"></div>
@@ -125,25 +119,80 @@
 
 <script>
 $(function(){
-    // Tab switching
-    $('.sa-report-tab').first().addClass('active').css('background','var(--sa-dim)').css('color','var(--sa3)');
+    // ─── IST timestamp formatter ──────────────────────────────────────
+    // Server-side `ts` is ISO-8601 with the server's local offset (often
+    // not IST). Render every timestamp in Asia/Kolkata so SA always sees
+    // the same wall-clock regardless of where the web tier is deployed.
+    function toIST(iso){
+        if(!iso) return '';
+        var d = new Date(iso);
+        if(isNaN(d.getTime())) return iso;
+        return d.toLocaleString('en-IN', {
+            timeZone:'Asia/Kolkata',
+            year:'numeric', month:'short', day:'2-digit',
+            hour:'2-digit', minute:'2-digit', second:'2-digit',
+            hour12:true
+        }) + ' IST';
+    }
+    function toISTShort(iso){
+        if(!iso) return '';
+        var d = new Date(iso);
+        if(isNaN(d.getTime())) return iso;
+        return d.toLocaleString('en-IN', {
+            timeZone:'Asia/Kolkata',
+            day:'2-digit', month:'short',
+            hour:'2-digit', minute:'2-digit', second:'2-digit',
+            hour12:true
+        });
+    }
+    // Render a table that may already have been wrapped as a DataTable by
+    // the SA footer auto-init (sa_footer.php). ORDER IS CRITICAL:
+    //   1. Destroy any existing DataTable wrapper (which restores the
+    //      empty pre-DataTable tbody snapshot — anything we wrote into
+    //      the tbody before this point would be wiped here).
+    //   2. NOW set the tbody HTML with the fresh rows.
+    //   3. THEN init a new DataTable so it picks up our rows from the DOM.
+    // Doing this in any other order leaves an empty "No data found"
+    // table because the destroy revert silently undoes the tbody write.
+    function renderDT(sel, tbodySel, html, opts){
+        if($.fn.DataTable.isDataTable(sel)){
+            $(sel).DataTable().destroy();
+        }
+        $(tbodySel).html(html);
+        return new DataTable(sel, opts);
+    }
+    // In-table loading state. Destroys any DataTable wrapper first (so the
+    // spinner row isn't wiped by a delayed revert) and paints a centered
+    // spinner inside a single colspan'd row. Called by every Load handler
+    // immediately after the button is disabled so the user gets feedback
+    // both on the button (icon spin) AND inside the table body.
+    function showTableLoading(tableSel, tbodySel, colspan){
+        if($.fn.DataTable.isDataTable(tableSel)){
+            $(tableSel).DataTable().destroy();
+        }
+        $(tbodySel).html(
+            '<tr><td colspan="'+colspan+'" style="text-align:center;padding:36px 0;color:var(--t3);font-family:var(--font-m);font-size:13px;">'
+            + '<i class="fa fa-spinner fa-spin" style="font-size:22px;margin-right:10px;color:var(--sa3);vertical-align:middle;"></i>'
+            + 'Loading…'
+            + '</td></tr>'
+        );
+    }
 
-    $('.sa-report-tab').on('click', function(){
-        $('.sa-report-tab').css('background','').css('color','').removeClass('active');
-        $(this).addClass('active').css('background','var(--sa-dim)').css('color','var(--sa3)');
-        var tab = $(this).data('tab');
-        $('.sa-report-pane').hide();
-        $('#tab-'+tab).show();
-    });
+    function esc(s){ return $('<div>').text(s||'').html(); }
 
+    // Tracks which tabs have been loaded so tab-switch lazy-loads them
+    // exactly once per page-open. Activity is excluded — its date filter
+    // requires a manual re-trigger via its Load button on every change.
+    var loaded = {students:false, revenue:false, activity:false, plans:false};
     var dtStudents, dtRevenue, dtActivity;
 
-    // Students
-    $('#loadStudentsBtn').on('click', function(){
-        $(this).prop('disabled',true).find('i').addClass('fa-spin');
+    // ── Named loaders (called by tab-click + auto-load + Activity btn). ──
+
+    function loadStudents(){
+        showTableLoading('#studentsTable', '#studentsTbody', 8);
         $.ajax({ url: BASE_URL+'superadmin/reports/students', type:'POST',
             success: function(r){
-                if(r.status!=='success'){ saToast(r.message,'error'); return; }
+                if(r.status!=='success'){ saToast(r.message||'Failed.','error'); return; }
                 var html = '';
                 (r.rows||[]).forEach(function(row,i){
                     var st = row.status==='active'?'label-success':'label-danger';
@@ -152,24 +201,21 @@ $(function(){
                           + '<td><span class="label '+st+'">'+esc(row.status)+'</span></td>'
                           + '<td style="font-weight:700;color:var(--sa3);">'+(row.students||0).toLocaleString('en-IN')+'</td>'
                           + '<td>'+(row.staff||0)+'</td>'
-                          + '<td style="font-size:11px;color:var(--t3);">'+esc(row.last_updated||'')+'</td></tr>';
+                          + '<td style="font-size:11px;color:var(--t3);">'+esc(toIST(row.last_updated)||'')+'</td></tr>';
                 });
-                if(dtStudents){ dtStudents.destroy(); dtStudents = null; }
-                $('#studentsTbody').html(html);
+                dtStudents = renderDT('#studentsTable', '#studentsTbody', html, {paging:true,searching:true,ordering:true,lengthMenu:[10,25,50],autoWidth:false,language:{emptyTable:'No data'}});
                 $('#studentsTotal').text((r.total||0).toLocaleString('en-IN'));
-                dtStudents = new DataTable('#studentsTable',{paging:true,searching:true,ordering:true,responsive:true,lengthMenu:[10,25,50],language:{emptyTable:'No data'}});
+                loaded.students = true;
             },
-            error: function(){ saToast('Failed.','error'); },
-            complete: function(){ $('#loadStudentsBtn').prop('disabled',false).find('i').removeClass('fa-spin'); }
+            error: function(){ saToast('Failed to load students.','error'); }
         });
-    });
+    }
 
-    // Revenue
-    $('#loadRevenueBtn').on('click', function(){
-        $(this).prop('disabled',true).find('i').addClass('fa-spin');
+    function loadRevenue(){
+        showTableLoading('#revenueTable', '#revenueTbody', 6);
         $.ajax({ url: BASE_URL+'superadmin/reports/revenue', type:'POST',
             success: function(r){
-                if(r.status!=='success'){ saToast(r.message,'error'); return; }
+                if(r.status!=='success'){ saToast(r.message||'Failed.','error'); return; }
                 var html='';
                 var ss = {active:'label-success',grace:'label-warning',expired:'label-danger',suspended:'label-default'};
                 (r.rows||[]).forEach(function(row,i){
@@ -177,24 +223,22 @@ $(function(){
                           + '<td>'+esc(row.expiry_date)+'</td><td><span class="label '+(ss[row.sub_status]||'label-default')+'">'+esc(row.sub_status)+'</span></td>'
                           + '<td style="font-weight:700;color:var(--green);">₹'+(parseFloat(row.revenue)||0).toLocaleString('en-IN')+'</td></tr>';
                 });
-                if(dtRevenue){ dtRevenue.destroy(); dtRevenue = null; }
-                $('#revenueTbody').html(html);
+                dtRevenue = renderDT('#revenueTable', '#revenueTbody', html, {paging:true,searching:true,lengthMenu:[10,25,50],autoWidth:false,language:{emptyTable:'No data'}});
                 $('#revenueTotal').text('₹'+(parseFloat(r.total_revenue)||0).toLocaleString('en-IN'));
-                dtRevenue = new DataTable('#revenueTable',{paging:true,searching:true,responsive:true,lengthMenu:[10,25,50],language:{emptyTable:'No data'}});
+                loaded.revenue = true;
             },
-            error:function(){ saToast('Failed.','error'); },
-            complete:function(){ $('#loadRevenueBtn').prop('disabled',false).find('i').removeClass('fa-spin'); }
+            error:function(){ saToast('Failed to load revenue.','error'); }
         });
-    });
+    }
 
-    // Activity
-    $('#loadActivityBtn').on('click', function(){
-        $(this).prop('disabled',true).find('i').addClass('fa-spin');
+    function loadActivity(){
+        var $btn = $('#loadActivityBtn');
+        $btn.prop('disabled', true).find('i').addClass('fa-spin');
+        showTableLoading('#activityTable', '#activityTbody', 5);
         $.ajax({ url: BASE_URL+'superadmin/reports/activity', type:'POST',
             data:{ date_from:$('#actFrom').val(), date_to:$('#actTo').val() },
             success:function(r){
-                if(r.status!=='success'){ saToast(r.message,'error'); return; }
-                // Action breakdown
+                if(r.status!=='success'){ saToast(r.message||'Failed.','error'); return; }
                 var bdHtml='';
                 $.each(r.action_map||{},function(action,count){
                     bdHtml+='<span style="padding:3px 9px;background:var(--sa-dim);border:1px solid var(--sa-ring);border-radius:6px;font-size:11px;font-family:var(--font-m);color:var(--sa3);">'
@@ -204,27 +248,34 @@ $(function(){
                 $('#activitySummary').show();
                 var html='';
                 (r.rows||[]).forEach(function(row){
-                    html+='<tr><td style="font-family:var(--font-m);font-size:11px;color:var(--t3);">'+(row.timestamp||'').substring(11,19)+'</td>'
-                         +'<td>'+esc(row.sa_name||'')+'</td>'
-                         +'<td><span style="color:var(--sa3);font-family:var(--font-m);font-size:12px;">'+esc(row.action||'')+'</span></td>'
+                    var who = esc(row.sa_user||'—');
+                    if(row.sa_role){ who += ' <span style="font-size:10px;color:var(--t4);">('+esc(row.sa_role)+')</span>'; }
+                    var reason = row.reason ? ' <span style="font-size:10px;color:var(--t4);">— '+esc(row.reason)+'</span>' : '';
+                    html+='<tr><td style="font-family:var(--font-m);font-size:11px;color:var(--t3);white-space:nowrap;">'+esc(toISTShort(row.timestamp))+'</td>'
+                         +'<td>'+who+'</td>'
+                         +'<td><span style="color:var(--sa3);font-family:var(--font-m);font-size:12px;">'+esc(row.action||'')+'</span>'+reason+'</td>'
                          +'<td style="font-size:11px;color:var(--t3);">'+esc(row.school_uid||'—')+'</td>'
-                         +'<td style="font-size:11px;color:var(--t3);">'+esc(row.ip||'')+'</td></tr>';
+                         +'<td style="font-size:11px;color:var(--t3);">'+esc(row.ip||'—')+'</td></tr>';
                 });
-                if(dtActivity){ dtActivity.destroy(); dtActivity = null; }
-                $('#activityTbody').html(html);
-                dtActivity = new DataTable('#activityTable',{paging:true,searching:true,responsive:true,lengthMenu:[25,50,100],language:{emptyTable:'No activity found'}});
+                dtActivity = renderDT('#activityTable', '#activityTbody', html, {paging:true,searching:true,lengthMenu:[25,50,100],autoWidth:false,language:{emptyTable:'No activity found'},order:[[0,'desc']]});
+                loaded.activity = true;
             },
-            error:function(){ saToast('Failed.','error'); },
-            complete:function(){ $('#loadActivityBtn').prop('disabled',false).find('i').removeClass('fa-spin'); }
+            error:function(){ saToast('Failed to load activity.','error'); },
+            complete:function(){ $btn.prop('disabled', false).find('i').removeClass('fa-spin'); }
         });
-    });
+    }
 
-    // Plan distribution
-    $('#loadPlansBtn').on('click', function(){
-        $(this).prop('disabled',true).find('i').addClass('fa-spin');
+    function loadPlans(){
+        // Plan-distribution table is plain `.table` (not auto-wrapped) so
+        // we can paint the spinner row directly without destroy/init dance.
+        $('#planDistTbody').html(
+            '<tr><td colspan="2" style="text-align:center;padding:24px 0;color:var(--t3);">'
+            + '<i class="fa fa-spinner fa-spin" style="font-size:20px;margin-right:10px;color:var(--sa3);"></i>'
+            + 'Loading…</td></tr>'
+        );
         $.ajax({ url: BASE_URL+'superadmin/reports/plans_distribution', type:'POST',
             success:function(r){
-                if(r.status!=='success'){ saToast(r.message,'error'); return; }
+                if(r.status!=='success'){ saToast(r.message||'Failed.','error'); return; }
                 var html='', chartData=[];
                 var colors=['#7c3aed','#6d28d9','#4c1d95','#a78bfa','#c4b5fd','#ddd6fe'];
                 (r.rows||[]).forEach(function(row,i){
@@ -237,12 +288,43 @@ $(function(){
                     Morris.Donut({element:'planDistChart', data:chartData, colors:chartData.map(function(d){return d.color;}),
                         labelColor:'#c4b5fd', backgroundColor:'transparent', borderWidth:0});
                 }
+                loaded.plans = true;
             },
-            error:function(){ saToast('Failed.','error'); },
-            complete:function(){ $('#loadPlansBtn').prop('disabled',false).find('i').removeClass('fa-spin'); }
+            error:function(){ saToast('Failed to load plan distribution.','error'); }
         });
+    }
+
+    var tabLoaders = {students:loadStudents, revenue:loadRevenue, activity:loadActivity, plans:loadPlans};
+
+    // ── Tab switching: lazy-load on first activation (except Activity,
+    // which requires manual reloads via its Load button after date edits). ──
+    $('.sa-report-tab').first().addClass('active').css('background','var(--sa-dim)').css('color','var(--sa3)');
+
+    $('.sa-report-tab').on('click', function(){
+        $('.sa-report-tab').css('background','').css('color','').removeClass('active');
+        $(this).addClass('active').css('background','var(--sa-dim)').css('color','var(--sa3)');
+        var tab = $(this).data('tab');
+        $('.sa-report-pane').hide();
+        $('#tab-'+tab).show();
+        if(!loaded[tab] && tabLoaders[tab]){
+            tabLoaders[tab]();
+        }
     });
 
-    function esc(s){ return $('<div>').text(s||'').html(); }
+    // Activity tab keeps its Load button — date range pickers need a
+    // manual re-trigger after the user changes the from/to dates.
+    $('#loadActivityBtn').on('click', loadActivity);
+
+    // Auto-load the first visible tab on page-open. Deferred via
+    // setTimeout(0) so the footer's `.sa-table-simple` DataTable
+    // auto-init (sa_footer.php) runs FIRST on an EMPTY tbody. If
+    // loadStudents() runs synchronously here it paints the spinner
+    // row (one td with colspan=8) BEFORE the footer init wraps the
+    // table — DataTable then parses the spinner row and emits
+    // "Requested unknown parameter '1' for row 0, column 1" because
+    // there's no second cell to read. Deferring lets the footer
+    // wrap an empty (0-row) tbody cleanly; renderDT inside
+    // loadStudents() destroys and re-inits with real rows.
+    setTimeout(loadStudents, 0);
 });
 </script>

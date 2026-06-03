@@ -723,6 +723,102 @@ function toast(msg,ok){
     t.textContent=msg;t.className='ac-toast '+(ok?'ok':'err')+' show';
     setTimeout(function(){t.classList.remove('show')},2800);
 }
+
+/**
+ * 2026-05-26 (BUG-073) — In-house confirm / info modal. Replaces native confirm()/alert()
+ * for destructive and notable flows. Duplicated from the school_config view _confirmModal
+ * shipped session 6 cycles 9+11 (BUG-066). Operator-noted opportunity to promote to a
+ * shared util in a future refactor cycle.
+ * opts: {title, body, confirmText, cancelText, dangerous, alertOnly}
+ * Returns Promise<boolean>.
+ */
+function _confirmModal(opts) {
+    opts = opts || {};
+    return new Promise(function(resolve) {
+        var prevFocus = document.activeElement;
+        var bd = document.createElement('div');
+        bd.setAttribute('role', 'dialog');
+        bd.setAttribute('aria-modal', 'true');
+        bd.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:11000;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+        var card = document.createElement('div');
+        card.style.cssText = 'background:#fff;border-radius:14px;max-width:540px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3);';
+
+        var hdr = document.createElement('div');
+        hdr.style.cssText = 'padding:14px 18px;border-bottom:1px solid #e5e7eb;background:' + (opts.dangerous ? '#fef2f2' : '#f8fafc') + ';display:flex;align-items:center;gap:10px;';
+        var icon = document.createElement('i');
+        icon.className = 'fa ' + (opts.dangerous ? 'fa-exclamation-triangle' : 'fa-info-circle');
+        icon.style.cssText = 'font-size:20px;color:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+        hdr.appendChild(icon);
+        var title = document.createElement('h4');
+        title.style.cssText = 'margin:0;font-size:15px;font-weight:600;color:#0f172a;';
+        title.textContent = opts.title || 'Please confirm';
+        hdr.appendChild(title);
+
+        var body = document.createElement('div');
+        body.style.cssText = 'padding:18px;color:#334155;font-size:13.5px;line-height:1.55;white-space:pre-wrap;max-height:60vh;overflow-y:auto;';
+        body.textContent = opts.body || '';
+
+        var ftr = document.createElement('div');
+        ftr.style.cssText = 'padding:12px 16px;border-top:1px solid #e5e7eb;background:#f8fafc;display:flex;gap:8px;justify-content:flex-end;';
+
+        var btnCancel = null;
+        if (!opts.alertOnly) {
+            btnCancel = document.createElement('button');
+            btnCancel.type = 'button';
+            btnCancel.textContent = opts.cancelText || 'Cancel';
+            btnCancel.style.cssText = 'padding:8px 16px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;color:#475569;font-weight:500;cursor:pointer;';
+            ftr.appendChild(btnCancel);
+        }
+        var btnConfirm = document.createElement('button');
+        btnConfirm.type = 'button';
+        btnConfirm.textContent = opts.alertOnly ? 'OK' : (opts.confirmText || 'Confirm');
+        btnConfirm.style.cssText = 'padding:8px 16px;border-radius:8px;border:none;color:#fff;font-weight:600;cursor:pointer;'
+            + 'background:' + (opts.dangerous ? '#dc2626' : '#0f766e') + ';';
+        ftr.appendChild(btnConfirm);
+
+        card.appendChild(hdr);
+        card.appendChild(body);
+        card.appendChild(ftr);
+        bd.appendChild(card);
+        document.body.appendChild(bd);
+
+        function cleanup() {
+            document.removeEventListener('keydown', onKey, true);
+            if (bd.parentNode) bd.parentNode.removeChild(bd);
+            if (prevFocus && typeof prevFocus.focus === 'function') {
+                try { prevFocus.focus(); } catch (_) {}
+            }
+        }
+        function done(v) { cleanup(); resolve(v); }
+
+        function onKey(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                done(opts.alertOnly ? true : false);
+                return;
+            }
+            if (e.key === 'Tab') {
+                var seq = btnCancel ? [btnCancel, btnConfirm] : [btnConfirm];
+                var idx = seq.indexOf(document.activeElement);
+                if (idx === -1) { e.preventDefault(); seq[0].focus(); return; }
+                e.preventDefault();
+                var nextIdx = e.shiftKey ? (idx - 1 + seq.length) % seq.length : (idx + 1) % seq.length;
+                seq[nextIdx].focus();
+            }
+            if (e.key === 'Enter' && document.activeElement === btnConfirm) {
+                e.preventDefault();
+                done(true);
+            }
+        }
+        document.addEventListener('keydown', onKey, true);
+
+        if (btnCancel) btnCancel.addEventListener('click', function() { done(false); });
+        btnConfirm.addEventListener('click', function() { done(true); });
+
+        setTimeout(function() { btnConfirm.focus(); }, 0);
+    });
+}
 /* Button loading state helper — disables btn, shows spinner, restores on promise settle */
 function withBtn(btn,promise){
     if(!btn)return promise;
@@ -1202,13 +1298,18 @@ AC.sa = {
         if(!found){toast('Class not found: '+pick,false);return}
         var fromKey=AC.sa._toFbKey(found.key);
 
-        if(!confirm('Copy all subject assignments from '+found.label+' to '+AC.sa._currentLabel+'?'))return;
-
-        post('academic/copy_subject_assignments',{from_key:fromKey,to_key:curFbKey}).then(function(d){
-            if(d.status==='success'){
-                toast('Copied '+d.count+' assignments',true);
-                AC.sa.load();
-            } else toast(d.message,false);
+        _confirmModal({
+            title:'Copy subject assignments',
+            body:'Copy all subject assignments from '+found.label+' to '+AC.sa._currentLabel+'?',
+            confirmText:'Copy'
+        }).then(function(ok){
+            if(!ok)return;
+            post('academic/copy_subject_assignments',{from_key:fromKey,to_key:curFbKey}).then(function(d){
+                if(d.status==='success'){
+                    toast('Copied '+d.count+' assignments',true);
+                    AC.sa.load();
+                } else toast(d.message,false);
+            });
         });
     }
 };
@@ -1632,7 +1733,17 @@ AC.cur = {
         });
     },
     deleteTopic: function(idx,btn){
-        if(!confirm('Delete this topic?'))return;
+        _confirmModal({
+            title:'Delete this topic',
+            body:'The topic will be removed from the curriculum.',
+            confirmText:'Delete',
+            dangerous:true
+        }).then(function(ok){
+            if(!ok)return;
+            AC.cur._deleteTopicConfirmed(idx,btn);
+        });
+    },
+    _deleteTopicConfirmed: function(idx,btn){
         var cs=document.getElementById('curClass').value;
         var sub=document.getElementById('curSubject').value;
         var topic = AC.cur.topics[idx] || {};
@@ -1794,10 +1905,17 @@ AC.cal = {
         });
     },
     deleteEvent:function(id){
-        if(!confirm('Delete this event?'))return;
-        post('academic/delete_event',{id:id}).then(function(d){
-            if(d.status==='success'){AC.cal.loadMonth();toast('Event deleted',true)}
-            else toast(d.message,false);
+        _confirmModal({
+            title:'Delete this event',
+            body:'The event will be removed from the calendar.',
+            confirmText:'Delete',
+            dangerous:true
+        }).then(function(ok){
+            if(!ok)return;
+            post('academic/delete_event',{id:id}).then(function(d){
+                if(d.status==='success'){AC.cal.loadMonth();toast('Event deleted',true)}
+                else toast(d.message,false);
+            });
         });
     }
 };
@@ -2591,27 +2709,37 @@ AC.tt = {
     },
 
     autoGenerate:function(){
-        if(!confirm('This will auto-generate a complete weekly timetable for ALL sections based on subject assignments.\n\nExisting timetable data will be REPLACED.\n\nProceed?')) return;
-
-        toast('Generating timetable...',true);
-        post('academic/auto_generate_timetable',{preview:'1'}).then(function(d){
-            if(d.status!=='success'){toast(d.message,false);return}
-            var r=d;
-            var msg='Preview: '+r.sections_generated+' sections generated.\n';
-            msg+=r.unallocated+' free slots remaining.\n';
-            if(r.conflicts>0) msg+=r.conflicts+' conflicts detected.\n';
-            msg+='\nSave this timetable?';
-
-            if(!confirm(msg)) {toast('Generation cancelled',false);return}
-
-            // Confirm save
-            post('academic/auto_generate_timetable',{confirm:'1'}).then(function(d2){
-                if(d2.status==='success'){
-                    toast('Timetable saved! '+d2.sections_generated+' sections, '+d2.unallocated+' free slots.',true);
-                    AC.tt.load(); // Refresh the grid
-                } else {
-                    toast(d2.message||'Save failed',false);
-                }
+        _confirmModal({
+            title:'Auto-generate weekly timetable',
+            body:'This will auto-generate a complete weekly timetable for ALL sections based on subject assignments.\n\nExisting timetable data will be REPLACED.\n\nProceed?',
+            confirmText:'Generate preview',
+            dangerous:true
+        }).then(function(ok){
+            if(!ok) return;
+            toast('Generating timetable...',true);
+            post('academic/auto_generate_timetable',{preview:'1'}).then(function(d){
+                if(d.status!=='success'){toast(d.message,false);return}
+                var r=d;
+                var msg='Preview: '+r.sections_generated+' sections generated.\n';
+                msg+=r.unallocated+' free slots remaining.\n';
+                if(r.conflicts>0) msg+=r.conflicts+' conflicts detected.\n';
+                msg+='\nSave this timetable?';
+                _confirmModal({
+                    title:'Save generated timetable?',
+                    body:msg,
+                    confirmText:'Save'
+                }).then(function(ok2){
+                    if(!ok2){toast('Generation cancelled',false);return}
+                    // Confirm save
+                    post('academic/auto_generate_timetable',{confirm:'1'}).then(function(d2){
+                        if(d2.status==='success'){
+                            toast('Timetable saved! '+d2.sections_generated+' sections, '+d2.unallocated+' free slots.',true);
+                            AC.tt.load(); // Refresh the grid
+                        } else {
+                            toast(d2.message||'Save failed',false);
+                        }
+                    });
+                });
             });
         });
     },
@@ -2628,8 +2756,18 @@ AC.tt = {
         toDay=toDay.charAt(0).toUpperCase()+toDay.slice(1).toLowerCase();
         if(days.indexOf(toDay)===-1){toast('Invalid day: '+toDay,false);return}
         if(toDay===fromDay){toast('Cannot copy to same day',false);return}
-        if(!confirm('Copy ALL class timetables from '+fromDay+' to '+toDay+'?\nThis will overwrite '+toDay+'\'s data.'))return;
+        _confirmModal({
+            title:'Copy '+fromDay+' → '+toDay,
+            body:'Copy ALL class timetables from '+fromDay+' to '+toDay+'?\nThis will overwrite '+toDay+'\'s data.',
+            confirmText:'Copy',
+            dangerous:true
+        }).then(function(ok){
+            if(!ok)return;
+            AC.tt._copyDayConfirmed(fromDay,toDay);
+        });
+    },
 
+    _copyDayConfirmed:function(fromDay,toDay){
         var labels=Object.keys(AC.tt.timetables);
         var promises=[];
         labels.forEach(function(label){
@@ -3094,10 +3232,17 @@ AC.sub = {
         });
     },
     del:function(id){
-        if(!confirm('Delete this substitute record?'))return;
-        post('academic/delete_substitute',{id:id}).then(function(d){
-            if(d.status==='success'){AC.sub.load();toast('Deleted',true)}
-            else toast(d.message,false);
+        _confirmModal({
+            title:'Delete this substitute record',
+            body:'The substitute assignment will be removed.',
+            confirmText:'Delete',
+            dangerous:true
+        }).then(function(ok){
+            if(!ok)return;
+            post('academic/delete_substitute',{id:id}).then(function(d){
+                if(d.status==='success'){AC.sub.load();toast('Deleted',true)}
+                else toast(d.message,false);
+            });
         });
     }
 };

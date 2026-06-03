@@ -7,6 +7,7 @@ $available_modules = $available_modules ?? [];
     <h1><i class="fa fa-tags" style="color:var(--sa3);margin-right:10px;font-size:20px;"></i>Subscription Plans</h1>
     <ol class="breadcrumb">
         <li><a href="<?= base_url('superadmin/dashboard') ?>">Dashboard</a></li>
+        <li><a href="<?= base_url('superadmin/plans') ?>">Plans &amp; Billing</a></li>
         <li class="active">Plans</li>
     </ol>
 </section>

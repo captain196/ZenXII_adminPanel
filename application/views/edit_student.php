@@ -391,36 +391,9 @@ $selectedFees = is_array($selected_exempted_fees ?? null) ? array_keys($selected
                     <div class="sa-section-body">
                         <div class="sa-grid sa-grid-2">
 
-                            <!-- Fee exemptions -->
-                            <div class="sa-field">
-                                <label>Fees to Exempt for This Student</label>
-
-                                <label class="sa-check-all">
-                                    <input type="checkbox" id="select_all_exempted_fees">
-                                    Select All Fees
-                                </label>
-
-                                <div class="sa-check-group" style="max-height:180px;">
-                                    <?php if (isset($exemptedFees) && is_array($exemptedFees)): ?>
-                                        <?php foreach ($exemptedFees as $feeType => $fees): ?>
-                                            <?php if (is_array($fees)): ?>
-                                                <?php foreach ($fees as $feeKey => $feeValue): ?>
-                                                    <label class="sa-check-item">
-                                                        <input type="checkbox"
-                                                               name="exempted_fees_multiple[]"
-                                                               value="<?= htmlspecialchars($feeKey) ?>"
-                                                               <?= in_array(trim($feeKey), $selectedFees, true) ? 'checked' : '' ?>>
-                                                        <?= htmlspecialchars($feeKey) ?>
-                                                        <span style="font-size:11px;color:var(--sa-muted);margin-left:4px;">(<?= htmlspecialchars($feeType) ?>)</span>
-                                                    </label>
-                                                <?php endforeach; ?>
-                                            <?php endif; ?>
-                                        <?php endforeach; ?>
-                                    <?php else: ?>
-                                        <p class="sa-check-muted">No fee options available.</p>
-                                    <?php endif; ?>
-                                </div>
-                            </div>
+                            <!-- Fees Exemption v2 (P0-b 2026-05-30): broken exemption-checkbox
+                                 block removed (same defect as on studentAdmission.php).
+                                 Concessions are now captured via the Fee_concessions screen. -->
 
                             <!-- Passport photo -->
                             <div class="sa-field">

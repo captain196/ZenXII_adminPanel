@@ -85,6 +85,36 @@ class Sis extends MY_Controller
         return $classMap;
     }
 
+    /**
+     * Session-scoped class→section map: { session: { classOrd: [sections] } }.
+     * Unlike _fs_class_map (which unions sections across ALL sessions), this
+     * preserves the session dimension so the promote dialog can show the
+     * SOURCE class's sections in the current session and the DESTINATION
+     * class's sections in the selected target session — instead of a
+     * session-agnostic union that offered sections not present in the target
+     * session.
+     */
+    private function _fs_session_class_map(): array
+    {
+        $sectionDocs = $this->fs->schoolWhere('sections', []);
+        $map = [];
+        foreach ($sectionDocs as $doc) {
+            $sd = $doc['data'] ?? $doc;
+            $session     = (string) ($sd['session']   ?? '');
+            $className   = (string) ($sd['className'] ?? '');
+            $sectionName = (string) ($sd['section']   ?? '');
+            if ($session === '' || $className === '' || $sectionName === '') continue;
+            $ordinal       = str_replace('Class ', '', $className);
+            $sectionLetter = str_replace('Section ', '', $sectionName);
+            if (!isset($map[$session]))            $map[$session] = [];
+            if (!isset($map[$session][$ordinal]))  $map[$session][$ordinal] = [];
+            if (!in_array($sectionLetter, $map[$session][$ordinal], true)) {
+                $map[$session][$ordinal][] = $sectionLetter;
+            }
+        }
+        return $map;
+    }
+
     /* ══════════════════════════════════════════════════════════════════════
        DASHBOARD
     ══════════════════════════════════════════════════════════════════════ */
@@ -191,14 +221,15 @@ class Sis extends MY_Controller
         // Preview next student ID
         $userId = $this->_peekNextStudentId($school_id);
 
-        // Fee structure for exemptions — read from Firestore feeStructures
-        $exemptedFees = $this->fs->schoolList('feeStructures');
-
+        // Fees Exemption v2 (P0-b): the legacy exemption-checkbox feed was
+        // removed here. The checkbox iterated schoolList('feeStructures')'s
+        // doc-FIELD names (schoolId/session/feeHeads/...) as checkbox values,
+        // so it could never store a real fee-head name. Concessions are now
+        // captured via the dedicated Fee_concessions screen (Phase 0+).
         $data['class_map']     = $classMap;
         $data['session_year']  = $session;
         $data['school_name']   = $school_name;
         $data['user_Id']       = $userId;
-        $data['exemptedFees']  = $exemptedFees;
 
         // LEAD SYSTEM — pass lead_id to view for prefill via AJAX
         $data['lead_id'] = trim($this->input->get('lead_id') ?? '');
@@ -393,8 +424,14 @@ class Sis extends MY_Controller
         // ══════════════════════════════════════════════════════════════
         // 1. FIRESTORE FIRST (primary) — Student profile for Android apps
         // ══════════════════════════════════════════════════════════════
-        $this->entity_sync->syncStudent($userId, $studentData);
-        $this->entity_sync->syncParent($userId, $studentData);
+        // SIS Wave-2 S6 (2026-05-31): capture sync return so silent failure
+        // is visible in logs. Observability-only; no behavior change.
+        if (!$this->entity_sync->syncStudent($userId, $studentData)) {
+            log_message('warning', "syncStudent returned false for {$userId} (save_admission)");
+        }
+        if (!$this->entity_sync->syncParent($userId, $studentData)) {
+            log_message('warning', "syncParent returned false for {$userId} (save_admission)");
+        }
 
         // G2 — Refresh sections.currentStrength after a new admit so the
         // admission section-picker's strength bars stay accurate.
@@ -409,13 +446,25 @@ class Sis extends MY_Controller
         }
 
         // Fee month markers
+        // SIS Wave-2 fix F5 (2026-05-31): fail-loud guard. Pre-fix, a
+        // Firestore failure here was logged but admission continued —
+        // student would exist with no monthFee field, defaulter engine
+        // would report incorrect status, and admin would have no signal.
+        // The current ordering ALREADY puts monthFee init before Firebase
+        // Auth creation at L500+, so a fail-here abort cleanly avoids
+        // orphan-Auth side-effects (Option-3 intent achieved without
+        // reorder — current code is already correct).
+        $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
+        $monthFeeInit = [];
+        foreach ($months as $m) $monthFeeInit[$m] = 0;
+        $monthFeeOk = false;
         try {
-            $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
-            $monthFeeInit = [];
-            foreach ($months as $m) $monthFeeInit[$m] = 0;
-            $this->fs->updateEntity('students', $userId, ['monthFee' => $monthFeeInit]);
+            $monthFeeOk = (bool) $this->fs->updateEntity('students', $userId, ['monthFee' => $monthFeeInit]);
         } catch (Exception $e) {
             log_message('error', "SIS admit fee init failed for {$userId}: " . $e->getMessage());
+        }
+        if (!$monthFeeOk) {
+            return $this->json_error('Failed to initialize fee tracking for student. Please retry. The student record was not created.');
         }
 
         // Subject assignment
@@ -453,39 +502,21 @@ class Sis extends MY_Controller
             }
         }
 
-        // Exempted fees
-        $exemptedFees = $this->input->post('exempted_fees_multiple');
-        if (!empty($exemptedFees) && is_array($exemptedFees)) {
-            $exemptedData = [];
-            foreach ($exemptedFees as $feeName) {
-                $feeName = trim($feeName);
-                if ($feeName !== '') $exemptedData[$feeName] = '';
-            }
-            if (!empty($exemptedData)) {
-                $this->fs->updateEntity('students', $userId, ['exemptedFees' => $exemptedData]);
-            }
-        }
+        // Fees Exemption v2 (P0-b): the exempted_fees_multiple admission write
+        // was removed. Concessions are captured via Fee_concessions (Phase 0+),
+        // applied by the unified generator (Phase 2+). Admission billing here
+        // is unchanged — assignInitialFees still runs for this student.
 
         // RTDB mirror removed per no-RTDB policy. Firestore `students` is the sole source.
 
         // ══════════════════════════════════════════════════════════════
         // 2. FIREBASE AUTH — Parent app login
         // ══════════════════════════════════════════════════════════════
-        try {
-            $authEmail = Firebase::authEmail($userId);
-            $this->firebase->createFirebaseUser($authEmail, $password, [
-                'uid'         => $userId,
-                'displayName' => $name,
-            ]);
-            $this->firebase->setFirebaseClaims($userId, [
-                'role'          => 'student',
-                'school_id'     => $this->school_id,
-                'school_code'   => $this->school_code,
-                'parent_db_key' => $this->parent_db_key,
-            ]);
-        } catch (Exception $e) {
-            log_message('error', "SIS Firebase Auth create failed for {$userId}: " . $e->getMessage());
-        }
+        // SIS Wave-3 D3 (2026-05-31): consolidated via _createFirebaseAuthStudent.
+        // Return value intentionally ignored — save_admission's pre-fix
+        // behavior was silent-continue on Auth failure. B3 fix (surface
+        // Auth failure to operator) is separate Tier-2 territory.
+        $this->_createFirebaseAuthStudent($userId, $password, $name, 'SIS save_admission');
 
         // ══════════════════════════════════════════════════════════════
         // 4. POST-ADMISSION — Fees, history, leads, notifications
@@ -743,7 +774,10 @@ class Sis extends MY_Controller
 
         // Entity sync for Android apps
         try {
-            $this->entity_sync->syncStudent($userId, $updates);
+            // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+            if (!$this->entity_sync->syncStudent($userId, $updates)) {
+                log_message('warning', "syncStudent returned false for {$userId} (update_profile)");
+            }
         } catch (\Exception $e) {
             log_message('error', "entity_sync syncStudent failed for {$userId}: " . $e->getMessage());
         }
@@ -762,8 +796,9 @@ class Sis extends MY_Controller
         $this->_require_role(self::MANAGE_ROLES, 'sis_promote');
         $session     = $this->session_year;
 
-        $data['class_map']    = $this->_fs_class_map();
-        $data['session_year'] = $session;
+        $data['class_map']         = $this->_fs_class_map();
+        $data['session_class_map'] = $this->_fs_session_class_map();
+        $data['session_year']      = $session;
 
         // Build session options. Issue B (2026-05-28): list ONLY sessions that
         // actually exist. Previously the computed next academic year was
@@ -779,6 +814,7 @@ class Sis extends MY_Controller
         $nextYear  = ((int)$parts[0] + 1) . '-' . substr((string)((int)$parts[0] + 2), -2);
         $data['session_options'] = $available;                                       // existing only
         $data['create_session']  = in_array($nextYear, $available, true) ? '' : $nextYear; // '' if it already exists
+        $data['next_session']    = $nextYear;                                        // label the next academic year "(next)" when it already exists
 
         $this->load->view('include/header');
         $this->load->view('sis/promote', $data);
@@ -843,43 +879,56 @@ class Sis extends MY_Controller
         if (!$this->safe_path_segment($toClass))   return $this->json_error('Invalid destination class.');
         if (!$this->safe_path_segment($toSection))  return $this->json_error('Invalid destination section.');
 
-        // Validate toSession format (YYYY-YY) — reject arbitrary strings
+        // SC-Step9 Part A (Session Convergence — 2026-06-02): fail-loud
+        // validation. Pre-Step-9 silently fell back to $session on malformed
+        // to_session, masking input bugs. Per NEW-Q12 fail-closed mandate,
+        // reject malformed input with HTTP 400 so callers can correct it.
+        // The empty-string default to current session (L870) still applies
+        // BEFORE this check — UI sending empty to_session for same-session
+        // promotion is unaffected.
         if (!preg_match('/^\d{4}-\d{2}$/', $toSession)) {
-            $toSession = $session;
+            return $this->json_error(
+                "Invalid target session format. Expected YYYY-YY (e.g. 2026-27), got: "
+                . substr($toSession, 0, 32),
+                400
+            );
         }
 
-        // Auto-register target session in Sessions list if it doesn't exist yet.
-        // BUG-056 SW1 (2026-05-26): write ONLY the sessions list. Active-session
-        // changes (currentSession) must route exclusively through
-        // School_config::set_active_session() which has lock+CAS+audit guards.
-        // Promotion adding a future session must not flip the school's
-        // globally-active session as a side effect.
+        // SC-Step9 Part B (Session Convergence — 2026-06-02): route
+        // session-add through canonical Session_lifecycle library per
+        // operator-locked EX-C(b) decision. The library applies the SAME
+        // lock + Firestore __updateTime CAS that School_config's canonical
+        // lifecycle writers use, with cross-controller serialization
+        // preserved via the shared lock-file path. Pre-Step-9 inline
+        // fs->update at L902 was the LAST unhardened session writer in
+        // the codebase; Step 9 closes it.
+        //
+        // BUG-056-SW1 invariant PRESERVED: promotion writes ONLY sessions[],
+        // never currentSession. Active-session changes route exclusively
+        // through School_config::set_active_session. The library's
+        // add_session() method has no path to currentSession.
         $available = $this->session->userdata('available_sessions') ?? [];
         if (!in_array($toSession, $available, true)) {
-            $available[] = $toSession;
-            rsort($available);
-            // Rollback-safe: if the Firestore write fails or throws, abort
-            // promotion BEFORE any per-student work runs. No partial state,
-            // no silent continuation.
-            $written = false;
-            try {
-                $written = (bool) $this->fs->update('schools', $this->school_id, ['sessions' => $available]);
-            } catch (\Throwable $e) {
+            $this->load->library('Session_lifecycle', null, 'session_lifecycle');
+            $libResult = $this->session_lifecycle->add_session(
+                $this->school_id,
+                $toSession,
+                (string) $this->admin_id,
+                'promotion'
+            );
+            if (!$libResult['success']) {
                 log_message('error',
-                    'BUG-056-SW1: exception registering target session ['
-                    . $toSession . '] for school [' . $this->school_id
-                    . ']: ' . $e->getMessage());
-            }
-            if (!$written) {
-                log_message('error',
-                    'BUG-056-SW1: failed to register target session ['
-                    . $toSession . '] for school [' . $this->school_id
+                    'SC-Step9: Session_lifecycle::add_session failed for promotion '
+                    . 'target=[' . $toSession . '] school=[' . $this->school_id
+                    . '] error=[' . ($libResult['error'] ?? 'unknown')
                     . '] — aborting promotion to prevent orphan state.');
                 return $this->json_error(
                     'Could not register the target session in school configuration. '
                     . 'Promotion has been aborted to prevent partial state. Please retry.');
             }
-            $this->session->set_userdata('available_sessions', $available);
+            // Refresh PHP userdata cache from the post-write canonical sessions[]
+            // returned by the library (includes the new session, sorted).
+            $this->session->set_userdata('available_sessions', $libResult['sessions']);
         }
 
         $students = $this->_get_students_in_class($fromClass, $fromSection, $session);
@@ -1002,9 +1051,17 @@ class Sis extends MY_Controller
             if ($oldSec === '') continue;
             $touchedSections["{$oldClassKey}|{$oldSec}"] = [$oldClassKey, $oldSec];
         }
-        foreach ($touchedSections as $pair) {
-            $this->_recompute_section_strength($pair[0], $pair[1]);
-        }
+        // BUG-045 Item 1 (perf, 2026-05-29): the synchronous section-strength
+        // recompute that used to run here was REMOVED. It duplicated the
+        // recompute already performed in the post-response shutdown handler
+        // (Phase D2 below), wasting ~6 Firestore round-trips on the operator-
+        // facing critical path for zero correctness benefit — currentStrength
+        // is informational (admission section-picker bars) and self-healing on
+        // the next lifecycle write.
+        // INVARIANT: the deferred Phase-D2 loop is now the SOLE section-strength
+        // recompute path. $touchedSections is captured into the shutdown closure
+        // ($__touchedLocal) and consumed there — do not re-add a synchronous
+        // recompute here.
 
         // ── BUG-045 Phase 1 B1 (2026-05-25): post-response shutdown handler ──
         // Pre-fix: fee-reassignment + section-strength recompute + promotion-batch
@@ -1128,11 +1185,77 @@ class Sis extends MY_Controller
             // Phase D1 — reassign fees per promoted student (the ~94% cost).
             foreach ($__promotedLocal as $p) {
                 try {
-                    $__feeLifecycle->reassignFeesOnPromotion(
+                    // SIS Tier-1 fix B5 (2026-05-31): capture the return so we
+                    // can detect the silent-zero-regenerated case. The upfront
+                    // guard at L967 blocks promotion when the destination
+                    // structure is missing AT REQUEST TIME, but this deferred
+                    // loop runs later in a shutdown handler — a structure
+                    // deleted between the guard and this call (admin race,
+                    // Firestore transient, mid-loop deletion) would leave
+                    // affected students Active-with-zero-demands while the
+                    // promotion reported clean success. We now surface them
+                    // in $deferFailedStudents like a thrown failure would.
+                    $__regenResult = $__feeLifecycle->reassignFeesOnPromotion(
                         $p['user_id'], $__oldClassKey, $__oldSectionKey,
                         $__newClassKey, $__newSectionKey, $__schoolId
                     );
-                    $processedCount++;
+                    $__regenCount = is_array($__regenResult) ? (int) ($__regenResult['regenerated'] ?? 0) : 0;
+                    if ($__regenCount === 0) {
+                        $deferFailedStudents[] = [
+                            'user_id' => $p['user_id'],
+                            'name'    => $p['name'] ?? $p['user_id'],
+                            'reason'  => "Zero demands regenerated for {$__newClassKey}/{$__newSectionKey} in session {$__toSessionLocal}. Destination fee structure may have been deleted after the upfront guard ran. Verify the structure exists and re-promote this student.",
+                        ];
+                    } else {
+                        $processedCount++;
+
+                        // SIS Wave-4 fix S1 (2026-05-31): propagate the new
+                        // class/section to parent + teacher apps via entity_sync.
+                        // Pre-fix, promoted students remained on their OLD
+                        // class in the parents collection until next admin
+                        // edit triggered a re-sync — parent app showed stale
+                        // attendance/marks/fees for the old class; teacher
+                        // app's new-class roster filter excluded them.
+                        //
+                        // Sync failures are LOG-AND-CONTINUE per operator
+                        // direction (promotion + fee-regen are the PRIMARY
+                        // transactional outcomes; app sync is post-write
+                        // observability). We deliberately do NOT add
+                        // sync-only failures to $deferFailedStudents — that
+                        // queue is reserved for fee-regen failures.
+                        //
+                        // S7 (commit d19e9e0a) made syncParent safe under
+                        // partial payloads — its $pick helper preserves
+                        // identity fields when the payload omits them.
+                        // Safe to pass a narrow 5-field update here.
+                        //
+                        // entity_sync is not in the closure's `use` list;
+                        // we re-acquire it via get_instance() like the
+                        // L1161 fsTxn re-init pattern (BUG-076 Part 2-B).
+                        try {
+                            $CI =& get_instance();
+                            $entitySync = ($CI !== null && isset($CI->entity_sync)) ? $CI->entity_sync : null;
+                            if ($entitySync !== null) {
+                                $syncPayload = [
+                                    'Name'    => $p['name'] ?? $p['user_id'],
+                                    'Class'   => $__newClassKey,
+                                    'Section' => $__newSectionKey,
+                                    'Status'  => 'Active',
+                                    'session' => $__toSessionLocal,
+                                ];
+                                if (!$entitySync->syncStudent($p['user_id'], $syncPayload)) {
+                                    log_message('warning', "promote(deferred): syncStudent returned false for {$p['user_id']}");
+                                }
+                                if (!$entitySync->syncParent($p['user_id'], $syncPayload)) {
+                                    log_message('warning', "promote(deferred): syncParent returned false for {$p['user_id']}");
+                                }
+                            } else {
+                                log_message('warning', "promote(deferred): entity_sync library not accessible in shutdown context for {$p['user_id']} — app sync skipped (fee regen succeeded)");
+                            }
+                        } catch (\Throwable $eSync) {
+                            log_message('error', "promote(deferred): entity_sync threw for {$p['user_id']}: " . $eSync->getMessage());
+                        }
+                    }
                 } catch (\Throwable $e) {
                     log_message('error', "promote(deferred): reassignFeesOnPromotion failed for {$p['user_id']}: " . $e->getMessage());
                     $deferFailedStudents[] = [
@@ -1361,6 +1484,13 @@ class Sis extends MY_Controller
         }
 
         $tcNo      = $this->_get_tc_number($school_name);
+        // SIS Wave-3 fix F4 (2026-05-31): _get_tc_number now returns '' when
+        // the atomic claim is unavailable (previously it silently fell back
+        // to stale-mirror math, risking duplicate TC numbers). Surface the
+        // failure to the operator instead of writing a TC with empty number.
+        if ($tcNo === '') {
+            return $this->json_error('Could not allocate a TC number atomically (Firestore counter unavailable). Please retry in a moment. If the issue persists, contact support.');
+        }
         $adminName = $this->session->userdata('admin_name') ?? 'Admin';
         $tcKey     = 'TC_' . date('YmdHis') . '_' . bin2hex(random_bytes(4));
         $tcData    = [
@@ -1411,14 +1541,25 @@ class Sis extends MY_Controller
 
         // Entity sync for Android apps
         try {
-            $this->entity_sync->syncStudent($userId, [
+            // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+            if (!$this->entity_sync->syncStudent($userId, [
                 'Name'    => $student['Name'] ?? $userId,
                 'Class'   => $stuClass,
                 'Section' => $stuSection,
                 'Status'  => 'TC',
-            ]);
+            ])) {
+                log_message('warning', "syncStudent returned false for {$userId} (issue_tc)");
+            }
+            // S2 (2026-05-31) + S6 (2026-05-31): propagate Status=TC to
+            // parent doc with array_merge to preserve identity (S7 anti-
+            // pattern guard), and check the return for visibility.
+            if (!$this->entity_sync->syncParent($userId, array_merge($student, [
+                'Status' => 'TC', 'status' => 'TC',
+            ]))) {
+                log_message('warning', "syncParent returned false for {$userId} (issue_tc)");
+            }
         } catch (\Exception $e) {
-            log_message('error', "entity_sync syncStudent TC failed for {$userId}: " . $e->getMessage());
+            log_message('error', "entity_sync sync TC failed for {$userId}: " . $e->getMessage());
         }
 
         // G1 — Blank current-month attendance from today onwards so the
@@ -1616,9 +1757,18 @@ class Sis extends MY_Controller
 
         // Entity sync for Android apps
         try {
-            $this->entity_sync->syncStudent($userId, [
+            // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+            if (!$this->entity_sync->syncStudent($userId, [
                 'Name' => $stuName, 'Class' => $stuClass, 'Section' => $stuSection, 'Status' => 'Active',
-            ]);
+            ])) {
+                log_message('warning', "syncStudent returned false for {$userId} (cancel_tc)");
+            }
+            // S2 + S6: parent propagation with S7-guarded array_merge + return check.
+            if (!$this->entity_sync->syncParent($userId, array_merge($student, [
+                'Status' => 'Active', 'status' => 'Active',
+            ]))) {
+                log_message('warning', "syncParent returned false for {$userId} (cancel_tc)");
+            }
         } catch (\Exception $e) {
             log_message('error', "entity_sync cancel_tc failed for {$userId}: " . $e->getMessage());
         }
@@ -1701,14 +1851,23 @@ class Sis extends MY_Controller
 
         // Entity sync for Android apps
         try {
-            $this->entity_sync->syncStudent($userId, [
+            // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+            if (!$this->entity_sync->syncStudent($userId, [
                 'Name'    => $student['Name'] ?? $student['name'] ?? $userId,
                 'Class'   => $stuClass,
                 'Section' => $stuSection,
                 'Status'  => 'Inactive',
-            ]);
+            ])) {
+                log_message('warning', "syncStudent returned false for {$userId} (withdraw_student)");
+            }
+            // S3 + S6: parent propagation with S7-guarded array_merge + return check.
+            if (!$this->entity_sync->syncParent($userId, array_merge($student, [
+                'Status' => 'Inactive', 'status' => 'Inactive',
+            ]))) {
+                log_message('warning', "syncParent returned false for {$userId} (withdraw_student)");
+            }
         } catch (\Exception $e) {
-            log_message('error', "entity_sync syncStudent failed for {$userId}: " . $e->getMessage());
+            log_message('error', "entity_sync withdraw_student sync failed for {$userId}: " . $e->getMessage());
         }
 
         // Freeze fee records for withdrawn student
@@ -1769,8 +1928,16 @@ class Sis extends MY_Controller
         );
 
         // Firestore sync for Android apps (entity_sync loaded in constructor)
-        $this->entity_sync->syncStudent($userId, ['Status' => $newStatus]);
-        $this->entity_sync->syncParent($userId, ['Status' => $newStatus]);
+        // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+        // Note: the syncParent call below passes a Status-only payload which
+        // is the S7 known-issue (full-doc rewrite clobbers fatherName/etc.).
+        // S6 only adds return visibility; S7 fix is Wave-4 territory.
+        if (!$this->entity_sync->syncStudent($userId, ['Status' => $newStatus])) {
+            log_message('warning', "syncStudent returned false for {$userId} (toggle_status)");
+        }
+        if (!$this->entity_sync->syncParent($userId, ['Status' => $newStatus])) {
+            log_message('warning', "syncParent returned false for {$userId} (toggle_status)");
+        }
 
         // G1 — Blank current-month attendance from today onwards on
         // every status flip. For Active→Inactive this stops the % drift
@@ -1942,15 +2109,44 @@ class Sis extends MY_Controller
         if (!in_array($mime, $allowedMime, true)) {
             return $this->json_error('Invalid MIME type for uploaded file.');
         }
-        // ── Fix 2: File size limit (5 MB) ─────────────────────────────────
-        if ($_FILES['document']['size'] > 5 * 1024 * 1024) {
-            return $this->json_error('File too large. Maximum allowed size is 5 MB.');
-        }
         if ($_FILES['document']['error'] !== UPLOAD_ERR_OK) {
             return $this->json_error('File upload error (code ' . $_FILES['document']['error'] . ').');
         }
 
+        // SIS Wave-3 DM6 (2026-05-31): per-student quota check. Replaces the
+        // hardcoded 5 MB per-file check with config-driven per-file + aggregate
+        // size + doc-count caps. Per-school override at
+        // schools.{schoolId}.documentQuota takes precedence over defaults
+        // (see application/config/sis_document_quota.php). Surface the quota
+        // reason to the operator so they know exactly what limit was hit.
+        $fileBytes = (int) $_FILES['document']['size'];
+        $quota = $this->_check_doc_quota($userId, $fileBytes);
+        if (!$quota['ok']) {
+            return $this->json_error($quota['reason']);
+        }
+
         $storagePath = "Students/{$school_id}/{$userId}/docs/{$docLabel}";
+
+        // ─────────────────────────────────────────────────────────────────
+        // Storage-orphan fix (2026-05-30): delete the previous Storage
+        // object before uploading the replacement. Mirrors the proven
+        // edit_student@3434-3435 pattern via _deleteOldStorageFile. Closes
+        // the cross-path orphan case where the prior upload landed at the
+        // admission path (_uploadStudentFile: {school}/Students/{class}/...)
+        // and the re-upload lands here at the deterministic docs path;
+        // without this delete, the admission file lingers. Same-path
+        // re-uploads remain correct (delete-then-write is idempotent).
+        // ─────────────────────────────────────────────────────────────────
+        $priorStudentDoc = $this->_getStudent($userId);
+        $priorDocNode    = is_array($priorStudentDoc['documents'][$docLabel] ?? null)
+            ? $priorStudentDoc['documents'][$docLabel]
+            : (is_array($priorStudentDoc['Doc'][$docLabel] ?? null)
+                ? $priorStudentDoc['Doc'][$docLabel]
+                : []);
+        if (!empty($priorDocNode)) {
+            $this->_deleteOldStorageFile($priorDocNode);
+        }
+
         try {
             // FIXED: args were swapped (localPath, remotePath) and return is bool not URL
             $uploaded = $this->firebase->uploadFile($_FILES['document']['tmp_name'], $storagePath);
@@ -1964,10 +2160,29 @@ class Sis extends MY_Controller
                 $thumbUrl = $url;
             }
 
-            // Firestore-only per no-RTDB policy.
-            $this->fs->updateEntity('students', $userId, [
-                "doc.{$docLabel}" => ['url' => $url, 'thumbnail' => $thumbUrl, 'uploaded_at' => date('Y-m-d H:i:s')]
-            ]);
+            // R1: write to the CANONICAL document map keys (documents + Doc) via
+            // read-modify-write — NOT the dotted "doc.{label}" literal field, which
+            // no reader sees (normalizer maps only documents<->Doc) and the REST
+            // client mis-encodes. Mirrors delete_document() + edit_student()'s
+            // Doc->documents mirror.
+            $studentDoc = $this->_getStudent($userId);
+            $docMap = is_array($studentDoc['documents'] ?? null) ? $studentDoc['documents']
+                    : (is_array($studentDoc['Doc'] ?? null) ? $studentDoc['Doc'] : []);
+            // SIS Wave-3 DM6 (2026-05-31): record `bytes` so future quota
+            // aggregations sum accurately. Additive — readers that don't
+            // care about size ignore the field; grandfathered docs without
+            // bytes continue to render normally.
+            $docMap[$docLabel] = [
+                'url'         => $url,
+                'thumbnail'   => $thumbUrl,
+                'uploaded_at' => date('Y-m-d H:i:s'),
+                'bytes'       => $fileBytes,
+            ];
+            $ok = $this->fs->updateEntity('students', $userId, ['documents' => $docMap, 'Doc' => $docMap]);
+            // R2: do not report success if the persistence write failed.
+            if (!$ok) {
+                return $this->json_error('File uploaded to storage, but saving the document record failed. Please retry.');
+            }
 
             $this->_log_history($school_id, $userId, 'DOCUMENT_UPLOAD',
                 "Document uploaded: {$docLabel}", ['doc_label' => $docLabel]
@@ -2004,8 +2219,25 @@ class Sis extends MY_Controller
         // — see memory/firestore_class_section_canonical.md.
         $studentDoc = $this->_getStudent($userId);
         $docMap = $studentDoc['documents'] ?? $studentDoc['Doc'] ?? [];
+
+        // ─────────────────────────────────────────────────────────────────
+        // Storage-orphan fix (2026-05-30): delete the Storage object BEFORE
+        // removing the Firestore reference. Mirrors the proven
+        // edit_student@3435 pattern via _deleteOldStorageFile. Without this
+        // call the Firestore entry vanished but the underlying Storage file
+        // lingered indefinitely (only cleaned at full student deletion).
+        // ─────────────────────────────────────────────────────────────────
+        $oldDocNode = $docMap[$docLabel] ?? [];
+        if (is_array($oldDocNode) && !empty($oldDocNode)) {
+            $this->_deleteOldStorageFile($oldDocNode);
+        }
+
         unset($docMap[$docLabel]);
-        $this->fs->updateEntity('students', $userId, ['documents' => $docMap]);
+        // R4: keep BOTH canonical keys in sync (upload now dual-writes documents+Doc).
+        $ok = $this->fs->updateEntity('students', $userId, ['documents' => $docMap, 'Doc' => $docMap]);
+        if (!$ok) {
+            return $this->json_error('Could not update the document record. Please retry.');
+        }
 
         $this->_log_history($school_id, $userId, 'DOCUMENT_DELETE',
             "Document deleted: {$docLabel}", ['doc_label' => $docLabel]
@@ -2023,18 +2255,27 @@ class Sis extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'sis_history');
         if (empty($userId) || !$this->safe_path_segment($userId)) show_404();
 
-        $school_id = $this->parent_db_key;
-        // Firestore-first read, RTDB fallback
         $student = $this->_getStudent($userId);
         if (empty($student)) show_404();
 
-        $studentDoc = $this->_getStudent($userId);
-        $history = $studentDoc['History'] ?? [];
-        if (!is_array($history)) $history = [];
-
-        uasort($history, fn($a, $b) =>
-            strcmp($b['changed_at'] ?? '', $a['changed_at'] ?? '')
-        );
+        // History Canonicalization (2026-06-02): read from canonical
+        // studentHistory collection (firestoreQuery composite index:
+        // schoolId ASC + studentId ASC + changed_at DESC). Replaces
+        // legacy students.{id}.History map read which is now retired
+        // (writer cutover this same commit).
+        $history = [];
+        try {
+            $rows = $this->firebase->firestoreQuery('studentHistory', [
+                ['schoolId',  '==', $this->school_id],
+                ['studentId', '==', $userId],
+            ], 'changed_at', 'DESC', 5000);
+            foreach ($rows as $r) {
+                $d = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+                if (!empty($d)) $history[] = $d;
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "Sis::history studentHistory query failed for {$userId}: " . $e->getMessage());
+        }
 
         $data['student'] = $student;
         $data['history'] = $history;
@@ -2402,6 +2643,141 @@ class Sis extends MY_Controller
      * Upload a student file to Firebase Storage — mirrors Student.php::uploadStudentFile().
      * Returns ['document' => url, 'thumbnail' => url] or false on failure.
      */
+    /**
+     * SIS Wave-3 fix D3 (2026-05-31): consolidated Firebase Auth user creation.
+     *
+     * Replaces 3 duplicated inline blocks (save_admission L515-529,
+     * import_students L3500-3514, enroll_student L5022-5044) with a single
+     * helper. Pre-fix, each call site had its own empty-password handling
+     * (only enroll_student checked), its own success-info-log (only
+     * enroll_student emitted), and its own error-log message format (3
+     * different strings).
+     *
+     * Helper provides a UNIFORM RETURN SHAPE so each caller decides what
+     * to do on failure. Behavioral preservation at call sites:
+     *   - save_admission: ignores return (silent continue, B3 territory)
+     *   - import_students: ignores return (silent continue)
+     *   - enroll_student: captures return into $authCreated + $authError
+     *     for the existing json_success response. B3 (success-when-auth-
+     *     fails anti-pattern) is NOT touched — separate Tier-2 fix.
+     *
+     * Returns ['success' => bool, 'error' => string].
+     *   ['success' => true,  'error' => '']        Auth + claims succeeded
+     *   ['success' => false, 'error' => 'reason']  Auth or claims failed,
+     *                                              or password was empty
+     *
+     * $context is the originating method name (free-form string) — used
+     * in log lines for forensic triage. Defaults to 'sis' for safety.
+     */
+    private function _createFirebaseAuthStudent(
+        string $studentId,
+        string $password,
+        string $displayName,
+        string $context = 'sis'
+    ): array {
+        if ($password === '') {
+            $err = 'Generated password is empty.';
+            log_message('error', "{$context}: Firebase Auth create skipped for {$studentId}: {$err}");
+            return ['success' => false, 'error' => $err];
+        }
+        try {
+            $authEmail = Firebase::authEmail($studentId);
+            $this->firebase->createFirebaseUser($authEmail, $password, [
+                'uid'         => $studentId,
+                'displayName' => $displayName,
+            ]);
+            $this->firebase->setFirebaseClaims($studentId, [
+                'role'          => 'student',
+                'school_id'     => $this->school_id,
+                'school_code'   => $this->school_code,
+                'parent_db_key' => $this->parent_db_key,
+            ]);
+            log_message('info', "{$context}: Firebase Auth user created for {$studentId} (email={$authEmail}).");
+            return ['success' => true, 'error' => ''];
+        } catch (\Exception $e) {
+            $msg = $e->getMessage();
+            log_message('error', "{$context}: Firebase Auth create failed for {$studentId}: {$msg}");
+            return ['success' => false, 'error' => $msg];
+        }
+    }
+
+    /**
+     * SIS Wave-3 fix DM6 (2026-05-31): per-student document quota check.
+     *
+     * Defaults come from application/config/sis_document_quota.php. Per-school
+     * override comes from schools.{schoolId}.documentQuota.{maxDocs|maxFileBytes|
+     * maxTotalBytes} when present.
+     *
+     * Returns ['ok' => true] on pass, or ['ok' => false, 'reason' => msg] on fail.
+     * Reason is operator-facing — call sites surface it via json_error.
+     *
+     * Grandfathered docs without a `bytes` field count toward the COUNT cap
+     * but are treated as 0 in the SIZE aggregate. COUNT is the primary
+     * safeguard for grandfathered students; SIZE becomes accurate over time
+     * as docs are re-uploaded through upload_document (which now records
+     * bytes). Admission-form uploads via _uploadStudentFile do NOT yet
+     * record bytes — a residual gap deliberately left out of DM6 scope
+     * (single-issue / surgical change discipline).
+     */
+    private function _check_doc_quota(string $userId, int $newFileBytes): array
+    {
+        $this->config->load('sis_document_quota', true);
+        $defaults = $this->config->item('sis_document_quota') ?: [];
+        $defaultMaxDocs       = (int) ($defaults['max_docs']        ?? 10);
+        $defaultMaxFileBytes  = (int) ($defaults['max_file_bytes']  ?? 5 * 1024 * 1024);
+        $defaultMaxTotalBytes = (int) ($defaults['max_total_bytes'] ?? 50 * 1024 * 1024);
+
+        $schoolDoc = $this->fs->get('schools', $this->school_id) ?: [];
+        $override  = is_array($schoolDoc['documentQuota'] ?? null) ? $schoolDoc['documentQuota'] : [];
+        $maxDocs       = (int) ($override['maxDocs']       ?? $defaultMaxDocs);
+        $maxFileBytes  = (int) ($override['maxFileBytes']  ?? $defaultMaxFileBytes);
+        $maxTotalBytes = (int) ($override['maxTotalBytes'] ?? $defaultMaxTotalBytes);
+
+        // Per-file size cap (operator-tunable; default 5 MB)
+        if ($newFileBytes > $maxFileBytes) {
+            $maxMb = number_format($maxFileBytes / 1024 / 1024, 1);
+            $newMb = number_format($newFileBytes / 1024 / 1024, 1);
+            return ['ok' => false, 'reason' => "File too large ({$newMb} MB). Per-file limit is {$maxMb} MB."];
+        }
+
+        // Read student's existing document map
+        $studentDoc = $this->_getStudent($userId);
+        $docMap = is_array($studentDoc['documents'] ?? null) ? $studentDoc['documents']
+                : (is_array($studentDoc['Doc'] ?? null) ? $studentDoc['Doc'] : []);
+        $currentCount = count($docMap);
+        $currentBytes = 0;
+        foreach ($docMap as $entry) {
+            if (is_array($entry) && isset($entry['bytes'])) {
+                $currentBytes += (int) $entry['bytes'];
+            }
+        }
+
+        // Doc-count cap (new upload would push count to currentCount + 1).
+        // A same-label re-upload does NOT add to the count — it replaces an
+        // existing entry. Detect this and skip the count cap if applicable.
+        // Per-site convention: callers pass $newFileBytes only; we cannot
+        // know the doc label here, so the count check applies uniformly.
+        // Net effect: a re-upload at full count (=maxDocs) is blocked — the
+        // operator must delete-first then upload. Acceptable tradeoff for
+        // surgical scope; callers that want the smarter re-upload-aware
+        // check can do their own count-vs-replacement detection before
+        // calling _check_doc_quota.
+        if ($currentCount >= $maxDocs) {
+            return ['ok' => false, 'reason' => "Student already has {$currentCount} documents (limit: {$maxDocs}). Delete an existing document first."];
+        }
+
+        // Aggregate size cap (tracked bytes only; grandfathered docs count
+        // as 0 — see method docblock for rationale)
+        if (($currentBytes + $newFileBytes) > $maxTotalBytes) {
+            $currentMb = number_format($currentBytes / 1024 / 1024, 1);
+            $newMb     = number_format($newFileBytes / 1024 / 1024, 1);
+            $maxMb     = number_format($maxTotalBytes / 1024 / 1024, 1);
+            return ['ok' => false, 'reason' => "Student total storage: {$currentMb} MB. Cannot upload {$newMb} MB file (would exceed {$maxMb} MB limit). Delete some documents first."];
+        }
+
+        return ['ok' => true];
+    }
+
     private function _uploadStudentFile($file, $schoolName, $combinedClassPath, $studentId, $folderLabel, $type = 'document')
     {
         if (!isset($file['tmp_name']) || !is_uploaded_file($file['tmp_name'])) return false;
@@ -2409,7 +2785,18 @@ class Sis extends MY_Controller
         $ext       = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
         $allowed   = ($type === 'profile') ? ['jpg','jpeg','png','webp'] : ['jpg','jpeg','png','webp','pdf'];
         if (!in_array($ext, $allowed, true)) return false;
-        if ($file['size'] > 5 * 1024 * 1024) return false;
+
+        // SIS Wave-3 DM6 (2026-05-31): per-student quota check. Replaces the
+        // hardcoded 5 MB check below with config-driven per-file + aggregate
+        // size + doc-count caps. Per-school override at schools.{id}.documentQuota
+        // takes precedence over the config default. Returns false on quota
+        // fail (matches existing _uploadStudentFile failure convention; caller
+        // sees a false return and can choose to surface error to operator).
+        $quota = $this->_check_doc_quota($studentId, (int) $file['size']);
+        if (!$quota['ok']) {
+            log_message('warning', "Sis::_uploadStudentFile DM6 quota block for {$studentId}: " . $quota['reason']);
+            return false;
+        }
 
         // M-03 FIX: Validate MIME via finfo (don't trust client-supplied type)
         $allowedMimes = ($type === 'profile')
@@ -2580,7 +2967,16 @@ class Sis extends MY_Controller
     }
 
     /**
-     * Append an entry to the student's History log.
+     * Append an entry to the canonical studentHistory collection.
+     *
+     * History Canonicalization (2026-06-02): D3.B cutover landing.
+     * Writes one document per history event keyed
+     * {schoolId}_{userId}_{histKey}. Replaces the prior dotted-path
+     * PATCH on students.{id}.History map (F2, 47913a6f, 2026-05-31).
+     *
+     * createDocument is idempotent (fails-if-exists); $histKey
+     * collision (timestamp + 6 hex random) remains astronomically
+     * unlikely — same risk profile as the legacy-map writer.
      */
     private function _log_history(
         string $schoolId,
@@ -2590,19 +2986,26 @@ class Sis extends MY_Controller
         array  $metadata = []
     ): void {
         $adminName = $this->session->userdata('admin_name') ?? 'System';
-        $entry = [
+        $histKey   = date('YmdHis') . '_' . bin2hex(random_bytes(3));
+        $docId     = $schoolId . '_' . $userId . '_' . $histKey;
+        $data = [
+            'schoolId'    => $schoolId,
+            'studentId'   => $userId,
+            'histKey'     => $histKey,
             'action'      => $action,
             'description' => $description,
             'changed_by'  => $adminName,
             'changed_at'  => date('Y-m-d H:i:s'),
             'metadata'    => $metadata,
         ];
-        // Append history to student doc
-        $student = $this->_getStudent($userId);
-        $history = $student['History'] ?? [];
-        $histKey = date('YmdHis') . '_' . bin2hex(random_bytes(3));
-        $history[$histKey] = $entry;
-        $this->fs->updateEntity('students', $userId, ['History' => $history]);
+        try {
+            $ok = $this->firebase->firestoreCreate('studentHistory', $docId, $data);
+            if (!$ok) {
+                log_message('error', "Sis::_log_history studentHistory create returned false: {$docId} action={$action}");
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "Sis::_log_history studentHistory write failed: {$docId} action={$action} err=" . $e->getMessage());
+        }
     }
 
     /**
@@ -2787,17 +3190,42 @@ class Sis extends MY_Controller
 
         $next = $this->fs->nextSchoolCounter('tc', $current);
         if ($next <= 0) {
-            // Atomic path unavailable (transient Firestore failure). Fall
-            // back to the legacy increment so TC issuance is never hard
-            // blocked — same behaviour as before this fix, no worse.
-            $next = $current + 1;
-            log_message('warning', "Sis::_get_tc_number atomic counter unavailable; legacy fallback next={$next}");
+            // SIS Wave-3 fix F4 (2026-05-31): the previous fallback computed
+            // $current + 1 from a possibly-stale schools.tcCounter mirror
+            // without claim-doc verification. If a prior call's mirror-write
+            // had failed silently, the mirror was stale and this fallback
+            // could compute a number ALREADY ISSUED by an earlier atomic
+            // claim — duplicate TC. We now abort TC issuance instead. Atomic
+            // unavailability is rare and operator-retryable; better to block
+            // briefly than to issue a duplicate. Caller (issue_tc) must
+            // check for empty return and surface a json_error.
+            log_message('error',
+                "Sis::_get_tc_number atomic counter unavailable; TC issuance aborted to prevent duplicate-number race from stale-mirror fallback. " .
+                "Retry the operation; if persistent, investigate feeCounters/{$this->school_id}_tc pointer doc.");
+            return '';
         }
 
         // Mirror into schools.tcCounter (monotonic) so existing verifiers
         // (Sis_canonical_verify / Sis_tier2_verify) stay coherent.
+        // SIS Wave-3 fix F4: capture return + ERROR log on failure. Pre-fix,
+        // a silent failure here left the mirror stale, which contributed to
+        // the duplicate-number window in the (now-removed) fallback path.
+        // The atomic claim doc remains the source of truth; mirror failure
+        // does NOT block the current TC issuance (the claim is already
+        // recorded) but the next-call's duplicate-number risk via fallback
+        // is now closed (fallback removed above).
         if ($next > $current) {
-            $this->fs->update('schools', $this->school_id, ['tcCounter' => $next]);
+            $mirrorOk = false;
+            try {
+                $mirrorOk = (bool) $this->fs->update('schools', $this->school_id, ['tcCounter' => $next]);
+            } catch (\Throwable $e) {
+                log_message('error', "Sis::_get_tc_number mirror update threw for tcCounter={$next}: " . $e->getMessage());
+            }
+            if (!$mirrorOk) {
+                log_message('error',
+                    "Sis::_get_tc_number mirror update returned false; schools.tcCounter is now stale relative to atomic claim ({$next}). " .
+                    "Verifiers may report drift until next successful mirror write. The atomic claim doc feeCounters/{$this->school_id}_tc_claim_{$next} remains authoritative.");
+            }
         }
 
         $year = date('Y');
@@ -3116,6 +3544,25 @@ class Sis extends MY_Controller
                 $section   = Firestore_service::sectionKey($section);
                 $combinedClass = "{$className}/{$section}";
 
+                // SIS Tier-1 fix B6 (2026-05-31): destination fee-structure
+                // pre-flight per row, mirroring the promotion guard at
+                // Sis.php:965-974 and the enroll_student sibling above.
+                // Without this check, an imported row whose class/section
+                // has no feeStructure doc would still get a studentId
+                // consumed, saveStudent, indexes, Auth, syncStudent — and
+                // assignInitialFees would then silently return [] leaving
+                // the student Active-with-zero-demands. Block the row here,
+                // before any studentId is consumed; the row appears in the
+                // import-summary skipped list with a specific reason.
+                $destFeeStructDocId = "{$school_name}_{$session_year}_{$className}_{$section}";
+                $destFeeStruct      = $this->fs->get('feeStructures', $destFeeStructDocId);
+                if (!is_array($destFeeStruct) || empty($destFeeStruct['feeHeads'])) {
+                    $skipped[] = "Row " . ($success + $error + count($skipped) + 1)
+                        . ": {$studentName} — No fee structure for {$className}/{$section} in session {$session_year}";
+                    $error++;
+                    continue;
+                }
+
                 // Generate globally unique student ID from central counter
                 $studentId = $this->_nextStudentId($school_id);
                 if (!$studentId) {
@@ -3159,7 +3606,28 @@ class Sis extends MY_Controller
                 ];
 
                 // Firestore-only per no-RTDB policy. RTDB profile + roster mirror removed.
-                $this->fs->saveStudent($studentId, $studentData);
+                // SIS Tier-1 fix B2 (2026-05-31): saveStudent must be fail-loud
+                // per row. Pre-fix, this call had no try/catch and no return
+                // check — a Firestore failure either threw (killing the whole
+                // import mid-loop via the outer catch) or returned false
+                // silently (loop continued, row was counted as $success, but
+                // the student doc never existed). The import summary lied
+                // about which rows imported.
+                // Mirrors the B1 pattern from enroll_student@4627; the
+                // loop-shape difference is that a per-row failure increments
+                // $error and adds a $skipped[] entry then `continue`s to the
+                // next row, instead of aborting the entire import.
+                $studentSaved = false;
+                try {
+                    $studentSaved = (bool) $this->fs->saveStudent($studentId, $studentData);
+                } catch (\Exception $e) {
+                    log_message('error', "SIS import saveStudent failed for {$studentId}: " . $e->getMessage());
+                }
+                if (!$studentSaved) {
+                    $skipped[] = "Row " . ($success + $error + count($skipped) + 1) . ": {$studentName} — Firestore save failed (see log)";
+                    $error++;
+                    continue;
+                }
 
                 $phone = trim($rowData['Phone Number'] ?? '');
                 if ($phone !== '') {
@@ -3179,19 +3647,33 @@ class Sis extends MY_Controller
                 $this->_update_student_index($school_name, $studentId, $studentName, $className, $section, 'Active', trim($rowData['Gender'] ?? ''));
 
                 // Initialize Month Fee markers as unpaid (0) for all 12 months
+                // SIS Wave-2 fix F5 (2026-05-31): fail-loud guard per row.
+                // Pre-fix, a Firestore failure here was logged but the loop
+                // continued — row counted as $success while student doc had
+                // no monthFee. Current ordering already places this BEFORE
+                // Firebase Auth at L3336+, so a per-row skip cleanly aborts
+                // before any Auth/sync side-effect (Option-3 intent achieved
+                // without reorder — current code is already correct).
+                $classKey   = $className;   // Already prefixed ("Class 8th")
+                $sectionKey = $section;    // Already prefixed ("Section A")
+                $studentFeePath = "Schools/{$school_name}/{$session_year}/{$classKey}/{$sectionKey}/Students/{$studentId}";
+                $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
+                $monthFeeInit = [];
+                foreach ($months as $m) {
+                    $monthFeeInit[$m] = 0;
+                }
+                $monthFeeOk = false;
                 try {
-                    $classKey   = $className;   // Already prefixed ("Class 8th")
-                    $sectionKey = $section;    // Already prefixed ("Section A")
-                    $studentFeePath = "Schools/{$school_name}/{$session_year}/{$classKey}/{$sectionKey}/Students/{$studentId}";
-                    $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
-                    $monthFeeInit = [];
-                    foreach ($months as $m) {
-                        $monthFeeInit[$m] = 0;
-                    }
                     // Firestore-only per no-RTDB policy.
-                    $this->fs->updateEntity('students', $studentId, ['monthFee' => $monthFeeInit]);
+                    $monthFeeOk = (bool) $this->fs->updateEntity('students', $studentId, ['monthFee' => $monthFeeInit]);
                 } catch (Exception $e) {
                     log_message('error', "SIS import fee init failed for {$studentId}: " . $e->getMessage());
+                }
+                if (!$monthFeeOk) {
+                    $skipped[] = "Row " . ($success + $error + count($skipped) + 1)
+                        . ": {$studentName} — monthFee init failed (see log); student doc remains without fee tracking";
+                    $error++;
+                    continue;
                 }
 
                 // Auto-assign class fees for imported student
@@ -3243,25 +3725,30 @@ class Sis extends MY_Controller
                 }
 
                 // Create Firebase Auth user (best-effort, don't block import on failure)
-                try {
-                    $authEmail = Firebase::authEmail($studentId);
-                    $this->firebase->createFirebaseUser($authEmail, $password, [
-                        'uid'         => $studentId,
-                        'displayName' => $studentName,
-                    ]);
-                    $this->firebase->setFirebaseClaims($studentId, [
-                        'role'          => 'student',
-                        'school_id'     => $this->school_id,
-                        'school_code'   => $this->school_code,
-                        'parent_db_key' => $this->parent_db_key,
-                    ]);
-                } catch (Exception $e) {
-                    log_message('error', "SIS import Firebase Auth create failed for {$studentId}: " . $e->getMessage());
-                }
+                // SIS Wave-3 D3 (2026-05-31): consolidated via _createFirebaseAuthStudent.
+                // Return value intentionally ignored — import_students's pre-fix
+                // behavior was silent-continue per row on Auth failure. Each row
+                // becomes a separate Auth attempt; one row's failure doesn't
+                // abort the rest of the import (matches B2 per-row pattern).
+                $this->_createFirebaseAuthStudent($studentId, $password, $studentName, 'SIS import_students');
 
                 // Firestore sync for Android apps (entity_sync loaded in constructor)
-                $this->entity_sync->syncStudent($studentId, $studentData);
-                $this->entity_sync->syncParent($studentId, $studentData);
+                // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+                if (!$this->entity_sync->syncStudent($studentId, $studentData)) {
+                    log_message('warning', "syncStudent returned false for {$studentId} (import_students)");
+                }
+                if (!$this->entity_sync->syncParent($studentId, $studentData)) {
+                    log_message('warning', "syncParent returned false for {$studentId} (import_students)");
+                }
+
+                // SIS Tier 2 carry (2026-05-30): emit ADMISSION history entry
+                // mirroring save_admission@536. Without this, students imported
+                // via the bulk-Excel path had no ADMISSION row in their History
+                // array (forensic-documented gap).
+                $this->_log_history($school_id, $studentId, 'ADMISSION',
+                    "Student admitted to {$className} / {$section} ({$session_year})",
+                    ['class' => $className, 'section' => $section, 'session' => $session_year]
+                );
 
                 $success++;
             }
@@ -3399,11 +3886,11 @@ class Sis extends MY_Controller
         $combinedClassPath = "{$classKey}/{$sectionKey}";
 
         if ($this->input->method() !== 'post') {
-            // Read additional subjects and exempted fees from student doc
+            // Read additional subjects from student doc.
             $data['additional_subjects'] = $existing['additionalSubjects'] ?? $existing['Additional Subjects'] ?? [];
-            $data['selected_exempted_fees'] = $existing['exemptedFees'] ?? $existing['Exempted Fees'] ?? [];
-            if (!is_array($data['selected_exempted_fees'])) $data['selected_exempted_fees'] = [];
-            $data['exemptedFees'] = $this->fs->schoolList('feeStructures');
+            // Fees Exemption v2 (P0-b): the legacy exemption-checkbox feed was
+            // removed (kept fee-head NAMES nowhere — see save_admission comment).
+            // Concessions are now managed via Fee_concessions screen.
 
             $classNumKey = null;
             if (preg_match('/\d+/', $existing['Class'] ?? '', $m)) $classNumKey = (int)$m[0];
@@ -3563,24 +4050,48 @@ class Sis extends MY_Controller
         }
         $updateData['additionalSubjects'] = $additionalSubjects;
 
-        // Exempted fees
-        $exemptedFeesData = [];
-        if (!empty($post['exempted_fees_multiple']) && is_array($post['exempted_fees_multiple'])) {
-            foreach ($post['exempted_fees_multiple'] as $fee) {
-                $fee = trim($fee);
-                if ($fee !== '') $exemptedFeesData[$fee] = "";
-            }
-        }
-        $updateData['exemptedFees'] = $exemptedFeesData;
+        // Fees Exemption v2 (P0-b): the exempted_fees_multiple edit-write was
+        // removed. Concessions are captured via Fee_concessions (Phase 0+),
+        // applied by the unified generator (Phase 2+). Edit billing unchanged.
 
         $this->fs->updateEntity('students', $userId, $updateData);
+
+        // SIS Wave-2 fix H1 (2026-05-31): emit PROFILE_UPDATE history entry,
+        // mirroring the canonical pattern from Sis::update_profile@736-771.
+        // Pre-fix, edit_student persisted comprehensive profile edits to
+        // Firestore but emitted no audit entry, leaving zero forensic trail
+        // for compliance reviews. Diff computed against $existing (loaded at
+        // L3499 via _getStudent). Skip 'updatedAt' (timestamp churn) and
+        // camelCase mirrors (the L3624-3669 aliasing block duplicates
+        // Title-Case keys for the Android apps — including both would
+        // double-count every change). Use === for type-safe comparison.
+        $auditDiff = [];
+        foreach ($updateData as $auditKey => $newVal) {
+            if ($auditKey === 'updatedAt') continue;
+            if ($auditKey === '' || ctype_lower($auditKey[0])) continue;
+            $oldVal = $existing[$auditKey] ?? null;
+            if ($oldVal === $newVal) continue;
+            $auditDiff[$auditKey] = ['old' => $oldVal, 'new' => $newVal];
+        }
+        if (!empty($auditDiff)) {
+            $changedKeys = array_keys($auditDiff);
+            $this->_log_history($school_id, $userId, 'PROFILE_UPDATE',
+                "Profile updated: " . implode(', ', $changedKeys),
+                ['fields' => $changedKeys, 'changes' => $auditDiff]
+            );
+        }
 
         // RTDB mirror removed per no-RTDB policy.
 
         // Entity sync: update student in Firestore (Android apps)
         try {
-            $this->entity_sync->syncStudent($userId, $updateData);
-            $this->entity_sync->syncParent($userId, $updateData);
+            // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+            if (!$this->entity_sync->syncStudent($userId, $updateData)) {
+                log_message('warning', "syncStudent returned false for {$userId} (edit_student)");
+            }
+            if (!$this->entity_sync->syncParent($userId, $updateData)) {
+                log_message('warning', "syncParent returned false for {$userId} (edit_student)");
+            }
         } catch (\Exception $e) { log_message('error', "entity_sync syncStudent failed for {$userId}: " . $e->getMessage()); }
 
         $response = ['status' => 'success', 'message' => 'Student updated successfully'];
@@ -3777,9 +4288,23 @@ class Sis extends MY_Controller
         $rawExempted = $studentData['exemptedFees'] ?? $studentData['Exempted Fees'] ?? [];
         $exemptedFees = is_array($rawExempted) ? $rawExempted : [];
 
-        $discountData = $studentData['Discount'] ?? $studentData['discount'] ?? null;
-        $totalDiscount   = isset($discountData['totalDiscount'])   ? (float)$discountData['totalDiscount']   : 0;
-        $currentDiscount = isset($discountData['currentDiscount']) ? (float)$discountData['currentDiscount'] : 0;
+        // 2026-06-02: Firestore-only — read the canonical
+        // studentDiscounts/{schoolId}_{userId} doc that Fees::submit_discount,
+        // Fees::set_student_discount, and Fee_management::apply_discount all
+        // write to. The legacy embedded students.{id}.Discount path was
+        // verified to have zero active writers + zero readers + zero
+        // production data across all tenants (audit 2026-05-29..2026-06-02)
+        // and is no longer kept as a fallback per the Firestore-only
+        // convergence policy. Field map: canonical onDemandDiscount -> view's
+        // "Current Discount"; canonical totalDiscount -> view's "Total".
+        // Legacy PascalCase 'OnDemandDiscount' is still tolerated for any
+        // doc written by Fee_management::apply_discount before Fix #3
+        // landed; with zero such docs in production it's a no-op today.
+        $discountDoc = $this->fs->get('studentDiscounts', "{$this->fs->schoolId()}_{$userId}");
+        $totalDiscount   = is_array($discountDoc) ? (float) ($discountDoc['totalDiscount'] ?? 0) : 0;
+        $currentDiscount = is_array($discountDoc)
+            ? (float) ($discountDoc['onDemandDiscount'] ?? $discountDoc['OnDemandDiscount'] ?? 0)
+            : 0;
 
         $feesJson = $this->_getFees($class, $section);
         $feesData = json_decode($feesJson, true);
@@ -4593,6 +5118,26 @@ class Sis extends MY_Controller
         if ($sectionRaw === '') $sectionRaw = 'A';
         $section = Firestore_service::sectionKey($sectionRaw);
 
+        // SIS Tier-1 fix B6 (2026-05-31): destination fee-structure pre-flight,
+        // mirroring the promotion guard at Sis.php:965-974 (BUG-076 Part 2-A).
+        // Without this check, an enrollment whose destination class/section
+        // has no feeStructure doc — or has one with empty feeHeads — would
+        // proceed: student doc saved, Firebase Auth created, SMS dispatched,
+        // CRM marked enrolled. Then assignInitialFees would silently return
+        // [] and the student would land Active-with-zero-demands. Block here,
+        // before any Firestore write or Auth side-effect, so the operator can
+        // set up the fee structure first and retry the enrollment.
+        $destFeeStructDocId = "{$school_name}_{$session}_{$className}_{$section}";
+        $destFeeStruct      = $this->fs->get('feeStructures', $destFeeStructDocId);
+        if (!is_array($destFeeStruct) || empty($destFeeStruct['feeHeads'])) {
+            return $this->json_error(
+                "No fee structure exists for {$className} / {$section} in session "
+                . "{$session}. Enrollment aborted to prevent the student being "
+                . "created without fee demands. Set up the fee structure for this "
+                . "class/section in session {$session} first, then retry."
+            );
+        }
+
         $combinedPath = "{$className}/{$section}";
         $formattedDOB = !empty($app['dob']) ? date('d-m-Y', strtotime($app['dob'])) : '';
         $now = date('Y-m-d H:i:s');
@@ -4635,7 +5180,26 @@ class Sis extends MY_Controller
         ];
 
         // Firestore-only per no-RTDB policy.
-        try { $this->fs->saveStudent($studentId, $studentData); } catch (\Exception $e) { log_message('error', "Firestore saveStudent failed for {$studentId}: " . $e->getMessage()); }
+        // SIS Tier-1 fix B1 (2026-05-31): saveStudent must be fail-loud.
+        // Pre-fix, a Firestore failure here was logged but the enrollment
+        // continued — admin saw success while parent had no profile, the
+        // Firebase Auth account was orphaned, no fee demands were
+        // generated, and the CRM application was marked enrolled despite
+        // no underlying student record. We now abort immediately and
+        // surface the error so admin can retry cleanly; downstream Auth
+        // creation, fee assignment, sync, and ADMISSION history are all
+        // skipped, so no orphan side-effect can be left behind.
+        // saveStudent returns bool; an exception is treated as a false
+        // return so a single guard covers both failure modes.
+        $studentSaved = false;
+        try {
+            $studentSaved = (bool) $this->fs->saveStudent($studentId, $studentData);
+        } catch (\Exception $e) {
+            log_message('error', "Firestore saveStudent failed for {$studentId}: " . $e->getMessage());
+        }
+        if (!$studentSaved) {
+            return $this->json_error('Failed to create student profile in database. Please retry. If the issue persists, contact support.');
+        }
 
         $phone = trim($app['phone'] ?? '');
         if ($phone !== '') {
@@ -4653,10 +5217,25 @@ class Sis extends MY_Controller
         $this->_update_student_index($school_name, $studentId, $app['student_name'] ?? '', $className, $section, 'Active', $gender);
 
         // Initialize Month Fee markers as unpaid (0) for all 12 months
+        // SIS Wave-2 fix F5 (2026-05-31): fail-loud guard. Pre-fix, a
+        // Firestore failure here was logged but enrollment continued —
+        // student doc + CRM marker + Auth + SMS all proceeded against a
+        // student with no monthFee. Current ordering already places this
+        // BEFORE Firebase Auth at L4835+, so a fail-here abort cleanly
+        // avoids orphan-Auth side-effects (Option-3 intent achieved
+        // without reorder — current code is already correct).
         $months = ['April','May','June','July','August','September','October','November','December','January','February','March'];
         $monthFeeData = array_fill_keys($months, 0);
-        // Firestore-only per no-RTDB policy.
-        try { $this->fs->updateEntity('students', $studentId, ['monthFee' => $monthFeeData]); } catch (\Exception $e) { log_message('error', "Firestore dual-write monthFee failed for {$studentId}: " . $e->getMessage()); }
+        $monthFeeOk = false;
+        try {
+            // Firestore-only per no-RTDB policy.
+            $monthFeeOk = (bool) $this->fs->updateEntity('students', $studentId, ['monthFee' => $monthFeeData]);
+        } catch (\Exception $e) {
+            log_message('error', "Firestore dual-write monthFee failed for {$studentId}: " . $e->getMessage());
+        }
+        if (!$monthFeeOk) {
+            return $this->json_error('Failed to initialize fee tracking for student. Please retry. CRM application has NOT been marked enrolled; no Firebase Auth account was created.');
+        }
 
         $history = $app['history'] ?? [];
         $history[] = ['action'=>"Enrolled as {$studentId} in {$className} {$section}",'by'=>$this->admin_name,'timestamp'=>$now];
@@ -4673,30 +5252,18 @@ class Sis extends MY_Controller
         // retry. Enrollment side effects (Firestore docs, fees) stay in
         // place — admin can re-run a "create auth account" repair flow
         // if needed (Phase A2 will add that).
-        $authCreated = false;
-        $authError   = '';
-        try {
-            $password = $studentData['Password'] ?? '';
-            if ($password === '') {
-                throw new \RuntimeException('Generated password is empty.');
-            }
-            $authEmail = Firebase::authEmail($studentId);
-            $this->firebase->createFirebaseUser($authEmail, $password, [
-                'uid'         => $studentId,
-                'displayName' => $app['student_name'] ?? '',
-            ]);
-            $this->firebase->setFirebaseClaims($studentId, [
-                'role'          => 'student',
-                'school_id'     => $this->school_id,
-                'school_code'   => $this->school_code,
-                'parent_db_key' => $this->parent_db_key,
-            ]);
-            $authCreated = true;
-            log_message('info', "SIS enroll: Firebase Auth user created for {$studentId} (email={$authEmail}).");
-        } catch (Exception $e) {
-            $authError = $e->getMessage();
-            log_message('error', "SIS enroll Firebase Auth create failed for {$studentId}: {$authError}");
-        }
+        // SIS Wave-3 D3 (2026-05-31): consolidated via _createFirebaseAuthStudent.
+        // Preserved behavior: captures result into $authCreated + $authError
+        // for the existing json_success response below (which surfaces the
+        // failure state to the operator — but does NOT abort enrollment).
+        // The B3 issue (success-when-auth-fails) is intentionally preserved;
+        // its fix is Tier-2 territory paired with this consolidation.
+        // Note: $password is sourced from $studentData (set at L4905+);
+        // the helper's empty-password guard handles the corner case the
+        // pre-fix block guarded inline.
+        $authResult  = $this->_createFirebaseAuthStudent($studentId, $studentData['Password'] ?? '', $app['student_name'] ?? '', 'SIS enroll');
+        $authCreated = (bool) $authResult['success'];
+        $authError   = (string) $authResult['error'];
 
         // Phase A Part 1 — fire SMS with login credentials immediately
         // after a successful Firebase Auth creation. Skipped if Auth
@@ -4738,8 +5305,22 @@ class Sis extends MY_Controller
         }
 
         // Firestore sync for Android apps (entity_sync loaded in constructor)
-        $this->entity_sync->syncStudent($studentId, $studentData);
-        $this->entity_sync->syncParent($studentId, $studentData);
+        // SIS Wave-2 S6 (2026-05-31): observability for sync return.
+        if (!$this->entity_sync->syncStudent($studentId, $studentData)) {
+            log_message('warning', "syncStudent returned false for {$studentId} (enroll_student)");
+        }
+        if (!$this->entity_sync->syncParent($studentId, $studentData)) {
+            log_message('warning', "syncParent returned false for {$studentId} (enroll_student)");
+        }
+
+        // SIS Tier 2 carry (2026-05-30): emit ADMISSION history entry
+        // mirroring save_admission@536. Without this, students enrolled via
+        // the CRM-approval path had no ADMISSION row in their History array
+        // (forensic-documented gap, 7/9 students at SCH_D94FE8F7AD missing).
+        $this->_log_history($school_id, $studentId, 'ADMISSION',
+            "Student admitted to {$className} / {$section} ({$session})",
+            ['class' => $className, 'section' => $section, 'session' => $session]
+        );
 
         // Response carries the credentials separately from the user-
         // facing message so the JS can show a clean toast AND a
@@ -4757,6 +5338,125 @@ class Sis extends MY_Controller
             'message'      => $authCreated
                 ? "Enrolled as {$studentId} in {$className} / {$section}." . ($smsSent ? ' Login credentials sent via SMS.' : '')
                 : "Enrolled as {$studentId} but parent login is NOT ready — Firebase Auth account creation failed. Error: {$authError}",
+        ]);
+    }
+
+    /**
+     * SIS Tier-2 fix B3 (post-soak 2026-06-01): retry Firebase Auth
+     * creation for a student whose original enrollment left an
+     * orphan-Auth row (enroll_student returned json_success with
+     * auth_created=false because Firebase Auth creation failed but
+     * the student profile + fee assignments succeeded).
+     *
+     * Pre-fix: operator saw the warning modal but had no in-app
+     * repair flow — only tech-support escalation could create the
+     * missing Auth account. This endpoint re-runs the same
+     * _createFirebaseAuthStudent helper used at enrollment, with no
+     * password rotation, no operator override, and no auto-notify
+     * (operator hand-delivers credentials from the json_success
+     * payload).
+     *
+     * Q-decisions locked 2026-05-31:
+     *   Q1 Option 1 — helper call only, no getFirebaseUserByEmail
+     *      pre-check (deferred Option 2)
+     *   Q2 MANAGE_ROLES gate (parity with change_status)
+     *   Q3 NO force-rotate — does NOT set mustChangePassword
+     *   Q4 Reuse stored password silently — no operator override
+     *   Q5 No auto-notify — silent JSON-only return
+     *   Q7 Password exposed in json_success (parity with
+     *      enroll_student credentials panel)
+     *
+     * Idempotent retry semantics inherited from
+     * _createFirebaseAuthStudent: on duplicate email Kreait throws,
+     * Firebase::createFirebaseUser silently catches and returns null,
+     * setFirebaseClaims then idempotently overwrites the 4-key
+     * claim set, helper returns success=true honestly.
+     *
+     * Known carry per Q-pre-4: the AUTH_REPAIR audit entry lands in
+     * legacy students.History map (not studentHistory collection)
+     * until History Canonicalization ships as Slot 4. Visible in
+     * admin History UI; invisible to studentHistory-only readers.
+     *
+     * POST  /sis/repair_auth  OR  /admission_crm/repair_auth
+     *   user_id (required)
+     *
+     * Returns json_success with credentials-panel shape mirroring
+     * enroll_student, OR json_error on any pre-flight failure or
+     * helper-reported Auth-create failure.
+     */
+    public function repair_student_auth()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'sis_repair_auth');
+
+        if (strtolower((string) $this->input->method()) !== 'post') {
+            return $this->json_error('POST required.');
+        }
+
+        $userId = trim((string) $this->input->post('user_id', TRUE));
+        if ($userId === '') {
+            return $this->json_error('user_id is required.');
+        }
+        if (!$this->safe_path_segment($userId)) {
+            return $this->json_error('Invalid user_id.');
+        }
+
+        $student = $this->_getStudent($userId);
+        if (!is_array($student) || empty($student)) {
+            return $this->json_error('Student not found.');
+        }
+
+        $status = (string) ($student['Status'] ?? $student['status'] ?? '');
+        if (in_array($status, ['Withdrawn', 'Inactive'], true)) {
+            return $this->json_error(
+                'Cannot repair Auth for a withdrawn/inactive student.'
+            );
+        }
+
+        // Q4: reuse stored password silently. Q3: no force-rotate.
+        // Fallback chain: students.{id}.Password → _generatePassword
+        // (Name, DOB) for legacy rows missing Password (pre-B1 rows).
+        // If both empty we abort rather than write an empty-password
+        // Auth account (which the helper would reject anyway).
+        $password = (string) ($student['Password'] ?? '');
+        if ($password === '') {
+            $password = $this->_generatePassword(
+                (string) ($student['Name'] ?? ''),
+                (string) ($student['DOB'] ?? $student['dob'] ?? '')
+            );
+        }
+        if ($password === '') {
+            return $this->json_error(
+                'No password available to retry: student record has no stored password and Name/DOB are missing.'
+            );
+        }
+
+        $displayName = (string) ($student['Name'] ?? $userId);
+        $result = $this->_createFirebaseAuthStudent(
+            $userId,
+            $password,
+            $displayName,
+            'SIS repair'
+        );
+        if (!($result['success'] ?? false)) {
+            return $this->json_error(
+                'Failed to repair Firebase Auth account: ' . ($result['error'] ?? 'unknown error')
+            );
+        }
+
+        $school_id = $this->parent_db_key;
+        $this->_log_history(
+            $school_id,
+            $userId,
+            'AUTH_REPAIR',
+            'Firebase Auth account repaired by ' . ($this->admin_name ?? 'system'),
+            ['context' => 'SIS repair']
+        );
+
+        return $this->json_success([
+            'user_id'      => $userId,
+            'password'     => $password,
+            'auth_created' => true,
+            'message'      => "Firebase Auth account repaired for {$userId}.",
         ]);
     }
 
@@ -5142,22 +5842,63 @@ class Sis extends MY_Controller
 
     private function _getFees($className, $section)
     {
-        // Read fee structure from Firestore (docId includes session)
+        // Read fee structure from Firestore (docId includes session).
         $feeDocId = $this->fs->sectionDocId($className, $section);
         $feeDoc = $this->fs->get('feeStructures', $feeDocId);
-        $feesData = $feeDoc['heads'] ?? $feeDoc ?? [];
-        if (!empty($feesData) && is_array($feesData)) {
-            $formattedFees = [];
-            $monthlyTotals = [];
-            foreach ($feesData as $month => $fees) {
-                if (is_array($fees)) {
-                    $formattedFees[$month] = $fees;
-                    $monthlyTotals[$month] = array_sum($fees);
+        if (!is_array($feeDoc) || empty($feeDoc)) {
+            return json_encode(["fees"=>[],"monthlyTotals"=>[]]);
+        }
+
+        $formattedFees = [];
+
+        // Canonical 2026+ schema: a flat `feeHeads` array, each item
+        // carrying { name, amount, frequency: 'monthly'|'annual' }.
+        // Project monthly heads across the 12 academic-year months
+        // (Apr–Mar) and bucket annual heads under the "Yearly Fees"
+        // key, so the existing student-profile view — which expects
+        // a { 'Yearly Fees' | <MonthName> => { title => amount } }
+        // map — renders correctly without any view changes.
+        if (!empty($feeDoc['feeHeads']) && is_array($feeDoc['feeHeads'])) {
+            $months = ['April','May','June','July','August','September',
+                       'October','November','December','January','February','March'];
+            foreach ($feeDoc['feeHeads'] as $head) {
+                if (!is_array($head)) continue;
+                $name = trim((string)($head['name'] ?? ''));
+                if ($name === '') continue;
+                $amt  = (float)($head['amount'] ?? 0);
+                $freq = strtolower((string)($head['frequency'] ?? 'monthly'));
+                if ($freq === 'annual' || $freq === 'yearly') {
+                    $formattedFees['Yearly Fees'][$name] = $amt;
+                } else {
+                    foreach ($months as $m) {
+                        $formattedFees[$m][$name] = $amt;
+                    }
                 }
             }
-            return json_encode(["fees"=>$formattedFees,"monthlyTotals"=>$monthlyTotals,"overallTotal"=>array_sum($monthlyTotals)]);
+        } else {
+            // Pre-2026 legacy shape: heads.<Month>.<Title> = amount, or
+            // the same map at the doc root. Retained so a school that
+            // hasn't yet been migrated to the feeHeads schema still
+            // renders.
+            $feesData = $feeDoc['heads'] ?? $feeDoc;
+            if (is_array($feesData)) {
+                foreach ($feesData as $month => $fees) {
+                    if (is_array($fees)) {
+                        $formattedFees[$month] = $fees;
+                    }
+                }
+            }
         }
-        return json_encode(["fees"=>[],"monthlyTotals"=>[]]);
+
+        $monthlyTotals = [];
+        foreach ($formattedFees as $month => $row) {
+            $monthlyTotals[$month] = array_sum(array_map('floatval', $row));
+        }
+        return json_encode([
+            "fees"          => $formattedFees,
+            "monthlyTotals" => $monthlyTotals,
+            "overallTotal"  => array_sum($monthlyTotals),
+        ]);
     }
 
     private function _getSundays($year, $month)

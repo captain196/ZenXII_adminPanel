@@ -353,7 +353,9 @@ class Academic extends MY_Controller
         try {
             $fsDocId = "{$this->school_id}_{$session}";
             $settings = $this->firebase->firestoreGet('timetableSettings', $fsDocId);
-        } catch (\Exception $e) {}
+        } catch (\Exception $e) {
+            log_message('error', 'Academic::get_subject_assignments timetableSettings Firestore read failed: ' . $e->getMessage());
+        }
         if (!is_array($settings)) $settings = [];
         $periodsPerDay = (int) ($settings['No_of_periods'] ?? 0);
         $workingDays = isset($settings['Working_days']) && is_array($settings['Working_days'])
@@ -417,7 +419,9 @@ class Academic extends MY_Controller
         $settings = null;
         try {
             $settings = $this->firebase->firestoreGet('timetableSettings', "{$this->school_id}_{$session}");
-        } catch (\Exception $e) {}
+        } catch (\Exception $e) {
+            log_message('error', 'Academic::save_subject_assignments timetableSettings Firestore read failed: ' . $e->getMessage());
+        }
         if (!is_array($settings)) $settings = [];
         $periodsPerDay = (int) ($settings['No_of_periods'] ?? 0);
         $workingDays = isset($settings['Working_days']) && is_array($settings['Working_days'])

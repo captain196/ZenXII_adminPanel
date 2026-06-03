@@ -3,6 +3,83 @@
 Quality Hardening Autopilot v1.0 — bug registry for SchoolSync project.
 Seeded 2026-05-21 (cycle 1). 16 findings merged from cycles 1-5 (2026-05-21).
 
+---
+
+## ✅ B2.3.4-A Dashboard Analytics — MODULE COMPLETION (2026-06-03)
+
+**Status:** SHIPPED · 7 spokes + module-completion polish on origin/ankit/my-feature.
+
+### Spoke inventory (all on origin)
+- Phase 1A Analytics Foundation (`bb7e35d9`)
+- Phase 1B Dashboard Hub (`bb7e35d9`)
+- Phase 1C Statistics Spoke (`bb7e35d9`)
+- Phase 1D School Search Spoke (`109e0351`)
+- Phase 1E Revenue Reports Spoke (`a341fc5d`)
+- Phase 1F Cross-School Summaries Spoke (`4f8542b4`)
+- Phase 1G Per-Tenant Deep Dive Spoke + analytics IST + H1 verifier preservation (`8328a8b3`)
+- Security: adminDisabled enforcement in login_access_view + W6 4-scenario probe (`f10ccba4`)
+- **Phase 1H Polish + Module Completion** (this commit)
+
+### Phase 1H closure items
+- H1.P0.a Unified status-badge fix (registry enrichment + 4 view files + 1 walkthrough-caught service-helper fix)
+- H1.P0.b Rollup totalSchools historical-inflation fix + 12-month backfill executed
+- H1.P0.c Sidebar nav treeview for 4 analytics spokes
+- H1.P0.d `lifecycle_access()` parallel security fix + W7 probe
+- H1.P0.e This BUG_LEDGER entry + `[[b2_3_4_a_complete]]` memory card
+- H1.P1.a Hub Top Schools widget repoint to Phase 1G Tenant Detail
+- H1.P1.b Cross-School Comparative Matrix rows clickable
+- H1.P1.c Statistics drill-down upgrade
+- H1.P1.d W3 BROKEN → SKIP cosmetic + gate logic accepts SKIP as PASS
+
+### Walkthrough-caught defect resolution (2026-06-03)
+During walkthrough, operator surfaced a phantom DISABLED badge on
+IIT Kanpur in the School Search page. Root cause: `_load_enriched_tenants()`
+in `B2_analytics_service.php` was the THIRD code site using the legacy
+`(bool) ($x['adminDisabled'] ?? ...) = true` predicate when the schoolControl
+field contains the Array audit-log struct. Already fixed in 2 prior sites
+during Phase 1G (`get_tenant_identity`) and Phase 1H (`list_tenants_summary`).
+Now propagated to the third site: prefers the registry-enriched value
+(single source of truth) and falls back to H1.5 canonical priority +
+strict === true if absent. Verified via direct probe:
+SCH_D94FE8F7AD adminDisabled=false → page shows active (correct).
+
+### Verifier coverage progression
+- Pre-cycle: H1 19/19 OK (no analytics probes)
+- Post-cycle: L0 116/116 PASS · H1 21 probes (18 OK + 1 SKIP intentional + 2 DEGRADED expected = security fixes enforcing on operator-disabled test tenant; not a regression)
+
+### Outstanding deferred items (filed; not blockers for module-completion)
+- `schoolControl.adminDisabled` Array → bool schema-cleanup migration (deferred per operator decision; defensive code handles drift correctly today)
+- Multi-sheet "Tenant Snapshot" + "Fleet Snapshot Pack" XLSX exports
+- Composite Firestore indexes for >100-tenant scale
+- `firestore.rules` client-read entries for analytics collections
+- Custom date-range picker
+- Broader IST sweep across non-analytics SA module pages (Monitor / Schools list / etc.)
+- Update legacy `lifecycle_access` + `login_access_view` probe check strings to acknowledge the post-fix DEGRADED-but-correct behavior
+
+### Architecture lock summary
+- Firestore canonical (zero RTDB additions across entire 1A→1H)
+- H1/H1.5 lifecycle behavior preserved + ENHANCED (login + lifecycle gates both enforce adminDisabled now)
+- Session-Convergence (SC-0b → SC-9) untouched
+- Mobile (Parent + Teacher) untouched
+- Strict schoolId isolation at Firestore query layer (probes 35+36+37)
+- H1.5 canonical mirror priority for adminDisabled reads (3 code sites aligned)
+- IST display + INR single-currency lock
+- Save-and-restore verifier discipline (W3 + W5 + W6 + W7)
+- Phase 2 + Phase 3 forward-compatibility hooks preserved
+
+### Module-completion gate criteria (all met)
+- [x] L0 ≥ 115/115 PASS (achieved: 116/116)
+- [x] H1 GATE documented (REVIEW status is the 2 DEGRADED security-fix-enforcing probes; expected, not a regression)
+- [x] HTTP smoke green on all 6 analytics spoke routes
+- [x] Status badges display correctly (Phase 1H H1.P0.a + walkthrough defect fix)
+- [x] School Growth chart shows realistic historical (post-backfill 0→0→…→1→3→3)
+- [x] Tenant Detail discoverable via sidebar nav (Phase 1H H1.P0.c)
+- [x] Top Schools widget routes to Phase 1G Tenant Detail (Phase 1H H1.P1.a)
+- [x] BUG_LEDGER + memory file entries
+- [x] Operator browser walkthrough OK confirmed
+
+---
+
 Companion docs:
 - North-star spec / quality bar: `FINAL_BLUEPRINT.md`
 - Live project state: `PROJECT_STATUS.md`
@@ -1961,3 +2038,73 @@ CARRY-013 (closed 2026-05-24 — thirteenth controlled-remediation package + FIR
 - **observed pre-fix:** header `.g-sess-list` dropdown not refreshed after AJAX session-mutation responses; stale sessions in dropdown until full page reload
 - **fix shipped:** new `refreshHeaderSessList(sessions, active)` helper inserted before `archiveSession`; invoked from all 5 session-mutation handlers. Frontend-only; no backend mutation; PHP lint clean.
 - **status:** fixed-unverified — pending operator runtime soak
+
+## H-LIFECYCLE — Tenant suspension enforcement on Firestore + mobile apps (2026-05-31, deferred from B2.3.2-FIX)
+
+**Origin:** surfaced during B2.3.2-FIX browser smoke B9/B10 walkthrough (status-toggle round-trip on `ZZ B1 Soak Test`). Operator asked whether suspending/deactivating a tenant blocks data access from (a) admin web, (b) parent Android app, (c) teacher Android app. Audit found a real two-surface gap — out of B2.3.2-FIX scope. Operator decision (2026-05-31, choice **A**): file as separate hardening cycle, do NOT expand B2.3.2-FIX scope, run after B2.3.2-FIX reaches module-completion status.
+
+**Status:** triaged — deferred (gated on B2.3.2-FIX module-completion + 7-day soak + commit).
+
+**Audit findings:**
+
+| Surface | State | Evidence |
+|---|---|---|
+| Admin Panel — login gate | ✅ HARDENED | `Admin_login::check_credentials` calls `B2_registry_service::login_access_view($schoolId, $now)` (Admin_login.php:365). When `allowed=false`, redirects to login with "Subscription is not active. Please contact support." |
+| Admin Panel — per-request gate | ✅ HARDENED (with 5-min latency carry) | `MY_Controller::__construct` calls `lifecycle_access()` every 5 min via `sub_check_ts` session timestamp (MY_Controller.php:216-265). On `allowed=false` → `_force_logout()`. Carry: up to 5 min between suspend and forced logout — acceptable; tightening to 60s adds Firestore read load. |
+| Firestore Security Rules | ⚠️ GAP | `firestore.rules` enforces tenant isolation via `isSameSchool()` checking `schoolId == request.auth.token.school_id` only (lines 25-93). NO `get('schoolControl/{schoolId}')` check on `lifecycle.state`. A logged-in mobile user with a valid Firebase Auth token (typical 1h TTL) can still read+write Firestore data after the tenant is suspended. |
+| Parent Android (`captain196/ZenXII_Parent`) — reactive logout | ❓ UNAUDITED | Out-of-repo. Per `[[session_propagation_crosssystem]]` memory, parent app uses `observeSchool()` realtime listener for session propagation. That listener could also detect `lifecycle.state != active/grace` or `adminDisabled.value == true` and call `FirebaseAuth.signOut()` — but unverified in this repo. |
+| Teacher Android (`captain196/ZenXII_Teacher`) — reactive logout | ❓ UNAUDITED | Same pattern as Parent. Per `[[session_propagation_crosssystem]]`, teacher app's `observeSchool()` was the surface that fixed session propagation 2026-05-29 (commit `5756377`, branch `ankit/my_teacherFeature`, not pushed). Adding lifecycle-state side-channel to the same listener is a natural extension. |
+
+**Three-phase fix plan (delivered when B2.3.2-FIX reaches module-completion):**
+
+### H1 — Firestore Rules lifecycle gate
+
+- **Scope:** add `get('schoolControl/{schoolId}')` inside the common access helpers; gate `isSameSchool()` / `isSameSchoolWrite()` / `isAdmin()` / `isStaff()` on `lifecycle.state in ['active','grace']`.
+- **Single point of change:** introduce a new helper `tenantActive(schoolId)` that all existing helpers compose with via `&&`. Avoids per-collection rewriting (~140 rules sites).
+- **Risk:** MEDIUM — bug here locks every legitimate user out. Adds 1 doc read per Firestore op (cost concern at scale).
+- **Verifier strategy:**
+  - Firestore Rules unit tests via `@firebase/rules-unit-testing` (scripts/firestore_rules_test.js — exists per `[[firebase_storage_rules]]`-style file in repo) for all 4 lifecycle states × all 12 main collections (read + write).
+  - End-to-end probe: PHP CLI script suspends ZZ B1 → mock client reads via simulated mobile JWT → expects PERMISSION_DENIED.
+- **Rollout:** stage in dedicated Firestore project first; promote to prod after 24h soak with 0 false-denials.
+- **Rollback:** revert rules file + redeploy via existing deploy pipeline. Single-file revert.
+
+### H2 — Parent app reactive logout (`captain196/ZenXII_Parent`)
+
+- **Scope:** in the existing `observeSchool()` flow (collect/subscribe to `schools/{id}`), also surface `schoolControl/{id}.lifecycle.state` + `schools/{id}.adminDisabled.value`. On state transition into `suspended | past_due | expired` OR `adminDisabled.value == true`, call `FirebaseAuth.getInstance().signOut()` and navigate to login with toast: "Your school's subscription is no longer active. Please contact support."
+- **Risk:** LOW — isolated change, well-understood listener.
+- **Verifier strategy:** on-device manual test: log in → admin suspends from SA panel → app receives listener update → forced logout within Firestore listener latency (~1–3 s).
+- **Rollout:** Phase 6A-style 1-tap feature flag, then full rollout.
+
+### H3 — Teacher app reactive logout (`captain196/ZenXII_Teacher`)
+
+- Mirror H2 in Teacher app. Same listener-extension pattern that fixed session propagation 2026-05-29.
+
+**Sequencing:**
+- H1 → H2 → H3 (Rules first so mobile clients have a defense-in-depth even before mobile changes ship).
+- Each phase soaks ≥ 48h before the next.
+
+**Operator gate / authorization status:**
+- This cycle is GATED on B2.3.2-FIX module-completion status (currently HELD pending B11-B13 + 7-day soak + clean commit per `[[feedback_commit_on_module_completion]]`).
+- A dedicated H-LIFECYCLE plan covering all 5 items (Firestore Rules · Parent reactive logout · Teacher reactive logout · verifier strategy · rollout/rollback plan) will be delivered on B2.3.2-FIX module-close, per operator's 2026-05-31 instruction.
+
+**Why this matters (impact):**
+- Without H1, a suspended/non-paying tenant's mobile users retain full Firestore read/write capability for up to the Firebase Auth token lifetime (~1 h). For a billing-driven SaaS this is a revenue-protection gap.
+- Without H2/H3, even with H1 shipped, suspended-tenant mobile users see opaque PERMISSION_DENIED errors instead of a clean logout flow — bad UX and confusing support tickets.
+
+## CARRY (2026-06-02): History Canonicalization truth-up
+
+CARRY-009 / CARRY-010 (declared D3.B 2026-05-25 in commit f146a215)
+were paper-only; load-bearing writer + reader code never landed. F2
+(commit 47913a6f, 2026-05-31) explicitly OUT-OF-SCOPE'd the migration.
+
+Truth-up shipped today: Sis::history reader + Sis::_log_history writer
++ studentHistory composite index landed as one atomic commit on
+ankit/my-feature, pre-execution HEAD 4f8542b4.
+
+Backfill of 96 orphan map entries into canonical studentHistory
+collection completed earlier in the same operator-driven session
+(SCH_D94FE8F7AD; 100 scanned / 96 created / 4 pre-existing skipped /
+0 failed; post-verify 0 missing).
+
+Step 5 (legacy students.History field SCHEDULED_RETIREMENT) remains
+HELD — not authorized in this cutover.

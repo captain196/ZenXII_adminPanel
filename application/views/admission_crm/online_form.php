@@ -186,7 +186,7 @@ $displayName = $profile['display_name'] ?? $school_name;
         <button onclick="location.reload()"><i class="fa-solid fa-plus" style="margin-right:6px;"></i> Submit Another</button>
     </div>
 
-    <div class="of-footer">Powered by SchoolX ERP</div>
+    <div class="of-footer">Powered by ZenXii ERP</div>
 </div>
 
 <script>

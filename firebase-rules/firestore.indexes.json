@@ -779,6 +779,25 @@
       ]
     },
     {
+      "_comment": "History Canonicalization (2026-06-02): Sis::history admin UI reader. Required for firestoreQuery('studentHistory', [['schoolId','==',X],['studentId','==',Y]], 'changed_at', 'DESC'). Without this composite index Firestore returns FAILED_PRECONDITION on first query, breaking admin History page immediately at cutover.",
+      "collectionGroup": "studentHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "changed_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "galleryAlbums",
       "queryScope": "COLLECTION",
       "fields": [
@@ -1198,6 +1217,91 @@
       "fields": [
         { "fieldPath": "schoolId", "order": "ASCENDING" },
         { "fieldPath": "session",  "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "B2.2-F (2026-05-30): tenantAudit per-tenant timeline",
+      "collectionGroup": "tenantAudit",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "ts",       "order": "DESCENDING" }
+      ]
+    },
+    { "_comment": "B2.2-F (2026-05-30): payments per-tenant history",
+      "collectionGroup": "payments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "date",     "order": "DESCENDING" }
+      ]
+    },
+    { "_comment": "B2.2-F (2026-05-30): payments per-invoice breakdown",
+      "collectionGroup": "payments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "invoiceId", "order": "ASCENDING" },
+        { "fieldPath": "date",      "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "B2.2-F (2026-05-30): subscriptions per-tenant history",
+      "collectionGroup": "subscriptions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",    "order": "ASCENDING" },
+        { "fieldPath": "periodStart", "order": "DESCENDING" }
+      ]
+    },
+    { "_comment": "B2.2-F (2026-05-30): invoices per-tenant history",
+      "collectionGroup": "invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",    "order": "ASCENDING" },
+        { "fieldPath": "invoiceDate", "order": "DESCENDING" }
+      ]
+    },
+    { "_comment": "B2.2-F (2026-05-30): schoolControl fleet by lifecycle.state + nextDueDate",
+      "collectionGroup": "schoolControl",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "lifecycle.state",            "order": "ASCENDING"  },
+        { "fieldPath": "billingSummary.nextDueDate", "order": "ASCENDING"  }
+      ]
+    },
+    { "_comment": "B2.2-F (2026-05-30): schoolControl fleet by adminDisabled.value",
+      "collectionGroup": "schoolControl",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "adminDisabled.value", "order": "ASCENDING"  },
+        { "fieldPath": "lifecycle.computedAt","order": "DESCENDING" }
+      ]
+    },
+    { "_comment": "Fees Exemption v2 (Phase 0): studentConcessions per student, active first",
+      "collectionGroup": "studentConcessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",    "order": "ASCENDING"  },
+        { "fieldPath": "studentId",   "order": "ASCENDING"  },
+        { "fieldPath": "status",      "order": "ASCENDING"  },
+        { "fieldPath": "effectiveFrom","order": "DESCENDING" }
+      ]
+    },
+    { "_comment": "Fees Exemption v2 (Phase 0): studentConcessions by session for generation reads",
+      "collectionGroup": "studentConcessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",     "order": "ASCENDING"  },
+        { "fieldPath": "session",      "order": "ASCENDING"  },
+        { "fieldPath": "status",       "order": "ASCENDING"  }
+      ]
+    },
+    { "_comment": "Fees Exemption v2 (Phase 0): studentServiceEnrollments per student, active first",
+      "collectionGroup": "studentServiceEnrollments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",     "order": "ASCENDING"  },
+        { "fieldPath": "studentId",    "order": "ASCENDING"  },
+        { "fieldPath": "status",       "order": "ASCENDING"  },
+        { "fieldPath": "effectiveFrom","order": "DESCENDING" }
       ]
     }
   ],

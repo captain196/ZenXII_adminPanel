@@ -399,13 +399,63 @@ function clearSelection() {
     updateBulkBar();
 }
 
+// SIS Tier-1 fix B7 (2026-05-31): typed-confirmation modal replaces the
+// bare native confirm() that was too easy to misclick. A single
+// reflexive OK could mark an entire class Inactive. Operator must now
+// type DELETE (uppercase) to enable the destructive button. Cancel is
+// the default; overlay-click aborts. No backend gate added — the
+// per-student DELETED audit at Sis.php:3665 already captures the
+// audit trail; this is purely an operator-intent-confirmation safeguard.
+function _bulkDeleteConfirmModal(count, sampleNames) {
+    return new Promise(function (resolve) {
+        var overlay = document.createElement('div');
+        overlay.id = '_sis_bulkdel_overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.65);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
+        var panel = document.createElement('div');
+        panel.style.cssText = 'background:#fff;border-radius:10px;max-width:520px;width:100%;box-shadow:0 20px 50px rgba(0,0,0,0.3);overflow:hidden;font-family:inherit;';
+        panel.innerHTML =
+            '<div style="background:#fef2f2;color:#991b1b;padding:14px 20px;border-bottom:1px solid #fecaca;font-weight:700;font-size:15px;">' +
+                '<i class="fa fa-exclamation-triangle" style="margin-right:8px;"></i>Confirm bulk delete</div>' +
+            '<div style="padding:18px 20px;font-size:13.5px;line-height:1.55;color:#1f2937;">' +
+                '<p>You are about to delete <b style="color:#b91c1c;">' + count + '</b> student(s):</p>' +
+                '<p style="margin:8px 0 12px;color:#4b5563;">' + sampleNames + '</p>' +
+                '<p style="margin-top:14px;">Type <b style="font-family:monospace;background:#f3f4f6;padding:2px 6px;border-radius:4px;">DELETE</b> below to confirm:</p>' +
+                '<input id="_sis_bulkdel_input" type="text" autocomplete="off" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;font-family:monospace;margin-top:6px;box-sizing:border-box;">' +
+            '</div>' +
+            '<div style="padding:12px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;gap:10px;">' +
+                '<button type="button" id="_sis_bulkdel_cancel" style="padding:8px 16px;border-radius:6px;border:1px solid #d1d5db;background:#fff;color:#374151;font-weight:500;cursor:pointer;">Cancel</button>' +
+                '<button type="button" id="_sis_bulkdel_confirm" disabled style="padding:8px 16px;border-radius:6px;border:0;background:#9ca3af;color:#fff;font-weight:600;cursor:not-allowed;">Delete</button>' +
+            '</div>';
+        overlay.appendChild(panel);
+        document.body.appendChild(overlay);
+        var input = document.getElementById('_sis_bulkdel_input');
+        var btn = document.getElementById('_sis_bulkdel_confirm');
+        function close(decision) {
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            resolve(decision);
+        }
+        input.focus();
+        input.addEventListener('input', function () {
+            var ok = (input.value === 'DELETE');
+            btn.disabled = !ok;
+            btn.style.background = ok ? '#dc2626' : '#9ca3af';
+            btn.style.cursor = ok ? 'pointer' : 'not-allowed';
+        });
+        document.getElementById('_sis_bulkdel_cancel').addEventListener('click', function () { close(false); });
+        btn.addEventListener('click', function () { if (!btn.disabled) close(true); });
+        overlay.addEventListener('click', function (e) { if (e.target === overlay) close(false); });
+    });
+}
+
 // FIXED: sequential delete with proper error handling (was parallel fire-and-forget)
 async function bulkDelete() {
     var checked = document.querySelectorAll('.row-cb:checked');
     if (checked.length === 0) return;
     var names = Array.from(checked).map(cb => cb.dataset.name).slice(0, 5).join(', ');
     if (checked.length > 5) names += '... and ' + (checked.length - 5) + ' more';
-    if (!confirm('Delete ' + checked.length + ' student(s)?\n' + names)) return;
+    // SIS Tier-1 fix B7 (2026-05-31): typed-confirmation safeguard.
+    var ok = await _bulkDeleteConfirmModal(checked.length, names);
+    if (!ok) return;
 
     var ids = Array.from(checked).map(cb => cb.value);
     var succeeded = 0, failed = 0, errors = [];

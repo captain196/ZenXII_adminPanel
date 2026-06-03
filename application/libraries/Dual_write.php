@@ -467,15 +467,23 @@ class Dual_write
                 'section'    => $toSection,
                 'sectionKey' => Firestore_service::buildSectionKey($toClass, $toSection),
                 'status'     => 'Active',
+                // BUG-053 fix 2026-05-25: propagate target session to syncStudent so cross-session
+                // promote lands at $toSession. Pairs with BUG-052 caller-precedence in
+                // Entity_firestore_sync::syncStudent which now picks $data['session'].
+                'session'    => $toSession,
             ]);
             if ($this->writeToFirestore('syncStudent', [$userId, $fsData], $idemKey)) {
                 $result['moved'][] = $userId;
             } else {
-                // The Firestore write was queued for retry on inline
-                // failure; we still count this student as moved at
-                // the user-visible level (the queue will reconcile).
-                // If even the queue push fails, _enqueue logs it.
-                $result['moved'][] = $userId;
+                // BUG-054 fix 2026-05-25: properly classify failures. Pre-fix this
+                // branch pushed to moved[] anyway with the rationale "queue will
+                // reconcile" — but the RTDB-based retry queue is post-R7 disabled,
+                // so failures here are SILENT data loss (student stays at old
+                // class/section/session without any caller-visible signal).
+                // Honest classification: failed writes go to failed[]; caller
+                // (Sis::execute_promotion) renders skipped[] back to UI per BUG-055.
+                $result['failed'][] = $userId;
+                $this->_log('error', "batchMoveStudents: syncStudent write failed for {$userId} (returning failure to caller for UI surfacing)");
             }
         }
 

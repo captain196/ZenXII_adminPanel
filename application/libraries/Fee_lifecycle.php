@@ -180,6 +180,164 @@ class Fee_lifecycle
      *
      * @return array  List of fee-head names that were generated.
      */
+    /**
+     * Build the demand specs that admission/promotion would emit for this
+     * (student, class, section) — WITHOUT committing. Pure builder (no
+     * Firestore writes). Extracted from assignInitialFees in Phase 1 of the
+     * Fees Exemption v2 work so the unified generator (Fee_generation_service)
+     * can call the same builder and produce byte-identical output for the
+     * zero-concession case.
+     *
+     * Returns: [
+     *   'specs'      => array<commitDemandBatch-entry>  ← what to write
+     *   'assigned'   => array<head-name>                ← unique fee heads with amt>0
+     *   'chartFound' => bool                            ← false iff feeStructure absent
+     * ]
+     *
+     * Exceptions propagate to the caller (assignInitialFees keeps its outer
+     * try/catch). DOES NOT change behavior of assignInitialFees — proven by
+     * the Phase-1 A/B verification probe before any P2 flag flip.
+     */
+    public function buildAdmissionDemandSpecs(
+        string $studentId,
+        string $class,
+        string $section
+    ): array {
+        $assigned     = [];
+        $batchEntries = [];
+
+        // BUG-075 fix (2026-05-26): pre-read existing demands to detect
+        // already-paid demand-ids. Re-running against a previously-visited
+        // class (reverse-promote, rollover) MUST NOT overwrite paidAmount/
+        // balance/status on demands that already carry a payment — the
+        // deterministic demandId formula collides when feeHeadIds match
+        // between source and target class structures, and Firestore
+        // merge=true SET would silently reset the paid state.
+        $existingDemands = [];
+        try {
+            foreach ($this->_demandsFor($studentId) as $did => $d) {
+                $existingDemands[$did] = $d;
+            }
+        } catch (\Throwable $_) {
+            $existingDemands = [];
+        }
+
+        // BUG-045 Phase 1 B2+B3 (2026-05-25): merged read (B3) wrapped in
+        // request-level cache (B2). Saves 1 RPC/student + (N-1) more when
+        // all N students share a target class/section.
+        $merged   = $this->_cachedFeeStructureWithIds($class, $section);
+        $chart    = $merged['chart'];
+        $headIds  = $merged['headIds'];
+        if (empty($chart)) {
+            return ['specs' => [], 'assigned' => [], 'chartFound' => false];
+        }
+
+        $stu = $this->_studentDoc($studentId);
+        $studentName = (string) ($stu['name'] ?? $stu['studentName'] ?? $studentId);
+
+        $now = date('c');
+
+        // BUG-045 Phase 2 (2026-05-25): collect-then-batch — caller emits
+        // a single :commit batched write via Fee_firestore_txn::commitDemandBatch
+        // with per-doc fallback. This builder produces the spec list only.
+        foreach ($chart as $monthOrYearly => $heads) {
+            if (!is_array($heads) || empty($heads)) continue;
+            foreach ($heads as $headName => $amount) {
+                $amt = (float) $amount;
+                if ($amt <= 0) continue;
+
+                $isYearly  = ($monthOrYearly === 'Yearly Fees');
+                $headId    = (string) ($headIds[$headName] ?? '');
+
+                // One demand per academic month for monthly heads; a single
+                // April bucket for yearly heads — matches the Phase-2.5 generator.
+                $targetMonths = $isYearly ? ['April'] : [$monthOrYearly];
+                if ($isYearly && $monthOrYearly !== 'Yearly Fees') continue;
+
+                foreach ($targetMonths as $m) {
+                    $year       = in_array($m, ['January','February','March'], true)
+                                ? ((int) substr($this->sessionYear, 0, 4) + 1)
+                                : (int) substr($this->sessionYear, 0, 4);
+                    $periodKey  = sprintf('%04d-%02d', $year, $this->_monthNum($m));
+                    $periodLbl  = $isYearly
+                        ? "Yearly Fees {$this->sessionYear}"
+                        : "{$m} {$year}";
+                    $demandId   = $this->_demandId($studentId, $periodKey, $headId, $headName);
+
+                    // BUG-075 fix (2026-05-26): preserve paid state on
+                    // re-write — see comment block above.
+                    $prior = $existingDemands[$demandId] ?? null;
+                    $preservePayment = $prior !== null && (
+                        in_array((string)($prior['status'] ?? ''), ['paid','partial'], true)
+                        || (float)($prior['paidAmount'] ?? 0) > 0
+                    );
+
+                    $entryData = [
+                        'studentId'    => $studentId,
+                        'studentName'  => $studentName,
+                        'className'    => $class,
+                        'section'      => $section,
+                        'feeHead'      => $headName,
+                        'feeHeadId'    => $headId,
+                        'frequency'    => $isYearly ? 'yearly' : 'monthly',
+                        'period'       => $periodLbl,
+                        'periodKey'    => $periodKey,
+                        'grossAmount'  => $amt,
+                        'netAmount'    => $amt,
+                        'createdAt'    => $now,
+                        'createdBy'    => $this->adminId,
+                    ];
+                    if (!$preservePayment) {
+                        $entryData['paidAmount'] = 0.0;
+                        $entryData['balance']    = $amt;
+                        $entryData['status']     = 'unpaid';
+                    }
+
+                    $batchEntries[] = [
+                        'op'       => 'write',
+                        'demandId' => $demandId,
+                        'data'     => $entryData,
+                    ];
+                }
+                if (!in_array($headName, $assigned, true)) $assigned[] = $headName;
+            }
+        }
+
+        return ['specs' => $batchEntries, 'assigned' => $assigned, 'chartFound' => true];
+    }
+
+    /**
+     * Phase 2 router: route through Fee_generation_service when the flag is
+     * on (concession-aware), else call buildAdmissionDemandSpecs directly
+     * (byte-identical to legacy / Phase 1 state). On any flag-read failure
+     * the legacy path is taken — fail-safe.
+     */
+    private function _routedBuildAdmissionSpecs(string $studentId, string $class, string $section): array
+    {
+        $useUnified = false;
+        $CI = function_exists('get_instance') ? get_instance() : null;
+        try {
+            if ($CI !== null && isset($CI->config)) {
+                $CI->config->load('fees_exemption_v2_flags', true);
+                $useUnified = (bool) $CI->config->item('USE_UNIFIED_FEE_GEN', 'fees_exemption_v2_flags');
+            }
+        } catch (\Throwable $_) {
+            $useUnified = false;
+        }
+
+        if (!$useUnified || $CI === null) {
+            return $this->buildAdmissionDemandSpecs($studentId, $class, $section);
+        }
+
+        if (!isset($CI->concessionReader)) $CI->load->library('Fee_concession_reader',         null, 'concessionReader');
+        if (!isset($CI->enrollmentReader)) $CI->load->library('Fee_service_enrollment_reader', null, 'enrollmentReader');
+        if (!isset($CI->genSvc))           $CI->load->library('Fee_generation_service',        null, 'genSvc');
+        $CI->concessionReader->init($this->firebase);
+        $CI->enrollmentReader->init($this->firebase);
+        $CI->genSvc->init($this, $CI->concessionReader, $CI->enrollmentReader, $this->schoolName, $this->sessionYear);
+        return $CI->genSvc->generateDemandsForStudent($studentId, $class, $section);
+    }
+
     public function assignInitialFees(
         string $studentId,
         string $class,
@@ -188,131 +346,18 @@ class Fee_lifecycle
     ): array {
         $assigned = [];
         try {
-            // BUG-075 fix (2026-05-26): pre-read existing demands to detect
-            // already-paid demand-ids. Re-running assignInitialFees against
-            // a previously-visited class (reverse-promote, rollover) MUST
-            // NOT overwrite paidAmount/balance/status on demands that
-            // already carry a payment — the deterministic demandId formula
-            // collides with prior demands when feeHeadIds match between
-            // source and target class structures, and Firestore merge=true
-            // SET would silently reset the paid state. Best-effort read:
-            // an empty map on failure falls back to current (pre-fix)
-            // behavior of unconditional payment defaults — no regression
-            // beyond pre-fix state.
-            $existingDemands = [];
-            try {
-                foreach ($this->_demandsFor($studentId) as $did => $d) {
-                    $existingDemands[$did] = $d;
-                }
-            } catch (\Throwable $_) {
-                $existingDemands = [];
-            }
+            // Phase 2 router: USE_UNIFIED_FEE_GEN gates the concession-aware
+            // path; flag off = byte-identical to Phase 1 (proven 9/9 A/B).
+            $built = $this->_routedBuildAdmissionSpecs($studentId, $class, $section);
 
-            // BUG-045 Phase 1 B2+B3 (2026-05-25): use merged read (B3) wrapped
-            // in request-level cache (B2). Saves 1 RPC/student (B3 dedup) +
-            // (N-1) more RPCs when all N students promote into same target
-            // class/section (B2 cache hits).
-            $merged   = $this->_cachedFeeStructureWithIds($class, $section);
-            $chart    = $merged['chart'];
-            $headIds  = $merged['headIds'];
-            if (empty($chart)) {
+            if (!$built['chartFound']) {
                 log_message('info', "Fee_lifecycle::assignInitialFees — no Firestore feeStructure for [{$class}/{$section}] student [{$studentId}]");
                 return [];
             }
 
-            $stu = $this->_studentDoc($studentId);
-            $studentName = (string) ($stu['name'] ?? $stu['studentName'] ?? $studentId);
+            $batchEntries = $built['specs'];
+            $assigned     = $built['assigned'];
 
-            $now = date('c');
-            // The demand generator in Phase 2.5 iterates chart months and
-            // writes one demand per (student, month, feeHead). We reuse
-            // that exact contract so every app already subscribed to
-            // feeDemands starts seeing this student's demands instantly.
-            $months = ['April','May','June','July','August','September',
-                       'October','November','December','January','February','March'];
-
-            // BUG-045 Phase 2 (2026-05-25): collect-then-batch pattern.
-            // Pre-fix wrote one Firestore PATCH per (month, feeHead) inside
-            // the loop = ~36 RPCs per student. Now we accumulate all demand
-            // payloads and emit a single :commit batched write per student.
-            // Fallback to per-doc writes if commit fails so semantics stay
-            // identical for callers that depended on partial-progress on
-            // commit-failure (rare).
-            $batchEntries = [];
-            foreach ($chart as $monthOrYearly => $heads) {
-                if (!is_array($heads) || empty($heads)) continue;
-                foreach ($heads as $headName => $amount) {
-                    $amt = (float) $amount;
-                    if ($amt <= 0) continue;
-
-                    $isYearly  = ($monthOrYearly === 'Yearly Fees');
-                    $headId    = (string) ($headIds[$headName] ?? '');
-
-                    // Build one demand per academic month for monthly
-                    // heads; a single April bucket for yearly heads to
-                    // match the Phase 2.5 generator.
-                    $targetMonths = $isYearly ? ['April'] : [$monthOrYearly];
-                    if ($isYearly && $monthOrYearly !== 'Yearly Fees') continue;
-
-                    foreach ($targetMonths as $m) {
-                        $year       = in_array($m, ['January','February','March'], true)
-                                    ? ((int) substr($this->sessionYear, 0, 4) + 1)
-                                    : (int) substr($this->sessionYear, 0, 4);
-                        $periodKey  = sprintf('%04d-%02d', $year, $this->_monthNum($m));
-                        $periodLbl  = $isYearly
-                            ? "Yearly Fees {$this->sessionYear}"
-                            : "{$m} {$year}";
-                        $demandId   = $this->_demandId($studentId, $periodKey, $headId, $headName);
-
-                        // BUG-075 fix (2026-05-26): detect existing payment
-                        // state and exclude payment fields from the merge
-                        // payload so they survive the re-write. Fresh demands
-                        // still get current defaults (unchanged behavior).
-                        // Existing paid/partial demands skip the payment-state
-                        // fields — Firestore merge=true then preserves their
-                        // paidAmount/balance/status from the prior write.
-                        $prior = $existingDemands[$demandId] ?? null;
-                        $preservePayment = $prior !== null && (
-                            in_array((string)($prior['status'] ?? ''), ['paid','partial'], true)
-                            || (float)($prior['paidAmount'] ?? 0) > 0
-                        );
-
-                        $entryData = [
-                            'studentId'    => $studentId,
-                            'studentName'  => $studentName,
-                            'className'    => $class,
-                            'section'      => $section,
-                            'feeHead'      => $headName,
-                            'feeHeadId'    => $headId,
-                            'frequency'    => $isYearly ? 'yearly' : 'monthly',
-                            'period'       => $periodLbl,
-                            'periodKey'    => $periodKey,
-                            'grossAmount'  => $amt,
-                            'netAmount'    => $amt,
-                            'createdAt'    => $now,
-                            'createdBy'    => $this->adminId,
-                        ];
-                        // Only emit payment-state defaults for FRESH demands.
-                        // Existing paid/partial demands keep their paidAmount/
-                        // balance/status (preserved by Firestore merge=true
-                        // because the fields are absent from the payload).
-                        if (!$preservePayment) {
-                            $entryData['paidAmount'] = 0.0;
-                            $entryData['balance']    = $amt;
-                            $entryData['status']     = 'unpaid';
-                        }
-
-                        $batchEntries[] = [
-                            'op'       => 'write',
-                            'demandId' => $demandId,
-                            'data'     => $entryData,
-                        ];
-                    }
-                    if (!in_array($headName, $assigned, true)) $assigned[] = $headName;
-                }
-            }
-
-            // BUG-045 Phase 2: single batched commit (was ~36 PATCHes per student).
             if (!empty($batchEntries)) {
                 if (!$this->fsTxn->commitDemandBatch($batchEntries)) {
                     log_message('warning', "Fee_lifecycle::assignInitialFees commitDemandBatch failed for [{$studentId}]; falling back to per-doc writes");
@@ -446,7 +491,17 @@ class Fee_lifecycle
         } catch (\Throwable $e) {
             log_message('error', "Fee_lifecycle::reassignFeesOnPromotion failed [{$studentId}]: " . $e->getMessage());
         }
-        return ['archived' => $archived, 'preserved' => $preserved];
+        // SIS Tier-1 fix B5 (2026-05-31): expose $regenCount in the return so
+        // the promotion caller can detect the silent-zero-regenerated case
+        // (destination structure deleted between Sis::execute_promotion's
+        // upfront guard at L967 and this per-student call). Existing fields
+        // preserved — sole caller is Sis::execute_promotion deferred handler
+        // (grep-verified). Additive change; no other consumer breaks.
+        return [
+            'archived'    => $archived,
+            'preserved'   => $preserved,
+            'regenerated' => $regenCount ?? 0,
+        ];
     }
 
     // ═════════════════════════════════════════════════════════════════

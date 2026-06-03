@@ -171,6 +171,7 @@
                 class="fm-btn fm-btn-success" onclick="saveUpdatedFees()" disabled>
             <i class="fa fa-save"></i> Save All Fees
         </button>
+        <?php $type = 'legacy-gen'; include APPPATH . 'views/_concession_awareness_badge.php'; ?>
     </div>
 
 </div><!-- /.fm-wrap -->
@@ -522,6 +523,26 @@ function saveUpdatedFees() {
         showToast('Please select a class and section first.', 'error');
         return;
     }
+
+    /* Fees v2 smart-confirm — UI-only guard. When the feature is off
+       (default pre-cutover), this resolves true immediately. When on,
+       it warns the operator if there are active concessions in the
+       school that the legacy chart-save will not apply. */
+    if (window.feesV2 && typeof window.feesV2.confirmLegacyGen === 'function') {
+        window.feesV2.confirmLegacyGen({
+            scope:        'school',
+            label:        'Save Chart',
+            proceedLabel: 'Save anyway',
+            cancelLabel:  'Cancel'
+        }).then(function (ok) {
+            if (ok) _doSaveUpdatedFees(cls, sec);
+        });
+        return;
+    }
+    _doSaveUpdatedFees(cls, sec);
+}
+
+function _doSaveUpdatedFees(cls, sec) {
 
     var allMonths = [
         'April','May','June','July','August','September',

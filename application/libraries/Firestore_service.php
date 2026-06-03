@@ -771,7 +771,27 @@ class Firestore_service
 
         // Always write these identity/status fields (Android SchoolDoc expects them)
         $doc['schoolCode']      = $this->schoolCode;
-        $doc['currentSession']  = $this->session;
+
+        // SC-Step1 (Session Convergence — 2026-06-02): DEMOTE currentSession
+        // write to "write only if absent" per Q7 verdict. saveSchool is a
+        // profile-save operation, not a session lifecycle operation. The
+        // pre-Step-1 unconditional write caused the 2026-05-31 07:54 NULL
+        // clobber incident. Active session changes flow exclusively through
+        // School_config::set_active_session (sole canonical writer).
+        // Defensive seed retained for legacy/new tenants without explicit
+        // active-session set.
+        try {
+            $existing = $this->firebase->firestoreGet('schools', $this->schoolId);
+            if (!is_array($existing) || empty($existing['currentSession'])) {
+                $doc['currentSession'] = $this->session;  // defensive seed
+            }
+            // else: populated — DO NOT include currentSession in $doc (preserve canonical)
+        } catch (\Exception $e) {
+            log_message('error',
+                "SC-Step1: Firestore_service::saveSchool currentSession DEMOTE read failed for {$this->schoolId}: " . $e->getMessage());
+            // Conservative: do NOT include currentSession on read failure (fail-safe)
+        }
+
         $doc['status']          = $data['status'] ?? 'active';
 
         return $this->set(self::SCHOOLS, $this->schoolId, $doc, true);
