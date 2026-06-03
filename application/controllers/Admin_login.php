@@ -166,6 +166,22 @@ class Admin_login extends CI_Controller
             redirect('admin_login');
         }
 
+        // [S-06] Per-account lockout enforcement (Firestore-canonical).
+        // Wave C follow-up (2026-06-03): _record_admin_account_fail writes
+        // lockedUntil to adminAuthState/{adminId} after ACCT_MAX_FAILS, but
+        // the original cutover (ae605392) did not read/enforce it here.
+        // This block blocks the Firebase Auth call while a lockout window
+        // is in force, mirroring the IP-rate-limit gate above.
+        if ($this->_admin_account_locked($adminId, $now)) {
+            $this->sec_telem->emit('ADMIN_LOGIN_LOCKED', 'warning', [
+                'admin_id' => $adminId,
+                'ip'       => $ip,
+                'reason'   => 'still_locked',
+            ], ['type' => 'school_admin', 'id' => $adminId]);
+            $this->session->set_flashdata('error', 'Account locked. Please try again later.');
+            redirect('admin_login');
+        }
+
         // ══════════════════════════════════════════════════════════════
         //  WAVE C: Firebase-Auth-first admin login (sole credential authority).
         //  _try_firebase_admin_login() emits success + redirects on a valid
@@ -474,6 +490,30 @@ class Admin_login extends CI_Controller
     // ─────────────────────────────────────────────────────────────────────
     //  WAVE C: Firestore-canonical per-account lockout (replaces RTDB)
     // ─────────────────────────────────────────────────────────────────────
+    /**
+     * Per-account lockout check (Wave C follow-up — 2026-06-03).
+     *
+     * Reads adminAuthState/{adminId}.lockedUntil and returns true if it
+     * still resolves to a future timestamp. Used by check_credentials to
+     * block Firebase Auth sign-in while a lockout window is in force.
+     *
+     * Fail-open on Firestore read errors (don't lock honest users out
+     * of admin if Firestore is flaky) — mirrors _admin_ip_blocked.
+     */
+    private function _admin_account_locked(string $adminId, int $now): bool
+    {
+        try {
+            $doc = $this->firebase->firestoreGet(self::FS_ADMIN_AUTH_STATE, $this->_acct_doc_id($adminId));
+        } catch (\Throwable $e) {
+            return false; // fail-open
+        }
+        if (!is_array($doc)) return false;
+        $lockedUntilRaw = $doc['lockedUntil'] ?? null;
+        if (empty($lockedUntilRaw) || !is_string($lockedUntilRaw)) return false;
+        $lockedUntilTs = (int) strtotime($lockedUntilRaw);
+        return $lockedUntilTs > 0 && $lockedUntilTs > $now;
+    }
+
     /**
      * Record a failed admin login attempt. Returns true if this attempt
      * crossed the lockout threshold (caller emits ADMIN_LOGIN_LOCKED).
