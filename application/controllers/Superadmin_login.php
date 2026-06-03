@@ -178,122 +178,31 @@ class Superadmin_login extends CI_Controller
         // ══════════════════════════════════════════════════════════════
         //  PRIMARY: Auth API (MongoDB) — resolves school + role automatically
         // ══════════════════════════════════════════════════════════════
-        $this->load->library('auth_client');
-        $result = $this->auth_client->web_login($adminId, '', $password, $ip);
+        // ── Wave A (A2): Firebase-Auth-first SA login (flag-gated) ──
+        // Credential authority = Firebase Auth. _try_firebase_sa_login()
+        // emits success + exits on a valid developer-SA Firebase credential;
+        // otherwise it returns and we fall through to the legacy path below.
+        $this->config->load('sa_migration_flags', FALSE, TRUE);
+        $saFlags = $this->config->item('sa_migration_flags');
+        // Firebase Auth is the sole SA credential authority — no MongoDB / Auth API.
+        // _try_firebase_sa_login() emits the success response and exits on a valid,
+        // active developer-SA Firebase credential. If it returns, login failed.
+        $this->_try_firebase_sa_login($adminId, $password, $ip, $now);
 
-        if (!empty($result['unavailable'])) {
-            log_message('error', 'SA Login: Auth API unavailable');
-            $this->_json(['status' => 'error', 'message' => 'Authentication service is temporarily unavailable. Please try again shortly.']);
-            return;
-        }
-
-        if (empty($result['success'])) {
-            $this->_record_fail($ip, $now);
-            $locked = $this->_record_account_fail($adminId, $ip, $now);
-            $this->sec_telem->emit(
-                $locked ? 'SA_LOGIN_LOCKED' : 'SA_LOGIN_FAILED',
-                $locked ? 'warning' : 'info',
-                [
-                    'admin_id' => $adminId,
-                    'ip'       => $ip,
-                    'reason'   => 'invalid_credentials',
-                    'attempts' => $this->_acct_attempts($adminId),
-                ],
-                ['type' => 'superadmin', 'id' => $adminId]
-            );
-            $this->_json(['status' => 'error', 'message' => $result['message'] ?? 'Invalid credentials.']);
-            return;
-        }
-
-        // ── Extract user data from Auth API response ──────────────────────
-        $userData        = $result['user']            ?? [];
-        $firebaseProfile = $result['firebaseProfile'] ?? [];
-        $mongoRole       = $userData['role']           ?? '';
-
-        // Role check: ONLY project-level super_admin (company employees) can access SA panel
-        // school_super_admin users must use the admin panel — they manage ONE school, not all
-        $fbRole = $firebaseProfile['Role'] ?? '';
-        $isSuperAdmin = ($mongoRole === 'super_admin')
-                     || strtolower(trim($fbRole)) === 'super admin';
-
-        if (!$isSuperAdmin) {
-            $this->_record_fail($ip, $now);
-            $locked = $this->_record_account_fail($adminId, $ip, $now);
-            $this->sec_telem->emit(
-                $locked ? 'SA_LOGIN_LOCKED' : 'SA_LOGIN_ROLE_REJECTED',
-                'warning',
-                [
-                    'admin_id'     => $adminId,
-                    'ip'           => $ip,
-                    'mongo_role'   => $mongoRole,
-                    'fb_role'      => $fbRole,
-                    'attempts'     => $this->_acct_attempts($adminId),
-                    'lock_tripped' => $locked,
-                ],
-                ['type' => 'superadmin', 'id' => $adminId]
-            );
-            $this->_json(['status' => 'error', 'message' => 'Access denied. Super Admin role required.']);
-            return;
-        }
-
-        // Account status
-        $status = $firebaseProfile['Status'] ?? $userData['status'] ?? 'Active';
-        if ($status !== 'Active') {
-            $this->_json(['status' => 'error', 'message' => 'Account is inactive. Contact support.']);
-            return;
-        }
-
-        // ── Success ───────────────────────────────────────────────────────────
-        $this->_clear_fail($ip);
-        $this->_clear_account_fail($adminId);
-        $this->sec_telem->emit('SA_LOGIN_SUCCESS', 'info', [
-            'admin_id'      => $adminId,
-            'ip'            => $ip,
-            'mongo_role'    => $mongoRole,
-            'resolved_role' => ($mongoRole === 'super_admin') ? 'developer' : 'superadmin',
-        ], ['type' => 'superadmin', 'id' => $adminId]);
-
-        // Clear any school admin session data to prevent session bleed-through
-        $this->session->unset_userdata([
-            'admin_id', 'school_id', 'school_code', 'admin_role', 'admin_name',
-            'session', 'current_session', 'session_year', 'schoolName',
-            'school_display_name', 'school_features', 'available_sessions',
-            'subscription_expiry', 'subscription_grace_end', 'subscription_warning',
-            'sub_check_ts', 'login_csrf',
-        ]);
-
-        $this->session->sess_regenerate(TRUE);
-
-        // Resolve name, email, role from API response
-        $resolvedName  = (string) ($userData['name']  ?? $firebaseProfile['Name']  ?? $adminId);
-        $resolvedEmail = (string) ($userData['email'] ?? $firebaseProfile['Email'] ?? '');
-        $resolvedRole  = ($mongoRole === 'super_admin') ? 'developer' : 'superadmin';
-
-        $this->session->set_userdata([
-            'sa_id'    => $adminId,
-            'sa_name'  => $resolvedName,
-            'sa_role'  => $resolvedRole,
-            'sa_email' => $resolvedEmail,
-        ]);
-
-        // Update Firebase access history (best-effort)
-        $schoolCode = $userData['schoolCode'] ?? '';
-        $loginCode  = $userData['schoolId']   ?? '';
-        try {
-            if ($mongoRole === 'super_admin') {
-                $this->firebase->update("Users/Admin/Our Panel/{$adminId}", [
-                    'SA_LastLogin'   => date('Y-m-d H:i:s'),
-                    'SA_LastLoginIP' => $ip,
-                ]);
-            } elseif ($loginCode) {
-                $this->firebase->update("Users/Admin/{$loginCode}/{$adminId}/AccessHistory", [
-                    'SA_LastLogin'   => date('Y-m-d H:i:s'),
-                    'SA_LastLoginIP' => $ip,
-                ]);
-            }
-        } catch (Exception $e) { /* non-critical */ }
-
-        $this->_json(['status' => 'success', 'redirect' => base_url('superadmin/dashboard')]);
+        // Reached here means Firebase-Auth login did not succeed (bad credentials,
+        // or not an authorized/active developer SA). Record + return a clear message.
+        $this->_record_fail($ip, $now);
+        $locked = $this->_record_account_fail($adminId, $ip, $now);
+        $this->sec_telem->emit(
+            $locked ? 'SA_LOGIN_LOCKED' : 'SA_LOGIN_FAILED',
+            $locked ? 'warning' : 'info',
+            ['admin_id' => $adminId, 'ip' => $ip, 'reason' => 'firebase_auth_rejected', 'attempts' => $this->_acct_attempts($adminId)],
+            ['type' => 'superadmin', 'id' => $adminId]
+        );
+        $this->_json(['status' => 'error', 'message' => $locked
+            ? 'Too many failed attempts. Account locked for 30 minutes.'
+            : 'Invalid User ID or password.']);
+        return;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -399,39 +308,271 @@ class Superadmin_login extends CI_Controller
     // PRIVATE — Firebase-based rate limiting (no MySQL dependency)
     // ─────────────────────────────────────────────────────────────────────────
 
-    private function _ip_path(string $ip): string
+    // ─────────────────────────────────────────────────────────────────────────
+    // Wave A (A2) — Firebase-Auth-first developer-SA login.
+    // Credential authority: Firebase Auth (signInWithEmail). Authorization:
+    // RTDB Users/Admin/Our Panel/{id} Role=='Super Admin' (Firestore
+    // superAdmins backfill lands in Phase A1). On a valid SA credential this
+    // emits the success JSON and exits; otherwise it returns so the caller
+    // falls through to the legacy Auth API path.
+    // ─────────────────────────────────────────────────────────────────────────
+    private function _try_firebase_sa_login(string $adminId, string $password, string $ip, int $now): void
     {
-        return 'RateLimit/SA/' . str_replace(['.', ':'], '-', $ip);
+        $email  = Firebase::authEmail($adminId);
+        $signIn = $this->firebase->signInWithEmail($email, $password);
+        if ($signIn === null) {
+            return; // not a valid Firebase-Auth credential — fall through
+        }
+        $signedUid = $this->_signin_uid($signIn, $adminId);
+
+        // ── Authorization read (A2.1 dual-read when sa.authz_firestore=ON) ──
+        // Credential already verified above; this only resolves role/status +
+        // the session display fields. Firestore-first with RTDB fallback.
+        $saFlags = $this->config->item('sa_migration_flags');
+        $useFs   = is_array($saFlags) && !empty($saFlags['sa.authz_firestore']);
+
+        $authz = $this->_resolve_sa_authz($adminId, $signedUid, $useFs, $ip);
+        if ($authz === null) {
+            return; // authenticated but not a developer SA — fall through to legacy
+        }
+        if ($authz['allow'] !== true) {
+            $this->_json(['status' => 'error', 'message' => 'Account is inactive. Contact support.']);
+            return;
+        }
+
+        // Success — establish SA session (mirrors the legacy success path).
+        $this->_clear_fail($ip);
+        $this->_clear_account_fail($adminId);
+        $this->sec_telem->emit('SA_LOGIN_SUCCESS', 'info', [
+            'admin_id'      => $adminId,
+            'ip'            => $ip,
+            'auth_source'   => 'firebase',
+            'authz_source'  => $authz['source'],
+            'resolved_role' => 'developer',
+        ], ['type' => 'superadmin', 'id' => $adminId]);
+
+        $this->session->unset_userdata([
+            'admin_id', 'school_id', 'school_code', 'admin_role', 'admin_name',
+            'session', 'current_session', 'session_year', 'schoolName',
+            'school_display_name', 'school_features', 'available_sessions',
+            'subscription_expiry', 'subscription_grace_end', 'subscription_warning',
+            'sub_check_ts', 'login_csrf',
+        ]);
+        $this->session->sess_regenerate(TRUE);
+
+        $this->session->set_userdata([
+            'sa_id'    => $adminId,
+            'sa_name'  => $authz['name'] !== '' ? $authz['name'] : $adminId,
+            'sa_role'  => 'developer',
+            'sa_email' => $authz['email'],
+        ]);
+
+        $this->_write_sa_access_history($adminId, $ip, $useFs);
+
+        $this->_json(['status' => 'success', 'redirect' => base_url('superadmin/dashboard')]);
+    }
+
+    /** Extract the authenticated uid from the Kreait SignInResult (fallback: adminId). */
+    private function _signin_uid($signIn, string $adminId): string
+    {
+        try {
+            if (is_object($signIn) && method_exists($signIn, 'data')) {
+                $d = $signIn->data();
+                if (is_array($d) && !empty($d['localId'])) return (string) $d['localId'];
+            }
+        } catch (\Throwable $e) { /* fall through to default */ }
+        return $adminId;
+    }
+
+    /**
+     * Resolve SA login authorization (A2.1 dual-read).
+     * When $useFs: read Firestore superAdmins first; on doc-missing OR read
+     * error fall back to RTDB Users/Admin/Our Panel. Emits SA_AUTHZ_PATH /
+     * SA_AUTHZ_DIVERGENCE / SA_AUTHZ_DOC_MISSING. Returns null = "not a
+     * developer SA, fall through to legacy"; else ['allow','reason','name','email','source'].
+     */
+    private function _resolve_sa_authz(string $adminId, string $signedUid, bool $useFs, string $ip): ?array
+    {
+        $saFlags = $this->config->item('sa_migration_flags');
+        $strict  = is_array($saFlags) && !empty($saFlags['sa.authz_firestore_strict']);
+
+        // ── A2.3 strict: Firestore ONLY — no RTDB read, no fallback ──
+        if ($useFs && $strict) {
+            $fsDoc = null;
+            try { $fsDoc = $this->firebase->firestoreGet('superAdmins', $adminId); }
+            catch (\Throwable $e) { log_message('error', "SA authz firestore read failed for {$adminId}: " . $e->getMessage()); }
+            $this->sec_telem->emit('SA_AUTHZ_PATH', 'info', [
+                'admin_id' => $adminId, 'ip' => $ip, 'path' => 'firestore',
+                'reason' => is_array($fsDoc) ? 'doc' : 'no_doc', 'mode' => 'strict',
+            ], ['type' => 'superadmin', 'id' => $adminId]);
+            if (!is_array($fsDoc)) return null;
+            $fs = $this->_decide_from_fs($fsDoc, $signedUid);
+            if (!$fs['present'] || $fs['reason'] === 'role_mismatch' || $fs['reason'] === 'uid_mismatch') return null;
+            return ['allow' => $fs['allow'], 'reason' => $fs['reason'], 'name' => $fs['name'], 'email' => $fs['email'], 'source' => 'firestore'];
+        }
+
+        // RTDB decision (also the dual-read parity baseline).
+        $rtdb = $this->_decide_from_rtdb($this->firebase->get("Users/Admin/Our Panel/{$adminId}"));
+
+        if (!$useFs) {
+            if (!$rtdb['present'] || $rtdb['reason'] === 'role_mismatch') return null;
+            return ['allow' => $rtdb['allow'], 'reason' => $rtdb['reason'], 'name' => $rtdb['name'], 'email' => $rtdb['email'], 'source' => 'rtdb'];
+        }
+
+        // Firestore-first.
+        $fsDoc = null; $fsErr = false;
+        try {
+            $fsDoc = $this->firebase->firestoreGet('superAdmins', $adminId);
+        } catch (\Throwable $e) {
+            $fsErr = true;
+            log_message('error', "SA authz firestore read failed for {$adminId}: " . $e->getMessage());
+        }
+
+        if (is_array($fsDoc)) {
+            $fs = $this->_decide_from_fs($fsDoc, $signedUid);
+            if ($rtdb['present'] && $fs['present'] && $rtdb['allow'] !== $fs['allow']) {
+                $this->sec_telem->emit('SA_AUTHZ_DIVERGENCE', 'warning', [
+                    'admin_id' => $adminId, 'ip' => $ip,
+                    'rtdb_allow' => $rtdb['allow'], 'fs_allow' => $fs['allow'],
+                    'rtdb_reason' => $rtdb['reason'], 'fs_reason' => $fs['reason'],
+                ], ['type' => 'superadmin', 'id' => $adminId]);
+            }
+            $this->sec_telem->emit('SA_AUTHZ_PATH', 'info', [
+                'admin_id' => $adminId, 'ip' => $ip, 'path' => 'firestore', 'reason' => $fs['reason'],
+            ], ['type' => 'superadmin', 'id' => $adminId]);
+
+            if (!$fs['present'] || $fs['reason'] === 'role_mismatch' || $fs['reason'] === 'uid_mismatch') return null;
+            return ['allow' => $fs['allow'], 'reason' => $fs['reason'], 'name' => $fs['name'], 'email' => $fs['email'], 'source' => 'firestore'];
+        }
+
+        // Firestore doc missing OR read error → RTDB fallback.
+        if (!$fsErr) {
+            $this->sec_telem->emit('SA_AUTHZ_DOC_MISSING', 'warning', [
+                'admin_id' => $adminId, 'ip' => $ip,
+            ], ['type' => 'superadmin', 'id' => $adminId]);
+        }
+        $this->sec_telem->emit('SA_AUTHZ_PATH', 'warning', [
+            'admin_id' => $adminId, 'ip' => $ip, 'path' => 'rtdb_fallback',
+            'reason' => $fsErr ? 'firestore_unavailable' : 'doc_missing',
+        ], ['type' => 'superadmin', 'id' => $adminId]);
+
+        if (!$rtdb['present'] || $rtdb['reason'] === 'role_mismatch') return null;
+        return ['allow' => $rtdb['allow'], 'reason' => $rtdb['reason'], 'name' => $rtdb['name'], 'email' => $rtdb['email'], 'source' => 'rtdb_fallback'];
+    }
+
+    /** Normalise the RTDB Our Panel record into an authorization decision. */
+    private function _decide_from_rtdb($rec): array
+    {
+        if (!is_array($rec)) return ['present' => false, 'allow' => false, 'reason' => 'not_found', 'name' => '', 'email' => ''];
+        $name  = (string) ($rec['Name'] ?? ($rec['Profile']['name'] ?? ''));
+        $email = (string) ($rec['Email'] ?? ($rec['Profile']['email'] ?? ''));
+        if (strcasecmp(trim((string) ($rec['Role'] ?? '')), 'Super Admin') !== 0) {
+            return ['present' => true, 'allow' => false, 'reason' => 'role_mismatch', 'name' => $name, 'email' => $email];
+        }
+        if (strcasecmp(trim((string) ($rec['Status'] ?? 'Active')), 'Inactive') === 0) {
+            return ['present' => true, 'allow' => false, 'reason' => 'inactive', 'name' => $name, 'email' => $email];
+        }
+        return ['present' => true, 'allow' => true, 'reason' => 'ok', 'name' => $name, 'email' => $email];
+    }
+
+    /** Normalise the Firestore superAdmins doc into an authorization decision. */
+    private function _decide_from_fs(array $doc, string $signedUid): array
+    {
+        $name  = (string) ($doc['name'] ?? '');
+        $email = (string) ($doc['email'] ?? '');
+        // Defense-in-depth: doc must belong to the account that just signed in.
+        $uid = (string) ($doc['firebaseUid'] ?? '');
+        if ($uid !== '' && $signedUid !== '' && $uid !== $signedUid) {
+            return ['present' => true, 'allow' => false, 'reason' => 'uid_mismatch', 'name' => $name, 'email' => $email];
+        }
+        if (strcasecmp(trim((string) ($doc['role'] ?? '')), 'super_admin') !== 0) {
+            return ['present' => true, 'allow' => false, 'reason' => 'role_mismatch', 'name' => $name, 'email' => $email];
+        }
+        if (strcasecmp(trim((string) ($doc['status'] ?? 'Active')), 'Inactive') === 0) {
+            return ['present' => true, 'allow' => false, 'reason' => 'inactive', 'name' => $name, 'email' => $email];
+        }
+        return ['present' => true, 'allow' => true, 'reason' => 'ok', 'name' => $name, 'email' => $email];
+    }
+
+    /** Access-history write. Dual-write (Firestore + RTDB) during A2.1; RTDB-only when flag OFF. */
+    private function _write_sa_access_history(string $adminId, string $ip, bool $useFs): void
+    {
+        $saFlags = $this->config->item('sa_migration_flags');
+        $strict  = is_array($saFlags) && !empty($saFlags['sa.authz_firestore_strict']);
+        if ($useFs) {
+            try {
+                $this->firebase->firestoreSet('superAdmins', $adminId, [
+                    'accessHistory' => ['lastLogin' => date('c'), 'lastLoginIp' => $ip],
+                ], true);
+            } catch (\Throwable $e) { log_message('error', "SA access-history FS write failed for {$adminId}: " . $e->getMessage()); }
+        }
+        if (!$strict) {
+            try {
+                $this->firebase->update("Users/Admin/Our Panel/{$adminId}", [
+                    'SA_LastLogin'   => date('Y-m-d H:i:s'),
+                    'SA_LastLoginIP' => $ip,
+                ]);
+            } catch (Exception $e) { /* non-critical */ }
+        }
+    }
+
+    /** Sanitised IP key (Firestore doc-id or RTDB child). */
+    private function _ip_key(string $ip): string
+    {
+        return str_replace(['.', ':'], '-', $ip);
+    }
+
+    /** SA IP rate-limit state in Firestore (saIpRateLimit) vs legacy RTDB (RateLimit/SA). */
+    private function _ratelimit_firestore(): bool
+    {
+        $f = $this->config->item('sa_migration_flags');
+        return is_array($f) && !empty($f['sa.ratelimit_firestore']);
+    }
+
+    private function _rl_get(string $key)
+    {
+        return $this->_ratelimit_firestore()
+            ? $this->firebase->firestoreGet('saIpRateLimit', $key)
+            : $this->firebase->get('RateLimit/SA/' . $key);
+    }
+
+    private function _rl_put(string $key, array $payload): void
+    {
+        if ($this->_ratelimit_firestore()) {
+            $this->firebase->firestoreSet('saIpRateLimit', $key, $payload, true);
+        } else {
+            $this->firebase->update('RateLimit/SA/' . $key, $payload);
+        }
     }
 
     private function _is_ip_blocked(string $ip, int $now): bool
     {
         try {
-            $rec = $this->firebase->get($this->_ip_path($ip));
+            $rec = $this->_rl_get($this->_ip_key($ip));
             if (!is_array($rec)) return false;
             if (($now - (int)($rec['windowStart'] ?? 0)) > self::IP_WINDOW_SEC) return false;
             return (int)($rec['fails'] ?? 0) >= self::IP_MAX_FAILS;
-        } catch (Exception $e) { return false; }
+        } catch (\Throwable $e) { return false; }
     }
 
     private function _record_fail(string $ip, int $now): void
     {
         try {
-            $path = $this->_ip_path($ip);
-            $rec  = $this->firebase->get($path);
+            $key = $this->_ip_key($ip);
+            $rec = $this->_rl_get($key);
             if (!is_array($rec) || ($now - (int)($rec['windowStart'] ?? 0)) > self::IP_WINDOW_SEC) {
-                $this->firebase->update($path, ['windowStart' => $now, 'fails' => 1]);
+                $this->_rl_put($key, ['windowStart' => $now, 'fails' => 1]);
             } else {
-                $this->firebase->update($path, ['fails' => (int)($rec['fails'] ?? 0) + 1]);
+                $this->_rl_put($key, ['windowStart' => (int)($rec['windowStart'] ?? $now), 'fails' => (int)($rec['fails'] ?? 0) + 1]);
             }
-        } catch (Exception $e) { /* non-critical */ }
+        } catch (\Throwable $e) { /* non-critical */ }
     }
 
     private function _clear_fail(string $ip): void
     {
         try {
-            $this->firebase->update($this->_ip_path($ip), ['fails' => 0, 'windowStart' => 0]);
-        } catch (Exception $e) {}
+            $this->_rl_put($this->_ip_key($ip), ['fails' => 0, 'windowStart' => 0]);
+        } catch (\Throwable $e) {}
     }
 
     // ─────────────────────────────────────────────────────────────────────────
