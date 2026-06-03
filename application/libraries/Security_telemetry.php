@@ -71,6 +71,15 @@ class Security_telemetry
         // is the synthetic 'SA_PANEL' since SA login has no school context.
         'SA_LOGIN_SUCCESS', 'SA_LOGIN_FAILED', 'SA_LOGIN_LOCKED',
         'SA_LOGIN_ROLE_REJECTED',
+        // ── Wave C (2026-06-03): school-admin login telemetry ──
+        // Emitted by Admin_login::check_credentials + _try_firebase_admin_login.
+        // ADMIN_LOGIN_SUCCESS      — Firebase Auth signIn + Firestore staff.status=Active
+        // ADMIN_LOGIN_FAILED       — signInWithEmail rejected by Firebase Auth
+        // ADMIN_LOGIN_LOCKED       — per-account lockout threshold reached (Firestore adminAuthState)
+        // ADMIN_LOGIN_AUTHZ_MISSING — signed in but customClaims missing schoolId/role OR staff doc absent
+        // ADMIN_LOGIN_AUTHZ_INACTIVE — signed in + claims present but staff.status != Active
+        'ADMIN_LOGIN_SUCCESS', 'ADMIN_LOGIN_FAILED', 'ADMIN_LOGIN_LOCKED',
+        'ADMIN_LOGIN_AUTHZ_MISSING', 'ADMIN_LOGIN_AUTHZ_INACTIVE',
         // ── Wave A A2.1 (2026-05-28): SA-login authorization dual-read telemetry ──
         // Emitted by Superadmin_login authz resolution (Firestore-first, RTDB fallback).
         // SA_AUTHZ_PATH      — which store authorized (path=firestore|rtdb_fallback, +reason)
