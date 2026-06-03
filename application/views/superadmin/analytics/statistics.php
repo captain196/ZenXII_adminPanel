@@ -168,7 +168,9 @@ $activePct    = $totalSchools > 0 ? round(($activeCount / $totalSchools) * 100) 
           <div style="padding:14px 16px;color:var(--t3);font-size:12px;text-align:center;">No new tenants in the last 30 days.</div>
           <?php else: ?>
           <?php foreach ($recentRegs as $r): ?>
-          <a href="<?= base_url('superadmin/schools/view/' . urlencode((string) ($r['schoolId'] ?? ''))) ?>" style="text-decoration:none;display:block;">
+          <?php // Phase 1H H1.P1.c: drill-down to Phase 1G Tenant Detail
+                // instead of legacy School Detail. ?>
+          <a href="<?= base_url('superadmin/dashboard/tenant/' . urlencode((string) ($r['schoolId'] ?? ''))) ?>" style="text-decoration:none;display:block;">
             <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;">
               <div style="flex:1;">
                 <div style="font-size:12.5px;color:var(--t1);font-weight:600;"><?= htmlspecialchars((string) ($r['schoolName'] ?? '')) ?></div>
@@ -317,7 +319,8 @@ $(function(){
       }
       var html = '<div style="margin-bottom:10px;color:var(--t3);font-size:11px;font-family:var(--font-m);text-transform:uppercase;letter-spacing:.5px;">' + r.rows.length + ' tenant' + (r.rows.length === 1 ? '' : 's') + '</div>';
       r.rows.forEach(function(t) {
-        html += '<a href="' + BASE_URL + 'superadmin/schools/view/' + encodeURIComponent(t.schoolId || '') + '" style="text-decoration:none;color:var(--t1);display:block;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;">';
+        // Phase 1H H1.P1.c: drill-down row links to Phase 1G Tenant Detail.
+        html += '<a href="' + BASE_URL + 'superadmin/dashboard/tenant/' + encodeURIComponent(t.schoolId || '') + '" style="text-decoration:none;color:var(--t1);display:block;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;">';
         html += '<div style="font-weight:600;font-size:12.5px;">' + escHtml(t.schoolName || t.schoolId || '') + '</div>';
         html += '<div style="font-size:11px;color:var(--t3);font-family:var(--font-m);margin-top:3px;">';
         html += escHtml((t.schoolCode || '?') + ' · ' + (t.city || '—') + ' · ' + (t.lifecycleState || '—') + ' · ' + (t.totalStudents || 0) + ' students');

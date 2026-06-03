@@ -71,6 +71,7 @@ $is_selected = function (string $needle, string $csv): bool {
 .b2ss-card .sub{font-size:11px;color:#64748b;}
 .b2ss-card .lc{font-size:10px;font-weight:600;padding:2px 7px;border-radius:9px;text-transform:uppercase;letter-spacing:.3px;}
 .b2ss-card .lc.active{background:#dcfce7;color:#166534;}
+.b2ss-card .lc.disabled{background:#fee2e2;color:#991b1b;font-weight:600;}
 .b2ss-card .lc.trialing{background:#dbeafe;color:#1e40af;}
 .b2ss-card .lc.expiring_soon{background:#fef3c7;color:#92400e;}
 .b2ss-card .lc.grace{background:#fef3c7;color:#92400e;}
@@ -89,6 +90,7 @@ $is_selected = function (string $needle, string $csv): bool {
 .b2ss-table tr:hover td{background:#f8fafc;}
 .b2ss-table .lc{font-size:10px;font-weight:600;padding:2px 7px;border-radius:9px;text-transform:uppercase;letter-spacing:.3px;display:inline-block;}
 .b2ss-table .lc.active{background:#dcfce7;color:#166534;}
+.b2ss-table .lc.disabled{background:#fee2e2;color:#991b1b;font-weight:600;}
 .b2ss-table .lc.trialing{background:#dbeafe;color:#1e40af;}
 .b2ss-table .lc.expiring_soon{background:#fef3c7;color:#92400e;}
 .b2ss-table .lc.grace{background:#fef3c7;color:#92400e;}
@@ -314,7 +316,16 @@ $is_selected = function (string $needle, string $csv): bool {
               <td><?= $h($r['schoolCode'] ?? '') ?></td>
               <td><?= $h($r['city'] ?? '') ?></td>
               <td><?= $h($r['planName'] ?? '') ?></td>
-              <td><span class="lc <?= $h($st) ?>"><?= $h($st) ?></span></td>
+              <td>
+                <?php // Phase 1H H1.P0.a unified status badge: DISABLED dominant
+                      // over lifecycle when adminDisabled=true. Matches Phase 1G
+                      // tenant detail UX pattern. ?>
+                <?php if (!empty($r['adminDisabled'])): ?>
+                  <span class="lc disabled" title="underlying lifecycle: <?= $h($st) ?>">disabled</span>
+                <?php else: ?>
+                  <span class="lc <?= $h($st) ?>"><?= $h($st) ?></span>
+                <?php endif; ?>
+              </td>
               <td style="text-align:right;"><?= (int) ($r['totalStudents'] ?? 0) ?></td>
               <td style="text-align:right;"><?= (int) ($r['totalStaff'] ?? 0) ?></td>
               <td><?= $h(substr((string) ($r['subscriptionPeriodEnd'] ?? ''), 0, 10)) ?></td>
@@ -340,7 +351,11 @@ $is_selected = function (string $needle, string $csv): bool {
                   <?= !empty($r['city']) ? ' · ' . $h($r['city']) : '' ?>
                 </div>
               </div>
-              <span class="lc <?= $h($st) ?>"><?= $h($st) ?></span>
+              <?php if (!empty($r['adminDisabled'])): ?>
+                <span class="lc disabled" title="underlying lifecycle: <?= $h($st) ?>">disabled</span>
+              <?php else: ?>
+                <span class="lc <?= $h($st) ?>"><?= $h($st) ?></span>
+              <?php endif; ?>
             </div>
             <div class="meta">
               <div><span>Plan</span><?= $h($r['planName'] ?? '—') ?></div>

@@ -252,11 +252,19 @@ $active_pct = ($kpi['total_schools'] ?? 0) > 0
           <div style="padding:14px 16px;color:var(--t3);font-size:12px;text-align:center;">No tenants yet.</div>
           <?php else: ?>
           <?php foreach ($top_schools as $i => $t): ?>
-          <a href="<?= base_url('superadmin/schools/view/' . urlencode((string) ($t['schoolId'] ?? ''))) ?>" style="text-decoration:none;display:block;">
+          <?php // Phase 1H H1.P1.a: repointed from legacy /superadmin/schools/view/{id}
+                // to Phase 1G Per-Tenant Deep Dive. Phase 1H H1.P0.a: badge
+                // override when adminDisabled (red dot dominant). ?>
+          <a href="<?= base_url('superadmin/dashboard/tenant/' . urlencode((string) ($t['schoolId'] ?? ''))) ?>" style="text-decoration:none;display:block;">
             <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;">
               <div style="width:24px;height:24px;background:var(--sa-dim);border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--sa3);font-weight:700;font-size:11px;flex-shrink:0;"><?= $i + 1 ?></div>
               <div style="flex:1;">
-                <div style="font-size:12.5px;color:var(--t1);font-weight:600;"><?= htmlspecialchars((string) ($t['schoolName'] ?? $t['schoolId'] ?? '')) ?></div>
+                <div style="font-size:12.5px;color:var(--t1);font-weight:600;">
+                  <?= htmlspecialchars((string) ($t['schoolName'] ?? $t['schoolId'] ?? '')) ?>
+                  <?php if (!empty($t['adminDisabled'])): ?>
+                    <span style="display:inline-block;font-size:9px;font-weight:600;padding:1px 5px;border-radius:9px;background:#fee2e2;color:#991b1b;text-transform:uppercase;letter-spacing:.3px;margin-left:4px;" title="underlying lifecycle: <?= htmlspecialchars((string) ($t['lifecycleState'] ?? '')) ?>">disabled</span>
+                  <?php endif; ?>
+                </div>
                 <div style="font-size:11px;color:var(--t3);font-family:var(--font-m);"><?= number_format((int) ($t['totalStudents'] ?? 0)) ?> students · <?= number_format((int) ($t['totalStaff'] ?? 0)) ?> staff</div>
               </div>
             </div>
@@ -276,10 +284,16 @@ $active_pct = ($kpi['total_schools'] ?? 0) > 0
           <div style="padding:14px 16px;color:var(--t3);font-size:12px;text-align:center;">No tenants expiring in the next 30 days.</div>
           <?php else: ?>
           <?php foreach ($expiring_soon as $t): ?>
-          <a href="<?= base_url('superadmin/schools/view/' . urlencode((string) ($t['schoolId'] ?? ''))) ?>" style="text-decoration:none;display:block;">
+          <?php // Phase 1H H1.P1.a: repointed to Phase 1G Tenant Detail. ?>
+          <a href="<?= base_url('superadmin/dashboard/tenant/' . urlencode((string) ($t['schoolId'] ?? ''))) ?>" style="text-decoration:none;display:block;">
             <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;">
               <div style="flex:1;">
-                <div style="font-size:12.5px;color:var(--t1);font-weight:600;"><?= htmlspecialchars((string) ($t['schoolName'] ?? $t['schoolId'] ?? '')) ?></div>
+                <div style="font-size:12.5px;color:var(--t1);font-weight:600;">
+                  <?= htmlspecialchars((string) ($t['schoolName'] ?? $t['schoolId'] ?? '')) ?>
+                  <?php if (!empty($t['adminDisabled'])): ?>
+                    <span style="display:inline-block;font-size:9px;font-weight:600;padding:1px 5px;border-radius:9px;background:#fee2e2;color:#991b1b;text-transform:uppercase;letter-spacing:.3px;margin-left:4px;">disabled</span>
+                  <?php endif; ?>
+                </div>
                 <div style="font-size:11px;color:var(--t3);font-family:var(--font-m);">
                   <?php
                   $end = (string) ($t['subscriptionPeriodEnd'] ?? '');
@@ -420,7 +434,8 @@ $(function(){
         }
         var html = '';
         r.rows.forEach(function(t){
-          html += '<a href="' + BASE_URL + 'superadmin/schools/view/' + encodeURIComponent(t.schoolId || '') + '" style="display:block;padding:9px 14px;border-bottom:1px solid var(--border);text-decoration:none;color:var(--t1);">';
+          // Phase 1H H1.P1.a: repointed to Phase 1G Tenant Detail.
+          html += '<a href="' + BASE_URL + 'superadmin/dashboard/tenant/' + encodeURIComponent(t.schoolId || '') + '" style="display:block;padding:9px 14px;border-bottom:1px solid var(--border);text-decoration:none;color:var(--t1);">';
           html += '<div style="font-size:12.5px;font-weight:600;">' + escHtml(t.schoolName || t.schoolId || '') + '</div>';
           html += '<div style="font-size:11px;color:var(--t3);font-family:var(--font-m);">' + escHtml((t.schoolCode || '?') + ' · ' + (t.city || '—') + ' · ' + (t.lifecycleState || '—')) + '</div>';
           html += '</a>';

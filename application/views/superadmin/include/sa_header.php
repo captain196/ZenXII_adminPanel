@@ -683,9 +683,43 @@ var BASE_URL = '<?= base_url() ?>';
             </li>
 
             <li class="g-sec">Analytics</li>
+            <?php
+            // 2026-06-03 Phase 1H H1.P0.c: B2.3.4-A Dashboard Analytics spoke
+            // navigation. Detects active spoke via URI segment to highlight
+            // the right entry. Tenant Detail (Phase 1G) is per-tenant, no
+            // direct sidebar entry — discovery via School Search row action,
+            // Hub Top Schools widget, or Cross-School matrix row.
+            $_uri = $this->uri->uri_string();
+            $_isAnalytics = strpos($_uri, 'superadmin/dashboard/') === 0
+                          && (strpos($_uri, '/statistics') !== false
+                              || strpos($_uri, '/schools-search') !== false
+                              || strpos($_uri, '/revenue') !== false
+                              || strpos($_uri, '/cross-school') !== false
+                              || strpos($_uri, '/tenant/') !== false);
+            ?>
+            <li class="treeview <?= $_isAnalytics ? 'active menu-open' : '' ?>">
+                <a href="#">
+                    <i class="fa fa-bar-chart"></i><span>Dashboard Analytics</span>
+                    <span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span>
+                </a>
+                <ul class="treeview-menu" <?= $_isAnalytics ? 'style="display:block;"' : '' ?>>
+                    <li class="<?= strpos($_uri, '/statistics')     !== false ? 'active' : '' ?>">
+                        <a href="<?= base_url('superadmin/dashboard/statistics') ?>"><i class="fa fa-circle-o"></i> Statistics</a>
+                    </li>
+                    <li class="<?= strpos($_uri, '/schools-search') !== false ? 'active' : '' ?>">
+                        <a href="<?= base_url('superadmin/dashboard/schools-search') ?>"><i class="fa fa-circle-o"></i> School Search</a>
+                    </li>
+                    <li class="<?= strpos($_uri, '/revenue')        !== false ? 'active' : '' ?>">
+                        <a href="<?= base_url('superadmin/dashboard/revenue') ?>"><i class="fa fa-circle-o"></i> Revenue Reports</a>
+                    </li>
+                    <li class="<?= strpos($_uri, '/cross-school')   !== false ? 'active' : '' ?>">
+                        <a href="<?= base_url('superadmin/dashboard/cross-school') ?>"><i class="fa fa-circle-o"></i> Cross-School Summary</a>
+                    </li>
+                </ul>
+            </li>
             <li class="<?= ($this->router->fetch_class() === 'superadmin_reports') ? 'active' : '' ?>">
                 <a href="<?= base_url('superadmin/reports') ?>">
-                    <i class="fa fa-bar-chart"></i><span>Global Reports</span>
+                    <i class="fa fa-file-text-o"></i><span>Global Reports</span>
                 </a>
             </li>
 

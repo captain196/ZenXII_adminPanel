@@ -670,9 +670,91 @@ class B2_analytics_verify extends CI_Controller
                 $allOk ? 'all ' . count($sumTen) . ' tenants ok' : 'first non-bool=' . $firstBad);
         }
 
+        // ─────────────────────────────────────────────────────────────
+        // PHASE 1H PROBES — Module-completion coverage
+        // ─────────────────────────────────────────────────────────────
+
+        // ── Probe 39: list_tenants_summary adminDisabled enrichment ──
+        // 2026-06-03 Phase 1H H1.P0.a: list_tenants_summary() must return
+        // strictly-bool adminDisabled for every tenant; matches identity.
+        echo "\n[39] list_tenants_summary rows include strict-bool adminDisabled (Phase 1H H1.P0.a)\n";
+        $sum = get_instance()->b2_registry_service->list_tenants_summary();
+        $allBool = true; $firstBad = '';
+        foreach ($sum as $row) {
+            if (!array_key_exists('adminDisabled', $row) || !is_bool($row['adminDisabled'])) {
+                $allBool = false; $firstBad = (string) ($row['schoolId'] ?? '?'); break;
+            }
+        }
+        $this->assert("every tenant row has strict-bool adminDisabled", $allBool,
+            $allBool ? 'all ' . count($sum) . ' tenants ok' : 'first non-bool=' . $firstBad);
+        // Consistency with get_tenant_identity (Phase 1G code path)
+        $mismatches = 0;
+        foreach ($sum as $row) {
+            $sid = (string) ($row['schoolId'] ?? '');
+            if ($sid === '') continue;
+            $idRow = $this->svc->get_tenant_identity($sid);
+            if (($idRow['adminDisabled'] ?? null) !== ($row['adminDisabled'] ?? null)) $mismatches++;
+        }
+        $this->assert("adminDisabled matches get_tenant_identity for every tenant",
+            $mismatches === 0,
+            $mismatches === 0 ? 'consistent' : "{$mismatches} mismatched");
+
+        // ── Probe 40: rollup historical totalSchools correctness ──
+        // 2026-06-03 Phase 1H H1.P0.b: post-fix totalSchools must be ≤ count
+        // of tenants with createdAt ≤ periodEnd (NOT all-current-tenants).
+        echo "\n[40] rollup totalSchools historical correctness (Phase 1H H1.P0.b)\n";
+        $schoolsForDates = $this->firebase->firestoreQuery('schools', []);
+        $tenantCreated = [];
+        if (is_array($schoolsForDates)) {
+            foreach ($schoolsForDates as $row) {
+                $data = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+                $sid = (string) ($row['id'] ?? $data['__firestoreId'] ?? '');
+                if (!preg_match('/^SCH_[A-Z0-9]+$/', $sid)) continue;
+                $cAt = (string) ($data['createdAt'] ?? '');
+                $tenantCreated[$sid] = $cAt !== '' ? strtotime($cAt) : 0;
+            }
+        }
+        $rollupViolations = 0; $rollupChecked = 0;
+        for ($i = 0; $i < 12; $i++) {
+            $periodKey = date('Y-m', strtotime("first day of -{$i} months"));
+            $periodEnd = strtotime("last day of {$periodKey}") + 86399;
+            $expected  = 0;
+            foreach ($tenantCreated as $ts) {
+                if ($ts > 0 && $ts <= $periodEnd) $expected++;
+            }
+            $doc = $this->firebase->firestoreGet('analyticsRollups', $periodKey);
+            if (!is_array($doc)) continue;
+            $actual = (int) ($doc['totalSchools'] ?? -1);
+            $rollupChecked++;
+            if ($actual > $expected) $rollupViolations++;
+        }
+        $this->assert("no rollup month has totalSchools > tenants-existing-by-period-end",
+            $rollupViolations === 0,
+            $rollupViolations === 0 ? "all {$rollupChecked} rollups consistent" : "{$rollupViolations} rollups inflated");
+
+        // ── Probe 41 (INFO): adminDisabled schema-drift detector ──
+        // 2026-06-03 Phase 1H: enumerates field types per tenant.
+        // Reports as INFO (always passes); becomes assertion if migration
+        // executes later (deferred per operator decision).
+        echo "\n[41] adminDisabled schema-drift detector (INFO; Phase 1H schema migration DEFERRED)\n";
+        $bools = 0; $arrays = 0; $missing = 0;
+        foreach ($sum as $row) {
+            $sid = (string) ($row['schoolId'] ?? '');
+            if ($sid === '') continue;
+            $sch = $this->firebase->firestoreGet('schools', $sid);
+            if (!is_array($sch)) { $missing++; continue; }
+            if (!array_key_exists('adminDisabled', $sch)) { $missing++; continue; }
+            $ad = $sch['adminDisabled'];
+            if (is_bool($ad)) $bools++;
+            elseif (is_array($ad)) $arrays++;
+            else $missing++;
+        }
+        echo "  ℹ️  field type distribution: bool={$bools}  Array={$arrays}  missing/other={$missing}\n";
+        $this->pass++; // INFO counts as PASS for gate purposes
+
         // ── Summary ──
         echo "\n═══════════════════════════════════════════════════════════════════\n";
-        printf("L0 verifier (Phase 1A-1G):  PASS=%d  FAIL=%d  SKIPPED-LATER=%d\n",
+        printf("L0 verifier (Phase 1A-1H):  PASS=%d  FAIL=%d  SKIPPED-LATER=%d\n",
             $this->pass, $this->fail, $this->skip);
         echo ($this->fail === 0 ? "GATE: ✅ PASS (foundation green)\n"
                                 : "GATE: ❌ FAIL\n");

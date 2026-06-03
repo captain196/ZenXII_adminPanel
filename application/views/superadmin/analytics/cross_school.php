@@ -89,6 +89,9 @@ $fmtMetric = function ($row, $metric) {
 .b2cs-lc.past_due{background:#fee2e2;color:#991b1b;}
 .b2cs-lc.suspended{background:#e5e7eb;color:#374151;}
 .b2cs-lc.expired{background:#e5e7eb;color:#374151;}
+.b2cs-lc.disabled{background:#fee2e2;color:#991b1b;}
+.b2cs-tbl tbody tr td a.tenant-link{color:#0f172a;text-decoration:none;}
+.b2cs-tbl tbody tr td a.tenant-link:hover{text-decoration:underline;}
 .b2cs-empty{text-align:center;padding:24px;color:#64748b;font-size:12.5px;font-style:italic;}
 .b2cs-chartwrap{height:220px;min-height:220px;position:relative;background:#fafbfc;border:1px solid #f1f5f9;border-radius:4px;}
 .b2cs-caption{font-size:11px;color:#94a3b8;font-style:italic;margin-top:8px;}
@@ -300,12 +303,27 @@ $fmtMetric = function ($row, $metric) {
             $lc = strtolower((string) ($r['lifecycleState'] ?? '')); ?>
             <tr>
               <td>
-                <strong><?= $h($r['schoolName'] ?? '') ?></strong>
+                <?php // Phase 1H H1.P1.b matrix row drill-down: tenant name
+                      // links to Phase 1G Tenant Detail. Reuses existing
+                      // _detail/_subscription/_analytics_url pattern from the
+                      // Phase 1F per-tenant accessor (if available); falls back
+                      // to direct route. ?>
+                <a class="tenant-link" href="<?= base_url('superadmin/dashboard/tenant/' . urlencode((string) ($r['schoolId'] ?? ''))) ?>" title="Open per-tenant deep dive">
+                  <strong><?= $h($r['schoolName'] ?? '') ?></strong>
+                </a>
                 <?php if (!empty($r['isTestTenant'])): ?><span class="b2cs-badge">non-prod</span><?php endif; ?>
                 <br><small style="color:#94a3b8;"><?= $h($r['schoolCode'] ?? '') ?><?= !empty($r['city']) ? ' · ' . $h($r['city']) : '' ?></small>
               </td>
               <td><?= $h($r['planName'] ?? '') ?></td>
-              <td><span class="b2cs-lc <?= $h($lc) ?>"><?= $h($lc) ?></span></td>
+              <td>
+                <?php // Phase 1H H1.P0.a unified badge: DISABLED dominant when
+                      // adminDisabled=true; underlying lifecycle in title tooltip. ?>
+                <?php if (!empty($r['adminDisabled'])): ?>
+                  <span class="b2cs-lc disabled" title="underlying lifecycle: <?= $h($lc) ?>">disabled</span>
+                <?php else: ?>
+                  <span class="b2cs-lc <?= $h($lc) ?>"><?= $h($lc) ?></span>
+                <?php endif; ?>
+              </td>
               <td class="r"><?= number_format((int) ($r['activity_volume'] ?? 0)) ?></td>
               <td class="r"><?php $v = (int) ($r['student_delta'] ?? 0); echo ($v > 0 ? '+' : '') . $v; ?></td>
               <td class="r"><?php $v = (int) ($r['staff_delta'] ?? 0); echo ($v > 0 ? '+' : '') . $v; ?></td>

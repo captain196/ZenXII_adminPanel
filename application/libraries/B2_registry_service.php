@@ -121,10 +121,41 @@ class B2_registry_service
         if (!is_array($sc)) return ['known' => false];
         $state = (string) ($sc['lifecycle']['state'] ?? '');
         if ($state === '') return ['known' => false];
+
+        // 2026-06-03 Phase 1H H1.P0.d SECURITY FIX: parallel to the
+        // login_access_view adminDisabled enforcement (commit f10ccba4).
+        // Pre-fix this function only checked lifecycle.state; operator-
+        // disabled tenants would pass the per-request access gate even
+        // though the SA UI + Phase 1G display + login flow correctly
+        // showed/enforced the disabled state. Reads adminDisabled in
+        // H1.5 canonical priority order with strict === true coercion;
+        // fail-CLOSED on read error.
+        $adminDisabled = false;
+        try {
+            $pub = $this->firebase->firestoreGet('tenantPublic', $schoolId);
+            if (is_array($pub) && (($pub['adminDisabled'] ?? null) === true)) {
+                $adminDisabled = true;
+            } else {
+                $sch = $this->firebase->firestoreGet('schools', $schoolId);
+                if (is_array($sch) && is_array($sch['adminDisabled'] ?? null)
+                    && (($sch['adminDisabled']['value'] ?? false) === true)) {
+                    $adminDisabled = true;
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error',
+                'B2_registry_service::lifecycle_access adminDisabled read failed schoolId=['
+                . $schoolId . '] err=' . $e->getMessage()
+            );
+            $adminDisabled = true;
+        }
+
         return [
-            'known'   => true,
-            'allowed' => in_array($state, self::ACCESS_LIFECYCLE_STATES, true),
-            'state'   => $state,
+            'known'         => true,
+            'allowed'       => in_array($state, self::ACCESS_LIFECYCLE_STATES, true)
+                               && !$adminDisabled,
+            'state'         => $state,
+            'adminDisabled' => $adminDisabled,
         ];
     }
 
@@ -486,8 +517,16 @@ class B2_registry_service
             // by doc id (which IS the schoolId).
             $schoolsRaw = $this->firebase->firestoreQuery('schools', []);
             $ctrlsRaw   = $this->firebase->firestoreQuery('schoolControl', []);
+            // 2026-06-03 Phase 1H H1.P0.a: also pull tenantPublic for the
+            // H1.5 canonical adminDisabled mirror. Same source Phase 1G
+            // get_tenant_identity() + the login_access_view security fix use.
+            // Enriching here means every consumer (Phase 1B Hub Top Schools,
+            // Phase 1D School Search, Phase 1F Cross-School matrix) automatically
+            // shows the correct DISABLED state instead of phantom ACTIVE.
+            $publicRaw  = $this->firebase->firestoreQuery('tenantPublic', []);
             $schoolsRaw = $this->_unwrap_query_rows($schoolsRaw);
             $ctrlsRaw   = $this->_unwrap_query_rows($ctrlsRaw);
+            $publicRaw  = $this->_unwrap_query_rows($publicRaw);
 
             // Index control docs by schoolId (doc id, surfaced as __firestoreId
             // post-unwrap; also tolerate a stored schoolId field if present).
@@ -495,6 +534,11 @@ class B2_registry_service
             foreach ($ctrlsRaw as $c) {
                 $sid = (string) ($c['schoolId'] ?? $c['__firestoreId'] ?? '');
                 if ($sid !== '') $ctrls[$sid] = $c;
+            }
+            $publics = [];
+            foreach ($publicRaw as $p) {
+                $sid = (string) ($p['schoolId'] ?? $p['__firestoreId'] ?? '');
+                if ($sid !== '') $publics[$sid] = $p;
             }
 
             $out = [];
@@ -537,6 +581,21 @@ class B2_registry_service
                 $totalStaff    = (int) ($stats['totalStaff']    ?? $stats['total_staff']    ?? 0);
                 $lastUpdated   = (string) ($stats['lastUpdated'] ?? $stats['last_updated'] ?? '');
 
+                // 2026-06-03 Phase 1H H1.P0.a: adminDisabled resolution.
+                // Reads in H1.5 canonical priority order matching Phase 1G's
+                // get_tenant_identity() and the login_access_view security fix:
+                //   1. tenantPublic.adminDisabled (canonical bool mirror)
+                //   2. schools.adminDisabled.value (audit-log Array fallback)
+                // STRICT === true coercion; non-bool or missing → false.
+                $pub = $publics[$sid] ?? [];
+                $adminDisabled = false;
+                if (($pub['adminDisabled'] ?? null) === true) {
+                    $adminDisabled = true;
+                } elseif (is_array($s['adminDisabled'] ?? null)
+                          && (($s['adminDisabled']['value'] ?? false) === true)) {
+                    $adminDisabled = true;
+                }
+
                 $out[] = [
                     'schoolId'              => $sid,
                     'schoolName'            => $schoolName,
@@ -545,6 +604,7 @@ class B2_registry_service
                     'primarySsaId'          => (string) ($s['primarySsaId'] ?? ''),
                     'planFamilyId'          => (string) ($sub['planId']   ?? ''),
                     'lifecycleState'        => (string) ($life['state']   ?? ''),
+                    'adminDisabled'         => $adminDisabled,
                     'subscriptionPeriodEnd' => $periodEnd,
                     'subscriptionGraceEnd'  => $graceEnd,
                     'subscriptionStatus'    => (string) ($sub['status']   ?? ''),

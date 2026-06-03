@@ -1001,8 +1001,18 @@ class B2_analytics_service
                 $byId[$sid] = $data;
             }
         }
-        // schoolControl read for adminDisabled (defense-in-depth alignment
-        // with H1 server-side rule); tolerant to missing docs.
+        // 2026-06-03 Phase 1H DEFECT FIX (walkthrough-caught): pre-fix used
+        // (bool) ($sData['adminDisabled'] ?? $cData['adminDisabled'] ?? false)
+        // which evaluated the Array audit-log struct as TRUE — producing
+        // phantom DISABLED badges on IIT Kanpur (schoolControl.adminDisabled
+        // is an Array on this tenant). Now reads the same H1.5 canonical
+        // priority chain as get_tenant_identity() (Phase 1G fix) + the
+        // list_tenants_summary registry enrichment (Phase 1H H1.P0.a):
+        //   1. base row's adminDisabled (already resolved by Phase 1H
+        //      list_tenants_summary using tenantPublic canonical → schools
+        //      Array.value fallback → strict === true)
+        // Falls back to direct reads only when the base row didn't carry
+        // adminDisabled (defensive against pre-Phase-1H callers).
         $rawCtrls = $this->firebase->firestoreQuery('schoolControl', []);
         $ctrlsById = [];
         if (is_array($rawCtrls)) {
@@ -1012,14 +1022,39 @@ class B2_analytics_service
                 if ($sid !== '') $ctrlsById[$sid] = $data;
             }
         }
+        $rawPublic = $this->firebase->firestoreQuery('tenantPublic', []);
+        $publicsById = [];
+        if (is_array($rawPublic)) {
+            foreach ($rawPublic as $row) {
+                $data = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+                $sid = (string) ($data['schoolId'] ?? $row['id'] ?? $data['__firestoreId'] ?? '');
+                if ($sid !== '') $publicsById[$sid] = $data;
+            }
+        }
         $out = [];
         foreach ($base as $row) {
             $sid = (string) ($row['schoolId'] ?? '');
             $sData = $byId[$sid] ?? [];
             $cData = $ctrlsById[$sid] ?? [];
+            $pData = $publicsById[$sid] ?? [];
             $row['createdAt']         = (string) ($sData['createdAt'] ?? '');
             $row['region']            = (string) ($sData['state'] ?? $sData['region'] ?? '');
-            $row['adminDisabled']     = (bool)   ($sData['adminDisabled'] ?? $cData['adminDisabled'] ?? false);
+            // adminDisabled: prefer the value already carried by the
+            // Phase-1H-enriched base row; otherwise compute it locally
+            // using the same H1.5 canonical priority + strict === true.
+            if (array_key_exists('adminDisabled', $row) && is_bool($row['adminDisabled'])) {
+                // base row already enriched by Phase 1H list_tenants_summary
+                // — preserve it (no recomputation).
+            } else {
+                $ad = false;
+                if (($pData['adminDisabled'] ?? null) === true) {
+                    $ad = true;
+                } elseif (is_array($sData['adminDisabled'] ?? null)
+                          && (($sData['adminDisabled']['value'] ?? false) === true)) {
+                    $ad = true;
+                }
+                $row['adminDisabled'] = $ad;
+            }
             $row['domainIdentifier']  = (string) ($sData['domainIdentifier'] ?? '');
             // Resolve plan name once.
             $planMap = $this->load_plan_price_map();

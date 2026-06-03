@@ -323,9 +323,12 @@ class B2_runtime_verify extends CI_Controller
             $origLifeState      = (string) (($beforeCtrl['lifecycle'] ?? [])['state'] ?? 'active');
             $origPubAd          = !empty($beforePub['adminDisabled']);
             if ($origDisabledFlag) {
-                // Tenant already suspended on schools surface; skip exercise but
-                // do NOT mutate anything — preserves operator state regardless.
-                throw new \Exception('test tenant already suspended; cannot exercise the round-trip safely');
+                // Tenant already operator-disabled on schools surface; skip
+                // exercise but do NOT mutate anything — preserves state.
+                // 2026-06-03 Phase 1H H1.P1.d: return SKIP signal instead of
+                // throwing (which previously reported as BROKEN). Read by the
+                // check() callback below.
+                return ['_skip' => true, 'reason' => 'test tenant already operator-disabled; preservation safety override'];
             }
             $ok1 = $svc->set_admin_disabled($TEST, 'suspended', 'rt_probe');
             if (!$ok1) throw new \Exception('suspend returned false');
@@ -344,7 +347,14 @@ class B2_runtime_verify extends CI_Controller
             return [];
         }, [
             'expect' => 'adminDisabled + lifecycle.state both flip to suspended; revert restores EXACT pre-probe snapshot',
-            'check'  => function () { return ['OK', 'composite write verified; snapshot-restore on revert']; },
+            'check'  => function ($result) {
+                // SKIP semantics for the operator-disabled early-bail
+                // (Phase 1H H1.P1.d).
+                if (is_array($result) && !empty($result['_skip'])) {
+                    return ['SKIP', $result['reason'] ?? 'intentional bail'];
+                }
+                return ['OK', 'composite write verified; snapshot-restore on revert'];
+            },
         ]);
 
         // ── W4: update_stats_cache (nested map: statsCache.{totalStudents, totalStaff, lastUpdated}) ──
@@ -528,11 +538,91 @@ class B2_runtime_verify extends CI_Controller
             'check'  => function () { return ['OK', '4 scenarios verified; snapshot-restore complete']; },
         ]);
 
+        // ── W7: lifecycle_access adminDisabled enforcement (Phase 1H H1.P0.d) ──
+        // Parallel to W6 (login_access_view). Verifies that the per-request
+        // access gate correctly blocks adminDisabled tenants, mirroring the
+        // login-time gate semantics. 4 scenarios + byte-for-byte snapshot-
+        // restore (same pattern as W3+W5+W6).
+        $this->_probe('access_gate: lifecycle_access enforces adminDisabled (4 scenarios)', function () use ($svc, $TEST) {
+            $origSch  = $this->firebase->firestoreGet('schools',       $TEST) ?: [];
+            $origCtrl = $this->firebase->firestoreGet('schoolControl', $TEST) ?: [];
+            $origPub  = $this->firebase->firestoreGet('tenantPublic',  $TEST) ?: [];
+            $origDisabledStruct = $origSch['adminDisabled'] ?? null;
+            $origPubAd          = !empty($origPub['adminDisabled']);
+            $origLifeState      = (string) (($origCtrl['lifecycle'] ?? [])['state'] ?? 'active');
+
+            $failures = [];
+
+            try {
+                // ── Scenario 1: active + enabled → allowed=true ──
+                $this->firebase->firestoreUpdate('schools',      $TEST, ['adminDisabled' => ['value' => false, 'reason' => '', 'actor' => 'rt_probe_w7', 'updatedAt' => date('c')]]);
+                $this->firebase->firestoreUpdate('tenantPublic', $TEST, ['adminDisabled' => false]);
+                $this->firebase->firestoreUpdate('schoolControl', $TEST, ['lifecycle' => ['state' => 'active', 'updatedAt' => date('c')]]);
+                $v1 = $svc->lifecycle_access($TEST);
+                if (empty($v1['allowed'])) {
+                    $failures[] = 'S1 active+enabled: gate denied (expected allowed=true)';
+                }
+
+                // ── Scenario 2: active + disabled → allowed=false (NEW post-fix) ──
+                $this->firebase->firestoreUpdate('schools',      $TEST, ['adminDisabled' => ['value' => true, 'reason' => 'rt_probe', 'actor' => 'rt_probe_w7', 'updatedAt' => date('c')]]);
+                $this->firebase->firestoreUpdate('tenantPublic', $TEST, ['adminDisabled' => true]);
+                $this->firebase->firestoreUpdate('schoolControl', $TEST, ['lifecycle' => ['state' => 'active', 'updatedAt' => date('c')]]);
+                $v2 = $svc->lifecycle_access($TEST);
+                if (!empty($v2['allowed'])) {
+                    $failures[] = 'S2 active+disabled: gate ALLOWED (expected blocked)';
+                }
+                if (($v2['adminDisabled'] ?? false) !== true) {
+                    $failures[] = 'S2: response.adminDisabled was not true';
+                }
+
+                // ── Scenario 3: suspended ──
+                $this->firebase->firestoreUpdate('schools',      $TEST, ['adminDisabled' => ['value' => false, 'reason' => '', 'actor' => 'rt_probe_w7', 'updatedAt' => date('c')]]);
+                $this->firebase->firestoreUpdate('tenantPublic', $TEST, ['adminDisabled' => false]);
+                $this->firebase->firestoreUpdate('schoolControl', $TEST, ['lifecycle' => ['state' => 'suspended', 'updatedAt' => date('c')]]);
+                $v3 = $svc->lifecycle_access($TEST);
+                if (!empty($v3['allowed'])) {
+                    $failures[] = 'S3 suspended: gate ALLOWED (expected blocked)';
+                }
+
+                // ── Scenario 4: expired ──
+                // lifecycle_access doesn't check periodEnd (only login_access_view
+                // does). For lifecycle_access, "expired" maps to lifecycle.state
+                // = 'expired'.
+                $this->firebase->firestoreUpdate('schools',      $TEST, ['adminDisabled' => ['value' => false, 'reason' => '', 'actor' => 'rt_probe_w7', 'updatedAt' => date('c')]]);
+                $this->firebase->firestoreUpdate('tenantPublic', $TEST, ['adminDisabled' => false]);
+                $this->firebase->firestoreUpdate('schoolControl', $TEST, ['lifecycle' => ['state' => 'expired', 'updatedAt' => date('c')]]);
+                $v4 = $svc->lifecycle_access($TEST);
+                if (!empty($v4['allowed'])) {
+                    $failures[] = 'S4 expired: gate ALLOWED (expected blocked)';
+                }
+            } finally {
+                // SAFE RESTORE
+                if ($origDisabledStruct !== null) {
+                    $this->firebase->firestoreUpdate('schools', $TEST, ['adminDisabled' => $origDisabledStruct]);
+                } else {
+                    $this->firebase->firestoreUpdate('schools', $TEST, ['adminDisabled' => ['value' => false, 'reason' => '', 'actor' => 'rt_probe_restore', 'updatedAt' => date('c')]]);
+                }
+                $this->firebase->firestoreUpdate('tenantPublic',  $TEST, ['adminDisabled' => $origPubAd]);
+                $svc->write_lifecycle_state($TEST, $origLifeState !== '' ? $origLifeState : 'active', 'rt_probe_w7_restore');
+            }
+
+            if (!empty($failures)) {
+                throw new \Exception('lifecycle_access enforcement failures: ' . implode(' | ', $failures));
+            }
+            return [];
+        }, [
+            'expect' => '4-scenario lifecycle_access enforcement; only active+enabled passes',
+            'check'  => function () { return ['OK', '4 scenarios verified; snapshot-restore complete']; },
+        ]);
+
         $this->_print_report();
-        // Hard gate: any verdict other than OK, OR any PHP warning, fails.
+        // Hard gate: any verdict other than OK or SKIP (intentional bail
+        // — e.g. W3 when tenant is operator-disabled), OR any PHP warning,
+        // fails. SKIP added 2026-06-03 Phase 1H H1.P1.d for cosmetic-correct
+        // reporting of intentional probe early-exits.
         $nonOk = 0;
         foreach ($this->rows as $r) {
-            if ($r['verdict'] !== 'OK') $nonOk++;
+            if (!in_array($r['verdict'], ['OK', 'SKIP'], true)) $nonOk++;
         }
         $exitCode = ($nonOk === 0 && $this->warn_count === 0) ? 0 : 2;
         echo "\nGATE: " . ($exitCode === 0 ? 'PASS' : 'REVIEW') . "\n";

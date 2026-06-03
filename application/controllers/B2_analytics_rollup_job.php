@@ -166,6 +166,25 @@ class B2_analytics_rollup_job extends CI_Controller
         foreach ($tenants as $t) {
             $sid = (string) ($t['schoolId'] ?? '');
             if (!preg_match('/^SCH_[A-Z0-9]+$/', $sid)) continue;
+
+            // 2026-06-03 Phase 1H H1.P0.b HISTORICAL CORRECTNESS FIX:
+            // Pre-fix unconditionally counted every current tenant toward
+            // totalSchools regardless of whether the tenant existed at the
+            // rollup period boundary. Result: historical rollups showed flat
+            // totalSchools=3 for every month back to 2025-07, when the first
+            // tenant was actually created 2026-04-02. Fix: read createdAt
+            // ONCE per tenant per period; count toward totalSchools only when
+            // the tenant existed by $periodEnd; newSchoolsCount uses the
+            // same fetch (refactored from a second read below).
+            $sch = $this->firebase->firestoreGet('schools', $sid);
+            $createdAt = is_array($sch) ? (string) ($sch['createdAt'] ?? '') : '';
+            $createdTs = $createdAt !== '' ? strtotime($createdAt) : 0;
+            $existedByPeriodEnd = ($createdTs !== false && $createdTs > 0 && $createdTs <= $periodEnd);
+            if (!$existedByPeriodEnd) {
+                // Tenant didn't exist yet at this period's boundary.
+                // Don't count it toward any aggregate for this period.
+                continue;
+            }
             $totalSchools++;
 
             $state = strtolower((string) ($t['lifecycleState'] ?? ''));
@@ -189,10 +208,9 @@ class B2_analytics_rollup_job extends CI_Controller
             $city = (string) ($t['city'] ?? '');
             if ($city !== '') $schoolsByCity[$city] = ($schoolsByCity[$city] ?? 0) + 1;
 
-            // Newly-onboarded check via schools.createdAt
-            $sch = $this->firebase->firestoreGet('schools', $sid);
-            $createdAt = is_array($sch) ? (string) ($sch['createdAt'] ?? '') : '';
-            $createdTs = $createdAt !== '' ? strtotime($createdAt) : 0;
+            // newSchoolsCount: created WITHIN this period (vs existedByPeriodEnd
+            // which is "existed at any point up to period end"). Reuses the
+            // same fetch above.
             if ($createdTs !== false && $createdTs >= $periodStart && $createdTs <= $periodEnd) {
                 $newSchoolsCount++;
             }
