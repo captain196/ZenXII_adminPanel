@@ -309,6 +309,32 @@
 </div>
 
 </div><!-- /.row -->
+
+<!-- ── Onboarding success confirmation dialog ── -->
+<div class="modal fade" id="onboardSuccessModal" tabindex="-1" role="dialog" data-backdrop="static" data-keyboard="false">
+  <div class="modal-dialog" role="document">
+    <div class="modal-content">
+      <div class="modal-header" style="background:var(--green-dim);">
+        <h4 class="modal-title" style="color:var(--green);"><i class="fa fa-check-circle"></i> School Onboarded Successfully</h4>
+      </div>
+      <div class="modal-body">
+        <p style="color:var(--t2);margin-bottom:14px;font-size:13px;">Share these login credentials securely with the school administrator. The password is shown here only once.</p>
+        <table class="table" style="margin-bottom:10px;">
+          <tr><td style="color:var(--t3);width:140px;">School Name</td><td id="osmName" style="font-weight:600;"></td></tr>
+          <tr><td style="color:var(--t3);">School ID</td><td><code id="osmSchoolId" style="background:var(--bg3);padding:2px 8px;border-radius:4px;color:var(--sa4);font-weight:600;"></code></td></tr>
+          <tr><td style="color:var(--t3);">School Code</td><td><code id="osmCode" style="background:var(--bg3);padding:2px 8px;border-radius:4px;color:var(--sa4);font-weight:600;"></code></td></tr>
+          <tr><td style="color:var(--t3);">SSA Login ID</td><td><code id="osmSsa" style="background:var(--bg3);padding:2px 8px;border-radius:4px;color:var(--sa4);font-weight:600;"></code></td></tr>
+          <tr><td style="color:var(--t3);">Password</td><td><code id="osmPass" style="background:var(--bg3);padding:2px 8px;border-radius:4px;color:var(--sa4);font-weight:600;"></code></td></tr>
+        </table>
+        <button type="button" class="btn btn-default btn-sm" id="osmCopy"><i class="fa fa-copy"></i> Copy all credentials</button>
+      </div>
+      <div class="modal-footer">
+        <a href="<?= base_url('superadmin/schools') ?>" class="btn btn-default">View all schools</a>
+        <button type="button" class="btn btn-primary" data-dismiss="modal">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
 </section>
 
 <script>
@@ -563,6 +589,22 @@ $(function(){
                         + '<p style="margin-bottom:0;color:var(--t3);font-size:11px;">Share these credentials with the school administrator.</p>'
                     );
                     $('#credentialsBox').show();
+
+                    // Prominent confirmation dialog (id + password + school name + schoolId)
+                    $('#osmName').text($('#schoolName').val().trim());
+                    $('#osmSchoolId').text(r.school_id || '');
+                    $('#osmCode').text(schoolCode);
+                    $('#osmSsa').text(ssaId);
+                    $('#osmPass').text($('#adminPass').val());
+                    $('#osmCopy').off('click').on('click', function(){
+                        var txt = 'School: ' + $('#osmName').text()
+                                + '\nSchool ID: ' + $('#osmSchoolId').text()
+                                + '\nSchool Code: ' + $('#osmCode').text()
+                                + '\nSSA Login ID: ' + $('#osmSsa').text()
+                                + '\nPassword: ' + $('#osmPass').text();
+                        if (navigator.clipboard) { navigator.clipboard.writeText(txt).then(function(){ if (window.saToast) saToast('Credentials copied', 'success'); }); }
+                    });
+                    try { $('#onboardSuccessModal').modal('show'); } catch(e) {}
 
                     $btn.hide();
                     $('#backToStep3Btn').hide();

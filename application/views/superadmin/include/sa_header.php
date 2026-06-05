@@ -281,7 +281,10 @@ a{text-decoration:none !important;}
 .sidebar-collapse .content-wrapper,.sidebar-collapse .main-footer{margin-left:56px !important;}
 .sidebar-collapse .main-header .navbar{margin-left:56px !important;}
 .sidebar-collapse .main-header .logo{width:56px !important;padding:0 !important;justify-content:center !important;}
-.sidebar-collapse .main-header .logo .g-logo-link{display:none !important;}
+/* Collapsed: keep the logo MARK visible (centered), hide only the text + SA pill */
+.sidebar-collapse .main-header .logo .g-logo-link{display:flex !important;justify-content:center !important;gap:0 !important;flex:0 0 auto !important;}
+.sidebar-collapse .main-header .logo .g-logotext{display:none !important;}
+.sidebar-collapse .main-header .logo .g-sa-pill{display:none !important;}
 .sidebar-collapse .g-logosub,.sidebar-collapse .g-sec,
 .sidebar-collapse .sidebar-menu>li>a>span:not(.pull-right-container),
 .sidebar-collapse .sidebar-menu>li>a>.pull-right-container,
@@ -591,14 +594,14 @@ var BASE_URL = '<?= base_url() ?>';
 <header class="main-header">
     <div class="logo">
         <a class="g-logo-link" href="<?= base_url('superadmin/dashboard') ?>">
-            <img src="<?= base_url('Designs/zenxii_logo_2.png') ?>" alt="ZenXii" class="g-mark" style="width:32px;height:32px;object-fit:contain;border-radius:50%;background:transparent;box-shadow:none;">
+            <img src="<?= base_url('Designs/zenxii_logo_2.png') ?>" alt="ZenXii" class="g-mark" style="width:46px;height:46px;object-fit:contain;border-radius:10px;background:transparent;box-shadow:none;flex-shrink:0;">
             <div class="g-logotext">
                 <div class="g-logoname">ZenXii</div>
                 <div class="g-logosub">Super Admin</div>
             </div>
         </a>
         <div class="g-sa-pill">SA</div>
-        <a class="sidebar-toggle" data-toggle="push-menu" role="button"><i class="fa fa-bars"></i></a>
+        <a class="sidebar-toggle" id="saSidebarToggle" role="button" title="Toggle sidebar"><i class="fa fa-bars"></i></a>
     </div>
     <nav class="navbar navbar-static-top">
         <div class="g-search">
@@ -625,8 +628,8 @@ var BASE_URL = '<?= base_url() ?>';
                             <p><?= htmlspecialchars($sa_name ?? 'Super Admin') ?><small><?= htmlspecialchars($sa_role ?? 'superadmin') ?></small></p>
                         </li>
                         <li class="user-footer">
-                            <a href="<?= base_url('superadmin/dashboard') ?>" class="btn btn-default">Dashboard</a>
-                            <a href="<?= base_url('superadmin/logout') ?>"    class="btn btn-danger">Logout</a>
+                            <a href="#" class="btn btn-default" onclick="saOpenProfile();return false;"><i class="fa fa-id-card-o"></i> Profile</a>
+                            <a href="<?= base_url('superadmin/logout') ?>" class="btn btn-danger">Logout</a>
                         </li>
                     </ul>
                 </li>
@@ -634,6 +637,52 @@ var BASE_URL = '<?= base_url() ?>';
         </div>
     </nav>
 </header>
+
+<!-- ── My Profile modal (developer super admin identity) ── -->
+<div class="modal fade" id="saProfileModal" tabindex="-1" role="dialog" aria-hidden="true">
+  <div class="modal-dialog" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+        <h4 class="modal-title"><i class="fa fa-id-card-o" style="color:var(--sa3);margin-right:8px;"></i>My Profile</h4>
+      </div>
+      <div class="modal-body" style="padding:22px !important;">
+        <div style="display:flex;align-items:center;gap:15px;margin-bottom:22px;">
+          <img src="<?= base_url() ?>tools/image/user.jpg" alt="" style="width:56px;height:56px;border-radius:14px;object-fit:cover;border:2px solid var(--brd2);flex-shrink:0;">
+          <div style="min-width:0;">
+            <div style="font-size:16px;font-weight:700;color:var(--t1);letter-spacing:-.2px;"><?= htmlspecialchars($sa_name ?? 'Super Admin') ?></div>
+            <span style="display:inline-block;margin-top:5px;font-family:var(--font-m);font-size:9.5px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--sa4);background:var(--sa-dim);border:1px solid var(--sa-ring);border-radius:5px;padding:2px 8px;"><?= htmlspecialchars((string)($this->session->userdata('sa_role') ?? $sa_role ?? 'super_admin')) ?></span>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:130px 1fr;align-items:center;row-gap:1px;background:var(--border);border:1px solid var(--border);border-radius:9px;overflow:hidden;">
+          <div style="background:var(--bg3);padding:11px 14px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--t3);">Admin ID</div>
+          <div style="background:var(--bg2);padding:11px 14px;font-family:var(--font-m);font-size:13px;color:var(--sa4);font-weight:600;"><?= htmlspecialchars((string)($this->session->userdata('sa_id') ?? '—')) ?></div>
+          <div style="background:var(--bg3);padding:11px 14px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--t3);">Email</div>
+          <div style="background:var(--bg2);padding:11px 14px;font-size:13px;color:var(--t1);word-break:break-all;"><?= htmlspecialchars((string)($this->session->userdata('sa_email') ?? '—')) ?></div>
+          <div style="background:var(--bg3);padding:11px 14px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--t3);">Role</div>
+          <div style="background:var(--bg2);padding:11px 14px;font-size:13px;color:var(--t1);text-transform:capitalize;"><?= htmlspecialchars((string)($this->session->userdata('sa_role') ?? $sa_role ?? 'super_admin')) ?></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+        <a href="<?= base_url('superadmin/logout') ?>" class="btn btn-danger"><i class="fa fa-sign-out"></i> Logout</a>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+function saOpenProfile(){ try { $('#saProfileModal').modal('show'); } catch(e) { window.location='<?= base_url('superadmin/dashboard') ?>'; } }
+(function(){
+    // Restore persisted collapsed state (set before AdminLTE inits so layout is correct)
+    try { if (localStorage.getItem('sa_sidebar') === 'collapsed') document.body.classList.add('sidebar-collapse'); } catch(e){}
+    var t = document.getElementById('saSidebarToggle');
+    if (t) t.addEventListener('click', function(e){
+        e.preventDefault();
+        var collapsed = document.body.classList.toggle('sidebar-collapse');
+        try { localStorage.setItem('sa_sidebar', collapsed ? 'collapsed' : 'expanded'); } catch(e){}
+    });
+})();
+</script>
 
 <!-- SIDEBAR -->
 <aside class="main-sidebar">
