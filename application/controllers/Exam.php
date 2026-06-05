@@ -142,6 +142,19 @@ class Exam extends MY_Controller
                 $this->json_error('Exam schedule has no entries. Please add at least one row.', 400);
             }
 
+            // — A1-6: duplicate-exam guard. Reject a second exam with the same
+            //   Name + Type in this session (prevents double-submit duplicates).
+            $existingExams = $this->firebase->get("Schools/{$school}/{$year}/Exams") ?? [];
+            if (is_array($existingExams)) {
+                foreach ($existingExams as $exId => $exMeta) {
+                    if ($exId === 'Count' || !is_array($exMeta)) continue;
+                    if (strcasecmp(trim((string) ($exMeta['Name'] ?? '')), $name) === 0
+                        && strcasecmp(trim((string) ($exMeta['Type'] ?? '')), $type) === 0) {
+                        $this->json_error("An exam named \"{$name}\" ({$type}) already exists for this session.", 409);
+                    }
+                }
+            }
+
             // — Generate EXM ID
             $examId = $this->generate_exam_id();
 
@@ -196,6 +209,12 @@ class Exam extends MY_Controller
                 if (!$stDt || !$etDt) {
                     $skippedRows[] = "Row {$rowIndex} ({$subject}): Invalid time format '{$startTime}-{$endTime}'.";
                     log_message('error', "Exam::create — bad time [{$startTime}-{$endTime}], skipping.");
+                    continue;
+                }
+                // A1-3: per-row end time must be after start time.
+                if ($etDt <= $stDt) {
+                    $skippedRows[] = "Row {$rowIndex} ({$subject}): End time must be after start time ('{$startTime}-{$endTime}').";
+                    log_message('error', "Exam::create — end<=start time [{$startTime}-{$endTime}], skipping.");
                     continue;
                 }
                 $timeStr = $stDt->format('h:iA') . '-' . $etDt->format('h:iA');
