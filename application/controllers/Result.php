@@ -289,9 +289,8 @@ class Result extends MY_Controller
             redirect('result');
         }
 
-        // Load student profile
-        $profile = $this->firebase->get("Users/Parents/{$this->parent_db_key}/{$userId}") ?? [];
-        if (!is_array($profile)) $profile = [];
+        // Load student profile (CC-6: Firestore canonical `students`, no RTDB).
+        $profile = $this->_profile_from_fs($userId);
 
         $studentName = $profile['Name'] ?? $profile['name'] ?? 'Unknown Student';
         $className   = $profile['Class']   ?? '';
@@ -539,15 +538,13 @@ class Result extends MY_Controller
         $schoolInfo = $this->firebase->get("Schools/{$school}/Info") ?? [];
         if (!is_array($schoolInfo)) $schoolInfo = [];
 
-        // Build per-student data using the parent_db_key for profile lookups
-        $school_id = $this->parent_db_key;
+        // Build per-student data (CC-6: profiles sourced from Firestore canonical).
         $students  = [];
         $userIds   = array_unique(array_merge(array_keys($computed), array_keys($roster)));
         sort($userIds);
 
-        // Single Firebase read for all profiles (fixes N+1 query pattern)
-        $allProfiles = $this->firebase->get("Users/Parents/{$school_id}") ?? [];
-        if (!is_array($allProfiles)) $allProfiles = [];
+        // CC-6: all profiles from Firestore canonical `students` in one query (no RTDB).
+        $allProfiles = $this->_profiles_from_fs();
 
         foreach ($userIds as $userId) {
             if (!isset($computed[$userId])) continue; // Only students with computed results
@@ -1684,9 +1681,8 @@ class Result extends MY_Controller
         $schoolInfo = $this->firebase->get("Schools/{$school}/Info") ?? [];
         if (!is_array($schoolInfo)) $schoolInfo = [];
 
-        $school_id   = $this->parent_db_key;
-        $allProfiles = $this->firebase->get("Users/Parents/{$school_id}") ?? [];
-        if (!is_array($allProfiles)) $allProfiles = [];
+        // CC-6: all profiles from Firestore canonical `students` in one query (no RTDB).
+        $allProfiles = $this->_profiles_from_fs();
 
         $rcTemplate = $this->firebase->get("Schools/{$school}/Config/ReportCardTemplate");
         $rcAllowed  = ['classic', 'cbse', 'minimal', 'modern', 'elegant', 'professional'];
@@ -1813,9 +1809,8 @@ class Result extends MY_Controller
         if (!$exam || !is_array($exam)) return null;
         $exam = array_merge(['id' => $examId], $exam);
 
-        $school_id = $this->parent_db_key;
-        $profile   = $this->firebase->get("Users/Parents/{$school_id}/{$userId}") ?? [];
-        if (!is_array($profile)) $profile = [];
+        // CC-6: profile from Firestore canonical `students` (no RTDB).
+        $profile = $this->_profile_from_fs($userId);
 
         $className  = trim($profile['Class']   ?? '');
         $section    = trim($profile['Section'] ?? '');
@@ -1893,6 +1888,89 @@ class Result extends MY_Controller
             'rc_template' => $rcTemplate,
             'rc_config'   => $this->_get_report_card_config(),
         ];
+    }
+
+    /**
+     * CC-6: Map a canonical Firestore `students` document to the RTDB-shaped
+     * profile keys the report-card views/templates expect. This adapter is the
+     * single place the camelCase canonical schema is translated to the legacy
+     * Title-Case contract, so no view/template changes are required.
+     *
+     * `Class`/`Section` are de-prefixed (any leading "Class "/"Section ") so the
+     * downstream `"Class {$x}"` / `"Section {$y}"` key derivation in
+     * student_result()/_load_report_card_data() reproduces the canonical
+     * result-lookup keys regardless of how the value is stored upstream.
+     */
+    private function _fs_profile_adapter(array $doc): array
+    {
+        return [
+            'Name'        => (string) ($doc['name']       ?? ''),
+            'Father Name' => (string) ($doc['fatherName'] ?? ''),
+            'Mother Name' => (string) ($doc['motherName'] ?? ''),
+            'DOB'         => (string) ($doc['dob']        ?? ''),
+            'Gender'      => (string) ($doc['gender']     ?? ''),
+            'User Id'     => (string) ($doc['rollNo']     ?? ''),
+            'Roll_No'     => (string) ($doc['rollNo']     ?? ''), // student_result.php Roll badge
+            'Address'     => $doc['address'] ?? [],
+            'Profile Pic' => (string) ($doc['profilePic'] ?? ''),
+            'Class'       => preg_replace('/^Class\s+/i',   '', (string) ($doc['className'] ?? '')),
+            'Section'     => preg_replace('/^Section\s+/i', '', (string) ($doc['section']   ?? '')),
+        ];
+    }
+
+    /**
+     * CC-6: Load a single student's profile from the canonical Firestore
+     * `students` collection (doc id = "{$this->school_id}_{$userId}").
+     * Firestore-only — returns [] on any miss/error so callers degrade exactly
+     * as the previous RTDB `?? []` path did.
+     */
+    private function _profile_from_fs(string $userId): array
+    {
+        if ($userId === '') return [];
+        try {
+            $doc = $this->fs->get('students', "{$this->school_id}_{$userId}");
+        } catch (\Throwable $e) {
+            log_message('error', "CC-6 _profile_from_fs({$userId}) failed: " . $e->getMessage());
+            return [];
+        }
+        if (!is_array($doc) || empty($doc)) return [];
+        return $this->_fs_profile_adapter($doc);
+    }
+
+    /**
+     * CC-6: Load all of this school's student profiles in a single Firestore
+     * query, keyed by studentId (the userId used throughout Result.php). Filters
+     * on the canonical `schoolId` field (= $this->school_id, the SCH_ id) — not
+     * Firestore_helper::querySchool(), whose schoolId is the school *name*.
+     * Firestore-only — returns [] on error.
+     */
+    private function _profiles_from_fs(): array
+    {
+        try {
+            $rows = $this->fs->query('students', [['schoolId', '==', $this->school_id]]);
+        } catch (\Throwable $e) {
+            log_message('error', 'CC-6 _profiles_from_fs failed: ' . $e->getMessage());
+            return [];
+        }
+        if (!is_array($rows)) return [];
+
+        $out = [];
+        foreach ($rows as $key => $row) {
+            $data = (is_array($row) && isset($row['data']) && is_array($row['data'])) ? $row['data'] : (is_array($row) ? $row : []);
+            if (!$data) continue;
+            $uid = (string) ($data['studentId'] ?? $data['userId'] ?? '');
+            if ($uid === '') {
+                // Fall back to the doc id ("{school_id}_{studentId}") if present.
+                $docId = is_string($row['id'] ?? null) ? $row['id'] : (is_string($key) ? $key : '');
+                $prefix = $this->school_id . '_';
+                if ($docId !== '' && strpos($docId, $prefix) === 0) {
+                    $uid = substr($docId, strlen($prefix));
+                }
+            }
+            if ($uid === '') continue;
+            $out[$uid] = $this->_fs_profile_adapter($data);
+        }
+        return $out;
     }
 
     /**
