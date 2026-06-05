@@ -955,72 +955,15 @@ class Examination extends MY_Controller
         ) ?? [];
         if (!is_array($allMarksNode)) $allMarksNode = [];
 
-        // Collect unique student IDs across all subjects
-        $allUserIds = [];
-        foreach ($allMarksNode as $subj => $stuMarks) {
-            if (is_array($stuMarks)) {
-                foreach (array_keys($stuMarks) as $uid) {
-                    $allUserIds[$uid] = true;
-                }
-            }
-        }
-        $allUserIds = array_keys($allUserIds);
+        // Phase 1 convergence: delegate to the single shared CC-8 compute path
+        // in Exam_engine (identical policy to Result.php::compute_results).
+        // Pure/storage-agnostic; this controller keeps its own RTDB write +
+        // Firestore mirror below.
+        $studentResults = $this->exam_engine->compute_section($templatesNode, $allMarksNode, $scale, $passingPct);
 
-        if (empty($allUserIds)) {
+        if (empty($studentResults)) {
             return ['success' => false, 'count' => 0, 'reason' => 'No marks entered'];
         }
-
-        // Per student: aggregate subjects
-        $studentResults = [];
-        foreach ($allUserIds as $uid) {
-            $totalMarks = 0;
-            $maxMarks   = 0;
-            $subjects   = [];
-            $allPass    = true;
-
-            foreach ($templatesNode as $subj => $tmpl) {
-                if (!is_array($tmpl)) continue;
-                $subjMax   = (int) ($tmpl['TotalMaxMarks'] ?? 0);
-                $stuMarks  = $allMarksNode[$subj][$uid] ?? [];
-                $absent    = !empty($stuMarks['Absent']);
-                $subjTotal = $absent ? 0 : (int) ($stuMarks['Total'] ?? 0);
-                $subjPct   = $subjMax > 0 ? ($subjTotal / $subjMax * 100) : 0;
-                $subjGrade = $absent ? 'AB' : $this->exam_engine->compute_grade($subjPct, $scale);
-                $subjPass  = $absent ? 'Fail' : $this->exam_engine->compute_pass_fail($subjPct, $passingPct);
-
-                if ($subjPass === 'Fail') $allPass = false;
-
-                $subjects[$subj] = [
-                    'Total'      => $subjTotal,
-                    'MaxMarks'   => $subjMax,
-                    'Percentage' => round($subjPct, 2),
-                    'Grade'      => $subjGrade,
-                    'PassFail'   => $subjPass,
-                    'Absent'     => $absent,
-                ];
-
-                $totalMarks += $subjTotal;
-                $maxMarks   += $subjMax;
-            }
-
-            $overallPct   = $maxMarks > 0 ? ($totalMarks / $maxMarks * 100) : 0;
-            $overallGrade = $this->exam_engine->compute_grade($overallPct, $scale);
-            $overallPass  = $allPass ? $this->exam_engine->compute_pass_fail($overallPct, $passingPct) : 'Fail';
-
-            $studentResults[$uid] = [
-                'TotalMarks' => $totalMarks,
-                'MaxMarks'   => $maxMarks,
-                'Percentage' => round($overallPct, 2),
-                'Grade'      => $overallGrade,
-                'PassFail'   => $overallPass,
-                'Subjects'   => $subjects,
-                'ComputedAt' => (int) round(microtime(true) * 1000),
-            ];
-        }
-
-        // Sort by Percentage desc → assign competition ranks (1,1,3)
-        uasort($studentResults, function($a, $b) { return $b['Percentage'] <=> $a['Percentage']; });
-        $this->exam_engine->assign_ranks_assoc($studentResults, 'Percentage');
 
         // Write to Computed node — single batch update instead of per-student writes
         $basePath = "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$sectionKey}";
