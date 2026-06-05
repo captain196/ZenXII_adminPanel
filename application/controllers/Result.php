@@ -1085,12 +1085,16 @@ class Result extends MY_Controller
         if (!is_array($config) || empty($config['Exams'])) {
             $this->json_error('No cumulative config found. Save config first.', 400);
         }
-        if ((int) ($config['TotalWeight'] ?? 0) !== 100) {
-            $this->json_error('TotalWeight must be 100.', 400);
-        }
-
         $examWeights = $config['Exams'];
         $examIds     = array_keys($examWeights);
+
+        // CC-5: guard a stale TotalWeight after an exam delete — recompute the
+        // live weight sum instead of trusting the stored value.
+        $sumWeights = 0;
+        foreach ($examWeights as $ew) { $sumWeights += (int) ($ew['Weight'] ?? 0); }
+        if ($sumWeights !== 100) {
+            $this->json_error('Cumulative config is out of date (exam weights total ' . $sumWeights . '%, expected 100%). Re-open and re-save the cumulative configuration.', 400);
+        }
 
         // Load computed results per exam
         $allExamResults = [];
@@ -1117,24 +1121,34 @@ class Result extends MY_Controller
 
         $studentCumulative = [];
         foreach (array_keys($allUids) as $uid) {
-            $weightedTotal    = 0;
-            $subjectWeighted  = [];
-            $anyFail          = false;
+            $weightedTotal    = 0.0;   // Σ(examPct × weight) over covered exams
+            $coveredWeight    = 0;     // Σ(weight) over exams with a real %
+            $subjectWeighted  = [];    // subj => Σ(subjPct × weight)
+            $subjectCovWeight = [];    // subj => per-subject covered weight
 
             foreach ($examIds as $examId) {
                 $weight    = (int) ($examWeights[$examId]['Weight'] ?? 0);
                 $stuResult = $allExamResults[$examId][$uid] ?? null;
                 if (!$stuResult) continue;
 
-                $stuPct  = (float) ($stuResult['Percentage'] ?? 0);
-                $weightedTotal += ($stuPct * $weight / 100);
+                // CC-5: overall normalizes by covered weight; CC-8 fully-absent
+                // exam (Percentage null) excluded from numerator AND denominator.
+                $examPct = $stuResult['Percentage'] ?? null;
+                if ($examPct !== null && $weight > 0) {
+                    $weightedTotal += ((float) $examPct) * $weight;
+                    $coveredWeight += $weight;
+                }
 
-                if (($stuResult['PassFail'] ?? '') === 'Fail') $anyFail = true;
-
+                // CC-5: each subject keeps its OWN denominator; AB subjects
+                // excluded both ways (key retained so AB is detectable later).
                 foreach ($stuResult['Subjects'] ?? [] as $subj => $subjData) {
-                    $subjPct = (float) ($subjData['Percentage'] ?? 0);
-                    if (!isset($subjectWeighted[$subj])) $subjectWeighted[$subj] = 0;
-                    $subjectWeighted[$subj] += ($subjPct * $weight / 100);
+                    if (!is_array($subjData)) continue;
+                    if (!isset($subjectWeighted[$subj]))  $subjectWeighted[$subj]  = 0.0;
+                    if (!isset($subjectCovWeight[$subj])) $subjectCovWeight[$subj] = 0;
+                    $sp = $subjData['Percentage'] ?? null;
+                    if (!empty($subjData['Absent']) || $sp === null || $weight <= 0) continue;
+                    $subjectWeighted[$subj]  += ((float) $sp) * $weight;
+                    $subjectCovWeight[$subj] += $weight;
                 }
             }
 
@@ -1158,22 +1172,54 @@ class Result extends MY_Controller
                 }
             }
 
-            $overallGrade = $this->exam_engine->compute_grade($weightedTotal, $scale);
-            $overallPass  = $anyFail ? 'Fail' : $this->exam_engine->compute_pass_fail($weightedTotal, $passingPct);
-
-            $subjResults = [];
-            foreach ($subjectWeighted as $subj => $ws) {
+            // CC-5: per-subject normalized results + final subject outcomes.
+            $subjResults     = [];
+            $anyNonAbSubject = false;
+            $anyNonAbFail    = false;
+            foreach ($subjectWeighted as $subj => $wsum) {
+                $cw = $subjectCovWeight[$subj] ?? 0;
+                if ($cw <= 0) {                              // absent in every covered exam
+                    $subjResults[$subj] = [
+                        'WeightedScore' => null,
+                        'Grade'         => 'AB',
+                        'PassFail'      => 'AB',
+                        'Absent'        => true,
+                    ];
+                    continue;
+                }
+                $sNorm = $wsum / $cw;
+                $sPass = $this->exam_engine->compute_pass_fail($sNorm, $passingPct);
+                $anyNonAbSubject = true;
+                if ($sPass === 'Fail') $anyNonAbFail = true;
                 $subjResults[$subj] = [
-                    'WeightedScore' => round($ws, 2),
-                    'Grade'         => $this->exam_engine->compute_grade($ws, $scale),
-                    'PassFail'      => $this->exam_engine->compute_pass_fail($ws, $passingPct),
+                    'WeightedScore' => round($sNorm, 2),
+                    'Grade'         => $this->exam_engine->compute_grade($sNorm, $scale),
+                    'PassFail'      => $sPass,
+                    'Absent'        => false,
                 ];
             }
 
+            // CC-5: overall % + grade from normalized aggregate (independent of result).
+            if ($coveredWeight > 0) {
+                $overallPct   = $weightedTotal / $coveredWeight;
+                $overallGrade = $this->exam_engine->compute_grade($overallPct, $scale);
+            } else {
+                $overallPct   = null;
+                $overallGrade = 'AB';
+            }
+
+            // CC-5: result from final subject outcomes (no blanket anyFail).
+            if (!$anyNonAbSubject) {
+                $overallPass = 'AB';
+            } else {
+                $overallPass = $anyNonAbFail ? 'Fail' : 'Pass';
+            }
+
             $studentCumulative[$uid] = [
-                'WeightedTotal' => round($weightedTotal, 2),
+                'WeightedTotal' => $overallPct === null ? null : round($overallPct, 2),
                 'Grade'         => $overallGrade,
                 'PassFail'      => $overallPass,
+                'Absent'        => (!$anyNonAbSubject),
                 'Subjects'      => $subjResults,
                 'ComputedAt'    => (int) round(microtime(true) * 1000),
                 'ExamsCovered'  => $examsAppeared,    // EX-5 FIX
@@ -1182,9 +1228,17 @@ class Result extends MY_Controller
             ];
         }
 
-        // Sort and assign ranks
-        uasort($studentCumulative, fn($a, $b) => $b['WeightedTotal'] <=> $a['WeightedTotal']);
-        $this->exam_engine->assign_ranks_assoc($studentCumulative, 'WeightedTotal');
+        // CC-5: rank only full-coverage students; partial/fully-absent → NR.
+        $rankable = [];
+        foreach ($studentCumulative as $rid => $r) {
+            if (empty($r['IsPartial']) && $r['WeightedTotal'] !== null) $rankable[$rid] = $r;
+        }
+        uasort($rankable, fn($a, $b) => $b['WeightedTotal'] <=> $a['WeightedTotal']);
+        $this->exam_engine->assign_ranks_assoc($rankable, 'WeightedTotal');
+        foreach ($studentCumulative as $rid => &$r) {
+            $r['Rank'] = $rankable[$rid]['Rank'] ?? 'NR';
+        }
+        unset($r);
 
         // EX-2 FIX: Single batch write instead of N individual writes
         $basePath = "Schools/{$school}/{$year}/Results/Cumulative/{$classKey}/{$sectionKey}";
@@ -1279,13 +1333,19 @@ class Result extends MY_Controller
                 'uid'           => $uid,
                 'name'          => $studentList[$uid] ?? $uid,
                 'rank'          => $res['Rank']           ?? '—',
-                'weightedTotal' => $res['WeightedTotal']  ?? 0,
+                'weightedTotal' => $res['WeightedTotal']  ?? null,   // CC-5: null → '—' (no 0%)
                 'grade'         => $res['Grade']          ?? '',
                 'passFail'      => $res['PassFail']       ?? '',
+                'isPartial'     => !empty($res['IsPartial']),
                 'subjects'      => $res['Subjects']       ?? [],
             ];
         }
-        usort($rows, fn($a, $b) => ($a['rank'] ?? 999) <=> ($b['rank'] ?? 999));
+        // CC-5: NR-safe sort — non-numeric ranks (NR) sink to the bottom.
+        usort($rows, function ($a, $b) {
+            $ra = is_numeric($a['rank']) ? (int) $a['rank'] : 9999;
+            $rb = is_numeric($b['rank']) ? (int) $b['rank'] : 9999;
+            return $ra <=> $rb;
+        });
 
         echo json_encode(['students' => $rows, 'subjects' => $subjects, 'stale' => $stale]);
     }
