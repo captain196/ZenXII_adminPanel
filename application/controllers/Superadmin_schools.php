@@ -248,6 +248,23 @@ class Superadmin_schools extends MY_Superadmin_Controller
         $useFsSsa        = is_array($saFlags) && !empty($saFlags['onboard.ssa_firebase']);
         $this->_ob_schcodeVal = null; $this->_ob_ssaVal = null; $this->_ob_fbUid = null;
 
+        // ── NO-MONGO HARD GATE (legacy onboarding decommissioned) ───────────────
+        // Every legacy onboarding branch below routes school-code + SSA creation
+        // through auth_client (the retired Mongo subsystem; B1 onboarding
+        // convergence). The all-Firestore path is the ONLY supported onboarding
+        // path. If any of the three cutover flags is off we fail loudly here
+        // rather than silently provisioning an SSA via Mongo / a partial path
+        // that cannot satisfy the canonical login contract.
+        if (!$this->_b23c_registry_firestore_on() || !$useIdGenSchcode || !$useFsSsa) {
+            log_message('error', 'SA onboard BLOCKED — legacy Mongo onboarding path is decommissioned. '
+                . 'Required all-Firestore flags: b2.registry_firestore=' . var_export($this->_b23c_registry_firestore_on(), true)
+                . ', onboard.schcode_firestore=' . var_export($useIdGenSchcode, true)
+                . ', onboard.ssa_firebase=' . var_export($useFsSsa, true) . ' (all must be true).');
+            $this->_onboard_telem('ONBOARD_RESULT', ['result' => 'blocked_legacy_mongo_decommissioned']);
+            $this->json_error('Onboarding is unavailable in this configuration. Please contact support.');
+            return;
+        }
+
         if ($useIdGenSchcode) {
             $this->load->library('id_generator');
             try { $school_code = $this->id_generator->safeGenerate('SCHCODE'); }
@@ -336,9 +353,15 @@ class Superadmin_schools extends MY_Superadmin_Controller
 
             $claimOk = false;
             for ($attempt = 1; $attempt <= 2 && !$claimOk; $attempt++) {
+                // Wave C canonical claim schema (camelCase) — MUST match the keys
+                // Admin_login::_try_firebase_admin_login reads (schoolId/schoolCode/
+                // role). The prior snake_case keys (school_id/school_code) left
+                // $schoolId empty at login → ADMIN_LOGIN_AUTHZ_MISSING → SSA could
+                // never sign in. See SSA0001 (working) for the canonical shape.
                 $claimOk = $this->firebase->setFirebaseClaims($admin_id, [
-                    'role' => 'school_super_admin', 'school_id' => $school_id,
-                    'school_code' => $school_code, 'parent_db_key' => $school_code,
+                    'role' => 'school_super_admin', 'roleLabel' => 'School Super Admin',
+                    'schoolId' => $school_id, 'schoolCode' => $school_code,
+                    'parentDbKey' => $school_code,
                 ]);
                 if (!$claimOk && $attempt < 2) usleep(200000);
             }
@@ -414,6 +437,52 @@ class Superadmin_schools extends MY_Superadmin_Controller
                 log_message('error', 'SA onboard (FS): Users/Admin write failed (non-fatal): ' . $e->getMessage());
             }
 
+            // ── SSA staff doc — REQUIRED for login authorization ────────────
+            // Admin_login::_try_firebase_admin_login reads staff/{schoolId}_{ssaId}
+            // for the canonical Active/Inactive status check (Wave C). create_tenant
+            // writes schoolSsa/{ssaId} but NOT this staff doc, so without this block
+            // a freshly-onboarded SSA fails login with ADMIN_LOGIN_AUTHZ_MISSING
+            // (reason=staff_doc_absent). Shape mirrors the working SSA0001 doc.
+            $staffDoc = [
+                'staffId'       => $admin_id,
+                'schoolId'      => $school_id,
+                'status'        => 'Active',
+                'Status'        => 'Active',
+                'role'          => 'School Super Admin',
+                'Role'          => 'School Super Admin',
+                'name'          => $admin_name,
+                'Name'          => $admin_name,
+                'email'         => $admin_email,
+                'Email'         => $admin_email,
+                'sessions'      => [$session_yr],
+                'session'       => $session_yr,
+                'auth_migrated' => true,
+                'Privileges'    => ['accountmanagement' => ''],
+                'Profile'       => [
+                    'name' => $admin_name, 'email' => $admin_email, 'phone' => $phone,
+                    'role' => 'school_super_admin', 'school' => $name,
+                    'school_id' => $school_code, 'firebase_id' => $school_id,
+                    'created_at' => $now, 'created_by' => (string) $this->sa_id,
+                ],
+                'updatedAt'     => date('c'),
+            ];
+            // Bounded retry (idempotent merge) — absorbs a transient single-write
+            // failure so a blip cannot strand the SSA without a staff doc. If all
+            // attempts fail, the contract self-heal below makes a final attempt
+            // and, failing that, quarantines the tenant (no silent success).
+            $staffOk = false;
+            for ($attempt = 1; $attempt <= 3 && !$staffOk; $attempt++) {
+                try {
+                    $staffOk = (bool) $this->firebase->firestoreSet('staff', "{$school_id}_{$admin_id}", $staffDoc, true);
+                } catch (\Throwable $e) {
+                    log_message('error', "SA onboard (FS): staff doc write attempt {$attempt} failed for {$admin_id} ({$school_id}): " . $e->getMessage());
+                }
+                if (!$staffOk && $attempt < 3) usleep(200000); // 200ms backoff
+            }
+            if (!$staffOk) {
+                log_message('error', "SA onboard (FS): staff doc write exhausted retries for {$admin_id} ({$school_id}) — contract self-heal will make a final attempt.");
+            }
+
             // SC-Step8 (Session Convergence — 2026-06-02): RTDB Sessions +
             // Config/ActiveSession writes RETIRED. Admin_login is Firestore-
             // canonical (SW2 2026-05-26); MY_Controller is Firestore-canonical
@@ -442,6 +511,45 @@ class Superadmin_schools extends MY_Superadmin_Controller
                 'grace_days' => $grace_days,
             ]);
 
+            // ── Canonical SSA login-contract enforcement (fail-closed by repair) ──
+            // Verify the freshly-provisioned SSA satisfies the Admin_login contract
+            // (Auth user + schoolId/role claims + staff doc + login-eligible status).
+            // On a violation we first attempt an idempotent SELF-HEAL, then re-verify.
+            // If it STILL violates we neither silently succeed nor destructively roll
+            // back — we QUARANTINE the tenant (lifecycle=provisioning_incomplete, which
+            // the login access-gate auto-denies) and return json_error, leaving the
+            // recoverable artifacts in place for idempotent repair.
+            $ssaViolations = $this->_verify_ssa_login_contract($school_id, $admin_id);
+            if (in_array('staff_doc_missing', $ssaViolations, true)) {
+                try { $this->firebase->firestoreSet('staff', "{$school_id}_{$admin_id}", $staffDoc, true); }
+                catch (\Throwable $e) {
+                    log_message('error', "SA onboard (FS): staff doc self-heal failed for {$admin_id} ({$school_id}): " . $e->getMessage());
+                }
+                $ssaViolations = $this->_verify_ssa_login_contract($school_id, $admin_id);
+            }
+
+            if (!empty($ssaViolations)) {
+                // Unresolved → quarantine (no destructive rollback) + fail-closed.
+                try {
+                    $svc->write_lifecycle_state($school_id, 'provisioning_incomplete',
+                        'ssa_login_contract_unresolved: ' . implode(',', $ssaViolations));
+                } catch (\Throwable $e) {
+                    log_message('error', "SA onboard (FS): provisioning_incomplete flag failed for {$school_id}: " . $e->getMessage());
+                }
+                $this->_onboard_telem('ONBOARD_RESULT', [
+                    'result' => 'ssa_contract_unresolved', 'path' => 'firestore_canonical',
+                    'school_id' => $school_id, 'school_code' => $school_code,
+                    'admin_id' => $admin_id, 'missing' => implode(',', $ssaViolations),
+                ]);
+                log_message('error', "SA onboard CONTRACT UNRESOLVED ssa={$admin_id} school={$school_id} "
+                    . "— tenant quarantined (provisioning_incomplete); SSA cannot log in until repaired: "
+                    . implode(', ', $ssaViolations));
+                $this->json_error('School created, but admin-login provisioning is incomplete ('
+                    . implode(', ', $ssaViolations) . '). The tenant has been flagged for repair — please retry or contact support.');
+                return;
+            }
+
+            // Contract satisfied — log success only now (never alongside a violation).
             $this->sa_log('school_onboarded', $school_id, [
                 'school_name' => $name, 'school_id' => $school_id,
                 'school_code' => $school_code, 'admin_id' => $admin_id,
@@ -618,9 +726,15 @@ class Superadmin_schools extends MY_Superadmin_Controller
             // Role claim — retry-then-rollback (2 attempts).
             $claimOk = false;
             for ($attempt = 1; $attempt <= 2 && !$claimOk; $attempt++) {
+                // Wave C canonical claim schema (camelCase) — MUST match the keys
+                // Admin_login::_try_firebase_admin_login reads (schoolId/schoolCode/
+                // role). The prior snake_case keys (school_id/school_code) left
+                // $schoolId empty at login → ADMIN_LOGIN_AUTHZ_MISSING → SSA could
+                // never sign in. See SSA0001 (working) for the canonical shape.
                 $claimOk = $this->firebase->setFirebaseClaims($admin_id, [
-                    'role' => 'school_super_admin', 'school_id' => $school_id,
-                    'school_code' => $school_code, 'parent_db_key' => $school_code,
+                    'role' => 'school_super_admin', 'roleLabel' => 'School Super Admin',
+                    'schoolId' => $school_id, 'schoolCode' => $school_code,
+                    'parentDbKey' => $school_code,
                 ]);
                 if (!$claimOk && $attempt < 2) usleep(200000);
             }
@@ -1592,6 +1706,72 @@ class Superadmin_schools extends MY_Superadmin_Controller
         } catch (Exception $e) {
             log_message('error', 'SA _initialize_default_data: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Canonical SSA login-contract enforcement.
+     *
+     * Re-reads a freshly-provisioned School Super Admin and verifies it meets
+     * the MINIMUM runtime contract that Admin_login::_try_firebase_admin_login
+     * requires to grant a session:
+     *   1. Firebase Auth user {ssaId}@schoolsync.app exists.
+     *   2. custom claim schoolId (camelCase) is present.
+     *   3. custom claim role is present.
+     *   4. staff/{schoolId}_{ssaId} exists and is non-empty.
+     *   5. staff status is login-eligible (not Inactive/Disabled).
+     *
+     * Tenant subscription + lockout are deliberately NOT checked here — they are
+     * tenant-level / transient, not SSA-provisioning properties.
+     *
+     * Returns [] when fully compliant, or a list of violation codes. Pure read;
+     * mutates nothing. Emits ONBOARD_RESULT telemetry + a loud error log on any
+     * violation so a provisioning gap surfaces immediately instead of silently
+     * succeeding.
+     */
+    private function _verify_ssa_login_contract(string $schoolId, string $ssaId): array
+    {
+        $violations = [];
+
+        // 1-3. Auth user + mandatory claims.
+        try {
+            $u = $this->firebase->getFirebaseUserByEmail(Firebase::authEmail($ssaId));
+            if ($u === null) {
+                $violations[] = 'auth_user_missing';
+            } else {
+                $claims = (array) ($u->customClaims ?? []);
+                if ((string) ($claims['schoolId'] ?? '') === '') $violations[] = 'claim_schoolId_missing';
+                if ((string) ($claims['role']     ?? '') === '') $violations[] = 'claim_role_missing';
+            }
+        } catch (\Throwable $e) {
+            $violations[] = 'auth_lookup_error';
+        }
+
+        // 4-5. staff doc existence + login-eligible status.
+        try {
+            $staff = $this->firebase->firestoreGet('staff', "{$schoolId}_{$ssaId}");
+            if (!is_array($staff) || empty($staff)) {
+                $violations[] = 'staff_doc_missing';
+            } else {
+                $status = strtolower(trim((string) ($staff['status'] ?? $staff['Status'] ?? 'Active')));
+                if ($status === 'inactive' || $status === 'disabled') $violations[] = 'staff_status_not_login_eligible';
+            }
+        } catch (\Throwable $e) {
+            $violations[] = 'staff_lookup_error';
+        }
+
+        if (empty($violations)) {
+            $this->_onboard_telem('ONBOARD_RESULT', [
+                'result' => 'ssa_contract_ok', 'school_id' => $schoolId, 'admin_id' => $ssaId,
+            ]);
+        } else {
+            $this->_onboard_telem('ONBOARD_RESULT', [
+                'result' => 'ssa_contract_violation', 'school_id' => $schoolId,
+                'admin_id' => $ssaId, 'missing' => implode(',', $violations),
+            ]);
+            log_message('error', "SA onboard CONTRACT VIOLATION ssa={$ssaId} school={$schoolId} "
+                . "— SSA may not be able to log in: " . implode(', ', $violations));
+        }
+        return $violations;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

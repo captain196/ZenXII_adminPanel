@@ -716,6 +716,11 @@ class B2_registry_service
         if (!$this->ready || $schoolId === '') return false;
         if (!in_array($newState, [
             'trialing','active','expiring_soon','grace','past_due','suspended','expired',
+            // Onboarding quarantine — set when the SSA login-contract self-heal
+            // fails. NOT in ACCESS_LIFECYCLE_STATES, so login_access_view()
+            // auto-denies access until the tenant is repaired (idempotent
+            // recovery flips it back to 'active').
+            'provisioning_incomplete',
         ], true)) return false;
         try {
             $nowIso = date('c');
