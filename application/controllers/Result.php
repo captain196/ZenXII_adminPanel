@@ -1001,16 +1001,31 @@ class Result extends MY_Controller
             $maxMarks   = 0;
             $subjects   = [];
             $allPass    = true;
+            $attempted  = 0;
 
             foreach ($templatesNode as $subj => $tmpl) {
                 if (!is_array($tmpl)) continue;
-                $subjMax    = (int) ($tmpl['TotalMaxMarks'] ?? 0);
-                $stuMarks   = $allMarksNode[$subj][$uid] ?? [];
-                $absent     = !empty($stuMarks['Absent']);
-                $subjTotal  = $absent ? 0 : (int) ($stuMarks['Total'] ?? 0);
-                $subjPct    = $subjMax > 0 ? ($subjTotal / $subjMax * 100) : 0;
-                $subjGrade  = $absent ? 'AB' : $this->exam_engine->compute_grade($subjPct, $scale);
-                $subjPass   = $absent ? 'Fail' : $this->exam_engine->compute_pass_fail($subjPct, $passingPct);
+                $subjMax  = (int) ($tmpl['TotalMaxMarks'] ?? 0);
+                $stuMarks = $allMarksNode[$subj][$uid] ?? [];
+
+                // CC-8: an absent (AB) paper is NOT zero and does NOT fail the
+                // student. It is excluded from the percentage denominator and
+                // from the overall pass/fail, but stays visibly 'AB'.
+                if (!empty($stuMarks['Absent'])) {
+                    $subjects[$subj] = [
+                        'Total'      => null,
+                        'MaxMarks'   => $subjMax,
+                        'Percentage' => null,
+                        'Grade'      => 'AB',
+                        'PassFail'   => 'AB',
+                        'Absent'     => true,
+                    ];
+                    continue;
+                }
+
+                $subjTotal = (int) ($stuMarks['Total'] ?? 0);
+                $subjPct   = $subjMax > 0 ? ($subjTotal / $subjMax * 100) : 0;
+                $subjPass  = $this->exam_engine->compute_pass_fail($subjPct, $passingPct);
 
                 if ($subjPass === 'Fail') $allPass = false;
 
@@ -1018,25 +1033,38 @@ class Result extends MY_Controller
                     'Total'      => $subjTotal,
                     'MaxMarks'   => $subjMax,
                     'Percentage' => round($subjPct, 2),
-                    'Grade'      => $subjGrade,
+                    'Grade'      => $this->exam_engine->compute_grade($subjPct, $scale),
                     'PassFail'   => $subjPass,
-                    'Absent'     => $absent,
+                    'Absent'     => false,
                 ];
 
                 $totalMarks += $subjTotal;
                 $maxMarks   += $subjMax;
+                $attempted++;
             }
 
-            $overallPct   = $maxMarks > 0 ? ($totalMarks / $maxMarks * 100) : 0;
-            $overallGrade = $this->exam_engine->compute_grade($overallPct, $scale);
-            $overallPass  = $allPass ? $this->exam_engine->compute_pass_fail($overallPct, $passingPct) : 'Fail';
+            // CC-8: percentage + pass/fail derive from attempted subjects only.
+            // Fully-absent student (no attempted papers) → AB overall: no 0%,
+            // no Fail, no new status beyond AB.
+            if ($attempted === 0 || $maxMarks === 0) {
+                $overallPct   = null;
+                $overallGrade = 'AB';
+                $overallPass  = 'AB';
+                $fullyAbsent  = true;
+            } else {
+                $overallPct   = $totalMarks / $maxMarks * 100;
+                $overallGrade = $this->exam_engine->compute_grade($overallPct, $scale);
+                $overallPass  = $allPass ? $this->exam_engine->compute_pass_fail($overallPct, $passingPct) : 'Fail';
+                $fullyAbsent  = false;
+            }
 
             $studentResults[$uid] = [
                 'TotalMarks' => $totalMarks,
                 'MaxMarks'   => $maxMarks,
-                'Percentage' => round($overallPct, 2),
+                'Percentage' => $overallPct === null ? null : round($overallPct, 2),
                 'Grade'      => $overallGrade,
                 'PassFail'   => $overallPass,
+                'Absent'     => $fullyAbsent,
                 'Subjects'   => $subjects,
                 'ComputedAt' => (int) round(microtime(true) * 1000),
             ];

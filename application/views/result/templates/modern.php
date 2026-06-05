@@ -137,7 +137,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
                 style="<?= $grandPass === 'Fail' ? 'stroke:#ef4444' : '' ?>" />
       </svg>
       <div class="md-gauge-label">
-        <span class="md-gauge-pct"><?= htmlspecialchars($grandPct) ?>%</span>
+        <span class="md-gauge-pct"><?= $overallAbsent ? '—' : htmlspecialchars($grandPct) . '%' ?></span>
         <span class="md-gauge-sub">Percentage</span>
       </div>
     </div>
@@ -241,8 +241,8 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
   <!-- ═══════════════════════════════════════════════════════════════
        RESULT BANNER
        ═══════════════════════════════════════════════════════════════ -->
-  <div class="md-result md-result-<?= $grandPass === 'Pass' ? 'pass' : 'fail' ?>">
-    <div class="md-result-icon"><?= $grandPass === 'Pass' ? '&#10003;' : '&#10007;' ?></div>
+  <div class="md-result md-result-<?= $overallAbsent ? 'absent' : ($grandPass === 'Pass' ? 'pass' : 'fail') ?>">
+    <div class="md-result-icon"><?= $resultIcon ?></div>
     <?= htmlspecialchars($resultText) ?>
   </div>
 

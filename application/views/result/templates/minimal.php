@@ -137,7 +137,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
       <div class="mn-summary">
         <div class="mn-sum-primary">
           <span class="mn-sum-total"><?= htmlspecialchars($grandTotal) ?><span class="mn-sum-of">/<?= htmlspecialchars($grandMax) ?></span></span>
-          <span class="mn-sum-pct"><?= htmlspecialchars($grandPct) ?>%</span>
+          <span class="mn-sum-pct"><?= $overallAbsent ? '—' : htmlspecialchars($grandPct) . '%' ?></span>
         </div>
         <div class="mn-sum-secondary">
           <?php if ($grandGrade): ?>
@@ -161,7 +161,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
     <?php endif; ?>
 
     <!-- ── RESULT ─────────────────────────────────────────────────── -->
-    <div class="mn-result mn-result-<?= $grandPass === 'Pass' ? 'pass' : 'fail' ?>">
+    <div class="mn-result mn-result-<?= $overallAbsent ? 'absent' : ($grandPass === 'Pass' ? 'pass' : 'fail') ?>">
       <?= htmlspecialchars($resultText) ?>
     </div>
 

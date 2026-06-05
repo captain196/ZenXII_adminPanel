@@ -89,7 +89,7 @@
         <div class="rsr-sum-lbl">Max Marks</div>
       </div>
       <div class="rsr-sum-card rsr-sum-pct">
-        <div class="rsr-sum-val"><?= htmlspecialchars($res['Percentage'] ?? '—') ?>%</div>
+        <div class="rsr-sum-val"><?= ($res['Absent'] ?? false) ? '—' : htmlspecialchars($res['Percentage'] ?? '—') . '%' ?></div>
         <div class="rsr-sum-lbl">Percentage</div>
       </div>
       <div class="rsr-sum-card">
@@ -128,7 +128,7 @@
             <td class="rsr-subj-name"><?= htmlspecialchars($subj) ?></td>
             <td class="rsr-subj-num"><?= htmlspecialchars($sd['Total'] ?? '—') ?></td>
             <td class="rsr-subj-num"><?= htmlspecialchars($sd['MaxMarks'] ?? '—') ?></td>
-            <td class="rsr-subj-pct"><?= htmlspecialchars($sd['Percentage'] ?? '—') ?>%</td>
+            <td class="rsr-subj-pct"><?= ($sd['Absent'] ?? false) ? '—' : htmlspecialchars($sd['Percentage'] ?? '—') . '%' ?></td>
             <td class="rsr-subj-grade"><?= htmlspecialchars($sd['Grade'] ?? '—') ?></td>
             <td class="rsr-subj-pf rsr-pf-<?= strtolower($sd['PassFail'] ?? 'fail') ?>">
               <?= htmlspecialchars($sd['PassFail'] ?? '—') ?>

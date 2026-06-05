@@ -131,7 +131,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
           <tr class="pr-tbl-total">
             <td colspan="<?= 2 + $numComps ?>" class="pr-total-lbl">Grand Total</td>
             <td class="pr-td-marks"><strong><?= htmlspecialchars($grandTotal) ?> / <?= htmlspecialchars($grandMax) ?></strong></td>
-            <td class="pr-td-pct"><strong><?= htmlspecialchars($grandPct) ?>%</strong></td>
+            <td class="pr-td-pct"><strong><?= $overallAbsent ? '—' : htmlspecialchars($grandPct) . '%' ?></strong></td>
             <td class="pr-td-grade"><span class="pr-pill pr-pill-big pr-pill-<?= strtolower($grandPass) ?>"><?= htmlspecialchars($grandGrade ?: '—') ?></span></td>
           </tr>
         </tfoot>
@@ -140,7 +140,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
       <?php if ($rcShowResultStrip): ?>
         <div class="pr-strip">
           <div class="pr-strip-item"><div class="pr-strip-val"><?= htmlspecialchars($grandTotal) ?><span>/<?= htmlspecialchars($grandMax) ?></span></div><div class="pr-strip-lbl">Total Marks</div></div>
-          <div class="pr-strip-item"><div class="pr-strip-val"><?= htmlspecialchars($grandPct) ?><span>%</span></div><div class="pr-strip-lbl">Percentage</div></div>
+          <div class="pr-strip-item"><div class="pr-strip-val"><?php if ($overallAbsent): ?>—<?php else: ?><?= htmlspecialchars($grandPct) ?><span>%</span><?php endif; ?></div><div class="pr-strip-lbl">Percentage</div></div>
           <div class="pr-strip-item pr-strip-accent"><div class="pr-strip-val"><?= htmlspecialchars($grandGrade ?: '—') ?></div><div class="pr-strip-lbl">Grade</div></div>
           <div class="pr-strip-item"><div class="pr-strip-val"><?= htmlspecialchars($rank ?: '—') ?></div><div class="pr-strip-lbl">Rank</div></div>
           <div class="pr-strip-item"><div class="pr-strip-val pr-pf-<?= strtolower($grandPass) ?>"><?= htmlspecialchars($grandPass ?: '—') ?></div><div class="pr-strip-lbl">Result</div></div>
@@ -175,8 +175,8 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
 
     <!-- ═══ RESULT DECLARATION ═══════════════════════════════════════ -->
     <?php if (!empty($subjectRows)): ?>
-      <div class="pr-result pr-result-<?= $grandPass === 'Pass' ? 'pass' : 'fail' ?>">
-        <span class="pr-result-icon"><?= $grandPass === 'Pass' ? '&#10003;' : '&#10007;' ?></span>
+      <div class="pr-result pr-result-<?= $overallAbsent ? 'absent' : ($grandPass === 'Pass' ? 'pass' : 'fail') ?>">
+        <span class="pr-result-icon"><?= $resultIcon ?></span>
         <span class="pr-result-text"><?= htmlspecialchars($resultText) ?></span>
       </div>
     <?php endif; ?>

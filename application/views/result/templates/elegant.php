@@ -197,7 +197,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
             </div>
             <div class="el-ov-item el-ov-wide">
               <span class="el-ov-label">Percentage</span>
-              <span class="el-ov-value"><?= htmlspecialchars($grandPct) ?>%</span>
+              <span class="el-ov-value"><?= $overallAbsent ? '—' : htmlspecialchars($grandPct) . '%' ?></span>
             </div>
           </div>
           <div class="el-ov-row">
@@ -224,7 +224,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
            ═══════════════════════════════════════════════════════════════ -->
       <div class="el-result-frame">
         <div class="el-result-corners"></div>
-        <div class="el-result-text el-result-<?= $grandPass === 'Pass' ? 'pass' : 'fail' ?>">
+        <div class="el-result-text el-result-<?= $overallAbsent ? 'absent' : ($grandPass === 'Pass' ? 'pass' : 'fail') ?>">
           <?= htmlspecialchars($resultText) ?>
         </div>
       </div>

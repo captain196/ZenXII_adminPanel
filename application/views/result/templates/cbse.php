@@ -209,7 +209,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
           <div class="cb-rs-lbl">Total Marks</div>
         </div>
         <div class="cb-rs-item">
-          <div class="cb-rs-val"><?= htmlspecialchars($grandPct) ?><span>%</span></div>
+          <div class="cb-rs-val"><?php if ($overallAbsent): ?>—<?php else: ?><?= htmlspecialchars($grandPct) ?><span>%</span><?php endif; ?></div>
           <div class="cb-rs-lbl">Percentage</div>
         </div>
         <div class="cb-rs-item cb-rs-grade">
@@ -295,8 +295,8 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
     <!-- ═══════════════════════════════════════════════════════════════
          RESULT DECLARATION
          ═══════════════════════════════════════════════════════════════ -->
-    <div class="cb-result <?= $grandPass === 'Pass' ? 'cb-result-pass' : 'cb-result-fail' ?>">
-      <div class="cb-result-icon"><?= $grandPass === 'Pass' ? '&#10003;' : '&#10007;' ?></div>
+    <div class="cb-result <?= $overallAbsent ? 'cb-result-absent' : ($grandPass === 'Pass' ? 'cb-result-pass' : 'cb-result-fail') ?>">
+      <div class="cb-result-icon"><?= $resultIcon ?></div>
       <div class="cb-result-text"><?= htmlspecialchars($resultText) ?></div>
     </div>
 

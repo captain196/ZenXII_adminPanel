@@ -221,7 +221,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
             <td colspan="<?= 2 + $numComps ?>" class="rc-mt-label">GRAND TOTAL</td>
             <td class="rc-md-total"><strong><?= htmlspecialchars($grandTotal) ?></strong><span class="rc-md-of"> / <?= htmlspecialchars($grandMax) ?></span></td>
             <td class="rc-md-grade"><strong><?= htmlspecialchars($grandGrade ?: '---') ?></strong></td>
-            <td class="rc-md-pf"><strong><?= htmlspecialchars($grandPct) ?>%</strong></td>
+            <td class="rc-md-pf"><strong><?= $overallAbsent ? '—' : htmlspecialchars($grandPct) . '%' ?></strong></td>
           </tr>
         </tbody>
       </table>
@@ -250,7 +250,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
       </tr>
       <tr class="rc-sum-values">
         <td><?= htmlspecialchars($grandTotal) ?> / <?= htmlspecialchars($grandMax) ?></td>
-        <td><?= htmlspecialchars($grandPct) ?> %</td>
+        <td><?= $overallAbsent ? '—' : htmlspecialchars($grandPct) . ' %' ?></td>
         <td class="rc-sum-grade"><?= htmlspecialchars($grandGrade ?: '---') ?></td>
         <td><?= htmlspecialchars($rank ?: '---') ?></td>
         <td class="rc-pf-<?= strtolower($grandPass) ?>"><?= htmlspecialchars($grandPass ?: '---') ?></td>
@@ -263,7 +263,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
     <!-- ════════════════════════════════════════════════════════════════
          SECTION 6 — RESULT DECLARATION
          ════════════════════════════════════════════════════════════════ -->
-    <div class="rc-result-band rc-result-<?= $grandPass === 'Pass' ? 'pass' : 'fail' ?>">
+    <div class="rc-result-band rc-result-<?= $overallAbsent ? 'absent' : ($grandPass === 'Pass' ? 'pass' : 'fail') ?>">
       <?= htmlspecialchars($resultText) ?>
     </div>
 

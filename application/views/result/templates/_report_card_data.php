@@ -113,6 +113,12 @@ $grandGrade = $computed['Grade']       ?? '';
 $grandPass  = (string)($computed['PassFail'] ?? '');
 $rank       = $computed['Rank']        ?? '';
 
+// CC-8-view: a fully-absent student (Absent flag from compute_results) must
+// render AB overall — never 0%, PASS or FAIL. Existing Pass/Fail rendering is
+// untouched ($overallAbsent is false for every non-fully-absent student).
+$overallAbsent = !empty($computed['Absent']);
+$resultIcon    = $overallAbsent ? '' : ($grandPass === 'Pass' ? '&#10003;' : '&#10007;');
+
 // ── Grade legend ──────────────────────────────────────────────────────
 $scaleLegendMap = [
   'Percentage' => 'A+=(90-100), A=(80-89), B+=(70-79), B=(60-69), C=(50-59), D=(33-49), F=(Below 33)',
@@ -131,9 +137,11 @@ if (preg_match('/\d+/', $classNameRaw, $m)) {
       $nextClass = ' TO GRADE ' . $nextNum;
   }
 }
-$resultText = ($grandPass === 'Pass')
-  ? 'RESULT : PROMOTED' . $nextClass
-  : 'RESULT : NOT PROMOTED — FURTHER IMPROVEMENT NEEDED';
+$resultText = $overallAbsent
+  ? 'RESULT : ABSENT'
+  : (($grandPass === 'Pass')
+      ? 'RESULT : PROMOTED' . $nextClass
+      : 'RESULT : NOT PROMOTED — FURTHER IMPROVEMENT NEEDED');
 
 // ──────────────────────────────────────────────────────────────────────
 // Report-card CUSTOMIZATION config (per-school, from school doc
