@@ -327,7 +327,7 @@ $configExams = $config['Exams'] ?? [];
       subjects.forEach(function (s) {
         var sd = (stu.subjects || {})[s] || {};
         tr.appendChild(cell(
-          sd.WeightedScore != null ? sd.WeightedScore.toFixed(1) : '—',
+          sd.Absent ? 'AB' : (sd.WeightedScore != null ? sd.WeightedScore.toFixed(1) : '—'),
           'rcu-td-subj'
         ));
       });
@@ -335,7 +335,7 @@ $configExams = $config['Exams'] ?? [];
       tr.appendChild(cell(stu.weightedTotal != null ? stu.weightedTotal.toFixed(2) + '%' : '—', 'rcu-td-pct'));
       tr.appendChild(cell(stu.grade, 'rcu-td-grade'));
       var pfTd = cell(stu.passFail, 'rcu-td-pf');
-      pfTd.classList.add(stu.passFail === 'Pass' ? 'rcu-pf-pass' : 'rcu-pf-fail');
+      pfTd.classList.add(stu.passFail === 'Pass' ? 'rcu-pf-pass' : (stu.passFail === 'AB' ? 'rcu-pf-ab' : 'rcu-pf-fail'));
       tr.appendChild(pfTd);
 
       tbody.appendChild(tr);
