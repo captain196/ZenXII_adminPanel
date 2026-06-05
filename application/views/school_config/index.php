@@ -266,6 +266,84 @@
 .rct-mini-footer { height:8px; }
 .rct-name { font-size:13px; font-weight:700; color:var(--t1); margin-bottom:4px; }
 .rct-desc { font-size:11px; color:var(--t3); line-height:1.4; }
+
+/* ── Report Card Customization Panel ──────────────────────── */
+.rcc-layout { display:grid; grid-template-columns:1fr 420px; gap:24px; align-items:start; }
+@media (max-width:1100px){ .rcc-layout { grid-template-columns:1fr; } }
+.rcc-group { margin-bottom:20px; }
+.rcc-group-title { font-size:12px; font-weight:700; color:var(--t1); text-transform:uppercase; letter-spacing:.6px; margin-bottom:10px; padding-bottom:6px; border-bottom:1px solid var(--border); }
+.rcc-color-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.rcc-color-row input[type=color]{ width:42px; height:38px; padding:0; border:1px solid var(--border); border-radius:8px; background:none; cursor:pointer; }
+.rcc-hex { width:96px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:var(--bg2); color:var(--t1); font-family:monospace; font-size:13px; text-transform:uppercase; }
+.rcc-swatches { display:flex; gap:6px; flex-wrap:wrap; }
+.rcc-sw { width:26px; height:26px; border-radius:50%; border:2px solid var(--border); cursor:pointer; transition:transform .15s var(--ease); padding:0; }
+.rcc-sw:hover { transform:scale(1.12); }
+.rcc-sw.active { box-shadow:0 0 0 3px var(--gold-ring); border-color:#fff; }
+.rcc-toggles { display:grid; grid-template-columns:1fr 1fr; gap:10px 16px; }
+.rcc-toggle { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--t2); cursor:pointer; }
+.rcc-toggle input { width:16px; height:16px; accent-color:var(--gold); cursor:pointer; }
+.rcc-fields { display:grid; grid-template-columns:1fr 1fr; gap:12px 16px; }
+.rcc-field { display:flex; flex-direction:column; gap:4px; }
+.rcc-field-wide { grid-column:1 / -1; }
+.rcc-field label { font-size:11px; font-weight:600; color:var(--t3); }
+.rcc-field input { padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:var(--bg2); color:var(--t1); font-size:13px; }
+.rcc-field input:focus { border-color:var(--gold); outline:none; }
+.rcc-assets { display:flex; gap:14px; flex-wrap:wrap; }
+.rcc-asset { width:130px; text-align:center; }
+.rcc-asset-prev { width:130px; height:74px; border:1px dashed var(--border); border-radius:8px; background:#fff; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+.rcc-asset-prev img { max-width:100%; max-height:100%; object-fit:contain; }
+.rcc-asset-ph { font-size:11px; color:#9aa3af; }
+.rcc-asset-label { font-size:11px; font-weight:600; color:var(--t2); margin:6px 0 5px; }
+.rcc-asset-btns { display:flex; gap:6px; justify-content:center; flex-wrap:wrap; }
+.rcc-file { display:none !important; }   /* theme overrides the [hidden] attr — force hide the native input */
+.rcc-mini-btn { display:inline-block; }
+.rcc-mini-btn { font-size:11px; padding:4px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg2); color:var(--t2); cursor:pointer; }
+.rcc-mini-btn:hover { border-color:var(--gold); color:var(--gold); }
+.rcc-mini-rm { color:#c0392b; }
+.rcc-mini-rm:hover { border-color:#c0392b; color:#c0392b; }
+.rcc-asset-note { font-size:11px; color:var(--t3); margin-top:10px; }
+.rcc-preview-col { position:sticky; top:14px; border:1px solid var(--border); border-radius:10px; overflow:hidden; background:#e9edf2; }
+.rcc-preview-bar { background:var(--bg2); border-bottom:1px solid var(--border); padding:8px 12px; font-size:12px; font-weight:600; color:var(--t2); display:flex; align-items:center; gap:6px; }
+.rcc-preview-frame { padding:14px; max-height:640px; overflow:auto; }
+
+/* Mini report-card preview (self-contained, light-themed regardless of admin theme) */
+.rcp { background:#fff; border:1px solid #d8dee6; border-top:4px solid var(--rcp-accent,#1a3a6b); border-radius:4px; font-family:'Segoe UI',Arial,sans-serif; color:#1f2733; box-shadow:0 4px 16px rgba(15,23,42,.12); }
+.rcp-head { display:flex; align-items:center; gap:10px; padding:12px 14px 8px; }
+.rcp-logo { width:42px; height:42px; border-radius:6px; object-fit:contain; background:var(--rcp-tint,#eef2f7); display:flex; align-items:center; justify-content:center; color:var(--rcp-accent,#1a3a6b); font-weight:800; font-size:15px; flex-shrink:0; }
+.rcp-logo img { width:100%; height:100%; object-fit:contain; border-radius:6px; }
+.rcp-head-c { flex:1; text-align:center; }
+.rcp-school { font-size:15px; font-weight:800; color:var(--rcp-dark,#13294b); line-height:1.1; }
+.rcp-sub { font-size:8px; color:#94a3b8; margin-top:2px; }
+.rcp-title { background:var(--rcp-accent,#1a3a6b); color:#fff; text-align:center; font-size:9px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; padding:4px; }
+.rcp-stu { display:flex; gap:8px; padding:9px 14px; border-bottom:1px solid #eef1f5; font-size:9px; }
+.rcp-stu-grid { flex:1; display:grid; grid-template-columns:1fr 1fr; gap:3px 12px; }
+.rcp-stu-grid div span { color:#94a3b8; }
+.rcp-photo { width:42px; height:50px; border:1px solid #d8dee6; border-radius:4px; background:#f8fafc; display:flex; align-items:center; justify-content:center; font-size:7px; color:#b8c0cc; flex-shrink:0; }
+.rcp-seclbl { background:var(--rcp-tint,#eef2f7); color:var(--rcp-dark,#13294b); font-size:8px; font-weight:700; letter-spacing:.8px; text-transform:uppercase; padding:4px 14px; border-left:3px solid var(--rcp-accent,#1a3a6b); }
+.rcp-tbl { width:100%; border-collapse:collapse; font-size:8.5px; }
+.rcp-tbl th { background:var(--rcp-accent,#1a3a6b); color:#fff; padding:4px 5px; font-weight:600; text-align:center; }
+.rcp-tbl td { padding:4px 5px; border:1px solid #e2e8f0; text-align:center; }
+.rcp-tbl td.l { text-align:left; font-weight:600; }
+.rcp-tbl tr:nth-child(even) td { background:#f8fafc; }
+.rcp-strip { display:flex; border-bottom:1px solid #eef1f5; }
+.rcp-strip div { flex:1; text-align:center; padding:7px 2px; border-right:1px solid #eef1f5; }
+.rcp-strip div:last-child { border-right:none; }
+.rcp-strip b { display:block; font-size:13px; color:var(--rcp-dark,#13294b); }
+.rcp-strip small { font-size:7px; color:#94a3b8; text-transform:uppercase; letter-spacing:.3px; }
+.rcp-legend { font-size:7px; color:#475569; padding:4px 14px; background:#fffbeb; border-bottom:1px solid #fde68a; font-style:italic; }
+.rcp-cosch { display:grid; grid-template-columns:1fr 1fr; }
+.rcp-cosch div { display:flex; justify-content:space-between; padding:5px 14px; border-bottom:1px solid #eef1f5; border-right:1px solid #eef1f5; font-size:8.5px; }
+.rcp-cosch div:nth-child(2n){ border-right:none; }
+.rcp-att { display:flex; border-bottom:1px solid #eef1f5; }
+.rcp-att div { flex:1; padding:5px 14px; border-right:1px solid #eef1f5; font-size:8px; }
+.rcp-att div:last-child{ border-right:none; }
+.rcp-att span { display:block; color:#94a3b8; font-size:7px; text-transform:uppercase; }
+.rcp-sigs { display:flex; padding:14px 0 12px; }
+.rcp-sig { flex:1; text-align:center; }
+.rcp-sig img { height:22px; max-width:70px; object-fit:contain; }
+.rcp-sig .ln { width:70%; margin:6px auto 4px; border-top:1px solid #94a3b8; }
+.rcp-sig .nm { font-size:8px; font-weight:700; color:var(--rcp-dark,#13294b); }
+.rcp-foot { text-align:center; font-size:7px; color:#94a3b8; font-style:italic; padding:6px; border-top:1px solid #eef1f5; }
 </style>
 
 <div class="content-wrapper">
@@ -925,6 +1003,17 @@
                     <div class="rct-name">Elegant</div>
                     <div class="rct-desc">Premium certificate-style with serif fonts, gold accents, and decorative borders.</div>
                 </div>
+                <!-- Professional -->
+                <div class="rct-card" data-tpl="professional">
+                    <div class="rct-preview rct-preview-professional">
+                        <div class="rct-mini-header" style="background:#1a3a6b;height:6px"></div>
+                        <div class="rct-mini-header" style="background:#1a3a6b;height:9px;margin-top:2px"></div>
+                        <div class="rct-mini-row"></div><div class="rct-mini-row"></div><div class="rct-mini-row"></div>
+                        <div class="rct-mini-footer" style="background:#eef2f7"></div>
+                    </div>
+                    <div class="rct-name">Professional <span style="display:inline-block;background:#1a3a6b;color:#fff;font-size:8px;font-weight:700;padding:1px 5px;border-radius:3px;vertical-align:middle;letter-spacing:.5px">CUSTOMIZABLE</span></div>
+                    <div class="rct-desc">Clean corporate layout that fully adapts to the customization options below — accent color, sections, text &amp; signatures.</div>
+                </div>
             </div>
 
             <div style="margin-top:18px;display:flex;align-items:center;gap:14px;">
@@ -932,6 +1021,115 @@
                     <i class="fa fa-save"></i> Save Template
                 </button>
                 <span id="rcCurrentLabel" style="font-size:12px;color:var(--t3);">Current: Classic</span>
+            </div>
+        </div>
+
+        <!-- ════════ CUSTOMIZE REPORT CARD ════════ -->
+        <div class="sc-card">
+            <div class="sc-card-title"><i class="fa fa-paint-brush"></i> Customize Report Card</div>
+            <div style="font-size:12px;color:var(--t3);margin-bottom:18px;">
+                Fine-tune the report card to match your school's branding. These settings apply on top of the selected template.
+                The <strong>Professional</strong> template reflects every option below; preset templates honor the section toggles, custom text &amp; signatures.
+            </div>
+
+            <div class="rcc-layout">
+                <!-- ── Controls column ── -->
+                <div class="rcc-controls">
+
+                    <!-- Accent colour -->
+                    <div class="rcc-group">
+                        <div class="rcc-group-title">Accent Color</div>
+                        <div class="rcc-color-row">
+                            <input type="color" id="rccAccent" value="#1a3a6b">
+                            <input type="text" id="rccAccentHex" class="rcc-hex" value="#1a3a6b" maxlength="7" spellcheck="false">
+                            <div class="rcc-swatches" id="rccSwatches">
+                                <button type="button" class="rcc-sw" data-c="#1a3a6b" style="background:#1a3a6b" title="Navy"></button>
+                                <button type="button" class="rcc-sw" data-c="#0f766e" style="background:#0f766e" title="Teal"></button>
+                                <button type="button" class="rcc-sw" data-c="#7c2d12" style="background:#7c2d12" title="Maroon"></button>
+                                <button type="button" class="rcc-sw" data-c="#4338ca" style="background:#4338ca" title="Indigo"></button>
+                                <button type="button" class="rcc-sw" data-c="#166534" style="background:#166534" title="Green"></button>
+                                <button type="button" class="rcc-sw" data-c="#9a3412" style="background:#9a3412" title="Rust"></button>
+                                <button type="button" class="rcc-sw" data-c="#1f2937" style="background:#1f2937" title="Charcoal"></button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Section toggles -->
+                    <div class="rcc-group">
+                        <div class="rcc-group-title">Sections</div>
+                        <div class="rcc-toggles">
+                            <label class="rcc-toggle"><input type="checkbox" id="rccSec_photo" checked><span>Student Photo</span></label>
+                            <label class="rcc-toggle"><input type="checkbox" id="rccSec_resultStrip" checked><span>Result Summary Strip</span></label>
+                            <label class="rcc-toggle"><input type="checkbox" id="rccSec_gradingLegend" checked><span>Grading Legend</span></label>
+                            <label class="rcc-toggle"><input type="checkbox" id="rccSec_coScholastic" checked><span>Co-Scholastic Areas</span></label>
+                            <label class="rcc-toggle"><input type="checkbox" id="rccSec_attendance" checked><span>Attendance &amp; Remarks</span></label>
+                            <label class="rcc-toggle"><input type="checkbox" id="rccSec_signatures" checked><span>Signatures</span></label>
+                        </div>
+                    </div>
+
+                    <!-- Custom text -->
+                    <div class="rcc-group">
+                        <div class="rcc-group-title">Custom Text</div>
+                        <div class="rcc-fields">
+                            <div class="rcc-field"><label>Report Title</label><input type="text" id="rccTxt_title" maxlength="80" placeholder="e.g. Academic Report Card"></div>
+                            <div class="rcc-field"><label>Principal Name</label><input type="text" id="rccTxt_principalName" maxlength="80" placeholder="Shown above Principal signature"></div>
+                            <div class="rcc-field"><label>Exam Controller Name</label><input type="text" id="rccTxt_examControllerName" maxlength="80" placeholder="Optional"></div>
+                            <div class="rcc-field"><label>Class Teacher Name</label><input type="text" id="rccTxt_classTeacherName" maxlength="80" placeholder="Optional"></div>
+                            <div class="rcc-field rcc-field-wide"><label>Default Teacher Remark</label><input type="text" id="rccTxt_defaultRemark" maxlength="240" placeholder="Optional default remark text"></div>
+                            <div class="rcc-field rcc-field-wide"><label>Footer Line</label><input type="text" id="rccTxt_footer" maxlength="240" placeholder="This is a computer-generated report card..."></div>
+                        </div>
+                    </div>
+
+                    <!-- Asset uploads -->
+                    <div class="rcc-group">
+                        <div class="rcc-group-title">Logo &amp; Signature Images</div>
+                        <div class="rcc-assets">
+                            <div class="rcc-asset" data-slot="logoUrl">
+                                <div class="rcc-asset-prev" id="rccAsset_logoUrl"><span class="rcc-asset-ph">No image</span></div>
+                                <div class="rcc-asset-label">Custom Logo</div>
+                                <div class="rcc-asset-btns">
+                                    <label class="rcc-mini-btn">Upload<input type="file" accept="image/*" data-slot="logoUrl" class="rcc-file" hidden></label>
+                                    <button type="button" class="rcc-mini-btn rcc-mini-rm" data-slot="logoUrl">Remove</button>
+                                </div>
+                            </div>
+                            <div class="rcc-asset" data-slot="principalSignUrl">
+                                <div class="rcc-asset-prev" id="rccAsset_principalSignUrl"><span class="rcc-asset-ph">No image</span></div>
+                                <div class="rcc-asset-label">Principal Signature</div>
+                                <div class="rcc-asset-btns">
+                                    <label class="rcc-mini-btn">Upload<input type="file" accept="image/*" data-slot="principalSignUrl" class="rcc-file" hidden></label>
+                                    <button type="button" class="rcc-mini-btn rcc-mini-rm" data-slot="principalSignUrl">Remove</button>
+                                </div>
+                            </div>
+                            <div class="rcc-asset" data-slot="classTeacherSignUrl">
+                                <div class="rcc-asset-prev" id="rccAsset_classTeacherSignUrl"><span class="rcc-asset-ph">No image</span></div>
+                                <div class="rcc-asset-label">Teacher Signature</div>
+                                <div class="rcc-asset-btns">
+                                    <label class="rcc-mini-btn">Upload<input type="file" accept="image/*" data-slot="classTeacherSignUrl" class="rcc-file" hidden></label>
+                                    <button type="button" class="rcc-mini-btn rcc-mini-rm" data-slot="classTeacherSignUrl">Remove</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="rcc-asset-note">PNG/JPG/WEBP up to 2&nbsp;MB. Transparent PNG works best for signatures. Uploads save immediately.</div>
+                    </div>
+
+                    <div style="margin-top:6px;display:flex;align-items:center;gap:14px;">
+                        <button class="sc-btn sc-btn-gold" id="btnSaveRcConfig">
+                            <i class="fa fa-save"></i> Save Customization
+                        </button>
+                        <button class="sc-btn" id="btnResetRcConfig" style="background:var(--bg2);border:1px solid var(--border);color:var(--t2);">
+                            <i class="fa fa-undo"></i> Reset to Default
+                        </button>
+                        <span id="rccSaveMsg" style="font-size:12px;color:var(--t3);"></span>
+                    </div>
+                </div>
+
+                <!-- ── Live preview column ── -->
+                <div class="rcc-preview-col">
+                    <div class="rcc-preview-bar">
+                        <i class="fa fa-eye"></i> Live Preview
+                    </div>
+                    <div class="rcc-preview-frame" id="rccPreview"><!-- JS-rendered --></div>
+                </div>
             </div>
         </div>
     </div>
@@ -1046,6 +1244,7 @@ function loadConfig() {
         renderStreams(streams);
         populateStreamDropdown(streams);
         renderReportCardTemplate(d.report_card_template || 'classic');
+        renderRcConfig(d.report_card_config || {});
     });
 }
 
@@ -3292,7 +3491,7 @@ function esc(s) {
 // suffix; Save success promotes selected → persisted and clears the suffix.
 var selectedRcTemplate  = 'classic';   // current click selection (in-progress)
 var persistedRcTemplate = 'classic';   // last server-confirmed value
-var _rcNames = { classic:'Classic', cbse:'CBSE', minimal:'Minimal', modern:'Modern', elegant:'Elegant' };
+var _rcNames = { classic:'Classic', cbse:'CBSE', minimal:'Minimal', modern:'Modern', elegant:'Elegant', professional:'Professional' };
 
 function _renderRcState() {
     // Tile .active reflects user's current selection (immediate visual feedback on click).
@@ -3346,6 +3545,186 @@ document.getElementById('btnSaveRcTemplate').addEventListener('click', function(
         }
     });
 });
+
+/* ══════════ REPORT CARD CUSTOMIZATION ══════════ */
+var RCC_SECTIONS = ['photo','resultStrip','gradingLegend','coScholastic','attendance','signatures'];
+var RCC_TEXT     = ['title','footer','principalName','examControllerName','classTeacherName','defaultRemark'];
+var RCC_ASSETS   = ['logoUrl','principalSignUrl','classTeacherSignUrl'];
+
+function _rccDefaults() {
+    var s = {}; RCC_SECTIONS.forEach(function(k){ s[k] = true; });
+    var t = {}; RCC_TEXT.forEach(function(k){ t[k] = ''; });
+    var a = {}; RCC_ASSETS.forEach(function(k){ a[k] = ''; });
+    return { accentColor:'#1a3a6b', sections:s, text:t, assets:a };
+}
+var rccState = _rccDefaults();
+
+function _validHex(v){ return /^#[0-9a-fA-F]{6}$/.test(v); }
+
+// Darken / tint helpers mirror _report_card_data.php
+function _shade(hex, factor){
+    var r=parseInt(hex.substr(1,2),16), g=parseInt(hex.substr(3,2),16), b=parseInt(hex.substr(5,2),16);
+    r=Math.round(r*factor); g=Math.round(g*factor); b=Math.round(b*factor);
+    return '#'+[r,g,b].map(function(x){ return ('0'+Math.max(0,Math.min(255,x)).toString(16)).slice(-2); }).join('');
+}
+function _tint(hex){
+    var r=parseInt(hex.substr(1,2),16), g=parseInt(hex.substr(3,2),16), b=parseInt(hex.substr(5,2),16);
+    r=Math.round(r+(255-r)*0.92); g=Math.round(g+(255-g)*0.92); b=Math.round(b+(255-b)*0.92);
+    return '#'+[r,g,b].map(function(x){ return ('0'+x.toString(16)).slice(-2); }).join('');
+}
+
+// Populate the form + state from a server config object (called by loadConfig)
+function renderRcConfig(cfg) {
+    var def = _rccDefaults();
+    cfg = (cfg && typeof cfg === 'object') ? cfg : {};
+    rccState.accentColor = _validHex(cfg.accentColor) ? cfg.accentColor : def.accentColor;
+    var secIn = cfg.sections || {}, txtIn = cfg.text || {}, asIn = cfg.assets || {};
+    RCC_SECTIONS.forEach(function(k){ rccState.sections[k] = (k in secIn) ? !!secIn[k] : true; });
+    RCC_TEXT.forEach(function(k){ rccState.text[k] = (txtIn[k] != null) ? String(txtIn[k]) : ''; });
+    RCC_ASSETS.forEach(function(k){ rccState.assets[k] = (asIn[k] != null) ? String(asIn[k]) : ''; });
+
+    // Push into inputs
+    document.getElementById('rccAccent').value = rccState.accentColor;
+    document.getElementById('rccAccentHex').value = rccState.accentColor.toUpperCase();
+    RCC_SECTIONS.forEach(function(k){ var el=document.getElementById('rccSec_'+k); if(el) el.checked = rccState.sections[k]; });
+    RCC_TEXT.forEach(function(k){ var el=document.getElementById('rccTxt_'+k); if(el) el.value = rccState.text[k]; });
+    RCC_ASSETS.forEach(_renderAssetThumb);
+    _syncSwatch();
+    renderRcPreview();
+}
+
+function _renderAssetThumb(slot) {
+    var box = document.getElementById('rccAsset_'+slot);
+    if (!box) return;
+    var url = rccState.assets[slot];
+    box.innerHTML = url ? '<img src="'+esc(url)+'" alt="">' : '<span class="rcc-asset-ph">No image</span>';
+}
+
+function _syncSwatch() {
+    document.querySelectorAll('#rccSwatches .rcc-sw').forEach(function(b){
+        b.classList.toggle('active', (b.dataset.c||'').toLowerCase() === rccState.accentColor.toLowerCase());
+    });
+}
+
+// Pull current form values into rccState (sections + text + accent)
+function _collectRcForm() {
+    var hex = document.getElementById('rccAccentHex').value.trim();
+    if (_validHex(hex)) rccState.accentColor = hex;
+    RCC_SECTIONS.forEach(function(k){ var el=document.getElementById('rccSec_'+k); if(el) rccState.sections[k]=el.checked; });
+    RCC_TEXT.forEach(function(k){ var el=document.getElementById('rccTxt_'+k); if(el) rccState.text[k]=el.value; });
+}
+
+/* ── Live mini preview ── */
+function renderRcPreview() {
+    _collectRcForm();
+    var c = rccState, ac = c.accentColor, dark = _shade(ac,0.72), tint = _tint(ac);
+    var s = c.sections, t = c.text, a = c.assets;
+    var logo = a.logoUrl
+        ? '<span class="rcp-logo"><img src="'+esc(a.logoUrl)+'"></span>'
+        : '<span class="rcp-logo">SC</span>';
+    var rows = [
+        ['English','95 / 100','95%','A1'],
+        ['Mathematics','88 / 100','88%','A2'],
+        ['Science','76 / 100','76%','B1']
+    ].map(function(r){ return '<tr><td class="l">'+r[0]+'</td><td>'+r[1]+'</td><td>'+r[2]+'</td><td>'+r[3]+'</td></tr>'; }).join('');
+
+    var html = ''
+      + '<div class="rcp" style="--rcp-accent:'+esc(ac)+';--rcp-dark:'+esc(dark)+';--rcp-tint:'+esc(tint)+'">'
+      +   '<div class="rcp-head">'+logo+'<div class="rcp-head-c"><div class="rcp-school">YOUR SCHOOL NAME</div><div class="rcp-sub">123 Education Road, City &nbsp;|&nbsp; Affiliated to CBSE</div></div></div>'
+      +   '<div class="rcp-title">'+esc(t.title || 'Academic Report Card')+'</div>'
+      +   '<div class="rcp-stu"><div class="rcp-stu-grid">'
+      +     '<div><span>Name:</span> <b>RAHUL SHARMA</b></div><div><span>Roll:</span> STU0001</div>'
+      +     '<div><span>Class:</span> 9th - A</div><div><span>DOB:</span> 12 Aug 2011</div>'
+      +   '</div>'+(s.photo ? '<div class="rcp-photo">Photo</div>' : '')+'</div>'
+      +   '<div class="rcp-seclbl">Scholastic Performance</div>'
+      +   '<table class="rcp-tbl"><thead><tr><th style="text-align:left">Subject</th><th>Total</th><th>%</th><th>Grade</th></tr></thead><tbody>'+rows+'</tbody></table>'
+      +   (s.resultStrip ? '<div class="rcp-strip"><div><b>259</b><small>Total</small></div><div><b>86.3%</b><small>Percent</small></div><div><b style="color:'+esc(ac)+'">A2</b><small>Grade</small></div><div><b>3</b><small>Rank</small></div><div><b style="color:#15803d">Pass</b><small>Result</small></div></div>' : '')
+      +   (s.gradingLegend ? '<div class="rcp-legend"><b>Grading Scale:</b> A1=(91-100), A2=(81-90), B1=(71-80)...</div>' : '')
+      +   (s.coScholastic ? '<div class="rcp-seclbl">Co-Scholastic Areas</div><div class="rcp-cosch"><div>Art Education<b>—</b></div><div>Health &amp; PE<b>—</b></div><div>Work Education<b>—</b></div><div>Discipline<b>—</b></div></div>' : '')
+      +   (s.attendance ? '<div class="rcp-seclbl">Attendance &amp; Remarks</div><div class="rcp-att"><div><span>Working Days</span>—</div><div><span>Present</span>—</div><div><span>Remark</span>'+esc(t.defaultRemark||'—')+'</div></div>' : '')
+      +   (s.signatures ? '<div class="rcp-sigs">'
+            + '<div class="rcp-sig">'+(a.classTeacherSignUrl?'<img src="'+esc(a.classTeacherSignUrl)+'">':'')+'<div class="ln"></div><div class="nm">'+esc(t.classTeacherName||'Class Teacher')+'</div></div>'
+            + '<div class="rcp-sig"><div class="ln"></div><div class="nm">'+esc(t.examControllerName||'Exam Controller')+'</div></div>'
+            + '<div class="rcp-sig">'+(a.principalSignUrl?'<img src="'+esc(a.principalSignUrl)+'">':'')+'<div class="ln"></div><div class="nm">'+esc(t.principalName||'Principal')+'</div></div>'
+          + '</div>' : '')
+      +   (t.footer !== '' ? '<div class="rcp-foot">'+esc(t.footer)+'</div>' : '<div class="rcp-foot">This is a computer-generated report card.</div>')
+      + '</div>';
+    document.getElementById('rccPreview').innerHTML = html;
+}
+
+/* ── Input wiring ── */
+(function () {
+    var accent = document.getElementById('rccAccent');
+    var hex    = document.getElementById('rccAccentHex');
+    if (accent) accent.addEventListener('input', function(){ hex.value = this.value.toUpperCase(); _syncSwatch(); renderRcPreview(); });
+    if (hex) hex.addEventListener('input', function(){
+        var v = this.value.trim();
+        if (_validHex(v)) { accent.value = v; _syncSwatch(); renderRcPreview(); }
+    });
+    document.querySelectorAll('#rccSwatches .rcc-sw').forEach(function(b){
+        b.addEventListener('click', function(){
+            var c = this.dataset.c; accent.value = c; hex.value = c.toUpperCase();
+            rccState.accentColor = c; _syncSwatch(); renderRcPreview();
+        });
+    });
+    RCC_SECTIONS.forEach(function(k){ var el=document.getElementById('rccSec_'+k); if(el) el.addEventListener('change', renderRcPreview); });
+    RCC_TEXT.forEach(function(k){ var el=document.getElementById('rccTxt_'+k); if(el) el.addEventListener('input', renderRcPreview); });
+
+    // Asset uploads
+    document.querySelectorAll('.rcc-file').forEach(function(inp){
+        inp.addEventListener('change', function(){
+            if (!this.files.length) return;
+            var slot = this.dataset.slot, file = this.files[0], self = this;
+            var box = document.getElementById('rccAsset_'+slot);
+            box.innerHTML = '<span class="rcc-asset-ph">Uploading…</span>';
+            var fd = new FormData();
+            fd.append('asset', file); fd.append('slot', slot); fd.append(CSRFN, CSRFT);
+            fetch(BASE + 'school_config/upload_reportcard_asset', { method:'POST', headers:{ 'X-CSRF-Token':CSRFT }, body:fd })
+            .then(function(r){ return r.json(); })
+            .then(function(d){
+                if (d.csrf_token) CSRFT = d.csrf_token;
+                if (d.status === 'success') {
+                    rccState.assets[slot] = d.url; _renderAssetThumb(slot); renderRcPreview();
+                    toast('Image uploaded!');
+                } else { _renderAssetThumb(slot); toast(d.message || 'Upload failed.', false); }
+                self.value = '';
+            })
+            .catch(function(){ _renderAssetThumb(slot); toast('Upload failed.', false); self.value=''; });
+        });
+    });
+    // Asset remove
+    document.querySelectorAll('.rcc-mini-rm').forEach(function(btn){
+        btn.addEventListener('click', function(){
+            var slot = this.dataset.slot;
+            if (!rccState.assets[slot]) return;
+            post('school_config/remove_reportcard_asset', { slot:slot }, function(d){
+                if (d.status === 'success') { rccState.assets[slot]=''; _renderAssetThumb(slot); renderRcPreview(); toast('Image removed.'); }
+                else { toast(d.message || 'Failed to remove.', false); }
+            });
+        });
+    });
+
+    var saveBtn = document.getElementById('btnSaveRcConfig');
+    if (saveBtn) saveBtn.addEventListener('click', function(){
+        _collectRcForm();
+        if (!_validHex(rccState.accentColor)) { toast('Enter a valid hex color (e.g. #1a3a6b).', false); return; }
+        var payload = { accentColor:rccState.accentColor, sections:rccState.sections, text:rccState.text };
+        var msg = document.getElementById('rccSaveMsg'); msg.textContent = 'Saving…';
+        post('school_config/save_report_card_config', { config: JSON.stringify(payload) }, function(d){
+            if (d.status === 'success') { msg.textContent = 'Saved'; toast('Customization saved!'); setTimeout(function(){ msg.textContent=''; }, 2500); }
+            else { msg.textContent = ''; toast(d.message || 'Failed to save.', false); }
+        });
+    });
+
+    var resetBtn = document.getElementById('btnResetRcConfig');
+    if (resetBtn) resetBtn.addEventListener('click', function(){
+        var keptAssets = rccState.assets;          // uploads are managed separately; keep them
+        rccState = _rccDefaults();
+        rccState.assets = keptAssets;
+        renderRcConfig(rccState);
+        toast('Reset to defaults — click Save Customization to persist.');
+    });
+})();
 
 /* ── Expose to inline onclick handlers ────────────────────────── */
 window.saveProfile = saveProfile;

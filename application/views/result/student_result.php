@@ -45,6 +45,11 @@
     <i class="fa fa-inbox"></i>
     <p>No active exams found.</p>
   </div>
+  <?php elseif (!empty($result_withheld ?? false)): ?>
+  <div class="rsr-empty rsr-withheld">
+    <i class="fa fa-lock"></i>
+    <p>Results are <strong>withheld</strong> due to pending fee dues<?= (!empty($withheld_dues)) ? ' of &#8377;' . htmlspecialchars(number_format((float) $withheld_dues)) : '' ?>. Please clear the outstanding amount to view results.</p>
+  </div>
   <?php elseif (empty($results)): ?>
   <div class="rsr-empty">
     <i class="fa fa-bar-chart"></i>

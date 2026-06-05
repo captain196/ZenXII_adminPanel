@@ -186,8 +186,11 @@ class School_config extends MY_Controller
 
         // Report card template from Firestore school doc
         $rcTemplate = $fsSchool['reportCardTemplate'] ?? null;
-        $rcAllowed  = ['classic', 'cbse', 'minimal', 'modern', 'elegant'];
+        $rcAllowed  = ['classic', 'cbse', 'minimal', 'modern', 'elegant', 'professional'];
         if (!$rcTemplate || !is_string($rcTemplate) || !in_array($rcTemplate, $rcAllowed, true)) $rcTemplate = 'classic';
+
+        // Report card CUSTOMISATION config (accent, section toggles, text, assets)
+        $rcConfig = (is_array($fsSchool['reportCardConfig'] ?? null)) ? $fsSchool['reportCardConfig'] : [];
 
         $archivedSess = (is_array($fsSchool['archivedSessions'] ?? null))
                             ? array_values(array_filter($fsSchool['archivedSessions'], 'is_string'))
@@ -203,6 +206,7 @@ class School_config extends MY_Controller
             'archived_sessions'       => $archivedSess,
             'firebase_path'           => "Schools/{$school}/Sessions",
             'report_card_template'    => $rcTemplate,
+            'report_card_config'      => (object) $rcConfig,
             'session_not_configured'  => $sessionNotConfigured,
             'name_not_configured'     => $nameNotConfigured,  // BUG-031
         ]);
@@ -4323,7 +4327,7 @@ class School_config extends MY_Controller
         $school   = $this->school_name;
         $template = trim((string) $this->input->post('template', TRUE));
 
-        $allowed = ['classic', 'cbse', 'minimal', 'modern', 'elegant'];
+        $allowed = ['classic', 'cbse', 'minimal', 'modern', 'elegant', 'professional'];
         if (!in_array($template, $allowed, true)) {
             return $this->json_error('Invalid template selection.');
         }
@@ -4334,6 +4338,169 @@ class School_config extends MY_Controller
         log_audit('Configuration', 'save_report_card_template', $school, "Set report card template to {$template}");
 
         $this->json_success(['message' => 'Report card template saved.', 'template' => $template]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/save_report_card_config
+    // Persists the report-card customisation (accent colour, section
+    // toggles, custom text). Asset image URLs are written separately by
+    // upload_reportcard_asset(). Payload arrives as a JSON string in `config`.
+    // ─────────────────────────────────────────────────────────────────────
+    public function save_report_card_config()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'save_rc_config');
+        $school = $this->school_name;
+
+        $raw = (string) $this->input->post('config', TRUE);
+        $in  = json_decode($raw, true);
+        if (!is_array($in)) {
+            return $this->json_error('Invalid configuration payload.');
+        }
+
+        // ── Sanitise accent colour ──
+        $accent = (string)($in['accentColor'] ?? '');
+        if (!preg_match('/^#[0-9a-fA-F]{6}$/', $accent)) $accent = '#1a3a6b';
+
+        // ── Sanitise section toggles (booleans only) ──
+        $sectionKeys = ['photo', 'resultStrip', 'gradingLegend', 'coScholastic', 'attendance', 'signatures'];
+        $sectionsIn  = is_array($in['sections'] ?? null) ? $in['sections'] : [];
+        $sections    = [];
+        foreach ($sectionKeys as $k) {
+            $sections[$k] = !array_key_exists($k, $sectionsIn) || filter_var($sectionsIn[$k], FILTER_VALIDATE_BOOLEAN);
+        }
+
+        // ── Sanitise custom text (trim + length cap) ──
+        $textIn  = is_array($in['text'] ?? null) ? $in['text'] : [];
+        $textKeys = [
+            'title'             => 80,
+            'footer'            => 240,
+            'principalName'     => 80,
+            'examControllerName'=> 80,
+            'classTeacherName'  => 80,
+            'defaultRemark'     => 240,
+        ];
+        $text = [];
+        foreach ($textKeys as $k => $max) {
+            $text[$k] = mb_substr(trim((string)($textIn[$k] ?? '')), 0, $max);
+        }
+
+        // Merge with any existing assets (those are managed by the upload endpoint).
+        $fsSchool   = $this->fs->get('schools', $this->fs->schoolId());
+        $existingCfg = (is_array($fsSchool['reportCardConfig'] ?? null)) ? $fsSchool['reportCardConfig'] : [];
+        $assets      = is_array($existingCfg['assets'] ?? null) ? $existingCfg['assets'] : [];
+
+        $config = [
+            'accentColor' => $accent,
+            'sections'    => $sections,
+            'text'        => $text,
+            'assets'      => $assets,
+        ];
+
+        $this->fs->update('schools', $this->fs->schoolId(), ['reportCardConfig' => $config, 'updatedAt' => date('c')]);
+        log_audit('Configuration', 'save_report_card_config', $school, 'Updated report card customisation');
+
+        $this->json_success(['message' => 'Report card customisation saved.', 'config' => $config]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/upload_reportcard_asset
+    // Uploads a report-card image asset (custom logo / principal signature /
+    // class-teacher signature) to Firebase Storage and stores its URL inside
+    // reportCardConfig.assets.{slot}. `slot` ∈ logoUrl|principalSignUrl|classTeacherSignUrl.
+    // ─────────────────────────────────────────────────────────────────────
+    public function upload_reportcard_asset()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'upload_rc_asset');
+        $school = $this->school_name;
+
+        $slot    = trim((string) $this->input->post('slot', TRUE));
+        $allowed = ['logoUrl', 'principalSignUrl', 'classTeacherSignUrl'];
+        if (!in_array($slot, $allowed, true)) {
+            return $this->json_error('Invalid asset slot.');
+        }
+        if (empty($_FILES['asset']['name'])) {
+            return $this->json_error('No file uploaded.');
+        }
+
+        $tempDir = APPPATH . 'temp/';
+        if (!is_dir($tempDir)) mkdir($tempDir, 0755, true);
+
+        $this->load->library('upload', [
+            'upload_path'   => $tempDir,
+            'allowed_types' => 'jpg|jpeg|png|gif|webp',
+            'max_size'      => 2048,
+            'encrypt_name'  => TRUE,
+        ]);
+
+        if (!$this->upload->do_upload('asset')) {
+            return $this->json_error($this->upload->display_errors('', ''));
+        }
+
+        $info       = $this->upload->data();
+        $localPath  = $info['full_path'];
+        $safe       = preg_replace('/[^A-Za-z0-9_\-]/', '_', $school);
+        $remotePath = "schools/{$safe}/reportcard/{$slot}_" . $info['file_name'];
+
+        // Capture previous asset path for orphan cleanup.
+        $prevPath = '';
+        try {
+            $schoolDoc = $this->fs->get('schools', $this->fs->schoolId());
+            $cfg       = is_array($schoolDoc['reportCardConfig'] ?? null) ? $schoolDoc['reportCardConfig'] : [];
+            $prevUrl   = (string)($cfg['assets'][$slot] ?? '');
+            if ($prevUrl !== '') $prevPath = $this->firebase->storagePathFromUrl($prevUrl);
+        } catch (\Throwable $_) {}
+
+        $uploaded = $this->firebase->uploadFile($localPath, $remotePath);
+        @unlink($localPath);
+        if (!$uploaded) {
+            return $this->json_error('Failed to upload asset to storage.');
+        }
+
+        $url = $this->firebase->getDownloadUrl($remotePath);
+
+        // Merge the new URL into reportCardConfig.assets without clobbering the rest.
+        $schoolDoc = $this->fs->get('schools', $this->fs->schoolId());
+        $config    = is_array($schoolDoc['reportCardConfig'] ?? null) ? $schoolDoc['reportCardConfig'] : [];
+        if (!isset($config['assets']) || !is_array($config['assets'])) $config['assets'] = [];
+        $config['assets'][$slot] = $url;
+        $this->fs->update('schools', $this->fs->schoolId(), ['reportCardConfig' => $config, 'updatedAt' => date('c')]);
+
+        if ($prevPath !== '' && $prevPath !== $remotePath) {
+            $this->firebase->deleteStorageFile($prevPath);
+        }
+
+        log_audit('Configuration', 'upload_reportcard_asset', $school, "Uploaded report card asset: {$slot}");
+        $this->json_success(['url' => $url, 'slot' => $slot, 'message' => 'Asset uploaded.']);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/remove_reportcard_asset
+    // Clears one asset slot (sets URL empty + best-effort storage delete).
+    // ─────────────────────────────────────────────────────────────────────
+    public function remove_reportcard_asset()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'remove_rc_asset');
+        $school = $this->school_name;
+
+        $slot    = trim((string) $this->input->post('slot', TRUE));
+        $allowed = ['logoUrl', 'principalSignUrl', 'classTeacherSignUrl'];
+        if (!in_array($slot, $allowed, true)) {
+            return $this->json_error('Invalid asset slot.');
+        }
+
+        $schoolDoc = $this->fs->get('schools', $this->fs->schoolId());
+        $config    = is_array($schoolDoc['reportCardConfig'] ?? null) ? $schoolDoc['reportCardConfig'] : [];
+        $prevUrl   = (string)($config['assets'][$slot] ?? '');
+        if (!isset($config['assets']) || !is_array($config['assets'])) $config['assets'] = [];
+        $config['assets'][$slot] = '';
+        $this->fs->update('schools', $this->fs->schoolId(), ['reportCardConfig' => $config, 'updatedAt' => date('c')]);
+
+        if ($prevUrl !== '') {
+            try { $this->firebase->deleteStorageFile($this->firebase->storagePathFromUrl($prevUrl)); } catch (\Throwable $_) {}
+        }
+
+        log_audit('Configuration', 'remove_reportcard_asset', $school, "Removed report card asset: {$slot}");
+        $this->json_success(['slot' => $slot, 'message' => 'Asset removed.']);
     }
 
     // ── Admission Payment Configuration ────────────────────────────────

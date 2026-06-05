@@ -26,8 +26,8 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
     <table class="cb-hdr-tbl" cellpadding="0" cellspacing="0">
       <tr>
         <td class="cb-hdr-logo-cell">
-          <?php if ($schoolLogoUrl): ?>
-            <img src="<?= htmlspecialchars($schoolLogoUrl) ?>" alt="" class="cb-logo-img">
+          <?php if ($rcLogoUrl): ?>
+            <img src="<?= htmlspecialchars($rcLogoUrl) ?>" alt="" class="cb-logo-img">
           <?php else: ?>
             <div class="cb-logo-ph"><?= htmlspecialchars(strtoupper(substr($schoolDisplayName, 0, 2))) ?></div>
           <?php endif; ?>
@@ -108,6 +108,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
         <?php endif; ?>
       </div>
       <div class="cb-stu-right">
+        <?php if ($rcShowPhoto): ?>
         <div class="cb-photo-box">
           <?php if ($photoUrl): ?>
             <img src="<?= htmlspecialchars($photoUrl) ?>" alt="Photo" class="cb-photo">
@@ -118,6 +119,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
             </div>
           <?php endif; ?>
         </div>
+        <?php endif; ?>
         <div class="cb-class-badge">
           <div class="cb-class-num"><?= htmlspecialchars($classNameRaw) ?></div>
           <div class="cb-class-sec"><?= $sectionLetter ? 'Sec ' . htmlspecialchars($sectionLetter) : '' ?></div>
@@ -193,13 +195,14 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
       </table>
 
       <!-- Grade scale -->
-      <?php if ($gradeLegend): ?>
+      <?php if ($rcShowLegend && $gradeLegend): ?>
         <div class="cb-grade-legend">
           <strong>Grading Scale (<?= htmlspecialchars($gradingScale) ?>):</strong> <?= $gradeLegend ?>
         </div>
       <?php endif; ?>
 
       <!-- OVERALL RESULT STRIP — horizontal stats -->
+      <?php if ($rcShowResultStrip): ?>
       <div class="cb-result-strip">
         <div class="cb-rs-item">
           <div class="cb-rs-val"><?= htmlspecialchars($grandTotal) ?><span>/<?= htmlspecialchars($grandMax) ?></span></div>
@@ -222,11 +225,13 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
           <div class="cb-rs-lbl">Result</div>
         </div>
       </div>
+      <?php endif; ?>
     <?php endif; ?>
 
     <!-- ═══════════════════════════════════════════════════════════════
          PART B — CO-SCHOLASTIC AREAS (Activity grid cards)
          ═══════════════════════════════════════════════════════════════ -->
+    <?php if ($rcShowCoScholastic): ?>
     <div class="cb-part-hdr">
       <span class="cb-part-num">B</span>
       <span class="cb-part-title">CO-SCHOLASTIC AREAS</span>
@@ -257,10 +262,12 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
         </div>
       <?php endforeach; ?>
     </div>
+    <?php endif; ?>
 
     <!-- ═══════════════════════════════════════════════════════════════
          PART C — ATTENDANCE & REMARKS
          ═══════════════════════════════════════════════════════════════ -->
+    <?php if ($rcShowAttendance): ?>
     <div class="cb-part-hdr">
       <span class="cb-part-num">C</span>
       <span class="cb-part-title">ATTENDANCE &amp; REMARKS</span>
@@ -280,9 +287,10 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
       </div>
       <div class="cb-att-item cb-att-wide">
         <span class="cb-att-k">Teacher's Remark</span>
-        <span class="cb-att-v cb-att-remark">---</span>
+        <span class="cb-att-v cb-att-remark"><?= $rcDefaultRemark ? htmlspecialchars($rcDefaultRemark) : '---' ?></span>
       </div>
     </div>
+    <?php endif; ?>
 
     <!-- ═══════════════════════════════════════════════════════════════
          RESULT DECLARATION
@@ -295,30 +303,38 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
     <!-- ═══════════════════════════════════════════════════════════════
          SIGNATURES
          ═══════════════════════════════════════════════════════════════ -->
+    <?php if ($rcShowSignatures): ?>
     <div class="cb-sigs">
       <div class="cb-sig">
-        <div class="cb-sig-space"></div>
+        <?php if ($rcTeacherSignUrl): ?><img src="<?= htmlspecialchars($rcTeacherSignUrl) ?>" alt="" style="height:42px;max-width:120px;object-fit:contain"><?php else: ?><div class="cb-sig-space"></div><?php endif; ?>
         <div class="cb-sig-line"></div>
-        <div class="cb-sig-label">Class Teacher</div>
-        <div class="cb-sig-date">Date: ___________</div>
+        <div class="cb-sig-label"><?= htmlspecialchars($rcClassTeacherNm ?: 'Class Teacher') ?></div>
+        <div class="cb-sig-date"><?= $rcClassTeacherNm ? 'Class Teacher' : 'Date: ___________' ?></div>
       </div>
       <div class="cb-sig">
         <div class="cb-sig-space"></div>
         <div class="cb-sig-line"></div>
-        <div class="cb-sig-label">Exam. Controller</div>
+        <div class="cb-sig-label"><?= htmlspecialchars($rcControllerName ?: 'Exam. Controller') ?></div>
       </div>
       <div class="cb-sig cb-sig-main">
-        <div class="cb-sig-space"></div>
-        <div class="cb-seal">SCHOOL<br>SEAL</div>
+        <?php if ($rcPrincipalSignUrl): ?>
+          <img src="<?= htmlspecialchars($rcPrincipalSignUrl) ?>" alt="" style="height:42px;max-width:120px;object-fit:contain">
+        <?php else: ?>
+          <div class="cb-sig-space"></div>
+          <div class="cb-seal">SCHOOL<br>SEAL</div>
+        <?php endif; ?>
         <div class="cb-sig-line"></div>
-        <div class="cb-sig-label">Principal</div>
-        <div class="cb-sig-date">Date: ___________</div>
+        <div class="cb-sig-label"><?= htmlspecialchars($rcPrincipalName ?: 'Principal') ?></div>
+        <div class="cb-sig-date"><?= $rcPrincipalName ? '' : 'Date: ___________' ?></div>
       </div>
     </div>
+    <?php endif; ?>
 
+    <?php if ($rcFooter): ?>
     <div class="cb-footer">
-      This is a computer-generated report card. No signature is required for electronic copies.
+      <?= htmlspecialchars($rcFooter) ?>
     </div>
+    <?php endif; ?>
 
   </div>
 </div>

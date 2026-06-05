@@ -5,7 +5,7 @@
  * Backward-compatible: defaults to 'classic' if no template selected.
  */
 $rc_template = $rc_template ?? 'classic';
-$allowed = ['classic', 'cbse', 'minimal', 'modern', 'elegant'];
+$allowed = ['classic', 'cbse', 'minimal', 'modern', 'elegant', 'professional'];
 if (!in_array($rc_template, $allowed, true)) {
     $rc_template = 'classic';
 }

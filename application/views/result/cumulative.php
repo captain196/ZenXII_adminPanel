@@ -268,6 +268,7 @@ $configExams = $config['Exams'] ?? [];
       .then(function (r) { return r.json(); })
       .then(function (d) {
         loading.style.display = 'none';
+        _setStaleBanner(!!d.stale);  // CC-3: surface stale cumulative state
         if (!d.students || !d.students.length) {
           emptyDiv.style.display = '';
           return;
@@ -278,6 +279,22 @@ $configExams = $config['Exams'] ?? [];
         loading.style.display = 'none';
         emptyDiv.style.display = '';
       });
+  }
+
+  function _setStaleBanner(show) {
+    var b = document.getElementById('rcuStaleBanner');
+    if (show) {
+      if (!b) {
+        b = document.createElement('div');
+        b.id = 'rcuStaleBanner';
+        b.style.cssText = 'margin:0 0 12px;padding:10px 14px;border:1px solid #f0c36d;background:#fff8e1;color:#8a6d3b;border-radius:8px;font-size:13px;';
+        b.innerHTML = '⚠ These cumulative results are <strong>stale</strong> (an exam was changed or deleted). Re-run <strong>Compute Cumulative</strong> for accurate figures.';
+        tableWrap.parentNode.insertBefore(b, tableWrap);
+      }
+      b.style.display = '';
+    } else if (b) {
+      b.style.display = 'none';
+    }
   }
 
   function renderTable(students, subjects) {

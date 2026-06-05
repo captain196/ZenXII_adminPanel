@@ -37,8 +37,8 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
     <table class="rc-hdr-tbl" cellpadding="0" cellspacing="0">
       <tr>
         <td class="rc-hdr-logo-cell">
-          <?php if ($schoolLogoUrl): ?>
-            <img src="<?= htmlspecialchars($schoolLogoUrl) ?>" alt="" class="rc-logo-img">
+          <?php if ($rcLogoUrl): ?>
+            <img src="<?= htmlspecialchars($rcLogoUrl) ?>" alt="" class="rc-logo-img">
           <?php else: ?>
             <div class="rc-logo-ph"><?= htmlspecialchars(strtoupper(substr($schoolDisplayName, 0, 3))) ?></div>
           <?php endif; ?>
@@ -86,7 +86,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
       <div class="rc-title-main">
         <?= htmlspecialchars(strtoupper($examName)) ?><?= $examType ? ' &mdash; ' . htmlspecialchars(strtoupper($examType)) : '' ?>
       </div>
-      <div class="rc-title-label">REPORT CARD</div>
+      <div class="rc-title-label"><?= htmlspecialchars($rcTitle ?: 'REPORT CARD') ?></div>
     </div>
 
     <div class="rc-class-strip">
@@ -105,6 +105,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
 
     <table class="rc-stu-tbl" cellpadding="0" cellspacing="0">
       <tr>
+        <?php if ($rcShowPhoto): ?>
         <td class="rc-stu-photo-cell" rowspan="5">
           <?php if ($photoUrl): ?>
             <img src="<?= htmlspecialchars($photoUrl) ?>" alt="Photo" class="rc-stu-photo">
@@ -115,6 +116,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
             </div>
           <?php endif; ?>
         </td>
+        <?php endif; ?>
         <td class="rc-si-label">Student's Name</td>
         <td class="rc-si-sep">:</td>
         <td class="rc-si-value rc-si-name"><?= htmlspecialchars(strtoupper($studentName ?: '---')) ?></td>
@@ -225,7 +227,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
       </table>
 
       <!-- Grade Legend -->
-      <?php if ($gradeLegend): ?>
+      <?php if ($rcShowLegend && $gradeLegend): ?>
         <div class="rc-legend">
           <strong>Grading Scale (<?= htmlspecialchars($gradingScale) ?>) :</strong>&ensp;<?= $gradeLegend ?>
         </div>
@@ -235,6 +237,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
          SECTION 5 — OVERALL RESULT SUMMARY
          Table: 5 columns — Marks | Percentage | Grade | Rank | Result
          ════════════════════════════════════════════════════════════════ -->
+    <?php if ($rcShowResultStrip): ?>
     <div class="rc-section-hdr rc-section-hdr-warm">OVERALL RESULT SUMMARY</div>
 
     <table class="rc-summary-tbl" cellpadding="0" cellspacing="0">
@@ -253,6 +256,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
         <td class="rc-pf-<?= strtolower($grandPass) ?>"><?= htmlspecialchars($grandPass ?: '---') ?></td>
       </tr>
     </table>
+    <?php endif; ?>
 
     <?php endif; ?>
 
@@ -266,43 +270,51 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
     <!-- ════════════════════════════════════════════════════════════════
          SECTION 7 — REMARKS
          ════════════════════════════════════════════════════════════════ -->
+    <?php if ($rcShowAttendance): ?>
     <table class="rc-remarks-tbl" cellpadding="0" cellspacing="0">
       <tr>
         <td class="rc-rem-label">Teacher's Remarks</td>
-        <td class="rc-rem-value">___________________________________________________________</td>
+        <td class="rc-rem-value"><?= $rcDefaultRemark ? htmlspecialchars($rcDefaultRemark) : '___________________________________________________________' ?></td>
       </tr>
     </table>
+    <?php endif; ?>
 
     <!-- ════════════════════════════════════════════════════════════════
          SECTION 8 — SIGNATURES
          Table: 3 equal columns
          ════════════════════════════════════════════════════════════════ -->
+    <?php if ($rcShowSignatures): ?>
     <table class="rc-sig-tbl" cellpadding="0" cellspacing="0">
       <tr>
         <td class="rc-sig-col">
-          <div class="rc-sig-space"></div>
+          <?php if ($rcTeacherSignUrl): ?><img src="<?= htmlspecialchars($rcTeacherSignUrl) ?>" alt="" style="height:44px;max-width:130px;object-fit:contain"><?php else: ?><div class="rc-sig-space"></div><?php endif; ?>
           <div class="rc-sig-line"></div>
-          <div class="rc-sig-name">Class Teacher</div>
-          <div class="rc-sig-date">Date: _______________</div>
+          <div class="rc-sig-name"><?= htmlspecialchars($rcClassTeacherNm ?: 'Class Teacher') ?></div>
+          <div class="rc-sig-date"><?= $rcClassTeacherNm ? 'Class Teacher' : 'Date: _______________' ?></div>
         </td>
         <td class="rc-sig-col rc-sig-center">
-          <div class="rc-sig-space"></div>
-          <div class="rc-seal">
-            <div class="rc-seal-text">SCHOOL<br>SEAL</div>
-          </div>
+          <?php if ($rcPrincipalSignUrl): ?>
+            <img src="<?= htmlspecialchars($rcPrincipalSignUrl) ?>" alt="" style="height:44px;max-width:130px;object-fit:contain">
+          <?php else: ?>
+            <div class="rc-sig-space"></div>
+            <div class="rc-seal">
+              <div class="rc-seal-text">SCHOOL<br>SEAL</div>
+            </div>
+          <?php endif; ?>
           <div class="rc-sig-line"></div>
-          <div class="rc-sig-name">Principal</div>
+          <div class="rc-sig-name"><?= htmlspecialchars($rcPrincipalName ?: 'Principal') ?></div>
         </td>
         <td class="rc-sig-col">
           <div class="rc-sig-space"></div>
           <div class="rc-sig-line"></div>
-          <div class="rc-sig-name">Parent / Guardian</div>
-          <div class="rc-sig-date">Date: _______________</div>
+          <div class="rc-sig-name"><?= htmlspecialchars($rcControllerName ?: 'Parent / Guardian') ?></div>
+          <div class="rc-sig-date"><?= $rcControllerName ? 'Exam Controller' : 'Date: _______________' ?></div>
         </td>
       </tr>
     </table>
+    <?php endif; ?>
 
-    <div class="rc-footer">This is a computer-generated report card.</div>
+    <?php if ($rcFooter): ?><div class="rc-footer"><?= htmlspecialchars($rcFooter) ?></div><?php endif; ?>
 
   </div><!-- .rc-page -->
 </div><!-- .rc-wrapper -->

@@ -173,6 +173,7 @@
       .then(function (r) { return r.json(); })
       .then(function (d) {
         loading.style.display = 'none';
+        _setStaleBanner(!!d.stale);  // CC-3 / A5-1: surface stale class-result state
         if (!d.students || !d.students.length) {
           emptyDiv.style.display = '';
           return;
@@ -186,6 +187,22 @@
   }
 
   var CURRENT_EXAM_ID = '';
+
+  function _setStaleBanner(show) {
+    var b = document.getElementById('rcrStaleBanner');
+    if (show) {
+      if (!b) {
+        b = document.createElement('div');
+        b.id = 'rcrStaleBanner';
+        b.style.cssText = 'margin:0 0 12px;padding:10px 14px;border:1px solid #f0c36d;background:#fff8e1;color:#8a6d3b;border-radius:8px;font-size:13px;';
+        b.innerHTML = '⚠ These results are <strong>stale</strong> (marks or template changed since last compute). Re-run <strong>Compute Results</strong> for accurate ranks &amp; grades.';
+        tableWrap.parentNode.insertBefore(b, tableWrap);
+      }
+      b.style.display = '';
+    } else if (b) {
+      b.style.display = 'none';
+    }
+  }
 
   function renderTable(students, subjects) {
     CURRENT_EXAM_ID = examSel.value;

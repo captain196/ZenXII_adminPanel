@@ -51,7 +51,14 @@ class Result extends MY_Controller
         $this->load->library('Fee_defaulter_check', null, 'feeDefaulter');
         $this->feeDefaulter->init($this->firebase, $this->school_name, $this->session_year);
 
-        // Firestore helper
+        // Firestore helper.
+        // CC-10 unblock: MY_Controller already aliased 'fs' to firestore_service.
+        // Release that alias so CI can rebind 'fs' to Firestore_helper (this
+        // controller's expected gateway) without the CI "Resource 'fs' already
+        // exists and is not a Firestore_helper instance" collision. roster/data_service
+        // captured their own firestore_service reference during parent::__construct(),
+        // so they are unaffected (objects are held by handle).
+        unset($this->fs);
         $this->load->library('Firestore_helper', null, 'fs');
         $this->fs->init($this->firebase, $this->school_name, $this->session_year);
     }
@@ -572,8 +579,9 @@ class Result extends MY_Controller
 
         // Load selected report card template
         $rcTemplate = $this->firebase->get("Schools/{$school}/Config/ReportCardTemplate");
-        $rcAllowed  = ['classic', 'cbse', 'minimal', 'modern', 'elegant'];
+        $rcAllowed  = ['classic', 'cbse', 'minimal', 'modern', 'elegant', 'professional'];
         if (!$rcTemplate || !is_string($rcTemplate) || !in_array($rcTemplate, $rcAllowed, true)) $rcTemplate = 'classic';
+        $rcConfig = $this->_get_report_card_config();
 
         // Render batch view — reuses report_card view in a loop
         $data = [
@@ -584,6 +592,7 @@ class Result extends MY_Controller
             'sectionKey'  => $sectionKey,
             'sessionYear' => $year,
             'rc_template' => $rcTemplate,
+            'rc_config'   => $rcConfig,
         ];
 
         $this->load->view('result/batch_report_cards', $data);
@@ -801,7 +810,7 @@ class Result extends MY_Controller
             if (!empty($roster) && !isset($roster[$userId])) {
                 $warnings[] = "Student {$userId} not in {$classKey}/{$sectionKey} roster — saved anyway (log-and-keep).";
                 log_message(
-                    'warning',
+                    'error',
                     "Result::save_marks — {$userId} not in roster for {$classKey}/{$sectionKey} but mark was saved (R4 log-and-keep)"
                 );
                 // No `continue` — fall through to the save below.
@@ -1279,8 +1288,16 @@ class Result extends MY_Controller
             "Schools/{$school}/{$year}/Results/Cumulative/{$classKey}/{$sectionKey}"
         ) ?? [];
 
+        // CC-3: surface + strip the stale sentinel so it never renders as a
+        // phantom student row, and so the view can show a "recompute" banner.
+        $stale = false;
+        if (is_array($cumulative) && isset($cumulative['_stale'])) {
+            $stale = true;
+            unset($cumulative['_stale']);
+        }
+
         if (!is_array($cumulative) || empty($cumulative)) {
-            echo json_encode(['students' => [], 'subjects' => []]);
+            echo json_encode(['students' => [], 'subjects' => [], 'stale' => $stale]);
             return;
         }
 
@@ -1314,7 +1331,7 @@ class Result extends MY_Controller
             // result row is still emitted. Hides nothing from the UI.
             if (!isset($studentList[$uid])) {
                 log_message(
-                    'warning',
+                    'error',
                     "Result::cumulative — {$uid} not in roster for {$classKey}/{$sectionKey} but result row was kept"
                 );
             }
@@ -1330,7 +1347,7 @@ class Result extends MY_Controller
         }
         usort($rows, fn($a, $b) => ($a['rank'] ?? 999) <=> ($b['rank'] ?? 999));
 
-        echo json_encode(['students' => $rows, 'subjects' => $subjects]);
+        echo json_encode(['students' => $rows, 'subjects' => $subjects, 'stale' => $stale]);
     }
 
     /**
@@ -1422,7 +1439,7 @@ class Result extends MY_Controller
             // R4 log-and-keep: roster gap is logged but the row stays.
             if (!isset($studentList[$uid])) {
                 log_message(
-                    'warning',
+                    'error',
                     "Result::class_result — {$uid} not in roster for {$classKey}/{$sectionKey} but row was kept"
                 );
             }
@@ -1672,10 +1689,11 @@ class Result extends MY_Controller
         if (!is_array($allProfiles)) $allProfiles = [];
 
         $rcTemplate = $this->firebase->get("Schools/{$school}/Config/ReportCardTemplate");
-        $rcAllowed  = ['classic', 'cbse', 'minimal', 'modern', 'elegant'];
+        $rcAllowed  = ['classic', 'cbse', 'minimal', 'modern', 'elegant', 'professional'];
         if (!$rcTemplate || !is_string($rcTemplate) || !in_array($rcTemplate, $rcAllowed, true)) {
             $rcTemplate = 'classic';
         }
+        $rcConfig = $this->_get_report_card_config();
 
         // ── Build student list ──
         $roster  = $this->exam_engine->get_student_names($classKey, $sectionKey);
@@ -1714,16 +1732,20 @@ class Result extends MY_Controller
                 'schoolName'  => $school,
                 'sessionYear' => $year,
                 'rc_template' => $rcTemplate,
+                'rc_config'   => $rcConfig,
             ];
 
             // Render to HTML string
             $html = $this->load->view('result/report_card', $data, true);
 
-            // Filename: StudentName_Class_Section.pdf
-            $name = trim($profile['Name'] ?? $userId);
+            // Filename: StudentName_UserId_Class_Section.pdf
+            // A7-5: include the unique userId so duplicate student names don't
+            // collide into one ZIP entry (which previously dropped a card).
+            $name     = trim($profile['Name'] ?? $userId);
+            $safeName = preg_replace('/[^a-zA-Z0-9_\-]/', '_', $name);
             $items[] = [
                 'html'     => $html,
-                'filename' => "{$name}_{$classShort}_{$sectionShort}.pdf",
+                'filename' => "{$safeName}_{$userId}_{$classShort}_{$sectionShort}.pdf",
             ];
 
             // Free the HTML string immediately
@@ -1850,7 +1872,7 @@ class Result extends MY_Controller
 
         // Template style
         $rcTemplate = $this->firebase->get("Schools/{$school}/Config/ReportCardTemplate");
-        $rcAllowed  = ['classic', 'cbse', 'minimal', 'modern', 'elegant'];
+        $rcAllowed  = ['classic', 'cbse', 'minimal', 'modern', 'elegant', 'professional'];
         if (!$rcTemplate || !is_string($rcTemplate) || !in_array($rcTemplate, $rcAllowed, true)) {
             $rcTemplate = 'classic';
         }
@@ -1869,7 +1891,27 @@ class Result extends MY_Controller
             'schoolName'  => $school,
             'sessionYear' => $year,
             'rc_template' => $rcTemplate,
+            'rc_config'   => $this->_get_report_card_config(),
         ];
+    }
+
+    /**
+     * Read the per-school report-card customisation (accent colour, section
+     * toggles, custom text, asset image URLs) from the canonical Firestore
+     * school doc — the same location School_config writes it to. Returns []
+     * (templates fall back to defaults) on any failure.
+     */
+    private function _get_report_card_config(): array
+    {
+        try {
+            // NOTE: inside Result.php, $this->fs is rebound to Firestore_helper (no schoolId()).
+            // Use the controller's canonical school doc id ($this->school_id = SCH_XXXXXX),
+            // which is the document id of the `schools` collection (same key School_config writes).
+            $doc = $this->fs->get('schools', $this->school_id);
+            return (is_array($doc['reportCardConfig'] ?? null)) ? $doc['reportCardConfig'] : [];
+        } catch (\Throwable $_) {
+            return [];
+        }
     }
 
 }

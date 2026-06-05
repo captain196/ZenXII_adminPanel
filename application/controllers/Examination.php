@@ -46,7 +46,13 @@ class Examination extends MY_Controller
         $this->load->library('Fee_defaulter_check', null, 'feeDefaulter');
         $this->feeDefaulter->init($this->firebase, $this->school_name, $this->session_year);
 
-        // Firestore helper
+        // Firestore helper.
+        // CC-10 unblock: MY_Controller already aliased 'fs' to firestore_service.
+        // Release that alias so CI can rebind 'fs' to Firestore_helper without the
+        // CI "Resource 'fs' already exists and is not a Firestore_helper instance"
+        // collision. roster/data_service hold their own firestore_service handle from
+        // parent::__construct(), so they are unaffected.
+        unset($this->fs);
         $this->load->library('Firestore_helper', null, 'fs');
         $this->fs->init($this->firebase, $this->school_name, $this->session_year);
     }

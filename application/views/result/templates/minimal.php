@@ -24,8 +24,8 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
     <table class="mn-hdr-tbl" cellpadding="0" cellspacing="0">
       <tr>
         <td class="mn-hdr-logo-cell">
-          <?php if ($schoolLogoUrl): ?>
-            <img src="<?= htmlspecialchars($schoolLogoUrl) ?>" alt="" class="mn-logo-img">
+          <?php if ($rcLogoUrl): ?>
+            <img src="<?= htmlspecialchars($rcLogoUrl) ?>" alt="" class="mn-logo-img">
           <?php else: ?>
             <div class="mn-logo-ph"><?= htmlspecialchars(strtoupper(substr($schoolDisplayName, 0, 2))) ?></div>
           <?php endif; ?>
@@ -133,6 +133,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
       <div class="mn-sep mn-sep-thick"></div>
 
       <!-- ── SUMMARY — Inline stats, no boxes ──────────────────────── -->
+      <?php if ($rcShowResultStrip): ?>
       <div class="mn-summary">
         <div class="mn-sum-primary">
           <span class="mn-sum-total"><?= htmlspecialchars($grandTotal) ?><span class="mn-sum-of">/<?= htmlspecialchars($grandMax) ?></span></span>
@@ -150,9 +151,10 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
           </span>
         </div>
       </div>
+      <?php endif; ?>
 
       <!-- ── GRADE LEGEND ─────────────────────────────────────────── -->
-      <?php if ($gradeLegend): ?>
+      <?php if ($rcShowLegend && $gradeLegend): ?>
         <div class="mn-legend"><?= $gradeLegend ?></div>
       <?php endif; ?>
 
@@ -166,20 +168,26 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
     <div class="mn-sep"></div>
 
     <!-- ── SIGNATURES — Minimal lines ─────────────────────────────── -->
+    <?php if ($rcShowSignatures): ?>
     <div class="mn-sigs">
       <div class="mn-sig">
+        <?php if ($rcTeacherSignUrl): ?><img src="<?= htmlspecialchars($rcTeacherSignUrl) ?>" alt="" style="height:36px;max-width:110px;object-fit:contain;margin-bottom:2px"><?php endif; ?>
         <div class="mn-sig-line"></div>
-        <span>Class Teacher</span>
+        <span><?= htmlspecialchars($rcClassTeacherNm ?: 'Class Teacher') ?></span>
+      </div>
+      <div class="mn-sig">
+        <?php if ($rcPrincipalSignUrl): ?><img src="<?= htmlspecialchars($rcPrincipalSignUrl) ?>" alt="" style="height:36px;max-width:110px;object-fit:contain;margin-bottom:2px"><?php endif; ?>
+        <div class="mn-sig-line"></div>
+        <span><?= htmlspecialchars($rcPrincipalName ?: 'Principal') ?></span>
       </div>
       <div class="mn-sig">
         <div class="mn-sig-line"></div>
-        <span>Principal</span>
-      </div>
-      <div class="mn-sig">
-        <div class="mn-sig-line"></div>
-        <span>Parent / Guardian</span>
+        <span><?= htmlspecialchars($rcControllerName ?: 'Parent / Guardian') ?></span>
       </div>
     </div>
+    <?php endif; ?>
+
+    <?php if ($rcFooter): ?><div style="text-align:center;font-size:10px;color:#a1a1aa;font-style:italic;padding-top:18px"><?= htmlspecialchars($rcFooter) ?></div><?php endif; ?>
 
   </div>
 </div>

@@ -123,13 +123,16 @@
   // Use $this->load->vars() so variables propagate through nested view loading.
   // Local PHP vars in CI3 views do NOT survive 2 levels of $this->load->view().
   $rc_template    = $rc_template ?? 'classic';
+  $rc_config      = $rc_config ?? [];
   $_batch_errors  = [];   // collect per-student failures
   $_batch_ok      = 0;    // count of successfully rendered cards
+  $_css_done      = false; // A7-3: shared CSS is emitted only after the first SUCCESSFUL render
 
   $this->load->vars([
       'batch_mode'        => true,
       'batch_css_emitted' => false,
       'rc_template'       => $rc_template,
+      'rc_config'         => $rc_config,
   ]);
 ?>
 
@@ -160,14 +163,18 @@
 
       $this->load->view('result/report_card');
 
-      // After first student, flag CSS as emitted so templates skip <style> blocks
-      if ($idx === 0) {
-          $this->load->vars(['batch_css_emitted' => true]);
-      }
-
       // ── Success: flush buffered HTML to the page ──
       ob_end_flush();
       $_batch_ok++;
+
+      // A7-3: emit the shared <style> only ONCE — after the first SUCCESSFUL
+      // render. Previously this flipped on $idx===0 even when that student
+      // FAILED (its CSS discarded by ob_end_clean), leaving the rest of the
+      // batch unstyled. Gating on a success-only flag fixes that.
+      if (!$_css_done) {
+          $_css_done = true;
+          $this->load->vars(['batch_css_emitted' => true]);
+      }
 
   } catch (\Throwable $e) {
       // ── Failure: discard any partial/broken HTML this student produced ──
@@ -201,10 +208,9 @@
          . '<div class="batch-error-msg">' . htmlspecialchars($e->getMessage()) . '</div>'
          . '</div>';
 
-      // Ensure CSS gets emitted if first student was the one that failed
-      if ($idx === 0) {
-          $this->load->vars(['batch_css_emitted' => true]);
-      }
+      // A7-3: do NOT flag CSS as emitted on failure — this student's output
+      // (including its <style>) was discarded by ob_end_clean, so the next
+      // student must still emit the shared CSS. The success path owns the flag.
   }
 endforeach; ?>
 

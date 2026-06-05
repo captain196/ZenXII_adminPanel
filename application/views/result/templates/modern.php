@@ -26,8 +26,8 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
     <table class="md-hdr-tbl" cellpadding="0" cellspacing="0">
       <tr>
         <td class="md-hdr-logo-cell">
-          <?php if ($schoolLogoUrl): ?>
-            <img src="<?= htmlspecialchars($schoolLogoUrl) ?>" alt="" class="md-logo-img">
+          <?php if ($rcLogoUrl): ?>
+            <img src="<?= htmlspecialchars($rcLogoUrl) ?>" alt="" class="md-logo-img">
           <?php else: ?>
             <div class="md-logo-ph"><?= htmlspecialchars(strtoupper(substr($schoolDisplayName, 0, 2))) ?></div>
           <?php endif; ?>
@@ -81,6 +81,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
   <!-- Student Card -->
   <div class="md-card md-student-card">
     <div class="md-stu-left">
+      <?php if ($rcShowPhoto): ?>
       <div class="md-stu-photo">
         <?php if ($photoUrl): ?>
           <img src="<?= htmlspecialchars($photoUrl) ?>" alt="photo">
@@ -90,6 +91,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
           </div>
         <?php endif; ?>
       </div>
+      <?php endif; ?>
       <div class="md-stu-info">
         <div class="md-stu-name"><?= htmlspecialchars($studentName ?: '—') ?></div>
         <div class="md-stu-detail"><?= htmlspecialchars($rollNo ?: '') ?><?= $rollNo && $dob ? ' &middot; ' : '' ?><?= htmlspecialchars($dob ?: '') ?></div>
@@ -117,6 +119,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
        OVERALL DASHBOARD — Large circular gauge + metric cards
        ═══════════════════════════════════════════════════════════════ -->
   <?php if (!empty($subjectRows)): ?>
+  <?php if ($rcShowResultStrip): ?>
   <div class="md-section-title">Performance Overview</div>
   <div class="md-dashboard">
     <!-- Central circular gauge -->
@@ -159,6 +162,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
       </div>
     </div>
   </div>
+  <?php endif; ?>
 
   <!-- ═══════════════════════════════════════════════════════════════
        SUBJECT CARDS — Each with mini progress + component bars
@@ -227,7 +231,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
   <!-- ═══════════════════════════════════════════════════════════════
        GRADE LEGEND
        ═══════════════════════════════════════════════════════════════ -->
-  <?php if ($gradeLegend): ?>
+  <?php if ($rcShowLegend && $gradeLegend): ?>
     <div class="md-card md-legend-card">
       <div class="md-legend-title">Grading Scale — <?= htmlspecialchars($gradingScale) ?></div>
       <div class="md-legend-text"><?= $gradeLegend ?></div>
@@ -249,21 +253,30 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
   <!-- ═══════════════════════════════════════════════════════════════
        SIGNATURES
        ═══════════════════════════════════════════════════════════════ -->
+  <?php if ($rcShowSignatures): ?>
   <div class="md-sigs">
     <div class="md-sig">
+      <?php if ($rcTeacherSignUrl): ?><img src="<?= htmlspecialchars($rcTeacherSignUrl) ?>" alt="" style="height:40px;max-width:120px;object-fit:contain;margin-bottom:6px"><?php endif; ?>
       <div class="md-sig-line"></div>
-      <div class="md-sig-label">Class Teacher</div>
+      <div class="md-sig-label"><?= htmlspecialchars($rcClassTeacherNm ?: 'Class Teacher') ?></div>
     </div>
     <div class="md-sig md-sig-center">
-      <div class="md-seal">SEAL</div>
+      <?php if ($rcPrincipalSignUrl): ?>
+        <img src="<?= htmlspecialchars($rcPrincipalSignUrl) ?>" alt="" style="height:40px;max-width:120px;object-fit:contain;margin-bottom:6px">
+      <?php else: ?>
+        <div class="md-seal">SEAL</div>
+      <?php endif; ?>
       <div class="md-sig-line"></div>
-      <div class="md-sig-label">Principal</div>
+      <div class="md-sig-label"><?= htmlspecialchars($rcPrincipalName ?: 'Principal') ?></div>
     </div>
     <div class="md-sig">
       <div class="md-sig-line"></div>
-      <div class="md-sig-label">Parent / Guardian</div>
+      <div class="md-sig-label"><?= htmlspecialchars($rcControllerName ?: 'Parent / Guardian') ?></div>
     </div>
   </div>
+  <?php endif; ?>
+
+  <?php if ($rcFooter): ?><div style="text-align:center;font-size:10px;color:#94a3b8;font-style:italic;padding-top:16px"><?= htmlspecialchars($rcFooter) ?></div><?php endif; ?>
 
 </div>
 

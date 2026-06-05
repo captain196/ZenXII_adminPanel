@@ -115,7 +115,7 @@ $rank       = $computed['Rank']        ?? '';
 
 // ── Grade legend ──────────────────────────────────────────────────────
 $scaleLegendMap = [
-  'Percentage' => 'A1=(91-100), A2=(81-90), B1=(71-80), B2=(61-70), C1=(51-60), C2=(41-50), D=(33-40), E=(32 &amp; Below - Needs Improvement)',
+  'Percentage' => 'A+=(90-100), A=(80-89), B+=(70-79), B=(60-69), C=(50-59), D=(33-49), F=(Below 33)',
   'A-F Grades' => 'A=(90-100), B=(80-89), C=(70-79), D=(60-69), E=(50-59), F=(&lt;50)',
   'O-E Grades' => 'O=(91-100), E1=(81-90), E2=(71-80), B1=(61-70), B2=(51-60), C1=(41-50), C2=(33-40), D=(&lt;33)',
   '10-Point'   => '10=(91-100), 9=(81-90), 8=(71-80), 7=(61-70), 6=(51-60), 5=(41-50), 4=(33-40), F=(&lt;33)',
@@ -134,3 +134,55 @@ if (preg_match('/\d+/', $classNameRaw, $m)) {
 $resultText = ($grandPass === 'Pass')
   ? 'RESULT : PROMOTED' . $nextClass
   : 'RESULT : NOT PROMOTED — FURTHER IMPROVEMENT NEEDED';
+
+// ──────────────────────────────────────────────────────────────────────
+// Report-card CUSTOMIZATION config (per-school, from school doc
+// `reportCardConfig`). Every template may read these $rc* variables.
+// All values fall back to safe defaults so templates render unchanged
+// when a school has not customised anything.
+// ──────────────────────────────────────────────────────────────────────
+$rc_config = isset($rc_config) && is_array($rc_config) ? $rc_config : [];
+
+// — Accent / theme colour ——————————————————————————————————————
+$rcAccent = (string)($rc_config['accentColor'] ?? '');
+if (!preg_match('/^#[0-9a-fA-F]{6}$/', $rcAccent)) {
+    $rcAccent = '#1a3a6b';   // default professional navy
+}
+// Derive a darker shade for gradients / borders (multiply each channel by 0.72)
+$_r = max(0, (int)round(hexdec(substr($rcAccent, 1, 2)) * 0.72));
+$_g = max(0, (int)round(hexdec(substr($rcAccent, 3, 2)) * 0.72));
+$_b = max(0, (int)round(hexdec(substr($rcAccent, 5, 2)) * 0.72));
+$rcAccentDark = sprintf('#%02x%02x%02x', $_r, $_g, $_b);
+// Very light tint for zebra rows / panels
+$_lr = (int)round(hexdec(substr($rcAccent, 1, 2)) + (255 - hexdec(substr($rcAccent, 1, 2))) * 0.92);
+$_lg = (int)round(hexdec(substr($rcAccent, 3, 2)) + (255 - hexdec(substr($rcAccent, 3, 2))) * 0.92);
+$_lb = (int)round(hexdec(substr($rcAccent, 5, 2)) + (255 - hexdec(substr($rcAccent, 5, 2))) * 0.92);
+$rcAccentTint = sprintf('#%02x%02x%02x', $_lr, $_lg, $_lb);
+
+// — Section visibility toggles (default ON) ——————————————————————
+$rcSections = is_array($rc_config['sections'] ?? null) ? $rc_config['sections'] : [];
+$_rcShow = function (string $k) use ($rcSections): bool {
+    // Missing key => visible (backward-compatible default).
+    return !array_key_exists($k, $rcSections) || (bool)$rcSections[$k];
+};
+$rcShowPhoto        = $_rcShow('photo');
+$rcShowResultStrip  = $_rcShow('resultStrip');
+$rcShowLegend       = $_rcShow('gradingLegend');
+$rcShowCoScholastic = $_rcShow('coScholastic');
+$rcShowAttendance   = $_rcShow('attendance');
+$rcShowSignatures   = $_rcShow('signatures');
+
+// — Custom text ————————————————————————————————————————————————
+$rcText            = is_array($rc_config['text'] ?? null) ? $rc_config['text'] : [];
+$rcTitle           = trim((string)($rcText['title'] ?? ''));            // overrides the "REPORT CARD" heading
+$rcFooter          = trim((string)($rcText['footer'] ?? 'This is a computer-generated report card. No signature is required for electronic copies.'));
+$rcPrincipalName   = trim((string)($rcText['principalName'] ?? ''));
+$rcControllerName  = trim((string)($rcText['examControllerName'] ?? ''));
+$rcClassTeacherNm  = trim((string)($rcText['classTeacherName'] ?? ''));
+$rcDefaultRemark   = trim((string)($rcText['defaultRemark'] ?? ''));
+
+// — Asset images (logo override + signature images) ————————————————
+$rcAssets           = is_array($rc_config['assets'] ?? null) ? $rc_config['assets'] : [];
+$rcLogoUrl          = trim((string)($rcAssets['logoUrl'] ?? '')) ?: $schoolLogoUrl;   // custom logo overrides school logo
+$rcPrincipalSignUrl = trim((string)($rcAssets['principalSignUrl'] ?? ''));
+$rcTeacherSignUrl   = trim((string)($rcAssets['classTeacherSignUrl'] ?? ''));

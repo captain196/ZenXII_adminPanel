@@ -32,8 +32,8 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
       <table class="el-hdr-tbl" cellpadding="0" cellspacing="0">
         <tr>
           <td class="el-hdr-logo-cell">
-            <?php if ($schoolLogoUrl): ?>
-              <img src="<?= htmlspecialchars($schoolLogoUrl) ?>" alt="" class="el-logo-img">
+            <?php if ($rcLogoUrl): ?>
+              <img src="<?= htmlspecialchars($rcLogoUrl) ?>" alt="" class="el-logo-img">
             <?php else: ?>
               <div class="el-logo-ph"><?= htmlspecialchars(strtoupper(substr($schoolDisplayName, 0, 2))) ?></div>
             <?php endif; ?>
@@ -76,7 +76,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
       <div class="el-divider"></div>
       <div class="el-title">
         <div class="el-title-main"><?= htmlspecialchars(strtoupper($examName)) ?><?= $examType ? ' — ' . htmlspecialchars(strtoupper($examType)) : '' ?></div>
-        <div class="el-title-sub">Academic Report Card</div>
+        <div class="el-title-sub"><?= htmlspecialchars($rcTitle ?: 'Academic Report Card') ?></div>
         <div class="el-title-class">
           Class <?= htmlspecialchars(strtoupper($classNameRaw)) ?>
           <?= $sectionLetter ? '&ensp;&bull;&ensp;Section ' . htmlspecialchars(strtoupper($sectionLetter)) : '' ?>
@@ -89,7 +89,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
            STUDENT — Centered card with photo + dotted-leader fields
            ═══════════════════════════════════════════════════════════════ -->
       <div class="el-student">
-        <?php if ($photoUrl): ?>
+        <?php if ($rcShowPhoto && $photoUrl): ?>
           <div class="el-photo">
             <img src="<?= htmlspecialchars($photoUrl) ?>" alt="Student Photo">
           </div>
@@ -180,13 +180,14 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
         <!-- ═══════════════════════════════════════════════════════════════
              GRADE LEGEND
              ═══════════════════════════════════════════════════════════════ -->
-        <?php if ($gradeLegend): ?>
+        <?php if ($rcShowLegend && $gradeLegend): ?>
           <div class="el-legend"><?= $gradeLegend ?></div>
         <?php endif; ?>
 
         <!-- ═══════════════════════════════════════════════════════════════
              OVERALL — Centered decorative summary
              ═══════════════════════════════════════════════════════════════ -->
+        <?php if ($rcShowResultStrip): ?>
         <div class="el-divider el-div-thin"></div>
         <div class="el-overall">
           <div class="el-ov-row">
@@ -214,6 +215,7 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
             </div>
           </div>
         </div>
+        <?php endif; ?>
 
       <?php endif; ?>
 
@@ -230,30 +232,40 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
       <!-- ═══════════════════════════════════════════════════════════════
            SIGNATURES — With date fields and ornamental seal
            ═══════════════════════════════════════════════════════════════ -->
+      <?php if ($rcShowSignatures): ?>
       <div class="el-sigs">
         <div class="el-sig-col">
-          <div class="el-sig-space"></div>
+          <?php if ($rcTeacherSignUrl): ?><img src="<?= htmlspecialchars($rcTeacherSignUrl) ?>" alt="" style="height:42px;max-width:120px;object-fit:contain"><?php else: ?><div class="el-sig-space"></div><?php endif; ?>
           <div class="el-sig-line"></div>
-          <div class="el-sig-title">Class Teacher</div>
-          <div class="el-sig-date">Date: _______________</div>
+          <div class="el-sig-title"><?= htmlspecialchars($rcClassTeacherNm ?: 'Class Teacher') ?></div>
+          <div class="el-sig-date"><?= $rcClassTeacherNm ? 'Class Teacher' : 'Date: _______________' ?></div>
         </div>
         <div class="el-sig-col el-sig-mid">
-          <div class="el-sig-space"></div>
-          <div class="el-seal">
-            <div class="el-seal-inner">School<br>Seal</div>
-          </div>
+          <?php if ($rcPrincipalSignUrl): ?>
+            <img src="<?= htmlspecialchars($rcPrincipalSignUrl) ?>" alt="" style="height:50px;max-width:130px;object-fit:contain">
+            <div class="el-sig-line" style="margin-top:6px"></div>
+            <div class="el-sig-title"><?= htmlspecialchars($rcPrincipalName ?: 'Principal') ?></div>
+          <?php else: ?>
+            <div class="el-sig-space"></div>
+            <div class="el-seal">
+              <div class="el-seal-inner">School<br>Seal</div>
+            </div>
+          <?php endif; ?>
         </div>
         <div class="el-sig-col">
-          <div class="el-sig-space"></div>
+          <?php if ($rcPrincipalSignUrl): ?><div class="el-sig-space"></div><?php endif; ?>
           <div class="el-sig-line"></div>
-          <div class="el-sig-title">Principal</div>
+          <div class="el-sig-title"><?= htmlspecialchars($rcControllerName ?: ($rcPrincipalSignUrl ? 'Exam Controller' : 'Principal')) ?></div>
           <div class="el-sig-date">Date: _______________</div>
         </div>
       </div>
+      <?php endif; ?>
 
+      <?php if ($rcFooter): ?>
       <div class="el-footer">
-        This is a computer-generated report card. No signature is required for digital copies.
+        <?= htmlspecialchars($rcFooter) ?>
       </div>
+      <?php endif; ?>
 
     </div><!-- .el-inner -->
   </div><!-- .el-page -->
