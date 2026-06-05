@@ -57,9 +57,13 @@ class Superadmin_plans extends MY_Superadmin_Controller
         if ($this->_b23b_registry_firestore_on()) {
             $svc = $this->_b23b_registry();
             $fsPlans = $svc->list_plans();
+            // PL-1: count schools per plan from a SINGLE schoolControl fetch
+            // grouped in memory, instead of one filtered query per plan (N+1).
+            // Equivalent to count_schools_on_plan() applied to every plan.
+            $planCounts = $svc->count_schools_by_plan();
             foreach ($fsPlans as $fs) {
                 $row = $this->_b23b_plan_view_shape($fs);
-                $row['school_count'] = $svc->count_schools_on_plan($row['plan_id']);
+                $row['school_count'] = $planCounts[$row['plan_id']] ?? 0;
                 $plans[] = $row;
             }
             usort($plans, fn($a, $b) => ($a['sort_order'] ?? 99) - ($b['sort_order'] ?? 99));

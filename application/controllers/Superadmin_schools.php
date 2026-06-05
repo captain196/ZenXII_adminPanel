@@ -44,27 +44,30 @@ class Superadmin_schools extends MY_Superadmin_Controller
                 $sid    = (string) $t['schoolId'];
                 $pfid   = (string) $t['planFamilyId'];
                 $state  = (string) $t['lifecycleState'];
-                $detail = $svc->get_tenant_detail($sid);
-                $schDoc = is_array($detail['schools'] ?? null) ? $detail['schools'] : [];
-                $cache  = is_array($schDoc['statsCache'] ?? null) ? $schDoc['statsCache'] : [];
-                $adminDis = is_array($schDoc['adminDisabled'] ?? null) ? $schDoc['adminDisabled'] : [];
-                // Canonical access-allowed → top-level legacy "status" string.
-                $topStatus = !empty($adminDis['value']) ? 'suspended' : 'active';
+                // P0-2: every rendered field is sourced directly from the
+                // summary row. The per-tenant get_tenant_detail() lookup
+                // (3 Firestore reads/tenant) is removed — list_tenants_summary()
+                // already carries city/logoUrl/domainIdentifier/totalStudents/
+                // totalStaff/adminDisabled from the same schools doc. Status
+                // derivation now matches the canonical adminDisabled source
+                // (tenantPublic-first, strict) used by lifecycle_access() and
+                // login_access_view(); active/suspended values are preserved.
+                $topStatus = !empty($t['adminDisabled']) ? 'suspended' : 'active';
                 $planName  = isset($planById[$pfid]) ? (string) ($planById[$pfid]['name'] ?? '—') : '—';
                 $schools[] = [
                     'uid'          => $sid,
                     'name'         => $t['schoolName'] !== '' ? $t['schoolName'] : $sid,
-                    'city'         => (string) ($schDoc['city'] ?? ''),
-                    'logo_url'     => (string) ($schDoc['logoUrl'] ?? ''),
-                    'domain_id'    => (string) ($schDoc['domainIdentifier'] ?? ''),
+                    'city'         => (string) ($t['city'] ?? ''),
+                    'logo_url'     => (string) ($t['logoUrl'] ?? ''),
+                    'domain_id'    => (string) ($t['domainIdentifier'] ?? ''),
                     'firebase_key' => $sid,
                     'status'       => $topStatus,
-                    'created_at'   => (string) ($schDoc['createdAt'] ?? ''),
+                    'created_at'   => '',
                     'plan_name'    => $planName,
                     'expiry_date'  => (string) $t['subscriptionPeriodEnd'],
                     'sub_status'   => $state,
-                    'students'     => (int) ($cache['totalStudents'] ?? $cache['total_students'] ?? 0),
-                    'staff'        => (int) ($cache['totalStaff']    ?? $cache['total_staff']    ?? 0),
+                    'students'     => (int) ($t['totalStudents'] ?? 0),
+                    'staff'        => (int) ($t['totalStaff']    ?? 0),
                 ];
             }
             usort($schools, fn($a, $b) => strcmp($a['name'], $b['name']));

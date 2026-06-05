@@ -156,13 +156,19 @@ class B2_analytics_service
             $total_staff    += (int) ($t['totalStaff']    ?? 0);
         }
 
+        // D-KPI: fetch subscriptions ONCE and feed both MRR and active-count
+        // from the shared dataset, instead of two separate full-collection
+        // scans of the same collection. (Reached only when ready — the
+        // !ready path returned _zero_kpi() above.) Output identical.
+        $subs = $this->firebase->firestoreQuery('subscriptions', []);
+        if (!is_array($subs)) $subs = [];
         return [
             'total_schools'        => $total_schools,
             'active_schools'       => $active_schools,
             'total_students'       => $total_students,
             'total_staff'          => $total_staff,
-            'mrr'                  => $this->compute_mrr_from_subscriptions(),
-            'active_subscriptions' => $this->count_active_subscriptions(),
+            'mrr'                  => $this->_mrr_from($subs),
+            'active_subscriptions' => $this->_count_active_from($subs),
         ];
     }
 
@@ -219,6 +225,45 @@ class B2_analytics_service
         if (!$this->ready) return 0;
         $subs = $this->firebase->firestoreQuery('subscriptions', []);
         if (!is_array($subs)) return 0;
+        $n = 0;
+        foreach ($subs as $row) {
+            $data = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+            $status = strtolower((string) ($data['status'] ?? ''));
+            if (in_array($status, ['active', 'trialing', 'grace'], true)) $n++;
+        }
+        return $n;
+    }
+
+    /**
+     * D-KPI: MRR from a pre-fetched subscriptions dataset. Mirrors
+     * compute_mrr_from_subscriptions() verbatim minus the fetch, so both
+     * KPI values can be served from a single read. No read.
+     */
+    private function _mrr_from(array $subs): float
+    {
+        $plans = $this->load_plan_price_map();
+        $mrr = 0.0;
+        foreach ($subs as $row) {
+            $data = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+            $status = strtolower((string) ($data['status'] ?? ''));
+            if (!in_array($status, ['active', 'trialing', 'grace'], true)) continue;
+            $planId = (string) ($data['planId'] ?? '');
+            if ($planId === '' || !isset($plans[$planId])) continue;
+            $price = (float) $plans[$planId]['price'];
+            $cycle = strtolower((string) $plans[$planId]['billingCycle']);
+            $months = self::BILLING_CYCLE_MONTHS[$cycle] ?? 12;
+            if ($months <= 0) continue;
+            $mrr += $price / $months;
+        }
+        return $mrr;
+    }
+
+    /**
+     * D-KPI: active-subscription count from a pre-fetched dataset. Mirrors
+     * count_active_subscriptions() verbatim minus the fetch. No read.
+     */
+    private function _count_active_from(array $subs): int
+    {
         $n = 0;
         foreach ($subs as $row) {
             $data = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
@@ -588,6 +633,45 @@ class B2_analytics_service
         return $out;
     }
 
+    /**
+     * S2: fetch each monthly rollup doc ONCE (oldest→newest), so multiple
+     * series can be projected from a single set of reads instead of
+     * re-reading the same docs per series. Same period keys / order as
+     * _load_monthly_rollups_series(). Returns
+     * [ ['period' => 'YYYY-MM', 'doc' => array|null], ... ].
+     */
+    private function _fetch_monthly_rollups(int $months): array
+    {
+        $rows = [];
+        for ($i = $months - 1; $i >= 0; $i--) {
+            $periodKey = date('Y-m', strtotime("first day of -{$i} months"));
+            $rows[] = [
+                'period' => $periodKey,
+                'doc'    => $this->ready ? $this->firebase->firestoreGet('analyticsRollups', $periodKey) : null,
+            ];
+        }
+        return $rows;
+    }
+
+    /**
+     * S2: project a field-set from pre-fetched rollup rows into the exact
+     * shape _load_monthly_rollups_series() produces (period + each field,
+     * missing/absent → 0). No reads — operates on the cached fetch.
+     */
+    private function _project_rollup_series(array $rollupRows, array $fields): array
+    {
+        $out = [];
+        foreach ($rollupRows as $r) {
+            $row = ['period' => $r['period'] ?? ''];
+            $doc = is_array($r['doc'] ?? null) ? $r['doc'] : null;
+            foreach ($fields as $f) {
+                $row[$f] = is_array($doc) ? ($doc[$f] ?? 0) : 0;
+            }
+            $out[] = $row;
+        }
+        return $out;
+    }
+
     // ──────────────────────────────────────────────────────────────
     // HUB PAYLOAD (Phase 1B — single AJAX endpoint for Hub refresh)
     // Combines all Hub widget data into one round-trip for the
@@ -597,11 +681,16 @@ class B2_analytics_service
 
     public function get_hub_payload(?string $userId = null): array
     {
+        // D-S2: fetch the 12 monthly rollup docs ONCE and project both
+        // Dashboard time-series from the shared dataset (reuses the S2
+        // helpers), instead of get_time_series_*() each re-reading the same
+        // docs. Field orders preserved → output/shape/ordering identical.
+        $rollupRows = $this->_fetch_monthly_rollups(12);
         return [
             'kpi'             => $this->get_kpi_totals(),
             'time_series'     => [
-                'schools_growth' => $this->get_time_series_schools_growth(12),
-                'revenue'        => $this->get_time_series_revenue(12),
+                'schools_growth' => $this->_project_rollup_series($rollupRows, ['totalSchools', 'newSchoolsCount']),
+                'revenue'        => $this->_project_rollup_series($rollupRows, ['mrr', 'totalRevenue']),
             ],
             'recent_activity' => $this->list_high_signal_activity(8),
             'top_schools'     => $this->get_top_schools_by_students(5),
@@ -664,18 +753,29 @@ class B2_analytics_service
     public function get_statistics_payload(int $monthsBack = 12): array
     {
         $monthsBack = max(1, min(36, $monthsBack));
+        // S2: fetch each monthly rollup doc ONCE, then project all three
+        // series from that single set of reads — instead of re-reading the
+        // same M docs once per series (the prior 3× redundant pattern).
+        // Output, shape, and ordering are identical to the per-series
+        // _load_monthly_rollups_series() path.
+        $rollupRows = $this->_fetch_monthly_rollups($monthsBack);
+        // S4: fetch the schools collection ONCE for the four createdAt-based
+        // aggregates below, instead of four identical full-collection scans.
+        // Each projection mirrors its public counterpart exactly (same filter,
+        // createdAt handling, ordering) — output is unchanged.
+        $schoolRows = $this->_fetch_school_rows();
         return [
             'monthsBack'              => $monthsBack,
-            'schools_onboarded_series' => $this->_load_monthly_rollups_series($monthsBack, ['newSchoolsCount', 'totalSchools']),
-            'students_growth_series'   => $this->_load_monthly_rollups_series($monthsBack, ['totalStudents']),
-            'staff_growth_series'      => $this->_load_monthly_rollups_series($monthsBack, ['totalStaff']),
+            'schools_onboarded_series' => $this->_project_rollup_series($rollupRows, ['newSchoolsCount', 'totalSchools']),
+            'students_growth_series'   => $this->_project_rollup_series($rollupRows, ['totalStudents']),
+            'staff_growth_series'      => $this->_project_rollup_series($rollupRows, ['totalStaff']),
             'lifecycle_distribution'   => $this->get_lifecycle_distribution(),
             'plan_distribution'        => $this->get_plan_distribution(),
             'schools_by_city'          => $this->get_schools_by_city(),
-            'avg_tenant_age_days'      => $this->get_average_tenant_age_days(),
-            'net_new_30d'              => $this->count_new_schools_in_window(30),
-            'net_new_90d'              => $this->count_new_schools_in_window(90),
-            'recent_registrations'     => $this->get_recent_registrations(30, 10),
+            'avg_tenant_age_days'      => $this->_avg_age_from($schoolRows),
+            'net_new_30d'              => $this->_count_new_from($schoolRows, 30),
+            'net_new_90d'              => $this->_count_new_from($schoolRows, 90),
+            'recent_registrations'     => $this->_recent_regs_from($schoolRows, 30, 10),
             'generated_at'             => date('c'),
         ];
     }
@@ -750,6 +850,78 @@ class B2_analytics_service
         if (!$this->ready) return [];
         $schools = $this->firebase->firestoreQuery('schools', []);
         if (!is_array($schools)) return [];
+        $cut = time() - ($daysWindow * 86400);
+        $rows = [];
+        foreach ($schools as $row) {
+            $data = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+            $sid = (string) ($row['id'] ?? $data['__firestoreId'] ?? '');
+            if (!preg_match('/^SCH_[A-Z0-9]+$/', $sid)) continue;
+            $created = (string) ($data['createdAt'] ?? '');
+            $ts = $created !== '' ? strtotime($created) : 0;
+            if ($ts > 0 && $ts >= $cut) {
+                $rows[] = [
+                    'schoolId'   => $sid,
+                    'schoolName' => (string) ($data['name'] ?? $sid),
+                    'city'       => (string) ($data['city'] ?? ''),
+                    'createdAt'  => $created,
+                    '_ts'        => $ts,
+                ];
+            }
+        }
+        usort($rows, fn($a, $b) => $b['_ts'] - $a['_ts']);
+        return array_slice($rows, 0, $limit);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // S4: single-fetch projections for the Statistics createdAt aggregates.
+    // _fetch_school_rows() reads the schools collection ONCE; the three
+    // _*_from() helpers replicate the public get_average_tenant_age_days()
+    // / count_new_schools_in_window() / get_recent_registrations() logic
+    // verbatim but operate on the pre-fetched rows (no read). The public
+    // functions are left intact for any other caller.
+    // ──────────────────────────────────────────────────────────────
+
+    private function _fetch_school_rows(): array
+    {
+        if (!$this->ready) return [];
+        $rows = $this->firebase->firestoreQuery('schools', []);
+        return is_array($rows) ? $rows : [];
+    }
+
+    private function _avg_age_from(array $schools): int
+    {
+        $ages = [];
+        $now = time();
+        foreach ($schools as $row) {
+            $data = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+            $sid = (string) ($row['id'] ?? $data['__firestoreId'] ?? '');
+            if (!preg_match('/^SCH_[A-Z0-9]+$/', $sid)) continue;
+            $created = (string) ($data['createdAt'] ?? '');
+            $ts = $created !== '' ? strtotime($created) : 0;
+            if ($ts <= 0) continue;
+            $ages[] = (int) floor(($now - $ts) / 86400);
+        }
+        if (empty($ages)) return 0;
+        return (int) round(array_sum($ages) / count($ages));
+    }
+
+    private function _count_new_from(array $schools, int $daysWindow): int
+    {
+        $cut = time() - ($daysWindow * 86400);
+        $n = 0;
+        foreach ($schools as $row) {
+            $data = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+            $sid = (string) ($row['id'] ?? $data['__firestoreId'] ?? '');
+            if (!preg_match('/^SCH_[A-Z0-9]+$/', $sid)) continue;
+            $created = (string) ($data['createdAt'] ?? '');
+            $ts = $created !== '' ? strtotime($created) : 0;
+            if ($ts > 0 && $ts >= $cut) $n++;
+        }
+        return $n;
+    }
+
+    private function _recent_regs_from(array $schools, int $daysWindow, int $limit): array
+    {
         $cut = time() - ($daysWindow * 86400);
         $rows = [];
         foreach ($schools as $row) {

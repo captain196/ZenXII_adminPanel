@@ -48,12 +48,22 @@ class B2_registry_service
     /** @var object|null */ private $ci         = null;
     /** @var bool */        private $ready      = false;
     /** @var array|null */  private $flagsCache = null;
+    /** @var array|null  Request-scoped memo for list_tenants_summary() (P0-1). */
+    private $tenantsSummaryMemo = null;
 
     /**
      * Bind dependencies. Idempotent.
      */
     public function init($firebase, $ci = null): self
     {
+        // P0-1 (request-scoped memo): only drop the memoized tenant summary
+        // when the Firebase binding actually changes — a memo built against a
+        // different data source would be invalid. Idempotent re-init with the
+        // SAME binding (the common case, e.g. _b23_registry() re-init per call)
+        // preserves the memo so it can actually hit across callers.
+        if ($this->firebase !== $firebase) {
+            $this->tenantsSummaryMemo = null;
+        }
         $this->firebase = $firebase;
         $this->ci       = $ci ?? get_instance();
         $this->ready    = ($firebase !== null);
@@ -497,6 +507,34 @@ class B2_registry_service
     }
 
     /**
+     * PL-1: school-count for ALL plans in a single pass — one schoolControl
+     * read grouped by subscription.planId. Equivalent to calling
+     * count_schools_on_plan() for every planId, but without the per-plan
+     * N+1 query. Returns [planFamilyId => count]; plans with zero schools
+     * are simply absent (callers use `?? 0`). Empty planIds are skipped,
+     * mirroring count_schools_on_plan()'s `$planFamilyId === ''` guard.
+     */
+    public function count_schools_by_plan(): array
+    {
+        if (!$this->ready) return [];
+        try {
+            $rows = $this->firebase->firestoreQuery('schoolControl', []);
+            $rows = $this->_unwrap_query_rows($rows);
+            $out = [];
+            foreach ($rows as $c) {
+                $sub = is_array($c['subscription'] ?? null) ? $c['subscription'] : [];
+                $pid = (string) ($sub['planId'] ?? '');
+                if ($pid === '') continue;
+                $out[$pid] = ($out[$pid] ?? 0) + 1;
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            log_message('error', 'B2_registry_service::count_schools_by_plan firestore failed: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
      * Return all tenant docs in a single pass: schools + schoolControl
      * joined on schoolId. Each row carries the canonical Firestore shape
      * for both collections plus a synthesized `subscription` block from
@@ -509,6 +547,15 @@ class B2_registry_service
     public function list_tenants_summary(): array
     {
         if (!$this->ready) return [];
+        // P0-1: request-scoped memo. This method is invoked multiple times
+        // per SA request (dashboard ×5, statistics ×3, cross-school ×4); the
+        // underlying collections do not change within a request lifecycle, so
+        // a SUCCESSFUL result is cached on the instance and returned by value
+        // on subsequent calls. Error/empty returns are intentionally NOT
+        // memoized, so transient failures stay retryable (prior behavior).
+        if ($this->tenantsSummaryMemo !== null) {
+            return $this->tenantsSummaryMemo;
+        }
         try {
             // B2.3.2-FIX R3: no orderBy at query layer. Schools docs do not
             // have a `schoolId` field — schoolId is the doc id, not stored.
@@ -601,6 +648,7 @@ class B2_registry_service
                     'schoolName'            => $schoolName,
                     'schoolCode'            => (string) ($s['schoolCode'] ?? ''),
                     'logoUrl'               => (string) ($s['logoUrl']    ?? ''),
+                    'domainIdentifier'      => (string) ($s['domainIdentifier'] ?? ''),
                     'primarySsaId'          => (string) ($s['primarySsaId'] ?? ''),
                     'planFamilyId'          => (string) ($sub['planId']   ?? ''),
                     'lifecycleState'        => (string) ($life['state']   ?? ''),
@@ -616,6 +664,8 @@ class B2_registry_service
             }
             // Stable order by schoolId for deterministic UI rendering.
             usort($out, fn($a, $b) => strcmp($a['schoolId'], $b['schoolId']));
+            // P0-1: memoize ONLY the successful result (returned by value).
+            $this->tenantsSummaryMemo = $out;
             return $out;
         } catch (\Throwable $e) {
             log_message('error', 'B2_registry_service::list_tenants_summary firestore failed: ' . $e->getMessage());
