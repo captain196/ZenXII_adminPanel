@@ -2649,12 +2649,43 @@ class Attendance extends MY_Controller
         $deviceId   = $auth['device_id'];
 
         // Determine session year from school config
-        $activeSession = $this->firebase->get("Schools/{$schoolName}/Config/ActiveSession");
-        if (!$activeSession) {
-            $sessions = $this->firebase->get("System/Schools/{$schoolName}/Sessions");
-            $activeSession = is_array($sessions) ? end($sessions) : date('Y') . '-' . (date('Y') + 1);
+        // SW3 (2026-05-26): cut over from RTDB Config/ActiveSession +
+        // System/Schools/{name}/Sessions to Firestore schools/{id}.currentSession
+        // + .sessions. Firestore is the sole canonical session authority;
+        // RTDB session paths are retired. Preserves the prior shape of the
+        // resolution chain (active marker → last-known session in list →
+        // computed fallback) so device punch behavior stays unchanged.
+        $activeSession = '';
+        try {
+            // SW3-FIX: schools collection is keyed by SCH_ id, not the school name.
+            $schoolDoc = $this->firebase->firestoreGet('schools', $auth['school_id'] ?? $this->school_id);
+            if (is_array($schoolDoc)) {
+                if (isset($schoolDoc['currentSession'])
+                    && is_string($schoolDoc['currentSession'])
+                    && $schoolDoc['currentSession'] !== '') {
+                    $activeSession = $schoolDoc['currentSession'];
+                } elseif (isset($schoolDoc['sessions']) && is_array($schoolDoc['sessions'])) {
+                    $sessionsList = array_values(array_filter($schoolDoc['sessions'], 'is_string'));
+                    if (!empty($sessionsList)) {
+                        // No active marker on doc; use the most recent session
+                        // from the list (same shape as legacy end() behavior
+                        // when sessions were stored sorted-ascending).
+                        rsort($sessionsList);
+                        $activeSession = $sessionsList[0];
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error',
+                'Attendance::api_punch SW3 Firestore session lookup failed for school ['
+                . $schoolName . ']: ' . $e->getMessage());
         }
-        $session = is_string($activeSession) ? $activeSession : (string) $activeSession;
+        if ($activeSession === '') {
+            // Last-resort computed fallback — preserved verbatim from prior
+            // behavior when school config is unavailable.
+            $activeSession = date('Y') . '-' . (date('Y') + 1);
+        }
+        $session = (string) $activeSession;
 
         // Device type already fetched during confidence check (reuse $deviceInfo_pre)
         $deviceType = $devType ?: 'unknown';
