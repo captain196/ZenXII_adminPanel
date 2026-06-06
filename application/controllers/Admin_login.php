@@ -326,10 +326,11 @@ class Admin_login extends CI_Controller
         // Hydrate session-derived fields from schools/{schoolId} Firestore doc.
         $this->_hydrate_admin_session_from_school($schoolId);
 
-        // [RBAC] Cache role permissions in session
-        $this->load->helper('rbac');
-        $rbacPerms = load_role_permissions($this->firebase, $schoolId, $displayRole);
-        $this->session->set_userdata('rbac_permissions', $rbacPerms);
+        // [RBAC] Permissions are hydrated by MY_Controller on the first
+        // authenticated request, where the Firestore `fs` service is loaded.
+        // Admin_login extends CI_Controller and does not load `fs`, so hydrating
+        // here would no-op (fail-closed []) — deferral keeps login read-free and
+        // Firestore-canonical (schools/{schoolId}.roles is the sole authority).
 
         $this->sec_telem->emit('ADMIN_LOGIN_SUCCESS', 'info', [
             'admin_id'    => $adminId,
