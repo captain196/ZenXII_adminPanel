@@ -303,6 +303,104 @@ class Exam extends MY_Controller
         $this->load->view('include/footer');
     }
 
+    // ── edit($id) — GET: render Create UI in edit mode (Phase 3.5) ────────
+    // Draft-only render of the prefilled form. The POST save is edit_exam().
+    public function edit($id = null)
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'edit exam');
+        $id = trim((string) $id);
+        if ($id === '') { redirect('exam'); }
+
+        $school = $this->school_name;
+        $year   = $this->session_year;
+
+        $raw = $this->firebase->firestoreGet('exams', "{$school}_{$id}");
+        if (!is_array($raw) || empty($raw)) {
+            $this->session->set_flashdata('error', 'Exam not found.');
+            redirect('exam');
+            return;
+        }
+        if ((string) ($raw['status'] ?? 'Draft') !== 'Draft') {
+            $this->session->set_flashdata('error', 'Only Draft exams can be edited. Unpublish it first.');
+            redirect('exam/view/' . urlencode($id));
+            return;
+        }
+
+        $structure = $this->exam_engine->get_class_structure();
+        $subjects  = [];
+        foreach ($structure as $classKey => $sectionLetters) {
+            if (empty($sectionLetters)) continue;
+            $firstSection        = "Section {$sectionLetters[0]}";
+            $subjectsRaw         = $this->firebase->get("Schools/{$school}/{$year}/{$classKey}/{$firstSection}/Subjects") ?? [];
+            $subjects[$classKey] = array_keys(is_array($subjectsRaw) ? $subjectsRaw : []);
+        }
+
+        $instr = '';
+        if (is_array($raw['generalInstructions'] ?? null) && !empty($raw['generalInstructions'])) {
+            $instr = implode("\n", array_map(static fn($i) => '• ' . $i, $raw['generalInstructions']));
+        }
+
+        $editExam = [
+            'id'             => $id,
+            'name'           => (string) ($raw['examName']       ?? ''),
+            'type'           => (string) ($raw['examType']       ?? ''),
+            'scale'          => (string) ($raw['gradingScale']   ?? 'Percentage'),
+            'passingPercent' => (int)    ($raw['passingPercent'] ?? 33),
+            'startDate'      => (string) ($raw['startDate']      ?? ''), // Y-m-d
+            'endDate'        => (string) ($raw['endDate']        ?? ''), // Y-m-d
+            'instructions'   => $instr,
+            'rows'           => $this->_build_edit_rows($id),
+        ];
+
+        $this->load->view('include/header');
+        $this->load->view('exam/create', [
+            'classNames' => array_keys($structure),
+            'subjects'   => $subjects,
+            'editExam'   => $editExam,
+        ]);
+        $this->load->view('include/footer');
+    }
+
+    /** Phase 3.5 — rebuild create-form rows from examSchedule (one section/class). */
+    private function _build_edit_rows(string $id): array
+    {
+        $sched = $this->exam_read->schedule($id); // [class][section][date][subject] => [Time,TotalMarks,PassingMarks]
+        $rows  = [];
+        foreach ($sched as $class => $sections) {
+            if (!is_array($sections) || empty($sections)) continue;
+            $firstSection = reset($sections); // sections of a class are identical
+            if (!is_array($firstSection)) continue;
+            foreach ($firstSection as $dateKey => $subjs) {
+                if (!is_array($subjs)) continue;
+                foreach ($subjs as $subjName => $cell) {
+                    if (!is_array($cell)) continue;
+                    $dt      = DateTime::createFromFormat('d-m-Y', (string) $dateKey);
+                    $dateYmd = $dt ? $dt->format('Y-m-d') : '';
+                    [$st, $et] = array_pad(explode('-', (string) ($cell['Time'] ?? ''), 2), 2, '');
+                    $rows[] = [
+                        'date'         => $dateYmd,
+                        'className'    => (string) $class,
+                        'subject'      => (string) $subjName,
+                        'startTime'    => $this->_to24($st),
+                        'endTime'      => $this->_to24($et),
+                        'totalMarks'   => (int) ($cell['TotalMarks']   ?? 0),
+                        'passingMarks' => (int) ($cell['PassingMarks'] ?? 0),
+                    ];
+                }
+            }
+        }
+        return $rows;
+    }
+
+    /** "10:00AM" → "10:00" (24h) for <input type=time>; '' on failure. */
+    private function _to24(string $t): string
+    {
+        $t = trim($t);
+        if ($t === '') return '';
+        $d = DateTime::createFromFormat('h:iA', $t) ?: DateTime::createFromFormat('g:iA', $t);
+        return $d ? $d->format('H:i') : '';
+    }
+
     // ── edit_exam($id) — POST AJAX (Phase 3.4, Option B Draft-only edit) ──
     //
     // Rewrites an EXISTING exam (same examId — no generate_exam_id) only when
@@ -534,8 +632,12 @@ class Exam extends MY_Controller
 
         if (!$exam || !is_array($exam)) { redirect('exam'); }
 
+        // Phase 3.5: server-rendered marks pre-check (UX). The authoritative
+        // guard remains the 3.3 server check in update_status()/delete().
+        $hasMarks = $this->_exam_has_marks($id);
+
         $this->load->view('include/header');
-        $this->load->view('exam/view', ['examId' => $id, 'exam' => $exam]);
+        $this->load->view('exam/view', ['examId' => $id, 'exam' => $exam, 'hasMarks' => $hasMarks]);
         $this->load->view('include/footer');
     }
 

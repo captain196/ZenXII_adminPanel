@@ -132,15 +132,32 @@
 
   <!-- ── Status Update Bar ──────────────────────────────────────────────── -->
   <div class="ev-status-bar">
-    <span class="ev-status-bar-label"><i class="fa fa-refresh"></i> Change Status:</span>
-    <select id="statusSelect" class="ev-status-sel">
-      <option value="Draft"     <?= $examStatus === 'Draft'     ? 'selected' : '' ?>>Draft</option>
-      <option value="Published" <?= $examStatus === 'Published' ? 'selected' : '' ?>>Published</option>
-      <option value="Completed" <?= $examStatus === 'Completed' ? 'selected' : '' ?>>Completed</option>
-    </select>
-    <button type="button" class="ev-btn-update-status" id="updateStatusBtn" onclick="evUpdateStatus()">
-      <i class="fa fa-check"></i> Update
-    </button>
+    <span class="ev-status-bar-label"><i class="fa fa-refresh"></i> Lifecycle:</span>
+    <?php if ($examStatus === 'Draft'): ?>
+      <a href="<?= base_url('exam/edit/' . urlencode($examId)) ?>" class="ev-btn-update-status" id="editBtn">
+        <i class="fa fa-pencil"></i> Edit
+      </a>
+      <button type="button" class="ev-btn-update-status" onclick="evSetStatus('Published', null)">
+        <i class="fa fa-check-circle"></i> Publish
+      </button>
+    <?php elseif ($examStatus === 'Published'): ?>
+      <button type="button" class="ev-btn-update-status" onclick="evSetStatus('Completed', null)">
+        <i class="fa fa-flag-checkered"></i> Mark Completed
+      </button>
+      <?php if (!empty($hasMarks)): ?>
+        <button type="button" class="ev-btn-update-status" disabled title="Clear marks before unpublishing">
+          <i class="fa fa-undo"></i> Unpublish <small>(marks present)</small>
+        </button>
+      <?php else: ?>
+        <button type="button" class="ev-btn-update-status" onclick="evSetStatus('Draft', 'Unpublish this exam? It returns to Draft and becomes editable. Parents will no longer see it, and it is removed from results until republished.')">
+          <i class="fa fa-undo"></i> Unpublish
+        </button>
+      <?php endif; ?>
+    <?php elseif ($examStatus === 'Completed'): ?>
+      <button type="button" class="ev-btn-update-status" onclick="evSetStatus('Published', 'Reopen this exam? It returns to Published so results can be revised.')">
+        <i class="fa fa-rotate-right"></i> Reopen
+      </button>
+    <?php endif; ?>
     <span class="ev-status-msg" id="statusMsg"></span>
   </div>
 
@@ -340,11 +357,15 @@
     <div class="ev-modal-title">Delete Exam?</div>
     <div class="ev-modal-body">
       You are about to permanently delete <strong><?= $examName ?></strong>.
-      All per-section schedule copies will also be removed. This cannot be undone.
+      All per-section schedule copies will also be removed.
+      <?php if (!empty($hasMarks)): ?>
+        <br><strong style="color:#b91c1c;">This exam has marks and results — they will be permanently deleted.</strong>
+      <?php endif; ?>
+      This cannot be undone.
     </div>
     <div class="ev-modal-actions">
       <button type="button" class="ev-modal-cancel" onclick="evCloseModal()">Cancel</button>
-      <a href="<?= base_url('exam/delete/' . urlencode($examId)) ?>" class="ev-modal-confirm">
+      <a href="<?= base_url('exam/delete/' . urlencode($examId)) ?>?confirm=1" class="ev-modal-confirm">
         <i class="fa fa-trash"></i> Delete
       </a>
     </div>
@@ -374,10 +395,13 @@
   });
 
   /* ── Status update ── */
-  window.evUpdateStatus = function () {
-    var btn    = document.getElementById('updateStatusBtn');
-    var status = document.getElementById('statusSelect').value;
-    var msg    = document.getElementById('statusMsg');
+  // Phase 3.5: generic gated lifecycle transition. Confirms (when a message
+  // is given), POSTs to update_status (server enforces the 3.2 state machine
+  // + 3.3 marks guard), and reloads on success so buttons re-gate to the new
+  // status. Errors (incl. 409 transition/marks) surface as toasts unchanged.
+  window.evSetStatus = function (newStatus, confirmMsg) {
+    if (confirmMsg && !window.confirm(confirmMsg)) return;
+    var msg = document.getElementById('statusMsg');
 
     var csrfNameMeta = document.querySelector('meta[name="csrf-name"]');
     var csrfTokenMeta= document.querySelector('meta[name="csrf-token"]');
@@ -387,28 +411,24 @@
     var fd = new FormData();
     if (csrfName) fd.append(csrfName, csrfToken);
     fd.append('examId', '<?= htmlspecialchars($examId) ?>');
-    fd.append('status', status);
+    fd.append('status', newStatus);
 
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Updating…';
-    msg.textContent = '';
+    if (msg) msg.textContent = 'Updating…';
 
     fetch('<?= base_url('exam/update_status') ?>', { method: 'POST', body: fd })
       .then(function (r) { return r.json(); })
       .then(function (res) {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa fa-check"></i> Update';
+        if (res.csrf_token && csrfTokenMeta) csrfTokenMeta.setAttribute('content', res.csrf_token);
         if (res.status === 'success') {
           showEvToast(res.message || 'Status updated.', 'success');
-          if (res.csrf_token && csrfTokenMeta) csrfTokenMeta.setAttribute('content', res.csrf_token);
+          setTimeout(function () { window.location.reload(); }, 900);
         } else {
+          if (msg) msg.textContent = '';
           showEvToast(res.message || 'Failed to update status.', 'error');
-          if (res.csrf_token && csrfTokenMeta) csrfTokenMeta.setAttribute('content', res.csrf_token);
         }
       })
       .catch(function () {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa fa-check"></i> Update';
+        if (msg) msg.textContent = '';
         showEvToast('Server error. Please try again.', 'error');
       });
   };

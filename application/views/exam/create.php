@@ -4,11 +4,11 @@
 <div class="ec-wrap">
 
   <!-- ── Page Header ─────────────────────────────────────────────────── -->
-  <div class="ec-page-title"><i class="fa fa-plus-square-o"></i> Create Exam</div>
+  <div class="ec-page-title"><i class="fa fa-plus-square-o"></i> <?= !empty($editExam) ? 'Edit Exam' : 'Create Exam' ?></div>
   <ol class="ec-breadcrumb">
     <li><a href="<?= base_url('admin') ?>">Dashboard</a></li>
     <li><a href="<?= base_url('exam') ?>">Exams</a></li>
-    <li>Create</li>
+    <li><?= !empty($editExam) ? 'Edit' : 'Create' ?></li>
   </ol>
 
   <form id="examForm" autocomplete="off" novalidate>
@@ -30,51 +30,51 @@
               <div class="ex-field ec-span2">
                 <label for="examName">Exam Name <span class="ex-req">*</span></label>
                 <input type="text" id="examName" name="examName"
-                       placeholder="e.g. Mid-Term 2026" maxlength="80" required>
+                       placeholder="e.g. Mid-Term 2026" maxlength="80" required
+                       value="<?= !empty($editExam) ? htmlspecialchars($editExam['name']) : '' ?>">
               </div>
 
               <div class="ex-field">
                 <label for="examType">Type <span class="ex-req">*</span></label>
                 <select id="examType" name="examType">
-                  <option>Mid-Term</option>
-                  <option>Final Term</option>
-                  <option>Unit Test</option>
-                  <option>Weekly Test</option>
-                  <option>Pre-Board</option>
-                  <option>Annual</option>
+                  <?php $etSel = !empty($editExam) ? $editExam['type'] : ''; foreach (['Mid-Term','Final Term','Unit Test','Weekly Test','Pre-Board','Annual'] as $t): ?>
+                  <option<?= $etSel === $t ? ' selected' : '' ?>><?= $t ?></option>
+                  <?php endforeach; ?>
                 </select>
               </div>
 
               <div class="ex-field">
                 <label for="gradingScale">Grading Scale <span class="ex-req">*</span></label>
                 <select id="gradingScale" name="gradingScale">
-                  <option value="Percentage">Percentage</option>
-                  <option value="A-F Grades">A-F Grades</option>
-                  <option value="O-E Grades">O-E Grades</option>
-                  <option value="10-Point">10-Point</option>
-                  <option value="Pass/Fail">Pass/Fail</option>
+                  <?php $gsSel = !empty($editExam) ? $editExam['scale'] : ''; foreach (['Percentage','A-F Grades','O-E Grades','10-Point','Pass/Fail'] as $gs): ?>
+                  <option value="<?= $gs ?>"<?= $gsSel === $gs ? ' selected' : '' ?>><?= $gs ?></option>
+                  <?php endforeach; ?>
                 </select>
               </div>
 
               <div class="ex-field" id="passingPctField">
                 <label for="passingPercent">Passing % <span class="ex-req">*</span></label>
                 <input type="number" id="passingPercent" name="passingPercent"
-                       value="33" min="1" max="100">
+                       value="<?= !empty($editExam) ? (int) $editExam['passingPercent'] : 33 ?>" min="1" max="100">
               </div>
 
               <div class="ex-field">
                 <label for="startDate">Start Date <span class="ex-req">*</span></label>
-                <input type="date" id="startDate" name="startDate" required>
+                <input type="date" id="startDate" name="startDate" required
+                       value="<?= !empty($editExam) ? htmlspecialchars($editExam['startDate']) : '' ?>">
               </div>
 
               <div class="ex-field">
                 <label for="endDate">End Date <span class="ex-req">*</span></label>
-                <input type="date" id="endDate" name="endDate" required>
+                <input type="date" id="endDate" name="endDate" required
+                       value="<?= !empty($editExam) ? htmlspecialchars($editExam['endDate']) : '' ?>">
               </div>
 
             </div>
 
-            <!-- Status pills -->
+            <!-- Status pills — Phase 3.5: hidden in edit mode (status is not
+                 editable here; it is owned exclusively by update_status). -->
+            <?php if (empty($editExam)): ?>
             <div class="ec-status-row">
               <span class="ec-status-label">Status:</span>
               <label class="ec-status-pill">
@@ -86,6 +86,7 @@
                 <span>Published</span>
               </label>
             </div>
+            <?php endif; ?>
           </div>
         </div>
 
@@ -132,7 +133,7 @@
           <div class="ex-card-head"><i class="fa fa-list-ul"></i> General Instructions</div>
           <div class="ex-card-body">
             <textarea id="generalInstructions" name="generalInstructions"
-                      rows="5" placeholder="Enter each instruction on a new line…"></textarea>
+                      rows="5" placeholder="Enter each instruction on a new line…"><?= !empty($editExam) ? htmlspecialchars($editExam['instructions']) : '' ?></textarea>
           </div>
         </div>
 
@@ -189,6 +190,8 @@
 
   /* ── PHP data ───────────────────────────────────────────────────── */
   var classList    = <?= json_encode(array_values($classNames ?? [])) ?>;
+  // Phase 3.5: edit-mode payload (null in create mode → all edit logic skipped).
+  var ecEdit       = <?= json_encode($editExam ?? null) ?>;
 
   /* ── DOM refs ──────────────────────────────────────────────────── */
   var examNameIn   = document.getElementById('examName');
@@ -291,7 +294,7 @@
   }
 
   /* ── Exposed to inline handlers ─────────────────────────────────── */
-  window.ecUpdateSubjects = function (sel) {
+  window.ecUpdateSubjects = function (sel, preselect) {
     var cls     = sel.value;
     var row     = sel.closest('tr');
     var subjSel = row.querySelector('.subj-sel');
@@ -312,6 +315,12 @@
           subjSel.disabled = false;
         } else {
           subjSel.innerHTML = '<option value="">No subjects found</option>';
+        }
+        // Phase 3.5 edit-mode: re-select the saved subject after load.
+        if (preselect) {
+          var exists = Array.prototype.some.call(subjSel.options, function (o) { return o.value === preselect; });
+          if (!exists) { var po = document.createElement('option'); po.value = po.textContent = preselect; subjSel.appendChild(po); subjSel.disabled = false; }
+          subjSel.value = preselect;
         }
         updateSummary();
       })
@@ -422,6 +431,25 @@
   updateSummary();
   togglePassingPct();
 
+  /* ── Phase 3.5: edit-mode prefill of schedule rows (skipped in create) ── */
+  if (ecEdit) {
+    if (saveBtn) saveBtn.innerHTML = '<i class="fa fa-save"></i> Update Exam';
+    (ecEdit.rows || []).forEach(function (r) {
+      tbody.insertAdjacentHTML('beforeend', makeRow(r.date || ''));
+      var row = tbody.lastElementChild;
+      if (!row) return;
+      var dateEl = row.querySelector('.ec-date-in'); if (dateEl) dateEl.value = r.date || '';
+      var stEl   = row.querySelector('.start-time'); if (stEl)   stEl.value   = r.startTime || '';
+      var etEl   = row.querySelector('.end-time');   if (etEl)   etEl.value   = r.endTime || '';
+      var tmEl   = row.querySelector('.total-marks');if (tmEl)   tmEl.value   = (r.totalMarks   != null ? r.totalMarks   : '');
+      var pmEl   = row.querySelector('.pass-marks'); if (pmEl)   pmEl.value   = (r.passingMarks != null ? r.passingMarks : '');
+      var clsEl  = row.querySelector('.cls-sel');
+      if (clsEl) { clsEl.value = r.className || ''; if (r.className) window.ecUpdateSubjects(clsEl, r.subject || ''); }
+    });
+    toggleEmpty();
+    updateSummary();
+  }
+
   /* ── Save ───────────────────────────────────────────────────────── */
   saveBtn.addEventListener('click', function () {
     var name    = examNameIn.value.trim();
@@ -481,11 +509,16 @@
     saveBtn.disabled = true;
     saveBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Saving…';
 
-    fetch('<?= base_url('exam/create') ?>', { method: 'POST', body: fd })
+    // Phase 3.5: edit mode posts to edit_exam/{id}; create mode unchanged.
+    var ecSaveUrl = ecEdit
+      ? '<?= base_url('exam/edit_exam/') ?>' + encodeURIComponent(ecEdit.id)
+      : '<?= base_url('exam/create') ?>';
+
+    fetch(ecSaveUrl, { method: 'POST', body: fd })
       .then(function (r) { return r.json(); })
       .then(function (res) {
         if (res.status === 'success') {
-          showToast(res.message || 'Exam created!', 'success');
+          showToast(res.message || (ecEdit ? 'Exam updated!' : 'Exam created!'), 'success');
           setTimeout(function () {
             window.location.href = '<?= base_url('exam') ?>';
           }, 1400);
