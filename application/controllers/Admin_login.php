@@ -232,8 +232,12 @@ class Admin_login extends CI_Controller
         //   schoolId     : Firestore SCH_* key
         //   schoolCode   : numeric login code
         //   parentDbKey  : legacy alias of schoolCode (back-compat — retirement deferred to Wave E)
-        $schoolId   = (string) ($claims['schoolId']   ?? '');
-        $schoolCode = (string) ($claims['schoolCode'] ?? '');
+        // TRANSITIONAL BRIDGE (2026-06-06): accept legacy snake_case claims emitted by
+        // pre-camelCase writers (Staff/Ssa_reset/Admin + any historical AdminUsers accounts).
+        // RETIRE once all admin-side writers emit camelCase AND legacy claims are backfilled.
+        // Tracking: RBAC_CLAIMS_REMEDIATION_PACKAGE.md (C3/C4).
+        $schoolId   = (string) ($claims['schoolId']   ?? $claims['school_id']   ?? '');
+        $schoolCode = (string) ($claims['schoolCode'] ?? $claims['school_code'] ?? '');
         $roleLabel  = (string) ($claims['roleLabel']  ?? '');
         $roleRaw    = (string) ($claims['role']       ?? '');
 
