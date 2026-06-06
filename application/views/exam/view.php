@@ -351,22 +351,22 @@
 
 
 <!-- ── Delete Confirm Modal ──────────────────────────────────────────────── -->
-<div id="evDelModal" class="ev-modal-overlay" style="display:none;">
-  <div class="ev-modal">
-    <div class="ev-modal-icon"><i class="fa fa-exclamation-triangle"></i></div>
-    <div class="ev-modal-title">Delete Exam?</div>
-    <div class="ev-modal-body">
-      You are about to permanently delete <strong><?= $examName ?></strong>.
+<div id="evDelModal" class="exdlg-overlay" style="display:none;">
+  <div class="exdlg-box" role="dialog" aria-modal="true" aria-labelledby="exdlgTitle">
+    <div class="exdlg-icon"><i class="fa fa-exclamation-triangle"></i></div>
+    <div class="exdlg-title" id="exdlgTitle">Delete this exam?</div>
+    <div class="exdlg-body">
+      You're about to permanently delete <strong><?= $examName ?></strong>.
       All per-section schedule copies will also be removed.
       <?php if (!empty($hasMarks)): ?>
-        <br><strong style="color:#b91c1c;">This exam has marks and results — they will be permanently deleted.</strong>
+        <span class="exdlg-warn"><i class="fa fa-exclamation-circle"></i> This exam has marks and results — they will be permanently deleted.</span>
       <?php endif; ?>
-      This cannot be undone.
+      <span class="exdlg-muted">This action cannot be undone.</span>
     </div>
-    <div class="ev-modal-actions">
-      <button type="button" class="ev-modal-cancel" onclick="evCloseModal()">Cancel</button>
-      <a href="<?= base_url('exam/delete/' . urlencode($examId)) ?>?confirm=1" class="ev-modal-confirm">
-        <i class="fa fa-trash"></i> Delete
+    <div class="exdlg-actions">
+      <button type="button" class="exdlg-btn exdlg-cancel" onclick="evCloseModal()">Cancel</button>
+      <a href="<?= base_url('exam/delete/' . urlencode($examId)) ?>?confirm=1" class="exdlg-btn exdlg-confirm">
+        <i class="fa fa-trash"></i> Delete exam
       </a>
     </div>
   </div>
@@ -838,34 +838,41 @@ html { font-size: 16px !important; }
 .ev-s-draft.ev-mini-badge{ background: #d97706; }
 .ev-s-done.ev-mini-badge { background: var(--gold); }
 
-/* ── Delete Modal ── */
-.ev-modal-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,.52);
+/* ── Delete Modal (scoped exdlg-* — decoupled from the global .ev-modal
+      Events-modal rules in header.php which force max-width:95vw !important) ── */
+.exdlg-overlay {
+  position: fixed; inset: 0; background: rgba(15,23,42,.55);
+  -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
   z-index: 9999; display: flex; align-items: center; justify-content: center; padding: 16px;
 }
-.ev-modal {
-  background: var(--bg2); border-radius: 14px; padding: 32px 28px 24px;
-  max-width: 420px; width: 100%; text-align: center;
-  box-shadow: 0 12px 48px rgba(0,0,0,.4); animation: ev-modal-in .2s ease;
+.exdlg-box {
+  box-sizing: border-box;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 16px; padding: 30px 28px 22px;
+  width: 100%; max-width: 420px; text-align: center;
+  box-shadow: 0 20px 60px rgba(0,0,0,.35); animation: exdlg-in .18s ease;
 }
-@keyframes ev-modal-in { from{transform:scale(.9);opacity:0} to{transform:scale(1);opacity:1} }
-.ev-modal-icon { font-size: 2.4rem; color: #ef4444; margin-bottom: 14px; }
-.ev-modal-title { font-size: 1.15rem; font-weight: 700; color: var(--t1); margin-bottom: 10px; }
-.ev-modal-body { font-size: .9rem; color: var(--t2); line-height: 1.6; margin-bottom: 22px; }
-.ev-modal-actions { display: flex; gap: 10px; justify-content: center; }
-.ev-modal-cancel {
-  padding: 9px 22px; border: 1px solid var(--border); border-radius: 7px;
-  background: var(--bg3); color: var(--t2); font-size: .9rem; font-weight: 600;
-  cursor: pointer; transition: background .18s;
+@keyframes exdlg-in { from{transform:translateY(8px) scale(.97);opacity:0} to{transform:none;opacity:1} }
+.exdlg-icon {
+  width: 56px; height: 56px; margin: 0 auto 16px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: rgba(239,68,68,.12); color: #ef4444; font-size: 1.5rem;
 }
-.ev-modal-cancel:hover { background: var(--border); }
-.ev-modal-confirm {
-  padding: 9px 22px; background: #ef4444; color: #fff; border: none;
-  border-radius: 7px; font-size: .9rem; font-weight: 600; cursor: pointer;
-  text-decoration: none; display: inline-flex; align-items: center; gap: 7px;
-  transition: background .18s;
+.exdlg-title { font-size: 1.2rem; font-weight: 700; color: var(--t1); margin-bottom: 10px; }
+.exdlg-body { font-size: .9rem; color: var(--t2); line-height: 1.6; margin-bottom: 24px; }
+.exdlg-body strong { color: var(--t1); font-weight: 700; }
+.exdlg-warn { display: block; margin-top: 12px; color: #b91c1c; font-weight: 600; }
+.exdlg-muted { display: block; margin-top: 8px; color: var(--t3, #94a3b8); font-size: .82rem; }
+.exdlg-actions { display: flex; gap: 10px; justify-content: center; }
+.exdlg-btn {
+  padding: 10px 22px; border-radius: 9px; font-size: .9rem; font-weight: 600;
+  cursor: pointer; transition: background .15s, box-shadow .15s; text-decoration: none;
+  display: inline-flex; align-items: center; gap: 8px; border: 1px solid transparent;
 }
-.ev-modal-confirm:hover { background: #dc2626; color: #fff; }
+.exdlg-cancel { background: var(--bg3); color: var(--t2); border-color: var(--border); }
+.exdlg-cancel:hover { background: var(--border); }
+.exdlg-confirm { background: #ef4444; color: #fff; }
+.exdlg-confirm:hover { background: #dc2626; color: #fff; box-shadow: 0 6px 18px rgba(239,68,68,.35); }
 
 /* ── Toast ── */
 .ev-toast-wrap { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 10px; z-index: 9999; }
