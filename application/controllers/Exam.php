@@ -261,6 +261,9 @@ class Exam extends MY_Controller
                 'applicableClasses'   => array_keys($classesSeen),
                 'generalInstructions' => $instructions ?: [],
                 'createdBy'           => $this->admin_id ?? '',
+                // Phase 1 lifecycle: stamp publish audit if created directly as Published.
+                'publishedBy'         => ($status === 'Published') ? ($this->admin_id ?? '') : null,
+                'publishedAt'         => ($status === 'Published') ? (int) round(microtime(true) * 1000) : null,
                 'createdAt'           => (int) round(microtime(true) * 1000),
             ]);
             foreach ($schedAccum as $accClass => $accSections) {
@@ -384,7 +387,16 @@ class Exam extends MY_Controller
         $school = $this->school_name;
         $year   = $this->session_year;
         // Phase 2B: Firestore-only status update.
-        $this->firebase->firestoreUpdate('exams', "{$school}_{$id}", ['status' => $status, 'updatedAt' => date('c')]);
+        // Phase 1 lifecycle: stamp the audit fields on the relevant transition.
+        $update = ['status' => $status, 'updatedAt' => date('c')];
+        if ($status === 'Published') {
+            $update['publishedBy'] = $this->admin_id ?? '';
+            $update['publishedAt'] = (int) round(microtime(true) * 1000);
+        } elseif ($status === 'Completed') {
+            $update['completedBy'] = $this->admin_id ?? '';
+            $update['completedAt'] = (int) round(microtime(true) * 1000);
+        }
+        $this->firebase->firestoreUpdate('exams', "{$school}_{$id}", $update);
         $this->json_success(['message' => 'Status updated to ' . $status . '.']);
     }
 

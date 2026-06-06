@@ -666,6 +666,11 @@ class Entity_firestore_sync
             // Phase 2B: detail-view fields (additive; mobile ignores extras; closes the 2A residual).
             'generalInstructions' => array_values($data['generalInstructions'] ?? $data['GeneralInstructions'] ?? []),
             'createdBy'           => (string) ($data['createdBy'] ?? $data['CreatedBy'] ?? ''),
+            // Phase 1 lifecycle audit (additive; null until the transition stamps them).
+            'publishedBy'         => $data['publishedBy'] ?? null,
+            'publishedAt'         => $data['publishedAt'] ?? null,
+            'completedBy'         => $data['completedBy'] ?? null,
+            'completedAt'         => $data['completedAt'] ?? null,
             'createdAt'         => $data['createdAt'] ?? date('c'),
             'updatedAt'         => date('c'),
         ];

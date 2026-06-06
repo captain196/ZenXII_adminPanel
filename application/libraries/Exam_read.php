@@ -63,8 +63,13 @@ class Exam_read
             'StartDate'           => $this->dispDate((string) ($d['startDate'] ?? '')),
             'EndDate'             => $this->dispDate((string) ($d['endDate']   ?? '')),
             'CreatedAt'           => $this->isoToMs($d['createdAt'] ?? 0),       // ISO → ms for legacy consumers
-            'CreatedBy'           => (string) ($d['createdBy'] ?? ''),          // GAP: not in schema yet
-            'GeneralInstructions' => is_array($d['generalInstructions'] ?? null) ? $d['generalInstructions'] : [], // GAP
+            'CreatedBy'           => (string) ($d['createdBy'] ?? ''),
+            // Phase 1 lifecycle audit (null until stamped on transition).
+            'PublishedBy'         => (string) ($d['publishedBy'] ?? ''),
+            'PublishedAt'         => ($d['publishedAt'] ?? null) === null ? null : $this->isoToMs($d['publishedAt']),
+            'CompletedBy'         => (string) ($d['completedBy'] ?? ''),
+            'CompletedAt'         => ($d['completedAt'] ?? null) === null ? null : $this->isoToMs($d['completedAt']),
+            'GeneralInstructions' => is_array($d['generalInstructions'] ?? null) ? $d['generalInstructions'] : [],
         ];
     }
 

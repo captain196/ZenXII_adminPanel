@@ -12,6 +12,11 @@
   $createdAt    = !empty($exam['CreatedAt'])
                     ? date('d M Y, h:i A', (int)($exam['CreatedAt'] / 1000))
                     : '—';
+  // Phase 1 lifecycle audit (shown only when stamped).
+  $publishedBy  = htmlspecialchars($exam['PublishedBy'] ?? '');
+  $publishedAt  = !empty($exam['PublishedAt']) ? date('d M Y, h:i A', (int)($exam['PublishedAt'] / 1000)) : '';
+  $completedBy  = htmlspecialchars($exam['CompletedBy'] ?? '');
+  $completedAt  = !empty($exam['CompletedAt']) ? date('d M Y, h:i A', (int)($exam['CompletedAt'] / 1000)) : '';
   $instructions = is_array($exam['GeneralInstructions'] ?? null)
                     ? $exam['GeneralInstructions'] : [];
   $schedule     = is_array($exam['Schedule'] ?? null) ? $exam['Schedule'] : [];
@@ -288,6 +293,18 @@
             <span class="ev-meta-label"><i class="fa fa-clock-o"></i> Created At</span>
             <span class="ev-meta-val ev-meta-date"><?= $createdAt ?></span>
           </div>
+          <?php if ($publishedBy || $publishedAt): ?>
+          <div class="ev-meta-row ev-meta-row-col">
+            <span class="ev-meta-label"><i class="fa fa-check-circle"></i> Published</span>
+            <span class="ev-meta-val ev-meta-date"><?= trim($publishedBy . ($publishedAt ? ' · ' . $publishedAt : '')) ?></span>
+          </div>
+          <?php endif; ?>
+          <?php if ($completedBy || $completedAt): ?>
+          <div class="ev-meta-row ev-meta-row-col">
+            <span class="ev-meta-label"><i class="fa fa-flag-checkered"></i> Completed</span>
+            <span class="ev-meta-val ev-meta-date"><?= trim($completedBy . ($completedAt ? ' · ' . $completedAt : '')) ?></span>
+          </div>
+          <?php endif; ?>
 
         </div>
       </div>
