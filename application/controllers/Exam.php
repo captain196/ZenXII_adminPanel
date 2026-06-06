@@ -326,6 +326,19 @@ class Exam extends MY_Controller
         $this->_require_role(self::ADMIN_ROLES, 'delete exam');
         if (!$id) { redirect('exam'); }
 
+        // Phase 3.3 delete guard: a graded exam (marks entered) requires an
+        // explicit confirm flag before the destructive cascade runs. Without
+        // it, redirect back with a warning rather than silently destroying
+        // marks/results. The existing cascade below is unchanged on confirm.
+        $confirm = ($this->input->get('confirm') === '1' || $this->input->post('confirm') === '1');
+        if (!$confirm && $this->_exam_has_marks($id)) {
+            $this->session->set_flashdata('error',
+                'This exam has marks entered. Deleting permanently removes all marks and '
+                . 'results. Re-confirm to proceed.');
+            redirect('exam');
+            return;
+        }
+
         $school   = $this->school_name;
         $year     = $this->session_year;
         // Phase 2B: enumerate sections from Firestore examSchedule (1:1 per section).
@@ -409,6 +422,17 @@ class Exam extends MY_Controller
             $this->json_error("Transition not allowed: {$from} \u{2192} {$to}.", 409);
         }
 
+        // Phase 3.3 marks guard (Philosophy A): block Unpublish (Published ->
+        // Draft) when marks exist. A graded exam must not be made editable;
+        // this prevents marks/schedule divergence once the Draft-only edit
+        // endpoint (Phase 3.4) lands. Clearing marks is the explicit prereq.
+        if ($from === 'Published' && $to === 'Draft' && $this->_exam_has_marks($id)) {
+            $this->json_error(
+                'Cannot unpublish: marks have already been entered for this exam. '
+                . 'Clear all marks before unpublishing to edit it.', 409
+            );
+        }
+
         $this->firebase->firestoreUpdate('exams', "{$school}_{$id}", $decision['update']);
         $this->json_success(['message' => "Status updated: {$from} \u{2192} {$to}."]);
     }
@@ -454,6 +478,23 @@ class Exam extends MY_Controller
             $update['reopenedBy'] = $by; $update['reopenedAt'] = $nowMs;
         }
         return ['action' => 'allowed', 'update' => $update];
+    }
+
+    /**
+     * Phase 3.3 — TRUE if any student marks exist for this exam.
+     *
+     * Graded signal is the legacy RTDB result store `Results/Marks/{examId}`
+     * ONLY (not Templates — a template can exist with zero marks). This reads
+     * the EXISTING result store; it introduces no new RTDB dependency (the
+     * result-pipeline -> Firestore migration is a separate workstream).
+     */
+    private function _exam_has_marks(string $examId): bool
+    {
+        if ($examId === '') return false;
+        $node = $this->firebase->shallow_get(
+            "Schools/{$this->school_name}/{$this->session_year}/Results/Marks/{$examId}"
+        );
+        return is_array($node) && !empty($node);
     }
 
     // ── get_subjects() — GET AJAX ────────────────────────────────────────
