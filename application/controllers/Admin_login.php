@@ -597,8 +597,19 @@ class Admin_login extends CI_Controller
         rsort($sessions);
 
         $currentSession = (string) ($schoolDoc['currentSession'] ?? '');
-        if ($currentSession === '' && !empty($sessions)) {
-            $currentSession = $sessions[0];
+
+        // SC-Step10/G1 (2026-06-06): FAIL-CLOSED. schools/{id}.currentSession is the SOLE
+        // session authority — NO sessions[0] fallback. If it is absent, the tenant has no
+        // canonical active session: block login (clear the partial session) rather than
+        // silently activating a non-canonical session.
+        if ($currentSession === '') {
+            log_message('error',
+                'SC10 fail-closed: schoolId=' . $schoolId . ' has no currentSession at login — blocking.');
+            $this->session->unset_userdata(self::SESSION_KEYS);
+            $this->session->set_flashdata('error',
+                'Your school has no active academic session configured. Please contact your administrator.');
+            redirect('admin_login');
+            return;
         }
 
         // Wave C hotfix (2026-06-03): features live in tenantPublic/{schoolId}.activeModules
