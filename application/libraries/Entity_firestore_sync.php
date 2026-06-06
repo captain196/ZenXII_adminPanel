@@ -671,6 +671,12 @@ class Entity_firestore_sync
             'publishedAt'         => $data['publishedAt'] ?? null,
             'completedBy'         => $data['completedBy'] ?? null,
             'completedAt'         => $data['completedAt'] ?? null,
+            // Phase 3.1 reverse-lifecycle audit (additive; null until the
+            // Unpublish/Reopen transitions are introduced in Phase 3.2).
+            'unpublishedBy'       => $data['unpublishedBy'] ?? null,
+            'unpublishedAt'       => $data['unpublishedAt'] ?? null,
+            'reopenedBy'          => $data['reopenedBy'] ?? null,
+            'reopenedAt'          => $data['reopenedAt'] ?? null,
             'createdAt'         => $data['createdAt'] ?? date('c'),
             'updatedAt'         => date('c'),
         ];

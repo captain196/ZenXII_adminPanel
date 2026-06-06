@@ -69,6 +69,11 @@ class Exam_read
             'PublishedAt'         => ($d['publishedAt'] ?? null) === null ? null : $this->isoToMs($d['publishedAt']),
             'CompletedBy'         => (string) ($d['completedBy'] ?? ''),
             'CompletedAt'         => ($d['completedAt'] ?? null) === null ? null : $this->isoToMs($d['completedAt']),
+            // Phase 3.1 reverse-lifecycle audit (null until stamped in Phase 3.2).
+            'UnpublishedBy'       => (string) ($d['unpublishedBy'] ?? ''),
+            'UnpublishedAt'       => ($d['unpublishedAt'] ?? null) === null ? null : $this->isoToMs($d['unpublishedAt']),
+            'ReopenedBy'          => (string) ($d['reopenedBy'] ?? ''),
+            'ReopenedAt'          => ($d['reopenedAt'] ?? null) === null ? null : $this->isoToMs($d['reopenedAt']),
             'GeneralInstructions' => is_array($d['generalInstructions'] ?? null) ? $d['generalInstructions'] : [],
         ];
     }

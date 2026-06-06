@@ -17,6 +17,11 @@
   $publishedAt  = !empty($exam['PublishedAt']) ? date('d M Y, h:i A', (int)($exam['PublishedAt'] / 1000)) : '';
   $completedBy  = htmlspecialchars($exam['CompletedBy'] ?? '');
   $completedAt  = !empty($exam['CompletedAt']) ? date('d M Y, h:i A', (int)($exam['CompletedAt'] / 1000)) : '';
+  // Phase 3.1 reverse-lifecycle audit (display-only; stamped from Phase 3.2 onward).
+  $unpublishedBy = htmlspecialchars($exam['UnpublishedBy'] ?? '');
+  $unpublishedAt = !empty($exam['UnpublishedAt']) ? date('d M Y, h:i A', (int)($exam['UnpublishedAt'] / 1000)) : '';
+  $reopenedBy    = htmlspecialchars($exam['ReopenedBy'] ?? '');
+  $reopenedAt    = !empty($exam['ReopenedAt']) ? date('d M Y, h:i A', (int)($exam['ReopenedAt'] / 1000)) : '';
   $instructions = is_array($exam['GeneralInstructions'] ?? null)
                     ? $exam['GeneralInstructions'] : [];
   $schedule     = is_array($exam['Schedule'] ?? null) ? $exam['Schedule'] : [];
@@ -303,6 +308,18 @@
           <div class="ev-meta-row ev-meta-row-col">
             <span class="ev-meta-label"><i class="fa fa-flag-checkered"></i> Completed</span>
             <span class="ev-meta-val ev-meta-date"><?= trim($completedBy . ($completedAt ? ' · ' . $completedAt : '')) ?></span>
+          </div>
+          <?php endif; ?>
+          <?php if ($unpublishedBy || $unpublishedAt): ?>
+          <div class="ev-meta-row ev-meta-row-col">
+            <span class="ev-meta-label"><i class="fa fa-undo"></i> Unpublished</span>
+            <span class="ev-meta-val ev-meta-date"><?= trim($unpublishedBy . ($unpublishedAt ? ' · ' . $unpublishedAt : '')) ?></span>
+          </div>
+          <?php endif; ?>
+          <?php if ($reopenedBy || $reopenedAt): ?>
+          <div class="ev-meta-row ev-meta-row-col">
+            <span class="ev-meta-label"><i class="fa fa-rotate-right"></i> Reopened</span>
+            <span class="ev-meta-val ev-meta-date"><?= trim($reopenedBy . ($reopenedAt ? ' · ' . $reopenedAt : '')) ?></span>
           </div>
           <?php endif; ?>
 
