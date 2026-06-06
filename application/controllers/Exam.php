@@ -385,19 +385,75 @@ class Exam extends MY_Controller
         }
 
         $school = $this->school_name;
-        $year   = $this->session_year;
-        // Phase 2B: Firestore-only status update.
-        // Phase 1 lifecycle: stamp the audit fields on the relevant transition.
-        $update = ['status' => $status, 'updatedAt' => date('c')];
-        if ($status === 'Published') {
-            $update['publishedBy'] = $this->admin_id ?? '';
-            $update['publishedAt'] = (int) round(microtime(true) * 1000);
-        } elseif ($status === 'Completed') {
-            $update['completedBy'] = $this->admin_id ?? '';
-            $update['completedAt'] = (int) round(microtime(true) * 1000);
+
+        // Phase 3.2 lifecycle state machine. Read the current status first;
+        // the exam must exist (fail-closed).
+        $meta = $this->exam_read->meta($id, false);
+        if (!is_array($meta)) {
+            $this->json_error('Exam not found.', 404);
         }
-        $this->firebase->firestoreUpdate('exams', "{$school}_{$id}", $update);
-        $this->json_success(['message' => 'Status updated to ' . $status . '.']);
+        $from = (string) ($meta['Status'] ?? 'Draft');
+        $to   = $status;
+
+        // Decide via the pure state machine (Phase 3.2).
+        $decision = $this->_status_transition(
+            $from, $to, $this->admin_id ?? '', (int) round(microtime(true) * 1000)
+        );
+
+        if ($decision['action'] === 'idempotent') {
+            // Same -> same: success, no write, no stamp, no error.
+            $this->json_success(['message' => "Status unchanged ({$to})."]);
+            return;
+        }
+        if ($decision['action'] === 'blocked') {
+            $this->json_error("Transition not allowed: {$from} \u{2192} {$to}.", 409);
+        }
+
+        $this->firebase->firestoreUpdate('exams', "{$school}_{$id}", $decision['update']);
+        $this->json_success(['message' => "Status updated: {$from} \u{2192} {$to}."]);
+    }
+
+    /**
+     * Pure lifecycle state machine (Phase 3.2) — no I/O, unit-testable.
+     *
+     * Locked allowed-transition matrix:
+     *   Draft     -> Published   (Publish)
+     *   Published -> Completed   (Complete)
+     *   Published -> Draft       (Unpublish)
+     *   Completed -> Published   (Reopen)
+     * Blocked: Draft->Completed (must Publish first),
+     *          Completed->Draft (must Reopen to Published, then Unpublish).
+     * Same -> same is idempotent (no write).
+     *
+     * @return array{action:string, update:?array}
+     *   action ∈ {'idempotent','blocked','allowed'}; 'update' holds the
+     *   Firestore payload (status + transition stamp) only when 'allowed'.
+     */
+    private function _status_transition(string $from, string $to, string $by, int $nowMs): array
+    {
+        if ($from === $to) {
+            return ['action' => 'idempotent', 'update' => null];
+        }
+        static $ALLOWED = [
+            'Draft'     => ['Published'],
+            'Published' => ['Completed', 'Draft'],
+            'Completed' => ['Published'],
+        ];
+        if (!in_array($to, $ALLOWED[$from] ?? [], true)) {
+            return ['action' => 'blocked', 'update' => null];
+        }
+        // Forward stamps (Phase 1) + reverse stamps (Phase 3.1 schema).
+        $update = ['status' => $to, 'updatedAt' => date('c')];
+        if ($from === 'Draft' && $to === 'Published') {            // Publish
+            $update['publishedBy'] = $by; $update['publishedAt'] = $nowMs;
+        } elseif ($from === 'Published' && $to === 'Completed') {   // Complete
+            $update['completedBy'] = $by; $update['completedAt'] = $nowMs;
+        } elseif ($from === 'Published' && $to === 'Draft') {       // Unpublish
+            $update['unpublishedBy'] = $by; $update['unpublishedAt'] = $nowMs;
+        } elseif ($from === 'Completed' && $to === 'Published') {   // Reopen
+            $update['reopenedBy'] = $by; $update['reopenedAt'] = $nowMs;
+        }
+        return ['action' => 'allowed', 'update' => $update];
     }
 
     // ── get_subjects() — GET AJAX ────────────────────────────────────────
