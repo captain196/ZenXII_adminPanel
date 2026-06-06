@@ -303,6 +303,225 @@ class Exam extends MY_Controller
         $this->load->view('include/footer');
     }
 
+    // ── edit_exam($id) — POST AJAX (Phase 3.4, Option B Draft-only edit) ──
+    //
+    // Rewrites an EXISTING exam (same examId — no generate_exam_id) only when
+    // the exam exists, is in Draft, and has no marks. Status ownership stays
+    // exclusively in update_status(); this method NEVER changes status. All
+    // lifecycle audit history + created metadata are preserved; only
+    // updatedAt is refreshed. Reachable via default routing exam/edit_exam/{id}.
+    public function edit_exam($id = null)
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'edit exam');
+        header('Content-Type: application/json');
+
+        if ($this->input->method() !== 'post') {
+            $this->json_error('POST required.', 405);
+        }
+
+        $id     = trim((string) $id);
+        $school = $this->school_name;
+        if ($id === '') {
+            $this->json_error('Missing exam id.', 400);
+        }
+
+        // — Gate 1: exam must exist. Read the RAW doc (camelCase) so lifecycle
+        //   history + created metadata can be preserved verbatim.
+        $existing = $this->firebase->firestoreGet('exams', "{$school}_{$id}");
+        if (!is_array($existing) || empty($existing)) {
+            $this->json_error('Exam not found.', 404);
+        }
+
+        // — Gate 2: Draft-only (Option B). Published/Completed are read-only.
+        $curStatus = (string) ($existing['status'] ?? 'Draft');
+        if ($curStatus !== 'Draft') {
+            $this->json_error(
+                'Only Draft exams can be edited. Unpublish a Published exam '
+                . '(or Reopen then Unpublish a Completed exam) before editing.', 409
+            );
+        }
+
+        // — Gate 3: marks-free defense-in-depth (Phase 3.3 already blocks the
+        //   Unpublish path when marks exist; this is belt-and-suspenders).
+        if ($this->_exam_has_marks($id)) {
+            $this->json_error(
+                'Cannot edit: marks have been entered for this exam. '
+                . 'Clear all marks first.', 409
+            );
+        }
+
+        $structure = $this->exam_engine->get_class_structure();
+
+        // ── Validation (identical rules to create(); replicated to keep the
+        //    shipped create() path untouched). NOTE: examStatus is NOT read —
+        //    status is preserved, never changed here. ──
+        $name = trim((string) $this->input->post('examName'));
+        if (!preg_match('/^[\w\s\-\.]{2,80}$/u', $name)) {
+            $this->json_error('Invalid exam name. Use letters, digits, spaces, hyphens, or dots (2–80 chars).', 400);
+        }
+        $type = trim((string) $this->input->post('examType'));
+        if (!in_array($type, self::ALLOWED_TYPES, true)) {
+            $this->json_error('Invalid exam type.', 400);
+        }
+        $scale = strip_tags(trim((string) $this->input->post('gradingScale')));
+        if (!in_array($scale, self::ALLOWED_SCALES, true)) {
+            $this->json_error('Invalid grading scale.', 400);
+        }
+        $passingPct = (int) $this->input->post('passingPercent');
+        if ($passingPct < 1 || $passingPct > 100) {
+            $this->json_error('PassingPercent must be 1–100.', 400);
+        }
+        $startDt = DateTime::createFromFormat('Y-m-d', trim((string) $this->input->post('startDate')));
+        $endDt   = DateTime::createFromFormat('Y-m-d', trim((string) $this->input->post('endDate')));
+        if (!$startDt || !$endDt) {
+            $this->json_error('Invalid date format.', 400);
+        }
+        if ($startDt > $endDt) {
+            $this->json_error('Start date must not be after end date.', 400);
+        }
+        $instructions = [];
+        $idx          = 0;
+        foreach (explode("\n", (string) $this->input->post('generalInstructions')) as $line) {
+            $c = trim(preg_replace('/^[•\-\*\s]+/', '', $line));
+            if ($c !== '') $instructions[$idx++] = $c;
+        }
+        $scheduleJson = (string) $this->input->post('examSchedule');
+        if (empty($scheduleJson)) {
+            $this->json_error('Exam schedule is empty. Please add at least one row.', 400);
+        }
+        $scheduleRows = json_decode($scheduleJson, true);
+        if (json_last_error() !== JSON_ERROR_NONE || !is_array($scheduleRows) || empty($scheduleRows)) {
+            $this->json_error('Invalid schedule data.', 400);
+        }
+
+        // — Gate 4: duplicate name+type guard EXCLUDING self.
+        $existingExams = $this->exam_read->list_exams() ?? [];
+        if (is_array($existingExams)) {
+            foreach ($existingExams as $exId => $exMeta) {
+                if ($exId === 'Count' || !is_array($exMeta) || $exId === $id) continue; // skip self
+                if (strcasecmp(trim((string) ($exMeta['Name'] ?? '')), $name) === 0
+                    && strcasecmp(trim((string) ($exMeta['Type'] ?? '')), $type) === 0) {
+                    $this->json_error("An exam named \"{$name}\" ({$type}) already exists for this session.", 409);
+                }
+            }
+        }
+
+        // ── Accumulate the new schedule (identical to create()). ──
+        $savedCount  = 0;
+        $skippedRows = [];
+        $rowIndex    = 0;
+        $schedAccum  = [];
+        $classesSeen = [];
+        foreach ($scheduleRows as $row) {
+            $rowIndex++;
+            if (!is_array($row)) continue;
+            $className  = trim((string) ($row['className']   ?? ''));
+            $subject    = strip_tags(trim((string) ($row['subject']     ?? '')));
+            $startTime  = trim((string) ($row['startTime']  ?? ''));
+            $endTime    = trim((string) ($row['endTime']    ?? ''));
+            $totalMarks = is_numeric($row['totalMarks']  ?? '') ? (int) $row['totalMarks'] : null;
+            $passMks    = is_numeric($row['passingMarks'] ?? '') ? (int) $row['passingMarks'] : null;
+            $dateRaw    = trim((string) ($row['date'] ?? ''));
+            if (!$className || !$subject || !$startTime || !$endTime || $totalMarks === null || !$dateRaw) {
+                $skippedRows[] = "Row {$rowIndex}: Missing required fields (class/subject/time/marks/date).";
+                continue;
+            }
+            $dateDt = DateTime::createFromFormat('d/m/Y', $dateRaw);
+            if (!$dateDt) {
+                $skippedRows[] = "Row {$rowIndex} ({$subject}): Invalid date format '{$dateRaw}' — expected DD/MM/YYYY.";
+                continue;
+            }
+            $dateKey = $dateDt->format('d-m-Y');
+            $stDt = DateTime::createFromFormat('H:i', $startTime);
+            $etDt = DateTime::createFromFormat('H:i', $endTime);
+            if (!$stDt || !$etDt) {
+                $skippedRows[] = "Row {$rowIndex} ({$subject}): Invalid time format '{$startTime}-{$endTime}'.";
+                continue;
+            }
+            if ($etDt <= $stDt) {
+                $skippedRows[] = "Row {$rowIndex} ({$subject}): End time must be after start time ('{$startTime}-{$endTime}').";
+                continue;
+            }
+            if ($passMks === null) {
+                $passMks = (int) round($totalMarks * $passingPct / 100);
+            }
+            $sections = $structure[$className] ?? [];
+            if (empty($sections)) {
+                $skippedRows[] = "Row {$rowIndex} ({$subject}): No sections found for '{$className}'.";
+                continue;
+            }
+            $classesSeen[$className] = true;
+            foreach ($sections as $sectionLetter) {
+                $sectionKey = "Section {$sectionLetter}";
+                $schedAccum[$className][$sectionKey][] = [
+                    'subjectName'  => $subject,
+                    'date'         => $dateKey,
+                    'startTime'    => $stDt->format('h:iA'),
+                    'endTime'      => $etDt->format('h:iA'),
+                    'maxTheory'    => 0,
+                    'maxPractical' => 0,
+                    'maxTotal'     => $totalMarks,
+                    'passingMarks' => $passMks,
+                    'room'         => '',
+                ];
+            }
+            $savedCount++;
+        }
+
+        // ── Rewrite the SAME examId. Preserve created metadata + ALL lifecycle
+        //    audit history; only updatedAt changes (buildExamDoc stamps it).
+        //    Status is carried forward unchanged. ──
+        $this->efs->syncExam($id, [
+            'examName'            => $name,
+            'examType'            => $type,
+            'status'              => $curStatus,                 // PRESERVE — never change here
+            'gradingScale'        => $scale,
+            'passingPercent'      => $passingPct,
+            'startDate'           => $startDt->format('Y-m-d'),
+            'endDate'             => $endDt->format('Y-m-d'),
+            'applicableClasses'   => array_keys($classesSeen),
+            'generalInstructions' => $instructions ?: [],
+            // Preserved created metadata + lifecycle audit (verbatim).
+            'createdBy'           => $existing['createdBy']     ?? '',
+            'createdAt'           => $existing['createdAt']     ?? null,
+            'publishedBy'         => $existing['publishedBy']   ?? null,
+            'publishedAt'         => $existing['publishedAt']   ?? null,
+            'completedBy'         => $existing['completedBy']   ?? null,
+            'completedAt'         => $existing['completedAt']   ?? null,
+            'unpublishedBy'       => $existing['unpublishedBy'] ?? null,
+            'unpublishedAt'       => $existing['unpublishedAt'] ?? null,
+            'reopenedBy'          => $existing['reopenedBy']    ?? null,
+            'reopenedAt'          => $existing['reopenedAt']    ?? null,
+        ]);
+
+        // ── Schedule reconciliation (full replace): delete every prior
+        //    per-section schedule doc, then write the current set. Sections
+        //    removed during the edit are thereby cleaned — no orphans.
+        $oldSections = $this->exam_read->sections($id);
+        foreach ($oldSections as $cs) {
+            $oc = $cs[0] ?? '';
+            $os = $cs[1] ?? '';
+            if ($oc === '' || $os === '') continue;
+            $this->firebase->firestoreDelete('examSchedule', "{$school}_{$id}_{$oc}_{$os}");
+        }
+        foreach ($schedAccum as $accClass => $accSections) {
+            foreach ($accSections as $accSection => $accSubjects) {
+                $this->efs->syncExamScheduleFull($id, (string) $accClass, (string) $accSection, $accSubjects);
+            }
+        }
+
+        $response = [
+            'examId'     => $id,
+            'message'    => "Exam updated successfully ({$savedCount} entries saved).",
+            'csrf_token' => $this->security->get_csrf_hash(),
+        ];
+        if (!empty($skippedRows)) {
+            $response['warnings'] = $skippedRows;
+            $response['message'] .= ' ' . count($skippedRows) . ' row(s) skipped due to validation errors.';
+        }
+        $this->json_success($response);
+    }
+
     // ── view($id) ────────────────────────────────────────────────────────
     public function view($id = null)
     {
