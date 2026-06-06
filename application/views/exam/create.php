@@ -1,5 +1,20 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
 
+<style>
+/* ── UX-1.2 Wizard shell chrome (presentation only) ── */
+.ec-stepind { display:flex; gap:8px; margin:0 0 18px; flex-wrap:wrap; }
+.ec-stepind-item { display:flex; align-items:center; gap:8px; padding:8px 14px; border-radius:9px; background:var(--bg3,#f1f5f9); color:var(--t2,#64748b); font-size:.85rem; font-weight:600; cursor:pointer; border:1px solid var(--border,#e2e8f0); transition:all .15s; }
+.ec-stepind-num { width:22px; height:22px; border-radius:50%; background:var(--border,#cbd5e1); color:#fff; display:flex; align-items:center; justify-content:center; font-size:.78rem; flex:0 0 auto; }
+.ec-stepind-item.active { background:var(--gold,#0d9488); color:#fff; border-color:transparent; }
+.ec-stepind-item.active .ec-stepind-num { background:rgba(255,255,255,.3); }
+.ec-stepind-item.done .ec-stepind-num { background:#16a34a; }
+.ec-wizfoot { position:sticky; bottom:0; z-index:50; display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:18px; padding:12px 16px; background:var(--bg2,#fff); border-top:1px solid var(--border,#e2e8f0); box-shadow:0 -4px 18px rgba(0,0,0,.06); }
+.ec-wizfoot-right { display:flex; gap:10px; align-items:center; }
+.ec-wiz-btn { padding:10px 20px; border-radius:9px; font-size:.9rem; font-weight:600; cursor:pointer; border:1px solid var(--border,#e2e8f0); display:inline-flex; align-items:center; gap:8px; }
+.ec-wiz-back { background:var(--bg3,#f1f5f9); color:var(--t2,#64748b); }
+.ec-wiz-back:hover { background:var(--border,#e2e8f0); }
+.ec-wiz-next { background:var(--gold,#0d9488); color:#fff; border-color:transparent; }
+</style>
 <div class="content-wrapper">
 <div class="ec-wrap">
 
@@ -11,6 +26,13 @@
     <li><?= !empty($editExam) ? 'Edit' : 'Create' ?></li>
   </ol>
 
+  <!-- ══ WIZARD STEP INDICATOR (UX-1.2) ══ -->
+  <div class="ec-stepind">
+    <div class="ec-stepind-item active" data-step="1"><span class="ec-stepind-num">1</span> Details</div>
+    <div class="ec-stepind-item" data-step="2"><span class="ec-stepind-num">2</span> Schedule</div>
+    <div class="ec-stepind-item" data-step="3"><span class="ec-stepind-num">3</span> Review &amp; Save</div>
+  </div>
+
   <form id="examForm" autocomplete="off" novalidate>
     <input type="hidden" name="<?= $this->security->get_csrf_token_name() ?>"
            value="<?= $this->security->get_csrf_hash() ?>" id="csrfInput">
@@ -21,6 +43,8 @@
       <!-- ══ LEFT PANEL ══════════════════════════════════════════════ -->
       <div class="ec-left">
 
+        <!-- ══ STEP 1 — Exam Details ══ -->
+        <div class="ec-step" data-step="1">
         <!-- Card 1 — Exam Identity -->
         <div class="ex-card">
           <div class="ex-card-head"><i class="fa fa-info-circle"></i> Exam Information</div>
@@ -90,6 +114,9 @@
           </div>
         </div>
 
+        </div><!-- /.ec-step (1) -->
+        <!-- ══ STEP 2 — Schedule ══ -->
+        <div class="ec-step" data-step="2" style="display:none;">
         <!-- Card 2 — Schedule Builder -->
         <div class="ex-card">
           <div class="ex-card-head">
@@ -128,6 +155,9 @@
           </div>
         </div>
 
+        </div><!-- /.ec-step (2) -->
+        <!-- ══ STEP 3 — Instructions + Review + Save ══ -->
+        <div class="ec-step" data-step="3" style="display:none;">
         <!-- Card 3 — Instructions -->
         <div class="ex-card">
           <div class="ex-card-head"><i class="fa fa-list-ul"></i> General Instructions</div>
@@ -137,6 +167,7 @@
           </div>
         </div>
 
+        </div><!-- /.ec-step (3) -->
       </div><!-- /.ec-left -->
 
       <!-- ══ RIGHT PANEL — Live Summary ══════════════════════════════ -->
@@ -166,15 +197,20 @@
               <span class="ec-sum-stat-val" id="sumPct">33%</span>
             </div>
           </div>
-          <div class="ec-sum-foot">
-            <button type="button" id="saveBtn" class="ec-btn-save">
-              <i class="fa fa-save"></i> Save Exam
-            </button>
-          </div>
+          <!-- Save button moved to the wizard sticky footer (UX-1.2, shown on Step 3) -->
         </div>
       </div><!-- /.ec-right -->
 
     </div><!-- /.ec-layout -->
+
+    <!-- ══ WIZARD STICKY FOOTER NAV (UX-1.2) ══ -->
+    <div class="ec-wizfoot">
+      <button type="button" id="ecBackBtn" class="ec-wiz-btn ec-wiz-back" style="visibility:hidden;"><i class="fa fa-arrow-left"></i> Back</button>
+      <div class="ec-wizfoot-right">
+        <button type="button" id="ecNextBtn" class="ec-wiz-btn ec-wiz-next">Next <i class="fa fa-arrow-right"></i></button>
+        <button type="button" id="saveBtn" class="ec-btn-save" style="display:none;"><i class="fa fa-save"></i> Save Exam</button>
+      </div>
+    </div>
   </form>
 
   <!-- Toast container -->
@@ -552,6 +588,37 @@
     }, 3200);
   }
 
+})();
+</script>
+
+<!-- ══ UX-1.2 Wizard step navigation (standalone; presentation only — no contract/serializer/IIFE changes) ══ -->
+<script>
+(function () {
+  'use strict';
+  var steps   = document.querySelectorAll('.ec-step');
+  var total   = steps.length || 3;
+  var cur     = 1;
+  var backBtn = document.getElementById('ecBackBtn');
+  var nextBtn = document.getElementById('ecNextBtn');
+  var saveBtn = document.getElementById('saveBtn');
+  var inds    = document.querySelectorAll('.ec-stepind-item');
+  function show(n) {
+    cur = Math.max(1, Math.min(total, n));
+    steps.forEach(function (el) { el.style.display = (parseInt(el.getAttribute('data-step'), 10) === cur) ? '' : 'none'; });
+    inds.forEach(function (el) {
+      var s = parseInt(el.getAttribute('data-step'), 10);
+      el.classList.toggle('active', s === cur);
+      el.classList.toggle('done', s < cur);
+    });
+    if (backBtn) backBtn.style.visibility = (cur === 1) ? 'hidden' : 'visible';
+    if (nextBtn) nextBtn.style.display = (cur === total) ? 'none' : '';
+    if (saveBtn) saveBtn.style.display = (cur === total) ? '' : 'none';
+    try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) {}
+  }
+  if (nextBtn) nextBtn.addEventListener('click', function () { show(cur + 1); });
+  if (backBtn) backBtn.addEventListener('click', function () { show(cur - 1); });
+  inds.forEach(function (el) { el.addEventListener('click', function () { show(parseInt(el.getAttribute('data-step'), 10)); }); });
+  show(1);
 })();
 </script>
 
