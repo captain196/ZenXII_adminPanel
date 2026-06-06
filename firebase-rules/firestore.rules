@@ -522,12 +522,42 @@ service cloud.firestore {
     // ambiguity.
 
     // ── Exams ────────────────────────────────────────────────────
+    // EXAM-LIFECYCLE Phase 2 (Visibility Hardening): non-staff tenant
+    // members (parents/students) may read ONLY Published or Completed
+    // exams; Draft is staff-only. Staff (isStaff: Teacher/Admin/etc.)
+    // retain full visibility incl. Draft — the Teacher marks-entry
+    // picker (getExams) depends on reading Draft exams. The backend
+    // (Admin SDK, service account) bypasses rules entirely, so server
+    // exam reads via Exam_read are unaffected. tenantActive isolation
+    // is inherited through isStaff()/isSameSchool().
     match /exams/{docId} {
-      allow read: if isSameSchool();
+      allow read: if isStaff()
+                  || (isSameSchool() && resource.data.status in ['Published', 'Completed']);
       allow write: if isAdmin();
     }
 
     // ── Exam Schedule ────────────────────────────────────────────
+    // DEFERRED HARDENING ITEM — examSchedule visibility inheritance
+    // from exams.status (NOT a Phase 2 blocker; future enhancement).
+    //   Current position: examSchedule read is gated by tenant
+    //     isolation (isSameSchool: same-school + tenantActive) only;
+    //     it does NOT derive visibility from its parent exam's status.
+    //     A parent obtains a schedule only by navigating from an exam
+    //     already filtered to Published/Completed (app flow + the
+    //     /exams rule above), and there is no known parent navigation
+    //     path that surfaces a Draft exam's schedule. Schedules carry
+    //     no marks/results — only date/time/maxTotal/passingMarks.
+    //   Risk level: LOW. Exposure requires a same-school authenticated
+    //     parent to directly query examSchedule by a Draft exam's id
+    //     out-of-band (no in-app path); leaks scheduling metadata only,
+    //     no marks/PII. Defended today by tenant isolation + app flow.
+    //   Future approach: optionally enforce in-rule by deriving the
+    //     parent exam's status — e.g. get(/databases/$(db)/documents/
+    //     exams/$(resource.data.schoolId + '_' + resource.data.examId))
+    //     .data.status in ['Published','Completed'] for non-staff.
+    //     Cost: one extra document get() per schedule read (billed +
+    //     latency); requires examSchedule docs to reliably carry
+    //     schoolId+examId (they do). Revisit alongside Phase 3.
     match /examSchedule/{docId} {
       allow read: if isSameSchool();
       allow write: if isAdmin();
