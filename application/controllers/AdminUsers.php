@@ -190,10 +190,11 @@ class AdminUsers extends MY_Controller
 
                 if ($created !== null && $created !== false) {
                     $this->firebase->setFirebaseClaims($adminId, [
-                        'role'          => $data['roleLabel'] ?? $data['role'] ?? '',
-                        'school_id'     => $data['schoolId'] ?? $this->school_id,
-                        'school_code'   => $data['schoolCode'] ?? $this->school_code,
-                        'parent_db_key' => $data['parentDbKey'] ?? $this->parent_db_key,
+                        'role'        => $data['role'] ?? $data['roleLabel'] ?? '',
+                        'roleLabel'   => $data['roleLabel'] ?? $data['role'] ?? '',
+                        'schoolId'    => $data['schoolId'] ?? $this->school_id,
+                        'schoolCode'  => $data['schoolCode'] ?? $this->school_code,
+                        'parentDbKey' => $data['parentDbKey'] ?? $this->parent_db_key,
                     ]);
                     $this->fs->remove('systemPendingSyncAdmins', $adminId);
                     $synced++;
@@ -492,10 +493,11 @@ class AdminUsers extends MY_Controller
                 ]);
                 if ($created !== null && $created !== false) {
                     $this->firebase->setFirebaseClaims($admin_id, [
-                        'role'          => $role,
-                        'school_id'     => $this->school_id,
-                        'school_code'   => $this->school_code,
-                        'parent_db_key' => $this->parent_db_key,
+                        'role'        => $role,
+                        'roleLabel'   => $role,
+                        'schoolId'    => $this->school_id,
+                        'schoolCode'  => $this->school_code,
+                        'parentDbKey' => $this->parent_db_key,
                     ]);
                     $auth_synced = true;
                 }
@@ -657,10 +659,11 @@ class AdminUsers extends MY_Controller
                 $old_role = $existing['Role'] ?? '';
                 if ($old_role !== $role) {
                     $this->firebase->setFirebaseClaims($admin_id, [
-                        'role'          => $role,
-                        'school_id'     => $this->school_id,
-                        'school_code'   => $this->school_code,
-                        'parent_db_key' => $this->parent_db_key,
+                        'role'        => $role,
+                        'roleLabel'   => $role,
+                        'schoolId'    => $this->school_id,
+                        'schoolCode'  => $this->school_code,
+                        'parentDbKey' => $this->parent_db_key,
                     ]);
                 }
             } catch (Exception $syncEx) {
@@ -841,9 +844,10 @@ class AdminUsers extends MY_Controller
             // 2. must-change-password claim — first-login self-set gate.
             $this->firebase->setFirebaseClaims($admin_id, [
                 'role'                 => (string) ($existing['Role'] ?? $existing['role'] ?? 'Admin'),
-                'school_id'            => $this->school_id,
-                'school_code'          => $this->school_code,
-                'parent_db_key'        => $this->parent_db_key,
+                'roleLabel'            => (string) ($existing['Role'] ?? $existing['role'] ?? 'Admin'),
+                'schoolId'             => $this->school_id,
+                'schoolCode'           => $this->school_code,
+                'parentDbKey'          => $this->parent_db_key,
                 'must_change_password' => true,
                 'password_reset_at'    => time(),
                 'password_reset_by'    => (string) ($this->admin_id ?? ''),
