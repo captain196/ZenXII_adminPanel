@@ -14,6 +14,30 @@
 .ec-wiz-back { background:var(--bg3,#f1f5f9); color:var(--t2,#64748b); }
 .ec-wiz-back:hover { background:var(--border,#e2e8f0); }
 .ec-wiz-next { background:var(--gold,#0d9488); color:#fff; border-color:transparent; }
+
+/* ── UX-1.3 ZenX primitives (DS-ready; reusable, not page-specific) ── */
+.zx-sr-only { position:absolute!important; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.zx-btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:10px 18px; border-radius:9px; font-size:.9rem; font-weight:600; line-height:1; cursor:pointer; border:1px solid transparent; transition:background .15s,box-shadow .15s,border-color .15s,filter .15s; text-decoration:none; }
+.zx-btn:focus-visible { outline:2px solid var(--gold,#0d9488); outline-offset:2px; }
+.zx-btn:disabled { opacity:.6; cursor:not-allowed; }
+.zx-btn--sm { padding:7px 12px; font-size:.82rem; }
+.zx-btn--primary { background:var(--gold,#0d9488); color:#fff; }
+.zx-btn--primary:hover:not(:disabled) { filter:brightness(1.06); }
+.zx-btn--secondary { background:var(--bg3,#f1f5f9); color:var(--t2,#475569); border-color:var(--border,#e2e8f0); }
+.zx-btn--secondary:hover:not(:disabled) { background:var(--border,#e2e8f0); }
+.zx-btn--ghost { background:transparent; color:var(--t2,#64748b); }
+.zx-btn--ghost:hover:not(:disabled) { background:var(--bg3,#f1f5f9); }
+.zx-btn--danger { background:#ef4444; color:#fff; }
+.zx-btn--danger:hover:not(:disabled) { background:#dc2626; }
+.zx-field--invalid input, .zx-field--invalid select, input.zx-invalid, select.zx-invalid { border-color:#ef4444!important; box-shadow:0 0 0 2px rgba(239,68,68,.15)!important; }
+.zx-field-error { display:block; margin-top:5px; color:#dc2626; font-size:.78rem; font-weight:600; }
+.zx-field-error::before { content:"\26A0"; margin-right:5px; }
+.zx-field-error:empty { display:none; }
+.zx-loading { opacity:.6; }
+.zx-empty-state { text-align:center; padding:24px 16px; color:var(--t3,#94a3b8); font-size:.88rem; }
+.zx-stepind-invalid { box-shadow:inset 0 0 0 1px #ef4444; }
+/* enterprise density (this page only) */
+.ec-page-title { margin-bottom:6px; }
 </style>
 <div class="content-wrapper">
 <div class="ec-wrap">
@@ -122,10 +146,10 @@
           <div class="ex-card-head">
             <i class="fa fa-calendar"></i> Exam Schedule
             <div class="ec-sched-btns">
-              <button type="button" class="ec-sched-btn-add" id="addRowBtn">
+              <button type="button" class="ec-sched-btn-add zx-btn zx-btn--secondary zx-btn--sm" id="addRowBtn">
                 <i class="fa fa-plus"></i> Add Row
               </button>
-              <button type="button" class="ec-sched-btn-clear" id="clearAllBtn">
+              <button type="button" class="ec-sched-btn-clear zx-btn zx-btn--ghost zx-btn--sm" id="clearAllBtn">
                 <i class="fa fa-times"></i> Clear All
               </button>
             </div>
@@ -205,16 +229,17 @@
 
     <!-- ══ WIZARD STICKY FOOTER NAV (UX-1.2) ══ -->
     <div class="ec-wizfoot">
-      <button type="button" id="ecBackBtn" class="ec-wiz-btn ec-wiz-back" style="visibility:hidden;"><i class="fa fa-arrow-left"></i> Back</button>
+      <button type="button" id="ecBackBtn" class="ec-wiz-btn ec-wiz-back zx-btn zx-btn--secondary" style="visibility:hidden;"><i class="fa fa-arrow-left"></i> Back</button>
       <div class="ec-wizfoot-right">
-        <button type="button" id="ecNextBtn" class="ec-wiz-btn ec-wiz-next">Next <i class="fa fa-arrow-right"></i></button>
-        <button type="button" id="saveBtn" class="ec-btn-save" style="display:none;"><i class="fa fa-save"></i> Save Exam</button>
+        <button type="button" id="ecNextBtn" class="ec-wiz-btn ec-wiz-next zx-btn zx-btn--primary">Next <i class="fa fa-arrow-right"></i></button>
+        <button type="button" id="saveBtn" class="ec-btn-save zx-btn zx-btn--primary" style="display:none;"><i class="fa fa-save"></i> Save Exam</button>
       </div>
     </div>
   </form>
 
   <!-- Toast container -->
   <div id="exToastWrap" class="ex-toast-wrap"></div>
+  <div id="zx-live" class="zx-sr-only" aria-live="polite" aria-atomic="true"></div>
 
 </div><!-- /.ec-wrap -->
 </div><!-- /.content-wrapper -->
@@ -318,8 +343,8 @@
       '<td><input type="number" class="ex-marks total-marks" value="100" min="1" max="9999" oninput="ecAutoPassMks(this)"></td>' +
       '<td><input type="number" class="ex-marks pass-marks" value="' + Math.round(100 * parseInt(pctIn.value||33) / 100) + '" min="0" max="9999"></td>' +
       '<td class="ex-row-act">' +
-        '<button type="button" class="ex-btn-icon ec-btn-dup" onclick="ecDupRow(this)" title="Duplicate"><i class="fa fa-copy"></i></button>' +
-        '<button type="button" class="ex-btn-icon ex-btn-del" onclick="ecDelRow(this)" title="Remove"><i class="fa fa-trash"></i></button>' +
+        '<button type="button" class="ex-btn-icon ec-btn-dup zx-btn zx-btn--ghost zx-btn--sm" onclick="ecDupRow(this)" title="Duplicate"><i class="fa fa-copy"></i></button>' +
+        '<button type="button" class="ex-btn-icon ex-btn-del zx-btn zx-btn--danger zx-btn--sm" onclick="ecDelRow(this)" title="Remove"><i class="fa fa-trash"></i></button>' +
       '</td></tr>';
   }
 
@@ -338,9 +363,11 @@
     subjSel.disabled  = true;
     if (!cls) { updateSummary(); return; }
     subjSel.innerHTML = '<option value="">Loading…</option>';
+    subjSel.classList.add('zx-loading'); subjSel.setAttribute('aria-busy', 'true');
     fetch('<?= base_url('exam/get_subjects') ?>?class=' + encodeURIComponent(cls))
       .then(function (r) { return r.json(); })
       .then(function (res) {
+        subjSel.classList.remove('zx-loading'); subjSel.removeAttribute('aria-busy');
         subjSel.innerHTML = '<option value="">— Select Subject —</option>';
         if (res.subjects && res.subjects.length) {
           res.subjects.forEach(function (s) {
@@ -361,6 +388,7 @@
         updateSummary();
       })
       .catch(function () {
+        subjSel.classList.remove('zx-loading'); subjSel.removeAttribute('aria-busy');
         subjSel.innerHTML = '<option value="">Error loading subjects</option>';
       });
   };
@@ -486,28 +514,123 @@
     updateSummary();
   }
 
+  /* ── UX-1.3 inline validation (SINGLE source of truth — used by both
+        the wizard Next gating and the Save handler) ───────────────────── */
+  function zxFieldError(id, msg) {
+    var input = document.getElementById(id); if (!input) return;
+    var wrap = input.closest('.ex-field') || input.parentNode;
+    if (wrap) wrap.classList.add('zx-field--invalid');
+    input.setAttribute('aria-invalid', 'true');
+    var errId = id + '-err';
+    var err = document.getElementById(errId);
+    if (!err) {
+      err = document.createElement('span');
+      err.id = errId; err.className = 'zx-field-error'; err.setAttribute('role', 'alert');
+      (wrap || input.parentNode).appendChild(err);
+    }
+    err.textContent = msg;
+    input.setAttribute('aria-describedby', errId);
+  }
+  function zxClearField(id) {
+    var input = document.getElementById(id); if (!input) return;
+    var wrap = input.closest('.ex-field') || input.parentNode;
+    if (wrap) wrap.classList.remove('zx-field--invalid');
+    input.removeAttribute('aria-invalid');
+    var err = document.getElementById(id + '-err'); if (err) err.textContent = '';
+  }
+  ['examName', 'passingPercent', 'startDate', 'endDate'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('input', function () { zxClearField(id); });
+  });
+  function zxSchedError(msg) {
+    var host = document.getElementById('scheduleCardBody') || (tbody && tbody.closest('.ex-card-body'));
+    var err = document.getElementById('schedError');
+    if (!err && host) {
+      err = document.createElement('div');
+      err.id = 'schedError'; err.className = 'zx-field-error'; err.setAttribute('role', 'alert');
+      host.appendChild(err);
+    }
+    if (err) err.textContent = msg || '';
+  }
+  function zxValidateStep1() {
+    var ok = true;
+    ['examName', 'passingPercent', 'startDate', 'endDate'].forEach(zxClearField);
+    var name = examNameIn.value.trim();
+    if (!name) { zxFieldError('examName', 'Exam name is required.'); ok = false; }
+    else if (!/^[\w\s\-\.]{2,80}$/.test(name)) { zxFieldError('examName', 'Use letters, digits, spaces, hyphens or dots (2–80).'); ok = false; }
+    if (isPassScale()) {
+      var pct = parseInt(pctIn.value, 10);
+      if (isNaN(pct) || pct < 1 || pct > 100) { zxFieldError('passingPercent', 'Passing % must be between 1 and 100.'); ok = false; }
+    }
+    if (!startIn.value) { zxFieldError('startDate', 'Start date is required.'); ok = false; }
+    if (!endIn.value)   { zxFieldError('endDate', 'End date is required.'); ok = false; }
+    if (startIn.value && endIn.value && startIn.value > endIn.value) { zxFieldError('endDate', 'End date must be on or after the start date.'); ok = false; }
+    return ok;
+  }
+  function zxValidateStep2() {
+    zxSchedError('');
+    document.querySelectorAll('#schedTbody .zx-invalid').forEach(function (el) { el.classList.remove('zx-invalid'); });
+    var rows = Array.prototype.slice.call(document.querySelectorAll('#schedTbody .ec-sched-row'));
+    if (!rows.length) { zxSchedError('Add at least one subject to the schedule.'); return false; }
+    var firstBad = null, bad = 0;
+    rows.forEach(function (row) {
+      var cells = {
+        date:  row.querySelector('.ec-date-in'),
+        cls:   row.querySelector('.cls-sel'),
+        subj:  row.querySelector('.subj-sel'),
+        st:    row.querySelector('.start-time'),
+        et:    row.querySelector('.end-time'),
+        total: row.querySelector('.total-marks')
+      };
+      var rowBad = false;
+      Object.keys(cells).forEach(function (k) {
+        var el = cells[k];
+        if (el && !el.value) { el.classList.add('zx-invalid'); rowBad = true; if (!firstBad) firstBad = el; }
+      });
+      if (isPassScale()) {
+        var p = row.querySelector('.pass-marks');
+        if (p && p.value === '') { p.classList.add('zx-invalid'); rowBad = true; if (!firstBad) firstBad = p; }
+      }
+      if (cells.st && cells.et && cells.st.value && cells.et.value && cells.et.value <= cells.st.value) {
+        cells.et.classList.add('zx-invalid'); rowBad = true; if (!firstBad) firstBad = cells.et;
+      }
+      if (rowBad) bad++;
+    });
+    if (bad) {
+      zxSchedError(bad + (bad > 1 ? ' schedule rows have' : ' schedule row has') + ' missing or invalid values (highlighted in red).');
+      if (firstBad) { try { firstBad.focus(); } catch (e) {} }
+      return false;
+    }
+    return true;
+  }
+  function zxValidateStep(n) { return n === 1 ? zxValidateStep1() : n === 2 ? zxValidateStep2() : true; }
+  window.zxExam = { validateStep: zxValidateStep };
+
+  // Clear a schedule cell's red state the moment the user edits it (don't wait
+  // for the next validate). Delegated so it also covers dynamically-added rows.
+  if (tbody) {
+    var zxCellClear = function (e) {
+      var t = e.target;
+      if (t && t.classList && t.classList.contains('zx-invalid')) {
+        t.classList.remove('zx-invalid');
+        if (!document.querySelector('#schedTbody .zx-invalid')) zxSchedError('');
+      }
+    };
+    tbody.addEventListener('input', zxCellClear);
+    tbody.addEventListener('change', zxCellClear);
+  }
+
   /* ── Save ───────────────────────────────────────────────────────── */
   saveBtn.addEventListener('click', function () {
-    var name    = examNameIn.value.trim();
-    var startDt = startIn.value;
-    var endDt   = endIn.value;
+    // UX-1.3: single source of truth — same validators as the wizard Next
+    // gating. On failure, jump to the offending step (errors render inline).
+    if (!window.zxExam.validateStep(1)) { if (window.zxWizard) window.zxWizard.goTo(1); return; }
+    if (!window.zxExam.validateStep(2)) { if (window.zxWizard) window.zxWizard.goTo(2); return; }
 
-    if (!name)    { showToast('Please enter an exam name.', 'error'); return; }
-    if (!startDt) { showToast('Please select a start date.', 'error'); return; }
-    if (!endDt)   { showToast('Please select an end date.', 'error'); return; }
-    if (startDt > endDt) { showToast('End date must be on or after start date.', 'error'); return; }
-
+    // Serializer UNCHANGED — build the identical examSchedule payload.
     var rows = Array.from(document.querySelectorAll('#schedTbody .ec-sched-row'));
-    if (!rows.length) {
-      showToast('Please add at least one schedule row.', 'error');
-      return;
-    }
-
     var scheduleData = [];
-    var hasError     = false;
-
     rows.forEach(function (row) {
-      if (hasError) return;
       var date  = row.querySelector('.ec-date-in').value;
       var cls   = row.querySelector('.cls-sel').value;
       var subj  = row.querySelector('.subj-sel').value;
@@ -515,12 +638,6 @@
       var et    = row.querySelector('.end-time').value;
       var total = row.querySelector('.total-marks').value;
       var pass  = isPassScale() ? row.querySelector('.pass-marks').value : '0';
-
-      if (!date || !cls || !subj || !st || !et || !total) {
-        showToast('Please fill in all fields in every schedule row.', 'error');
-        hasError = true;
-        return;
-      }
       // Convert date from YYYY-MM-DD to DD/MM/YYYY for server
       var dtParts = date.split('-');
       var fmtDate = dtParts[2] + '/' + dtParts[1] + '/' + dtParts[0];
@@ -534,8 +651,6 @@
         passingMarks: parseInt(pass || '0')
       });
     });
-
-    if (hasError) return;
 
     document.getElementById('examScheduleInput').value = JSON.stringify(scheduleData);
 
@@ -576,6 +691,7 @@
 
   /* ── Toast ──────────────────────────────────────────────────────── */
   function showToast(msg, type) {
+    var live = document.getElementById('zx-live'); if (live) live.textContent = msg;
     var wrap  = document.getElementById('exToastWrap');
     var el    = document.createElement('div');
     var icons = { success:'check-circle', error:'times-circle', warning:'exclamation-triangle', info:'info-circle' };
@@ -602,6 +718,20 @@
   var nextBtn = document.getElementById('ecNextBtn');
   var saveBtn = document.getElementById('saveBtn');
   var inds    = document.querySelectorAll('.ec-stepind-item');
+
+  // a11y: label each step group once.
+  steps.forEach(function (el) {
+    el.setAttribute('role', 'group');
+    el.setAttribute('aria-label', 'Step ' + el.getAttribute('data-step') + ' of ' + total);
+  });
+
+  function focusFirst() {
+    var panel = document.querySelector('.ec-step[data-step="' + cur + '"]');
+    if (!panel) return;
+    var f = panel.querySelector('input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea');
+    if (f) { try { f.focus(); } catch (e) {} }
+  }
+
   function show(n) {
     cur = Math.max(1, Math.min(total, n));
     steps.forEach(function (el) { el.style.display = (parseInt(el.getAttribute('data-step'), 10) === cur) ? '' : 'none'; });
@@ -609,15 +739,49 @@
       var s = parseInt(el.getAttribute('data-step'), 10);
       el.classList.toggle('active', s === cur);
       el.classList.toggle('done', s < cur);
+      if (s === cur) el.setAttribute('aria-current', 'step'); else el.removeAttribute('aria-current');
     });
     if (backBtn) backBtn.style.visibility = (cur === 1) ? 'hidden' : 'visible';
     if (nextBtn) nextBtn.style.display = (cur === total) ? 'none' : '';
     if (saveBtn) saveBtn.style.display = (cur === total) ? '' : 'none';
     try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) {}
+    focusFirst();
   }
-  if (nextBtn) nextBtn.addEventListener('click', function () { show(cur + 1); });
+
+  // Step gating: validate the current step before advancing (shared validators).
+  function tryNext() {
+    if (window.zxExam && typeof window.zxExam.validateStep === 'function' && !window.zxExam.validateStep(cur)) {
+      var item = document.querySelector('.ec-stepind-item[data-step="' + cur + '"]');
+      if (item) { item.classList.add('zx-stepind-invalid'); setTimeout(function () { item.classList.remove('zx-stepind-invalid'); }, 1600); }
+      return;
+    }
+    show(cur + 1);
+  }
+
+  if (nextBtn) nextBtn.addEventListener('click', tryNext);
   if (backBtn) backBtn.addEventListener('click', function () { show(cur - 1); });
-  inds.forEach(function (el) { el.addEventListener('click', function () { show(parseInt(el.getAttribute('data-step'), 10)); }); });
+  inds.forEach(function (el) {
+    el.addEventListener('click', function () {
+      var target = parseInt(el.getAttribute('data-step'), 10);
+      if (target > cur && window.zxExam) {
+        for (var s = cur; s < target; s++) { if (!window.zxExam.validateStep(s)) { show(s); return; } }
+      }
+      show(target);
+    });
+  });
+
+  // Enter-to-advance (never from a textarea/button; form has no submit button).
+  var form = document.getElementById('examForm');
+  if (form) form.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && cur < total) {
+      var t = e.target;
+      if (t && t.tagName !== 'TEXTAREA' && t.tagName !== 'BUTTON') { e.preventDefault(); tryNext(); }
+    }
+  });
+
+  // Expose for the Save handler to jump to a failing step (single nav source).
+  window.zxWizard = { goTo: show };
+
   show(1);
 })();
 </script>
