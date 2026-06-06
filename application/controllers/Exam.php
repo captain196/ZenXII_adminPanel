@@ -39,6 +39,13 @@ class Exam extends MY_Controller
         require_permission('Examinations');
         $this->load->library('exam_engine');
         $this->exam_engine->init($this->firebase, $this->school_name, $this->session_year);
+        // EXAM-DEF-FS-CUTOVER Phase 2A: exam definitions are read from Firestore
+        // (`exams`/`examSchedule`) via the Exam_read adapter (legacy-shaped).
+        $this->load->library('Exam_read', null, 'exam_read');
+        $this->exam_read->init($this->firebase, $this->school_name, $this->session_year);
+        // Phase 2B: Firestore-only exam-definition WRITES via the canonical sync lib.
+        $this->load->library('Entity_firestore_sync', null, 'efs');
+        $this->efs->init($this->firebase, $this->school_name, $this->session_year);
     }
 
     // ── Backward compatibility ────────────────────────────────────────────
@@ -54,7 +61,7 @@ class Exam extends MY_Controller
         $school = $this->school_name;
         $year   = $this->session_year;
 
-        $raw   = $this->firebase->get("Schools/{$school}/{$year}/Exams") ?? [];
+        $raw   = $this->exam_read->list_exams() ?? [];
         $exams = [];
         foreach ($raw as $id => $e) {
             if ($id === 'Count' || !is_array($e)) continue;
@@ -144,7 +151,7 @@ class Exam extends MY_Controller
 
             // — A1-6: duplicate-exam guard. Reject a second exam with the same
             //   Name + Type in this session (prevents double-submit duplicates).
-            $existingExams = $this->firebase->get("Schools/{$school}/{$year}/Exams") ?? [];
+            $existingExams = $this->exam_read->list_exams() ?? [];
             if (is_array($existingExams)) {
                 foreach ($existingExams as $exId => $exMeta) {
                     if ($exId === 'Count' || !is_array($exMeta)) continue;
@@ -158,25 +165,13 @@ class Exam extends MY_Controller
             // — Generate EXM ID
             $examId = $this->generate_exam_id();
 
-            // — Save central metadata (without Schedule key — added incrementally below)
-            $examMeta = [
-                'Name'                => $name,
-                'Type'                => $type,
-                'Status'              => $status,
-                'GradingScale'        => $scale,
-                'PassingPercent'      => $passingPct,
-                'StartDate'           => $startDt->format('d-m-Y'),
-                'EndDate'             => $endDt->format('d-m-Y'),
-                'GeneralInstructions' => $instructions ?: (object)[],
-                'CreatedAt'           => (int) round(microtime(true) * 1000),
-                'CreatedBy'           => $this->admin_id ?? '',
-            ];
-            $this->firebase->set("Schools/{$school}/{$year}/Exams/{$examId}", $examMeta);
-
-            // — Process schedule rows
-            $savedCount = 0;
+            // — Phase 2B: accumulate the schedule, then write Firestore-only
+            //   (syncExam + syncExamScheduleFull) after the loop. No RTDB writes.
+            $savedCount  = 0;
             $skippedRows = []; // H-08 FIX: Track skipped rows to report back to user
-            $rowIndex = 0;
+            $rowIndex    = 0;
+            $schedAccum  = []; // [className][sectionKey] => [ subject entry, … ]
+            $classesSeen = []; // distinct classes → applicableClasses
 
             foreach ($scheduleRows as $row) {
                 $rowIndex++;
@@ -236,20 +231,42 @@ class Exam extends MY_Controller
                     log_message('error', "Exam::create — no sections for [{$className}], skipping.");
                     continue;
                 }
+                $classesSeen[$className] = true;
                 foreach ($sections as $sectionLetter) {
                     $sectionKey = "Section {$sectionLetter}";
-                    // Central schedule copy
-                    $this->firebase->set(
-                        "Schools/{$school}/{$year}/Exams/{$examId}/Schedule/{$className}/{$sectionKey}/{$dateKey}/{$subject}",
-                        $entry
-                    );
-                    // Per-section copy
-                    $this->firebase->set(
-                        "Schools/{$school}/{$year}/{$className}/{$sectionKey}/Exams/{$examId}/{$dateKey}/{$subject}",
-                        $entry
-                    );
+                    $schedAccum[$className][$sectionKey][] = [
+                        'subjectName'  => $subject,
+                        'date'         => $dateKey,
+                        'startTime'    => $stDt->format('h:iA'),
+                        'endTime'      => $etDt->format('h:iA'),
+                        'maxTheory'    => 0,
+                        'maxPractical' => 0,
+                        'maxTotal'     => $totalMarks,
+                        'passingMarks' => $passMks,
+                        'room'         => '',
+                    ];
                 }
                 $savedCount++;
+            }
+
+            // — Phase 2B: Firestore-only writes (exam meta + per-section schedule).
+            $this->efs->syncExam($examId, [
+                'examName'            => $name,
+                'examType'            => $type,
+                'status'              => $status,
+                'gradingScale'        => $scale,            // engine vocabulary verbatim
+                'passingPercent'      => $passingPct,
+                'startDate'           => $startDt->format('Y-m-d'),
+                'endDate'             => $endDt->format('Y-m-d'),
+                'applicableClasses'   => array_keys($classesSeen),
+                'generalInstructions' => $instructions ?: [],
+                'createdBy'           => $this->admin_id ?? '',
+                'createdAt'           => (int) round(microtime(true) * 1000),
+            ]);
+            foreach ($schedAccum as $accClass => $accSections) {
+                foreach ($accSections as $accSection => $accSubjects) {
+                    $this->efs->syncExamScheduleFull($examId, (string) $accClass, (string) $accSection, $accSubjects);
+                }
             }
 
             // H-08 FIX: Include skipped row details so the user knows what failed
@@ -291,7 +308,7 @@ class Exam extends MY_Controller
 
         $school = $this->school_name;
         $year   = $this->session_year;
-        $exam   = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$id}");
+        $exam   = $this->exam_read->meta($id);
 
         if (!$exam || !is_array($exam)) { redirect('exam'); }
 
@@ -308,18 +325,20 @@ class Exam extends MY_Controller
 
         $school   = $this->school_name;
         $year     = $this->session_year;
-        $schedule = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$id}/Schedule") ?? [];
-
-        // Remove per-section copies
-        foreach ($schedule as $classKey => $sectionData) {
-            if (!is_array($sectionData)) continue;
-            foreach (array_keys($sectionData) as $sectionKey) {
-                $this->firebase->delete("Schools/{$school}/{$year}/{$classKey}/{$sectionKey}/Exams/{$id}");
-            }
+        // Phase 2B: enumerate sections from Firestore examSchedule (1:1 per section).
+        $sections = $this->exam_read->sections($id);
+        foreach ($sections as $cs) {
+            $secClass   = $cs[0] ?? '';
+            $secSection = $cs[1] ?? '';
+            if ($secClass === '' || $secSection === '') continue;
+            // Firestore exam-def: delete the per-section schedule doc.
+            $this->firebase->firestoreDelete('examSchedule', "{$school}_{$id}_{$secClass}_{$secSection}");
+            // Legacy cleanup: remove any pre-cutover RTDB per-section copy.
+            $this->firebase->delete("Schools/{$school}/{$year}/{$secClass}/{$secSection}/Exams/{$id}");
         }
 
-        // Delete central record
-        $this->firebase->delete("Schools/{$school}/{$year}/Exams/{$id}");
+        // Delete central exam definition (Firestore).
+        $this->firebase->firestoreDelete('exams', "{$school}_{$id}");
 
         // Cascade: remove Results nodes (Templates, Marks, Computed) for this exam
         $this->firebase->delete("Schools/{$school}/{$year}/Results/Templates/{$id}");
@@ -364,7 +383,8 @@ class Exam extends MY_Controller
 
         $school = $this->school_name;
         $year   = $this->session_year;
-        $this->firebase->update("Schools/{$school}/{$year}/Exams/{$id}", ['Status' => $status]);
+        // Phase 2B: Firestore-only status update.
+        $this->firebase->firestoreUpdate('exams', "{$school}_{$id}", ['status' => $status, 'updatedAt' => date('c')]);
         $this->json_success(['message' => 'Status updated to ' . $status . '.']);
     }
 

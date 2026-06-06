@@ -47,6 +47,9 @@ class Result extends MY_Controller
         require_permission('Results');
         $this->load->library('exam_engine');
         $this->exam_engine->init($this->firebase, $this->school_name, $this->session_year);
+        // EXAM-DEF-FS-CUTOVER Phase 2A: exam definitions read from Firestore via adapter.
+        $this->load->library('Exam_read', null, 'exam_read');
+        $this->exam_read->init($this->firebase, $this->school_name, $this->session_year);
 
         $this->load->library('Fee_defaulter_check', null, 'feeDefaulter');
         $this->feeDefaulter->init($this->firebase, $this->school_name, $this->session_year);
@@ -89,7 +92,7 @@ class Result extends MY_Controller
         $school = $this->school_name;
         $year   = $this->session_year;
 
-        $raw   = $this->firebase->get("Schools/{$school}/{$year}/Exams") ?? [];
+        $raw   = $this->exam_read->list_exams() ?? [];
         $exams = [];
         foreach ($raw as $id => $e) {
             if ($id === 'Count' || !is_array($e)) continue;
@@ -124,7 +127,7 @@ class Result extends MY_Controller
         ];
 
         if ($examId) {
-            $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+            $exam = $this->exam_read->meta($examId);
             if ($exam && is_array($exam)) {
                 $data['exam'] = array_merge(['id' => $examId], $exam);
             }
@@ -154,7 +157,7 @@ class Result extends MY_Controller
         ];
 
         if ($examId) {
-            $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+            $exam = $this->exam_read->meta($examId);
             if ($exam && is_array($exam)) {
                 $data['exam'] = array_merge(['id' => $examId], $exam);
             }
@@ -193,7 +196,7 @@ class Result extends MY_Controller
         }
 
         // Load exam metadata
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             $this->session->set_flashdata('error', 'Exam not found.');
             redirect('result/marks_entry');
@@ -265,7 +268,7 @@ class Result extends MY_Controller
         ];
 
         if ($examId) {
-            $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+            $exam = $this->exam_read->meta($examId);
             if ($exam && is_array($exam)) {
                 $data['exam'] = array_merge(['id' => $examId], $exam);
             }
@@ -363,7 +366,7 @@ class Result extends MY_Controller
     //     if (!$userId || !$examId) { redirect('result'); }
 
     //     // Load exam
-    //     $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+    //     $exam = $this->exam_read->meta($examId);
     //     if (!$exam || !is_array($exam)) { redirect('result'); }
     //     $exam = array_merge(['id' => $examId], $exam);
 
@@ -506,7 +509,7 @@ class Result extends MY_Controller
         $sectionKey = urldecode($sectionKey);
 
         // Load exam
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             redirect('result/class_result');
         }
@@ -957,7 +960,7 @@ class Result extends MY_Controller
         }
         extract($this->_safe_result_params(compact('examId', 'classKey', 'sectionKey')));
 
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             $this->json_error('Exam not found.', 404);
         }
@@ -1164,7 +1167,7 @@ class Result extends MY_Controller
             $scale      = 'Percentage';
             $passingPct = 33;
             foreach ($examIds as $examId) {
-                $examMeta = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+                $examMeta = $this->exam_read->meta($examId);
                 if ($examMeta && is_array($examMeta)) {
                     $scale      = $examMeta['GradingScale']  ?? 'Percentage';
                     $passingPct = (int) ($examMeta['PassingPercent'] ?? 33);
@@ -1659,7 +1662,7 @@ class Result extends MY_Controller
         ini_set('memory_limit', '512M');
 
         // ── Load shared data (one Firebase read each) ──
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             redirect('result/class_result');
         }
@@ -1808,7 +1811,7 @@ class Result extends MY_Controller
         $school = $this->school_name;
         $year   = $this->session_year;
 
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) return null;
         $exam = array_merge(['id' => $examId], $exam);
 

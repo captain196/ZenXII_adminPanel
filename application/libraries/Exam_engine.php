@@ -377,7 +377,12 @@ class Exam_engine
             return $this->_exams_cache;
         }
 
-        $raw   = $this->firebase->get("Schools/{$this->school}/{$this->year}/Exams") ?? [];
+        // EXAM-DEF-FS-CUTOVER Phase 2A: exam list from Firestore via adapter
+        // (legacy-shaped; StartDate stays d-m-Y so the existing sort is unchanged).
+        $CI =& get_instance();
+        $CI->load->library('Exam_read', null, 'exam_read');
+        $CI->exam_read->init($this->firebase, $this->school, $this->year);
+        $raw   = $CI->exam_read->list_exams();
         $exams = [];
         foreach ($raw as $id => $e) {
             if ($id === 'Count' || !is_array($e)) continue;

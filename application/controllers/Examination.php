@@ -42,6 +42,9 @@ class Examination extends MY_Controller
         require_permission('Examinations');
         $this->load->library('exam_engine');
         $this->exam_engine->init($this->firebase, $this->school_name, $this->session_year);
+        // EXAM-DEF-FS-CUTOVER Phase 2A: exam definitions read from Firestore via adapter.
+        $this->load->library('Exam_read', null, 'exam_read');
+        $this->exam_read->init($this->firebase, $this->school_name, $this->session_year);
 
         $this->load->library('Fee_defaulter_check', null, 'feeDefaulter');
         $this->feeDefaulter->init($this->firebase, $this->school_name, $this->session_year);
@@ -70,7 +73,7 @@ class Examination extends MY_Controller
         $school = $this->school_name;
         $year   = $this->session_year;
 
-        $raw   = $this->firebase->get("Schools/{$school}/{$year}/Exams") ?? [];
+        $raw   = $this->exam_read->list_exams() ?? [];
         $exams = [];
         $stats = ['total' => 0, 'published' => 0, 'completed' => 0, 'draft' => 0];
 
@@ -182,7 +185,7 @@ class Examination extends MY_Controller
             $this->json_error('Exam and class are required.', 400);
         }
 
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             $this->json_error('Exam not found.', 404);
         }
@@ -304,7 +307,7 @@ class Examination extends MY_Controller
             $this->json_error('Exam and class are required.', 400);
         }
 
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             $this->json_error('Exam not found.', 404);
         }
@@ -466,8 +469,8 @@ class Examination extends MY_Controller
         }
 
         // Load exam metadata
-        $exam1 = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId1}");
-        $exam2 = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId2}");
+        $exam1 = $this->exam_read->meta($examId1);
+        $exam2 = $this->exam_read->meta($examId2);
 
         if (!is_array($exam1) || !is_array($exam2)) {
             $this->json_error('One or both exams not found.', 404);
@@ -604,7 +607,7 @@ class Examination extends MY_Controller
             $this->json_error('Exam, class, and section are required.', 400);
         }
 
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             $this->json_error('Exam not found.', 404);
         }
@@ -735,7 +738,7 @@ class Examination extends MY_Controller
             $this->json_error('Class or allClasses flag is required.', 400);
         }
 
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             $this->json_error('Exam not found.', 404);
         }
@@ -830,7 +833,7 @@ class Examination extends MY_Controller
             $this->json_error('Exam and class are required.', 400);
         }
 
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             $this->json_error('Exam not found.', 404);
         }
@@ -974,7 +977,7 @@ class Examination extends MY_Controller
 
         // ── Sync results to Firestore 'results' collection ──
         try {
-            $examData = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+            $examData = $this->exam_read->meta($examId);
             $examName = is_array($examData) ? ($examData['Name'] ?? $examId) : $examId;
             $sectionKeyFs = "{$classKey}/{$sectionKey}";
 
