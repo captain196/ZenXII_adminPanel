@@ -21,6 +21,15 @@
     </button>
 </div>
 
+<!-- Search Bar -->
+<div style="margin-bottom:14px;">
+    <div style="position:relative;max-width:360px;">
+        <i class="fa fa-search" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--t4);font-size:13px;"></i>
+        <input type="text" id="adminSearch" class="form-control sa-inp" placeholder="Search by Admin ID or Name..." style="padding-left:34px;padding-right:34px;">
+        <i id="adminSearchClear" class="fa fa-times" style="display:none;position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--t4);cursor:pointer;font-size:13px;"></i>
+    </div>
+</div>
+
 <!-- Admins Table -->
 <div class="sa-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;overflow:hidden;">
     <div id="adminTableWrap" style="padding:16px;">
@@ -29,7 +38,7 @@
                 <tr>
                     <th>Admin ID</th>
                     <th>Name</th>
-                    <th>Email</th>
+                    <th>Role</th>
                     <th>Status</th>
                     <th>Last Login</th>
                     <th>Created</th>
@@ -224,6 +233,8 @@
 .sa-badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:.3px;}
 .sa-badge-active{background:rgba(16,185,129,.12);color:#10b981;}
 .sa-badge-inactive{background:rgba(239,68,68,.12);color:#ef4444;}
+.sa-badge-primary{background:rgba(245,158,11,.12);color:#f59e0b;}
+.sa-badge-dev{background:rgba(99,102,241,.12);color:var(--sa4);}
 .sa-abtn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--t3);cursor:pointer;transition:all .15s;font-size:12px;margin-right:3px;}
 .sa-abtn:hover{background:var(--bg3);color:var(--t1);border-color:var(--t4);}
 .sa-abtn.danger:hover{background:rgba(239,68,68,.1);color:#ef4444;border-color:#ef4444;}
@@ -236,6 +247,24 @@ document.addEventListener('DOMContentLoaded', function(){
     var CSRF = '<?= $sa_csrf_token ?>';
     var currentAdmin = '<?= $sa_id ?>';
     var dt = null;
+
+    // ── Custom search: match Admin ID (col 0) or Name (col 1) only ──
+    $.fn.dataTable.ext.search.push(function(settings, data) {
+        if (settings.nTable.id !== 'adminsTable') return true;
+        var q = ($('#adminSearch').val() || '').toLowerCase().trim();
+        if (!q) return true;
+        var id   = (data[0] || '').toLowerCase();
+        var name = (data[1] || '').toLowerCase();
+        return id.indexOf(q) !== -1 || name.indexOf(q) !== -1;
+    });
+
+    $('#adminSearch').on('keyup input', function() {
+        $('#adminSearchClear').toggle(!!this.value);
+        if (dt) dt.draw();
+    });
+    $('#adminSearchClear').on('click', function() {
+        $('#adminSearch').val('').trigger('input').focus();
+    });
 
     // ── Helpers ──
     function post(url, data, cb) {
@@ -263,6 +292,12 @@ document.addEventListener('DOMContentLoaded', function(){
         return '<span class="sa-badge ' + cls + '">' + s + '</span>';
     }
 
+    function roleBadge(a) {
+        return a.is_primary
+            ? '<span class="sa-badge sa-badge-primary"><i class="fa fa-star" style="margin-right:4px;"></i>Primary</span>'
+            : '<span class="sa-badge sa-badge-dev">Developer</span>';
+    }
+
     // ── Load admins ──
     function loadAdmins() {
         $('#adminLoader').show();
@@ -283,7 +318,7 @@ document.addEventListener('DOMContentLoaded', function(){
                     '<td><code style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:12px;">' + a.admin_id + '</code>' +
                         (isSelf ? ' <span style="font-size:10px;color:var(--sa4);font-weight:600;">(you)</span>' : '') + '</td>' +
                     '<td>' + (a.name || '-') + '</td>' +
-                    '<td style="font-size:12px;color:var(--t3);">' + (a.email || '-') + '</td>' +
+                    '<td>' + roleBadge(a) + '</td>' +
                     '<td>' + statusBadge(a.status) + '</td>' +
                     '<td style="font-size:12px;">' + fmtDate(a.last_login) + '</td>' +
                     '<td style="font-size:12px;">' + fmtDate(a.created_at) + '</td>' +
@@ -300,9 +335,9 @@ document.addEventListener('DOMContentLoaded', function(){
             dt = $('#adminsTable').DataTable({
                 paging: false,
                 info: false,
-                searching: admins.length > 5,
-                order: [[5, 'desc']],
-                language: { search: '', searchPlaceholder: 'Search admins...' }
+                searching: true,
+                dom: 't',
+                order: [[5, 'desc']]
             });
         });
     }
