@@ -81,8 +81,6 @@ class Exam extends MY_Controller
     {
         $this->_require_role(self::ADMIN_ROLES, 'create exam');
 
-        $school    = $this->school_name;
-        $year      = $this->session_year;
         $structure = $this->exam_engine->get_class_structure();
 
         if ($this->input->method() === 'post') {
@@ -286,19 +284,21 @@ class Exam extends MY_Controller
             return;
         }
 
-        // GET — build subjects map
-        $subjects = [];
-        foreach ($structure as $classKey => $sectionLetters) {
-            if (empty($sectionLetters)) continue;
-            $firstSection       = "Section {$sectionLetters[0]}";
-            $subjectsRaw        = $this->firebase->get("Schools/{$school}/{$year}/{$classKey}/{$firstSection}/Subjects") ?? [];
-            $subjects[$classKey] = array_keys(is_array($subjectsRaw) ? $subjectsRaw : []);
-        }
+        // GET — build subjects map from the CANONICAL Firestore `subjects`
+        // collection (UX-1.4.1.1; NO RTDB). The prior inline read of the RTDB
+        // path {class}/{firstSection}/Subjects pointed at an unpopulated node and
+        // returned [] for every class, leaving the UX-1.4.1 combobox empty.
+        // Shape unchanged: [className => [subjectName, …]].
+        $subjects = $this->_build_subjects_map($structure);
 
         $this->load->view('include/header');
         $this->load->view('exam/create', [
             'classNames' => array_keys($structure),
             'subjects'   => $subjects,
+            // UX-1.4: read-only [className => [sectionLetter,…]] for fan-out
+            // visibility. Same $structure already used by the POST fan-out;
+            // exposed verbatim — no business-logic/serializer/payload impact.
+            'sections'   => $structure,
         ]);
         $this->load->view('include/footer');
     }
@@ -312,7 +312,6 @@ class Exam extends MY_Controller
         if ($id === '') { redirect('exam'); }
 
         $school = $this->school_name;
-        $year   = $this->session_year;
 
         $raw = $this->firebase->firestoreGet('exams', "{$school}_{$id}");
         if (!is_array($raw) || empty($raw)) {
@@ -327,13 +326,8 @@ class Exam extends MY_Controller
         }
 
         $structure = $this->exam_engine->get_class_structure();
-        $subjects  = [];
-        foreach ($structure as $classKey => $sectionLetters) {
-            if (empty($sectionLetters)) continue;
-            $firstSection        = "Section {$sectionLetters[0]}";
-            $subjectsRaw         = $this->firebase->get("Schools/{$school}/{$year}/{$classKey}/{$firstSection}/Subjects") ?? [];
-            $subjects[$classKey] = array_keys(is_array($subjectsRaw) ? $subjectsRaw : []);
-        }
+        // UX-1.4.1.1: canonical Firestore subject source (see create()).
+        $subjects  = $this->_build_subjects_map($structure);
 
         $instr = '';
         if (is_array($raw['generalInstructions'] ?? null) && !empty($raw['generalInstructions'])) {
@@ -357,8 +351,49 @@ class Exam extends MY_Controller
             'classNames' => array_keys($structure),
             'subjects'   => $subjects,
             'editExam'   => $editExam,
+            // UX-1.4: read-only section map for fan-out visibility (see create()).
+            'sections'   => $structure,
         ]);
         $this->load->view('include/footer');
+    }
+
+    /**
+     * UX-1.4.1.1 — build [className => [subjectName,…]] from the CANONICAL
+     * Firestore `subjects` collection (NO RTDB). One read for the whole school,
+     * grouped by the stored `classKey`, then mapped onto the class names from
+     * get_class_structure(). This is the same Firestore source the Subjects /
+     * SIS / Academic modules use (`subjects` docs: {classKey, name, …}).
+     * Output shape matches the legacy build consumed by the create.php combobox.
+     */
+    private function _build_subjects_map(array $structure): array
+    {
+        $byKey = [];
+        $rows  = $this->fs->schoolWhere('subjects', []);
+        foreach ((array) $rows as $row) {
+            $d  = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+            $ck = trim((string) ($d['classKey'] ?? ''));
+            $nm = trim((string) ($d['name'] ?? $d['subject_name'] ?? ''));
+            if ($ck === '' || $nm === '') continue;
+            $byKey[$ck][] = $nm;
+        }
+
+        $subjects = [];
+        foreach (array_keys($structure) as $className) {
+            $subjects[(string) $className] = $byKey[$this->_subject_class_key((string) $className)] ?? [];
+        }
+        return $subjects;
+    }
+
+    /** className → Firestore `subjects.classKey` (matches the Subjects module mapping). */
+    private function _subject_class_key(string $className): string
+    {
+        $l = strtolower($className);
+        if (strpos($l, 'nursery') !== false)   return 'Nursery';
+        if (strpos($l, 'lkg') !== false)       return 'LKG';
+        if (strpos($l, 'ukg') !== false)       return 'UKG';
+        if (strpos($l, 'playgroup') !== false || strpos($l, 'play') !== false) return 'Playgroup';
+        if (preg_match('/\d+/', $className, $m)) return (string) (int) $m[0];
+        return '';
     }
 
     /** Phase 3.5 — rebuild create-form rows from examSchedule (one section/class). */
@@ -831,7 +866,13 @@ class Exam extends MY_Controller
             return;
         }
 
-        echo json_encode(['subjects' => $this->exam_engine->get_subject_list($classKey)]);
+        // UX-1.4.1.2: read from the CANONICAL Firestore `subjects` collection via
+        // the shared UX-1.4.1.1 reader (NO RTDB Subject_list). The $classKey here
+        // is the class label/key sent by callers (Marks Entry, Template Designer);
+        // _subject_class_key() normalises both "Class 8th" and bare "8"/"LKG".
+        // API contract unchanged: { "subjects": [name, …] }.
+        $map = $this->_build_subjects_map([$classKey => true]);
+        echo json_encode(['subjects' => $map[$classKey] ?? []]);
     }
 
     // ── Private helpers ──────────────────────────────────────────────────
