@@ -504,6 +504,42 @@ class Firebase
     }
 
     /**
+     * Copy a Storage object from one path to another within the same bucket.
+     * Used to promote an onboarding temp logo (schools/_onboarding_temp/…)
+     * to its canonical schools/{schoolId}/logos/ path once the school id
+     * exists. GCS copy preserves the object's custom metadata — including the
+     * firebaseStorageDownloadTokens token — so getDownloadUrl($toPath) keeps
+     * working; we also cache the token under the new path. Returns true on
+     * success, false if the source is missing or the copy fails.
+     * Added 2026-06-06 for onboarding logo storage-first flow.
+     */
+    public function copyStorageFile(string $fromPath, string $toPath): bool
+    {
+        if (trim($fromPath) === '' || trim($toPath) === '') return false;
+        try {
+            $src = $this->storageBucket->object($fromPath);
+            if (!$src->exists()) {
+                log_message('error', 'Firebase::copyStorageFile() source missing: ' . $fromPath);
+                return false;
+            }
+            $src->copy($this->storageBucket, ['name' => $toPath]);
+
+            // Preserve the download token so getDownloadUrl($toPath) resolves
+            // without a metadata round-trip. Non-fatal if it can't be read.
+            try {
+                $info  = $src->info();
+                $token = $info['metadata']['firebaseStorageDownloadTokens'] ?? '';
+                if ($token !== '') $this->_downloadTokens[$toPath] = $token;
+            } catch (\Exception $_) {}
+
+            return true;
+        } catch (\Exception $e) {
+            log_message('error', 'Firebase::copyStorageFile() failed ' . $fromPath . ' -> ' . $toPath . ': ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Extract the Storage object path from a Firebase download URL.
      * (…/o/{urlencoded-path}?…) → decoded path, or '' if not parseable.
      * Helper for callers that stored a full download URL and need the

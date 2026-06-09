@@ -88,20 +88,24 @@
                     </div>
                     <div class="col-md-5">
                         <div class="form-group">
-                            <label>— or upload image</label>
-                            <div style="display:flex;align-items:center;gap:8px;">
-                                <input type="file" id="logoFileInput" accept="image/jpeg,image/png,image/gif,image/webp,image/svg+xml" style="flex:1;min-width:0;overflow:hidden;font-size:12px;">
-                                <button type="button" class="btn btn-default btn-sm" id="uploadLogoCreateBtn" style="white-space:nowrap;">
-                                    <i class="fa fa-upload"></i> Upload
-                                </button>
-                            </div>
+                            <label>— or upload an image
+                                <span style="color:var(--t3);font-size:11px;font-weight:400;">(uploads automatically once selected)</span>
+                            </label>
+                            <input type="file" id="logoFileInput" accept="image/jpeg,image/png,image/gif,image/webp,image/svg+xml" style="width:100%;min-width:0;overflow:hidden;font-size:12px;">
                             <span id="logoUploadMsg" style="font-size:11px;display:block;margin-top:4px;"></span>
                         </div>
                     </div>
                 </div>
-                <div id="logoPreview" style="margin-bottom:12px;display:none;">
+                <div id="logoPreview" style="margin-bottom:12px;display:none;align-items:center;gap:10px;">
                     <img id="logoImg" src="" alt="Logo preview"
                          style="height:48px;border-radius:6px;border:1px solid var(--border);padding:4px;background:var(--bg2);">
+                    <span id="logoSourceTag" style="font-size:11px;color:var(--t3);"></span>
+                    <button type="button" id="logoClearBtn" class="btn btn-default btn-xs" style="white-space:nowrap;">
+                        <i class="fa fa-times"></i> Remove
+                    </button>
+                </div>
+                <div id="logoPreviewErr" style="display:none;font-size:11px;color:#ef4444;margin-bottom:12px;">
+                    <i class="fa fa-exclamation-triangle"></i> That image URL couldn't be loaded — check the link.
                 </div>
                 <div style="text-align:right;">
                     <button type="button" class="btn btn-primary" id="toStep2Btn">
@@ -399,37 +403,93 @@ $(function(){
     });
 
     // ── Logo URL preview ──────────────────────────────────────────────────────
-    $('#logoUrlInput').on('input blur', function(){
-        var url = $(this).val().trim();
-        if (url && /^https?:\/\//i.test(url)){ $('#logoImg').attr('src', url); $('#logoPreview').show(); }
-        else { $('#logoPreview').hide(); }
-    });
+    // ───────────────────────────────────────────────────────────────────────
+    // Logo widget — the URL field and the file uploader are kept in sync.
+    // The single source of truth is #logoUrlInput's value (submitted as
+    // logo_url). Both paths write to it, so the user can freely switch:
+    //   • paste/type a URL                → that becomes the logo
+    //   • pick/upload a file              → returned Storage URL fills the field
+    //   • upload, then type a URL         → the typed URL supersedes the upload
+    //   • type a URL, then upload a file  → the upload supersedes the URL
+    //   • Remove button                   → clears everything
+    // The preview validates the image actually loads and flags broken links.
+    // ───────────────────────────────────────────────────────────────────────
+    (function(){
+        var $url     = $('#logoUrlInput');
+        var $file    = $('#logoFileInput');
+        var $img     = $('#logoImg');
+        var $preview = $('#logoPreview');
+        var $err     = $('#logoPreviewErr');
+        var $tag     = $('#logoSourceTag');
+        var $msg     = $('#logoUploadMsg');
 
-    // ── Logo file upload (before school is created — stored in temp, URL saved to hidden input) ──
-    $('#uploadLogoCreateBtn').on('click', function(){
-        var file = $('#logoFileInput')[0].files[0];
-        if(!file){ alert('Select a file first.'); return; }
-        var fd = new FormData();
-        fd.append('logo', file);
-        // Send temp prefix so server skips Firebase write (school doesn't exist yet)
-        fd.append('school_uid', 'temp_' + ($('#schoolName').val().trim() || 'upload'));
-        var $btn = $(this).prop('disabled',true);
-        $('#logoUploadMsg').html('<i class="fa fa-spinner fa-spin"></i> Uploading...');
-        $.ajax({
-            url: BASE_URL+'superadmin/schools/upload_logo',
-            type:'POST', data:fd, contentType:false, processData:false,
-            success:function(r){
-                if(r.status==='success'){
-                    $('#logoUrlInput').val(r.logo_url).trigger('input');
-                    $('#logoUploadMsg').html('<span style="color:#22c55e;"><i class="fa fa-check"></i> Uploaded</span>');
-                } else {
-                    $('#logoUploadMsg').html('<span style="color:#ef4444;">'+(r.message||'Upload failed.')+'</span>');
-                }
-            },
-            error:function(){ $('#logoUploadMsg').html('<span style="color:#ef4444;">Upload failed.</span>'); },
-            complete:function(){ $btn.prop('disabled',false); }
+        function isHttp(u){ return /^https?:\/\//i.test(u); }
+        function isStored(u){ return /firebasestorage\.googleapis\.com/i.test(u); }
+
+        // Render the preview for whatever URL is current. label describes source.
+        function showPreview(u, label){
+            $err.hide();
+            if(!u || !isHttp(u)){ $preview.hide(); $tag.text(''); return; }
+            $tag.text(label || '');
+            $img.attr('src', u);
+            $preview.css('display','flex');
+        }
+        function clearAll(){
+            $url.val(''); $file.val(''); $msg.html('');
+            $preview.hide(); $err.hide(); $tag.text('');
+        }
+        function labelFor(u){ return isStored(u) ? 'Stored logo' : 'External URL'; }
+
+        // Image actually loaded vs. broken link feedback.
+        $img.on('load',  function(){ $err.hide(); });
+        $img.on('error', function(){
+            if($url.val().trim()){ $preview.hide(); $err.show(); }
         });
-    });
+
+        // Typing / pasting a URL supersedes any prior upload.
+        $url.on('input blur paste', function(){
+            setTimeout(function(){                 // defer so pasted value is in
+                var u = $url.val().trim();
+                $msg.html('');                     // drop any stale "Uploaded ✓"
+                if(u){ showPreview(u, labelFor(u)); }
+                else { $preview.hide(); $err.hide(); $tag.text(''); }
+            }, 0);
+        });
+
+        function doUpload(file){
+            if(!file){ return; }
+            var fd = new FormData();
+            fd.append('logo', file);
+            // temp prefix → server stages to Storage temp path (no SCH_ id yet)
+            fd.append('school_uid', 'temp_' + ($('#schoolName').val().trim() || 'upload'));
+            $file.prop('disabled', true);
+            $msg.html('<i class="fa fa-spinner fa-spin"></i> Uploading...');
+            $.ajax({
+                url: BASE_URL+'superadmin/schools/upload_logo',
+                type:'POST', data:fd, contentType:false, processData:false,
+                success:function(r){
+                    if(r && r.status==='success'){
+                        $url.val(r.logo_url);              // sync: upload fills URL field
+                        showPreview(r.logo_url, 'Uploaded');
+                        $msg.html('<span style="color:#22c55e;"><i class="fa fa-check"></i> Uploaded</span>');
+                    } else {
+                        $msg.html('<span style="color:#ef4444;">'+((r&&r.message)||'Upload failed.')+'</span>');
+                    }
+                },
+                error:function(){ $msg.html('<span style="color:#ef4444;">Upload failed.</span>'); },
+                complete:function(){ $file.prop('disabled', false); }
+            });
+        }
+
+        // Single, clear behavior: selecting a file uploads it immediately.
+        // (No separate Upload button — a picked-but-not-uploaded file can't be lost.)
+        $file.on('change', function(){ if(this.files[0]) doUpload(this.files[0]); });
+        // Remove clears both inputs and the preview.
+        $('#logoClearBtn').on('click', clearAll);
+
+        // Initial paint (e.g. returning to step 1 with a value already set).
+        if($url.val().trim()){ showPreview($url.val().trim(), labelFor($url.val().trim())); }
+    })();
 
     // ── Password strength meter ───────────────────────────────────────────────
     var strengthLabels = ['Weak','Fair','Good','Strong'];

@@ -435,6 +435,12 @@ class School_config extends MY_Controller
         $school    = $this->school_name;
         $school_id = $this->school_id;
 
+        // Storage path keys on the SCH_ id; bail if the session lacks it
+        // rather than writing to an "schools//logos/" path.
+        if (empty($school_id)) {
+            return $this->json_error('Session missing school id; please re-login.');
+        }
+
         if (empty($_FILES['logo']['name'])) {
             return $this->json_error('No file uploaded.');
         }
@@ -475,8 +481,11 @@ class School_config extends MY_Controller
 
         $info       = $this->upload->data();
         $localPath  = $info['full_path'];
-        $safe       = preg_replace('/[^A-Za-z0-9_\-]/', '_', $school);
-        $remotePath = "schools/{$safe}/logo/" . $info['file_name'];
+        // Align with onboarding (Superadmin_schools::_promote_temp_logo_to_storage):
+        // store under the canonical SCH_ id, plural "logos" folder. The previous
+        // file is deleted below via the stored logoUrl (not a reconstructed path),
+        // so changing this convention does not orphan existing logos.
+        $remotePath = "schools/{$school_id}/logos/" . $info['file_name'];
 
         // Capture the PREVIOUS logo's Storage path BEFORE we overwrite the
         // pointer, so we can delete the old file after the new one commits

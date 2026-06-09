@@ -1623,13 +1623,22 @@ class Superadmin_schools extends MY_Superadmin_Controller
 
     // ─────────────────────────────────────────────────────────────────────────
     // POST  /superadmin/schools/upload_logo
-    // Accepts a logo image file upload, saves to uploads/logos/, returns URL
+    // Uploads a logo image straight to Firebase Storage and returns its public
+    // download URL (no more local /uploads/logos/ + localhost URL staging).
+    //
+    // Two callers, two cases:
+    //   • Onboarding wizard (create.php) posts school_uid='temp_…' — the SCH_
+    //     id doesn't exist yet, so the file goes to a temp Storage path
+    //     schools/_onboarding_temp/{token}/logos/. onboard() then calls
+    //     _promote_temp_logo_to_storage() to move it to schools/{SCH_ID}/logos/.
+    //   • Edit page (view.php) posts the real SCH_ id — the file goes straight
+    //     to schools/{SCH_ID}/logos/ and logoUrl is persisted immediately.
     // ─────────────────────────────────────────────────────────────────────────
     public function upload_logo()
     {
-        $school_name = trim($this->input->post('school_uid', TRUE) ?? '');
-        // [FIX] Validate school_name to prevent path injection in Firebase write
-        if ($school_name !== '' && !preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $school_name)) {
+        $school_uid = trim($this->input->post('school_uid', TRUE) ?? '');
+        // Validate school_uid to prevent path injection in the Storage path.
+        if ($school_uid !== '' && !preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $school_uid)) {
             $this->json_error('Invalid school identifier.'); return;
         }
 
@@ -1638,6 +1647,9 @@ class Superadmin_schools extends MY_Superadmin_Controller
         }
 
         $file = $_FILES['logo'];
+        if (!is_uploaded_file($file['tmp_name'])) {
+            $this->json_error('Invalid upload.'); return;
+        }
         $mime = mime_content_type($file['tmp_name']);
         $allowed_mimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'];
         if (!in_array($mime, $allowed_mimes, true)) {
@@ -1647,33 +1659,41 @@ class Superadmin_schools extends MY_Superadmin_Controller
             $this->json_error('Logo file must be under 2 MB.'); return;
         }
 
-        $ext       = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-        $label     = $school_name !== '' ? preg_replace('/[^A-Za-z0-9_]/', '_', $school_name) : 'new';
-        $safe_name = 'logo_' . $label . '_' . time() . '.' . $ext;
-        $upload_dir = FCPATH . 'uploads/logos/';
-        if (!is_dir($upload_dir)) mkdir($upload_dir, 0755, true);
+        $ext           = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION)) ?: 'png';
+        $is_onboarding = ($school_uid === '' || strpos($school_uid, 'temp') === 0);
 
-        $dest = $upload_dir . $safe_name;
-        if (!move_uploaded_file($file['tmp_name'], $dest)) {
-            $this->json_error('Failed to save uploaded file.'); return;
+        if ($is_onboarding) {
+            // No SCH_ id yet — stage under a random temp folder. onboard()
+            // promotes this to schools/{SCH_ID}/logos/ on final submit.
+            $token      = bin2hex(random_bytes(8));
+            $remotePath = 'schools/_onboarding_temp/' . $token . '/logos/logo_' . $token . '.' . $ext;
+        } else {
+            // Existing school — school_uid IS the SCH_ id (see view()).
+            $safe_id    = preg_replace('/[^A-Za-z0-9_\-]/', '_', $school_uid);
+            $remotePath = 'schools/' . $safe_id . '/logos/logo_' . time() . '.' . $ext;
         }
 
-        $logo_url = base_url('uploads/logos/' . $safe_name);
+        // Upload the PHP temp file directly to Storage — no local-disk staging.
+        if (!$this->firebase->uploadFile($file['tmp_name'], $remotePath)) {
+            $this->json_error('Failed to upload logo to storage.'); return;
+        }
+        $logo_url = $this->firebase->getDownloadUrl($remotePath);
+        if ($logo_url === '') {
+            $this->json_error('Logo uploaded but URL could not be generated.'); return;
+        }
 
-        // Do NOT write to Firebase here — the school doesn't exist yet during onboard.
-        // The logo_url is returned to the client and included in the onboard POST,
-        // which writes it to the correct System/Schools/{school_id}/profile node.
-        // For existing schools (edit profile), update_profile() handles the Firebase write.
-        if (!empty($school_name) && strpos($school_name, 'temp') !== 0) {
+        // For an existing school, persist the Storage URL now. For onboarding
+        // the URL rides along in the onboard POST and is rewritten on promote.
+        if (!$is_onboarding) {
             // ── B2.3.2-C: flag-gated single-source logo URL write ────────
             if ($this->_b23c_registry_firestore_on()) {
-                $this->_b23c_registry()->update_school_profile($school_name, [
+                $this->_b23c_registry()->update_school_profile($school_uid, [
                     'logoUrl'   => $logo_url,
                     'updatedAt' => date('c'),
                 ]);
             } else {
                 try {
-                    $this->firebase->update("System/Schools/{$school_name}/profile", ['logo_url' => $logo_url]);
+                    $this->firebase->update("System/Schools/{$school_uid}/profile", ['logo_url' => $logo_url]);
                 } catch (Exception $e) {
                     log_message('error', 'SA upload_logo: Firebase update failed — ' . $e->getMessage());
                 }
@@ -1891,40 +1911,77 @@ class Superadmin_schools extends MY_Superadmin_Controller
     }
 
     /**
-     * SIS Tier-2 fix LOGO-1 (post-B3 2026-06-02): promote a temp local-FS
-     * logo URL to Firebase Storage once schoolId is known.
+     * LOGO-1 (post-B3 2026-06-02; storage-first rework 2026-06-06): promote the
+     * onboarding temp logo to its canonical schools/{schoolId}/logos/ path once
+     * the schoolId exists, then point logoUrl at it.
      *
-     * Pre-fix: SA "Onboard New School" wizard's upload_logo() at L1459
-     * writes the file to FCPATH/uploads/logos/ BEFORE schoolId exists and
-     * returns a base_url() (localhost in dev) URL. That URL gets written
-     * verbatim into schools.logoUrl AND tenantPublic.logoUrl by
-     * B2_registry_service::create_tenant with no follow-up promotion.
-     * Mobile apps can't reach localhost URLs; the temp file gets orphaned;
-     * admin UI shows broken image.
+     * Current flow: upload_logo() uploads the file straight to Firebase Storage
+     * at schools/_onboarding_temp/{token}/logos/ and returns a real download
+     * URL (no localhost). This helper COPIES that object to
+     * schools/{schoolId}/logos/{basename}, updates BOTH schools/{id}.logoUrl
+     * and tenantPublic/{id}.logoUrl, then deletes the temp object.
      *
-     * Post-fix: this helper detects the temp URL pattern, uploads the
-     * local file to Firebase Storage at schools/{schoolId}/logo/{basename}
-     * (same convention used by School_config::upload_logo, the proven
-     * pattern), calls getDownloadUrl(), updates BOTH schools/{id}.logoUrl
-     * and tenantPublic/{id}.logoUrl, then @unlink's the local file.
+     * Legacy fallback: if $tempUrl still points at a local /uploads/logos/
+     * file (an in-flight onboarding started before this rework), upload that
+     * local file to the canonical path and @unlink it.
      *
-     * Non-fatal — onboarding never fails on a Storage hiccup. On failure
-     * the tenant lands with the original temp URL (still broken, but the
-     * SSA can re-upload via School Config's working path to recover).
+     * Non-fatal — onboarding never fails on a Storage hiccup. On any failure
+     * path the helper logs and returns the original $tempUrl unchanged (the
+     * SSA can re-upload via School Config to recover).
      *
-     * Scope deliberately limited to the FS-canonical onboard branch.
-     * The legacy RTDB onboard branch (L469-784) writes logo to RTDB
-     * System/Schools/{id}/profile only — no Firestore logoUrl target
-     * exists for that tenant, so calling this helper there would write
-     * Firestore for an otherwise RTDB-only tenant (mixed state). That
-     * branch is held per B2.3.3 RTDB retirement contract.
+     * Scope deliberately limited to the FS-canonical onboard branch (see the
+     * B2.3.3 RTDB-retirement note that previously lived here).
      *
-     * Returns the new Firebase Storage URL on success, or the original
+     * Returns the canonical Firebase Storage URL on success, or the original
      * $tempUrl on any failure path.
      */
     private function _promote_temp_logo_to_storage(string $schoolId, string $tempUrl): string
     {
         if ($tempUrl === '') return '';
+
+        // ── Primary path: temp logo already in Storage → copy to final path ──
+        $tempPath = $this->firebase->storagePathFromUrl($tempUrl);
+        if ($tempPath !== '' && strpos($tempPath, 'schools/_onboarding_temp/') === 0) {
+            try {
+                $basename  = basename($tempPath);
+                $finalPath = "schools/{$schoolId}/logos/{$basename}";
+
+                if (!$this->firebase->copyStorageFile($tempPath, $finalPath)) {
+                    log_message('error',
+                        "LOGO-1 promote: copyStorageFile failed for school={$schoolId}; leaving temp URL.");
+                    return $tempUrl;
+                }
+                $newUrl = $this->firebase->getDownloadUrl($finalPath);
+                if ($newUrl === '') {
+                    log_message('error',
+                        "LOGO-1 promote: getDownloadUrl empty for school={$schoolId}; leaving temp URL.");
+                    return $tempUrl;
+                }
+
+                $now = date('c');
+                $this->firebase->firestoreUpdate('schools', $schoolId, [
+                    'logoUrl'       => $newUrl,
+                    'logoUpdatedAt' => $now,
+                ]);
+                $this->firebase->firestoreUpdate('tenantPublic', $schoolId, [
+                    'logoUrl'       => $newUrl,
+                    'logoUpdatedAt' => $now,
+                ]);
+
+                // Best-effort temp cleanup — a leftover temp object is harmless.
+                $this->firebase->deleteStorageFile($tempPath);
+
+                log_message('info',
+                    "LOGO-1 promote: temp logo moved to {$finalPath} for school={$schoolId} → {$newUrl}");
+                return $newUrl;
+            } catch (\Throwable $e) {
+                log_message('error',
+                    "LOGO-1 promote (storage): threw for school={$schoolId}: " . $e->getMessage());
+                return $tempUrl;
+            }
+        }
+
+        // ── Legacy fallback: temp logo still on local disk (/uploads/logos/) ──
         if (strpos($tempUrl, '/uploads/logos/') === false) return $tempUrl;
 
         $basename  = basename($tempUrl);
@@ -1936,9 +1993,8 @@ class Superadmin_schools extends MY_Superadmin_Controller
         }
 
         try {
-            $remotePath = "schools/{$schoolId}/logo/{$basename}";
-            $uploaded = $this->firebase->uploadFile($localPath, $remotePath);
-            if (!$uploaded) {
+            $remotePath = "schools/{$schoolId}/logos/{$basename}";
+            if (!$this->firebase->uploadFile($localPath, $remotePath)) {
                 log_message('error',
                     "LOGO-1 promote: Firebase Storage uploadFile returned false for school={$schoolId}; leaving URL as-is.");
                 return $tempUrl;
@@ -1963,11 +2019,11 @@ class Superadmin_schools extends MY_Superadmin_Controller
             @unlink($localPath);
 
             log_message('info',
-                "LOGO-1 promote: temp logo promoted to Firebase Storage for school={$schoolId} → {$newUrl}");
+                "LOGO-1 promote: local temp logo promoted to Firebase Storage for school={$schoolId} → {$newUrl}");
             return $newUrl;
         } catch (\Throwable $e) {
             log_message('error',
-                "LOGO-1 promote: threw for school={$schoolId}: " . $e->getMessage());
+                "LOGO-1 promote (legacy): threw for school={$schoolId}: " . $e->getMessage());
             return $tempUrl;
         }
     }

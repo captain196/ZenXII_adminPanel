@@ -117,17 +117,16 @@ $cache      = $school['stats_cache']  ?? [];
                             </div>
                         </div>
                     </div>
-                    <?php if (!empty($profile['logo_url'])): ?>
-                    <div style="margin-bottom:12px;">
-                        <img id="logoPreview" src="<?= htmlspecialchars($profile['logo_url']) ?>" alt="School Logo"
+                    <?php $__logo = $profile['logo_url'] ?? ''; ?>
+                    <div id="logoPreviewWrap" style="margin-bottom:12px;align-items:center;gap:10px;display:<?= $__logo ? 'flex' : 'none' ?>;">
+                        <img id="logoPreview" src="<?= htmlspecialchars($__logo) ?>" alt="School Logo"
                              style="max-height:80px;max-width:200px;border:1px solid var(--border);border-radius:8px;padding:4px;background:var(--bg2);">
+                        <span id="logoSourceTag" style="font-size:11px;color:var(--t3);"></span>
+                        <button type="button" id="logoClearBtn" class="btn btn-default btn-xs" style="white-space:nowrap;"><i class="fa fa-times"></i> Remove</button>
                     </div>
-                    <?php else: ?>
-                    <div style="margin-bottom:12px;display:none;" id="logoPreviewWrap">
-                        <img id="logoPreview" src="" alt="School Logo"
-                             style="max-height:80px;max-width:200px;border:1px solid var(--border);border-radius:8px;padding:4px;background:var(--bg2);">
+                    <div id="logoPreviewErr" style="display:none;font-size:11px;color:#ef4444;margin-bottom:12px;">
+                        <i class="fa fa-exclamation-triangle"></i> That image URL couldn't be loaded — check the link.
                     </div>
-                    <?php endif; ?>
                     <div style="text-align:right;">
                         <button type="submit" class="btn btn-primary btn-sm" id="saveProfileBtn">
                             <i class="fa fa-save"></i> Save Profile
@@ -379,39 +378,85 @@ $(function(){
         });
     });
 
-    // Logo URL preview on input change
-    $('#logoUrlInput').on('input', function(){
-        var url = $(this).val().trim();
-        if(url){ $('#logoPreview, #logoPreviewWrap').show(); $('#logoPreview').attr('src', url); }
-        else   { $('#logoPreviewWrap').hide(); }
-    });
+    // ── Logo widget — URL field and uploader kept in sync (mirrors create.php) ──
+    // The URL field is the submitted truth (logo_url); both paths write to it,
+    // so the user can switch between pasting a URL and uploading a file freely.
+    // An upload also persists logoUrl server-side immediately (real school);
+    // a typed URL is persisted on "Save Profile".
+    (function(){
+        var $url  = $('#logoUrlInput');
+        var $file = $('#logoFileInput');
+        var $img  = $('#logoPreview');
+        var $wrap = $('#logoPreviewWrap');
+        var $err  = $('#logoPreviewErr');
+        var $tag  = $('#logoSourceTag');
+        var $msg  = $('#logoUploadMsg');
+        var $btn  = $('#uploadLogoBtn');
 
-    // Upload logo file
-    $('#uploadLogoBtn').on('click', function(){
-        var file = $('#logoFileInput')[0].files[0];
-        if(!file){ saToast('Select a file first.','error'); return; }
-        var fd = new FormData();
-        fd.append('logo', file);
-        fd.append('school_uid', '<?= addslashes($school_uid) ?>');
-        $('#logoUploadMsg').html('<i class="fa fa-spinner fa-spin"></i>');
-        $.ajax({
-            url: BASE_URL+'superadmin/schools/upload_logo',
-            type:'POST', data:fd, contentType:false, processData:false,
-            success:function(r){
-                if(r.status==='success'){
-                    $('#logoUrlInput').val(r.logo_url);
-                    $('#logoPreview').attr('src', r.logo_url);
-                    $('#logoPreview, #logoPreviewWrap').show();
-                    $('#logoUploadMsg').html('<span style="color:#22c55e;"><i class="fa fa-check"></i> Uploaded</span>');
-                    saToast('Logo uploaded.','success');
-                } else {
-                    $('#logoUploadMsg').html('<span style="color:#ef4444;">'+escHtml(r.message)+'</span>');
-                    saToast(r.message,'error');
-                }
-            },
-            error:function(){ $('#logoUploadMsg').html('<span style="color:#ef4444;">Upload failed.</span>'); }
+        function isHttp(u){ return /^https?:\/\//i.test(u); }
+        function isStored(u){ return /firebasestorage\.googleapis\.com/i.test(u); }
+        function labelFor(u){ return isStored(u) ? 'Stored logo' : 'External URL'; }
+
+        function showPreview(u, label){
+            $err.hide();
+            if(!u || !isHttp(u)){ $wrap.hide(); $tag.text(''); return; }
+            $tag.text(label || '');
+            $img.attr('src', u);
+            $wrap.css('display','flex');
+        }
+        function clearAll(){
+            $url.val(''); $file.val(''); $msg.html('');
+            $wrap.hide(); $err.hide(); $tag.text('');
+        }
+
+        $img.on('load',  function(){ $err.hide(); });
+        $img.on('error', function(){ if($url.val().trim()){ $wrap.hide(); $err.show(); } });
+
+        $url.on('input blur paste', function(){
+            setTimeout(function(){
+                var u = $url.val().trim();
+                $msg.html('');
+                if(u){ showPreview(u, labelFor(u)); }
+                else { $wrap.hide(); $err.hide(); $tag.text(''); }
+            }, 0);
         });
-    });
+
+        function doUpload(file){
+            if(!file){ return; }
+            var fd = new FormData();
+            fd.append('logo', file);
+            fd.append('school_uid', '<?= addslashes($school_uid) ?>');
+            $btn.prop('disabled', true);
+            $msg.html('<i class="fa fa-spinner fa-spin"></i>');
+            $.ajax({
+                url: BASE_URL+'superadmin/schools/upload_logo',
+                type:'POST', data:fd, contentType:false, processData:false,
+                success:function(r){
+                    if(r && r.status==='success'){
+                        $url.val(r.logo_url);
+                        showPreview(r.logo_url, 'Uploaded');
+                        $msg.html('<span style="color:#22c55e;"><i class="fa fa-check"></i> Uploaded</span>');
+                        saToast('Logo uploaded.','success');
+                    } else {
+                        $msg.html('<span style="color:#ef4444;">'+escHtml((r&&r.message)||'Upload failed.')+'</span>');
+                        saToast((r&&r.message)||'Upload failed.','error');
+                    }
+                },
+                error:function(){ $msg.html('<span style="color:#ef4444;">Upload failed.</span>'); },
+                complete:function(){ $btn.prop('disabled', false); }
+            });
+        }
+
+        $btn.on('click', function(){
+            var file = $file[0].files[0];
+            if(!file){ saToast('Select a file first.','error'); return; }
+            doUpload(file);
+        });
+        $file.on('change', function(){ if(this.files[0]) doUpload(this.files[0]); });
+        $('#logoClearBtn').on('click', clearAll);
+
+        if($url.val().trim()){ showPreview($url.val().trim(), labelFor($url.val().trim())); }
+    })();
 
     function escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
