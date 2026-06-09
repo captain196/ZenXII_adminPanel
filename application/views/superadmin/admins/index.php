@@ -24,9 +24,9 @@
 <!-- Search Bar -->
 <div style="margin-bottom:14px;">
     <div style="position:relative;max-width:360px;">
-        <i class="fa fa-search" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--t4);font-size:13px;"></i>
-        <input type="text" id="adminSearch" class="form-control sa-inp" placeholder="Search by Admin ID or Name..." style="padding-left:34px;padding-right:34px;">
-        <i id="adminSearchClear" class="fa fa-times" style="display:none;position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--t4);cursor:pointer;font-size:13px;"></i>
+        <i class="fa fa-search" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--t4);font-size:13px;z-index:2;pointer-events:none;"></i>
+        <input type="text" id="adminSearch" class="form-control sa-inp sa-search-inp" placeholder="Search by Admin ID or Name...">
+        <i id="adminSearchClear" class="fa fa-times" style="display:none;position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--t4);cursor:pointer;font-size:13px;z-index:2;"></i>
     </div>
 </div>
 
@@ -226,6 +226,9 @@
 <style>
 .sa-inp{background:var(--bg) !important;border:1px solid var(--border) !important;color:var(--t1) !important;border-radius:7px !important;padding:8px 12px !important;font-size:13px !important;font-family:var(--font-m) !important;}
 .sa-inp:focus{border-color:var(--sa4) !important;box-shadow:0 0 0 2px rgba(99,102,241,.15) !important;}
+/* Leave room for the leading search icon / trailing clear button — longhand !important
+   overrides the .sa-inp `padding` shorthand so the placeholder no longer sits under the icon. */
+.sa-search-inp{width:100%;padding-left:36px !important;padding-right:36px !important;}
 #adminsTable{font-family:var(--font-m);font-size:13px;color:var(--t1);}
 #adminsTable thead th{background:var(--bg3) !important;color:var(--t2) !important;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.3px;border-bottom:1px solid var(--border) !important;padding:10px 12px !important;}
 #adminsTable tbody td{padding:10px 12px !important;border-bottom:1px solid var(--border) !important;vertical-align:middle;}

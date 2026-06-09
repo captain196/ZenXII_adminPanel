@@ -108,36 +108,31 @@ a{text-decoration:none !important;}
     background:var(--bg2) !important;
     border-right:1px solid var(--border) !important;border-bottom:none !important;
     display:flex !important;align-items:center !important;
-    padding:0 14px !important;flex-shrink:0;gap:0 !important;
+    justify-content:space-between !important;
+    padding:0 12px 0 16px !important;flex-shrink:0;gap:0 !important;
 }
-.g-logo-link{display:flex !important;align-items:center !important;gap:9px !important;flex:1 !important;min-width:0;text-decoration:none !important;}
+.g-logo-link{display:flex !important;align-items:center !important;gap:10px !important;flex:1 !important;min-width:0;text-decoration:none !important;}
 .g-mark{
-    width:30px;height:30px;border-radius:7px;
-    background:var(--sa);
-    display:flex;align-items:center;justify-content:center;
-    font-family:var(--font-b);font-size:15px;font-weight:800;color:#fff;
-    flex-shrink:0;letter-spacing:-.5px;
+    width:44px;height:44px;border-radius:50%;
+    object-fit:contain;background:transparent;box-shadow:none;
+    flex-shrink:0;
 }
-.g-logotext{line-height:1.15;overflow:hidden;}
-.g-logoname{font-family:var(--font-b);font-size:14.5px;font-weight:700;color:var(--t1);letter-spacing:-.2px;}
-.g-logoname b{color:var(--sa3);font-weight:800;}
-.g-logosub{font-family:var(--font-m);font-size:9px;color:var(--t3);margin-top:1px;white-space:nowrap;letter-spacing:.3px;}
-.g-sa-pill{
-    background:var(--sa-dim);border:1px solid var(--sa-ring);
-    border-radius:4px;padding:2px 6px;
-    font-family:var(--font-m);font-size:8px;font-weight:700;
-    color:var(--sa4);letter-spacing:.8px;flex-shrink:0;
+.g-logotext{line-height:1.1;overflow:hidden;min-width:0;}
+.g-logoname{
+    font-family:var(--font-b);font-size:16px;font-weight:800;
+    color:var(--t1);letter-spacing:-.3px;white-space:nowrap;
 }
+.g-logosub{font-family:var(--font-m);font-size:9.5px;color:var(--t3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.4px;text-transform:uppercase;}
 .sidebar-toggle{
-    width:28px !important;height:28px !important;border-radius:6px !important;
-    border:1px solid var(--border) !important;
-    color:var(--t3) !important;font-size:12px !important;
-    margin:0 !important;margin-right:6px !important;
+    width:32px !important;height:32px !important;border-radius:7px !important;
+    border:1px solid var(--sa-ring) !important;
+    color:var(--t2) !important;font-size:13px !important;
+    margin:0 0 0 10px !important;
     display:flex !important;align-items:center !important;justify-content:center !important;
-    background:transparent !important;
+    background:var(--sa-dim) !important;
     transition:all var(--ease) !important;flex-shrink:0 !important;
 }
-.sidebar-toggle:hover{background:var(--sa-dim) !important;color:var(--sa4) !important;border-color:var(--sa-ring) !important;}
+.sidebar-toggle:hover{background:rgba(109,40,217,.16) !important;color:var(--sa4) !important;border-color:var(--sa-ring) !important;}
 .main-header .navbar{
     background:transparent !important;border:none !important;
     min-height:var(--hh) !important;margin-left:var(--sw) !important;
@@ -281,10 +276,9 @@ a{text-decoration:none !important;}
 .sidebar-collapse .content-wrapper,.sidebar-collapse .main-footer{margin-left:56px !important;}
 .sidebar-collapse .main-header .navbar{margin-left:56px !important;}
 .sidebar-collapse .main-header .logo{width:56px !important;padding:0 !important;justify-content:center !important;}
-/* Collapsed: keep the logo MARK visible (centered), hide only the text + SA pill */
-.sidebar-collapse .main-header .logo .g-logo-link{display:flex !important;justify-content:center !important;gap:0 !important;flex:0 0 auto !important;}
-.sidebar-collapse .main-header .logo .g-logotext{display:none !important;}
-.sidebar-collapse .main-header .logo .g-sa-pill{display:none !important;}
+/* Collapsed: hide the brand link, center just the toggle (mirrors school panel). */
+.sidebar-collapse .main-header .logo .g-logo-link{display:none !important;}
+.sidebar-collapse .main-header .logo .sidebar-toggle{margin:0 !important;}
 .sidebar-collapse .g-logosub,.sidebar-collapse .g-sec,
 .sidebar-collapse .sidebar-menu>li>a>span:not(.pull-right-container),
 .sidebar-collapse .sidebar-menu>li>a>.pull-right-container,
@@ -594,13 +588,12 @@ var BASE_URL = '<?= base_url() ?>';
 <header class="main-header">
     <div class="logo">
         <a class="g-logo-link" href="<?= base_url('superadmin/dashboard') ?>">
-            <img src="<?= base_url('Designs/zenxii_logo_2.png') ?>" alt="ZenXii" class="g-mark" style="width:46px;height:46px;object-fit:contain;border-radius:10px;background:transparent;box-shadow:none;flex-shrink:0;">
+            <img src="<?= base_url('Designs/zenxii_logo_2.png') ?>" alt="ZenXii" class="g-mark">
             <div class="g-logotext">
                 <div class="g-logoname">ZenXii</div>
                 <div class="g-logosub">Super Admin</div>
             </div>
         </a>
-        <div class="g-sa-pill">SA</div>
         <a class="sidebar-toggle" id="saSidebarToggle" role="button" title="Toggle sidebar"><i class="fa fa-bars"></i></a>
     </div>
     <nav class="navbar navbar-static-top">
