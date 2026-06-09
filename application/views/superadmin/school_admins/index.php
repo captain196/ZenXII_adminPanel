@@ -18,6 +18,15 @@
     </div>
 </div>
 
+<!-- Search Bar -->
+<div style="margin-bottom:14px;">
+    <div style="position:relative;max-width:420px;">
+        <i class="fa fa-search" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--t4);font-size:13px;z-index:2;pointer-events:none;"></i>
+        <input type="text" id="adminSearch" class="form-control sa-inp sa-search-inp" placeholder="Search by ID, name, email, phone or school...">
+        <i id="adminSearchClear" class="fa fa-times" style="display:none;position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--t4);cursor:pointer;font-size:13px;z-index:2;"></i>
+    </div>
+</div>
+
 <!-- SSA Table -->
 <div class="sa-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;overflow:hidden;">
     <div id="adminTableWrap" style="padding:16px;">
@@ -91,6 +100,9 @@
 <style>
 .sa-inp{background:var(--bg) !important;border:1px solid var(--border) !important;color:var(--t1) !important;border-radius:7px !important;padding:8px 12px !important;font-size:13px !important;font-family:var(--font-m) !important;}
 .sa-inp:focus{border-color:var(--sa4) !important;box-shadow:0 0 0 2px rgba(99,102,241,.15) !important;}
+/* Leave room for the leading search icon / trailing clear button — longhand !important
+   overrides the .sa-inp `padding` shorthand so the placeholder no longer sits under the icon. */
+.sa-search-inp{width:100%;padding-left:36px !important;padding-right:36px !important;}
 #adminsTable{font-family:var(--font-m);font-size:13px;color:var(--t1);}
 #adminsTable thead th{background:var(--bg3) !important;color:var(--t2) !important;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.3px;border-bottom:1px solid var(--border) !important;padding:10px 12px !important;}
 #adminsTable tbody td{padding:10px 12px !important;border-bottom:1px solid var(--border) !important;vertical-align:middle;}
@@ -110,6 +122,26 @@ document.addEventListener('DOMContentLoaded', function(){
     var BASE = '<?= base_url() ?>';
     var CSRF = '<?= $sa_csrf_token ?>';
     var dt = null;
+
+    // ── Custom search: match ID / name / email / phone / school across the row ──
+    // Phone is not a visible column, so we match a data-search blob on the <tr>
+    // (built in loadAdmins) rather than the rendered cell text.
+    $.fn.dataTable.ext.search.push(function(settings, searchData, index) {
+        if (settings.nTable.id !== 'adminsTable') return true;
+        var q = ($('#adminSearch').val() || '').toLowerCase().trim();
+        if (!q) return true;
+        var node = settings.aoData[index].nTr;
+        var hay = (node && node.getAttribute('data-search') || '').toLowerCase();
+        return hay.indexOf(q) !== -1;
+    });
+
+    $('#adminSearch').on('keyup input', function() {
+        $('#adminSearchClear').toggle(!!this.value);
+        if (dt) dt.draw();
+    });
+    $('#adminSearchClear').on('click', function() {
+        $('#adminSearch').val('').trigger('input').focus();
+    });
 
     // ── Helpers ──
     function post(url, data, cb) {
@@ -171,7 +203,8 @@ document.addEventListener('DOMContentLoaded', function(){
                 var toggleBtn = isActive
                     ? '<button class="sa-abtn danger" title="Deactivate" onclick="toggleStatus(\'' + esc(a.school_uid) + '\',\'' + esc(a.ssa_id) + '\',\'' + esc(a.school_name) + '\',\'Inactive\')"><i class="fa fa-power-off"></i></button>'
                     : '<button class="sa-abtn ok" title="Activate" onclick="toggleStatus(\'' + esc(a.school_uid) + '\',\'' + esc(a.ssa_id) + '\',\'' + esc(a.school_name) + '\',\'Active\')"><i class="fa fa-power-off"></i></button>';
-                html += '<tr>' +
+                var searchBlob = esc([a.ssa_id, a.name, a.email, a.phone, a.school_name, a.school_code].join(' '));
+                html += '<tr data-search="' + searchBlob + '">' +
                     '<td><code style="background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:12px;">' + esc(a.ssa_id) + '</code></td>' +
                     '<td>' + (esc(a.name) || '-') + '</td>' +
                     '<td style="font-size:12px;color:var(--t3);">' + (esc(a.email) || '-') + '</td>' +
@@ -190,9 +223,9 @@ document.addEventListener('DOMContentLoaded', function(){
             dt = $('#adminsTable').DataTable({
                 paging: false,
                 info: false,
-                searching: admins.length > 5,
-                order: [[3, 'asc']],
-                language: { search: '', searchPlaceholder: 'Search school super admins...' }
+                searching: true,
+                dom: 't',
+                order: [[3, 'asc']]
             });
         });
     }

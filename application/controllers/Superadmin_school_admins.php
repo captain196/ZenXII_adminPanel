@@ -82,11 +82,15 @@ class Superadmin_school_admins extends MY_Superadmin_Controller
                 $last_login = is_array($rec)
                     ? (string) ($rec['AccessHistory']['SA_LastLogin'] ?? '')
                     : '';
+                $phone = is_array($rec)
+                    ? (string) ($rec['Phone'] ?? $rec['Profile']['phone'] ?? '')
+                    : '';
 
                 $rows[] = [
                     'ssa_id'      => $primary['id'],
                     'name'        => $primary['name'],
                     'email'       => $primary['email'],
+                    'phone'       => $phone,
                     // Active only when explicitly "Active"; "Inactive"/"Disabled"/anything else → Inactive.
                     'status'      => (strcasecmp($primary['status'], 'Active') === 0) ? 'Active' : 'Inactive',
                     'school_name' => $school_name,
@@ -158,6 +162,7 @@ class Superadmin_school_admins extends MY_Superadmin_Controller
                     'ssa_id'      => $ssa_id,
                     'name'        => $name,
                     'email'       => $email,
+                    'phone'       => (string) ($d['phone'] ?? ''),
                     'status'      => $status,
                     'school_name' => $school_name,
                     'school_code' => $school_code,
