@@ -2659,31 +2659,25 @@ class Attendance extends MY_Controller
         try {
             // SW3-FIX: schools collection is keyed by SCH_ id, not the school name.
             $schoolDoc = $this->firebase->firestoreGet('schools', $auth['school_id'] ?? $this->school_id);
-            if (is_array($schoolDoc)) {
-                if (isset($schoolDoc['currentSession'])
-                    && is_string($schoolDoc['currentSession'])
-                    && $schoolDoc['currentSession'] !== '') {
-                    $activeSession = $schoolDoc['currentSession'];
-                } elseif (isset($schoolDoc['sessions']) && is_array($schoolDoc['sessions'])) {
-                    $sessionsList = array_values(array_filter($schoolDoc['sessions'], 'is_string'));
-                    if (!empty($sessionsList)) {
-                        // No active marker on doc; use the most recent session
-                        // from the list (same shape as legacy end() behavior
-                        // when sessions were stored sorted-ascending).
-                        rsort($sessionsList);
-                        $activeSession = $sessionsList[0];
-                    }
-                }
+            if (is_array($schoolDoc)
+                && isset($schoolDoc['currentSession'])
+                && is_string($schoolDoc['currentSession'])
+                && $schoolDoc['currentSession'] !== '') {
+                $activeSession = $schoolDoc['currentSession'];
             }
         } catch (\Throwable $e) {
             log_message('error',
                 'Attendance::api_punch SW3 Firestore session lookup failed for school ['
                 . $schoolName . ']: ' . $e->getMessage());
         }
+        // SC-Step10/G2 (2026-06-06): FAIL-CLOSED. schools/{id}.currentSession is the SOLE
+        // session authority — NO sessions[0] fallback, NO synthetic session generation.
+        // If it is unavailable, reject the punch rather than recording it against an
+        // inferred/fabricated session.
         if ($activeSession === '') {
-            // Last-resort computed fallback — preserved verbatim from prior
-            // behavior when school config is unavailable.
-            $activeSession = date('Y') . '-' . (date('Y') + 1);
+            log_message('error',
+                'SC10 fail-closed: api_punch no currentSession for school [' . $schoolName . '] — punch rejected.');
+            return $this->json_error('No active academic session configured for this school. Punch rejected.', 409);
         }
         $session = (string) $activeSession;
 

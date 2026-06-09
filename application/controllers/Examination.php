@@ -42,6 +42,9 @@ class Examination extends MY_Controller
         require_permission('Examinations');
         $this->load->library('exam_engine');
         $this->exam_engine->init($this->firebase, $this->school_name, $this->session_year);
+        // EXAM-DEF-FS-CUTOVER Phase 2A: exam definitions read from Firestore via adapter.
+        $this->load->library('Exam_read', null, 'exam_read');
+        $this->exam_read->init($this->firebase, $this->school_name, $this->session_year);
 
         $this->load->library('Fee_defaulter_check', null, 'feeDefaulter');
         $this->feeDefaulter->init($this->firebase, $this->school_name, $this->session_year);
@@ -70,7 +73,7 @@ class Examination extends MY_Controller
         $school = $this->school_name;
         $year   = $this->session_year;
 
-        $raw   = $this->firebase->get("Schools/{$school}/{$year}/Exams") ?? [];
+        $raw   = $this->exam_read->list_exams() ?? [];
         $exams = [];
         $stats = ['total' => 0, 'published' => 0, 'completed' => 0, 'draft' => 0];
 
@@ -182,7 +185,7 @@ class Examination extends MY_Controller
             $this->json_error('Exam and class are required.', 400);
         }
 
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             $this->json_error('Exam not found.', 404);
         }
@@ -304,7 +307,7 @@ class Examination extends MY_Controller
             $this->json_error('Exam and class are required.', 400);
         }
 
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             $this->json_error('Exam not found.', 404);
         }
@@ -466,8 +469,8 @@ class Examination extends MY_Controller
         }
 
         // Load exam metadata
-        $exam1 = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId1}");
-        $exam2 = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId2}");
+        $exam1 = $this->exam_read->meta($examId1);
+        $exam2 = $this->exam_read->meta($examId2);
 
         if (!is_array($exam1) || !is_array($exam2)) {
             $this->json_error('One or both exams not found.', 404);
@@ -604,7 +607,7 @@ class Examination extends MY_Controller
             $this->json_error('Exam, class, and section are required.', 400);
         }
 
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             $this->json_error('Exam not found.', 404);
         }
@@ -735,7 +738,7 @@ class Examination extends MY_Controller
             $this->json_error('Class or allClasses flag is required.', 400);
         }
 
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             $this->json_error('Exam not found.', 404);
         }
@@ -830,7 +833,7 @@ class Examination extends MY_Controller
             $this->json_error('Exam and class are required.', 400);
         }
 
-        $exam = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+        $exam = $this->exam_read->meta($examId);
         if (!$exam || !is_array($exam)) {
             $this->json_error('Exam not found.', 404);
         }
@@ -955,72 +958,15 @@ class Examination extends MY_Controller
         ) ?? [];
         if (!is_array($allMarksNode)) $allMarksNode = [];
 
-        // Collect unique student IDs across all subjects
-        $allUserIds = [];
-        foreach ($allMarksNode as $subj => $stuMarks) {
-            if (is_array($stuMarks)) {
-                foreach (array_keys($stuMarks) as $uid) {
-                    $allUserIds[$uid] = true;
-                }
-            }
-        }
-        $allUserIds = array_keys($allUserIds);
+        // Phase 1 convergence: delegate to the single shared CC-8 compute path
+        // in Exam_engine (identical policy to Result.php::compute_results).
+        // Pure/storage-agnostic; this controller keeps its own RTDB write +
+        // Firestore mirror below.
+        $studentResults = $this->exam_engine->compute_section($templatesNode, $allMarksNode, $scale, $passingPct);
 
-        if (empty($allUserIds)) {
+        if (empty($studentResults)) {
             return ['success' => false, 'count' => 0, 'reason' => 'No marks entered'];
         }
-
-        // Per student: aggregate subjects
-        $studentResults = [];
-        foreach ($allUserIds as $uid) {
-            $totalMarks = 0;
-            $maxMarks   = 0;
-            $subjects   = [];
-            $allPass    = true;
-
-            foreach ($templatesNode as $subj => $tmpl) {
-                if (!is_array($tmpl)) continue;
-                $subjMax   = (int) ($tmpl['TotalMaxMarks'] ?? 0);
-                $stuMarks  = $allMarksNode[$subj][$uid] ?? [];
-                $absent    = !empty($stuMarks['Absent']);
-                $subjTotal = $absent ? 0 : (int) ($stuMarks['Total'] ?? 0);
-                $subjPct   = $subjMax > 0 ? ($subjTotal / $subjMax * 100) : 0;
-                $subjGrade = $absent ? 'AB' : $this->exam_engine->compute_grade($subjPct, $scale);
-                $subjPass  = $absent ? 'Fail' : $this->exam_engine->compute_pass_fail($subjPct, $passingPct);
-
-                if ($subjPass === 'Fail') $allPass = false;
-
-                $subjects[$subj] = [
-                    'Total'      => $subjTotal,
-                    'MaxMarks'   => $subjMax,
-                    'Percentage' => round($subjPct, 2),
-                    'Grade'      => $subjGrade,
-                    'PassFail'   => $subjPass,
-                    'Absent'     => $absent,
-                ];
-
-                $totalMarks += $subjTotal;
-                $maxMarks   += $subjMax;
-            }
-
-            $overallPct   = $maxMarks > 0 ? ($totalMarks / $maxMarks * 100) : 0;
-            $overallGrade = $this->exam_engine->compute_grade($overallPct, $scale);
-            $overallPass  = $allPass ? $this->exam_engine->compute_pass_fail($overallPct, $passingPct) : 'Fail';
-
-            $studentResults[$uid] = [
-                'TotalMarks' => $totalMarks,
-                'MaxMarks'   => $maxMarks,
-                'Percentage' => round($overallPct, 2),
-                'Grade'      => $overallGrade,
-                'PassFail'   => $overallPass,
-                'Subjects'   => $subjects,
-                'ComputedAt' => (int) round(microtime(true) * 1000),
-            ];
-        }
-
-        // Sort by Percentage desc → assign competition ranks (1,1,3)
-        uasort($studentResults, function($a, $b) { return $b['Percentage'] <=> $a['Percentage']; });
-        $this->exam_engine->assign_ranks_assoc($studentResults, 'Percentage');
 
         // Write to Computed node — single batch update instead of per-student writes
         $basePath = "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$sectionKey}";
@@ -1031,7 +977,7 @@ class Examination extends MY_Controller
 
         // ── Sync results to Firestore 'results' collection ──
         try {
-            $examData = $this->firebase->get("Schools/{$school}/{$year}/Exams/{$examId}");
+            $examData = $this->exam_read->meta($examId);
             $examName = is_array($examData) ? ($examData['Name'] ?? $examId) : $examId;
             $sectionKeyFs = "{$classKey}/{$sectionKey}";
 

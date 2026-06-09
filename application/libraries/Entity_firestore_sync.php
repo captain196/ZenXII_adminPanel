@@ -629,20 +629,57 @@ class Entity_firestore_sync
     {
         if (!$this->ready) return false;
         $docId = "{$this->schoolId}_{$examId}";
-        $doc = [
-            'schoolCode'  => $this->schoolId,
-            'examId'      => $examId,
-            'name'        => $data['name'] ?? $data['exam_name'] ?? '',
-            'type'        => $data['type'] ?? '',
-            'startDate'   => $data['start_date'] ?? '',
-            'endDate'     => $data['end_date'] ?? '',
-            'maxMarks'    => $data['max_marks'] ?? '',
-            // BUG-052 fix 2026-05-25: caller-provided session precedence
-            'session'     => $data['session'] ?? $data['Session'] ?? $this->session,
-            'status'      => $data['status'] ?? 'Active',
-            'updatedAt'   => date('c'),
+        return $this->_write('exams', $docId, $this->buildExamDoc($examId, $data));
+    }
+
+    /**
+     * EXAM-DEF-FS-CUTOVER Phase 0 (contract alignment): build the canonical
+     * `exams` document matching the mobile ExamDoc contract (Parent + Teacher,
+     * identical) and the ExamFirestoreRepository.getExams() query, which filters
+     * `schoolId` + `session` and orders by `startDate`.
+     *
+     * Pure (no I/O) so the shape can be verified without a Firestore write.
+     * `schoolId` VALUE = $this->schoolId (the SCH_ id — same value students /
+     * results use; confirmed against live Firestore). Callers should pass
+     * `startDate`/`endDate` in ISO `YYYY-MM-DD` so the orderBy('startDate') query
+     * sorts chronologically, and `gradingScale` in the mobile enum form.
+     * Accepts both camelCase and legacy snake_case input keys.
+     */
+    public function buildExamDoc(string $examId, array $data): array
+    {
+        return [
+            'schoolId'          => $this->schoolId,   // was 'schoolCode' — getExams() filters on schoolId
+            'session'           => $data['session'] ?? $data['Session'] ?? $this->session,
+            'examId'            => $examId,
+            'examName'          => $data['examName'] ?? $data['name'] ?? $data['exam_name'] ?? '',
+            'examType'          => $data['examType'] ?? $data['type'] ?? '',
+            'gradingScale'      => $data['gradingScale'] ?? $data['grading_scale'] ?? '',
+            'passingPercent'    => (int) ($data['passingPercent'] ?? $data['passing_percent'] ?? 33),
+            'maxTotal'          => (float) ($data['maxTotal'] ?? $data['max_total'] ?? $data['max_marks'] ?? 0),
+            'maxTheory'         => (float) ($data['maxTheory'] ?? $data['max_theory'] ?? 0),
+            'maxPractical'      => (float) ($data['maxPractical'] ?? $data['max_practical'] ?? 0),
+            'startDate'         => $data['startDate'] ?? $data['start_date'] ?? '',
+            'endDate'           => $data['endDate'] ?? $data['end_date'] ?? '',
+            'status'            => $data['status'] ?? 'Draft',
+            'weight'            => (float) ($data['weight'] ?? 0),
+            'applicableClasses' => array_values($data['applicableClasses'] ?? $data['applicable_classes'] ?? []),
+            // Phase 2B: detail-view fields (additive; mobile ignores extras; closes the 2A residual).
+            'generalInstructions' => array_values($data['generalInstructions'] ?? $data['GeneralInstructions'] ?? []),
+            'createdBy'           => (string) ($data['createdBy'] ?? $data['CreatedBy'] ?? ''),
+            // Phase 1 lifecycle audit (additive; null until the transition stamps them).
+            'publishedBy'         => $data['publishedBy'] ?? null,
+            'publishedAt'         => $data['publishedAt'] ?? null,
+            'completedBy'         => $data['completedBy'] ?? null,
+            'completedAt'         => $data['completedAt'] ?? null,
+            // Phase 3.1 reverse-lifecycle audit (additive; null until the
+            // Unpublish/Reopen transitions are introduced in Phase 3.2).
+            'unpublishedBy'       => $data['unpublishedBy'] ?? null,
+            'unpublishedAt'       => $data['unpublishedAt'] ?? null,
+            'reopenedBy'          => $data['reopenedBy'] ?? null,
+            'reopenedAt'          => $data['reopenedAt'] ?? null,
+            'createdAt'         => $data['createdAt'] ?? date('c'),
+            'updatedAt'         => date('c'),
         ];
-        return $this->_write('exams', $docId, $doc);
     }
 
     /**

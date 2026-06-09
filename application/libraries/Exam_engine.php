@@ -190,6 +190,126 @@ class Exam_engine
     }
 
     // =========================================================================
+    //  SECTION RESULT COMPUTATION (single source of truth — CC-8 policy)
+    // =========================================================================
+
+    /**
+     * Compute the per-student result map for one exam/class/section.
+     *
+     * SINGLE SOURCE OF TRUTH for the CC-8 absent policy, shared by
+     * Result.php::compute_results and Examination.php::_compute_section_results
+     * (Phase 1 convergence). PURE and STORAGE-AGNOSTIC: it takes the already
+     * loaded templates + marks and returns the ranked result map. It performs
+     * NO I/O — no RTDB, no Firestore — so it adds no storage dependency and is
+     * reusable by any future Firestore-first caller without modification.
+     *
+     * CC-8 policy: an absent (AB) paper is excluded from the percentage
+     * denominator and from overall pass/fail (kept visibly 'AB'); a fully-absent
+     * student is AB overall (Percentage=null, Grade='AB', PassFail='AB').
+     *
+     * @param array  $templatesNode [subject => ['TotalMaxMarks'=>int, ...]]
+     * @param array  $allMarksNode  [subject => [uid => ['Total'=>?, 'Absent'=>?]]]
+     * @param string $scale         Grading scale (e.g. 'Percentage')
+     * @param int    $passingPct    Passing percentage threshold
+     * @return array [uid => ['TotalMarks','MaxMarks','Percentage','Grade',
+     *                        'PassFail','Absent','Subjects','ComputedAt','Rank']]
+     */
+    public function compute_section(array $templatesNode, array $allMarksNode, string $scale, int $passingPct): array
+    {
+        // Collect unique student IDs across all subjects.
+        $allUserIds = [];
+        foreach ($allMarksNode as $stuMarks) {
+            if (is_array($stuMarks)) {
+                foreach (array_keys($stuMarks) as $uid) {
+                    $allUserIds[$uid] = true;
+                }
+            }
+        }
+        $allUserIds = array_keys($allUserIds);
+
+        $studentResults = [];
+        foreach ($allUserIds as $uid) {
+            $totalMarks = 0;
+            $maxMarks   = 0;
+            $subjects   = [];
+            $allPass    = true;
+            $attempted  = 0;
+
+            foreach ($templatesNode as $subj => $tmpl) {
+                if (!is_array($tmpl)) continue;
+                $subjMax  = (int) ($tmpl['TotalMaxMarks'] ?? 0);
+                $stuMarks = $allMarksNode[$subj][$uid] ?? [];
+
+                // CC-8: an absent (AB) paper is NOT zero and does NOT fail the
+                // student. It is excluded from the percentage denominator and
+                // from the overall pass/fail, but stays visibly 'AB'.
+                if (!empty($stuMarks['Absent'])) {
+                    $subjects[$subj] = [
+                        'Total'      => null,
+                        'MaxMarks'   => $subjMax,
+                        'Percentage' => null,
+                        'Grade'      => 'AB',
+                        'PassFail'   => 'AB',
+                        'Absent'     => true,
+                    ];
+                    continue;
+                }
+
+                $subjTotal = (int) ($stuMarks['Total'] ?? 0);
+                $subjPct   = $subjMax > 0 ? ($subjTotal / $subjMax * 100) : 0;
+                $subjPass  = $this->compute_pass_fail($subjPct, $passingPct);
+
+                if ($subjPass === 'Fail') $allPass = false;
+
+                $subjects[$subj] = [
+                    'Total'      => $subjTotal,
+                    'MaxMarks'   => $subjMax,
+                    'Percentage' => round($subjPct, 2),
+                    'Grade'      => $this->compute_grade($subjPct, $scale),
+                    'PassFail'   => $subjPass,
+                    'Absent'     => false,
+                ];
+
+                $totalMarks += $subjTotal;
+                $maxMarks   += $subjMax;
+                $attempted++;
+            }
+
+            // CC-8: percentage + pass/fail derive from attempted subjects only.
+            // Fully-absent student (no attempted papers) → AB overall: no 0%,
+            // no Fail, no new status beyond AB.
+            if ($attempted === 0 || $maxMarks === 0) {
+                $overallPct   = null;
+                $overallGrade = 'AB';
+                $overallPass  = 'AB';
+                $fullyAbsent  = true;
+            } else {
+                $overallPct   = $totalMarks / $maxMarks * 100;
+                $overallGrade = $this->compute_grade($overallPct, $scale);
+                $overallPass  = $allPass ? $this->compute_pass_fail($overallPct, $passingPct) : 'Fail';
+                $fullyAbsent  = false;
+            }
+
+            $studentResults[$uid] = [
+                'TotalMarks' => $totalMarks,
+                'MaxMarks'   => $maxMarks,
+                'Percentage' => $overallPct === null ? null : round($overallPct, 2),
+                'Grade'      => $overallGrade,
+                'PassFail'   => $overallPass,
+                'Absent'     => $fullyAbsent,
+                'Subjects'   => $subjects,
+                'ComputedAt' => (int) round(microtime(true) * 1000),
+            ];
+        }
+
+        // Sort by Percentage desc → assign competition ranks (1,1,3).
+        uasort($studentResults, fn($a, $b) => $b['Percentage'] <=> $a['Percentage']);
+        $this->assign_ranks_assoc($studentResults, 'Percentage');
+
+        return $studentResults;
+    }
+
+    // =========================================================================
     //  CLASS / SECTION STRUCTURE
     // =========================================================================
 
@@ -257,7 +377,12 @@ class Exam_engine
             return $this->_exams_cache;
         }
 
-        $raw   = $this->firebase->get("Schools/{$this->school}/{$this->year}/Exams") ?? [];
+        // EXAM-DEF-FS-CUTOVER Phase 2A: exam list from Firestore via adapter
+        // (legacy-shaped; StartDate stays d-m-Y so the existing sort is unchanged).
+        $CI =& get_instance();
+        $CI->load->library('Exam_read', null, 'exam_read');
+        $CI->exam_read->init($this->firebase, $this->school, $this->year);
+        $raw   = $CI->exam_read->list_exams();
         $exams = [];
         foreach ($raw as $id => $e) {
             if ($id === 'Count' || !is_array($e)) continue;

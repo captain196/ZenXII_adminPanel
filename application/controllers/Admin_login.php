@@ -232,8 +232,12 @@ class Admin_login extends CI_Controller
         //   schoolId     : Firestore SCH_* key
         //   schoolCode   : numeric login code
         //   parentDbKey  : legacy alias of schoolCode (back-compat — retirement deferred to Wave E)
-        $schoolId   = (string) ($claims['schoolId']   ?? '');
-        $schoolCode = (string) ($claims['schoolCode'] ?? '');
+        // TRANSITIONAL BRIDGE (2026-06-06): accept legacy snake_case claims emitted by
+        // pre-camelCase writers (Staff/Ssa_reset/Admin + any historical AdminUsers accounts).
+        // RETIRE once all admin-side writers emit camelCase AND legacy claims are backfilled.
+        // Tracking: RBAC_CLAIMS_REMEDIATION_PACKAGE.md (C3/C4).
+        $schoolId   = (string) ($claims['schoolId']   ?? $claims['school_id']   ?? '');
+        $schoolCode = (string) ($claims['schoolCode'] ?? $claims['school_code'] ?? '');
         $roleLabel  = (string) ($claims['roleLabel']  ?? '');
         $roleRaw    = (string) ($claims['role']       ?? '');
 
@@ -326,10 +330,11 @@ class Admin_login extends CI_Controller
         // Hydrate session-derived fields from schools/{schoolId} Firestore doc.
         $this->_hydrate_admin_session_from_school($schoolId);
 
-        // [RBAC] Cache role permissions in session
-        $this->load->helper('rbac');
-        $rbacPerms = load_role_permissions($this->firebase, $schoolId, $displayRole);
-        $this->session->set_userdata('rbac_permissions', $rbacPerms);
+        // [RBAC] Permissions are hydrated by MY_Controller on the first
+        // authenticated request, where the Firestore `fs` service is loaded.
+        // Admin_login extends CI_Controller and does not load `fs`, so hydrating
+        // here would no-op (fail-closed []) — deferral keeps login read-free and
+        // Firestore-canonical (schools/{schoolId}.roles is the sole authority).
 
         $this->sec_telem->emit('ADMIN_LOGIN_SUCCESS', 'info', [
             'admin_id'    => $adminId,
@@ -592,8 +597,19 @@ class Admin_login extends CI_Controller
         rsort($sessions);
 
         $currentSession = (string) ($schoolDoc['currentSession'] ?? '');
-        if ($currentSession === '' && !empty($sessions)) {
-            $currentSession = $sessions[0];
+
+        // SC-Step10/G1 (2026-06-06): FAIL-CLOSED. schools/{id}.currentSession is the SOLE
+        // session authority — NO sessions[0] fallback. If it is absent, the tenant has no
+        // canonical active session: block login (clear the partial session) rather than
+        // silently activating a non-canonical session.
+        if ($currentSession === '') {
+            log_message('error',
+                'SC10 fail-closed: schoolId=' . $schoolId . ' has no currentSession at login — blocking.');
+            $this->session->unset_userdata(self::SESSION_KEYS);
+            $this->session->set_flashdata('error',
+                'Your school has no active academic session configured. Please contact your administrator.');
+            redirect('admin_login');
+            return;
         }
 
         // Wave C hotfix (2026-06-03): features live in tenantPublic/{schoolId}.activeModules

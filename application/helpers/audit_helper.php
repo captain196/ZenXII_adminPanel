@@ -40,7 +40,15 @@ function log_audit(string $module, string $action, string $entityId = '', string
         // Firestore service must be loaded and initialized — if not, the
         // controller is running before MY_Controller::__construct's fs
         // bootstrap (rare). Degrade silently.
-        if (!isset($CI->fs) || !$CI->fs->isReady()) {
+        // Degrade silently unless `fs` is the Firestore_service gateway that
+        // provides isReady()/schoolId(). Some controllers (Result,
+        // Examination) rebind `fs` to Firestore_helper, which lacks both —
+        // calling them there would fatal. method_exists keeps audit logging
+        // intact for Firestore_service and a safe no-op elsewhere.
+        if (!isset($CI->fs)
+            || !method_exists($CI->fs, 'isReady')
+            || !method_exists($CI->fs, 'schoolId')
+            || !$CI->fs->isReady()) {
             return;
         }
         $schoolId = $CI->fs->schoolId();
@@ -83,7 +91,7 @@ function audit_log_count($firebase = null, string $school = ''): int
 {
     try {
         $CI =& get_instance();
-        if (!isset($CI->fs) || !$CI->fs->isReady()) return 0;
+        if (!isset($CI->fs) || !method_exists($CI->fs, 'isReady') || !method_exists($CI->fs, 'schoolId') || !$CI->fs->isReady()) return 0;
 
         $schoolId = $CI->fs->schoolId();
         if ($schoolId === '') return 0;
@@ -105,7 +113,7 @@ function audit_archive_old($firebase = null, string $school = '', int $limit = 1
 {
     try {
         $CI =& get_instance();
-        if (!isset($CI->fs) || !$CI->fs->isReady()) return 0;
+        if (!isset($CI->fs) || !method_exists($CI->fs, 'isReady') || !method_exists($CI->fs, 'schoolId') || !$CI->fs->isReady()) return 0;
 
         $schoolId = $CI->fs->schoolId();
         if ($schoolId === '') return 0;

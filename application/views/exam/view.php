@@ -12,6 +12,16 @@
   $createdAt    = !empty($exam['CreatedAt'])
                     ? date('d M Y, h:i A', (int)($exam['CreatedAt'] / 1000))
                     : '—';
+  // Phase 1 lifecycle audit (shown only when stamped).
+  $publishedBy  = htmlspecialchars($exam['PublishedBy'] ?? '');
+  $publishedAt  = !empty($exam['PublishedAt']) ? date('d M Y, h:i A', (int)($exam['PublishedAt'] / 1000)) : '';
+  $completedBy  = htmlspecialchars($exam['CompletedBy'] ?? '');
+  $completedAt  = !empty($exam['CompletedAt']) ? date('d M Y, h:i A', (int)($exam['CompletedAt'] / 1000)) : '';
+  // Phase 3.1 reverse-lifecycle audit (display-only; stamped from Phase 3.2 onward).
+  $unpublishedBy = htmlspecialchars($exam['UnpublishedBy'] ?? '');
+  $unpublishedAt = !empty($exam['UnpublishedAt']) ? date('d M Y, h:i A', (int)($exam['UnpublishedAt'] / 1000)) : '';
+  $reopenedBy    = htmlspecialchars($exam['ReopenedBy'] ?? '');
+  $reopenedAt    = !empty($exam['ReopenedAt']) ? date('d M Y, h:i A', (int)($exam['ReopenedAt'] / 1000)) : '';
   $instructions = is_array($exam['GeneralInstructions'] ?? null)
                     ? $exam['GeneralInstructions'] : [];
   $schedule     = is_array($exam['Schedule'] ?? null) ? $exam['Schedule'] : [];
@@ -122,15 +132,32 @@
 
   <!-- ── Status Update Bar ──────────────────────────────────────────────── -->
   <div class="ev-status-bar">
-    <span class="ev-status-bar-label"><i class="fa fa-refresh"></i> Change Status:</span>
-    <select id="statusSelect" class="ev-status-sel">
-      <option value="Draft"     <?= $examStatus === 'Draft'     ? 'selected' : '' ?>>Draft</option>
-      <option value="Published" <?= $examStatus === 'Published' ? 'selected' : '' ?>>Published</option>
-      <option value="Completed" <?= $examStatus === 'Completed' ? 'selected' : '' ?>>Completed</option>
-    </select>
-    <button type="button" class="ev-btn-update-status" id="updateStatusBtn" onclick="evUpdateStatus()">
-      <i class="fa fa-check"></i> Update
-    </button>
+    <span class="ev-status-bar-label"><i class="fa fa-refresh"></i> Lifecycle:</span>
+    <?php if ($examStatus === 'Draft'): ?>
+      <a href="<?= base_url('exam/edit/' . urlencode($examId)) ?>" class="ev-btn-update-status" id="editBtn">
+        <i class="fa fa-pencil"></i> Edit
+      </a>
+      <button type="button" class="ev-btn-update-status" onclick="evSetStatus('Published', null)">
+        <i class="fa fa-check-circle"></i> Publish
+      </button>
+    <?php elseif ($examStatus === 'Published'): ?>
+      <button type="button" class="ev-btn-update-status" onclick="evSetStatus('Completed', null)">
+        <i class="fa fa-flag-checkered"></i> Mark Completed
+      </button>
+      <?php if (!empty($hasMarks)): ?>
+        <button type="button" class="ev-btn-update-status" disabled title="Clear marks before unpublishing">
+          <i class="fa fa-undo"></i> Unpublish <small>(marks present)</small>
+        </button>
+      <?php else: ?>
+        <button type="button" class="ev-btn-update-status" onclick="evSetStatus('Draft', 'Unpublish this exam? It returns to Draft and becomes editable. Parents will no longer see it, and it is removed from results until republished.')">
+          <i class="fa fa-undo"></i> Unpublish
+        </button>
+      <?php endif; ?>
+    <?php elseif ($examStatus === 'Completed'): ?>
+      <button type="button" class="ev-btn-update-status" onclick="evSetStatus('Published', 'Reopen this exam? It returns to Published so results can be revised.')">
+        <i class="fa fa-rotate-right"></i> Reopen
+      </button>
+    <?php endif; ?>
     <span class="ev-status-msg" id="statusMsg"></span>
   </div>
 
@@ -288,6 +315,30 @@
             <span class="ev-meta-label"><i class="fa fa-clock-o"></i> Created At</span>
             <span class="ev-meta-val ev-meta-date"><?= $createdAt ?></span>
           </div>
+          <?php if ($publishedBy || $publishedAt): ?>
+          <div class="ev-meta-row ev-meta-row-col">
+            <span class="ev-meta-label"><i class="fa fa-check-circle"></i> Published</span>
+            <span class="ev-meta-val ev-meta-date"><?= trim($publishedBy . ($publishedAt ? ' · ' . $publishedAt : '')) ?></span>
+          </div>
+          <?php endif; ?>
+          <?php if ($completedBy || $completedAt): ?>
+          <div class="ev-meta-row ev-meta-row-col">
+            <span class="ev-meta-label"><i class="fa fa-flag-checkered"></i> Completed</span>
+            <span class="ev-meta-val ev-meta-date"><?= trim($completedBy . ($completedAt ? ' · ' . $completedAt : '')) ?></span>
+          </div>
+          <?php endif; ?>
+          <?php if ($unpublishedBy || $unpublishedAt): ?>
+          <div class="ev-meta-row ev-meta-row-col">
+            <span class="ev-meta-label"><i class="fa fa-undo"></i> Unpublished</span>
+            <span class="ev-meta-val ev-meta-date"><?= trim($unpublishedBy . ($unpublishedAt ? ' · ' . $unpublishedAt : '')) ?></span>
+          </div>
+          <?php endif; ?>
+          <?php if ($reopenedBy || $reopenedAt): ?>
+          <div class="ev-meta-row ev-meta-row-col">
+            <span class="ev-meta-label"><i class="fa fa-rotate-right"></i> Reopened</span>
+            <span class="ev-meta-val ev-meta-date"><?= trim($reopenedBy . ($reopenedAt ? ' · ' . $reopenedAt : '')) ?></span>
+          </div>
+          <?php endif; ?>
 
         </div>
       </div>
@@ -300,18 +351,22 @@
 
 
 <!-- ── Delete Confirm Modal ──────────────────────────────────────────────── -->
-<div id="evDelModal" class="ev-modal-overlay" style="display:none;">
-  <div class="ev-modal">
-    <div class="ev-modal-icon"><i class="fa fa-exclamation-triangle"></i></div>
-    <div class="ev-modal-title">Delete Exam?</div>
-    <div class="ev-modal-body">
-      You are about to permanently delete <strong><?= $examName ?></strong>.
-      All per-section schedule copies will also be removed. This cannot be undone.
+<div id="evDelModal" class="exdlg-overlay" style="display:none;">
+  <div class="exdlg-box" role="dialog" aria-modal="true" aria-labelledby="exdlgTitle">
+    <div class="exdlg-icon"><i class="fa fa-exclamation-triangle"></i></div>
+    <div class="exdlg-title" id="exdlgTitle">Delete this exam?</div>
+    <div class="exdlg-body">
+      You're about to permanently delete <strong><?= $examName ?></strong>.
+      All per-section schedule copies will also be removed.
+      <?php if (!empty($hasMarks)): ?>
+        <span class="exdlg-warn"><i class="fa fa-exclamation-circle"></i> This exam has marks and results — they will be permanently deleted.</span>
+      <?php endif; ?>
+      <span class="exdlg-muted">This action cannot be undone.</span>
     </div>
-    <div class="ev-modal-actions">
-      <button type="button" class="ev-modal-cancel" onclick="evCloseModal()">Cancel</button>
-      <a href="<?= base_url('exam/delete/' . urlencode($examId)) ?>" class="ev-modal-confirm">
-        <i class="fa fa-trash"></i> Delete
+    <div class="exdlg-actions">
+      <button type="button" class="exdlg-btn exdlg-cancel" onclick="evCloseModal()">Cancel</button>
+      <a href="<?= base_url('exam/delete/' . urlencode($examId)) ?>?confirm=1" class="exdlg-btn exdlg-confirm">
+        <i class="fa fa-trash"></i> Delete exam
       </a>
     </div>
   </div>
@@ -340,10 +395,13 @@
   });
 
   /* ── Status update ── */
-  window.evUpdateStatus = function () {
-    var btn    = document.getElementById('updateStatusBtn');
-    var status = document.getElementById('statusSelect').value;
-    var msg    = document.getElementById('statusMsg');
+  // Phase 3.5: generic gated lifecycle transition. Confirms (when a message
+  // is given), POSTs to update_status (server enforces the 3.2 state machine
+  // + 3.3 marks guard), and reloads on success so buttons re-gate to the new
+  // status. Errors (incl. 409 transition/marks) surface as toasts unchanged.
+  window.evSetStatus = function (newStatus, confirmMsg) {
+    if (confirmMsg && !window.confirm(confirmMsg)) return;
+    var msg = document.getElementById('statusMsg');
 
     var csrfNameMeta = document.querySelector('meta[name="csrf-name"]');
     var csrfTokenMeta= document.querySelector('meta[name="csrf-token"]');
@@ -353,28 +411,24 @@
     var fd = new FormData();
     if (csrfName) fd.append(csrfName, csrfToken);
     fd.append('examId', '<?= htmlspecialchars($examId) ?>');
-    fd.append('status', status);
+    fd.append('status', newStatus);
 
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Updating…';
-    msg.textContent = '';
+    if (msg) msg.textContent = 'Updating…';
 
     fetch('<?= base_url('exam/update_status') ?>', { method: 'POST', body: fd })
       .then(function (r) { return r.json(); })
       .then(function (res) {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa fa-check"></i> Update';
+        if (res.csrf_token && csrfTokenMeta) csrfTokenMeta.setAttribute('content', res.csrf_token);
         if (res.status === 'success') {
           showEvToast(res.message || 'Status updated.', 'success');
-          if (res.csrf_token && csrfTokenMeta) csrfTokenMeta.setAttribute('content', res.csrf_token);
+          setTimeout(function () { window.location.reload(); }, 900);
         } else {
+          if (msg) msg.textContent = '';
           showEvToast(res.message || 'Failed to update status.', 'error');
-          if (res.csrf_token && csrfTokenMeta) csrfTokenMeta.setAttribute('content', res.csrf_token);
         }
       })
       .catch(function () {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa fa-check"></i> Update';
+        if (msg) msg.textContent = '';
         showEvToast('Server error. Please try again.', 'error');
       });
   };
@@ -784,34 +838,41 @@ html { font-size: 16px !important; }
 .ev-s-draft.ev-mini-badge{ background: #d97706; }
 .ev-s-done.ev-mini-badge { background: var(--gold); }
 
-/* ── Delete Modal ── */
-.ev-modal-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,.52);
+/* ── Delete Modal (scoped exdlg-* — decoupled from the global .ev-modal
+      Events-modal rules in header.php which force max-width:95vw !important) ── */
+.exdlg-overlay {
+  position: fixed; inset: 0; background: rgba(15,23,42,.55);
+  -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
   z-index: 9999; display: flex; align-items: center; justify-content: center; padding: 16px;
 }
-.ev-modal {
-  background: var(--bg2); border-radius: 14px; padding: 32px 28px 24px;
-  max-width: 420px; width: 100%; text-align: center;
-  box-shadow: 0 12px 48px rgba(0,0,0,.4); animation: ev-modal-in .2s ease;
+.exdlg-box {
+  box-sizing: border-box;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 16px; padding: 30px 28px 22px;
+  width: 100%; max-width: 420px; text-align: center;
+  box-shadow: 0 20px 60px rgba(0,0,0,.35); animation: exdlg-in .18s ease;
 }
-@keyframes ev-modal-in { from{transform:scale(.9);opacity:0} to{transform:scale(1);opacity:1} }
-.ev-modal-icon { font-size: 2.4rem; color: #ef4444; margin-bottom: 14px; }
-.ev-modal-title { font-size: 1.15rem; font-weight: 700; color: var(--t1); margin-bottom: 10px; }
-.ev-modal-body { font-size: .9rem; color: var(--t2); line-height: 1.6; margin-bottom: 22px; }
-.ev-modal-actions { display: flex; gap: 10px; justify-content: center; }
-.ev-modal-cancel {
-  padding: 9px 22px; border: 1px solid var(--border); border-radius: 7px;
-  background: var(--bg3); color: var(--t2); font-size: .9rem; font-weight: 600;
-  cursor: pointer; transition: background .18s;
+@keyframes exdlg-in { from{transform:translateY(8px) scale(.97);opacity:0} to{transform:none;opacity:1} }
+.exdlg-icon {
+  width: 56px; height: 56px; margin: 0 auto 16px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: rgba(239,68,68,.12); color: #ef4444; font-size: 1.5rem;
 }
-.ev-modal-cancel:hover { background: var(--border); }
-.ev-modal-confirm {
-  padding: 9px 22px; background: #ef4444; color: #fff; border: none;
-  border-radius: 7px; font-size: .9rem; font-weight: 600; cursor: pointer;
-  text-decoration: none; display: inline-flex; align-items: center; gap: 7px;
-  transition: background .18s;
+.exdlg-title { font-size: 1.2rem; font-weight: 700; color: var(--t1); margin-bottom: 10px; }
+.exdlg-body { font-size: .9rem; color: var(--t2); line-height: 1.6; margin-bottom: 24px; }
+.exdlg-body strong { color: var(--t1); font-weight: 700; }
+.exdlg-warn { display: block; margin-top: 12px; color: #b91c1c; font-weight: 600; }
+.exdlg-muted { display: block; margin-top: 8px; color: var(--t3, #94a3b8); font-size: .82rem; }
+.exdlg-actions { display: flex; gap: 10px; justify-content: center; }
+.exdlg-btn {
+  padding: 10px 22px; border-radius: 9px; font-size: .9rem; font-weight: 600;
+  cursor: pointer; transition: background .15s, box-shadow .15s; text-decoration: none;
+  display: inline-flex; align-items: center; gap: 8px; border: 1px solid transparent;
 }
-.ev-modal-confirm:hover { background: #dc2626; color: #fff; }
+.exdlg-cancel { background: var(--bg3); color: var(--t2); border-color: var(--border); }
+.exdlg-cancel:hover { background: var(--border); }
+.exdlg-confirm { background: #ef4444; color: #fff; }
+.exdlg-confirm:hover { background: #dc2626; color: #fff; box-shadow: 0 6px 18px rgba(239,68,68,.35); }
 
 /* ── Toast ── */
 .ev-toast-wrap { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 10px; z-index: 9999; }

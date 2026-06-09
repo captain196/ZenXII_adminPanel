@@ -12,7 +12,8 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *   POST admission/submit/{school_id} → processes submission
  *
  * Firestore collections (Phase-0 migration: NO RTDB anywhere in the form flow):
- *   schools/{school_id}                     — school profile + activeSession (read)
+ *   schools/{school_id}                     — school profile + currentSession (read-only;
+ *                                             SC-Step11/G3 sole session authority, no write)
  *   sections                                — class list resolution (read)
  *   crmApplications                         — application storage (write — same
  *                                             collection admin's CRM reads)
@@ -69,10 +70,10 @@ class Admission_public extends CI_Controller
             'email'        => $schoolDoc['email'] ?? '',
         ]);
 
-        // Resolve the active session — `currentSession` is the canonical
-        // Firestore field per School_config.php:2880-2882; if the school
-        // doc was migrated before that field existed, we derive it from
-        // the `sections` collection instead so the form still works.
+        // Resolve the active session — `schools/{id}.currentSession` is the
+        // sole canonical authority (SC-Step11/G3). Fail-closed: if absent,
+        // $activeSession is '' and the class list stays empty, so the form
+        // renders "No classes available" rather than inventing a session.
         $activeSession = $this->_resolve_active_session($school_id, $schoolDoc);
 
         // Build class list by querying the `sections` collection scoped to
@@ -135,6 +136,14 @@ class Admission_public extends CI_Controller
             'school_name'  => $schoolDoc['name'] ?? $schoolDoc['schoolName'] ?? '',
         ]);
         $activeSession = $this->_resolve_active_session($school_id, $schoolDoc);
+
+        // SC-Step11/G3 fail-closed: no canonical session → reject before any
+        // write (do not persist a session-less application).
+        if ($activeSession === '') {
+            http_response_code(409);
+            echo json_encode(['status' => 'error', 'message' => 'Admissions are not currently open for this school.']);
+            return;
+        }
 
         // ── Rate limiting: 10 submissions per IP per 15 minutes ───────────
         // Doc-per-IP in `crmRateLimits`. Each doc carries an `attempts` array
@@ -496,6 +505,11 @@ class Admission_public extends CI_Controller
         // tampered POST can't change the fee amount.
         $schoolDoc = $this->fs->get('schools', $school_id) ?? [];
         $session = $this->_resolve_active_session($school_id, $schoolDoc);
+        // SC-Step11/G3 fail-closed: no canonical session → no payment order.
+        if ($session === '') {
+            echo json_encode(['status' => 'error', 'message' => 'Admissions are not currently open for this school.']);
+            return;
+        }
         $appClass = (string) ($app['class'] ?? '');
         $feeInfo = $this->_resolve_admission_fee($school_id, $schoolDoc, $session, $appClass);
         if (!$feeInfo['enabled'] || $feeInfo['amount'] <= 0) {
@@ -774,6 +788,12 @@ class Admission_public extends CI_Controller
             ?? $school_id
         );
         $session = $this->_resolve_active_session($school_id, $schoolDoc);
+        // SC-Step11/G3 fail-closed: gateway lookup requires the canonical
+        // session. Absent → throw; both callers (initiate_payment,
+        // payment_callback) catch and surface "gateway not configured".
+        if ($session === '') {
+            throw new \RuntimeException('SC-G3: currentSession absent — admission payment gateway not resolvable (fail-closed)');
+        }
 
         // Two-stage lookup. Some tenants store the gateway doc keyed by
         // `{schoolName}_{session}_gateway` (fees-module convention),
@@ -803,7 +823,7 @@ class Admission_public extends CI_Controller
                     // Prefer a row matching the active session; fall back
                     // to any gateway row for this school if no session match.
                     $rowSession = (string) ($r['session'] ?? '');
-                    if ($session === '' || $rowSession === '' || $rowSession === $session) {
+                    if ($rowSession === '' || $rowSession === $session) {
                         $gwConfig = $r;
                         break;
                     }
@@ -962,59 +982,28 @@ class Admission_public extends CI_Controller
     }
 
     /**
-     * Resolve the school's active session.
+     * Resolve the school's active session — Firestore canonical authority.
      *
-     * Read order:
-     *   1. `currentSession` on the schools doc (canonical, per
-     *      School_config.php:2880-2882)
-     *   2. Legacy fields: `activeSession`, `active_session`, `session`
-     *   3. Sections-collection fallback — pick the latest `session` value
-     *      across this school's sections. This handles tenants whose
-     *      schools doc was created before the session field existed but
-     *      whose sections rows do carry it. The result is also written
-     *      back to the schools doc so subsequent reads are O(1).
+     * SC-Step11/G3 (2026-06-06): `schools/{id}.currentSession` is the SOLE
+     * session authority. This resolver no longer consults legacy fields
+     * (`activeSession`, `active_session`, `session`), no longer derives a
+     * session from the `sections` collection, and no longer writes
+     * `currentSession` back. The removed side-channel write let the public
+     * admission form mutate the canonical authority and re-seed a value the
+     * SC-Step10 read fail-closes (G1 login, G2 api_punch) depend on being
+     * absent. `currentSession` is written only by School_config (canonical)
+     * and the Superadmin onboarding seed.
      *
-     * Returns empty string if nothing resolves (caller treats this as
-     * "no class list available").
+     * Fail-closed: returns '' when `currentSession` is absent; every caller
+     * treats '' as "admissions not currently open / session not configured"
+     * rather than inventing or persisting a session.
+     *
+     * @param string $school_id  Retained for signature stability; unused now
+     *                           that the side-channel write has been removed.
      */
     private function _resolve_active_session(string $school_id, array $schoolDoc): string
     {
-        $fromDoc = (string) (
-            $schoolDoc['currentSession']
-            ?? $schoolDoc['activeSession']
-            ?? $schoolDoc['active_session']
-            ?? $schoolDoc['session']
-            ?? ''
-        );
-        if ($fromDoc !== '') return $fromDoc;
-
-        // Sections-collection fallback. Sort lexicographically — session
-        // strings are formatted "YYYY-YY" so newer windows sort later.
-        try {
-            $sections = $this->fs->schoolList('sections');
-            $sessions = [];
-            foreach ($sections as $s) {
-                $sv = (string) ($s['session'] ?? '');
-                if ($sv !== '') $sessions[$sv] = true;
-            }
-            if (!empty($sessions)) {
-                $sessionKeys = array_keys($sessions);
-                rsort($sessionKeys);
-                $resolved = (string) $sessionKeys[0];
-
-                // Best-effort: persist the resolved value to the schools
-                // doc so future reads skip the sections query. Failure
-                // here is non-fatal — we still return the value.
-                try {
-                    $this->fs->update('schools', $school_id, ['currentSession' => $resolved]);
-                } catch (\Exception $e) { /* non-fatal */ }
-
-                return $resolved;
-            }
-        } catch (\Exception $e) {
-            log_message('error', "Admission_public::_resolve_active_session sections fallback failed: " . $e->getMessage());
-        }
-        return '';
+        return (string) ($schoolDoc['currentSession'] ?? '');
     }
 
     // ─── PUBLIC: Printable PDF receipt ──────────────────────────────────
