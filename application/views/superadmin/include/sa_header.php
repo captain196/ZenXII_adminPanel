@@ -723,14 +723,19 @@ var BASE_URL = '<?= base_url() ?>';
                 </a>
             </li>
 
-            <?php if (($sa_role ?? '') === 'developer'): ?>
             <li class="g-sec">Admin Access</li>
+            <?php if (($sa_role ?? '') === 'developer'): ?>
             <li class="<?= ($this->router->fetch_class() === 'superadmin_admins') ? 'active' : '' ?>">
                 <a href="<?= base_url('superadmin/admins') ?>">
                     <i class="fa fa-user-secret"></i><span>Super Admins</span>
                 </a>
             </li>
             <?php endif; ?>
+            <li class="<?= ($this->router->fetch_class() === 'superadmin_school_admins') ? 'active' : '' ?>">
+                <a href="<?= base_url('superadmin/school_admins') ?>">
+                    <i class="fa fa-user"></i><span>School Super Admins</span>
+                </a>
+            </li>
 
             <li class="g-sec">System</li>
             <li class="<?= ($this->router->fetch_class() === 'superadmin_monitor') ? 'active' : '' ?>">

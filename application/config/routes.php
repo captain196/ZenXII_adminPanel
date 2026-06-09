@@ -313,6 +313,12 @@ $route['superadmin/admins/reset_password']              = 'Superadmin_admins/res
 $route['superadmin/admins/update_profile']              = 'Superadmin_admins/update_profile';
 $route['superadmin/admins/delete']                      = 'Superadmin_admins/delete';
 
+// ─── School Super Admin Management (all super admins) — onboarding-created SSAs
+$route['superadmin/school_admins']                      = 'Superadmin_school_admins/index';
+$route['superadmin/school_admins/fetch']                = 'Superadmin_school_admins/fetch';
+$route['superadmin/school_admins/toggle_status']        = 'Superadmin_school_admins/toggle_status';
+$route['superadmin/school_admins/reset_password']       = 'Superadmin_school_admins/reset_password';
+
 // ─── School Configuration
 $route['school_config']                                 = 'School_config/index';
 $route['school_config/get_config']                      = 'School_config/get_config';

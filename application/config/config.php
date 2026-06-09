@@ -183,6 +183,7 @@ $config['csrf_exclude_uris'] = [
     'superadmin/debug(.*)',
     'superadmin/migration(.*)',
     'superadmin/admins(.*)',
+    'superadmin/school_admins(.*)',
     'superadmin/bootstrap(.*)',
     'superadmin/login(.*)',
     'superadmin/csrf_token',
