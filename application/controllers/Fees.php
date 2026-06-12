@@ -6964,6 +6964,15 @@ class Fees extends MY_Controller
                 continue;
             }
 
+            // Item 4 guard: never recompute a concession demand from the legacy
+            // studentDiscounts map — it would zero the concession and OVERCHARGE
+            // the student (net→gross). Preserve net/discount/attribution; re-run
+            // assignInitialFees (concession-aware) to re-chart a concession student.
+            if (!empty($demand['concessionApplied'])) {
+                $preserved++;
+                continue;
+            }
+
             $feeHead   = $demand['fee_head'] ?? '';
             $monthName = explode(' ', $demand['period'] ?? '')[0] ?? '';
 

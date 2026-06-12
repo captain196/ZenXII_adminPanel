@@ -108,6 +108,7 @@ class Fee_generation_service
             if (abs($net - $gross) > 0.0001) {
                 $data['netAmount']         = $net;
                 $data['concessionApplied'] = round($gross - $net, 2);
+                $data['discountAmount']    = round($gross - $net, 2); // Item 1: persist discount so gross − discount == net (reporting/audit/analytics)
                 // Recompute balance only when this spec is for a fresh (unpaid) demand.
                 // BUG-075 preservePayment may have omitted balance entirely; only set
                 // balance when the legacy build had set it (i.e., status was emitted).
