@@ -24,7 +24,7 @@
         <?php foreach ($exams as $ex): ?>
         <option value="<?= htmlspecialchars($ex['id']) ?>"
           <?= ($examId === $ex['id']) ? 'selected' : '' ?>>
-          <?= htmlspecialchars($ex['Name'] ?? $ex['id']) ?> (<?= htmlspecialchars($ex['id']) ?>)
+          <?= htmlspecialchars($ex['Name'] ?? $ex['id']) ?>
         </option>
         <?php endforeach; ?>
       </select>
@@ -135,6 +135,14 @@
     if (!examSel.value || !classSel.value || !sectionSel.value) return;
     computeBtn.disabled = true;
     computeBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Computing…';
+    // Clean the result area while computing: hide the stale warning + old table
+    // and show a clear in-body progress state (the compute is network-bound).
+    _setStaleBanner(false);
+    computeMsg.style.display = 'none';
+    emptyDiv.style.display = 'none';
+    tableWrap.style.display = 'none';
+    loading.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Computing results & ranks… this can take a few seconds.';
+    loading.style.display = '';
 
     var fd = new FormData();
     fd.append('examId',     examSel.value);
@@ -162,9 +170,11 @@
     var classKey   = classSel.value;
     var sectionKey = sectionSel.value;
 
+    loading.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Loading results…';
     loading.style.display   = '';
     emptyDiv.style.display  = 'none';
     tableWrap.style.display = 'none';
+    _setStaleBanner(false);  // never show the stale warning WHILE (re)loading
 
     // Fetch computed results via AJAX
     fetch('<?= base_url('result/get_class_result_data') ?>?examId=' + encodeURIComponent(examId)

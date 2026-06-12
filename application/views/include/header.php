@@ -43,6 +43,39 @@
             --border:rgba(15,118,110,.15);--brd2:rgba(15,118,110,.28);
             --t1:#0c1e38;--t2:#1a5c56;--t3:#5a9e98;--t4:#94c9c3;--sh:0 2px 16px rgba(0,0,0,.08);
         }
+        /* ── Unified breadcrumb across Exam / Result / Examination modules ──
+           One consistent style overriding the per-page *-breadcrumb classes
+           (page <style> blocks load later, hence !important). ── */
+        .ec-breadcrumb,.ei-breadcrumb,.ev-breadcrumb,.rcr-breadcrumb,.rcu-breadcrumb,
+        .ri-breadcrumb,.rme-breadcrumb,.rms-breadcrumb,.rsr-breadcrumb,.rt-breadcrumb,
+        .epa-breadcrumb,.exm-breadcrumb,.eml-breadcrumb,.etb-breadcrumb {
+            list-style:none !important; margin:0 0 18px 0 !important; padding:0 !important;
+            display:flex !important; flex-wrap:wrap; align-items:center; gap:7px !important;
+            font-size:.82rem !important; color:var(--t3) !important; line-height:1.2 !important;
+        }
+        .ec-breadcrumb li,.ei-breadcrumb li,.ev-breadcrumb li,.rcr-breadcrumb li,.rcu-breadcrumb li,
+        .ri-breadcrumb li,.rme-breadcrumb li,.rms-breadcrumb li,.rsr-breadcrumb li,.rt-breadcrumb li,
+        .epa-breadcrumb li,.exm-breadcrumb li,.eml-breadcrumb li,.etb-breadcrumb li {
+            display:inline-flex !important; align-items:center; gap:7px; margin:0 !important; padding:0 !important;
+        }
+        .ec-breadcrumb a,.ei-breadcrumb a,.ev-breadcrumb a,.rcr-breadcrumb a,.rcu-breadcrumb a,
+        .ri-breadcrumb a,.rme-breadcrumb a,.rms-breadcrumb a,.rsr-breadcrumb a,.rt-breadcrumb a,
+        .epa-breadcrumb a,.exm-breadcrumb a,.eml-breadcrumb a,.etb-breadcrumb a {
+            color:var(--gold) !important; text-decoration:none !important; font-weight:600;
+        }
+        .ec-breadcrumb a:hover,.ei-breadcrumb a:hover,.ev-breadcrumb a:hover,.rcr-breadcrumb a:hover,.rcu-breadcrumb a:hover,
+        .ri-breadcrumb a:hover,.rme-breadcrumb a:hover,.rms-breadcrumb a:hover,.rsr-breadcrumb a:hover,.rt-breadcrumb a:hover,
+        .epa-breadcrumb a:hover,.exm-breadcrumb a:hover,.eml-breadcrumb a:hover,.etb-breadcrumb a:hover { text-decoration:underline !important; }
+        .ec-breadcrumb li + li::before,.ei-breadcrumb li + li::before,.ev-breadcrumb li + li::before,
+        .rcr-breadcrumb li + li::before,.rcu-breadcrumb li + li::before,.ri-breadcrumb li + li::before,
+        .rme-breadcrumb li + li::before,.rms-breadcrumb li + li::before,.rsr-breadcrumb li + li::before,
+        .rt-breadcrumb li + li::before,.epa-breadcrumb li + li::before,.exm-breadcrumb li + li::before,
+        .eml-breadcrumb li + li::before,.etb-breadcrumb li + li::before {
+            content:'\203A' !important; color:var(--t4) !important; margin:0 !important; font-weight:400;
+        }
+        /* shared button loading state (works with [data-spin] + zxBtnLoad helper) */
+        .zx-btn-loading { opacity:.75 !important; cursor:progress !important; pointer-events:none !important; }
+        .zx-btn-loading .fa-spinner { margin-right:5px; }
         /* ── Day mode: light teal-mint sidebar — matches the day theme.
            Soft mint tint (deeper than the #f0f7f5 content bg) so the sidebar
            reads as a distinct panel; crisper teal edge + shadow for float.

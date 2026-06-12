@@ -583,36 +583,38 @@ class Health_check extends MY_Controller
             [
                 'name' => 'Exam Templates',
                 'fn'   => function() use ($fb, $school, $session) {
-                    $tpl = $fb->shallow_get("Schools/{$school}/{$session}/Results/Templates");
-                    if (!is_array($tpl) || empty($tpl)) return $this->_p('No templates defined yet');
-                    // Templates are keyed by examId — each contains class/section/subject data
+                    // Phase B: canonical Firestore examTemplates — distinct examIds for this tenant/session.
+                    $rows = $fb->firestoreQuery('examTemplates', [['schoolId','==',$school],['session','==',$session]], null, 'ASC', 5000);
+                    if (!is_array($rows) || empty($rows)) return $this->_p('No templates defined yet');
                     $exams = [];
-                    foreach ($tpl as $examId) {
-                        $classes = $fb->shallow_get("Schools/{$school}/{$session}/Results/Templates/{$examId}");
-                        $classCount = is_array($classes) ? count($classes) : 0;
-                        $exams[] = "{$examId} ({$classCount} classes)";
-                    }
-                    return $this->_p(count($tpl) . ' exam template(s): ' . implode(', ', array_slice($exams, 0, 5)));
+                    foreach ($rows as $r) { $d = $r['data'] ?? $r; if (is_array($d) && !empty($d['examId'])) { $ex=(string)$d['examId']; $exams[$ex] = ($exams[$ex] ?? 0) + 1; } }
+                    $labels = []; foreach ($exams as $ex => $n) { $labels[] = "{$ex} ({$n} templates)"; }
+                    return $this->_p(count($exams) . ' exam(s) with templates (Firestore): ' . implode(', ', array_slice($labels, 0, 5)));
                 },
             ],
             [
                 'name' => 'Marks Data Present',
                 'fn'   => function() use ($fb, $school, $session) {
-                    $marks = $fb->shallow_get("Schools/{$school}/{$session}/Results/Marks");
-                    if (is_array($marks) && count($marks) > 0) return $this->_p(count($marks) . ' exams have marks data');
+                    // C2: canonical Firestore `marks` — distinct examIds for this tenant/session.
+                    $rows = $fb->firestoreQuery('marks', [['schoolId','==',$school],['session','==',$session]], null, 'ASC', 5000);
+                    $exams = [];
+                    if (is_array($rows)) foreach ($rows as $r) { $d = $r['data'] ?? $r; if (is_array($d) && !empty($d['examId'])) $exams[(string)$d['examId']] = true; }
+                    if ($exams) return $this->_p(count($exams) . ' exam(s) have marks data (Firestore)');
                     return $this->_p('No marks entered yet');
                 },
             ],
             [
                 'name' => 'Computed Results Sync',
                 'fn'   => function() use ($fb, $school, $session) {
-                    $marks = $fb->shallow_get("Schools/{$school}/{$session}/Results/Marks");
-                    $computed = $fb->shallow_get("Schools/{$school}/{$session}/Results/Computed");
-                    if (!is_array($marks) || empty($marks)) return $this->_p('No marks — nothing to compute');
-                    if (!is_array($computed)) $computed = [];
-                    $missing = array_diff($marks, $computed);
-                    if (empty($missing)) return $this->_p('All ' . count($marks) . ' exams have computed results');
-                    return $this->_f(count($missing) . ' exams with marks but no computed results: ' . implode(', ', array_slice($missing, 0, 3)));
+                    // C2: distinct examIds with marks vs distinct examIds with results (Firestore).
+                    $mRows = $fb->firestoreQuery('marks',   [['schoolId','==',$school],['session','==',$session]], null, 'ASC', 5000);
+                    $rRows = $fb->firestoreQuery('results', [['schoolId','==',$school],['session','==',$session]], null, 'ASC', 5000);
+                    $mEx = []; if (is_array($mRows)) foreach ($mRows as $r){ $d=$r['data']??$r; if(is_array($d)&&!empty($d['examId'])) $mEx[(string)$d['examId']]=true; }
+                    if (empty($mEx)) return $this->_p('No marks — nothing to compute');
+                    $rEx = []; if (is_array($rRows)) foreach ($rRows as $r){ $d=$r['data']??$r; if(is_array($d)&&!empty($d['examId'])) $rEx[(string)$d['examId']]=true; }
+                    $missing = array_diff(array_keys($mEx), array_keys($rEx));
+                    if (empty($missing)) return $this->_p('All ' . count($mEx) . ' exam(s) with marks have computed results (Firestore)');
+                    return $this->_f(count($missing) . ' exam(s) with marks but no results: ' . implode(', ', array_slice($missing, 0, 3)));
                 },
             ],
         ];
