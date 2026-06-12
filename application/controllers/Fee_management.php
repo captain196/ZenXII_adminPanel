@@ -3270,16 +3270,20 @@ class Fee_management extends MY_Controller
             }
             try {
                 $this->load->library('Fee_audit', null, 'feeAudit');
-                if (method_exists($this->feeAudit, 'record')) {
-                    $this->feeAudit->record('amount_mismatch', [
-                        'order_id'   => $gwOrderId,
-                        'payment_id' => $gwPaymentId,
-                        'student_id' => $studentId,
-                        'expected'   => $orderAmountParent,
-                        'gateway'    => $gwReportedAmountParent,
-                        'source'     => 'parent_verify_payment',
-                    ]);
-                }
+                $this->feeAudit->init(
+                    $this->firebase, "{$this->sessionRoot}/Fees",
+                    $this->admin_id ?? 'system', $this->admin_name ?? 'System',
+                    $this->school_name
+                );
+                // Firestore audit + critical alert (amount_mismatch ∈ ALERT_EVENTS). No RTDB.
+                $this->feeAudit->log('amount_mismatch', [
+                    'order_id'   => $gwOrderId,
+                    'payment_id' => $gwPaymentId,
+                    'student_id' => $studentId,
+                    'expected'   => $orderAmountParent,
+                    'gateway'    => $gwReportedAmountParent,
+                    'source'     => 'parent_verify_payment',
+                ]);
             } catch (\Exception $e) {
                 log_message('warning', 'parent_verify_payment: Fee_audit emit failed: ' . $e->getMessage());
             }
@@ -3983,16 +3987,20 @@ class Fee_management extends MY_Controller
             // Emit Fee_audit amount_mismatch event (severity=critical per Fee_audit.php:113).
             try {
                 $this->load->library('Fee_audit', null, 'feeAudit');
-                if (method_exists($this->feeAudit, 'record')) {
-                    $this->feeAudit->record('amount_mismatch', [
-                        'order_id'   => $gwOrderId,
-                        'payment_id' => $gwPaymentId,
-                        'student_id' => (string) ($order['student_id'] ?? ''),
-                        'expected'   => $orderAmount,
-                        'gateway'    => $gwReportedAmount,
-                        'source'     => $source,
-                    ]);
-                }
+                $this->feeAudit->init(
+                    $this->firebase, "{$this->sessionRoot}/Fees",
+                    $this->admin_id ?? 'system', $this->admin_name ?? 'System',
+                    $this->school_name
+                );
+                // Firestore audit + critical alert (amount_mismatch ∈ ALERT_EVENTS). No RTDB.
+                $this->feeAudit->log('amount_mismatch', [
+                    'order_id'   => $gwOrderId,
+                    'payment_id' => $gwPaymentId,
+                    'student_id' => (string) ($order['student_id'] ?? ''),
+                    'expected'   => $orderAmount,
+                    'gateway'    => $gwReportedAmount,
+                    'source'     => $source,
+                ]);
             } catch (\Exception $e) {
                 log_message('warning', 'verify_and_process: Fee_audit emit failed: ' . $e->getMessage());
             }
