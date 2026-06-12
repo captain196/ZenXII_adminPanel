@@ -172,7 +172,7 @@ html { font-size: 16px !important; }
 /* ═══════════════════════════════════════════════════════════
    Student Result — .rsr-*
 ═══════════════════════════════════════════════════════════ */
-.rsr-wrap { max-width: 1000px; margin: 0 auto; padding: 24px 16px 56px; }
+.rsr-wrap { max-width: 1400px; margin: 0 auto; padding: 24px 28px 56px; }
 
 .rsr-header { margin-bottom: 24px; }
 .rsr-page-title { font-size: 1.4rem; font-weight: 700; color: var(--t1); display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
