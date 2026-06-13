@@ -12,7 +12,9 @@ defined('BASEPATH') or exit('No direct script access allowed');
 class Fee_audit
 {
     private $firebase;
-    private $basePath;    // Schools/{school}/{session}/Fees
+    private $basePath;    // legacy RTDB path string — retained only to derive schoolId/session
+    private $schoolId = '';
+    private $session  = '';
     private $adminId;
     private $adminName;
     private $schoolName;
@@ -31,6 +33,11 @@ class Fee_audit
     {
         $this->firebase   = $firebase;
         $this->basePath   = $basePath;
+        // Derive tenant-isolation fields from the canonical path "Schools/{schoolId}/{session}/Fees".
+        // Safe fallback: schoolName (== SCH_ id) for schoolId, '' for session.
+        $parts            = explode('/', trim($basePath, '/'));
+        $this->schoolId   = $parts[1] ?? $schoolName;
+        $this->session    = $parts[2] ?? '';
         $this->adminId    = $adminId;
         $this->adminName  = $adminName;
         $this->schoolName = $schoolName;
@@ -61,7 +68,13 @@ class Fee_audit
         ];
 
         try {
-            $logId = $this->firebase->push("{$this->basePath}/Audit_Logs", $logEntry);
+            // Firestore-canonical sink (NO RTDB). Sortable, tenant-isolated doc id.
+            $auditId              = 'FAE_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(3)), 0, 6);
+            $logEntry['auditId']  = $auditId;
+            $logEntry['schoolId'] = $this->schoolId;
+            $logEntry['session']  = $this->session;
+            $ok    = (bool) $this->firebase->firestoreSet('feeAuditEvents', $auditId, $logEntry);
+            $logId = $ok ? $auditId : null;
 
             // CI log for server-side trail
             $brief = "{$event} | student={$logEntry['student_id']} | amount={$logEntry['amount']} | receipt={$logEntry['receipt_no']}";
@@ -85,20 +98,27 @@ class Fee_audit
     private function _createAlert(string $event, array $logEntry, ?string $logId): void
     {
         try {
-            $alert = [
-                'event'      => $event,
-                'severity'   => $this->_severity($event),
-                'message'    => $this->_alertMessage($event, $logEntry),
-                'log_id'     => $logId,
-                'student_id' => $logEntry['student_id'],
-                'amount'     => $logEntry['amount'],
-                'created_at' => date('c'),
-                'resolved'   => false,
+            // Route through the existing operator alert system (Fee_alerts → fee_alerts)
+            // so criticals appear on the operator dashboard. Single Firestore alert sink
+            // (no second 'feeAlerts' collection). Severity mapped to Fee_alerts levels.
+            require_once APPPATH . 'libraries/Fee_alerts.php';
+            $alerts = new Fee_alerts($this->firebase, $this->schoolId, $this->session);
+            $sevMap = [
+                'critical' => Fee_alerts::SEV_CRITICAL,
+                'high'     => Fee_alerts::SEV_ERROR,
+                'medium'   => Fee_alerts::SEV_WARNING,
             ];
-            $this->firebase->push("{$this->basePath}/Alerts", $alert);
+            $sev = $sevMap[$this->_severity($event)] ?? Fee_alerts::SEV_WARNING;
+            $msg = $this->_alertMessage($event, $logEntry);
+            $alerts->raise($sev, 'fee_' . $event, $msg, $msg, [
+                'refEntity' => 'student',
+                'refId'     => (string) ($logEntry['student_id'] ?? ''),
+                'payload'   => ['amount' => $logEntry['amount'] ?? 0, 'log_id' => $logId, 'event' => $event],
+                'dedupKey'  => $event . '|' . ($logEntry['student_id'] ?? ''),
+            ]);
 
             // Also log at CI error level for server monitoring
-            log_message('error', "FEE_ALERT [{$alert['severity']}] {$alert['message']}");
+            log_message('error', "FEE_ALERT [{$this->_severity($event)}] {$msg}");
         } catch (\Exception $e) {
             log_message('error', 'Fee_audit::_createAlert failed: ' . $e->getMessage());
         }

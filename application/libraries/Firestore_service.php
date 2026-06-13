@@ -197,6 +197,41 @@ class Firestore_service
     }
 
     /**
+     * Collision-safe, Unicode-safe, deterministic identifier TOKEN for a free-text
+     * value (subject / class / section names, incl. Hindi & regional scripts).
+     *
+     * Hashes the UTF-8 bytes of the raw value → 16 lowercase hex chars (64-bit).
+     * Use to build Firestore doc-ids that must never collapse punctuation or drop
+     * non-Latin characters (the slug() failure mode). The human-readable value is
+     * always stored as a document FIELD; this token is only the id component.
+     * Deterministic → point reads recompute it from the known value (no lookup).
+     */
+    public static function idToken(string $raw): string
+    {
+        return substr(sha1(self::canonicalizeName($raw)), 0, 16);
+    }
+
+    /**
+     * Idempotent canonicalization for identifier inputs (approved normalization
+     * policy): trim → collapse internal whitespace → Unicode NFC. Case PRESERVED
+     * (system is case-sensitive). NFC requires ext-intl (Normalizer); when absent
+     * it is skipped — see RISK: enable php-intl in production for full multilingual
+     * (composed/decomposed) safety. Store the SAME canonical value in the readable
+     * field so point-reads recompute the identical token.
+     */
+    public static function canonicalizeName(string $raw): string
+    {
+        $s = trim($raw);
+        $s = preg_replace('/\s+/u', ' ', $s);                  // collapse internal whitespace
+        if ($s === null) $s = trim($raw);                      // preg failure guard
+        if (class_exists('Normalizer')) {
+            $n = \Normalizer::normalize($s, \Normalizer::FORM_C);
+            if ($n !== false) $s = $n;
+        }
+        return $s;
+    }
+
+    /**
      * Ensure "Class " prefix: "9th" → "Class 9th"
      */
     public static function classKey(string $val): string

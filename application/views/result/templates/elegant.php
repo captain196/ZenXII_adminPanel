@@ -33,7 +33,9 @@ include(APPPATH . 'views/result/templates/_report_card_data.php');
         <tr>
           <td class="el-hdr-logo-cell">
             <?php if ($rcLogoUrl): ?>
-              <img src="<?= htmlspecialchars($rcLogoUrl) ?>" alt="" class="el-logo-img">
+              <img src="<?= htmlspecialchars($rcLogoUrl) ?>" alt="" class="el-logo-img"
+                   onerror="this.style.display='none';this.nextElementSibling.style.display='';">
+              <div class="el-logo-ph" style="display:none"><?= htmlspecialchars(strtoupper(substr($schoolDisplayName, 0, 2))) ?></div>
             <?php else: ?>
               <div class="el-logo-ph"><?= htmlspecialchars(strtoupper(substr($schoolDisplayName, 0, 2))) ?></div>
             <?php endif; ?>

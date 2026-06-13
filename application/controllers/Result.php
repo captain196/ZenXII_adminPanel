@@ -203,10 +203,9 @@ class Result extends MY_Controller
         }
         $exam = array_merge(['id' => $examId], $exam);
 
-        // Guard: template must exist before marks entry
-        $template = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Templates/{$examId}/{$classKey}/{$sectionKey}/{$subject}"
-        );
+        // Guard: template must exist before marks entry — Phase B: canonical
+        // Firestore examTemplates (legacy shape) via Exam_read.
+        $template = $this->exam_read->template_subject($examId, $classKey, $sectionKey, $subject);
         if (!$template || empty($template['Components'])) {
             $this->session->set_flashdata(
                 'error',
@@ -227,11 +226,10 @@ class Result extends MY_Controller
                 : (string) $uid;
         }
 
-        // Load existing marks
-        $existingMarks = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Marks/{$examId}/{$classKey}/{$sectionKey}/{$subject}"
-        ) ?? [];
-        if (!is_array($existingMarks)) $existingMarks = [];
+        // Load existing marks — B1 re-edit reader cutover: canonical Firestore
+        // `marks` (subject-scoped [userId] legacy shape) via Exam_read.
+        // Firestore-only (no RTDB read, no fallback).
+        $existingMarks = $this->exam_read->marks_subject($examId, $classKey, $sectionKey, $subject);
 
         $data = [
             'examId'        => $examId,
@@ -332,10 +330,9 @@ class Result extends MY_Controller
         $results = [];
         foreach ($exams as $exam) {
             if (!$classKey || !$sectionKey) continue;
-            $computed = $this->firebase->get(
-                "Schools/{$school}/{$year}/Results/Computed/{$exam['id']}/{$classKey}/{$sectionKey}/{$userId}"
-            );
-            if ($computed && is_array($computed)) {
+            // C2: canonical Firestore `results` (legacy Computed shape) via Exam_read.
+            $computed = $this->exam_read->results_student($exam['id'], $userId);
+            if (!empty($computed)) {
                 $results[$exam['id']] = $computed;
             }
         }
@@ -515,31 +512,24 @@ class Result extends MY_Controller
         }
         $exam = array_merge(['id' => $examId], $exam);
 
-        // Load all templates for this exam/class/section
-        $templates = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Templates/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($templates)) $templates = [];
+        // Load all templates — Phase B: canonical Firestore examTemplates
+        // (legacy shape) via Exam_read.
+        $templates = $this->_resolve_templates($examId, $classKey, $sectionKey);
 
-        // Load all computed results
-        $computed = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($computed)) $computed = [];
-        unset($computed['_stale']);
+        // Load all computed results — C2: canonical Firestore `results`
+        // (legacy Computed [uid=>entry] shape) via Exam_read. Firestore-only.
+        $computed = $this->exam_read->results_section($examId, $classKey, $sectionKey);
 
-        // Load all marks for all subjects and students in one batch
-        $allMarks = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Marks/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($allMarks)) $allMarks = [];
+        // B1 marks-reader cutover: canonical Firestore `marks` (nested
+        // [subject][userId] legacy shape) via Exam_read — Firestore is the sole
+        // source of truth (no RTDB read, no fallback).
+        $allMarks = $this->exam_read->marks_section($examId, $classKey, $sectionKey);
 
         // Load student roster
         $roster = $this->exam_engine->get_student_names($classKey, $sectionKey);
 
         // Load school info
-        $schoolInfo = $this->firebase->get("Schools/{$school}/Info") ?? [];
-        if (!is_array($schoolInfo)) $schoolInfo = [];
+        $schoolInfo = $this->_load_school_info_fs();   // Firestore-only (was RTDB)
 
         // Build per-student data (CC-6: profiles sourced from Firestore canonical).
         $students  = [];
@@ -578,7 +568,7 @@ class Result extends MY_Controller
         }
 
         // Load selected report card template
-        $rcTemplate = $this->firebase->get("Schools/{$school}/Config/ReportCardTemplate");
+        $rcTemplate = $this->_report_card_style();   // Firestore-only (was RTDB)
         $rcAllowed  = ['classic', 'cbse', 'minimal', 'modern', 'elegant', 'professional'];
         if (!$rcTemplate || !is_string($rcTemplate) || !in_array($rcTemplate, $rcAllowed, true)) $rcTemplate = 'classic';
         $rcConfig = $this->_get_report_card_config();
@@ -607,10 +597,8 @@ class Result extends MY_Controller
         $structure = $this->exam_engine->get_class_structure();
         $exams     = $this->exam_engine->get_active_exams();
 
-        $config = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/CumulativeConfig"
-        ) ?? [];
-        if (!is_array($config)) $config = [];
+        // Cumulative migration: canonical Firestore cumulativeConfig (legacy shape).
+        $config = $this->exam_read->cumulative_config();
 
         $data = [
             'structure' => $structure,
@@ -673,15 +661,23 @@ class Result extends MY_Controller
             $compsClean[$i]   = ['Name' => $name, 'MaxMarks' => $maxMarks];
         }
 
-        $template = [
-            'Components'    => $compsClean,
-            'TotalMaxMarks' => $totalMax,
-            'CreatedAt'     => (int) round(microtime(true) * 1000),
-            'CreatedBy'     => $this->admin_id ?? '',
-        ];
+        // Phase B: canonical components for examTemplates (lowercase name/maxMarks).
+        $componentsFs = [];
+        foreach ($compsClean as $c) {
+            $componentsFs[] = ['name' => (string) $c['Name'], 'maxMarks' => (int) $c['MaxMarks']];
+        }
 
-        $path = "Schools/{$school}/{$year}/Results/Templates/{$examId}/{$classKey}/{$sectionKey}/{$subject}";
-        $this->firebase->set($path, $template);
+        // Phase B: Firestore-ONLY template write (no RTDB, no dual-write).
+        $this->load->library('exam_result_store');
+        $ers = $this->exam_result_store->init($this->firebase, $this->school_id, $year);
+        $doc = $ers->buildTemplateDoc(
+            $examId, $classKey, $sectionKey, $subject,
+            $componentsFs, $totalMax, (int) round(microtime(true) * 1000),
+            (string) ($this->admin_id ?? ''), date('c')
+        );
+        if (!$ers->writeTemplate($examId, $classKey, $sectionKey, $subject, $doc)) {
+            $this->json_error('Failed to save template to Firestore. Please retry.', 500);
+        }
 
         log_audit('Results', 'save_template', $examId, "Saved marks template for {$classKey}/{$sectionKey}/{$subject}");
 
@@ -716,8 +712,8 @@ class Result extends MY_Controller
 
         extract($this->_safe_result_params(compact('examId', 'classKey', 'sectionKey', 'subject')));
 
-        $path     = "Schools/{$school}/{$year}/Results/Templates/{$examId}/{$classKey}/{$sectionKey}/{$subject}";
-        $template = $this->firebase->get($path);
+        // Phase B: canonical Firestore examTemplates (legacy shape) via Exam_read.
+        $template = $this->exam_read->template_subject($examId, $classKey, $sectionKey, $subject);
 
         echo json_encode(['template' => $template]);
     }
@@ -767,8 +763,8 @@ class Result extends MY_Controller
         }
 
         // ── Fix H1: Load template to enforce marks upper bound ──────────
-        $tmplPath = "Schools/{$school}/{$year}/Results/Templates/{$examId}/{$classKey}/{$sectionKey}/{$subject}";
-        $template = $this->firebase->get($tmplPath);
+        // Phase B: canonical Firestore examTemplates (legacy shape) via Exam_read.
+        $template = $this->exam_read->template_subject($examId, $classKey, $sectionKey, $subject);
         if (!is_array($template) || empty($template['Components'])) {
             $this->json_error('No template found for this subject. Design a template first.', 400);
         }
@@ -843,58 +839,84 @@ class Result extends MY_Controller
                 'SavedBy' => $savedBy,
             ]);
 
-            $this->firebase->set("{$basePath}/{$userId}", $entry);
+            // B1: RTDB marks write REMOVED — Firestore is the only source of truth (no dual-write).
             $count++;
         }
 
-        // ── Fix H4: Mark computed results as stale ──────────────────────
-        $stalePath = "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$sectionKey}/_stale";
-        $this->firebase->set($stalePath, true);
+        // ── B1: RTDB _stale write REMOVED — staleness is recorded in examResultMeta
+        //        (Firestore) inside the canonical atomic commit below.
 
-        // ── Sync marks to Firestore 'marks' collection ──
+        // ── B1: CANONICAL Firestore-ONLY marks write via Exam_result_store ──
+        // ONE atomic commit per chunk: marks (componentMarks canonical) +
+        // examResultMeta(stale=true,lastMarksAt,publicationDirty) + marksAudit.
+        // Firestore is the SOLE source of truth — NO RTDB write, NO dual-write.
+        // FS is authoritative: a commit failure is a HARD error (marks not saved).
         try {
-            $sectionKeyFs = "{$classKey}/{$sectionKey}";
+            $this->load->library('exam_result_store');
+            $ers = $this->exam_result_store->init($this->firebase, $this->school_id, $year);
+            $cid    = $ers->newCorrelationId('marks');
+            $nowIso = date('c');
+            $actor  = ['uid' => $savedBy, 'role' => (string) ($this->admin_role ?? ''), 'name' => $savedBy];
+            $exMeta = $this->exam_read->meta($examId, false);
+            $pubState = is_array($exMeta) ? (string) ($exMeta['Status'] ?? 'Draft') : 'Draft';
+
+            // canonical component ORDER = examTemplates/template order
+            $orderedComps = [];
+            foreach ($template['Components'] as $c) {
+                if (is_array($c) && !empty($c['Name'])) $orderedComps[] = (string) $c['Name'];
+            }
+
+            $ops = [];
             foreach ($students as $stu) {
                 $userId = trim((string) ($stu['userId'] ?? ''));
                 if (!$userId) continue;
-                $absent    = !empty($stu['absent']);
-                $rawMarks  = is_array($stu['marks'] ?? null) ? $stu['marks'] : [];
-                $theory    = 0.0;
-                $practical = 0.0;
-                $total     = 0.0;
-                foreach ($rawMarks as $comp => $val) {
-                    $v = $absent ? 0.0 : max(0.0, floatval($val));
-                    if (stripos($comp, 'Theory') !== false) $theory = $v;
-                    elseif (stripos($comp, 'Practical') !== false) $practical = $v;
-                    $total += $v;
+                $userId = $this->safe_path_segment($userId, 'userId');
+                $absent   = !empty($stu['absent']);
+                $rawMarks = is_array($stu['marks'] ?? null) ? $stu['marks'] : [];
+
+                // componentMarks CANONICAL — template order, clamped (same policy as RTDB loop)
+                $componentMarks = [];
+                foreach ($orderedComps as $cn) {
+                    $v = $absent ? 0 : max(0, (int) ($rawMarks[$cn] ?? 0));
+                    if (isset($compMaxMap[$cn]) && $v > $compMaxMap[$cn]) $v = $compMaxMap[$cn];
+                    $componentMarks[] = ['name' => $cn, 'value' => $v];
                 }
-                if ($absent) $total = 0.0;
-
-                $marksDocId = "{$school}_{$examId}_{$sectionKeyFs}_{$subject}_{$userId}";
-
-                // Resolve student name (best-effort)
                 $stuName = isset($roster[$userId]) ?
                     (is_string($roster[$userId]) ? $roster[$userId] : ($roster[$userId]['Name'] ?? '')) : '';
 
-                $this->fs->set(Firestore_helper::MARKS, $marksDocId, [
-                    'schoolId'    => $school,
-                    'session'     => $year,
-                    'examId'      => $examId,
-                    'studentId'   => $userId,
-                    'studentName' => $stuName,
-                    'sectionKey'  => $sectionKeyFs,
-                    'subject'     => $subject,
-                    'theory'      => $theory,
-                    'practical'   => $practical,
-                    'total'       => $total,
-                    'absent'      => $absent,
-                    'maxMarks'    => $templateTotalMax,
-                    'savedAt'     => date('c'),
-                    'savedBy'     => $savedBy,
-                ]);
+                $docId  = $ers->marksDocId($examId, $classKey, $sectionKey, $subject, $userId);
+                // before-image (for audit) + CAS token (concurrent-edit protection)
+                $before     = $this->firebase->firestoreGet(Firestore_helper::MARKS, $docId);
+                $beforeComp = is_array($before) ? ($before['componentMarks'] ?? null) : null;
+                $cas        = (is_array($before) && !empty($before['__updateTime']))
+                    ? $ers->casUpdateTime((string) $before['__updateTime']) : null;
+
+                $marksDoc = $ers->buildMarksDoc($examId, $classKey, $sectionKey, $subject,
+                    $userId, $stuName, $componentMarks, $absent, $templateTotalMax, $savedBy, $nowIso);
+                $ops[] = $ers->setOp(Firestore_helper::MARKS, $docId, $marksDoc, false, $cas);
+
+                // marksAudit (deterministic correlationId id → retry-idempotent; append-only across edits)
+                $auditDoc = $ers->buildMarksAudit($cid, $examId, $classKey, $sectionKey, $subject, $userId,
+                    $actor, (is_array($before) ? 'update' : 'create'), $beforeComp, $componentMarks, $pubState, '', $nowIso);
+                $ops[] = $ers->setOp(Firestore_helper::MARKS_AUDIT, $ers->marksAuditDocId($cid, $userId, $subject), $auditDoc, false);
             }
+            // examResultMeta: stale=true + lastMarksAt + publicationDirty (once)
+            $ops[] = $ers->metaStaleOp($examId, $classKey, $sectionKey, $nowIso);
+
+            // atomic commit — chunk if over the :commit op limit (audit doubles op count)
+            $chunkSafe = Exam_result_store::COMMIT_MAX_OPS;
+            if (count($ops) <= $chunkSafe) {
+                $okFs = $ers->commit($ops);
+            } else {
+                $okFs = true;
+                $meta = array_pop($ops);                       // keep meta for the final chunk
+                foreach (array_chunk($ops, $chunkSafe) as $i => $chunk) { $okFs = $ers->commit($chunk) && $okFs; }
+                $okFs = $ers->commit([$meta]) && $okFs;
+            }
+            if (!$okFs) { $this->json_error('Failed to save marks to Firestore. Please retry.', 500); }
         } catch (\Exception $e) {
-            log_message('error', "save_marks: Firestore sync failed [{$examId}/{$subject}]: " . $e->getMessage());
+            log_message('error', "save_marks: Firestore marks write failed [{$examId}/{$subject}]: " . $e->getMessage());
+            $this->json_error('Failed to save marks to Firestore. Please retry.', 500);
         }
 
         log_audit('Results', 'save_marks', $examId, "Saved marks for {$count} student(s) in {$subject}");
@@ -914,8 +936,8 @@ class Result extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'get_marks');
         header('Content-Type: application/json');
 
-        $school     = $this->school_name;
-        $year       = $this->session_year;
+        // B1: marks now read from Firestore via Exam_read (keyed by $this->school_id
+        // / session); the legacy $school/$year RTDB-path locals are no longer needed.
         $examId     = trim((string) $this->input->get('examId'));
         $classKey   = trim((string) $this->input->get('classKey'));
         $sectionKey = trim((string) $this->input->get('sectionKey'));
@@ -935,10 +957,77 @@ class Result extends MY_Controller
             }
         }
 
-        $path  = "Schools/{$school}/{$year}/Results/Marks/{$examId}/{$classKey}/{$sectionKey}/{$subject}";
-        $marks = $this->firebase->get($path) ?? [];
+        // B1 re-edit reader cutover: canonical Firestore `marks` (subject-scoped
+        // [userId] legacy shape) via Exam_read. Firestore-only (no RTDB, no fallback).
+        $marks = $this->exam_read->marks_subject($examId, $classKey, $sectionKey, $subject);
 
         echo json_encode(['marks' => is_array($marks) ? $marks : (object)[]]);
+    }
+
+    /**
+     * Derive a grading template node from the DATESHEET (examSchedule) when no
+     * examTemplates were designed. Shape matches Exam_read::templates_section:
+     *   [subjectName => ['Components'=>[{Name,MaxMarks}], 'TotalMaxMarks'=>int]]
+     * compute_section only needs TotalMaxMarks; Components are derived from the
+     * datesheet's theory/practical split (or a single "Total" when there is none).
+     */
+    private function _templates_from_schedule(string $examId, string $classKey, string $sectionKey): array
+    {
+        $rows = $this->firebase->firestoreQuery('examSchedule', [
+            ['schoolId', '==', $this->school_id],
+            ['examId',   '==', $examId],
+            ['className', '==', $classKey],
+            ['section',  '==', $sectionKey],
+        ], null, 'ASC', 10);
+        if (!is_array($rows) || !$rows) return [];
+
+        $out = [];
+        foreach ($rows as $r) {
+            $d = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+            $subjects = is_array($d['subjects'] ?? null) ? $d['subjects'] : [];
+            foreach ($subjects as $s) {
+                if (!is_array($s)) continue;
+                $name = trim((string) ($s['subjectName'] ?? ''));
+                if ($name === '') continue;
+                $maxTheory    = (int) ($s['maxTheory'] ?? 0);
+                $maxPractical = (int) ($s['maxPractical'] ?? 0);
+                $maxTotal     = (int) ($s['maxTotal'] ?? 0);
+
+                $comps = [];
+                if ($maxTheory > 0)    $comps[] = ['Name' => 'Theory',    'MaxMarks' => $maxTheory];
+                if ($maxPractical > 0) $comps[] = ['Name' => 'Practical', 'MaxMarks' => $maxPractical];
+                if (!$comps)           $comps[] = ['Name' => 'Total',     'MaxMarks' => $maxTotal];
+
+                $tmm = $maxTotal > 0 ? $maxTotal : ($maxTheory + $maxPractical);
+                $out[$name] = ['Components' => $comps, 'TotalMaxMarks' => $tmm];
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Single source of truth for "what subjects/templates this exam has":
+     * designed examTemplates if present, otherwise derived from the DATESHEET
+     * (restricted to subjects that actually have marks, so partial entry stays
+     * clean). Used by compute_results AND every report-card path so the report
+     * card shows the SAME subjects the compute used (no missing-subject rows
+     * when templates were never separately designed).
+     */
+    private function _resolve_templates(string $examId, string $classKey, string $sectionKey, ?array $marksNode = null): array
+    {
+        $t = $this->exam_read->templates_section($examId, $classKey, $sectionKey);
+        if (!empty($t)) return $t;
+
+        $derived = $this->_templates_from_schedule($examId, $classKey, $sectionKey);
+        if (!empty($derived)) {
+            if ($marksNode === null) {
+                $marksNode = $this->exam_read->marks_section($examId, $classKey, $sectionKey);
+            }
+            if (!empty($marksNode)) {
+                $derived = array_intersect_key($derived, $marksNode);
+            }
+        }
+        return $derived;
     }
 
     /**
@@ -968,19 +1057,20 @@ class Result extends MY_Controller
         $scale      = $exam['GradingScale']   ?? 'Percentage';
         $passingPct = (int) ($exam['PassingPercent'] ?? 33);
 
-        // Load all subject templates for this class/section
-        $templatesNode = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Templates/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($templatesNode) || empty($templatesNode)) {
-            $this->json_error('No templates found. Please design templates first.', 400);
-        }
+        // B1 compute-path: marks input from canonical Firestore `marks`
+        // (Title-case Total/Absent legacy shape) via Exam_read — Firestore-only.
+        $allMarksNode = $this->exam_read->marks_section($examId, $classKey, $sectionKey);
 
-        // Load all marks for this class/section
-        $allMarksNode = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Marks/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($allMarksNode)) $allMarksNode = [];
+        // Templates: designed examTemplates, else derived from the DATESHEET
+        // (single shared resolver used by compute AND the report card).
+        $templatesNode = $this->_resolve_templates($examId, $classKey, $sectionKey, $allMarksNode);
+        if (empty($templatesNode)) {
+            $this->json_error(
+                'No grading template or datesheet found for this exam/class/section. ' .
+                'Please set up the exam datesheet (subjects + max marks) first.',
+                400
+            );
+        }
 
         // Phase 1 convergence: CC-8 compute is the single shared path in
         // Exam_engine. Pure/storage-agnostic — pass loaded templates + marks,
@@ -992,12 +1082,23 @@ class Result extends MY_Controller
             $this->json_error('No marks entered yet for this class/section.', 400);
         }
 
-        // EX-2 FIX: Single batch write instead of N individual writes
-        $basePath = "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$sectionKey}";
-        $this->firebase->set($basePath, $studentResults);
-
-        // ── Fix H4: Clear stale flag after fresh computation ────────────
-        $this->firebase->delete("{$basePath}", '_stale');
+        // ── C1: CANONICAL Firestore-ONLY results write (no RTDB Computed, no
+        //        _stale, no dual-write). One atomic commitBatch: results
+        //        (complete ResultDoc + sectionKey + CC-8 null preservation) +
+        //        resultsAudit + examResultMeta clear (CAS). Firestore is the sole
+        //        source of truth → a commit failure is a HARD error.
+        $this->load->library('exam_result_store');
+        $ers = $this->exam_result_store->init($this->firebase, $this->school_id, $year);
+        $rosterNames = $this->exam_engine->get_student_names($classKey, $sectionKey);
+        $actor = ['uid' => (string) ($this->admin_id ?? ''), 'role' => (string) ($this->admin_role ?? ''), 'name' => (string) ($this->admin_id ?? '')];
+        $res = $ers->commitSectionResults(
+            $examId, (string) ($exam['Name'] ?? $examId), $classKey, $sectionKey,
+            $studentResults, is_array($rosterNames) ? $rosterNames : [], $actor,
+            $scale, $passingPct, (string) ($this->admin_id ?? ''), date('c')
+        );
+        if (empty($res['ok'])) {
+            $this->json_error('Failed to write results to Firestore. Please retry.', 500);
+        }
 
         // ── Fix H3: Notify parents/students via Communication module ────
         try {
@@ -1051,16 +1152,21 @@ class Result extends MY_Controller
             if ($weight < 0 || $weight > 100) {
                 $this->json_error("Weight for {$examId} must be 0–100.", 400);
             }
-            $totalWeight         += $weight;
-            $examsClean[$examId]  = ['Weight' => $weight, 'Label' => $label];
+            $totalWeight              += $weight;
+            $examsClean[$examId]  = ['weight' => $weight, 'label' => $label]; // canonical lowercase
         }
 
         if ($totalWeight !== 100) {
             $this->json_error("Total weight must be exactly 100 (got {$totalWeight}).", 400);
         }
 
-        $payload = ['Exams' => $examsClean, 'TotalWeight' => 100];
-        $this->firebase->set("Schools/{$school}/{$year}/Results/CumulativeConfig", $payload);
+        // Cumulative migration: Firestore-ONLY config write (no RTDB, no dual-write).
+        $this->load->library('exam_result_store');
+        $ers = $this->exam_result_store->init($this->firebase, $this->school_id, $year);
+        $doc = $ers->buildCumulativeConfigDoc($examsClean, 100, (string) ($this->admin_id ?? ''), date('c'));
+        if (!$ers->writeCumulativeConfig($doc)) {
+            $this->json_error('Failed to save cumulative config to Firestore. Please retry.', 500);
+        }
 
         $this->json_success(['message' => 'Cumulative config saved.']);
     }
@@ -1083,8 +1189,8 @@ class Result extends MY_Controller
         }
         extract($this->_safe_result_params(compact('classKey', 'sectionKey')));
 
-        // Load config
-        $config = $this->firebase->get("Schools/{$school}/{$year}/Results/CumulativeConfig") ?? [];
+        // Load config — canonical Firestore cumulativeConfig (legacy shape).
+        $config = $this->exam_read->cumulative_config();
         if (!is_array($config) || empty($config['Exams'])) {
             $this->json_error('No cumulative config found. Save config first.', 400);
         }
@@ -1102,10 +1208,9 @@ class Result extends MY_Controller
         // Load computed results per exam
         $allExamResults = [];
         foreach ($examIds as $examId) {
-            $node = $this->firebase->get(
-                "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$sectionKey}"
-            ) ?? [];
-            if (is_array($node)) {
+            // C2: canonical Firestore `results` per exam (legacy Computed shape).
+            $node = $this->exam_read->results_section($examId, $classKey, $sectionKey);
+            if (!empty($node)) {
                 $allExamResults[$examId] = $node;
             }
         }
@@ -1243,9 +1348,13 @@ class Result extends MY_Controller
         }
         unset($r);
 
-        // EX-2 FIX: Single batch write instead of N individual writes
-        $basePath = "Schools/{$school}/{$year}/Results/Cumulative/{$classKey}/{$sectionKey}";
-        $this->firebase->set($basePath, $studentCumulative);
+        // Cumulative migration: Firestore-ONLY atomic section write (stale=false).
+        $this->load->library('exam_result_store');
+        $ers = $this->exam_result_store->init($this->firebase, $this->school_id, $year);
+        $res = $ers->commitCumulativeSection($classKey, $sectionKey, $studentCumulative, date('c'));
+        if (empty($res['ok'])) {
+            $this->json_error('Failed to write cumulative results to Firestore. Please retry.', 500);
+        }
 
         $this->json_success([
             'message' => 'Cumulative computed for ' . count($studentCumulative) . ' student(s).',
@@ -1281,17 +1390,10 @@ class Result extends MY_Controller
             }
         }
 
-        $cumulative = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Cumulative/{$classKey}/{$sectionKey}"
-        ) ?? [];
-
-        // CC-3: surface + strip the stale sentinel so it never renders as a
-        // phantom student row, and so the view can show a "recompute" banner.
-        $stale = false;
-        if (is_array($cumulative) && isset($cumulative['_stale'])) {
-            $stale = true;
-            unset($cumulative['_stale']);
-        }
+        // Cumulative migration: canonical Firestore `cumulative` (legacy [uid=>entry]
+        // shape) + per-section `stale` flag (replaces the legacy _stale sentinel).
+        $cumulative = $this->exam_read->cumulative_section($classKey, $sectionKey);
+        $stale      = $this->exam_read->cumulative_stale($classKey, $sectionKey);
 
         if (!is_array($cumulative) || empty($cumulative)) {
             echo json_encode(['students' => [], 'subjects' => [], 'stale' => $stale]);
@@ -1374,17 +1476,19 @@ class Result extends MY_Controller
         }
         extract($this->_safe_result_params(compact('examId', 'classKey', 'sectionKey')));
 
-        $computedPath = "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$sectionKey}";
-        $computed = $this->firebase->get($computedPath) ?? [];
+        // C2: canonical Firestore `results` (legacy Computed shape) via Exam_read.
+        $computed = $this->exam_read->results_section($examId, $classKey, $sectionKey);
 
-        if (!is_array($computed) || empty($computed)) {
+        if (empty($computed)) {
             echo json_encode(['students' => [], 'subjects' => []]);
             return;
         }
 
-        // Fix H4: Extract and remove stale flag from results
-        $stale = !empty($computed['_stale']);
-        unset($computed['_stale']);
+        // Staleness now from canonical examResultMeta (set by save_marks, cleared
+        // by compute via metaClearOp) — not an inline _stale key.
+        $this->load->library('exam_result_store');
+        $stale = $this->exam_result_store->init($this->firebase, $this->school_id, $year)
+            ->isStale($examId, $classKey, $sectionKey);
 
         // Fix M3: Teachers can only view their assigned classes
         if (($this->admin_role ?? '') === 'Teacher') {
@@ -1524,31 +1628,18 @@ class Result extends MY_Controller
             }
         }
 
-        // Templates
-        $templatesNode = $this->firebase->shallow_get(
-            "Schools/{$school}/{$year}/Results/Templates/{$examId}/{$classKey}/{$sectionKey}"
-        );
-        $templateCount = count($templatesNode);
+        // Templates — Phase B: canonical Firestore examTemplates via Exam_read.
+        $templateCount = count($this->exam_read->templates_section($examId, $classKey, $sectionKey));
 
-        // Count subjects with marks
-        $marksCount = 0;
-        foreach ($templatesNode as $subj) {
-            $mNode = $this->firebase->shallow_get(
-                "Schools/{$school}/{$year}/Results/Marks/{$examId}/{$classKey}/{$sectionKey}/{$subj}"
-            );
-            if (!empty($mNode)) $marksCount++;
-        }
+        // Count subjects with marks — canonical Firestore `marks` (nested
+        // [subject][uid]); top-level key count = subjects with at least one mark.
+        $marksCount = count($this->exam_read->marks_section($examId, $classKey, $sectionKey));
 
-        // Computed
-        $computedNode  = $this->firebase->shallow_get(
-            "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$sectionKey}"
-        );
-        $computedCount = count($computedNode);
-        // Fix H4: Don't count _stale as a computed student
-        if (isset($computedNode['_stale'])) $computedCount--;
-
-        // Fix H4: Check stale flag
-        $stale = isset($computedNode['_stale']);
+        // Computed — canonical Firestore `results`; staleness from examResultMeta.
+        $computedCount = count($this->exam_read->results_section($examId, $classKey, $sectionKey));
+        $this->load->library('exam_result_store');
+        $stale = $this->exam_result_store->init($this->firebase, $this->school_id, $year)
+            ->isStale($examId, $classKey, $sectionKey);
 
         echo json_encode([
             'status' => [
@@ -1668,29 +1759,22 @@ class Result extends MY_Controller
         }
         $exam = array_merge(['id' => $examId], $exam);
 
-        $templates = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Templates/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($templates)) $templates = [];
+        // Phase B: canonical Firestore examTemplates (legacy shape) via Exam_read.
+        $templates = $this->_resolve_templates($examId, $classKey, $sectionKey);
 
-        $computed = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($computed)) $computed = [];
-        unset($computed['_stale']);
+        // C2: canonical Firestore `results` (legacy Computed shape) via Exam_read.
+        $computed = $this->exam_read->results_section($examId, $classKey, $sectionKey);
 
-        $allMarks = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Marks/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($allMarks)) $allMarks = [];
+        // B1 marks-reader cutover: canonical Firestore `marks` (nested
+        // [subject][userId] legacy shape) via Exam_read — Firestore-only.
+        $allMarks = $this->exam_read->marks_section($examId, $classKey, $sectionKey);
 
-        $schoolInfo = $this->firebase->get("Schools/{$school}/Info") ?? [];
-        if (!is_array($schoolInfo)) $schoolInfo = [];
+        $schoolInfo = $this->_load_school_info_fs();   // Firestore-only (was RTDB)
 
         // CC-6: all profiles from Firestore canonical `students` in one query (no RTDB).
         $allProfiles = $this->_profiles_from_fs();
 
-        $rcTemplate = $this->firebase->get("Schools/{$school}/Config/ReportCardTemplate");
+        $rcTemplate = $this->_report_card_style();   // Firestore-only (was RTDB)
         $rcAllowed  = ['classic', 'cbse', 'minimal', 'modern', 'elegant', 'professional'];
         if (!$rcTemplate || !is_string($rcTemplate) || !in_array($rcTemplate, $rcAllowed, true)) {
             $rcTemplate = 'classic';
@@ -1787,18 +1871,66 @@ class Result extends MY_Controller
             return;
         }
 
-        $computed = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($computed)) $computed = [];
-        unset($computed['_stale']);
-
+        // C2: canonical Firestore `results` (legacy Computed shape) via Exam_read.
+        $computed = $this->exam_read->results_section($examId, $classKey, $sectionKey);
         echo json_encode(['count' => count($computed)]);
     }
 
     // ──────────────────────────────────────────────────────────────────
     // PRIVATE HELPERS
     // ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Report-card school header info — Firestore-only (schools/{schoolId}),
+     * remapped to the Title-case keys the templates consume. Replaces the legacy
+     * RTDB `Schools/{school}/Info` read, which is empty post-migration and made
+     * the report card fall back to showing the SCH_ id instead of the name.
+     */
+    private function _load_school_info_fs(): array
+    {
+        $d = [];
+        try {
+            $d = $this->fs->get('schools', $this->school_id) ?: [];
+        } catch (\Throwable $e) {
+            log_message('error', 'report-card school info FS read failed: ' . $e->getMessage());
+        }
+        if (!is_array($d)) $d = [];
+        return [
+            'Name'      => $d['name'] ?? ($d['schoolName'] ?? ''),
+            'City'      => $d['city'] ?? '',
+            'Address'   => $d['street'] ?? ($d['address'] ?? ''),
+            'State'     => $d['state'] ?? '',
+            'Pincode'   => $d['pincode'] ?? '',
+            'AffNo'     => $d['affiliationNo'] ?? '',
+            'Board'     => $d['affiliationBoard'] ?? ($d['board'] ?? ''),
+            'Code'      => $d['schoolCode'] ?? ($d['code'] ?? ''),
+            'Logo'      => $d['logoUrl'] ?? '',
+            'Phone'     => $d['phone'] ?? '',
+            'Email'     => $d['email'] ?? '',
+            'Website'   => $d['website'] ?? '',
+            'Principal' => $d['principal'] ?? '',
+        ];
+    }
+
+    /**
+     * Report-card design/style — Firestore-only (schools/{id}.reportCardTemplate,
+     * written by School_config::save_report_card_template). Replaces the legacy
+     * RTDB `Schools/{school}/Config/ReportCardTemplate` read, which is empty
+     * post-migration and made every report card fall back to 'classic',
+     * ignoring the admin's saved design.
+     */
+    private function _report_card_style(): string
+    {
+        $allowed = ['classic', 'cbse', 'minimal', 'modern', 'elegant', 'professional'];
+        $t = '';
+        try {
+            $d = $this->fs->get('schools', $this->school_id) ?: [];
+            $t = is_array($d) ? (string) ($d['reportCardTemplate'] ?? '') : '';
+        } catch (\Throwable $e) {
+            log_message('error', 'report-card style FS read failed: ' . $e->getMessage());
+        }
+        return in_array($t, $allowed, true) ? $t : 'classic';
+    }
 
     /**
      * Load all data needed for a single student's report card.
@@ -1831,10 +1963,9 @@ class Result extends MY_Controller
         // Computed result
         $computed = [];
         if ($classKey && $sectionKey) {
-            $c = $this->firebase->get(
-                "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$sectionKey}/{$userId}"
-            );
-            if (is_array($c)) $computed = $c;
+            // C2: canonical Firestore `results` single-student (legacy shape).
+            $c = $this->exam_read->results_student($examId, $userId);
+            if (!empty($c)) $computed = $c;
         }
         if (empty($computed)) {
             $computed = [
@@ -1843,36 +1974,29 @@ class Result extends MY_Controller
             ];
         }
 
-        // Templates
+        // Templates — Phase B: canonical Firestore examTemplates (legacy shape).
         $templates = [];
         if ($classKey && $sectionKey) {
-            $t = $this->firebase->get(
-                "Schools/{$school}/{$year}/Results/Templates/{$examId}/{$classKey}/{$sectionKey}"
-            );
-            if (is_array($t)) $templates = $t;
+            $templates = $this->_resolve_templates($examId, $classKey, $sectionKey);
         }
 
-        // Marks (single read)
+        // Marks — B1 marks-reader cutover: canonical Firestore `marks` (nested
+        // [subject][userId] legacy shape) via Exam_read — Firestore-only.
         $marks = [];
         if ($classKey && $sectionKey) {
-            $allMarks = $this->firebase->get(
-                "Schools/{$school}/{$year}/Results/Marks/{$examId}/{$classKey}/{$sectionKey}"
-            );
-            if (is_array($allMarks)) {
-                foreach ($templates as $subject => $tmp) {
-                    if (isset($allMarks[$subject][$userId]) && is_array($allMarks[$subject][$userId])) {
-                        $marks[$subject] = $allMarks[$subject][$userId];
-                    }
+            $allMarks = $this->exam_read->marks_section($examId, $classKey, $sectionKey);
+            foreach ($templates as $subject => $tmp) {
+                if (isset($allMarks[$subject][$userId]) && is_array($allMarks[$subject][$userId])) {
+                    $marks[$subject] = $allMarks[$subject][$userId];
                 }
             }
         }
 
         // School info
-        $schoolInfo = $this->firebase->get("Schools/{$school}/Info") ?? [];
-        if (!is_array($schoolInfo)) $schoolInfo = [];
+        $schoolInfo = $this->_load_school_info_fs();   // Firestore-only (was RTDB)
 
         // Template style
-        $rcTemplate = $this->firebase->get("Schools/{$school}/Config/ReportCardTemplate");
+        $rcTemplate = $this->_report_card_style();   // Firestore-only (was RTDB)
         $rcAllowed  = ['classic', 'cbse', 'minimal', 'modern', 'elegant', 'professional'];
         if (!$rcTemplate || !is_string($rcTemplate) || !in_array($rcTemplate, $rcAllowed, true)) {
             $rcTemplate = 'classic';

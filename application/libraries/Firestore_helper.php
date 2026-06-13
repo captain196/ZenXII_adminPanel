@@ -34,8 +34,13 @@ class Firestore_helper
     const LEAVE_APPLICATIONS  = 'leaveApplications';
     const EXAMS               = 'exams';
     const EXAM_SCHEDULE       = 'examSchedule';
+    const EXAM_TEMPLATES      = 'examTemplates';   // Phase B: canonical per-subject mark-scheme (Firestore-only)
     const MARKS               = 'marks';
     const RESULTS             = 'results';
+    const RESULTS_STAGING     = 'resultsStaging';  // B1: staged compute set (admin-only) → promoted to results on publish
+    const EXAM_RESULT_META    = 'examResultMeta';  // B1: stale/freshness + publication-dirty (Firestore-only)
+    const MARKS_AUDIT         = 'marksAudit';      // B1: append-only marks change trail
+    const RESULTS_AUDIT       = 'resultsAudit';    // B1: append-only compute/publish trail
     const TIMETABLES          = 'timetables';
     const FEE_STRUCTURES      = 'feeStructures';
     const FEE_DEMANDS         = 'feeDemands';

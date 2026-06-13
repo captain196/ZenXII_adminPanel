@@ -362,3 +362,63 @@
         margin-left: 56px !important;
     }
 </style>
+
+<!-- ── Global button-spinner helper (consistent loading feedback) ──────────
+     Usage: add  data-spin  (optional  data-spin="Saving…"  for custom text)
+     to any action button/link. It auto-disables + shows a spinner on click.
+     Buttons that navigate keep the spinner until the new page loads; AJAX
+     buttons auto-reset after a safety timeout (override via data-spin-timeout).
+     Pages with their own AJAX flow can call window.zxBtnReset(btn) explicitly. -->
+<script>
+(function () {
+  'use strict';
+  window.zxBtnLoad = function (btn, text) {
+    if (!btn || btn.getAttribute('data-zx-loading') === '1') return;
+    btn.setAttribute('data-zx-loading', '1');
+    btn.setAttribute('data-zx-orig', btn.innerHTML);
+    if ('disabled' in btn) btn.disabled = true;
+    btn.classList.add('zx-btn-loading');
+    var label = text || btn.getAttribute('data-spin') || btn.getAttribute('data-spin-text') || 'Please wait…';
+    btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> ' + label;
+    var ms = parseInt(btn.getAttribute('data-spin-timeout') || '15000', 10);
+    btn._zxTimer = window.setTimeout(function () { window.zxBtnReset(btn); }, ms);
+  };
+  window.zxBtnReset = function (btn) {
+    if (!btn || btn.getAttribute('data-zx-loading') !== '1') return;
+    if (btn._zxTimer) window.clearTimeout(btn._zxTimer);
+    if ('disabled' in btn) btn.disabled = false;
+    btn.classList.remove('zx-btn-loading');
+    var orig = btn.getAttribute('data-zx-orig');
+    if (orig !== null) btn.innerHTML = orig;
+    btn.setAttribute('data-zx-loading', '0');
+  };
+  // Delegated opt-in: any element with [data-spin] shows the spinner on click.
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('[data-spin]') : null;
+    if (!b || b.disabled || b.getAttribute('data-zx-loading') === '1') return;
+    if (b.getAttribute('aria-disabled') === 'true') return;
+    window.zxBtnLoad(b);
+  }, true);
+
+  // Auto-feedback for Exam/Result module ACTION LINKS (full-page navigation).
+  // Safe: only <a> that genuinely navigate same-tab → the spinner resets when the
+  // new page loads. Skips #, javascript:, target=_blank, and [data-no-spin].
+  var ZX_NAV_LINKS = [
+    'a.ei-btn-create','a.ei-btn-view',
+    'a.exm-btn-primary','a.exm-btn-outline','a.exm-qa-card','a.exm-act-btn','a.exm-recent-item',
+    'a.rcr-btn-primary','a.rcr-btn-outline','a.rcr-btn-sm','a.rcr-act-btn',
+    'a.rme-btn-primary','a.rme-subj-btn',
+    'a.eml-btn-primary','a.eml-btn-outline',
+    'a.rt-btn','a.rcu-btn','a.rsr-btn','a.etb-btn','a.epa-btn'
+  ].join(',');
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest ? e.target.closest(ZX_NAV_LINKS) : null;
+    if (!a || a.hasAttribute('data-spin') || a.hasAttribute('data-no-spin')) return; // [data-spin] handled above
+    if (a.getAttribute('data-zx-loading') === '1' || a.getAttribute('aria-disabled') === 'true') return;
+    if (a.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey) return;        // new tab / modified click
+    var href = a.getAttribute('href') || '';
+    if (!href || href === '#' || href.charAt(0) === '#' || /^(javascript:|mailto:|tel:)/i.test(href)) return;
+    window.zxBtnLoad(a, a.getAttribute('data-spin') || '');
+  }, true);
+})();
+</script>

@@ -188,7 +188,7 @@
         <!-- UX-2.0.1-B P1 — Datesheet Builder (feature-flagged; shown only when ZXB_ON) -->
         <div class="ex-card zxb-card" id="zxb-builder" style="display:none;">
           <div class="ex-card-head"><i class="fa fa-calendar-check-o"></i> Exam Datesheet
-            <span class="zxb-head-hint">subject-first · applies to all sections of each class</span>
+            <span class="zxb-head-hint">subject-first · applies to all sections of each class · dates DD/MM/YYYY</span>
           </div>
           <div class="ex-card-body">
             <div class="zxb-bulkbar">
@@ -197,15 +197,70 @@
               <label>Passing <input type="number" id="zxb-def-pass" class="zxb-mini" min="0" max="9999" value="33"></label>
               <label>Duration <input type="number" id="zxb-def-dur" class="zxb-mini" min="0" max="600" value="120">m</label>
               <button type="button" class="zx-btn zx-btn--secondary zx-btn--sm" id="zxb-apply-all">Apply to all</button>
+              <span class="zxb-bulk-sep"></span>
+              <button type="button" class="zx-btn zx-btn--secondary zx-btn--sm" id="zxb-autoseq" title="Lay subjects on consecutive working days from the start date (skips weekends + holidays)"><i class="fa fa-magic"></i> Auto-sequence</button>
+              <span class="zxb-bulk-shift">Shift
+                <button type="button" class="zx-btn zx-btn--ghost zx-btn--sm" id="zxb-shift-back" title="Shift all dates back 1 working day">−1d</button>
+                <button type="button" class="zx-btn zx-btn--ghost zx-btn--sm" id="zxb-shift-fwd" title="Shift all dates forward 1 working day">+1d</button>
+              </span>
+            </div>
+            <!-- UX-2.0.1-B P7-B — clone previous exam / copy datesheet class→class -->
+            <div class="zxb-p7" id="zxb-p7">
+              <label class="zxb-p7-clone" id="zxb-clone-wrap"><i class="fa fa-clone"></i>
+                <select id="zxb-clone" class="zxb-mini-sel" title="Load a previous exam's datesheet to clone"><option value="">Clone previous exam…</option></select>
+              </label>
+              <span class="zxb-bulk-sep"></span>
+              <span class="zxb-p7-copy">Copy
+                <select id="zxb-copy-src" class="zxb-mini-sel"></select> →
+                <select id="zxb-copy-dst" class="zxb-mini-sel"></select>
+                <button type="button" class="zx-btn zx-btn--secondary zx-btn--sm" id="zxb-copy-go">Copy</button>
+              </span>
             </div>
             <div class="zxb-rows" id="zxb-rows"></div>
             <div class="zxb-foot" id="zxb-foot"></div>
+
+            <!-- UX-2.0.1-B P4-B — mobile bottom-sheet editor (touch) -->
+            <div class="zxb-sheet-bd" id="zxb-sheet-bd"></div>
+            <div class="zxb-sheet" id="zxb-sheet" role="dialog" aria-modal="true" aria-label="Schedule subject">
+              <div class="zxb-sheet-head"><span id="zxb-sheet-title">Schedule</span>
+                <button type="button" class="zxb-sheet-x" data-sheetclose aria-label="Close">✕</button></div>
+              <div class="zxb-sheet-body" id="zxb-sheet-body"></div>
+              <div class="zxb-sheet-foot">
+                <button type="button" class="zx-btn zx-btn--ghost zx-btn--sm" id="zxb-sheet-remove" data-mclear="" data-cls="">Remove from class</button>
+                <button type="button" class="zx-btn zx-btn--primary zx-btn--sm" data-sheetclose>Done</button>
+              </div>
+            </div>
           </div>
         </div>
 
         </div><!-- /.ec-step (2) -->
         <!-- ══ STEP 3 — Instructions + Review + Save ══ -->
         <div class="ec-step" data-step="3" style="display:none;">
+
+        <!-- UX-2.0.1-B P3-B — Review (coverage · conflicts · unscheduled · readiness); shown only when ZXB_ON -->
+        <div class="ex-card zxb-card" id="zxb-review" style="display:none;">
+          <div class="ex-card-head"><i class="fa fa-check-square-o"></i> Review &amp; Validation
+            <span class="zxb-head-hint">verify coverage and resolve conflicts before saving</span>
+          </div>
+          <div class="ex-card-body">
+            <div class="zxb-readiness" id="zxb-readiness"></div>
+            <div class="zxb-rev-grid">
+              <div class="zxb-rev-col">
+                <div class="zxb-rev-h">Coverage</div>
+                <div id="zxb-coverage" class="zxb-coverage-wrap"></div>
+              </div>
+              <div class="zxb-rev-col">
+                <div class="zxb-rev-h">Datesheet</div>
+                <div id="zxb-datesheet-preview" class="zxb-dsp"></div>
+              </div>
+            </div>
+            <div id="zxb-conflicts" class="zxb-issues"></div>
+            <div id="zxb-unscheduled" class="zxb-issues"></div>
+            <!-- UX-2.0.1-B P5-B — publish gate -->
+            <div id="zxb-publish" class="zxb-publish"></div>
+          </div>
+        </div>
+
         <!-- Card 3 — Instructions -->
         <div class="ex-card">
           <div class="ex-card-head"><i class="fa fa-list-ul"></i> General Instructions</div>
@@ -257,6 +312,8 @@
       <div class="ec-wizfoot-right">
         <button type="button" id="ecNextBtn" class="ec-wiz-btn ec-wiz-next zx-btn zx-btn--primary">Next <i class="fa fa-arrow-right"></i></button>
         <button type="button" id="saveBtn" class="ec-btn-save zx-btn zx-btn--primary" style="display:none;"><i class="fa fa-save"></i> Save Exam</button>
+        <!-- UX-2.0.1-B: Save & Publish lives in the footer beside Save as Draft (both = outcomes of the same save). Gated by the Review publish-readiness checks. -->
+        <button type="button" id="zxbFootPublishBtn" class="zx-btn zx-btn--primary" style="display:none;"><i class="fa fa-paper-plane"></i> Save &amp; Publish</button>
       </div>
     </div>
   </form>
@@ -282,6 +339,9 @@
   // = [sectionLetter,…] (read-only, from the controller's $structure).
   var subjectMap   = <?= json_encode($subjects ?? []) ?>;
   var sectionMap   = <?= json_encode($sections ?? []) ?>;
+  var zxbHolidays  = <?= json_encode($holidays ?? []) ?>;   // UX-2.0.1-B P6-B: Firestore calendarEvents holiday dates (Y-m-d)
+  var zxbExams     = <?= json_encode($exams ?? []) ?>;       // UX-2.0.1-B P7-B: [{id,name,type,status}] for clone picker
+  var zxbDsBase    = '<?= base_url('exam/datesheet_json/') ?>'; // P7-B: read-only datesheet JSON endpoint
   var cbSeq        = 0; // unique-id source for zx-combobox instances
 
   /* ===== UX-2.0.1-B P1 — Datesheet Builder state (feature-flagged) =====
@@ -290,10 +350,13 @@
      localStorage 'zxb'='1'. Declared EARLY so edit-prefill + validateStep see it. */
   var ZXB_ON = (function () {
     try {
-      if (/[?&]ux=datesheet\b/.test(location.search)) return true;
+      // UX-2.0.1-B is now the DEFAULT create experience (datesheet builder).
+      // Escape hatches preserved: ?ux=legacy (one-off) or localStorage zxb='0' (sticky).
       if (/[?&]ux=legacy\b/.test(location.search))    return false;
-      return localStorage.getItem('zxb') === '1';
-    } catch (e) { return false; }
+      if (/[?&]ux=datesheet\b/.test(location.search)) return true;
+      if (localStorage.getItem('zxb') === '0')        return false;
+      return true;
+    } catch (e) { return true; }
   })();
   var zxbModel    = { scope: { classes: [] },
                       defaults: { total: 100, passing: 33, durationMins: 120 },
@@ -924,7 +987,92 @@
     else { S.base=S.base||{}; S.base[field]=value; } }
   function zxbSetDate(subject, date, cls){ zxbSetField(subject,'date',date,cls); }
   function zxbAddMins(hhmm,mins){ var p=String(hhmm).split(':'); if(p.length<2) return hhmm; var t=parseInt(p[0])*60+parseInt(p[1])+mins; t=((t%1440)+1440)%1440; var h=Math.floor(t/60),m=t%60; return (h<10?'0':'')+h+':'+(m<10?'0':'')+m; }
-  function zxbIsWorkingDay(d){ return true; } // reserved hook (P6-B consults zxbModel.calendar / Firestore calendarEvents)
+  // ── UX-2.0.1-B P6-B — holiday/working-day awareness (Firestore calendarEvents) ──
+  function zxbFmtDate(dt){ var y=dt.getFullYear(),m=dt.getMonth()+1,da=dt.getDate(); return y+'-'+(m<10?'0':'')+m+'-'+(da<10?'0':'')+da; }
+  function zxbIsWorkingDay(d){
+    if(!d) return false;
+    var dt=new Date(d+'T00:00:00'); if(isNaN(dt.getTime())) return true;
+    if((zxbModel.calendar.weekend||[]).indexOf(dt.getDay())!==-1) return false;       // weekend (0=Sun)
+    if((zxbModel.calendar.holidays||[]).indexOf(d)!==-1) return false;                // configured holiday
+    return true;
+  }
+  function zxbNextWorkingDay(d){ var dt=new Date(d+'T00:00:00'); var g=0; do{ dt.setDate(dt.getDate()+1); g++; }while(!zxbIsWorkingDay(zxbFmtDate(dt))&&g<400); return zxbFmtDate(dt); }
+  function zxbPrevWorkingDay(d){ var dt=new Date(d+'T00:00:00'); var g=0; do{ dt.setDate(dt.getDate()-1); g++; }while(!zxbIsWorkingDay(zxbFmtDate(dt))&&g<400); return zxbFmtDate(dt); }
+  function zxbFirstWorkingDay(d){ return zxbIsWorkingDay(d)? d : zxbNextWorkingDay(d); }
+  // Auto-sequence: lay every subject on consecutive WORKING days from the exam
+  // start (skipping weekends + holidays), one subject per day, clamped to end.
+  // Sets dates via the date mutator → serializer unchanged.
+  function zxbAutoSequence(){
+    var start=startIn.value; if(!start){ if(typeof showToast==='function') showToast('Set the exam Start date first (Step 1).','warning'); return; }
+    var endD=endIn.value, dur=zxbModel.defaults.durationMins||120, DEF='09:00';
+    var day=zxbFirstWorkingDay(start);
+    zxbOrderedSubjects().forEach(function(s){
+      var S=zxbModel.subjects[s]; if(!S) return;
+      if(endD && day>endD) day=endD;                       // clamp into range (overflow shows as same-day → conflict in review)
+      if(!S.appliesTo.length) S.appliesTo=zxbAppliesDefault(s);
+      S.base.date=day;
+      if(!S.base.start) S.base.start=DEF;
+      S.base.end=zxbAddMins(S.base.start||DEF,dur);
+      if(S.base.total==null||S.base.total==='') S.base.total=zxbModel.defaults.total;
+      if(S.base.passing==null||S.base.passing==='') S.base.passing=zxbModel.defaults.passing;
+      day=zxbNextWorkingDay(day);
+    });
+    zxbRender();
+  }
+  // Bulk date-shift: move every scheduled date by N working days (±).
+  function zxbShiftDates(n){
+    function sh(d){ var x=d, c=Math.abs(n), g=0; while(c>0 && g<800){ x = n>0? zxbNextWorkingDay(x) : zxbPrevWorkingDay(x); c--; g++; } return x; }
+    zxbOrderedSubjects().forEach(function(s){ var S=zxbModel.subjects[s]; if(!S) return;
+      if(S.base && S.base.date) S.base.date=sh(S.base.date);
+      Object.keys(S.overrides||{}).forEach(function(c){ if(S.overrides[c].date) S.overrides[c].date=sh(S.overrides[c].date); });
+    });
+    zxbRender();
+  }
+  // ── UX-2.0.1-B P7-B — Clone previous exam / Copy datesheet class→class ──
+  // Both reuse the shared model + hydration; no serializer/Firestore/lifecycle change.
+  function zxbCloneFrom(id){
+    if(!id || ecEdit) return;
+    fetch(zxbDsBase + encodeURIComponent(id)).then(function(r){ return r.json(); }).then(function(res){
+      if(!res || !res.ok){ if(typeof showToast==='function') showToast('Could not load that exam.','error'); return; }
+      zxbModel.subjects = {}; zxbModel.scope.classes = [];                 // replace current draft with the clone
+      zxbHydrate(res.rows || []);                                          // reuse the edit hydration path
+      if(res.gradingScale && scaleSelect){ scaleSelect.value = res.gradingScale; togglePassingPct(); }
+      if(res.passingPercent && pctIn){ pctIn.value = res.passingPercent; }
+      zxbRender();
+      if(typeof showToast==='function') showToast('Cloned datesheet — re-date (Auto-sequence / Shift) and save as a NEW exam.','success');
+    }).catch(function(){ if(typeof showToast==='function') showToast('Clone failed (network).','error'); });
+  }
+  function zxbCopyClass(src, dst){
+    if(!src || !dst || src===dst) return;
+    zxbOrderedSubjects().forEach(function(s){
+      var S=zxbModel.subjects[s]; if(!S || S.appliesTo.indexOf(src)===-1) return;   // src not scheduled for this subject
+      if(!zxbClassHas(dst, s)) return;                                              // dst doesn't offer this subject → skip
+      var e=zxbEff(S, src); if(!e.date) return;                                     // src slot empty → skip
+      if(S.appliesTo.indexOf(dst)===-1) S.appliesTo.push(dst);
+      S.overrides = S.overrides || {};
+      S.overrides[dst] = { date:e.date, start:e.start, end:e.end, total:e.total, passing:e.passing };
+    });
+    zxbRender();
+  }
+  function zxbRenderP7(){
+    if(!ZXB_ON) return;
+    // clone picker — populated once from zxbExams; hidden in edit mode
+    var cl=document.getElementById('zxb-clone'), wrap=document.getElementById('zxb-clone-wrap');
+    if(cl && cl.options.length<=1 && Array.isArray(zxbExams)){
+      zxbExams.forEach(function(x){ var o=document.createElement('option'); o.value=x.id; o.textContent=(x.name||x.id)+(x.type?(' · '+x.type):'')+(x.status?(' ['+x.status+']'):''); cl.appendChild(o); });
+    }
+    if(wrap) wrap.style.display = (ecEdit || !(zxbExams&&zxbExams.length)) ? 'none' : '';
+    // copy src/dst — refreshed with the current in-scope classes
+    ['zxb-copy-src','zxb-copy-dst'].forEach(function(idd){
+      var sel=document.getElementById(idd); if(!sel) return; var keep=sel.value;
+      sel.innerHTML = zxbModel.scope.classes.map(function(c){ return '<option value="'+esc(c)+'">'+esc(c)+'</option>'; }).join('');
+      if(keep) sel.value=keep;
+    });
+    var cp=document.getElementById('zxb-p7-copy-wrap');
+    var copyOk = zxbModel.scope.classes.length>=2;
+    var src=document.getElementById('zxb-copy-src'), dst=document.getElementById('zxb-copy-dst'), go=document.getElementById('zxb-copy-go');
+    [src,dst,go].forEach(function(el){ if(el) el.disabled=!copyOk; });
+  }
 
   function zxbSerialize(){
     var out=[]; var subs=zxbOrderedSubjects();
@@ -981,7 +1129,7 @@
       +'<div class="zxb-row-main">'
         +'<span class="zxb-status" aria-hidden="true">'+(scheduled?'✓':'·')+'</span>'
         +'<span class="zxb-subj">'+esc(s)+'</span>'
-        +'<input type="date" class="zxb-in zxb-date" data-si="'+i+'" data-f="date" aria-label="Date" value="'+esc(b.date||'')+'"'+(startIn.value?(' min="'+esc(startIn.value)+'"'):'')+(endIn.value?(' max="'+esc(endIn.value)+'"'):'')+'>'
+        +'<input type="date" class="zxb-in zxb-date" data-si="'+i+'" data-f="date" aria-label="Date (DD/MM/YYYY)" title="Date format: DD/MM/YYYY" value="'+esc(b.date||'')+'"'+(startIn.value?(' min="'+esc(startIn.value)+'"'):'')+(endIn.value?(' max="'+esc(endIn.value)+'"'):'')+'>'
         +'<input type="time" class="zxb-in zxb-start" data-si="'+i+'" data-f="start" aria-label="Start" value="'+esc(b.start||'')+'">'
         +'<span class="zxb-dash">–</span>'
         +'<input type="time" class="zxb-in zxb-end" data-si="'+i+'" data-f="end" aria-label="End" value="'+esc(b.end||'')+'">'
@@ -1008,10 +1156,15 @@
     if(!ZXB_ON) return;
     var sc=document.getElementById('zxb-scope-chips');
     if(sc){ sc.innerHTML=classList.map(function(c){ var on=zxbModel.scope.classes.indexOf(c)!==-1; return '<button type="button" class="zxb-chip'+(on?' on':'')+'" data-scope="'+esc(c)+'" aria-pressed="'+on+'">'+(on?'✓ ':'')+esc(c)+'</button>'; }).join(''); }
-    zxbEnsureSubjects(); var host=document.getElementById('zxb-rows'); if(!host) return;
+    zxbEnsureSubjects(); zxbRenderP7(); var host=document.getElementById('zxb-rows'); if(!host) return;
     if(zxbModel.scope.classes.length===0){ host.className='zxb-rows'; host.innerHTML='<div class="zxb-empty">Select one or more classes above to begin scheduling.</div>'; zxbUpdateFoot(); updateSummary(); return; }
-    host.className='zxb-rows'+(isPassScale()?'':' zxb-nopass');
-    var subs=zxbOrderedSubjects(); host.innerHTML=subs.map(function(s,i){ return zxbRowHtml(s,i); }).join('');
+    // UX-2.0.1-B P4-B: mobile/tablet uses a dedicated touch card renderer over
+    // the SAME model; desktop keeps the datesheet rows. (Not a CSS reflow.)
+    if (zxbIsMobile()) { zxbRenderCards(host); }
+    else {
+      host.className='zxb-rows'+(isPassScale()?'':' zxb-nopass');
+      var subs=zxbOrderedSubjects(); host.innerHTML=subs.map(function(s,i){ return zxbRowHtml(s,i); }).join('');
+    }
     zxbUpdateFoot(); updateSummary();
   }
   function zxbApplyDefaults(){ var dur=zxbModel.defaults.durationMins;
@@ -1021,6 +1174,7 @@
     if(scope) scope.addEventListener('click',function(e){ var b=e.target.closest&&e.target.closest('[data-scope]'); if(!b) return; var c=b.getAttribute('data-scope'); var i=zxbModel.scope.classes.indexOf(c); if(i===-1) zxbModel.scope.classes.push(c); else zxbModel.scope.classes.splice(i,1); zxbRender(); });
     var root=document.getElementById('zxb-builder'); if(!root) return;
     root.addEventListener('change',function(e){ var inp=e.target.closest&&e.target.closest('.zxb-in'); if(!inp) return; var s=zxbSubjectAt(parseInt(inp.getAttribute('data-si'))); if(s==null) return; var f=inp.getAttribute('data-f'), cls=inp.getAttribute('data-cls')||null; if(f==='date') zxbSetDate(s,inp.value,cls); else zxbSetField(s,f,inp.value,cls);
+      if(cls && f==='date' && inp.value){ var SS=zxbModel.subjects[s]; if(SS && SS.appliesTo.indexOf(cls)===-1) SS.appliesTo.push(cls); } // P4-B: scheduling a per-class date applies that class
       var row=inp.closest('.zxb-row'); if(row && f==='date' && !cls){ var sched=!!zxbModel.subjects[s].base.date; row.classList.toggle('is-sched',sched); row.classList.toggle('is-unsched',!sched); var st=row.querySelector('.zxb-status'); if(st) st.textContent=sched?'✓':'·'; }
       zxbUpdateFoot(); updateSummary(); });
     root.addEventListener('click',function(e){ var t=e.target;
@@ -1033,16 +1187,236 @@
     if(dp) dp.addEventListener('change',function(){ zxbModel.defaults.passing=parseInt(dp.value)||0; });
     if(dd) dd.addEventListener('change',function(){ zxbModel.defaults.durationMins=parseInt(dd.value)||0; });
     if(ba) ba.addEventListener('click',function(){ zxbApplyDefaults(); zxbRender(); });
+    var as=document.getElementById('zxb-autoseq'); if(as) as.addEventListener('click', zxbAutoSequence);
+    var sb=document.getElementById('zxb-shift-back'); if(sb) sb.addEventListener('click', function(){ zxbShiftDates(-1); });
+    var sf=document.getElementById('zxb-shift-fwd');  if(sf) sf.addEventListener('click', function(){ zxbShiftDates(1); });
+    var cl=document.getElementById('zxb-clone'); if(cl) cl.addEventListener('change', function(){ var v=cl.value; cl.value=''; zxbCloneFrom(v); });
+    var cg=document.getElementById('zxb-copy-go'); if(cg) cg.addEventListener('click', function(){ var s=document.getElementById('zxb-copy-src'), d=document.getElementById('zxb-copy-dst'); if(s&&d) zxbCopyClass(s.value,d.value); });
   }
+  /* ── UX-2.0.1-B P3-B — Review: conflicts, coverage, unscheduled, readiness
+     (read-only analysis over the P1 model; no serializer/backend change) ── */
+  function zxbScheduledForClass(cls){
+    var out=[];
+    zxbOrderedSubjects().forEach(function(s){ var S=zxbModel.subjects[s]; if(!S||S.appliesTo.indexOf(cls)===-1) return;
+      var e=zxbEff(S,cls); if(!e.date) return; out.push({subject:s,date:e.date,start:e.start,end:e.end}); });
+    return out;
+  }
+  function zxbConflicts(){
+    var hits=[];
+    zxbModel.scope.classes.forEach(function(c){
+      var slots=zxbScheduledForClass(c).slice().sort(function(a,b){ return (a.date+a.start)<(b.date+b.start)?-1:1; });
+      for(var i=0;i<slots.length-1;i++){
+        var A=slots[i],B=slots[i+1];
+        if(A.date===B.date && A.start && B.start && A.end && A.end>B.start){
+          hits.push({cls:c,date:A.date,a:A.subject,b:B.subject});
+        }
+      }
+    });
+    return hits;
+  }
+  function zxbConflictSet(){ var m={}; zxbConflicts().forEach(function(h){ m[h.cls+'|'+h.a]=1; m[h.cls+'|'+h.b]=1; }); return m; }
+  function zxbUnscheduled(){
+    var out=[];
+    zxbOrderedSubjects().forEach(function(s){ var S=zxbModel.subjects[s]; if(!S) return;
+      S.appliesTo.forEach(function(c){ var e=zxbEff(S,c); if(!e.date) out.push({cls:c,subject:s}); }); });
+    return out;
+  }
+  function zxbDmy(d){ if(!d) return ''; var p=String(d).split('-'); return p[2]+'/'+p[1]+'/'+p[0]; }
+  function zxbPlural(n, one, many){ return n===1 ? one : many; }   // UX polish: 1 class / 2 classes
+  function zxbReviewRender(){
+    if(!ZXB_ON) return;
+    var ser=zxbSerialize(), conflicts=zxbConflicts(), unsched=zxbUnscheduled(), cset=zxbConflictSet();
+    var subjSet={}; ser.forEach(function(r){subjSet[r.subject]=1;});
+    var dates=ser.map(function(r){ return r.date.split('/').reverse().join('-'); }).sort();
+    var range = dates.length ? (zxbDmy(dates[0])+' – '+zxbDmy(dates[dates.length-1])) : '—';
+    // readiness banner
+    var rd=document.getElementById('zxb-readiness');
+    if(rd){
+      var ready = ser.length>0 && conflicts.length===0;
+      rd.className='zxb-readiness '+(ser.length===0?'zxb-r-empty':(conflicts.length?'zxb-r-block':(unsched.length?'zxb-r-warn':'zxb-r-ok')));
+      rd.innerHTML =
+        '<span class="zxb-r-stat"><strong>'+zxbModel.scope.classes.length+'</strong> '+zxbPlural(zxbModel.scope.classes.length,'class','classes')+'</span>'
+       +'<span class="zxb-r-stat"><strong>'+Object.keys(subjSet).length+'</strong> '+zxbPlural(Object.keys(subjSet).length,'subject','subjects')+'</span>'
+       +'<span class="zxb-r-stat"><strong>'+ser.length+'</strong> '+zxbPlural(ser.length,'entry','entries')+'</span>'
+       +'<span class="zxb-r-stat">'+range+'</span>'
+       +'<span class="zxb-r-verdict">'+(ser.length===0?'⚠ nothing scheduled':(conflicts.length?('⛔ '+conflicts.length+' conflict(s) — resolve before publish'):(unsched.length?('⚠ '+unsched.length+' unscheduled (will be skipped)'):'✅ ready to save')))+'</span>';
+    }
+    // coverage matrix
+    var cov=document.getElementById('zxb-coverage');
+    if(cov){
+      var subs=zxbOrderedSubjects();
+      if(!zxbModel.scope.classes.length || !subs.length){ cov.innerHTML='<div class="zxb-empty">No classes/subjects in scope.</div>'; }
+      else {
+        var h='<table class="zxb-cov"><thead><tr><th></th>'+subs.map(function(s){return '<th title="'+esc(s)+'">'+esc(s.length>10?s.slice(0,9)+'…':s)+'</th>';}).join('')+'</tr></thead><tbody>';
+        zxbModel.scope.classes.forEach(function(c){
+          h+='<tr><th>'+esc(c)+'</th>'+subs.map(function(s){
+            var S=zxbModel.subjects[s]; var applies=S&&S.appliesTo.indexOf(c)!==-1; var eligible=zxbClassHas(c,s);
+            if(applies){ var e=zxbEff(S,c); if(cset[c+'|'+s]) return '<td class="cf">⛔</td>'; return e.date?'<td class="ok">✓</td>':'<td class="un">·</td>'; }
+            return eligible?'<td class="un">·</td>':'<td class="na">–</td>';
+          }).join('')+'</tr>';
+        });
+        cov.innerHTML=h+'</tbody></table>';
+      }
+    }
+    // datesheet preview (date-ascending)
+    var dsp=document.getElementById('zxb-datesheet-preview');
+    if(dsp){
+      if(!ser.length){ dsp.innerHTML='<div class="zxb-empty">No entries yet.</div>'; }
+      else {
+        var rows=ser.slice().sort(function(a,b){ var ka=a.date.split('/').reverse().join('')+a.startTime, kb=b.date.split('/').reverse().join('')+b.startTime; return ka<kb?-1:1; });
+        dsp.innerHTML='<table class="zxb-dsp-t"><thead><tr><th>Date</th><th>Class</th><th>Subject</th><th>Time</th></tr></thead><tbody>'+rows.map(function(r){ return '<tr><td>'+esc(r.date)+'</td><td>'+esc(r.className)+'</td><td class="zxb-dsp-subj">'+esc(r.subject)+'</td><td>'+esc(r.startTime)+'–'+esc(r.endTime)+'</td></tr>'; }).join('')+'</tbody></table>';
+      }
+    }
+    // conflicts list
+    var cf=document.getElementById('zxb-conflicts');
+    if(cf){ cf.innerHTML = conflicts.length ? ('<div class="zxb-issue-h zxb-issue-block">⛔ Time conflicts ('+conflicts.length+')</div>'+conflicts.map(function(h){ return '<div class="zxb-issue-row">'+esc(h.cls)+': <strong>'+esc(h.a)+'</strong> &amp; <strong>'+esc(h.b)+'</strong> overlap on '+esc(zxbDmy(h.date))+' <button type="button" class="zxb-jump" data-goto="2">fix</button></div>'; }).join('')) : ''; }
+    // unscheduled list
+    var us=document.getElementById('zxb-unscheduled');
+    if(us){ us.innerHTML = unsched.length ? ('<div class="zxb-issue-h zxb-issue-warn">⚠ Unscheduled subjects ('+unsched.length+') — skipped on save</div>'+unsched.map(function(u){ return '<div class="zxb-issue-row">'+esc(u.cls)+' · '+esc(u.subject)+' <button type="button" class="zxb-jump" data-goto="2">schedule</button></div>'; }).join('')) : ''; }
+    // P5-B publish gate
+    zxbPublishRender(ser.length, conflicts.length, unsched.length);
+  }
+  // ── UX-2.0.1-B P5-B — Publish gate. Conflicts BLOCK publish; unscheduled
+  //    requires acknowledgement. Reuses P3-B outputs. Lifecycle unchanged:
+  //    Draft is the footer save; Publish sets examStatus=Published then saves.
+  function zxbPublishReady(entries, conflicts, unsched){
+    return entries>0 && conflicts===0 && (unsched===0 || zxbAck);
+  }
+  function zxbPublishRender(entries, conflicts, unsched){
+    var host=document.getElementById('zxb-publish'); if(!host) return;
+    var ck=function(ok,bad){ return '<span class="zxb-ck '+(ok?'ok':(bad?'bad':'warn'))+'">'+(ok?'✓':(bad?'⛔':'⚠'))+'</span>'; };
+    var items=''
+      + '<li>'+ck(entries>0,entries===0)+' '+entries+' subject-entr'+(entries===1?'y':'ies')+' scheduled</li>'
+      + '<li>'+ck(conflicts===0,conflicts>0)+' '+(conflicts===0?'No time conflicts':(conflicts+' conflict(s) — must resolve to publish'))+'</li>'
+      + '<li>'+ck(unsched===0,false)+' '+(unsched===0?'All applied subjects scheduled':(unsched+' unscheduled (skipped) '
+          + '<label class="zxb-ack"><input type="checkbox" id="zxb-ack"'+(zxbAck?' checked':'')+'> acknowledge</label>'))+'</li>';
+    if(ecEdit){
+      // Edit is Draft-only; publish/unpublish happens via the exam view (update_status).
+      host.innerHTML='<div class="zxb-pub-h">Readiness</div><ul class="zxb-checklist">'+items+'</ul>'
+        +'<div class="zxb-pub-note">Editing a Draft. Publish/Unpublish is managed from the exam view after saving.</div>';
+      return;
+    }
+    var ready=zxbPublishReady(entries,conflicts,unsched);
+    host.innerHTML='<div class="zxb-pub-h">Publish readiness</div><ul class="zxb-checklist">'+items+'</ul>'
+      +'<div class="zxb-pub-actions">'
+        +'<span class="zxb-pub-verdict '+(ready?'ok':'block')+'">'+(ready?'✅ Ready to publish':(conflicts>0?'⛔ Resolve conflicts to publish':(entries===0?'⚠ Nothing scheduled':'⚠ Acknowledge unscheduled to publish')))+'</span>'
+      +'</div>'
+      +'<div class="zxb-pub-note">Use the footer: <strong>Save as Draft</strong> (not visible to parents) or <strong>Save &amp; Publish</strong> (live to parents).</div>';
+    // Sync the footer "Save & Publish" button with the SAME gate (unchanged logic):
+    // conflicts block; unscheduled requires the acknowledge checkbox above.
+    var fpb=document.getElementById('zxbFootPublishBtn');
+    if(fpb){ fpb.disabled=!ready; fpb.title=ready?'Save and publish — visible to parents'
+      :(conflicts>0?'Resolve time conflicts first':(entries===0?'Schedule at least one subject':'Tick “acknowledge” for the unscheduled subjects first')); }
+  }
+  window.zxbOnStep = function(step){
+    var fp=document.getElementById('zxbFootPublishBtn');
+    if(fp) fp.style.display = (ZXB_ON && !ecEdit && step===3) ? '' : 'none';   // footer Publish only on Review (Step 3), create mode
+    if(ZXB_ON && step===3) zxbReviewRender();
+  };
+
+  /* ── UX-2.0.1-B P4-B — dedicated mobile/tablet renderer (class accordion →
+     subject cards → bottom-sheet editor). Same model + mutators + serializer;
+     no separate business logic — sheet inputs reuse data-si/data-f/data-cls so
+     the P1 change handler updates the model identically. ── */
+  var zxbOpenClass = null;
+  var zxbAck = false; // P5-B: unscheduled-subjects acknowledgement for publish
+  function zxbDoPublish(){
+    var ser=zxbSerialize(), conflicts=zxbConflicts().length, unsched=zxbUnscheduled().length;
+    if(!zxbPublishReady(ser.length,conflicts,unsched)) return;       // hard guard: conflicts block publish
+    var radios=document.querySelectorAll('input[name="examStatus"]');
+    for(var i=0;i<radios.length;i++) radios[i].checked=(radios[i].value==='Published');
+    saveBtn.click();                                                  // existing save: validate + serialize + POST (status=Published)
+  }
+  function zxbIsMobile(){ try { return window.matchMedia('(max-width:768px)').matches; } catch(e){ return (window.innerWidth||999) <= 768; } }
+  function zxbCardHtml(s,c,i){
+    var S=zxbModel.subjects[s], e=zxbEff(S,c), sched=!!e.date, pass=isPassScale();
+    var info = sched ? (zxbDmy(e.date)+' · '+esc(e.start||'')+'–'+esc(e.end||'')+' · '+esc(String(e.total||''))+(pass?('/'+esc(String(e.passing||''))):''))
+                     : '<span class="zxb-mcard-tap">⊕ tap to schedule</span>';
+    return '<button type="button" class="zxb-mcard'+(sched?' is-sched':'')+'" data-card="'+i+'" data-cls="'+esc(c)+'">'
+      +'<span class="zxb-mcard-name">'+(sched?'✓ ':'')+esc(s)+'</span>'
+      +'<span class="zxb-mcard-info">'+info+'</span></button>';
+  }
+  function zxbRenderCards(host){
+    host.className='zxb-cards';
+    if(zxbOpenClass===null || zxbModel.scope.classes.indexOf(zxbOpenClass)===-1) zxbOpenClass=zxbModel.scope.classes[0]||null;
+    var subs=zxbOrderedSubjects();
+    host.innerHTML = zxbModel.scope.classes.map(function(c){
+      var open=(c===zxbOpenClass);
+      var cs=subs.filter(function(s){ var S=zxbModel.subjects[s]; return zxbClassHas(c,s) || (S&&S.appliesTo.indexOf(c)!==-1); });
+      var done=cs.filter(function(s){ return zxbEff(zxbModel.subjects[s],c).date; }).length;
+      var secs=(sectionMap[c]&&sectionMap[c].length)?sectionMap[c]:[];
+      var cards = open ? (cs.length ? cs.map(function(s){ return zxbCardHtml(s,c,subs.indexOf(s)); }).join('') : '<div class="zxb-empty">No subjects for this class.</div>') : '';
+      return '<div class="zxb-acc'+(open?' open':'')+'">'
+        +'<button type="button" class="zxb-acc-head" data-acc="'+esc(c)+'" aria-expanded="'+open+'">'
+          +'<span class="zxb-acc-title">'+esc(c)+'</span>'
+          +'<span class="zxb-acc-meta">'+done+'/'+cs.length+' scheduled'+(secs.length?(' · '+secs.length+' sec'):'')+'</span>'
+          +'<span class="zxb-acc-caret">'+(open?'▾':'▸')+'</span></button>'
+        +(open?('<div class="zxb-acc-body">'+cards+'</div>'):'')+'</div>';
+    }).join('');
+  }
+  function zxbOpenSheet(i, cls){
+    var s=zxbSubjectAt(i); if(s==null) return; var S=zxbModel.subjects[s], e=zxbEff(S,cls), pass=isPassScale();
+    var t=document.getElementById('zxb-sheet-title'); if(t) t.textContent=s+' · '+cls;
+    var body=document.getElementById('zxb-sheet-body');
+    if(body){ body.innerHTML=''
+      +'<label class="zxb-sf">Date <span class="zxb-fmt">(DD/MM/YYYY)</span><input type="date" class="zxb-in" data-si="'+i+'" data-f="date" data-cls="'+esc(cls)+'" title="Date format: DD/MM/YYYY" value="'+esc(e.date||'')+'"'+(startIn.value?(' min="'+esc(startIn.value)+'"'):'')+(endIn.value?(' max="'+esc(endIn.value)+'"'):'')+'></label>'
+      +'<div class="zxb-sf-row"><label class="zxb-sf">Start<input type="time" class="zxb-in" data-si="'+i+'" data-f="start" data-cls="'+esc(cls)+'" value="'+esc(e.start||'')+'"></label>'
+      +'<label class="zxb-sf">End<input type="time" class="zxb-in" data-si="'+i+'" data-f="end" data-cls="'+esc(cls)+'" value="'+esc(e.end||'')+'"></label></div>'
+      +'<div class="zxb-sf-row"><label class="zxb-sf">Total<input type="number" class="zxb-in" data-si="'+i+'" data-f="total" data-cls="'+esc(cls)+'" min="1" max="9999" value="'+esc(e.total!=null?e.total:'')+'"></label>'
+      +(pass?('<label class="zxb-sf">Passing<input type="number" class="zxb-in" data-si="'+i+'" data-f="passing" data-cls="'+esc(cls)+'" min="0" max="9999" value="'+esc(e.passing!=null?e.passing:'')+'"></label>'):'')+'</div>'; }
+    var rm=document.getElementById('zxb-sheet-remove'); if(rm){ rm.setAttribute('data-mclear', i); rm.setAttribute('data-cls', cls); }
+    var sh=document.getElementById('zxb-sheet'), bd=document.getElementById('zxb-sheet-bd'); if(sh) sh.classList.add('open'); if(bd) bd.classList.add('open');
+  }
+  function zxbCloseSheet(){ var sh=document.getElementById('zxb-sheet'), bd=document.getElementById('zxb-sheet-bd'); if(sh) sh.classList.remove('open'); if(bd) bd.classList.remove('open'); if(zxbIsMobile()) zxbRender(); }
+  function zxbWireMobile(){
+    var root=document.getElementById('zxb-builder'); if(!root) return;
+    root.addEventListener('click', function(e){
+      var acc=e.target.closest&&e.target.closest('[data-acc]'); if(acc){ var c=acc.getAttribute('data-acc'); zxbOpenClass=(zxbOpenClass===c?null:c); zxbRender(); return; }
+      var card=e.target.closest&&e.target.closest('[data-card]'); if(card){ zxbOpenSheet(parseInt(card.getAttribute('data-card')), card.getAttribute('data-cls')); return; }
+      var scl=e.target.closest&&e.target.closest('[data-sheetclose]'); if(scl){ zxbCloseSheet(); return; }
+      var mc=e.target.closest&&e.target.closest('[data-mclear]'); if(mc && mc.getAttribute('data-mclear')!==''){ var s=zxbSubjectAt(parseInt(mc.getAttribute('data-mclear'))), c2=mc.getAttribute('data-cls'), S=zxbModel.subjects[s]; if(S){ var ix=S.appliesTo.indexOf(c2); if(ix!==-1)S.appliesTo.splice(ix,1); if(S.overrides) delete S.overrides[c2]; } zxbCloseSheet(); return; }
+    });
+    var bd=document.getElementById('zxb-sheet-bd'); if(bd) bd.addEventListener('click', zxbCloseSheet);
+    var lastM=zxbIsMobile();
+    window.addEventListener('resize', function(){ var m=zxbIsMobile(); if(m!==lastM){ lastM=m; if(!m) zxbCloseSheet(); zxbRender(); } });
+  }
+
   function zxbInit(){
     if(!ZXB_ON) return;
+    zxbModel.calendar.holidays = Array.isArray(zxbHolidays) ? zxbHolidays : [];   // P6-B: Firestore holidays → model.calendar
+    // UX polish: date-format guidance on the Step-1 native inputs (no custom picker).
+    if(startIn){ startIn.title='Date format: DD/MM/YYYY'; }
+    if(endIn){ endIn.title='Date format: DD/MM/YYYY';
+      try { if(!document.getElementById('zxb-date-hint')){ var hn=document.createElement('div'); hn.id='zxb-date-hint'; hn.className='zxb-datehint'; hn.textContent='Dates use DD/MM/YYYY format.'; (endIn.closest('.ex-field')||endIn.parentNode).appendChild(hn); } } catch(e){}
+    }
     var sb=document.getElementById('zxb-builder'); if(sb) sb.style.display='';
     var sc=document.getElementById('zxb-scope'); if(sc) sc.style.display='';
+    var rv=document.getElementById('zxb-review'); if(rv) rv.style.display='';
     var leg=document.getElementById('ec-legacy-schedule'); if(leg) leg.style.display='none';
     var dp=document.getElementById('zxb-def-pass'); if(dp){ dp.value=parseInt(pctIn.value)||33; zxbModel.defaults.passing=parseInt(dp.value)||33; }
     var dt=document.getElementById('zxb-def-total'); if(dt) zxbModel.defaults.total=parseInt(dt.value)||100;
     if(ecEdit){ zxbHydrate(ecEdit.rows||[]); }
-    zxbWire(); zxbRender();
+    // P5-B: status is decided in the Review publish gate → hide the Step-1 pills (create only).
+    var sr=document.querySelector('.ec-status-row'); if(sr && !ecEdit) sr.style.display='none';
+    if(!ecEdit && saveBtn){
+      saveBtn.innerHTML='<i class="fa fa-save"></i> Save as Draft';
+      // Draft = quiet SECONDARY; Save & Publish = solid PRIMARY. Drop ec-btn-save
+      // (solid-teal + width:100%) so the secondary style actually shows.
+      saveBtn.classList.remove('ec-btn-save','zx-btn--primary');
+      saveBtn.classList.add('zx-btn--secondary');
+    }
+    var zxFpb=document.getElementById('zxbFootPublishBtn');
+    if(zxFpb && !zxFpb._wired){ zxFpb._wired=1; zxFpb.addEventListener('click', function(){ if(!this.disabled) zxbDoPublish(); }); }
+    zxbWire(); zxbWireMobile(); zxbRender();
+    // P3-B/P5-B: review jumps (fix/schedule) + publish gate + acknowledge.
+    var rev=document.getElementById('zxb-review');
+    if(rev){
+      rev.addEventListener('click', function(e){
+        var b=e.target.closest&&e.target.closest('[data-goto]'); if(b && window.zxWizard){ window.zxWizard.goTo(parseInt(b.getAttribute('data-goto'))); return; }
+        var pb=e.target.closest&&e.target.closest('#zxb-publish-btn'); if(pb && !pb.disabled){ zxbDoPublish(); return; }
+      });
+      rev.addEventListener('change', function(e){ if(e.target && e.target.id==='zxb-ack'){ zxbAck=e.target.checked; zxbReviewRender(); } });
+    }
   }
   zxbInit();
 
@@ -1178,6 +1552,8 @@
     if (saveBtn) saveBtn.style.display = (cur === total) ? '' : 'none';
     try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) {}
     focusFirst();
+    // UX-2.0.1-B P3-B: let the datesheet builder render its Review on Step 3.
+    if (typeof window.zxbOnStep === 'function') window.zxbOnStep(cur);
   }
 
   // Step gating: validate the current step before advancing (shared validators).
@@ -1661,4 +2037,105 @@ html { font-size: 16px !important; }
   .zxb-row-main { gap:6px; }
   .zxb-date, .zxb-start, .zxb-end, .zxb-total, .zxb-pass { flex:1 1 auto; width:auto; min-width:0; }
 }
+
+/* ── UX-2.0.1-B P3-B — Review (coverage · conflicts · unscheduled · readiness) ── */
+.zxb-readiness { display:flex; flex-wrap:wrap; align-items:center; gap:14px; padding:10px 14px; border-radius:8px; font-size:.84rem; margin-bottom:14px; border:1px solid var(--border); background:var(--bg3); }
+.zxb-readiness .zxb-r-stat strong { color:var(--gold); }
+.zxb-readiness .zxb-r-verdict { margin-left:auto; font-weight:700; }
+.zxb-r-ok    { border-color:#16a34a; } .zxb-r-ok    .zxb-r-verdict { color:#16a34a; }
+.zxb-r-warn  { border-color:#d97706; } .zxb-r-warn  .zxb-r-verdict { color:#b45309; }
+.zxb-r-block { border-color:#ef4444; } .zxb-r-block .zxb-r-verdict { color:#dc2626; }
+.zxb-r-empty .zxb-r-verdict { color:var(--t3); }
+/* Review panels stack full-width (Coverage matrix + Datesheet both get room;
+   no cramped 2-col squeeze / no subject truncation). */
+.zxb-rev-grid { display:grid; grid-template-columns:1fr; gap:20px; }
+.zxb-rev-h { font-size:.74rem; text-transform:uppercase; letter-spacing:.04em; color:var(--t3); font-weight:700; margin-bottom:8px; }
+.zxb-coverage-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:8px; }
+.zxb-cov { border-collapse:collapse; font-size:.78rem; width:100%; }
+.zxb-cov th, .zxb-cov td { border:1px solid var(--border); padding:6px 10px; text-align:center; white-space:nowrap; }
+.zxb-cov thead th { background:var(--bg3); color:var(--t2); font-weight:600; }
+.zxb-cov tbody th { background:var(--bg3); text-align:left; color:var(--t2); font-weight:600; }
+.zxb-cov td.ok { color:#16a34a; font-weight:700; } .zxb-cov td.un { color:var(--t3); } .zxb-cov td.na { color:var(--border); } .zxb-cov td.cf { color:#dc2626; font-weight:700; background:rgba(239,68,68,.08); }
+.zxb-dsp { overflow-x:auto; border:1px solid var(--border); border-radius:8px; }
+.zxb-dsp-t { border-collapse:collapse; font-size:.82rem; width:100%; }
+.zxb-dsp-t thead th { background:var(--bg3); color:var(--t2); font-weight:600; text-align:left; padding:7px 12px; font-size:.72rem; text-transform:uppercase; letter-spacing:.03em; border-bottom:1px solid var(--border); }
+.zxb-dsp-t thead th:last-child { text-align:right; }
+.zxb-dsp-t td { padding:7px 12px; border-bottom:1px solid var(--border); white-space:nowrap; }
+.zxb-dsp-t tbody tr:last-child td { border-bottom:none; }
+.zxb-dsp-t tbody tr:hover { background:var(--bg3); }
+.zxb-dsp-t td:first-child { color:var(--t2); }
+.zxb-dsp-t td.zxb-dsp-subj { color:var(--t1); font-weight:600; }     /* subject: full name, emphasized */
+.zxb-dsp-t td:last-child { text-align:right; color:var(--t2); }       /* time */
+/* UX polish: date-format guidance */
+.zxb-datehint { margin-top:5px; font-size:.72rem; color:var(--t3); }
+.zxb-fmt { font-weight:400; color:var(--t3); font-size:.72rem; }
+.zxb-issues { margin-top:14px; }
+.zxb-issue-h { font-weight:700; font-size:.82rem; margin:10px 0 5px; }
+.zxb-issue-block { color:#dc2626; } .zxb-issue-warn { color:#b45309; }
+.zxb-issue-row { font-size:.82rem; color:var(--t2); padding:4px 0; display:flex; align-items:center; gap:8px; }
+.zxb-jump { border:1px solid var(--border); background:var(--bg3); color:var(--gold); border-radius:5px; padding:2px 9px; font-size:.74rem; font-weight:600; cursor:pointer; }
+.zxb-jump:hover { background:var(--gold-dim); }
+@media (max-width:768px){ .zxb-rev-grid { grid-template-columns:1fr; } }
+
+/* ── UX-2.0.1-B P4-B — mobile/tablet: accordion + cards + bottom sheet ── */
+.zxb-cards { display:flex; flex-direction:column; gap:10px; }
+.zxb-acc { border:1px solid var(--border); border-radius:10px; overflow:hidden; background:var(--bg2); }
+.zxb-acc-head { width:100%; display:flex; align-items:center; gap:10px; padding:14px 14px; background:var(--bg3); border:none; cursor:pointer; text-align:left; min-height:52px; }
+.zxb-acc-title { font-weight:700; color:var(--t1); font-size:.95rem; flex:1 1 auto; }
+.zxb-acc-meta { font-size:.74rem; color:var(--t3); }
+.zxb-acc-caret { color:var(--gold); font-size:.9rem; width:16px; text-align:center; }
+.zxb-acc.open .zxb-acc-head { background:var(--gold-dim); }
+.zxb-acc-body { padding:10px; display:flex; flex-direction:column; gap:8px; }
+.zxb-mcard { width:100%; display:flex; flex-direction:column; gap:4px; align-items:flex-start; text-align:left; padding:12px 14px; min-height:56px; border:1px solid var(--border); border-radius:9px; background:var(--bg3); cursor:pointer; }
+.zxb-mcard.is-sched { border-color:var(--gold); background:var(--bg2); }
+.zxb-mcard-name { font-weight:600; color:var(--t1); font-size:.9rem; }
+.zxb-mcard.is-sched .zxb-mcard-name { color:var(--gold); }
+.zxb-mcard-info { font-size:.8rem; color:var(--t2); }
+.zxb-mcard-tap { color:var(--t3); }
+/* bottom sheet */
+.zxb-sheet-bd { position:fixed; inset:0; background:rgba(0,0,0,.42); opacity:0; visibility:hidden; transition:opacity .2s; z-index:1200; }
+.zxb-sheet-bd.open { opacity:1; visibility:visible; }
+.zxb-sheet { position:fixed; left:0; right:0; bottom:0; transform:translateY(100%); transition:transform .25s ease; z-index:1201;
+  background:var(--bg2); border-top-left-radius:16px; border-top-right-radius:16px; box-shadow:0 -8px 30px rgba(0,0,0,.25); padding:8px 16px 20px; max-height:85vh; overflow-y:auto; }
+.zxb-sheet.open { transform:translateY(0); }
+.zxb-sheet-head { display:flex; align-items:center; justify-content:space-between; padding:10px 0 12px; font-weight:700; color:var(--t1); border-bottom:1px solid var(--border); margin-bottom:14px; }
+.zxb-sheet-head::before { content:''; position:absolute; left:50%; top:6px; width:38px; height:4px; border-radius:2px; background:var(--border); transform:translateX(-50%); }
+.zxb-sheet-x { border:none; background:transparent; font-size:1.1rem; color:var(--t3); cursor:pointer; width:40px; height:40px; }
+.zxb-sheet-body { display:flex; flex-direction:column; gap:14px; }
+.zxb-sf { display:flex; flex-direction:column; gap:6px; font-size:.8rem; font-weight:600; color:var(--t2); flex:1 1 auto; }
+.zxb-sf input { height:46px; border:1px solid var(--border); border-radius:9px; background:var(--bg3); color:var(--t1); font-size:1rem; padding:0 12px; box-sizing:border-box; }
+.zxb-sf input:focus { outline:none; border-color:var(--gold); box-shadow:0 0 0 2px var(--gold-ring); }
+.zxb-sf-row { display:flex; gap:12px; }
+.zxb-sheet-foot { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:18px; }
+.zxb-sheet-foot .zx-btn { min-height:44px; }
+/* desktop: hide the mobile sheet entirely (datesheet is used) */
+@media (min-width:769px){ .zxb-sheet, .zxb-sheet-bd { display:none !important; } }
+
+/* ── UX-2.0.1-B P5-B — publish gate ── */
+.zxb-publish { margin-top:16px; padding:14px; border:1px solid var(--border); border-radius:9px; background:var(--bg3); }
+.zxb-pub-h { font-size:.74rem; text-transform:uppercase; letter-spacing:.04em; color:var(--t3); font-weight:700; margin-bottom:8px; }
+.zxb-checklist { list-style:none; margin:0 0 12px; padding:0; display:flex; flex-direction:column; gap:6px; font-size:.85rem; color:var(--t2); }
+.zxb-checklist li { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.zxb-ck { width:18px; height:18px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:.7rem; font-weight:700; color:#fff; flex:0 0 auto; }
+.zxb-ck.ok { background:#16a34a; } .zxb-ck.bad { background:#ef4444; } .zxb-ck.warn { background:#d97706; }
+.zxb-ack { font-size:.8rem; color:var(--t2); display:inline-flex; align-items:center; gap:5px; cursor:pointer; }
+.zxb-pub-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding-top:8px; border-top:1px solid var(--border); }
+.zxb-pub-verdict { font-weight:700; font-size:.85rem; }
+.zxb-pub-verdict.ok { color:#16a34a; } .zxb-pub-verdict.block { color:#dc2626; }
+.zxb-pub-btn { margin-left:auto; }
+.zxb-pub-btn[disabled] { opacity:.5; cursor:not-allowed; }
+.zxb-pub-note { margin-top:10px; font-size:.75rem; color:var(--t3); }
+@media (max-width:768px){ .zxb-pub-actions { flex-direction:column; align-items:stretch; } .zxb-pub-btn { margin-left:0; min-height:46px; } }
+
+/* ── UX-2.0.1-B P6-B — bulk auto-sequence / shift controls ── */
+.zxb-bulk-sep { width:1px; height:22px; background:var(--border); margin:0 2px; }
+.zxb-bulk-shift { display:inline-flex; align-items:center; gap:5px; font-size:.78rem; color:var(--t2); }
+/* ── UX-2.0.1-B P7-B — clone / copy controls ── */
+.zxb-p7 { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:10px; padding-top:10px; border-top:1px dashed var(--border); font-size:.8rem; color:var(--t2); }
+.zxb-p7-clone { display:inline-flex; align-items:center; gap:6px; }
+.zxb-p7-clone i { color:var(--gold); }
+.zxb-p7-copy { display:inline-flex; align-items:center; gap:6px; }
+.zxb-mini-sel { height:30px; border:1px solid var(--border); border-radius:6px; background:var(--bg2); color:var(--t1); font-size:.8rem; padding:0 8px; max-width:230px; box-sizing:border-box; }
+.zxb-mini-sel:disabled { opacity:.55; cursor:not-allowed; }
+@media (max-width:768px){ .zxb-p7 { flex-direction:column; align-items:stretch; } .zxb-mini-sel { max-width:none; width:100%; } }
 </style>

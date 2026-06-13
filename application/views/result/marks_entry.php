@@ -30,7 +30,7 @@ $flashError = $this->session->flashdata('error');
         <?php foreach ($exams as $ex): ?>
         <option value="<?= htmlspecialchars($ex['id']) ?>"
           <?= ($examId === $ex['id']) ? 'selected' : '' ?>>
-          <?= htmlspecialchars($ex['Name'] ?? $ex['id']) ?> (<?= htmlspecialchars($ex['id']) ?>)
+          <?= htmlspecialchars($ex['Name'] ?? $ex['id']) ?>
         </option>
         <?php endforeach; ?>
       </select>

@@ -25,7 +25,7 @@ $passingPct  = (int) ($exam['PassingPercent'] ?? 33);
       </ol>
     </div>
     <div class="rms-header-meta">
-      <span class="rms-meta-pill"><i class="fa fa-tag"></i> <?= htmlspecialchars($examId) ?></span>
+      <span class="rms-meta-pill"><i class="fa fa-tag"></i> <?= htmlspecialchars($exam['Name'] ?? $examId) ?></span>
       <span class="rms-meta-pill"><i class="fa fa-users"></i> <?= htmlspecialchars($classKey) ?> / <?= htmlspecialchars($sectionKey) ?></span>
       <span class="rms-meta-pill"><i class="fa fa-graduation-cap"></i> <?= htmlspecialchars($scale) ?> | Pass ≥ <?= $passingPct ?>%</span>
     </div>

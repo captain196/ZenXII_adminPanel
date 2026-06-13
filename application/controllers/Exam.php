@@ -299,6 +299,11 @@ class Exam extends MY_Controller
             // visibility. Same $structure already used by the POST fan-out;
             // exposed verbatim — no business-logic/serializer/payload impact.
             'sections'   => $structure,
+            // UX-2.0.1-B P6-B: read-only holiday dates (Firestore calendarEvents)
+            // for auto-sequence/holiday-aware scheduling. No write, no contract impact.
+            'holidays'   => $this->_holiday_dates(),
+            // UX-2.0.1-B P7-B: brief exam list for the "Clone previous exam" picker (read-only).
+            'exams'      => $this->_exam_list_brief(),
         ]);
         $this->load->view('include/footer');
     }
@@ -353,6 +358,8 @@ class Exam extends MY_Controller
             'editExam'   => $editExam,
             // UX-1.4: read-only section map for fan-out visibility (see create()).
             'sections'   => $structure,
+            'holidays'   => $this->_holiday_dates(), // UX-2.0.1-B P6-B (see create())
+            'exams'      => $this->_exam_list_brief(), // P7-B clone source list
         ]);
         $this->load->view('include/footer');
     }
@@ -394,6 +401,81 @@ class Exam extends MY_Controller
         if (strpos($l, 'playgroup') !== false || strpos($l, 'play') !== false) return 'Playgroup';
         if (preg_match('/\d+/', $className, $m)) return (string) (int) $m[0];
         return '';
+    }
+
+    /**
+     * UX-2.0.1-B P6-B — holiday dates for this school from the CANONICAL Firestore
+     * `calendarEvents` collection (category=holiday). Each event's start_date..end_date
+     * is expanded to a flat list of 'Y-m-d' strings. READ-ONLY, Firestore-only, no
+     * RTDB; best-effort (returns [] on any failure). Drives client-side
+     * auto-sequence / holiday-aware scheduling — no serializer/payload/lifecycle impact.
+     */
+    private function _holiday_dates(): array
+    {
+        $out = [];
+        try {
+            $rows = $this->fs->schoolWhere('calendarEvents', []);
+            foreach ((array) $rows as $r) {
+                $d   = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+                $cat = strtolower((string) ($d['category'] ?? $d['type'] ?? ''));
+                if ($cat !== 'holiday') continue;
+                if (strtolower((string) ($d['status'] ?? '')) === 'cancelled') continue;
+                $s = (string) ($d['start_date'] ?? $d['startDate'] ?? '');
+                $e = (string) ($d['end_date']   ?? $d['endDate']   ?? $s);
+                if ($s === '') continue;
+                try {
+                    $cur = new DateTime($s); $end = new DateTime($e !== '' ? $e : $s);
+                    $guard = 0;
+                    while ($cur <= $end && $guard++ < 370) { $out[$cur->format('Y-m-d')] = true; $cur->modify('+1 day'); }
+                } catch (\Throwable $e2) { $out[$s] = true; }
+            }
+        } catch (\Throwable $e) { /* best-effort: no holidays */ }
+        return array_keys($out);
+    }
+
+    /**
+     * UX-2.0.1-B P7-B — brief exam list for the "Clone previous exam" picker.
+     * Read-only; reuses Exam_read::list_exams() (Firestore exams). No writes.
+     */
+    private function _exam_list_brief(): array
+    {
+        $out = [];
+        try {
+            $raw = $this->exam_read->list_exams() ?? [];
+            foreach ((array) $raw as $eid => $m) {
+                if ($eid === 'Count' || !is_array($m)) continue;
+                $out[] = [
+                    'id'     => (string) $eid,
+                    'name'   => (string) ($m['Name'] ?? ''),
+                    'type'   => (string) ($m['Type'] ?? ''),
+                    'status' => (string) ($m['Status'] ?? 'Draft'),
+                ];
+            }
+        } catch (\Throwable $e) { /* best-effort: empty list */ }
+        return $out;
+    }
+
+    /**
+     * UX-2.0.1-B P7-B — datesheet of an existing exam as JSON, for client-side
+     * cloning into the builder. READ-ONLY (no write, no lifecycle/serializer/
+     * Firestore-contract change). Returns the same flat row shape the builder
+     * hydrates from (className, subject, date, startTime, endTime, totalMarks,
+     * passingMarks) + grading meta. Firestore-canonical via Exam_read.
+     */
+    public function datesheet_json($id = null)
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'clone exam datesheet');
+        header('Content-Type: application/json');
+        $id = trim((string) $id);
+        if ($id === '') { echo json_encode(['ok' => false, 'error' => 'Missing exam id']); return; }
+        $meta = $this->exam_read->meta($id, false);
+        if (!is_array($meta) || empty($meta)) { echo json_encode(['ok' => false, 'error' => 'Exam not found']); return; }
+        echo json_encode([
+            'ok'             => true,
+            'rows'           => $this->_build_edit_rows($id),
+            'gradingScale'   => (string) ($meta['GradingScale'] ?? ''),
+            'passingPercent' => (int)    ($meta['PassingPercent'] ?? 33),
+        ]);
     }
 
     /** Phase 3.5 — rebuild create-form rows from examSchedule (one section/class). */
@@ -695,6 +777,22 @@ class Exam extends MY_Controller
             return;
         }
 
+        // Phase-E: Published/Completed exams require an ADDITIONAL explicit
+        // confirmation — student-visible results may already exist. Draft uses
+        // the normal flow above.
+        $examMeta = $this->exam_read->meta($id, false);
+        $status   = is_array($examMeta) ? (string) ($examMeta['Status'] ?? 'Draft') : 'Draft';
+        if (in_array($status, ['Published', 'Completed'], true)) {
+            $confirmPub = ($this->input->get('confirm_published') === '1' || $this->input->post('confirm_published') === '1');
+            if (!$confirmPub) {
+                $this->session->set_flashdata('error',
+                    "This exam is {$status}; student-visible results may already exist. "
+                    . 'Re-confirm to permanently delete the exam and all of its results.');
+                redirect('exam');
+                return;
+            }
+        }
+
         $school   = $this->school_name;
         $year     = $this->session_year;
         // Phase 2B: enumerate sections from Firestore examSchedule (1:1 per section).
@@ -712,30 +810,21 @@ class Exam extends MY_Controller
         // Delete central exam definition (Firestore).
         $this->firebase->firestoreDelete('exams', "{$school}_{$id}");
 
-        // Cascade: remove Results nodes (Templates, Marks, Computed) for this exam
-        $this->firebase->delete("Schools/{$school}/{$year}/Results/Templates/{$id}");
-        $this->firebase->delete("Schools/{$school}/{$year}/Results/Marks/{$id}");
-        $this->firebase->delete("Schools/{$school}/{$year}/Results/Computed/{$id}");
-        // Remove from CumulativeConfig
-        $this->firebase->delete("Schools/{$school}/{$year}/Results/CumulativeConfig/Exams/{$id}");
+        // Phase-E: Firestore-only cascade — delete results, marks, examResultMeta,
+        // resultsStaging, examTemplates for this exam. Audit retained + terminal
+        // exam_deleted event. Firestore is the authoritative store.
+        $this->load->library('exam_result_store');
+        $actor = ['uid' => (string) ($this->admin_id ?? ''), 'role' => (string) ($this->admin_role ?? ''), 'name' => (string) ($this->admin_id ?? '')];
+        $this->exam_result_store->init($this->firebase, $this->school_id, $year)
+            ->cascadeDeleteExam($id, $actor, date('c'));
 
-        // EX-4 FIX: Mark cumulative results as stale since an exam was removed
-        // (full re-computation needed — we cannot selectively remove one exam's contribution)
-        $cumulativePath = "Schools/{$school}/{$year}/Results/Cumulative";
-        $cumulativeKeys = $this->firebase->shallow_get($cumulativePath);
-        if (is_array($cumulativeKeys)) {
-            foreach (array_keys($cumulativeKeys) as $ck) {
-                $sectionKeys = $this->firebase->shallow_get("{$cumulativePath}/{$ck}");
-                if (is_array($sectionKeys)) {
-                    foreach (array_keys($sectionKeys) as $sk) {
-                        $this->firebase->set("{$cumulativePath}/{$ck}/{$sk}/_stale", [
-                            'reason' => "Exam {$id} deleted",
-                            'deleted_at' => date('c'),
-                        ]);
-                    }
-                }
-            }
-        }
+        // Cumulative migration (Firestore-only): drop the exam from cumulativeConfig
+        // and mark ALL cumulative results stale — EX-4: an exam removal invalidates
+        // every cumulative (we cannot selectively subtract one exam's contribution).
+        $this->load->library('exam_result_store');
+        $cers = $this->exam_result_store->init($this->firebase, $this->school_id, $year);
+        $cers->removeExamFromCumulativeConfig($id);
+        $cers->markCumulativeStale("Exam {$id} deleted", date('c'));
 
         redirect('exam');
     }
@@ -839,18 +928,27 @@ class Exam extends MY_Controller
     /**
      * Phase 3.3 — TRUE if any student marks exist for this exam.
      *
-     * Graded signal is the legacy RTDB result store `Results/Marks/{examId}`
-     * ONLY (not Templates — a template can exist with zero marks). This reads
-     * the EXISTING result store; it introduces no new RTDB dependency (the
-     * result-pipeline -> Firestore migration is a separate workstream).
+     * B1 (results-engine cutover): the graded signal is now the canonical
+     * Firestore `marks` collection (the legacy RTDB `Results/Marks` is no longer
+     * written by save_marks, so reading it would fail OPEN for exams graded
+     * after the migration). Existence is an equality-only `(schoolId, examId)`
+     * query with `limit 1` — served by single-field indexes (no composite).
+     *
+     * FAIL-CLOSED: a query error returns TRUE ("assume marks may exist") so this
+     * destructive-action guard can never fail open and silently permit a
+     * delete/unpublish/edit that would lose marks.
      */
     private function _exam_has_marks(string $examId): bool
     {
         if ($examId === '') return false;
-        $node = $this->firebase->shallow_get(
-            "Schools/{$this->school_name}/{$this->session_year}/Results/Marks/{$examId}"
-        );
-        return is_array($node) && !empty($node);
+        try {
+            $rows = $this->firebase->firestoreQuery('marks',
+                [['schoolId', '==', $this->school_id], ['examId', '==', $examId]], null, 'ASC', 1);
+            return is_array($rows) && count($rows) > 0;
+        } catch (\Throwable $e) {
+            log_message('error', "_exam_has_marks FS query failed [{$examId}]: " . $e->getMessage());
+            return true; // fail-closed: block the destructive action rather than fail open
+        }
     }
 
     // ── get_subjects() — GET AJAX ────────────────────────────────────────

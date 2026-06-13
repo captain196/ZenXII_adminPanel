@@ -17,16 +17,16 @@ class Fees extends MY_Controller
         parent::__construct();
         require_permission('Fees');
 
-        // Init audit + transaction libraries
+        // Init audit library (Firestore-canonical sink — no RTDB).
+        // Fee_transaction retired: dead runtime (zero callers/readers). Load + init
+        // removed; the file is intentionally left on disk for this package.
         $this->load->library('Fee_audit', null, 'feeAudit');
-        $this->load->library('Fee_transaction', null, 'feeTxn');
         $feesBase = "Schools/{$this->school_name}/{$this->session_year}/Fees";
         $this->feeAudit->init(
             $this->firebase, $feesBase,
             $this->admin_id ?? 'system', $this->admin_name ?? 'System',
             $this->school_name
         );
-        $this->feeTxn->init($this->firebase, $feesBase);
 
         $this->load->library('Fee_defaulter_check', null, 'feeDefaulter');
         $this->load->library('Fee_lifecycle', null, 'feeLifecycle');
@@ -6964,6 +6964,15 @@ class Fees extends MY_Controller
 
             // Only update unpaid demands
             if (($demand['status'] ?? '') !== 'unpaid') {
+                $preserved++;
+                continue;
+            }
+
+            // Item 4 guard: never recompute a concession demand from the legacy
+            // studentDiscounts map — it would zero the concession and OVERCHARGE
+            // the student (net→gross). Preserve net/discount/attribution; re-run
+            // assignInitialFees (concession-aware) to re-chart a concession student.
+            if (!empty($demand['concessionApplied'])) {
                 $preserved++;
                 continue;
             }

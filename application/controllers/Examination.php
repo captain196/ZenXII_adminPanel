@@ -211,10 +211,9 @@ class Examination extends MY_Controller
 
         foreach ($sections as $letter) {
             $secKey  = "Section {$letter}";
-            $computed = $this->firebase->get(
-                "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$secKey}"
-            );
-            if (!is_array($computed) || empty($computed)) continue;
+            // C2: canonical Firestore `results` (legacy Computed shape) via Exam_read.
+            $computed = $this->exam_read->results_section($examId, $classKey, $secKey);
+            if (empty($computed)) continue;
 
             // Load student names for this section
             $roster = $this->exam_engine->get_student_names($classKey, $secKey);
@@ -341,10 +340,9 @@ class Examination extends MY_Controller
 
         foreach ($sections as $letter) {
             $secKey   = "Section {$letter}";
-            $computed = $this->firebase->get(
-                "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$secKey}"
-            );
-            if (!is_array($computed) || empty($computed)) continue;
+            // C2: canonical Firestore `results` (legacy Computed shape) via Exam_read.
+            $computed = $this->exam_read->results_section($examId, $classKey, $secKey);
+            if (empty($computed)) continue;
 
             $secTotal = 0;
             $secCount = 0;
@@ -476,15 +474,9 @@ class Examination extends MY_Controller
             $this->json_error('One or both exams not found.', 404);
         }
 
-        // Load computed results for both exams
-        $basePath1 = "Schools/{$school}/{$year}/Results/Computed/{$examId1}/{$classKey}/{$sectionKey}";
-        $basePath2 = "Schools/{$school}/{$year}/Results/Computed/{$examId2}/{$classKey}/{$sectionKey}";
-
-        $computed1 = $this->firebase->get($basePath1) ?? [];
-        $computed2 = $this->firebase->get($basePath2) ?? [];
-
-        if (!is_array($computed1)) $computed1 = [];
-        if (!is_array($computed2)) $computed2 = [];
+        // Load computed results for both exams — C2: canonical Firestore `results`.
+        $computed1 = $this->exam_read->results_section($examId1, $classKey, $sectionKey);
+        $computed2 = $this->exam_read->results_section($examId2, $classKey, $sectionKey);
 
         if (empty($computed1) && empty($computed2)) {
             $this->json_error('No computed results found for either exam.', 404);
@@ -612,23 +604,16 @@ class Examination extends MY_Controller
             $this->json_error('Exam not found.', 404);
         }
 
-        // Load templates
-        $templates = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Templates/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($templates)) $templates = [];
+        // Load templates — Phase B: canonical Firestore examTemplates (legacy shape).
+        $templates = $this->exam_read->templates_section($examId, $classKey, $sectionKey);
 
-        // Load marks
-        $marksNode = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Marks/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($marksNode)) $marksNode = [];
+        // Load marks — B1 marks-reader cutover: canonical Firestore `marks`
+        // (nested [subject][userId] legacy shape) via Exam_read — Firestore-only.
+        $marksNode = $this->exam_read->marks_section($examId, $classKey, $sectionKey);
 
-        // Load computed results (for totals, grades, ranks)
-        $computed = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($computed)) $computed = [];
+        // Load computed results (for totals, grades, ranks) — C2: canonical
+        // Firestore `results` (legacy Computed shape) via Exam_read.
+        $computed = $this->exam_read->results_section($examId, $classKey, $sectionKey);
 
         // Student roster
         $roster = $this->exam_engine->get_student_names($classKey, $sectionKey);
@@ -859,10 +844,9 @@ class Examination extends MY_Controller
         $allResults = [];
         foreach ($sections as $letter) {
             $secKey   = "Section {$letter}";
-            $computed = $this->firebase->get(
-                "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$secKey}"
-            );
-            if (!is_array($computed) || empty($computed)) continue;
+            // C2: canonical Firestore `results` (legacy Computed shape) via Exam_read.
+            $computed = $this->exam_read->results_section($examId, $classKey, $secKey);
+            if (empty($computed)) continue;
 
             $roster = $this->exam_engine->get_student_names($classKey, $secKey);
 
@@ -944,78 +928,44 @@ class Examination extends MY_Controller
         $school = $this->school_name;
         $year   = $this->session_year;
 
-        // Load templates
-        $templatesNode = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Templates/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($templatesNode) || empty($templatesNode)) {
+        // Load templates — Phase B: canonical Firestore examTemplates (legacy shape).
+        $templatesNode = $this->exam_read->templates_section($examId, $classKey, $sectionKey);
+        if (empty($templatesNode)) {
             return ['success' => false, 'count' => 0, 'reason' => 'No templates found'];
         }
 
-        // Load marks
-        $allMarksNode = $this->firebase->get(
-            "Schools/{$school}/{$year}/Results/Marks/{$examId}/{$classKey}/{$sectionKey}"
-        ) ?? [];
-        if (!is_array($allMarksNode)) $allMarksNode = [];
+        // B1 compute-path: marks input from canonical Firestore `marks`
+        // (Title-case Total/Absent legacy shape) via Exam_read — Firestore-only.
+        $allMarksNode = $this->exam_read->marks_section($examId, $classKey, $sectionKey);
 
         // Phase 1 convergence: delegate to the single shared CC-8 compute path
         // in Exam_engine (identical policy to Result.php::compute_results).
-        // Pure/storage-agnostic; this controller keeps its own RTDB write +
-        // Firestore mirror below.
         $studentResults = $this->exam_engine->compute_section($templatesNode, $allMarksNode, $scale, $passingPct);
 
         if (empty($studentResults)) {
             return ['success' => false, 'count' => 0, 'reason' => 'No marks entered'];
         }
 
-        // Write to Computed node — single batch update instead of per-student writes
-        $basePath = "Schools/{$school}/{$year}/Results/Computed/{$examId}/{$classKey}/{$sectionKey}";
-        $this->firebase->update($basePath, $studentResults);
+        // ── C1: CANONICAL Firestore-ONLY results write. Replaces the former RTDB
+        //        Computed write + _stale delete AND the partial FS `results`
+        //        mirror (that dual-write is eliminated). One atomic commitBatch
+        //        per section: complete ResultDoc (sectionKey + per-subject
+        //        percentage/passFail + CC-8 null preservation) + resultsAudit +
+        //        examResultMeta clear (CAS). Firestore is the sole source of truth.
+        $examData = $this->exam_read->meta($examId, false);
+        $examName = is_array($examData) ? ($examData['Name'] ?? $examId) : $examId;
 
-        // Fix H4: Clear stale flag after fresh computation
-        $this->firebase->delete("{$basePath}", '_stale');
-
-        // ── Sync results to Firestore 'results' collection ──
-        try {
-            $examData = $this->exam_read->meta($examId);
-            $examName = is_array($examData) ? ($examData['Name'] ?? $examId) : $examId;
-            $sectionKeyFs = "{$classKey}/{$sectionKey}";
-
-            foreach ($studentResults as $uid => $result) {
-                $docId = "{$school}_{$examId}_{$sectionKeyFs}_{$uid}";
-
-                // Map subjects for Firestore ResultDoc format
-                $fsSubjects = [];
-                foreach ($result['Subjects'] as $subj => $subjData) {
-                    $fsSubjects[$subj] = [
-                        'total'    => $subjData['Total'] ?? 0,
-                        'maxMarks' => $subjData['MaxMarks'] ?? 0,
-                        'grade'    => $subjData['Grade'] ?? '',
-                        'absent'   => $subjData['Absent'] ?? false,
-                    ];
-                }
-
-                $this->fs->set(Firestore_helper::RESULTS, $docId, [
-                    'schoolId'    => $school,
-                    'session'     => $year,
-                    'examId'      => $examId,
-                    'examName'    => $examName,
-                    'studentId'   => $uid,
-                    'className'   => $classKey,
-                    'section'     => $sectionKey,
-                    'sectionKey'  => $sectionKeyFs,
-                    'subjects'    => $fsSubjects,
-                    'totalMarks'  => $result['TotalMarks'] ?? 0,
-                    'maxMarks'    => $result['MaxMarks'] ?? 0,
-                    'percentage'  => $result['Percentage'] ?? 0,
-                    'grade'       => $result['Grade'] ?? '',
-                    'rank'        => $result['Rank'] ?? 0,
-                    'passFail'    => $result['PassFail'] ?? '',
-                    'computedAt'  => date('c'),
-                ]);
-            }
-        } catch (\Exception $e) {
-            log_message('error', "_compute_section_results: Firestore sync failed [{$examId}/{$classKey}/{$sectionKey}]: " . $e->getMessage());
+        $this->load->library('exam_result_store');
+        $ers = $this->exam_result_store->init($this->firebase, $this->school_id, $year);
+        $rosterNames = $this->exam_engine->get_student_names($classKey, $sectionKey);
+        $actor = ['uid' => (string) ($this->admin_id ?? ''), 'role' => (string) ($this->admin_role ?? ''), 'name' => (string) ($this->admin_id ?? '')];
+        $res = $ers->commitSectionResults(
+            $examId, (string) $examName, $classKey, $sectionKey,
+            $studentResults, is_array($rosterNames) ? $rosterNames : [], $actor,
+            $scale, $passingPct, (string) ($this->admin_id ?? ''), date('c')
+        );
+        if (empty($res['ok'])) {
+            return ['success' => false, 'count' => 0, 'reason' => 'Firestore results write failed'];
         }
 
         return ['success' => true, 'count' => count($studentResults), 'reason' => ''];

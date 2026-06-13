@@ -105,6 +105,21 @@ if (!empty($computed['Subjects']) && is_array($computed['Subjects'])) {
   }
 }
 
+// ── Collapse redundant synthetic "Total" component ─────────────────────
+// When the ONLY component across all subjects is the synthetic "Total"
+// (created by the datesheet->template fallback for total-only exams), the
+// per-component column just duplicates "Marks Obtained". Drop it so every
+// template renders a clean Subject | Marks | Grade table. Genuine breakdowns
+// (Theory/Practical/Internal, or any 2+ components, or any non-"Total" single
+// component) are retained untouched. Single-point fix — all 6 templates derive
+// their component columns from $allCompDefs / $row['comps'].
+if (count($allCompDefs) === 1 && array_key_exists('Total', $allCompDefs)) {
+  $allCompDefs = [];
+  foreach ($subjectRows as $__i => $__row) {
+    $subjectRows[$__i]['comps'] = [];
+  }
+}
+
 // ── Grand totals ──────────────────────────────────────────────────────
 $grandTotal = $computed['TotalMarks']  ?? 0;
 $grandMax   = $computed['MaxMarks']    ?? 0;
@@ -137,11 +152,15 @@ if (preg_match('/\d+/', $classNameRaw, $m)) {
       $nextClass = ' TO GRADE ' . $nextNum;
   }
 }
+// Promotion is an ANNUAL/FINAL decision — only the final/annual exam may declare
+// "PROMOTED TO GRADE X". Term/unit/mid-term report cards show a neutral
+// pass/fail result instead (a single term test must never promote a student).
+$isFinalExam = (bool) preg_match('/\b(final|annual)\b/i', (string) $examType . ' ' . (string) $examName);
 $resultText = $overallAbsent
   ? 'RESULT : ABSENT'
-  : (($grandPass === 'Pass')
-      ? 'RESULT : PROMOTED' . $nextClass
-      : 'RESULT : NOT PROMOTED — FURTHER IMPROVEMENT NEEDED');
+  : ($grandPass === 'Pass'
+      ? ($isFinalExam ? ('RESULT : PROMOTED' . $nextClass) : 'RESULT : PASS')
+      : ($isFinalExam ? 'RESULT : NOT PROMOTED — FURTHER IMPROVEMENT NEEDED' : 'RESULT : FAIL'));
 
 // ──────────────────────────────────────────────────────────────────────
 // Report-card CUSTOMIZATION config (per-school, from school doc

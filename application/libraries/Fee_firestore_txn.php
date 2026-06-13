@@ -912,6 +912,11 @@ class Fee_firestore_txn
         if (array_key_exists('status', $data)) {
             $doc['status'] = (string) $pick($data, ['status'], 'unpaid');
         }
+        // Item 1: persist concession attribution ONLY for concession demands
+        // (conditional — keeps non-concession demands byte-identical; no snake alias needed).
+        if (array_key_exists('concessionApplied', $data)) {
+            $doc['concessionApplied'] = (float) $pick($data, ['concessionApplied'], 0);
+        }
 
         return $doc;
     }
