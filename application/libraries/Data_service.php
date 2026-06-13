@@ -23,7 +23,6 @@ defined('BASEPATH') or exit('No direct script access allowed');
  * COLLECTIONS & RTDB PATH MAPPING:
  *   'students'     → Users/Parents/{parentDbKey}/{id}
  *   'staff'        → Users/Admin/{parentDbKey}/{id}
- *   'schools'      → System/Schools/{id}
  *   'systemPlans'  → System/Plans/{id}
  *   'sections'     → Schools/{school}/{session}/{class}/{section}
  *   'circulars'    → Schools/{school}/Communication/Notices/{id}
@@ -64,7 +63,6 @@ class Data_service
     private const RTDB_PATHS = [
         'students'    => 'Users/Parents/{parentDbKey}/{id}',
         'staff'       => 'Users/Admin/{parentDbKey}/{id}',
-        'schools'     => 'System/Schools/{id}',
         'systemPlans' => 'System/Plans/{id}',
         'circulars'   => 'Schools/{schoolId}/Communication/Notices/{id}',
         'sections'    => 'Schools/{schoolId}/{session}/{classKey}/{sectionKey}',
@@ -380,7 +378,6 @@ class Data_service
         $map = [
             'students'    => "Users/Parents/{$this->parentDbKey}",
             'staff'       => "Users/Admin/{$this->parentDbKey}",
-            'schools'     => 'System/Schools',
             'systemPlans' => 'System/Plans',
             'circulars'   => "Schools/{$this->schoolId}/Communication/Notices",
         ];

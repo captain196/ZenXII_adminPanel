@@ -95,6 +95,26 @@
                                 </select>
                             </div>
 
+                            <div class="nsa-field">
+                                <label>Religion <span class="req">*</span></label>
+                                <select id="religion" name="religion" class="nsa-select" required>
+                                    <option value="">Select Religion</option>
+                                    <?php foreach (['Hindu','Muslim','Sikh','Jain','Buddh','Christian','Other'] as $r): ?>
+                                    <option value="<?= $r ?>"><?= $r ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+
+                            <div class="nsa-field">
+                                <label>Category <span class="req">*</span></label>
+                                <select id="category" name="category" class="nsa-select" required>
+                                    <option value="">Select</option>
+                                    <?php foreach (['General','OBC','SC','ST'] as $c): ?>
+                                    <option value="<?= $c ?>"><?= $c ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+
                         </div>
                     </div>
                 </div>

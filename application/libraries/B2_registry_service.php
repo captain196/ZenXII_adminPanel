@@ -50,6 +50,8 @@ class B2_registry_service
     /** @var array|null */  private $flagsCache = null;
     /** @var array|null  Request-scoped memo for list_tenants_summary() (P0-1). */
     private $tenantsSummaryMemo = null;
+    /** @var array  Request-scoped memo for per-school tenantPublic docs. */
+    private $tenantPublicMemo = [];
 
     /**
      * Bind dependencies. Idempotent.
@@ -63,6 +65,7 @@ class B2_registry_service
         // preserves the memo so it can actually hit across callers.
         if ($this->firebase !== $firebase) {
             $this->tenantsSummaryMemo = null;
+            $this->tenantPublicMemo   = [];
         }
         $this->firebase = $firebase;
         $this->ci       = $ci ?? get_instance();
@@ -142,7 +145,7 @@ class B2_registry_service
         // fail-CLOSED on read error.
         $adminDisabled = false;
         try {
-            $pub = $this->firebase->firestoreGet('tenantPublic', $schoolId);
+            $pub = $this->_tenantPublic($schoolId);
             if (is_array($pub) && (($pub['adminDisabled'] ?? null) === true)) {
                 $adminDisabled = true;
             } else {
@@ -266,7 +269,7 @@ class B2_registry_service
         // missing → defaults to false (not disabled).
         $adminDisabled = false;
         try {
-            $pub = $this->firebase->firestoreGet('tenantPublic', $schoolId);
+            $pub = $this->_tenantPublic($schoolId);
             if (is_array($pub) && (($pub['adminDisabled'] ?? null) === true)) {
                 $adminDisabled = true;
             } else {
@@ -302,6 +305,27 @@ class B2_registry_service
     }
 
     /**
+     * Request-scoped read of tenantPublic/{schoolId}. The same doc is fetched
+     * up to 3× in one login (adminDisabled gates + activeModules); memoizing
+     * collapses that to a single round trip. Re-throws on read error so each
+     * caller's own try/catch behaves EXACTLY as before (a thrown read is never
+     * memoized → stays retryable); only successful reads (incl. a genuine
+     * doc-miss → null) are cached. Memo is cleared when the Firebase binding
+     * changes (init()).
+     */
+    private function _tenantPublic(string $schoolId): ?array
+    {
+        if ($schoolId === '') return null;
+        if (array_key_exists($schoolId, $this->tenantPublicMemo)) {
+            return $this->tenantPublicMemo[$schoolId];
+        }
+        $d = $this->firebase->firestoreGet('tenantPublic', $schoolId); // may throw — caller handles
+        $doc = is_array($d) ? $d : null;
+        $this->tenantPublicMemo[$schoolId] = $doc;
+        return $doc;
+    }
+
+    /**
      * Return the entitled-module list for `schoolId`. Reads the canonical
      * tenantPublic/{schoolId}.activeModules array (precomputed at backfill;
      * updated by the future Firestore-authoritative writer). Returns an
@@ -313,7 +337,7 @@ class B2_registry_service
         if (!$this->ready)     return [];
         if ($schoolId === '')  return [];
         try {
-            $tp = $this->firebase->firestoreGet('tenantPublic', $schoolId);
+            $tp = $this->_tenantPublic($schoolId);
             if (!is_array($tp)) return [];
             $am = $tp['activeModules'] ?? [];
             if (!is_array($am)) return [];
@@ -1053,6 +1077,38 @@ class B2_registry_service
     }
 
     /**
+     * Mint a fresh, unique schoolId (SCH_<10 hex>) and atomically claim it.
+     *
+     * Firestore-only replacement for the legacy RTDB-claim minter
+     * (Superadmin_schools::_generate_school_id, which wrote System/Schools/{id}/_claim).
+     * The claim is a one-field doc in the `schoolIdIndex` uniqueness collection;
+     * firestoreCreate returns false on HTTP 409 (doc exists), so two concurrent
+     * onboards can never win the same id. Returns '' on exhaustion — the caller
+     * MUST treat '' as a hard error and abort onboarding (never invent an id).
+     */
+    public function mint_school_id(string $actor = '', int $maxAttempts = 6): string
+    {
+        if (!$this->ready) return '';
+        for ($attempt = 0; $attempt < $maxAttempts; $attempt++) {
+            $candidate = 'SCH_' . strtoupper(bin2hex(random_bytes(5)));
+            try {
+                $claimed = $this->firebase->firestoreCreate('schoolIdIndex', $candidate, [
+                    'schoolId'  => $candidate,
+                    'claimedAt' => date('c'),
+                    'claimedBy' => $actor ?: 'system',
+                ]);
+            } catch (\Throwable $e) {
+                log_message('error', 'B2_registry_service::mint_school_id firestore failed: ' . $e->getMessage());
+                $claimed = false;
+            }
+            if ($claimed) return $candidate;
+            // false → either a 409 collision (retry) or a transient write error.
+        }
+        log_message('error', "B2_registry_service::mint_school_id exhausted {$maxAttempts} attempts");
+        return '';
+    }
+
+    /**
      * Patch schools/{schoolId} with arbitrary canonical-shape fields.
      * Caller MUST pass camelCase keys (city, street, email, phone, logoUrl,
      * domainIdentifier, updatedAt, updatedBy). Field translation happens at
@@ -1407,6 +1463,7 @@ class B2_registry_service
             'name'             => $schoolName,
             'city'             => (string) ($args['city']             ?? ''),
             'street'           => (string) ($args['street']           ?? ''),
+            'address'          => (string) ($args['street'] ?? $args['address'] ?? ''),
             'email'            => (string) ($args['email']            ?? ''),
             'phone'            => (string) ($args['phone']            ?? ''),
             'logoUrl'          => (string) ($args['logoUrl']          ?? ''),

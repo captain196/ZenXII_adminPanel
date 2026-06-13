@@ -84,7 +84,12 @@ class Schools extends MY_Controller
         if ($schoolName) {
             $result1             = $this->CM->delete_data('Schools', $schoolName);
             $result2             = $this->CM->delete_data('Indexes/School_codes', $schoolId);
-            $deleteStorageResult = $this->CM->delete_folder_from_firebase_storage($schoolName . '/');
+            // Wipe BOTH trees: the canonical schools/{schoolId}/ (all post-cutover
+            // uploads) and the legacy {schoolName}/ root (pre-migration files).
+            // OR the results so an empty-but-clean tree doesn't fail the guard below.
+            $deleteStorageCanon  = $this->CM->delete_folder_from_firebase_storage('schools/' . $schoolId . '/');
+            $deleteStorageLegacy = $this->CM->delete_folder_from_firebase_storage($schoolName . '/');
+            $deleteStorageResult = $deleteStorageCanon || $deleteStorageLegacy;
 
             if ($result1 && $result2 && $deleteStorageResult) {
                 $currentSchoolCount = $this->CM->get_data('Indexes/School_codes/Count');
@@ -135,29 +140,27 @@ class Schools extends MY_Controller
                 return;
             }
 
-            $oldFolderPath = $oldSchoolName . '/';
-            $newFolderPath = $newSchoolName . '/';
-
-            // BUG FIX #2 — only pass files that were actually uploaded
-            $files = [];
-            foreach (['school_logos', 'holidays', 'academic'] as $key) {
-                if (isset($_FILES[$key]) && is_uploaded_file($_FILES[$key]['tmp_name'] ?? '')) {
-                    $files[$key] = $_FILES[$key];
-                } else {
-                    $files[$key] = ['tmp_name' => '', 'name' => ''];
-                }
-            }
-
             $changeSchoolName = $oldSchoolName && $oldSchoolName !== $newSchoolName;
-            $updateFiles      = !empty(array_filter($files, fn($f) => !empty($f['tmp_name'])));
 
-            $updatedFiles = $this->CM->update_files_and_folder_in_firebase_storage(
-                $oldFolderPath, $newFolderPath, $files, $changeSchoolName, $updateFiles
-            );
-
-            if ($updatedFiles === false) {
-                echo '0';
-                return;
+            // Canonical Storage scheme: logo + calendars go to
+            // schools/{schoolId}/{logos|holidays|academic}/ — the SAME tree
+            // School_config writes to (single-sourced). The folder is keyed by
+            // the stable schoolId, so a name change is a pure Firestore/RTDB
+            // field update with NO Storage folder rename. This replaces the
+            // legacy Common_model path which (a) rooted files at the bare school
+            // NAME and (b) copy-renamed the whole {oldName}/ tree on rename —
+            // both obsolete under ID-keyed storage.
+            $folderMap    = ['school_logos' => 'logos', 'holidays' => 'holidays', 'academic' => 'academic'];
+            $updatedFiles = [];
+            foreach ($folderMap as $inputKey => $canonFolder) {
+                if (!isset($_FILES[$inputKey]) || !is_uploaded_file($_FILES[$inputKey]['tmp_name'] ?? '')) {
+                    continue;
+                }
+                $ext      = strtolower(pathinfo($_FILES[$inputKey]['name'], PATHINFO_EXTENSION)) ?: 'jpg';
+                $destPath = "schools/{$schoolId}/{$canonFolder}/{$inputKey}.{$ext}";
+                if ($this->firebase->uploadFile($_FILES[$inputKey]['tmp_name'], $destPath) === true) {
+                    $updatedFiles[$inputKey] = $this->firebase->getDownloadUrl($destPath);
+                }
             }
 
             $existingData = $this->CM->get_data('Schools/' . $oldSchoolName . '/' . $session_year);
@@ -180,22 +183,40 @@ class Schools extends MY_Controller
                 $this->CM->update_data('Schools/' . $newSchoolName . '/' . $session_year, null, $dataToUpdate);
             }
 
-            $userData        = $this->CM->select_data('System/Schools/' . $oldSchoolName);
-            $userDataToUpdate = $userData ?: [];
-
-            foreach ($normalizedData as $key => $value) {
-                if (!in_array($key, ['School Name', 'school_logos', 'holidays', 'academic'])) {
-                    $userDataToUpdate[$key] = $value;
+            // ── School profile → Firestore schools/{schoolId} (single source of
+            // truth). The doc is keyed by the stable schoolId, so a name change
+            // is just a field update — no node move/delete as the legacy RTDB
+            // System/Schools/{name} path required. Operational data under
+            // Schools/{name}/{session} (above) is out of scope and unchanged. ──
+            $patch = [
+                'schoolName' => $newSchoolName,
+                'name'       => $newSchoolName,
+                'updatedAt'  => date('c'),
+            ];
+            $fieldMap = [
+                'Address'            => 'address',
+                'Phone Number'       => 'phone',
+                'Mobile Number'      => 'mobileNumber',
+                'Email'              => 'email',
+                'Website'            => 'website',
+                'Affiliated To'      => 'affiliationBoard',
+                'Affiliation Number' => 'affiliationNo',
+            ];
+            foreach ($fieldMap as $formKey => $fsKey) {
+                if (isset($normalizedData[$formKey]) && $normalizedData[$formKey] !== '') {
+                    $patch[$fsKey] = $normalizedData[$formKey];
                 }
             }
-            if (isset($updatedFiles['school_logos'])) $userDataToUpdate['Logo'] = $updatedFiles['school_logos'];
-            $userDataToUpdate['School Name'] = $newSchoolName;
+            if (isset($patch['address'])) $patch['street'] = $patch['address']; // legacy mirror (SA panel reads `street`)
+            // Documents → same canonical Firestore fields School_config writes,
+            // so logo + calendars are single-sourced across both school screens.
+            if (isset($updatedFiles['school_logos'])) $patch['logoUrl']           = $updatedFiles['school_logos'];
+            if (isset($updatedFiles['holidays']))     $patch['holidays_calendar'] = $updatedFiles['holidays'];
+            if (isset($updatedFiles['academic']))     $patch['academic_calendar'] = $updatedFiles['academic'];
 
-            if ($changeSchoolName) {
-                $this->CM->update_data('System/Schools/' . $newSchoolName, null, $userDataToUpdate);
-                $this->CM->delete_data('System/Schools/', $oldSchoolName);
-            } else {
-                $this->CM->update_data('System/Schools/' . $oldSchoolName, null, $userDataToUpdate);
+            if (!$this->fs->set('schools', $schoolId, $patch, true)) {
+                log_message('error', "Schools::edit_school — Firestore profile write failed for {$schoolId}");
+                echo '0'; return;
             }
 
             echo '1';
@@ -205,13 +226,30 @@ class Schools extends MY_Controller
             $data['school'] = $schoolDetails;
 
             if (!empty($schoolDetails['School Name'])) {
-                $userSchoolData = $this->CM->select_data('System/Schools/' . $schoolDetails['School Name']);
-                if ($userSchoolData) {
-                    $data['schooll'] = $userSchoolData;
+                // Read the canonical profile from Firestore schools/{schoolId}
+                // and remap to the title-case keys the edit_school view expects.
+                $fsSchool = $this->fs->get('schools', $schoolId) ?: [];
+                if (is_array($fsSchool)) {
+                    $data['schooll'] = [
+                        'School Id'          => (string) ($fsSchool['schoolCode'] ?? $schoolId),
+                        'School Name'        => (string) ($fsSchool['schoolName'] ?? $fsSchool['name'] ?? $schoolDetails['School Name']),
+                        'Address'            => (string) ($fsSchool['address'] ?? $fsSchool['street'] ?? ''),
+                        'Phone Number'       => (string) ($fsSchool['phone'] ?? ''),
+                        'Mobile Number'      => (string) ($fsSchool['mobileNumber'] ?? ''),
+                        'Email'              => (string) ($fsSchool['email'] ?? ''),
+                        'Website'            => (string) ($fsSchool['website'] ?? ''),
+                        'Affiliated To'      => (string) ($fsSchool['affiliationBoard'] ?? $fsSchool['board'] ?? ''),
+                        'Affiliation Number' => (string) ($fsSchool['affiliationNo'] ?? ''),
+                    ];
                 }
-                $data['school_logo_url'] = $this->CM->get_file_url($schoolDetails['School Name'] . '/school_logos/school_logos.jpg');
-                $data['holidays_url']    = $this->CM->get_file_url($schoolDetails['School Name'] . '/holidays/holidays');
-                $data['academic_url']    = $this->CM->get_file_url($schoolDetails['School Name'] . '/academic/academic');
+                // Documents: prefer the canonical Firestore fields (shared with
+                // School_config); fall back to the legacy name-keyed Storage path.
+                $data['school_logo_url'] = (string) ($fsSchool['logoUrl'] ?? '')
+                    ?: $this->CM->get_file_url($schoolDetails['School Name'] . '/school_logos/school_logos.jpg');
+                $data['holidays_url']    = (string) ($fsSchool['holidays_calendar'] ?? '')
+                    ?: $this->CM->get_file_url($schoolDetails['School Name'] . '/holidays/holidays');
+                $data['academic_url']    = (string) ($fsSchool['academic_calendar'] ?? '')
+                    ?: $this->CM->get_file_url($schoolDetails['School Name'] . '/academic/academic');
             } else {
                 $data['school_logo_url'] = '';
                 $data['holidays_url']    = '';
@@ -285,9 +323,9 @@ class Schools extends MY_Controller
         $fsToTitle = [
             'name'              => 'School Name',
             'logoUrl'           => 'Logo',
-            'street'            => 'Address',
+            'address'           => 'Address',
             'phone'             => 'Phone Number',
-            'mobile'            => 'Mobile Number',
+            'mobileNumber'      => 'Mobile Number',
             'email'             => 'Email',
             'website'           => 'Website',
             'city'              => 'City',
@@ -302,10 +340,17 @@ class Schools extends MY_Controller
                 $schoolData[$titleKey] = $schoolDoc[$fsKey];
             }
         }
-        // Legacy fallback: affiliationBoard may have been written under 'board'
-        // by older onboarding paths (saveSchool@L745 accepts both).
+        // Legacy fallbacks for fields that have alias names in older docs:
+        //   affiliationBoard ← board; address ← street (SA panel writes `street`);
+        //   mobileNumber ← mobile.
         if (empty($schoolData['Affiliated To']) && !empty($schoolDoc['board'])) {
             $schoolData['Affiliated To'] = $schoolDoc['board'];
+        }
+        if (empty($schoolData['Address']) && !empty($schoolDoc['street'])) {
+            $schoolData['Address'] = $schoolDoc['street'];
+        }
+        if (empty($schoolData['Mobile Number']) && !empty($schoolDoc['mobile'])) {
+            $schoolData['Mobile Number'] = $schoolDoc['mobile'];
         }
 
         // Subscription block — schoolControl + systemPlans
@@ -392,135 +437,56 @@ class Schools extends MY_Controller
             return;
         }
         if ($this->input->method() === 'post') {
-            $formData           = $this->input->post();
-            $normalizedFormData = $this->CM->normalizeKeys($formData);
-
-            if (!isset($normalizedFormData['School Name'])) {
-                echo 'School name is missing';
-                return;
-            }
-
-            $fileUrls     = [];
-            $userFileUrls = [];
-
-            if (!empty($_FILES['school_logo']['name'])) {
-                $logoUrl              = $this->CM->handleFileUpload($_FILES['school_logo'], $normalizedFormData['School Name'], 'school_logos', 'school_logos', true);
-                $fileUrls['Logo']     = $logoUrl ?: 'No logo';
-                $userFileUrls['Logo'] = $logoUrl ?: 'No logo';
-            }
-
-            if (!empty($_FILES['Holidays']['name'])) {
-                $holidaysUrl          = $this->CM->handleFileUpload($_FILES['Holidays'], $normalizedFormData['School Name'], 'holidays', 'holidays', true);
-                $fileUrls['Holidays'] = $holidaysUrl;
-            }
-
-            if (!empty($_FILES['Academic']['name'])) {
-                $academicUrl                   = $this->CM->handleFileUpload($_FILES['Academic'], $normalizedFormData['School Name'], 'academic', 'academic', true);
-                $fileUrls['Academic calendar'] = $academicUrl;
-            }
-
-            // BUG FIX #3 — normalizeKeys() converts "subscription_plan" → "Subscription Plan"
-            // so we must read the normalised title-case keys, not the original underscore keys.
-            $subscriptionData = [
-                'planName' => $normalizedFormData['Subscription Plan']     ?? '',
-                'amount'   => [
-                    'totalAmount' => (float)($normalizedFormData['Last Payment Amount'] ?? 0),
-                    'monthly'     => (float)($normalizedFormData['Last Payment Amount'] ?? 0)
-                                   / max(1, (int)($normalizedFormData['Subscription Duration'] ?? 1))
-                ],
-                'duration' => [
-                    'periodInMonths' => (int)($normalizedFormData['Subscription Duration'] ?? 0),
-                    'startDate'      => date('Y-m-d'),
-                    'endDate'        => date('Y-m-d', strtotime('+' . (int)($normalizedFormData['Subscription Duration'] ?? 0) . ' months'))
-                ],
-                'status'   => 'Active',
-                // BUG FIX #4 — cast to array in case only one checkbox was ticked
-                'features' => (array)($normalizedFormData['Features'] ?? [])
-            ];
-
-            $paymentData = [
-                'lastPaymentAmount' => $normalizedFormData['Last Payment Amount'] ?? '',
-                'lastPaymentDate'   => $normalizedFormData['Last Payment Date']   ?? '',
-                'paymentMethod'     => $normalizedFormData['Payment Method']      ?? ''
-            ];
-
-            // Remove keys that go into subscription/payment only
-            $keysToRemove = [
-                'Last Payment Amount', 'Last Payment Date', 'Payment Method',
-                'Subscription Duration', 'Subscription Plan', 'Features'
-            ];
-            foreach ($keysToRemove as $key) {
-                unset($normalizedFormData[$key]);
-            }
-
-            $schoolName      = $normalizedFormData['School Name'];
-            $finalFormData   = array_merge(
-                $normalizedFormData,
-                $userFileUrls,
-                ['subscription' => $subscriptionData],
-                ['payment'      => $paymentData]
-            );
-
-            $resultUsers = $this->CM->addKey_pair_data('System/Schools/', [$schoolName => $finalFormData]);
-
-            $defaultValues = [
-                'Activities' => [
-                    '1' => 'https://firebasestorage.googleapis.com/v0/b/graders-1c047.appspot.com/o/Maharishi%20Vidhya%20Mandir%2C%20Balaghat%2Factivities%2Factivity_5.png?alt=media&token=5b97b8b2-ebfd-4cf8-80e6-7066935d9a8f',
-                    '2' => 'https://firebasestorage.googleapis.com/v0/b/graders-1c047.appspot.com/o/Maharishi%20Vidhya%20Mandir%2C%20Balaghat%2Factivities%2Factivity_2.jpg?alt=media&token=bfa69104-fc82-4e3b-a65b-97cc6b3fb43e',
-                    '3' => 'https://firebasestorage.googleapis.com/v0/b/graders-1c047.appspot.com/o/Maharishi%20Vidhya%20Mandir%2C%20Balaghat%2Factivities%2Factivity_4.jpg?alt=media&token=718a6c9e-ffde-4c05-a591-d30c59348f89',
-                    '4' => 'https://firebasestorage.googleapis.com/v0/b/graders-1c047.appspot.com/o/Maharishi%20Vidhya%20Mandir%2C%20Balaghat%2Factivities%2Factivity_3.jpg?alt=media&token=89eeb8d6-b482-40ab-a172-57952e1b2856'
-                ],
-                'Features'      => ['Assignment' => '', 'Attendance' => '', 'Notification' => '', 'Profile' => '', 'Syllabus' => '', 'Time Table' => ''],
-                'Total Classes' => ['Classes Done' => '', 'Total' => '']
-            ];
-
-            $schoolDataToInsert = array_merge($defaultValues, $fileUrls);
-
-            $currentYear = date('Y');
-            $nextYear    = date('y', strtotime('+1 year'));
-            $session_year = "$currentYear-$nextYear";
-
-            $result2 = $this->CM->addKey_pair_data("Schools/$schoolName/$session_year/", $schoolDataToInsert);
-
-            $currentSchoolCount = (int)$this->CM->get_data('Indexes/School_codes/Count');
-            $newSchoolId        = 'SCH' . str_pad($currentSchoolCount, 4, '0', STR_PAD_LEFT);
-            $result1            = $this->CM->addKey_pair_data('Indexes/School_codes/', [$newSchoolId => $schoolName]);
-
-            if ($resultUsers && $result1 && $result2) {
-                $this->CM->addKey_pair_data("Schools/$schoolName/", ['Session' => $session_year]);
-                $this->CM->addKey_pair_data('Indexes/School_codes/', ['Count' => $currentSchoolCount + 1]);
-                echo '1';
-            } else {
-                echo '0';
-            }
+            // Legacy school-creation path RETIRED. School onboarding is now
+            // canonical via the Super Admin panel (Firestore tenant registry +
+            // SSA login provisioning through create_tenant). This form created
+            // an RTDB-only school (System/Schools/{name}) with no login account
+            // and is no longer supported.
+            log_message('info', 'Schools::manage_school legacy add-school POST blocked — onboard via Super Admin panel.');
+            echo 'School creation has moved to the Super Admin panel. Please onboard new schools from Super Admin → Schools.';
+            return;
 
         } else {
-            // BUG FIX #5 — guard against null from select_data
-            $currentSchoolCount = $this->CM->get_data('Indexes/School_codes/Count');
-            $schoolIds          = $this->CM->select_data('Indexes/School_codes') ?? [];
-            $schools            = [];
+            // Canonical Firestore tenant list (replaces the legacy
+            // Indexes/School_codes + System/Schools RTDB registry). 'School Id'
+            // is the SCH_ schoolId so the edit link routes to the Firestore
+            // edit path; profile detail fields come from schools/{schoolId}.
+            $svc     = $this->_schools_registry();
+            $tenants = $svc->list_tenants_summary();
+            $schools = [];
 
-            foreach ($schoolIds as $schoolId => $schoolName) {
-                if ($schoolId === 'Count') continue;
-
-                $schoolData = $this->CM->select_data('System/Schools/' . $schoolName);
-                if ($schoolData) {
-                    $schoolData['School Id']   = $schoolId;
-                    $schoolData['School Name'] = $schoolName;
-                    $logoPath                  = $schoolName . '/school_logos/school_logos.jpg';
-                    $logoUrl                   = $this->CM->get_file_url($logoPath);
-                    $schoolData['Logo']        = $logoUrl ?: 'No logo';
-                    $schools[]                 = $schoolData;
-                }
+            foreach ($tenants as $t) {
+                $sid = (string) ($t['schoolId'] ?? '');
+                if ($sid === '') continue;
+                $doc = $this->fs->get('schools', $sid) ?: [];
+                $schools[] = [
+                    'School Id'        => $sid,
+                    'School Name'      => (string) ($t['schoolName'] ?? $doc['schoolName'] ?? $doc['name'] ?? ''),
+                    'School Principal' => (string) ($doc['principal'] ?? ''),
+                    'Email'            => (string) ($doc['email'] ?? ''),
+                    'Address'          => (string) ($doc['address'] ?? $t['city'] ?? ''),
+                    'Affiliated To'    => (string) ($doc['affiliationBoard'] ?? $doc['board'] ?? ''),
+                    'Phone Number'     => (string) ($doc['phone'] ?? ''),
+                    'Logo'             => ((string) ($t['logoUrl'] ?? $doc['logoUrl'] ?? '')) ?: 'No logo',
+                    'subscription'     => ['status' => (string) ($t['subscriptionStatus'] ?? $t['lifecycleState'] ?? '')],
+                ];
             }
 
             $data['Schools']            = $schools;
-            $data['currentSchoolCount'] = $currentSchoolCount;
+            $data['currentSchoolCount'] = count($schools);
 
             $this->load->view('include/header');
             $this->load->view('manage_school', $data);
             $this->load->view('include/footer');
         }
+    }
+
+    /** Canonical Firestore tenant-registry accessor (B2_registry_service). */
+    private function _schools_registry()
+    {
+        $this->load->library('b2_registry_service');
+        $this->b2_registry_service->init($this->firebase);
+        return $this->b2_registry_service;
     }
 
     // ── School Gallery ────────────────────────────────────────────────────
@@ -875,7 +841,9 @@ class Schools extends MY_Controller
         $timestamp    = time();
         $randomString = substr(md5(uniqid(mt_rand(), true)), 0, 6);
         $safeEvent    = preg_replace('/[^A-Za-z0-9_\-]/', '_', $eventId);
-        $storagePath  = "$school_name/Events/Media/$safeEvent/";
+        // Canonical Storage scheme: schools/{schoolId}/events/... (ID-keyed,
+        // rename-proof). Previously rooted at the bare school NAME.
+        $storagePath  = "schools/{$this->school_id}/events/{$safeEvent}/";
         $prefix       = ($fileType == '1') ? 'img_' : 'vid_';
         $newFileName  = "{$prefix}{$timestamp}_{$randomString}.{$fileExtension}";
         $firebasePath = $storagePath . $newFileName;

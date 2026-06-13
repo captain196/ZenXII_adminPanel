@@ -2786,6 +2786,10 @@ class Fees extends MY_Controller
         if (is_array($err) && isset($err['json_error'])) {
             $this->json_error($err['json_error']);
         }
+        // Receipt collected → refresh the dashboard's fee/defaulter numbers
+        // on the next load instead of waiting out the cache TTL.
+        $this->load->library('dashboard_cache');
+        $this->dashboard_cache->bustDashboard($this->school_name, $this->session_year);
     }
 
 

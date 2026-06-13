@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
 <title><?= htmlspecialchars($page_title ?? 'Super Admin') ?> — ZenXii SA</title>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="csrf-token" content="<?= htmlspecialchars($sa_csrf_token ?? '', ENT_QUOTES) ?>">
 <meta name="csrf-name"  content="csrf_token">
 
@@ -552,9 +552,10 @@ label,.control-label{
     .modal-dialog{margin:8px !important;width:calc(100vw - 16px) !important;}
     .modal-content{border-radius:8px !important;}
 
-    /* Sidebar open overlay */
+    /* Sidebar open overlay — must sit BELOW the sidebar (z-index:1038) so its
+       links stay clickable, and below the header (z-index:1040). */
     .sidebar-open::before{
-        content:'';position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1039;
+        content:'';position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1037;
     }
 }
 
@@ -581,6 +582,8 @@ var BASE_URL = '<?= base_url() ?>';
 
 <!-- SA Context Banner -->
 <div class="sa-context-banner"></div>
+
+<?php $this->load->view('include/zenxii_loader'); ?>
 
 <div class="wrapper">
 
@@ -666,13 +669,25 @@ var BASE_URL = '<?= base_url() ?>';
 <script>
 function saOpenProfile(){ try { $('#saProfileModal').modal('show'); } catch(e) { window.location='<?= base_url('superadmin/dashboard') ?>'; } }
 (function(){
-    // Restore persisted collapsed state (set before AdminLTE inits so layout is correct)
-    try { if (localStorage.getItem('sa_sidebar') === 'collapsed') document.body.classList.add('sidebar-collapse'); } catch(e){}
+    // Restore persisted collapsed state (desktop only — mobile uses off-canvas).
+    try { if (window.innerWidth > 767 && localStorage.getItem('sa_sidebar') === 'collapsed') document.body.classList.add('sidebar-collapse'); } catch(e){}
     var t = document.getElementById('saSidebarToggle');
     if (t) t.addEventListener('click', function(e){
         e.preventDefault();
-        var collapsed = document.body.classList.toggle('sidebar-collapse');
-        try { localStorage.setItem('sa_sidebar', collapsed ? 'collapsed' : 'expanded'); } catch(e){}
+        if (window.innerWidth <= 767) {
+            // Mobile: reveal/hide the off-canvas sidebar (CSS slides it on .sidebar-open)
+            document.body.classList.toggle('sidebar-open');
+        } else {
+            var collapsed = document.body.classList.toggle('sidebar-collapse');
+            try { localStorage.setItem('sa_sidebar', collapsed ? 'collapsed' : 'expanded'); } catch(e){}
+        }
+    });
+    // Mobile: tap the dimmed overlay (outside sidebar / toggle) to close it.
+    document.addEventListener('click', function(e){
+        if (window.innerWidth > 767) return;
+        if (!document.body.classList.contains('sidebar-open')) return;
+        if (e.target.closest('.main-sidebar') || e.target.closest('#saSidebarToggle')) return;
+        document.body.classList.remove('sidebar-open');
     });
 })();
 </script>
@@ -793,7 +808,7 @@ function saOpenProfile(){ try { $('#saProfileModal').modal('show'); } catch(e) {
 
             <li class="<?= ($this->router->fetch_class() === 'superadmin_migration') ? 'active' : '' ?>">
                 <a href="<?= base_url('superadmin/migration') ?>">
-                    <i class="fa fa-database"></i><span>Migration Tool</span>
+                    <i class="fa fa-random"></i><span>Migration Tool</span>
                 </a>
             </li>
 

@@ -324,7 +324,13 @@ class Admin_login extends CI_Controller
             'subscription_expiry'    => $endTs,
             'subscription_grace_end' => $graceEndTs,
             'subscription_warning'   => $subWarning,
-            'sub_check_ts'           => 0,
+            // Subscription/lifecycle + admin status were JUST validated by
+            // login_access_view() above, so seed the throttle timestamps to
+            // "now": the next periodic re-check fires on the normal 5-min / 30s
+            // cadence instead of redundantly re-running on the very first page
+            // load. Security is unchanged — re-checks still run every 5 minutes.
+            'sub_check_ts'           => time(),
+            'push_check_ts'          => time(),
         ]);
 
         // Hydrate session-derived fields from schools/{schoolId} Firestore doc.

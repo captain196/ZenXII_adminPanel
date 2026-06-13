@@ -54,6 +54,27 @@ class Firebase
             ->withDatabaseUri($databaseUri)
             ->withHttpClientOptions($httpOptions);
 
+        // Persist Kreait's OAuth service-account token + token-verifier key set
+        // ACROSS requests. By default Kreait uses an in-memory cache, so every
+        // PHP process re-mints a Google OAuth token (~0.3–1.5s, up to ~3s cold)
+        // BEFORE it can even check the password — the single biggest hidden
+        // cost of login. A file pool under application/cache/ (outside webroot,
+        // same posture as the Firestore REST client's existing token cache)
+        // makes that mint happen ~once per token lifetime instead of per login.
+        // The pool honours token expiry, so credentials still rotate normally.
+        // Wrapped defensively: any failure falls back to the default in-memory
+        // cache (slower, but auth still works).
+        try {
+            $authCacheDir = APPPATH . 'cache/firebase_auth';
+            if (!is_dir($authCacheDir)) @mkdir($authCacheDir, 0755, true);
+            $authTokenCache = new \Google\Auth\Cache\FileSystemCacheItemPool($authCacheDir);
+            $factory = $factory
+                ->withAuthTokenCache($authTokenCache)
+                ->withVerifierCache($authTokenCache);
+        } catch (\Throwable $e) {
+            log_message('error', 'Firebase::__construct() auth-token cache init failed (continuing uncached): ' . $e->getMessage());
+        }
+
         $this->database = $factory->createDatabase();
         $this->auth     = $factory->createAuth();
 
@@ -1055,6 +1076,17 @@ class Firebase
     {
         if ($this->firestoreDb === null) { log_message('error', 'Firebase::firestoreSet() — Firestore not initialized'); return false; }
         return $this->firestoreDb->setDocument($collection, $docId, $data, $merge);
+    }
+
+    /**
+     * Atomically increment numeric fields on a doc (server-side increment
+     * transforms; upserts the doc). $increments maps a backtick-escaped field
+     * path to an int (integerValue) or float (doubleValue) delta.
+     */
+    public function firestoreIncrement(string $collection, string $docId, array $increments): bool
+    {
+        if ($this->firestoreDb === null) { log_message('error', 'Firebase::firestoreIncrement() — Firestore not initialized'); return false; }
+        return $this->firestoreDb->incrementDoc($collection, $docId, $increments);
     }
 
     /**

@@ -11,7 +11,7 @@ require_once APPPATH . 'core/MY_Superadmin_Controller.php';
  * the tenant space rather than the developer space:
  *   - Credentials  : Firebase Auth  (uid == SSAxxxx; login authenticates here).
  *   - Profile/status : RTDB Users/Admin/{school_code}/{SSAxxxx} (held bridge).
- *   - School link  : System/Schools/{school_id}/profile/school_code.
+ *   - School link  : Firestore schools/{schoolId}.schoolCode.
  *
  * Visible to and controllable by EVERY super admin (no developer gate) — the
  * SSA list is operational tenant-support surface, not developer-account admin.
@@ -46,65 +46,10 @@ class Superadmin_school_admins extends MY_Superadmin_Controller
 
     public function fetch()
     {
-        // B2.3.2-C convergence: when the registry is Firestore-canonical, new
-        // schools (and their onboarding-created SSA) live in Firestore only —
-        // RTDB System/Schools is not written by that onboarding branch. Read
-        // the same Firestore tenant registry the Schools page uses, so every
-        // school visible there also surfaces its SSA here.
-        if ($this->_registry_firestore_on()) {
-            $this->_fetch_firestore();
-            return;
-        }
-
-        $rows = [];
-        try {
-            $schools = $this->firebase->get('System/Schools') ?? [];
-            if (!is_array($schools)) $schools = [];
-
-            foreach ($schools as $uid => $school) {
-                if (!is_array($school)) continue;
-
-                $profile     = is_array($school['profile'] ?? null) ? $school['profile'] : [];
-                $school_code = (string) ($profile['school_code'] ?? '');
-                if ($school_code === '') continue;
-
-                $school_name = (string) ($profile['school_name'] ?? $profile['name'] ?? $uid);
-
-                // Pull the SSA record(s) for this school. listSsasInSchool returns
-                // them sorted by id; the first is the onboarding-created primary.
-                $ssas = $this->ssa_reset->listSsasInSchool($school_code);
-                if (empty($ssas)) continue;
-
-                $primary = $ssas[0];
-
-                // Last login lives on the held-bridge RTDB record.
-                $rec = $this->firebase->get("Users/Admin/{$school_code}/{$primary['id']}");
-                $last_login = is_array($rec)
-                    ? (string) ($rec['AccessHistory']['SA_LastLogin'] ?? '')
-                    : '';
-                $phone = is_array($rec)
-                    ? (string) ($rec['Phone'] ?? $rec['Profile']['phone'] ?? '')
-                    : '';
-
-                $rows[] = [
-                    'ssa_id'      => $primary['id'],
-                    'name'        => $primary['name'],
-                    'email'       => $primary['email'],
-                    'phone'       => $phone,
-                    // Active only when explicitly "Active"; "Inactive"/"Disabled"/anything else → Inactive.
-                    'status'      => (strcasecmp($primary['status'], 'Active') === 0) ? 'Active' : 'Inactive',
-                    'school_name' => $school_name,
-                    'school_code' => $school_code,
-                    'school_uid'  => (string) $uid,
-                    'last_login'  => $last_login,
-                ];
-            }
-        } catch (\Throwable $e) {
-            log_message('error', 'SA school_admins fetch failed: ' . $e->getMessage());
-        }
-
-        usort($rows, fn($a, $b) => strcmp($a['school_name'], $b['school_name']));
-        $this->json_success(['admins' => $rows]);
+        // Firestore-canonical: schools and their onboarding-created SSA live in
+        // Firestore only. Read the same tenant registry the Schools page uses,
+        // so every school visible there also surfaces its SSA here.
+        $this->_fetch_firestore();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -178,18 +123,7 @@ class Superadmin_school_admins extends MY_Superadmin_Controller
         $this->json_success(['admins' => $rows]);
     }
 
-    // ── B2.3.2-C helpers (mirror Superadmin_schools) ───────────────────────────
-
-    private function _registry_firestore_on(): bool
-    {
-        static $cached = null;
-        if ($cached === null) {
-            $this->config->load('b2_migration_flags', FALSE, TRUE);
-            $flags  = $this->config->item('b2_migration_flags') ?: [];
-            $cached = !empty($flags['b2.registry_firestore']);
-        }
-        return $cached;
-    }
+    // ── helpers ────────────────────────────────────────────────────────────────
 
     private function _registry()
     {
@@ -199,19 +133,13 @@ class Superadmin_school_admins extends MY_Superadmin_Controller
     }
 
     /**
-     * Resolve a school's login code from its uid. RTDB System/Schools is the
-     * legacy source; when the registry is Firestore-canonical the school may
-     * exist only in Firestore (RTDB System/Schools unwritten), so fall back to
-     * the schools/{uid} doc.
+     * Resolve a school's login code from its uid via the canonical Firestore
+     * schools/{uid} doc.
      */
     private function _resolve_school_code(string $school_uid): string
     {
-        $code = (string) ($this->firebase->get("System/Schools/{$school_uid}/profile/school_code") ?? '');
-        if ($code === '' && $this->_registry_firestore_on()) {
-            $doc  = $this->firebase->firestoreGet('schools', $school_uid);
-            if (is_array($doc)) $code = (string) ($doc['schoolCode'] ?? '');
-        }
-        return $code;
+        $doc = $this->firebase->firestoreGet('schools', $school_uid);
+        return is_array($doc) ? (string) ($doc['schoolCode'] ?? '') : '';
     }
 
     // ─────────────────────────────────────────────────────────────────────────

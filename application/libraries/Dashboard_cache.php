@@ -117,4 +117,35 @@ class Dashboard_cache
         if ($this->apcuOk) { @apcu_delete($key); return; }
         @unlink($this->fileDir . '/' . $key . '.json');
     }
+
+    /**
+     * Bust the per-session dashboard payloads (data + charts) for a school
+     * across every role they're cached under. Call from write paths that
+     * change dashboard-visible data (fees, attendance, admissions, events)
+     * so the numbers refresh on the next load instead of waiting out the TTL.
+     *
+     * Pass the SAME school identifier the dashboard endpoints use
+     * ($this->school_name, which equals school_id). De-duped per request, so a
+     * bulk write touching many rows collapses to a single sweep.
+     */
+    public function bustDashboard(string $schoolId, ?string $sessionYear = null): void
+    {
+        static $done = [];
+        $guard = $schoolId . '|' . ($sessionYear ?? '');
+        if (isset($done[$guard])) return;
+        $done[$guard] = true;
+
+        // Mirror of Admin::VIEW_ROLES (+ '' for role-less contexts). Dashboard
+        // payloads are cached per role, so we sweep them all.
+        $roles = [
+            '', 'Super Admin', 'School Super Admin', 'Admin', 'Principal',
+            'Vice Principal', 'Academic Coordinator', 'HR Manager', 'Accountant',
+            'Front Office', 'Class Teacher', 'Teacher', 'Librarian',
+            'Transport Manager', 'Hostel Warden',
+        ];
+        foreach ($roles as $r) {
+            $this->invalidate($schoolId, 'dashboard_data_'   . $r, $sessionYear);
+            $this->invalidate($schoolId, 'dashboard_charts_' . $r, $sessionYear);
+        }
+    }
 }

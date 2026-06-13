@@ -753,12 +753,16 @@ class Timetable_service
         $fsDocId = "{$this->schoolId}_{$this->session}_{$safeKey}_{$day}";
 
         $existingPeriods = [];
+        $prevVersion = 0;
         try {
             $existingDoc = $this->firebase->firestoreGet(self::COLLECTION_TT, $fsDocId);
-            if (is_array($existingDoc) && isset($existingDoc['periods'])) {
-                foreach ($existingDoc['periods'] as $p) {
-                    $pi2 = ($p['periodNumber'] ?? 1) - 1;
-                    $existingPeriods[$pi2] = $p;
+            if (is_array($existingDoc)) {
+                $prevVersion = (int) ($existingDoc['version'] ?? 0);
+                if (isset($existingDoc['periods'])) {
+                    foreach ($existingDoc['periods'] as $p) {
+                        $pi2 = ($p['periodNumber'] ?? 1) - 1;
+                        $existingPeriods[$pi2] = $p;
+                    }
                 }
             }
         } catch (\Throwable $e) {}
@@ -803,6 +807,7 @@ class Timetable_service
             'day'            => $day,
             'periods'        => $periodDocs,
             'manuallyEdited' => true,
+            'version'        => $prevVersion + 1,
             'updatedAt'      => date('c'),
             'updatedByUid'   => $this->adminId,
         ], true);
@@ -844,10 +849,26 @@ class Timetable_service
         $sectionKey = ($canonClass !== '' && $canonSection !== '')
             ? "{$canonClass}/{$canonSection}" : "{$class}/{$section}";
 
+        $written = 0;
         try {
             foreach ($clean as $day => $periods) {
                 $safeKey = str_replace('/', '_', $sectionKey);
                 $docId = "{$this->schoolId}_{$this->session}_{$safeKey}_{$day}";
+
+                // Read the existing day-doc so we can (a) bump the version stamp
+                // (required by the integrity verifier) and (b) preserve period
+                // times the bulk payload may have omitted instead of wiping them.
+                $existing = null;
+                try { $existing = $this->firebase->firestoreGet(self::COLLECTION_TT, $docId); }
+                catch (\Throwable $e) {}
+                $prevVersion   = is_array($existing) ? (int) ($existing['version'] ?? 0) : 0;
+                $existingByNum = [];
+                if (is_array($existing) && is_array($existing['periods'] ?? null)) {
+                    foreach ($existing['periods'] as $ep) {
+                        if (isset($ep['periodNumber'])) $existingByNum[(int) $ep['periodNumber']] = $ep;
+                    }
+                }
+
                 $periodDocs = [];
                 $periodNum = 1;
 
@@ -857,13 +878,19 @@ class Timetable_service
                     $isBreak = ($type === 'break' || $type === 'lunch'
                         || stripos((string)$key, 'Break') === 0 || strcasecmp((string)$key, 'Lunch') === 0);
 
+                    $pn = is_numeric($key) ? intval($key) : $periodNum;
+                    $startTime = $entry['startTime'] ?? $entry['start_time'] ?? '';
+                    $endTime   = $entry['endTime']   ?? $entry['end_time']   ?? '';
+                    if ($startTime === '') $startTime = $existingByNum[$pn]['startTime'] ?? '';
+                    if ($endTime === '')   $endTime   = $existingByNum[$pn]['endTime']   ?? '';
+
                     $periodDocs[] = [
-                        'periodNumber' => is_numeric($key) ? intval($key) : $periodNum,
+                        'periodNumber' => $pn,
                         'subject'      => $isBreak ? '' : ($entry['subject']  ?? $entry['Subject'] ?? ''),
                         'teacher'      => $isBreak ? '' : ($entry['teacher']  ?? $entry['Teacher'] ?? ''),
                         'teacherId'    => $entry['teacherId'] ?? $entry['teacher_id'] ?? '',
-                        'startTime'    => $entry['startTime'] ?? $entry['start_time'] ?? '',
-                        'endTime'      => $entry['endTime']   ?? $entry['end_time']   ?? '',
+                        'startTime'    => $startTime,
+                        'endTime'      => $endTime,
                         'room'         => $entry['room']      ?? $entry['Room'] ?? '',
                         'type'         => $isBreak ? ($type === 'lunch' ? 'lunch' : 'break') : 'class',
                     ];
@@ -881,15 +908,19 @@ class Timetable_service
                     'day'            => $day,
                     'periods'        => $periodDocs,
                     'manuallyEdited' => true,
+                    'version'        => $prevVersion + 1,
                     'updatedAt'      => date('c'),
                     'updatedByUid'   => $this->adminId,
                 ], true);
+                $written++;
             }
         } catch (\Throwable $e) {
-            log_message('error', 'saveSectionTimetable: Firestore sync failed: ' . $e->getMessage());
+            // Do NOT report success on a write failure — surface it to the caller.
+            log_message('error', "saveSectionTimetable: Firestore sync failed after {$written} day(s): " . $e->getMessage());
+            throw new Service_exception('Failed to save timetable: ' . $e->getMessage(), 'write_failed');
         }
 
-        return ['message' => 'Timetable saved successfully'];
+        return ['message' => 'Timetable saved successfully', 'days_written' => $written];
     }
 
     /**

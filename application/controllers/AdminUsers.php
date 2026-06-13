@@ -160,9 +160,6 @@ class AdminUsers extends MY_Controller
     {
         parent::__construct();
         require_permission('Admin Users');
-
-        // Auto-retry pending MongoDB syncs on every AdminUsers page load (non-blocking)
-        $this->_process_pending_syncs();
     }
 
     /**
@@ -265,7 +262,7 @@ class AdminUsers extends MY_Controller
             $this->json_error('New password and confirmation are required.');
             return;
         }
-        if (!hash_equals($new_password, $confirm_password)) {
+        if ($new_password !== $confirm_password) {
             $this->json_error('Passwords do not match.');
             return;
         }
@@ -334,7 +331,11 @@ class AdminUsers extends MY_Controller
 
     public function index(): void
     {
-        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'admin_users_view');
+        $this->_require_role(['Super Admin', 'Admin'], 'admin_users_view');
+
+        // Auto-retry admins created while Firebase Auth was unavailable (non-blocking).
+        // Gated to the page load only — was previously firing on every AJAX request.
+        $this->_process_pending_syncs();
 
         $data = [
             'page_title'        => 'Admin Users',
@@ -352,7 +353,7 @@ class AdminUsers extends MY_Controller
 
     public function get_dashboard(): void
     {
-        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'admin_users_dashboard');
+        $this->_require_role(['Super Admin', 'Admin'], 'admin_users_dashboard');
 
         try {
             $adminDocs = $this->fs->schoolWhere('admins', []);
@@ -361,25 +362,13 @@ class AdminUsers extends MY_Controller
             $recent = [];
 
             foreach ($adminDocs as $doc) {
-                $d = $doc['data'] ?? $doc;
-                $a   = $doc['data'];
-                $aid = $a['adminId'] ?? $d['id'];
+                $a = $doc['data'];
                 $total++;
-                $status = $a['Status'] ?? 'Active';
-                if ($status === 'Active') $active++;
+                if (($a['Status'] ?? 'Active') === 'Active') $active++;
                 else $disabled++;
 
-                $lastLogin = $a['AccessHistory']['LastLogin'] ?? '';
-                if (!empty($lastLogin)) {
-                    $recent[] = [
-                        'adminId'   => $aid,
-                        'adminName' => $a['Name'] ?? $a['Profile']['name'] ?? $aid,
-                        'loginTime' => $lastLogin,
-                        'ipAddress' => $a['AccessHistory']['LoginIP'] ?? '',
-                        'status'    => 'success',
-                        'device'    => '-',
-                    ];
-                }
+                $row = $this->_login_row($doc);
+                if ($row !== null) $recent[] = $row;
             }
 
             usort($recent, fn($a, $b) => strcmp($b['loginTime'] ?? '', $a['loginTime'] ?? ''));
@@ -396,13 +385,38 @@ class AdminUsers extends MY_Controller
         }
     }
 
+    /**
+     * Build one "last login" row from an admins doc, or null if the admin
+     * has never logged in. Shared by get_dashboard + get_login_logs.
+     *
+     * Note: this is last-login-per-admin, not a full event log — there is no
+     * failed-login or device data source, so neither is reported.
+     */
+    private function _login_row(array $doc): ?array
+    {
+        $d   = $doc['data'] ?? $doc;
+        $a   = $doc['data'];
+        $aid = $a['adminId'] ?? $d['id'];
+        $access    = $a['AccessHistory'] ?? [];
+        $lastLogin = $access['LastLogin'] ?? '';
+        if (empty($lastLogin)) return null;
+
+        return [
+            'adminId'   => $aid,
+            'adminName' => $a['Name'] ?? $a['Profile']['name'] ?? $aid,
+            'loginTime' => $lastLogin,
+            'ipAddress' => $access['LoginIP'] ?? '',
+            'isOnline'  => !empty($access['IsLoggedIn']),
+        ];
+    }
+
     // -------------------------------------------------------------------------
     // POST  /admin_users/get_admins
     // -------------------------------------------------------------------------
 
     public function get_admins(): void
     {
-        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'admin_users_list');
+        $this->_require_role(['Super Admin', 'Admin'], 'admin_users_list');
 
         try {
             $adminDocs = $this->fs->schoolWhere('admins', [], 'Name', 'ASC');
@@ -425,7 +439,7 @@ class AdminUsers extends MY_Controller
 
     public function create_admin(): void
     {
-        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'create_admin');
+        $this->_require_role(['Super Admin', 'Admin'], 'create_admin');
 
         $name     = trim($this->input->post('name',      TRUE) ?? '');
         $email    = strtolower(trim($this->input->post('email', TRUE) ?? ''));
@@ -441,12 +455,14 @@ class AdminUsers extends MY_Controller
             $this->json_error('Invalid email address.');
             return;
         }
-        if (strlen($password) < 8) {
-            $this->json_error('Password must be at least 8 characters.');
+        if (strlen($password) < 8 || strlen($password) > 72) {
+            $this->json_error('Password must be 8–72 characters.');
             return;
         }
-        if (strlen($password) > 72) {
-            $this->json_error('Password must be 72 characters or less.');
+        if (!preg_match('/[A-Z]/', $password)
+            || !preg_match('/[a-z]/', $password)
+            || !preg_match('/[0-9]/', $password)) {
+            $this->json_error('Password must contain an uppercase letter, a lowercase letter, and a digit.');
             return;
         }
 
@@ -482,28 +498,40 @@ class AdminUsers extends MY_Controller
             // Auto-generate ADM ID via Id_generator
             $this->load->library('id_generator');
             $admin_id    = $this->id_generator->generate('ADM');
-            $auth_synced = false;
+            if ($admin_id === null) {
+                log_message('error', 'AdminUsers::create_admin — Id_generator returned null for ADM (counter exhausted)');
+                $this->json_error('Could not allocate an admin ID right now. Please try again.');
+                return;
+            }
+            // Numeric part of the claimed id, for releaseClaim() on rollback.
+            $adm_seq = (int) preg_replace('/^[A-Z]+/', '', $admin_id);
 
-            // Create Firebase Auth account
+            // Create Firebase Auth account — this is the primary login source.
+            // If it fails we abort BEFORE writing any Firestore record, so we
+            // never leave a half-created admin that has no working login.
             try {
                 $authEmail = Firebase::authEmail($admin_id);
                 $created   = $this->firebase->createFirebaseUser($authEmail, $password, [
                     'uid'         => $admin_id,
                     'displayName' => $name,
                 ]);
-                if ($created !== null && $created !== false) {
-                    $this->firebase->setFirebaseClaims($admin_id, [
-                        'role'        => $role,
-                        'roleLabel'   => $role,
-                        'schoolId'    => $this->school_id,
-                        'schoolCode'  => $this->school_code,
-                        'parentDbKey' => $this->parent_db_key,
-                    ]);
-                    $auth_synced = true;
-                }
             } catch (Exception $e) {
                 log_message('error', 'AdminUsers::create_admin Firebase Auth failed: ' . $e->getMessage());
+                $created = null;
             }
+            if ($created === null || $created === false) {
+                // Hand the unused ADM number back so the sequence has no gap.
+                $this->id_generator->releaseClaim('ADM', $adm_seq);
+                $this->json_error('Could not create the login account (Firebase Auth unavailable, or that account already exists). No admin was created — please try again.');
+                return;
+            }
+            $this->firebase->setFirebaseClaims($admin_id, [
+                'role'        => $role,
+                'roleLabel'   => $role,
+                'schoolId'    => $this->school_id,
+                'schoolCode'  => $this->school_code,
+                'parentDbKey' => $this->parent_db_key,
+            ]);
             $now       = date('Y-m-d H:i:s');
 
             // Firebase structure — same as School Super Admin
@@ -542,7 +570,25 @@ class AdminUsers extends MY_Controller
                 'updatedAt' => date('c'),
             ]);
             unset($fsData['Credentials']);
-            $this->fs->set('admins', $this->fs->docId($admin_id), $fsData, true);
+
+            // The admins doc is the source of truth. If it can't be written we
+            // roll back the Auth account + ID claim so create is all-or-nothing.
+            $written = false;
+            try {
+                $written = $this->fs->set('admins', $this->fs->docId($admin_id), $fsData, true);
+            } catch (Exception $writeEx) {
+                log_message('error', 'AdminUsers::create_admin — admins write failed: ' . $writeEx->getMessage());
+            }
+            if ($written === false) {
+                try {
+                    $this->firebase->deleteFirebaseUser($admin_id);
+                } catch (Exception $rb) {
+                    log_message('error', 'AdminUsers::create_admin — Auth rollback failed: ' . $rb->getMessage());
+                }
+                $this->id_generator->releaseClaim('ADM', $adm_seq);
+                $this->json_error('Could not save the admin record. No admin was created — please try again.');
+                return;
+            }
 
             // ── Firestore staff collection dual-write (best-effort) ──
             try {
@@ -559,13 +605,8 @@ class AdminUsers extends MY_Controller
 
             log_audit('AdminUsers', 'create_admin', $admin_id, "Created admin '{$name}' with role '{$role}'");
 
-            $msg = 'Admin created successfully.';
-            if (!$auth_synced) {
-                $msg .= ' (Note: Firebase Auth account could not be created — admin can log in via RTDB credentials only.)';
-            }
-
             $this->json_success([
-                'message'  => $msg,
+                'message'  => 'Admin created successfully.',
                 'admin_id' => $admin_id,
                 'name'     => $name,
                 'role'     => $role,
@@ -798,6 +839,12 @@ class AdminUsers extends MY_Controller
         $admin_id     = $this->safe_path_segment(trim($this->input->post('admin_id', TRUE) ?? ''), 'admin_id');
         $new_password = (string)($this->input->post('new_password', FALSE) ?? '');
 
+        // Self-reset would force-logout the caller mid-session. Use Change My Password instead.
+        if ($admin_id === $this->admin_id) {
+            $this->json_error('Use “Change My Password” to reset your own account.');
+            return;
+        }
+
         if ($new_password === '') {
             $this->json_error('New password is required.');
             return;
@@ -995,7 +1042,7 @@ class AdminUsers extends MY_Controller
 
     public function get_roles(): void
     {
-        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'view_roles');
+        $this->_require_role(['Super Admin', 'Admin'], 'view_roles');
 
         try {
             $schoolDoc = $this->fs->get('schools', $this->school_id);
@@ -1145,29 +1192,15 @@ class AdminUsers extends MY_Controller
 
     public function get_login_logs(): void
     {
-        $this->_require_role(['Super Admin', 'Admin', 'Principal'], 'view_login_logs');
+        $this->_require_role(['Super Admin', 'Admin'], 'view_login_logs');
 
         try {
             $adminDocs = $this->fs->schoolWhere('admins', []);
             $rows = [];
 
             foreach ($adminDocs as $doc) {
-                $d = $doc['data'] ?? $doc;
-                $a   = $doc['data'];
-                $aid = $a['adminId'] ?? $d['id'];
-                $access    = $a['AccessHistory'] ?? [];
-                $lastLogin = $access['LastLogin'] ?? '';
-                if (empty($lastLogin)) continue;
-
-                $rows[] = [
-                    'adminId'   => $aid,
-                    'adminName' => $a['Name'] ?? $a['Profile']['name'] ?? $aid,
-                    'loginTime' => $lastLogin,
-                    'ipAddress' => $access['LoginIP'] ?? '',
-                    'status'    => 'success',
-                    'device'    => '-',
-                    'isOnline'  => !empty($access['IsLoggedIn']),
-                ];
+                $row = $this->_login_row($doc);
+                if ($row !== null) $rows[] = $row;
             }
 
             usort($rows, fn($a, $b) => strcmp($b['loginTime'] ?? '', $a['loginTime'] ?? ''));

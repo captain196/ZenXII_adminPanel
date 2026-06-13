@@ -63,6 +63,9 @@ class Staff extends MY_Controller
         'lab'        => 'ROLE_LAB_ASST',
     ];
 
+    /** Phones already seen during the current import scan (in-file dedupe). */
+    private $_importSeenPhones = [];
+
     public function __construct()
     {
         parent::__construct();
@@ -295,6 +298,13 @@ class Staff extends MY_Controller
             return false;
         }
 
+        // Server-side size cap (2 MB). The browser enforces this too, but a
+        // crafted multipart POST can bypass the JS — never trust the client.
+        if (!empty($file['error']) || ($file['size'] ?? PHP_INT_MAX) > 2 * 1024 * 1024) {
+            log_message('error', "uploadStaffFile rejected {$label} for {$staffId}: size/error (size=" . ($file['size'] ?? '?') . ", err=" . ($file['error'] ?? '?') . ')');
+            return false;
+        }
+
         $ext       = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
 
         // M-03 FIX: Validate MIME type server-side via finfo (callers already check
@@ -311,9 +321,12 @@ class Staff extends MY_Controller
         $safeLabel = str_replace([' ', '.', '#', '$', '[', ']'], '_', $label);
         $fileName  = "{$safeLabel}_{$timestamp}_{$random}.{$ext}";
 
+        // Canonical Storage scheme: schools/{schoolId}/staff/{staffId}/... so the
+        // school's whole footprint sits under one ID-keyed prefix. Previously
+        // rooted at the bare school NAME ({school_name}/Staff/...).
         $basePath = ($label === 'Photo')
-            ? "{$school_name}/Staff/{$staffId}/Profile_pic/"
-            : "{$school_name}/Staff/{$staffId}/Documents/";
+            ? "schools/{$this->school_id}/staff/{$staffId}/profile/"
+            : "schools/{$this->school_id}/staff/{$staffId}/documents/";
 
         $filePath = $basePath . $fileName;
 
@@ -417,26 +430,48 @@ class Staff extends MY_Controller
         $this->_require_role(self::VIEW_ROLES);
         $session_year = $this->session_year;
 
-        // Firestore: query all staff for this school assigned to current session
-        $staffDocs = $this->fs->schoolWhere('staff', [['sessions', 'array-contains', $session_year]], 'Name', 'ASC');
+        // PERF (2026-06-13) — this page server-renders the full roster, so its
+        // only cost is the blocking Firestore read below (the whole staff
+        // collection + the school doc for role defs). It used to fire on every
+        // visit; we now cache the assembled list under a school+session key for
+        // 90s. The snapshot is busted immediately on any staff write (see
+        // Firestore_service::_bustDashboard), so new hires / deletions / status
+        // changes still appear on the next load with no staleness. Search and
+        // filtering are already client-side, so nothing about typing changes.
+        $this->load->driver('cache', ['adapter' => 'file']);
+        $cacheKey = $this->fs->staffListCacheKey();
+        $snapshot = $this->cache->get($cacheKey);
 
-        // Firestore is the sole source per no-RTDB policy. No fallback.
+        if (is_array($snapshot) && isset($snapshot['staff'], $snapshot['staff_role_defs'])) {
+            $data['staff']           = $snapshot['staff'];
+            $data['staff_role_defs'] = $snapshot['staff_role_defs'];
+        } else {
+            // Firestore: query all staff for this school assigned to current session
+            $staffDocs = $this->fs->schoolWhere('staff', [['sessions', 'array-contains', $session_year]], 'Name', 'ASC');
 
-        $data['staff'] = [];
-        foreach ($staffDocs as $doc) {
-            $d = $doc['data'] ?? $doc;
-            $s = $doc['data'];
-            $s['_profilePic'] = $s['ProfilePic'] ?? $s['Photo URL'] ?? $s['profilePic'] ?? '';
-            $id = $s['User ID'] ?? $s['staffId'] ?? $d['id'];
-            $data['staff'][$id] = $s;
+            // Firestore is the sole source per no-RTDB policy. No fallback.
+
+            $data['staff'] = [];
+            foreach ($staffDocs as $doc) {
+                $d = $doc['data'] ?? $doc;
+                $s = $doc['data'];
+                $s['_profilePic'] = $s['ProfilePic'] ?? $s['Photo URL'] ?? $s['profilePic'] ?? '';
+                $id = $s['User ID'] ?? $s['staffId'] ?? $d['id'];
+                $data['staff'][$id] = $s;
+            }
+
+            // Load staff role definitions from school config
+            $schoolDoc = $this->fs->get('schools', $this->school_id);
+            $data['staff_role_defs'] = $schoolDoc['staffRoles'] ?? [];
+            if (!is_array($data['staff_role_defs'])) $data['staff_role_defs'] = [];
+
+            $this->cache->save($cacheKey, [
+                'staff'           => $data['staff'],
+                'staff_role_defs' => $data['staff_role_defs'],
+            ], 90);
         }
 
         $data['school_name'] = $this->school_name;
-
-        // Load staff role definitions from school config
-        $schoolDoc = $this->fs->get('schools', $this->school_id);
-        $data['staff_role_defs'] = $schoolDoc['staffRoles'] ?? [];
-        if (!is_array($data['staff_role_defs'])) $data['staff_role_defs'] = [];
 
         $this->load->view('include/header');
         $this->load->view('all_staff', $data);
@@ -476,319 +511,131 @@ class Staff extends MY_Controller
     public function import_staff()
     {
         $this->_require_role(self::MANAGE_ROLES);
+
+        // Bulk import does ~7 sequential network calls per row (Firestore +
+        // Firebase Auth). Without a relaxed limit a moderate roster blows PHP's
+        // max_execution_time mid-loop → fatal 500 after partially importing.
+        // (The chunked commit below also bounds each request, but this is the
+        // belt-and-suspenders for the legacy single-shot path.)
+        @set_time_limit(0);
+        @ignore_user_abort(true);
+
         try {
 
             $school_id    = $this->parent_db_key;
             $school_name  = $this->school_name;
             $session_year = $this->session_year;
 
-            if (!isset($_FILES['excelFile']) || $_FILES['excelFile']['error'] !== UPLOAD_ERR_OK) {
-                redirect('staff/all_staff');
+            // Two entry paths:
+            //  (a) confirm a previewed file via `import_token` (preferred — see
+            //      preview_import()), or
+            //  (b) a direct upload of `excelFile` (back-compat).
+            $token    = $this->_safe_import_token($this->input->post('import_token'));
+            $tmpPath  = $token ? $this->_import_tmp_path($token) : '';
+
+            if ($token && is_file($tmpPath)) {
+                $extension = strtolower(pathinfo($tmpPath, PATHINFO_EXTENSION));
+                $loadPath  = $tmpPath;
+            } elseif (isset($_FILES['excelFile']) && $_FILES['excelFile']['error'] === UPLOAD_ERR_OK) {
+                $extension = strtolower(pathinfo($_FILES['excelFile']['name'], PATHINFO_EXTENSION));
+                $loadPath  = $_FILES['excelFile']['tmp_name'];
+            } else {
+                if ($this->input->is_ajax_request()) {
+                    $this->json_error('No file to import (upload expired — please re-select).', 400);
+                } else {
+                    redirect('staff/all_staff');
+                }
                 return;
             }
-
-            $file      = $_FILES['excelFile'];
-            $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
 
             $reader = ($extension === 'csv')
                 ? IOFactory::createReader('Csv')
                 : IOFactory::createReader('Xlsx');
 
-            $spreadsheet = $reader->load($file['tmp_name']);
+            $spreadsheet = $reader->load($loadPath);
             $sheetData   = $spreadsheet->getActiveSheet()->toArray();
 
             if (count($sheetData) <= 1) {
-                $this->session->set_flashdata('import_result', 'Import failed: file is empty.');
-                redirect('staff/all_staff');
+                if ($token) { @unlink($tmpPath); }
+                if ($this->input->is_ajax_request()) {
+                    $this->json_error('Import failed: file is empty.', 400);
+                } else {
+                    $this->session->set_flashdata('import_result', 'Import failed: file is empty.');
+                    redirect('staff/all_staff');
+                }
                 return;
             }
 
             $headers = array_map('trim', $sheetData[0]);
             unset($sheetData[0]);
-            $sheetData = array_values($sheetData);
+
+            // Keep only non-empty data rows, re-indexed, so chunking can slice
+            // by a stable absolute index across requests.
+            $dataRows = array_values(array_filter($sheetData, function ($r) {
+                if (!is_array($r)) return false;
+                foreach ($r as $v) { if (trim((string) $v) !== '') return true; }
+                return false;
+            }));
+            $total = count($dataRows);
 
             $this->load->library('id_generator');
+            $this->load->library('staff_import_mapper');
+
+            // Resolve the uploaded headers to canonical fields ONCE (alias +
+            // fuzzy match), so arbitrary column names/order/extra columns work.
+            $headerRes = $this->staff_import_mapper->resolveHeaders($headers);
+
+            // Chunked/resumable commit: the client confirms a previewed file in
+            // slices of CHUNK rows, so each request stays well under any
+            // execution limit, reports progress, and resumes after a blip.
+            // offset/chunk apply only to the token (preview→confirm) path; a
+            // direct upload still imports in one shot.
+            $CHUNK   = 25;
+            $chunked = ($token !== '');
+            $offset  = $chunked ? max(0, (int) $this->input->post('offset')) : 0;
+            $end     = $chunked ? min($total, $offset + $CHUNK) : $total;
 
             $success = 0;
             $error   = 0;
             $skipped = [];
+            // In-file phone dedupe; cross-chunk duplicates are caught by the
+            // committed indexPhones entries from earlier chunks.
+            $this->_importSeenPhones = [];
 
-            foreach ($sheetData as $row) {
+            for ($i = $offset; $i < $end; $i++) {
+                // Map through the canonical schema — tolerant of missing/extra
+                // columns, applies per-field transforms (phone digits, dates, …).
+                $rowData = $this->staff_import_mapper->mapRow($dataRows[$i], $headerRes);
+                $rowNum  = $i + 1;
 
-                if (!array_filter($row)) continue;
-
-                // prevent array_combine crash
-                if (count($headers) !== count($row)) {
+                $res = $this->_commit_staff_row($rowData);
+                if ($res['status'] === 'created') {
+                    $success++;
+                } else {
                     $error++;
-                    continue;
+                    $label = ($res['name'] ?? '') !== '' ? $res['name'] : 'row';
+                    $skipped[] = "Row {$rowNum} ({$label}): " . ($res['reason'] ?? $res['status']);
                 }
-
-                $rowData = array_combine($headers, $row);
-
-                // Phase 4.2 — safeGenerate retries transient failures
-                // and throws on catastrophic exhaustion. Per-row
-                // try/catch keeps the bulk import resilient: one bad
-                // row doesn't fail the whole CSV.
-                try {
-                    $staffId = $this->id_generator->safeGenerate('STA');
-                } catch (\Throwable $e) {
-                    log_message('error', 'ID_GEN_INTEGRATION staff_bulk_import_failed row=' . ($success + $error + count($skipped) + 1) . ' err=' . $e->getMessage());
-                    $skipped[] = "Row " . ($success + $error + count($skipped) + 1) . ": ID generation failed (" . $e->getMessage() . ")";
-                    $error++;
-                    continue;
-                }
-
-                $rowNum      = $success + $error + count($skipped) + 1;
-                $name        = trim($rowData['Name'] ?? '');
-                $phone       = trim($rowData['Phone Number'] ?? '');
-                $dob         = trim($rowData['DOB'] ?? '');
-                $email       = trim($rowData['Email'] ?? '');
-                $gender      = trim($rowData['Gender'] ?? '');
-                $fatherName  = trim($rowData['Father Name'] ?? '');
-                $empType     = trim($rowData['Employment Type'] ?? '');
-                $department  = trim($rowData['Department'] ?? '');
-                $positionRaw = trim($rowData['Position'] ?? '');
-                $dojRaw      = trim($rowData['Date Of Joining'] ?? '');
-                $basicRaw    = $rowData['Basic Salary'] ?? '';
-
-                // Required fields — must match new_staff form exactly
-                $missing = [];
-                if ($name === '')        $missing[] = 'Name';
-                if ($phone === '')       $missing[] = 'Phone Number';
-                if ($dob === '')         $missing[] = 'DOB';
-                if ($email === '')       $missing[] = 'Email';
-                if ($gender === '')      $missing[] = 'Gender';
-                if ($fatherName === '')  $missing[] = 'Father Name';
-                if ($positionRaw === '') $missing[] = 'Position';
-                if ($dojRaw === '')      $missing[] = 'Date Of Joining';
-                if ($empType === '')     $missing[] = 'Employment Type';
-                if ($department === '')  $missing[] = 'Department';
-                if ($basicRaw === '' || $basicRaw === null) $missing[] = 'Basic Salary';
-
-                if (!empty($missing)) {
-                    $skipped[] = "Row {$rowNum}: Missing " . implode(', ', $missing);
-                    $error++;
-                    continue;
-                }
-
-                // Validate phone
-                if (!preg_match('/^[6-9]\d{9}$/', $phone)) {
-                    $skipped[] = "Row {$rowNum}: Invalid phone '{$phone}'";
-                    $error++;
-                    continue;
-                }
-
-                // Validate email
-                if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                    $skipped[] = "Row {$rowNum}: Invalid email '{$email}'";
-                    $error++;
-                    continue;
-                }
-
-                // Validate DOB parseable
-                $timestamp = strtotime($dob);
-                if ($timestamp === false) {
-                    $skipped[] = "Row {$rowNum}: Invalid DOB format '{$dob}'";
-                    $error++;
-                    continue;
-                }
-
-                // Password generation: First3Name + last3DOBYear + @
-                $cleanName     = preg_replace('/\s+/', '', $name);
-                $first3        = ucfirst(substr($cleanName, 0, 3));
-                $year          = date('Y', $timestamp);
-                $last3         = substr($year, -3);
-                $plainPassword = $first3 . $last3 . '@';
-                $hashedPassword = password_hash($plainPassword, PASSWORD_DEFAULT);
-
-                // Salary
-                $basic = (float)$basicRaw;
-                $allow = (float)($rowData['Allowances'] ?? 0);
-                $net   = $basic + $allow;
-
-                // Infer staff roles from Position column
-                $position = trim($rowData['Position'] ?? '');
-                $roleIds  = $this->_infer_roles_from_position($position);
-                if (empty($roleIds)) $roleIds = ['ROLE_TEACHER'];
-                $primaryRole = $roleIds[0];
-
-                $religion    = trim($rowData['Religion'] ?? '');
-                $category    = trim($rowData['Category'] ?? '');
-                $bloodGroup  = trim($rowData['Blood Group'] ?? '');
-                $designation = trim($rowData['Designation'] ?? '');
-                $altPhone    = trim($rowData['Alt Phone'] ?? '');
-                $maritalSt   = trim($rowData['Marital Status'] ?? '');
-                $panNumber   = strtoupper(trim($rowData['PAN Number'] ?? ''));
-                $aadharNum   = trim($rowData['Aadhar Number'] ?? '');
-                $pfNumber    = trim($rowData['PF Number'] ?? '');
-                $esiNumber   = trim($rowData['ESI Number'] ?? '');
-                $teachingSubjectsRaw = trim($rowData['Teaching Subjects'] ?? '');
-                $teachingSubjects = $teachingSubjectsRaw !== ''
-                    ? array_values(array_filter(array_map('trim', explode(',', $teachingSubjectsRaw))))
-                    : [];
-
-                // If display label is non-blank, prefer it over auto-derived label.
-                $positionLabel = $designation !== '' ? $designation : $position;
-
-                $data = [
-                    'User ID'         => $staffId,
-                    'Name'            => $name,
-                    'Email'           => $email,
-                    'Phone Number'    => $phone,
-                    'Gender'          => $gender,
-                    'Department'      => $department,
-                    'Position'        => $positionLabel,
-                    'Employment Type' => $empType,
-                    'DOB'             => $dob,
-                    'Date Of Joining' => $dojRaw,
-                    'Father Name'     => $fatherName,
-                    'Blood Group'     => $bloodGroup,
-                    'Religion'        => $religion,
-                    'Category'        => $category,
-                    'Password'        => $hashedPassword,
-                    'Credentials'     => ['Id' => $staffId, 'Password' => $hashedPassword],
-                    'lastUpdated'     => date('Y-m-d'),
-                    'staff_roles'     => $roleIds,
-                    'primary_role'    => $primaryRole,
-
-                    // Phase A statutory fields — mirror new_staff()
-                    'altPhone'        => $altPhone,
-                    'maritalStatus'   => $maritalSt,
-                    'designation'     => $designation,
-                    'panNumber'       => $panNumber,
-                    'aadharNumber'    => $aadharNum,
-                    'pfNumber'        => $pfNumber,
-                    'esiNumber'       => $esiNumber,
-
-                    'qualificationDetails' => [
-                        'highestQualification' => trim($rowData['Qualification'] ?? ''),
-                        'experience'           => trim($rowData['Experience'] ?? ''),
-                        'university'           => trim($rowData['University'] ?? ''),
-                        'yearOfPassing'        => trim($rowData['Year Of Passing'] ?? ''),
-                    ],
-
-                    'salaryDetails' => [
-                        'basicSalary' => $basic,
-                        'Allowances'  => $allow,
-                        'Net Salary'  => $net,
-                    ],
-
-                    'bankDetails' => [
-                        'accountHolderName' => trim($rowData['Account Holder Name'] ?? ''),
-                        'accountNumber'     => trim($rowData['Account Number'] ?? ''),
-                        'bankName'          => trim($rowData['Bank Name'] ?? ''),
-                        'ifscCode'          => trim($rowData['IFSC Code'] ?? ''),
-                    ],
-
-                    'emergencyContact' => [
-                        'name'        => trim($rowData['Emergency Contact Name'] ?? ''),
-                        'phoneNumber' => trim($rowData['Emergency Contact Number'] ?? ''),
-                        'relation'    => trim($rowData['Emergency Contact Relation'] ?? ''),
-                    ],
-
-                    'Address' => [
-                        'Street'     => trim($rowData['Street'] ?? ''),
-                        'City'       => trim($rowData['City'] ?? ''),
-                        'State'      => trim($rowData['State'] ?? ''),
-                        'PostalCode' => trim($rowData['Postal Code'] ?? ''),
-                    ],
-
-                    'permanentAddress' => [
-                        'street'     => trim($rowData['Permanent Street'] ?? ''),
-                        'city'       => trim($rowData['Permanent City'] ?? ''),
-                        'state'      => trim($rowData['Permanent State'] ?? ''),
-                        'postalCode' => trim($rowData['Permanent Postal Code'] ?? ''),
-                    ],
-                    'sameAsCurrentAddress' => false,
-
-                    'ProfilePic' => '',
-
-                    'Doc' => [
-                        'Photo'       => ['url' => '', 'thumbnail' => ''],
-                        'Aadhar Card' => ['url' => '', 'thumbnail' => ''],
-                    ],
-                ];
-
-                if (!empty($teachingSubjects)) {
-                    $data['teaching_subjects'] = $teachingSubjects;
-                }
-
-                // Write full record to Firestore
-                // camelCase aliases mirror new_staff() exactly — Parent + Teacher apps read these.
-                $fsData = array_merge($data, [
-                    'schoolId'       => $this->school_id,
-                    'session'        => $session_year,
-                    'sessions'       => [$session_year],
-                    'staffId'        => $staffId,
-                    'name'           => $name,
-                    'phone'          => $phone,
-                    'email'          => $email,
-                    'status'         => 'Active',
-                    'role'           => $positionLabel,
-                    'roleId'         => $primaryRole,
-                    'position'       => $positionLabel,
-                    'department'     => $department,
-                    'gender'         => $gender,
-                    'employmentType' => $empType,
-                    'fatherName'     => $fatherName,
-                    'dateOfJoining'  => $dojRaw,
-                    'dob'            => $dob,
-                    'bloodGroup'     => $bloodGroup,
-                    'religion'       => $religion,
-                    'category'       => $category,
-                    'profilePic'     => '',
-                    'updatedAt'      => date('c'),
-                ]);
-                unset($fsData['Password'], $fsData['Credentials']);
-                // Phase 4.3 — guarded write. If Firestore rejects or
-                // errors, release the STA claim for this row and count
-                // it as skipped instead of burning a number + leaving
-                // an orphan claim doc.
-                try {
-                    $writeOk = $this->fs->set('staff', $this->fs->docId($staffId), $fsData, true);
-                    if (!$writeOk) throw new \RuntimeException('staff set returned falsy');
-                } catch (\Throwable $writeErr) {
-                    $staVal = (int) preg_replace('/\D/', '', $staffId);
-                    if ($staVal > 0) $this->id_generator->releaseClaim('STA', $staVal);
-                    log_message('error', "ID_GEN_INTEGRATION staff_bulk_write_failed row={$rowNum} id={$staffId} released=1 err=" . $writeErr->getMessage());
-                    $skipped[] = "Row {$rowNum}: Firestore write failed — ID released";
-                    $error++;
-                    continue;
-                }
-
-                // Auto-create salary structure for payroll
-                $this->_sync_salary_structure($staffId, $basic, $allow);
-
-                // Phone index in Firestore
-                $this->fs->set('indexPhones', $this->fs->docId($phone), [
-                    'schoolId' => $this->school_id,
-                    'phone'    => $phone,
-                    'userId'   => $staffId,
-                    'type'     => 'staff',
-                ]);
-
-                // Create Firebase Auth account (best-effort)
-                try {
-                    $authEmail = Firebase::authEmail($staffId);
-                    $this->firebase->createFirebaseUser($authEmail, $plainPassword, [
-                        'uid'         => $staffId,
-                        'displayName' => $name,
-                    ]);
-                    $this->firebase->setFirebaseClaims($staffId, [
-                        'role'           => 'Teacher',
-                        'school_id'      => $this->school_id,
-                        'school_code'    => $this->school_code,
-                        'parent_db_key'  => $this->parent_db_key,
-                    ]);
-                } catch (Exception $e) {
-                    log_message('error', "Staff import Firebase Auth failed for {$staffId}: " . $e->getMessage());
-                }
-
-                $success++;
             }
 
-            $isAjax = $this->input->is_ajax_request();
+            // ── Chunked path: return this slice's progress; client loops ──
+            if ($chunked) {
+                $done = ($end >= $total);
+                if ($done) { @unlink($tmpPath); } // last chunk → drop parked file
+                $this->json_success([
+                    'success'    => $success,        // this chunk
+                    'failed'     => $error,          // this chunk
+                    'skipped'    => $skipped,        // this chunk
+                    'processed'  => $end - $offset,
+                    'nextOffset' => $end,
+                    'total'      => $total,
+                    'done'       => $done,
+                ]);
+                return;
+            }
 
+            // ── Legacy single-shot path (direct upload) ──
+            $isAjax = $this->input->is_ajax_request();
             if ($isAjax) {
                 $this->json_success([
                     'success' => $success,
@@ -804,7 +651,9 @@ class Staff extends MY_Controller
                 $this->session->set_flashdata('import_result', $msg);
                 redirect('staff/all_staff');
             }
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
+            // \Throwable (not just Exception) so a fatal/Error returns a clean
+            // message instead of a raw 500 with no body.
             log_message('error', 'IMPORT STAFF ERROR: ' . $e->getMessage());
 
             if ($this->input->is_ajax_request()) {
@@ -814,6 +663,551 @@ class Staff extends MY_Controller
                 redirect('staff/all_staff');
             }
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Import preview (dry-run) + supporting helpers
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Parse the uploaded file and render the interactive MAP & PREVIEW page
+     * (import_staff_map): the admin matches columns → fields, then validates and
+     * commits in chunks. Mirrors the SIS student-import flow.
+     */
+    public function preview_import()
+    {
+        $this->_require_role(self::MANAGE_ROLES);
+
+        if (!isset($_FILES['excelFile']) || $_FILES['excelFile']['error'] !== UPLOAD_ERR_OK) {
+            $this->session->set_flashdata('import_result', 'No file received, or the upload failed. Choose a CSV or XLSX file.');
+            redirect('staff/all_staff');
+            return;
+        }
+
+        $origName  = $_FILES['excelFile']['name'];
+        $extension = strtolower(pathinfo($origName, PATHINFO_EXTENSION));
+        if (!in_array($extension, ['csv', 'xlsx', 'xls'], true)) {
+            $this->session->set_flashdata('import_result', 'Unsupported file type. Upload a .csv or .xlsx file.');
+            redirect('staff/all_staff');
+            return;
+        }
+
+        try {
+            $reader = ($extension === 'csv') ? IOFactory::createReader('Csv') : IOFactory::createReader('Xlsx');
+            $spreadsheet = $reader->load($_FILES['excelFile']['tmp_name']);
+            $sheetData   = $spreadsheet->getActiveSheet()->toArray(null, true, true, false);
+        } catch (\Throwable $e) {
+            log_message('error', 'STAFF IMPORT PREVIEW read error: ' . $e->getMessage());
+            $this->session->set_flashdata('import_result', 'Could not read the file. It may be corrupt or password-protected.');
+            redirect('staff/all_staff');
+            return;
+        }
+
+        // Drop fully-empty rows; first remaining row is the header.
+        $sheetData = array_values(array_filter($sheetData, function ($r) {
+            if (!is_array($r)) return false;
+            foreach ($r as $v) { if (trim((string) $v) !== '') return true; }
+            return false;
+        }));
+        if (count($sheetData) < 2) {
+            $this->session->set_flashdata('import_result', 'The file has no data rows below the header.');
+            redirect('staff/all_staff');
+            return;
+        }
+
+        $headers  = array_map(function ($h) { return trim((string) $h); }, $sheetData[0]);
+        $dataRows = array_slice($sheetData, 1);
+
+        // Normalize ragged rows to header width so column alignment holds.
+        $width = count($headers);
+        foreach ($dataRows as &$r) {
+            $r = array_map(function ($v) { return (string) $v; }, array_values($r));
+            if (count($r) < $width) $r = array_pad($r, $width, '');
+            elseif (count($r) > $width) $r = array_slice($r, 0, $width);
+        }
+        unset($r);
+
+        $cap    = 1500;
+        $capped = count($dataRows) > $cap;
+        if ($capped) $dataRows = array_slice($dataRows, 0, $cap);
+
+        $this->load->library('staff_import_mapper');
+
+        $data = [
+            'headers'  => $headers,
+            'rows'     => $dataRows,
+            'autoMap'  => $this->staff_import_mapper->autoMap($headers),
+            'schema'   => $this->staff_import_mapper->fieldsForUi(),
+            'capped'   => $capped,
+            'capLimit' => $cap,
+            'fileName' => $origName,
+        ];
+
+        $this->load->view('include/header');
+        $this->load->view('import_staff_map', $data);
+        $this->load->view('include/footer');
+    }
+
+    /**
+     * Step 2 — dry-run validation (AJAX). Receives canonical rows (keyed by
+     * field key) as JSON in `payload`; returns per-row {data, errors, warnings,
+     * status} + summary. No writes.
+     */
+    public function import_validate()
+    {
+        $this->_require_role(self::MANAGE_ROLES);
+        $this->output->set_content_type('application/json');
+
+        $payload = json_decode((string) $this->input->post('payload'), true);
+        $rows    = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
+
+        $this->load->library('staff_import_mapper');
+
+        $out = []; $ok = 0; $warn = 0; $err = 0;
+        foreach ($rows as $r) {
+            $v = $this->staff_import_mapper->validateCanonical(is_array($r) ? $r : []);
+            // Role chain (no Firestore needed at validate time). Unresolved role
+            // is a WARNING, not an error — the staff still imports (with no role,
+            // assign later), so a missing/odd Position never blocks the row.
+            $roleSource = trim($v['data']['role'] ?? '');
+            if ($roleSource === '') $roleSource = trim($v['data']['designation'] ?? '');
+            if (empty($this->_match_roles_no_default($roleSource))) {
+                $v['warnings'][] = 'Role not recognized — will import with no role (set it later in Edit Staff)';
+                if ($v['status'] === 'ok') $v['status'] = 'warning';
+            }
+            if ($v['status'] === 'error') $err++;
+            elseif ($v['status'] === 'warning') $warn++;
+            else $ok++;
+            $out[] = $v;
+        }
+
+        echo json_encode([
+            'rows'    => $out,
+            'summary' => ['ok' => $ok, 'warning' => $warn, 'error' => $err, 'total' => count($rows)],
+        ]);
+    }
+
+    /**
+     * Step 3 — commit (AJAX, chunked). Receives a batch of canonical rows in
+     * `payload.rows`; writes every non-error row via the shared committer and
+     * returns counts. The client loops batches of ~25 so no single request can
+     * time out.
+     */
+    public function import_commit()
+    {
+        $this->_require_role(self::MANAGE_ROLES);
+        $this->output->set_content_type('application/json');
+        @set_time_limit(0);
+        @ignore_user_abort(true);
+
+        $payload = json_decode((string) $this->input->post('payload'), true);
+        $rows    = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
+        if (empty($rows)) {
+            echo json_encode(['status' => 'error', 'message' => 'No rows to import.']);
+            return;
+        }
+
+        $this->load->library('id_generator');
+        $this->load->library('staff_import_mapper');
+        // Reset per chunk; cross-chunk duplicates are caught by the indexPhones
+        // entries written by earlier chunks.
+        $this->_importSeenPhones = [];
+
+        $created = 0; $failed = 0; $dups = 0; $skipped = [];
+        foreach ($rows as $r) {
+            $rowData = $this->_canon_to_label(is_array($r) ? $r : []);
+            try {
+                $res = $this->_commit_staff_row($rowData);
+            } catch (\Throwable $e) {
+                log_message('error', 'STAFF import_commit row error: ' . $e->getMessage());
+                $res = ['status' => 'failed', 'reason' => 'unexpected error', 'name' => trim($rowData['Name'] ?? '')];
+            }
+            if ($res['status'] === 'created') {
+                $created++;
+            } elseif ($res['status'] === 'duplicate') {
+                $dups++;
+            } else {
+                $failed++;
+                $skipped[] = (($res['name'] ?? '') ?: 'row') . ': ' . ($res['reason'] ?? 'failed');
+            }
+        }
+
+        echo json_encode([
+            'status'  => 'success',
+            'counts'  => ['success' => $created, 'duplicates' => $dups, 'error' => $failed],
+            'skipped' => $skipped,
+        ]);
+    }
+
+    /**
+     * Validate one mapped row + resolve its role + phone-dedupe.
+     * Returns ['errors'=>[], 'roleIds'=>[], 'roleSource'=>'']. Shared by
+     * preview_import() (dry-run) and import_staff() (commit) so they can never
+     * disagree about what is importable.
+     */
+    private function _scan_import_row(array $rowData): array
+    {
+        $errors = $this->staff_import_mapper->validateRow($rowData);
+
+        // Role chain: Position column → Designation column → flag for review.
+        // Uses the NO-DEFAULT matcher so an unknown/blank role is genuinely held
+        // back (the shared _infer_roles_from_position falls back to ROLE_TEACHER,
+        // which would silently mislabel non-teaching staff — the bug this avoids).
+        $roleSource = trim($rowData['Position'] ?? '');
+        if ($roleSource === '') $roleSource = trim($rowData['Designation'] ?? '');
+        $roleIds = $this->_match_roles_no_default($roleSource);
+        if (empty($roleIds)) {
+            $errors[] = 'Role could not be determined — add a Position/Role (e.g. Teacher, Accountant)';
+        }
+
+        // Phone dedupe (phone-only key):
+        //  (a) within THIS file — first occurrence wins, later duplicates flagged;
+        //  (b) against existing staff in indexPhones — re-import won't duplicate.
+        $phone = trim($rowData['Phone Number'] ?? '');
+        if ($phone !== '' && preg_match('/^[6-9]\d{9}$/', $phone)) {
+            if (isset($this->_importSeenPhones[$phone])) {
+                $errors[] = 'Duplicate — phone ' . $phone . ' appears earlier in this file';
+            } else {
+                $this->_importSeenPhones[$phone] = true;
+                try {
+                    $existing = $this->fs->get('indexPhones', $this->fs->docId($phone));
+                    if (!empty($existing['userId'])
+                        && strtolower((string)($existing['type'] ?? '')) === 'staff') {
+                        $errors[] = 'Duplicate — phone already registered to staff ' . $existing['userId'];
+                    }
+                } catch (\Exception $e) {
+                    // Non-fatal: a lookup blip shouldn't block the whole preview.
+                }
+            }
+        }
+
+        return ['errors' => $errors, 'roleIds' => $roleIds, 'roleSource' => $roleSource];
+    }
+
+    /**
+     * Resolve role IDs from free-text WITHOUT the ROLE_TEACHER fallback that
+     * _infer_roles_from_position() applies. Returns [] when nothing matches, so
+     * the importer can flag the row for review instead of mislabeling it.
+     * Also accepts an explicit canonical id (e.g. "ROLE_ACCOUNTANT").
+     */
+    private function _match_roles_no_default(string $text): array
+    {
+        $t = strtolower(trim($text));
+        if ($t === '') return [];
+
+        // Explicit canonical id in a Role column.
+        $upper = strtoupper(trim($text));
+        if (isset(self::DEFAULT_STAFF_ROLES[$upper])) return [$upper];
+
+        foreach (self::POSITION_ROLE_MAP as $keyword => $roleId) {
+            if (strpos($t, $keyword) !== false) return [$roleId];
+        }
+        return [];
+    }
+
+    /**
+     * Commit one staff row (label-keyed canonical $rowData): validate fields +
+     * resolve role + phone-dedupe + write the full record (Firestore + salary +
+     * phone index + Firebase Auth). Shared by import_staff (file path) and
+     * import_commit (mapping-UI payload path) so both write identically.
+     * Returns ['status'=>'created'|'duplicate'|'failed', 'reason'=>?, 'name'=>?, 'staffId'=>?].
+     */
+    private function _commit_staff_row(array $rowData): array
+    {
+        $name  = trim($rowData['Name'] ?? '');
+        $phone = trim($rowData['Phone Number'] ?? '');
+
+        // 1) Field validation — only a MISSING REQUIRED field (Name/Phone) blocks.
+        $valid = $this->staff_import_mapper->validateRow($rowData);
+        if (!empty($valid['errors'])) {
+            return ['status' => 'failed', 'reason' => implode('; ', $valid['errors']), 'name' => $name];
+        }
+
+        // 2) Role chain: Position → Designation. Unresolved is NON-blocking —
+        // the staff imports with NO role (assign later from Edit Staff); we never
+        // silently default to Teacher.
+        $roleSource = trim($rowData['Position'] ?? '');
+        if ($roleSource === '') $roleSource = trim($rowData['Designation'] ?? '');
+        $roleIds = $this->_match_roles_no_default($roleSource);
+
+        // 3) Phone-only dedupe (skip, don't fail): in-file + against existing staff.
+        if ($phone !== '' && preg_match('/^[6-9]\d{9}$/', $phone)) {
+            if (isset($this->_importSeenPhones[$phone])) {
+                return ['status' => 'duplicate', 'reason' => "phone {$phone} repeated in this file", 'name' => $name];
+            }
+            $this->_importSeenPhones[$phone] = true;
+            try {
+                $ex = $this->fs->get('indexPhones', $this->fs->docId($phone));
+                if (!empty($ex['userId']) && strtolower((string)($ex['type'] ?? '')) === 'staff') {
+                    return ['status' => 'duplicate', 'reason' => 'phone already registered to staff ' . $ex['userId'], 'name' => $name];
+                }
+            } catch (\Exception $e) { /* non-fatal */ }
+        }
+
+        // 4) Allocate ID only now (invalid/dup rows never burn one).
+        try {
+            $staffId = $this->id_generator->safeGenerate('STA');
+        } catch (\Throwable $e) {
+            log_message('error', 'ID_GEN_INTEGRATION staff_commit_idgen_failed err=' . $e->getMessage());
+            return ['status' => 'failed', 'reason' => 'ID generation failed', 'name' => $name];
+        }
+
+        $session_year = $this->session_year;
+        $dob          = trim($rowData['DOB'] ?? '');
+        $email        = trim($rowData['Email'] ?? '');
+        $gender       = trim($rowData['Gender'] ?? '');
+        $fatherName   = trim($rowData['Father Name'] ?? '');
+        $empType      = trim($rowData['Employment Type'] ?? '');
+        $department   = trim($rowData['Department'] ?? '');
+        $dojRaw       = trim($rowData['Date Of Joining'] ?? '');
+        $basicRaw     = $rowData['Basic Salary'] ?? '';
+        $primaryRole  = $roleIds[0] ?? '';   // '' when role unresolved (assign later)
+
+        // Password: First3Name + (last3 DOB year | last3 phone | "123") + @.
+        // DOB is optional now, so fall back when it's missing so the generated
+        // password is never just "Nam@".
+        $timestamp      = strtotime($dob);
+        $cleanName      = preg_replace('/\s+/', '', $name);
+        $first3         = ucfirst(substr($cleanName, 0, 3));
+        $year           = $timestamp ? date('Y', $timestamp) : '';
+        $last3          = substr($year, -3);
+        if ($last3 === '') {
+            $digits = preg_replace('/\D/', '', $phone);
+            $last3  = $digits !== '' ? substr($digits, -3) : '123';
+        }
+        $plainPassword  = $first3 . $last3 . '@';
+        $hashedPassword = password_hash($plainPassword, PASSWORD_DEFAULT);
+
+        $basic = (float) $basicRaw;
+        $allow = (float) ($rowData['Allowances'] ?? 0);
+        $net   = $basic + $allow;
+
+        $religion    = trim($rowData['Religion'] ?? '');
+        $category    = trim($rowData['Category'] ?? '');
+        $bloodGroup  = trim($rowData['Blood Group'] ?? '');
+        $designation = trim($rowData['Designation'] ?? '');
+        $altPhone    = trim($rowData['Alt Phone'] ?? '');
+        $maritalSt   = trim($rowData['Marital Status'] ?? '');
+        $panNumber   = strtoupper(trim($rowData['PAN Number'] ?? ''));
+        $aadharNum   = trim($rowData['Aadhar Number'] ?? '');
+        $pfNumber    = trim($rowData['PF Number'] ?? '');
+        $esiNumber   = trim($rowData['ESI Number'] ?? '');
+
+        // Teaching subjects: explicit column wins; else for teaching roles the
+        // Department column carries the subject (move it, blank the department).
+        $teachingSubjectsRaw = trim($rowData['Teaching Subjects'] ?? '');
+        $teachingSubjects = $teachingSubjectsRaw !== ''
+            ? array_values(array_filter(array_map('trim', explode(',', $teachingSubjectsRaw))))
+            : [];
+        if (empty($teachingSubjects) && in_array('ROLE_TEACHER', $roleIds, true) && $department !== '') {
+            $teachingSubjects = array_values(array_filter(array_map('trim', explode(',', $department))));
+            $department = '';
+        }
+
+        $positionLabel = $designation !== '' ? $designation : $roleSource;
+
+        $data = [
+            'User ID'         => $staffId,
+            'Name'            => $name,
+            'Email'           => $email,
+            'Phone Number'    => $phone,
+            'Gender'          => $gender,
+            'Department'      => $department,
+            'Position'        => $positionLabel,
+            'Employment Type' => $empType,
+            'DOB'             => $dob,
+            'Date Of Joining' => $dojRaw,
+            'Father Name'     => $fatherName,
+            'Blood Group'     => $bloodGroup,
+            'Religion'        => $religion,
+            'Category'        => $category,
+            'Password'        => $hashedPassword,
+            'Credentials'     => ['Id' => $staffId, 'Password' => $hashedPassword],
+            'lastUpdated'     => date('Y-m-d'),
+            'staff_roles'     => $roleIds,
+            'primary_role'    => $primaryRole,
+            'altPhone'        => $altPhone,
+            'maritalStatus'   => $maritalSt,
+            'designation'     => $designation,
+            'panNumber'       => $panNumber,
+            'aadharNumber'    => $aadharNum,
+            'pfNumber'        => $pfNumber,
+            'esiNumber'       => $esiNumber,
+            'qualificationDetails' => [
+                'highestQualification' => trim($rowData['Qualification'] ?? ''),
+                'experience'           => trim($rowData['Experience'] ?? ''),
+                'university'           => trim($rowData['University'] ?? ''),
+                'yearOfPassing'        => trim($rowData['Year Of Passing'] ?? ''),
+            ],
+            'salaryDetails' => [
+                'basicSalary' => $basic,
+                'Allowances'  => $allow,
+                'Net Salary'  => $net,
+            ],
+            'bankDetails' => [
+                'accountHolderName' => trim($rowData['Account Holder Name'] ?? ''),
+                'accountNumber'     => trim($rowData['Account Number'] ?? ''),
+                'bankName'          => trim($rowData['Bank Name'] ?? ''),
+                'ifscCode'          => trim($rowData['IFSC Code'] ?? ''),
+            ],
+            'emergencyContact' => [
+                'name'        => trim($rowData['Emergency Contact Name'] ?? ''),
+                'phoneNumber' => trim($rowData['Emergency Contact Number'] ?? ''),
+                'relation'    => trim($rowData['Emergency Contact Relation'] ?? ''),
+            ],
+            'Address' => [
+                'Street'     => trim($rowData['Street'] ?? ''),
+                'City'       => trim($rowData['City'] ?? ''),
+                'State'      => trim($rowData['State'] ?? ''),
+                'PostalCode' => trim($rowData['Postal Code'] ?? ''),
+            ],
+            'permanentAddress' => [
+                'street'     => trim($rowData['Permanent Street'] ?? ''),
+                'city'       => trim($rowData['Permanent City'] ?? ''),
+                'state'      => trim($rowData['Permanent State'] ?? ''),
+                'postalCode' => trim($rowData['Permanent Postal Code'] ?? ''),
+            ],
+            'sameAsCurrentAddress' => false,
+            'ProfilePic' => '',
+            'Doc' => [
+                'Photo'       => ['url' => '', 'thumbnail' => ''],
+                'Aadhar Card' => ['url' => '', 'thumbnail' => ''],
+            ],
+        ];
+        if (!empty($teachingSubjects)) {
+            $data['teaching_subjects'] = $teachingSubjects;
+        }
+
+        // camelCase aliases mirror new_staff() so Parent + Teacher apps read fresh values.
+        $fsData = array_merge($data, [
+            'schoolId'       => $this->school_id,
+            'session'        => $session_year,
+            'sessions'       => [$session_year],
+            'staffId'        => $staffId,
+            'name'           => $name,
+            'phone'          => $phone,
+            'email'          => $email,
+            'status'         => 'Active',
+            'role'           => $positionLabel,
+            'roleId'         => $primaryRole,
+            'position'       => $positionLabel,
+            'department'     => $department,
+            'gender'         => $gender,
+            'employmentType' => $empType,
+            'fatherName'     => $fatherName,
+            'dateOfJoining'  => $dojRaw,
+            'dob'            => $dob,
+            'bloodGroup'     => $bloodGroup,
+            'religion'       => $religion,
+            'category'       => $category,
+            'profilePic'     => '',
+            'updatedAt'      => date('c'),
+        ]);
+        unset($fsData['Password'], $fsData['Credentials']);
+
+        // Guarded write — release the STA claim on failure so the number isn't burnt.
+        try {
+            $writeOk = $this->fs->set('staff', $this->fs->docId($staffId), $fsData, true);
+            if (!$writeOk) throw new \RuntimeException('staff set returned falsy');
+        } catch (\Throwable $writeErr) {
+            $staVal = (int) preg_replace('/\D/', '', $staffId);
+            if ($staVal > 0) $this->id_generator->releaseClaim('STA', $staVal);
+            log_message('error', "ID_GEN_INTEGRATION staff_commit_write_failed id={$staffId} released=1 err=" . $writeErr->getMessage());
+            return ['status' => 'failed', 'reason' => 'Firestore write failed — ID released', 'name' => $name];
+        }
+
+        // Salary structure + phone index.
+        $this->_sync_salary_structure($staffId, $basic, $allow);
+        $this->fs->set('indexPhones', $this->fs->docId($phone), [
+            'schoolId' => $this->school_id,
+            'phone'    => $phone,
+            'userId'   => $staffId,
+            'type'     => 'staff',
+        ]);
+
+        // Firebase Auth (best-effort).
+        try {
+            $authEmail = Firebase::authEmail($staffId);
+            $this->firebase->createFirebaseUser($authEmail, $plainPassword, [
+                'uid'         => $staffId,
+                'displayName' => $name,
+            ]);
+            $this->firebase->setFirebaseClaims($staffId, [
+                'role'           => $positionLabel,
+                'school_id'      => $this->school_id,
+                'school_code'    => $this->school_code,
+                'parent_db_key'  => $this->parent_db_key,
+            ]);
+        } catch (Exception $e) {
+            log_message('error', "Staff import Firebase Auth failed for {$staffId}: " . $e->getMessage());
+        }
+
+        return ['status' => 'created', 'staffId' => $staffId, 'name' => $name];
+    }
+
+    /** Convert a mapping-UI canonical row (keyed by field key) → label-keyed,
+     *  applying the schema transforms so commit normalizes like validate. */
+    private function _canon_to_label(array $rowByKey): array
+    {
+        $out = [];
+        foreach ($this->staff_import_mapper->fields() as $key => $def) {
+            if (!array_key_exists($key, $rowByKey)) continue;
+            $label = $def['label'] ?? $key;
+            $out[$label] = Staff_import_mapper::transform($rowByKey[$key], $def['transform'] ?? 'trim');
+        }
+        return $out;
+    }
+
+    /** Directory where previewed import files are parked between preview→confirm. */
+    private function _import_tmp_dir(): string
+    {
+        $dir = FCPATH . 'uploads/staff_import_tmp/';
+        if (!is_dir($dir)) { @mkdir($dir, 0775, true); }
+        // Belt-and-suspenders: deny direct web access to parked uploads.
+        $deny = $dir . '.htaccess';
+        if (!is_file($deny)) { @file_put_contents($deny, "Require all denied\nDeny from all\n"); }
+        return $dir;
+    }
+
+    /**
+     * Delete parked preview files older than 1 hour. Previews that are never
+     * confirmed (tab closed, all rows flagged) would otherwise leak disk space.
+     */
+    private function _sweep_import_tmp(): void
+    {
+        $cutoff = time() - 3600;
+        foreach (glob($this->_import_tmp_dir() . '*.{xlsx,csv}', GLOB_BRACE) ?: [] as $f) {
+            if (@filemtime($f) < $cutoff) { @unlink($f); }
+        }
+    }
+
+    private function _new_import_token(): string
+    {
+        return bin2hex(random_bytes(16));
+    }
+
+    /** Sanitize a token from user input (hex only) to keep paths safe. */
+    private function _safe_import_token($token): string
+    {
+        $token = (string) $token;
+        return preg_match('/^[a-f0-9]{16,64}$/', $token) ? $token : '';
+    }
+
+    private function _import_tmp_path(string $token): string
+    {
+        // Extension is unknown at confirm time; resolve by globbing the token.
+        foreach (['xlsx', 'csv'] as $ext) {
+            $p = $this->_import_tmp_dir() . $token . '.' . $ext;
+            if (is_file($p)) return $p;
+        }
+        return $this->_import_tmp_dir() . $token . '.xlsx';
+    }
+
+    private function _park_import_file(string $src, string $token, string $ext): bool
+    {
+        $dest = $this->_import_tmp_dir() . $token . '.' . ($ext === 'csv' ? 'csv' : 'xlsx');
+        // move_uploaded_file isn't reliable here (already-read tmp); copy instead.
+        return @copy($src, $dest);
     }
 
     // ── Download pre-filled Excel template for bulk import ─────────────────
@@ -835,6 +1229,7 @@ class Staff extends MY_Controller
             'Bank Name', 'Account Holder Name', 'Account Number', 'IFSC Code',
             'Emergency Contact Name', 'Emergency Contact Number',
             'Street', 'City', 'State', 'Postal Code',
+            'Teaching Subjects',
         ];
 
         // Write headers (row 1) with styling
@@ -864,6 +1259,7 @@ class Staff extends MY_Controller
             'State Bank of India', 'Rajesh Kumar', '12345678901234', 'SBIN0001234',
             'Suresh Kumar', '9876543211',
             '123 Main Street', 'New Delhi', 'Delhi', '110001',
+            'Mathematics, Science',
         ];
 
         $colLetter = 'A';
@@ -934,6 +1330,7 @@ class Staff extends MY_Controller
             [''],
             ['OPTIONAL COLUMNS (leave blank if not available):'],
             ['  - Blood Group'],
+            ['  - Teaching Subjects: for teachers, comma-separated (e.g. "Mathematics, Science")'],
             ['  - Qualification, Experience, University, Year Of Passing'],
             ['  - Allowances (defaults to 0)'],
             ['  - Bank Name, Account Holder Name, Account Number, IFSC Code'],
@@ -948,7 +1345,10 @@ class Staff extends MY_Controller
             ['  - Row 2 on "Staff Import" sheet is a SAMPLE row — delete or overwrite it'],
             ['  - Staff ID is auto-generated (STA0001, STA0002, etc.)'],
             ['  - Photo & documents can be uploaded later via Edit Staff'],
-            ['  - Do NOT change or reorder the column headers'],
+            ['  - Columns may be renamed/reordered — the importer auto-detects common'],
+            ['    header names (e.g. "Mobile" = Phone Number) and shows a preview to confirm'],
+            ['  - Upload shows a PREVIEW first: valid rows vs rows needing attention,'],
+            ['    so nothing is saved until you confirm'],
             ['  - Gender dropdown: Male / Female / Other'],
             ['  - Employment Type dropdown: Full-time / Part-time / Contract / Temporary'],
         ];
@@ -1066,6 +1466,17 @@ class Staff extends MY_Controller
                 $normalizedPostData[str_replace('%20', ' ', urldecode($key))] = $value;
             }
 
+            // Creating one staff fans out into a long chain of sequential
+            // network calls: up to 2 Storage uploads per image (file +
+            // thumbnail), the staff doc, leave-balance doc, phone index,
+            // schools counter, salary sync, and 2 Firebase Auth calls. On a
+            // slow link or a large Aadhar file this easily exceeds PHP's
+            // default 30s max_execution_time, which fatal-kills the request
+            // (HTTP 500) AFTER the staff doc is already written — the user
+            // sees an error but the record was half-saved. Give the handler
+            // headroom so the full chain completes. Matches Timetable_service.
+            @set_time_limit(180);
+
             $staffName   = $normalizedPostData['Name']         ?? '';
             $phoneNumber = $normalizedPostData['phone_number']  ?? '';
             $emailAddr   = $normalizedPostData['email']         ?? '';
@@ -1107,6 +1518,25 @@ class Staff extends MY_Controller
                 // Non-fatal — continue; race is still possible but rare.
             }
 
+            // Date formatting — validated BEFORE allocating the STA id.
+            // A bad date is pure POST-data validation and must NOT burn a
+            // staff number: if we claimed first, json_error()'s exit would
+            // leave the claim doc + advanced pointer behind and the next
+            // staff would skip this id (the STA0009-skipped bug).
+            $formattedData = [];
+            foreach (['dob' => 'DOB', 'date_of_joining' => 'dateOfJoining'] as $field => $outputKey) {
+                $dateValue = $normalizedPostData[$field] ?? '';
+                if (!empty($dateValue)) {
+                    $dateObj = DateTime::createFromFormat('Y-m-d', $dateValue);
+                    if (!$dateObj) {
+                        $this->json_error("Invalid {$field} format.", 400);
+                    }
+                    $formattedData[$outputKey] = $dateObj->format('d-m-Y');
+                } else {
+                    $formattedData[$outputKey] = '';
+                }
+            }
+
             // Phase 4.3 — timestamp fallback REMOVED (race-unsafe: two
             // concurrent imports landing on the same time() value would
             // collide). If safeGenerate exhausts every retry + self-
@@ -1121,20 +1551,19 @@ class Staff extends MY_Controller
                 return;
             }
 
-            // Date formatting
-            $formattedData = [];
-            foreach (['dob' => 'DOB', 'date_of_joining' => 'dateOfJoining'] as $field => $outputKey) {
-                $dateValue = $normalizedPostData[$field] ?? '';
-                if (!empty($dateValue)) {
-                    $dateObj = DateTime::createFromFormat('Y-m-d', $dateValue);
-                    if (!$dateObj) {
-                        $this->json_error("Invalid {$field} format.", 400);
-                    }
-                    $formattedData[$outputKey] = $dateObj->format('d-m-Y');
-                } else {
-                    $formattedData[$outputKey] = '';
+            // From here on $staffId is CLAIMED. Every early exit before the
+            // Firestore write below MUST release the claim, or the number is
+            // burnt (claim doc persists + pointer stays advanced) and the
+            // next staff skips it. Use $failAndRelease() instead of
+            // json_error() for any failure between here and the write.
+            $staVal = (int) substr($staffId, 3);
+            $failAndRelease = function (string $msg, int $code) use ($staffId, $staVal) {
+                if ($staVal > 0) {
+                    $this->id_generator->releaseClaim('STA', $staVal);
+                    log_message('error', "ID_GEN_INTEGRATION staff_single_early_exit id={$staffId} released=1 code={$code} reason=" . $msg);
                 }
-            }
+                $this->json_error($msg, $code);
+            };
 
             // ── Doc structure: Photo + Aadhar Card (mirrors student pattern) ──
             $docData = [
@@ -1150,12 +1579,12 @@ class Staff extends MY_Controller
                 // Bug 6 fix: mime_content_type only ever returns 'image/jpeg' for JPG;
                 // 'image/jpg' was dead. Keep just the canonical type.
                 if ($realMime !== 'image/jpeg') {
-                    $this->json_error('Only JPG/JPEG files are allowed for photos.', 400);
+                    $failAndRelease('Only JPG/JPEG files are allowed for photos.', 400);
                 }
 
                 $result = $this->uploadStaffFile($photo, $school_name, $staffId, 'Photo');
                 if (!$result) {
-                    $this->json_error('Photo upload failed.', 500);
+                    $failAndRelease('Photo upload failed.', 500);
                 }
                 $docData['Photo'] = $result;
             }
@@ -1166,12 +1595,12 @@ class Staff extends MY_Controller
                 $realMime = mime_content_type($aadhar['tmp_name']);
 
                 if (!in_array($realMime, ['image/jpeg', 'image/png', 'application/pdf'], true)) {
-                    $this->json_error('Only PDF, JPG, JPEG, or PNG files are allowed for Aadhar.', 400);
+                    $failAndRelease('Only PDF, JPG, JPEG, or PNG files are allowed for Aadhar.', 400);
                 }
 
                 $result = $this->uploadStaffFile($aadhar, $school_name, $staffId, 'Aadhar Card');
                 if (!$result) {
-                    $this->json_error('Aadhar upload failed.', 500);
+                    $failAndRelease('Aadhar upload failed.', 500);
                 }
                 $docData['Aadhar Card'] = $result;
             }
@@ -1829,37 +2258,157 @@ class Staff extends MY_Controller
         ]);
     }
 
-    public function delete_staff($id)
+    /**
+     * POST /staff/delete_staff/{userId}  (AJAX, JSON)
+     *
+     * Hard-deletes a staff member and their LIVE links across the system:
+     *   - staff doc (master record)
+     *   - indexPhones reverse-index
+     *   - userDevices (FCM / push)
+     *   - subjectAssignments (class/subject wiring)
+     *   - Firebase Auth account
+     *
+     * Historical records — attendance, salarySlips, marks, leaveApplications,
+     * appraisals — are deliberately KEPT so audit / payroll history survives.
+     *
+     * The cascade runs FIRST (best-effort, each step independently caught),
+     * then the master staff doc is removed, then the Auth account. The staff
+     * doc is the source of truth: if its removal fails we abort and report.
+     */
+    public function delete_staff($id = null)
     {
         $this->_require_role(self::MANAGE_ROLES);
+        header('Content-Type: application/json');
 
+        if ($this->input->method() !== 'post') {
+            $this->json_error('POST only.', 405);
+            return;
+        }
         if (!$id || !preg_match('/^[A-Za-z0-9_]+$/', $id)) {
-            redirect(base_url() . 'staff/all_staff/');
+            $this->json_error('Invalid user id.', 400);
             return;
         }
 
-        // Read staff from Firestore
+        // Read the staff doc before we touch anything (need phone + name).
         $staff = $this->fs->getEntity('staff', $id);
-
-        if ($staff && isset($staff['Phone Number'])) {
-            $phoneNumber = $staff['Phone Number'];
-            // Remove phone index
-            $this->fs->remove('indexPhones', $this->fs->docId($phoneNumber));
+        if (empty($staff)) {
+            $this->json_error('Staff not found.', 404);
+            return;
         }
+        $name = $staff['Name'] ?? $staff['name'] ?? $id;
 
-        // Delete staff document from Firestore
-        $this->fs->removeEntity('staff', $id);
+        // ── Cascade: remove the teacher's LIVE links everywhere ──
+        $cascade = $this->_delete_live_links($id, $staff);
 
-        // RTDB mirror removed per no-RTDB policy. Firestore `staff` is the sole source.
-
-        // Delete Firebase Auth account (best-effort)
+        // ── Remove the master staff doc (source of truth) ──
         try {
-            $this->firebase->deleteFirebaseUser($id);
-        } catch (Exception $e) {
-            log_message('error', "Staff delete Firebase Auth failed for {$id}: " . $e->getMessage());
+            $ok = $this->fs->removeEntity('staff', $id);
+            if (!$ok) {
+                $this->json_error('Failed to delete staff record.', 500);
+                return;
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "delete_staff removeEntity failed for {$id}: " . $e->getMessage());
+            $this->json_error('Failed to delete staff record: ' . $e->getMessage(), 500);
+            return;
         }
 
-        redirect(base_url() . 'staff/all_staff/');
+        // ── Delete Firebase Auth account (best-effort) ──
+        $authDeleted = false;
+        try {
+            $authDeleted = (bool) $this->firebase->deleteFirebaseUser($id);
+        } catch (\Throwable $e) {
+            log_message('error', "delete_staff Firebase Auth failed for {$id}: " . $e->getMessage());
+        }
+
+        log_message('info', "STAFF_DELETE user={$id} name={$name} by=" . ($this->admin_id ?? '')
+            . " cascade=" . json_encode($cascade)
+            . " authDeleted=" . ($authDeleted ? '1' : '0'));
+
+        $this->json_success([
+            'message'     => $name . ' deleted, along with their live links.',
+            'cascade'     => $cascade,
+            'authDeleted' => $authDeleted,
+        ]);
+    }
+
+    /**
+     * Hard-delete a staff member's LIVE links across Firestore.
+     *
+     * "Live links" keep a teacher wired into day-to-day operations: their
+     * phone reverse-index, push-notification devices, and subject/class
+     * assignments. Historical records (attendance, salarySlips, marks,
+     * leaveApplications, appraisals) are deliberately left untouched so
+     * audit / payroll history survives the delete.
+     *
+     * Every step is independently try/caught — a failure in one collection
+     * is logged and counted but never aborts the rest of the cascade.
+     *
+     * @return array per-collection deletion counts + any errors
+     */
+    private function _delete_live_links(string $userId, array $staff): array
+    {
+        $stats = [
+            'indexPhones'        => 0,
+            'userDevices'        => 0,
+            'subjectAssignments' => 0,
+            'errors'             => [],
+        ];
+
+        // 1) Phone reverse-index (doc id is school-scoped: {schoolId}_{phone})
+        try {
+            $phone = trim((string) ($staff['Phone Number'] ?? $staff['phone'] ?? ''));
+            if ($phone !== '' && $this->fs->remove('indexPhones', $this->fs->docId($phone))) {
+                $stats['indexPhones'] = 1;
+            }
+        } catch (\Throwable $e) {
+            $stats['errors'][] = 'indexPhones: ' . $e->getMessage();
+            log_message('error', "delete cascade indexPhones failed for {$userId}: " . $e->getMessage());
+        }
+
+        // 2) userDevices (FCM) — one doc per device, NOT school-scoped.
+        try {
+            $devices = $this->fs->where('userDevices', [['userId', '==', $userId]]);
+            if (is_array($devices)) {
+                foreach ($devices as $entry) {
+                    $docId = $entry['id'] ?? '';
+                    if ($docId === '') continue;
+                    try {
+                        if ($this->fs->remove('userDevices', $docId)) $stats['userDevices']++;
+                    } catch (\Throwable $e) {
+                        log_message('error', "delete cascade userDevices failed docId={$docId}: " . $e->getMessage());
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            $stats['errors'][] = 'userDevices: ' . $e->getMessage();
+            log_message('error', "delete cascade userDevices query failed for {$userId}: " . $e->getMessage());
+        }
+
+        // 3) subjectAssignments — teacher↔class/subject wiring (school-scoped).
+        //    Field is teacherId on newer rows, staffId on older ones; cover both.
+        try {
+            $seen = [];
+            foreach (['teacherId', 'staffId'] as $field) {
+                $rows = $this->fs->schoolWhere('subjectAssignments', [[$field, '==', $userId]]);
+                if (!is_array($rows)) continue;
+                foreach ($rows as $row) {
+                    $docId = $row['id'] ?? '';
+                    if ($docId === '' || isset($seen[$docId])) continue;
+                    $seen[$docId] = true;
+                    try {
+                        if ($this->fs->remove('subjectAssignments', $docId)) $stats['subjectAssignments']++;
+                    } catch (\Throwable $e) {
+                        log_message('error', "delete cascade subjectAssignments failed docId={$docId}: " . $e->getMessage());
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            $stats['errors'][] = 'subjectAssignments: ' . $e->getMessage();
+            log_message('error', "delete cascade subjectAssignments query failed for {$userId}: " . $e->getMessage());
+        }
+
+        return $stats;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2032,14 +2581,16 @@ class Staff extends MY_Controller
             unset($formattedData['staff_roles_raw'], $postData['staff_roles'], $postData['primary_role']);
 
             // ── Teaching subjects + assigned classes (Phase 1) ───────────
-            $teachingSubjectsRaw = trim($postData['teaching_subjects'] ?? '');
-            if ($teachingSubjectsRaw !== '') {
-                $formattedData['teaching_subjects'] = array_values(
-                    array_filter(array_map('trim', explode(',', $teachingSubjectsRaw)))
-                );
-            } else {
-                // Empty submission = clear the field (e.g., role changed from Teacher to Accountant)
-                $formattedData['teaching_subjects'] = [];
+            // Only touch teaching_subjects when the form actually submitted the
+            // field. A stale/cached form (or any edit page that doesn't render
+            // the subjects picker) would otherwise silently WIPE a teacher's
+            // saved subjects on every save. When the key IS present, an empty
+            // value still clears it on purpose (e.g. role changed away from Teacher).
+            if (array_key_exists('teaching_subjects', $postData)) {
+                $teachingSubjectsRaw = trim((string) $postData['teaching_subjects']);
+                $formattedData['teaching_subjects'] = $teachingSubjectsRaw !== ''
+                    ? array_values(array_filter(array_map('trim', explode(',', $teachingSubjectsRaw))))
+                    : [];
             }
             unset($postData['teaching_subjects'], $formattedData['teaching_subjects_raw']);
 
@@ -2088,25 +2639,45 @@ class Staff extends MY_Controller
             // RTDB mirror removed per no-RTDB policy. Firestore `staff` is the sole source.
 
             if ($updateRes) {
-                // Phone number changed — update phone index
+                // Phone number changed — update phone index, but DON'T hijack a
+                // number another account already owns (mirrors new_staff). If a
+                // different staff/parent/student owns it, skip the index swap and
+                // warn — the staff doc keeps the new number, but OTP for it stays
+                // with the original owner.
+                $phoneWarning = null;
                 if (!empty($formattedData['Phone Number']) && $formattedData['Phone Number'] !== $oldPhoneNumber) {
-                    if ($oldPhoneNumber) {
-                        $this->fs->remove('indexPhones', $this->fs->docId($oldPhoneNumber));
-                    }
                     $newPhone = $formattedData['Phone Number'];
-                    $this->fs->set('indexPhones', $this->fs->docId($newPhone), [
-                        'schoolId' => $this->school_id,
-                        'phone'    => $newPhone,
-                        'userId'   => $user_id,
-                        'type'     => 'staff',
-                    ]);
+                    $blocked  = false;
+                    try {
+                        $pre = $this->fs->get('indexPhones', $this->fs->docId($newPhone));
+                        if (!empty($pre['userId']) && $pre['userId'] !== $user_id) {
+                            $blocked = true;
+                            $preType = strtolower((string)($pre['type'] ?? 'account'));
+                            $phoneWarning = 'Phone is already registered to ' . $preType . ' ' . $pre['userId']
+                                . '. The record was saved, but OTP login on this number still resolves to that account.';
+                            log_message('error', "edit_staff: phone {$newPhone} owned by {$preType} {$pre['userId']} — index NOT changed for {$user_id}");
+                        }
+                    } catch (\Exception $e) { /* non-fatal */ }
+
+                    if (!$blocked) {
+                        if ($oldPhoneNumber) {
+                            $this->fs->remove('indexPhones', $this->fs->docId($oldPhoneNumber));
+                        }
+                        $this->fs->set('indexPhones', $this->fs->docId($newPhone), [
+                            'schoolId' => $this->school_id,
+                            'phone'    => $newPhone,
+                            'userId'   => $user_id,
+                            'type'     => 'staff',
+                        ]);
+                    }
                 }
 
-                // Sync salary structure if salary fields were submitted
-                $editBasic = (float) ($postData['basicSalary'] ?? $postData['Basicsalary'] ?? 0);
-                $editAllow = (float) ($postData['allowances']  ?? $postData['Allowances']  ?? 0);
-                if ($editBasic > 0) {
-                    $this->_sync_salary_structure($user_id, $editBasic, $editAllow);
+                // Persist the submitted salary ALWAYS (was gated on basic>0, so a
+                // zero-salary staff could never have salary/allowance edits saved).
+                if (array_key_exists('basicSalary', $postData) || array_key_exists('Basicsalary', $postData)
+                    || array_key_exists('allowances', $postData) || array_key_exists('Allowances', $postData)) {
+                    $editBasic = (float) ($postData['basicSalary'] ?? $postData['Basicsalary'] ?? 0);
+                    $editAllow = (float) ($postData['allowances']  ?? $postData['Allowances']  ?? 0);
                     $this->fs->updateEntity('staff', $user_id, [
                         'salaryDetails' => [
                             'basicSalary' => $editBasic,
@@ -2114,6 +2685,9 @@ class Staff extends MY_Controller
                             'Net Salary'  => $editBasic + $editAllow,
                         ],
                     ]);
+                    if ($editBasic > 0) {
+                        $this->_sync_salary_structure($user_id, $editBasic, $editAllow);
+                    }
                 }
 
                 // ── Sync updated profile to Firebase Auth (best-effort) ──
@@ -2125,11 +2699,14 @@ class Staff extends MY_Controller
                     if (!empty($authUpdate)) {
                         $this->firebase->updateFirebaseUser($user_id, $authUpdate);
                     }
-                    // Use the actual primary-role label, not a hardcoded "Teacher".
-                    // Falls back to the existing Position if roles weren't submitted in this edit.
-                    $authRole = $formattedData['Position']
-                        ?? $existingData['Position']
-                        ?? 'Teacher';
+                    // RBAC claim from the CANONICAL role label (primary_role),
+                    // not the free-text Position/designation — otherwise a custom
+                    // designation ("People Lead") would become the role claim and
+                    // could cost the staff admin-panel access. Fall back to the
+                    // existing Position only when no role is set.
+                    $authRole = !empty($formattedData['primary_role'])
+                        ? $this->_role_id_to_label($formattedData['primary_role'])
+                        : ($formattedData['Position'] ?? $existingData['Position'] ?? '');
                     $this->firebase->setFirebaseClaims($user_id, [
                         'role'           => $authRole,
                         'school_id'      => $this->school_id,
@@ -2140,7 +2717,7 @@ class Staff extends MY_Controller
                     log_message('error', 'Staff: Firebase Auth sync failed on edit_staff for ' . $user_id . ': ' . $e->getMessage());
                 }
 
-                $this->json_success();
+                $this->json_success($phoneWarning ? ['warning' => $phoneWarning] : []);
             } else {
                 $this->json_error('Update failed.', 500);
             }
@@ -2323,10 +2900,14 @@ class Staff extends MY_Controller
             $this->fs->update('sections', $sectionDocId, $sectionUpdate);
         }
 
-        // Sync Firebase Auth claims (best-effort)
+        // Sync Firebase Auth claims (best-effort).
+        // Use the staff member's actual role, not a hard-coded 'Teacher' — a
+        // duty assignment must not overwrite the RBAC role of e.g. a Principal
+        // who also teaches a class.
+        $dutyRoleClaim = $staffDoc['Position'] ?? $staffDoc['role'] ?? 'Teacher';
         try {
             $this->firebase->setFirebaseClaims($teacherID, [
-                'role'           => 'Teacher',
+                'role'           => $dutyRoleClaim,
                 'school_id'      => $this->school_id,
                 'school_code'    => $this->school_code,
                 'parent_db_key'  => $this->parent_db_key,
@@ -2611,6 +3192,18 @@ class Staff extends MY_Controller
 
             if ($ok) {
                 $migrated++;
+                // Refresh the Auth role claim too, so a migrated non-teacher
+                // (Accountant, Clerk, …) stops carrying a stale 'Teacher' claim.
+                try {
+                    $this->firebase->setFirebaseClaims($sid, [
+                        'role'          => $this->_role_id_to_label($primary),
+                        'school_id'     => $this->school_id,
+                        'school_code'   => $this->school_code,
+                        'parent_db_key' => $this->parent_db_key,
+                    ]);
+                } catch (\Exception $e) {
+                    log_message('error', "migrate_staff_roles claim refresh failed for {$sid}: " . $e->getMessage());
+                }
             } else {
                 $errors++;
             }

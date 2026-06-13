@@ -32,6 +32,15 @@ $config['b2_migration_flags'] = [
     // probes (update_school_profile, write_lifecycle_state, set_admin_disabled
     // composite, update_stats_cache); zero warnings; existing structural +
     // foundation + JS data verifiers all green.
+    // TOMBSTONE (2026-06): the RTDB `System/Schools` school surface has been
+    // fully retired — every request-path controller (Superadmin_schools,
+    // Superadmin, Superadmin_plans, Superadmin_school_admins, MY_Controller,
+    // Schools) now reads/writes Firestore unconditionally; the legacy branches
+    // and `_b23*_registry_firestore_on()` guards are deleted. This flag no
+    // longer gates any runtime path (B2_registry_service::firestore_authoritative
+    // has no request-path caller). It is retained ONLY so legacy verify/job
+    // tooling (B2_cutover_verify, B2_foundation_verify, B2_lifecycle_job) does
+    // not fatal on a missing key. Safe to delete once that tooling is retired.
     'b2.registry_firestore'      => true,
     'b2.billing_firestore'       => false, // DEPRECATED: billing is part of the single-flag B2.3.2 co-cutover; this flag is retained as scaffolding until B2.8 cleanup but is not read.
     'b2.registry_read_firestore' => false, // DEPRECATED: rejected (read-fallback architecture). Retained as scaffolding until B2.8 cleanup but is not read.

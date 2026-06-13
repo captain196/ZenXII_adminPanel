@@ -80,7 +80,7 @@
                 <i class="fa fa-users"></i>
             </div>
             <div>
-                <div class="nsa-stat-num"><?= $totalCount ?></div>
+                <div class="nsa-stat-num" id="statTotal"><?= $totalCount ?></div>
                 <div class="nsa-stat-lbl">Total Staff</div>
             </div>
         </div>
@@ -89,7 +89,7 @@
                 <i class="fa fa-graduation-cap"></i>
             </div>
             <div>
-                <div class="nsa-stat-num"><?= $teachingCount ?></div>
+                <div class="nsa-stat-num" id="statTeaching"><?= $teachingCount ?></div>
                 <div class="nsa-stat-lbl">Teaching</div>
             </div>
         </div>
@@ -98,7 +98,7 @@
                 <i class="fa fa-briefcase"></i>
             </div>
             <div>
-                <div class="nsa-stat-num"><?= $nonTeachingCount ?></div>
+                <div class="nsa-stat-num" id="statNonTeaching"><?= $nonTeachingCount ?></div>
                 <div class="nsa-stat-lbl">Non-Teaching</div>
             </div>
         </div>
@@ -107,7 +107,7 @@
                 <i class="fa fa-building-o"></i>
             </div>
             <div>
-                <div class="nsa-stat-num"><?= count($deptSet) ?></div>
+                <div class="nsa-stat-num" id="statDepartments"><?= count($deptSet) ?></div>
                 <div class="nsa-stat-lbl">Departments</div>
             </div>
         </div>
@@ -122,7 +122,7 @@
                 <i class="fa fa-search nsa-search-icon"></i>
                 <input type="text" id="staffSearch"
                        class="nsa-search-input"
-                       placeholder="Search by name, ID, position, phone…">
+                       placeholder="Search by ID, name, phone, department…">
                 <button class="nsa-search-clear" id="clearSearch" title="Clear" style="display:none;">
                     <i class="fa fa-times"></i>
                 </button>
@@ -159,24 +159,21 @@
             <table class="nsa-table" id="staffTable">
                 <thead>
                     <tr>
-                        <th class="nsa-th-check">
-                            <input type="checkbox" id="selectAllStaff" class="nsa-checkbox">
-                        </th>
                         <th class="nsa-th-sno">#</th>
                         <th>Staff</th>
-                        <th class="nsa-sortable" data-col="3">Designation</th>
-                        <th class="nsa-sortable" data-col="4">Department</th>
+                        <th class="nsa-sortable" data-col="2">Designation</th>
+                        <th class="nsa-sortable" data-col="3">Department</th>
                         <th>Phone</th>
                         <th>Subjects</th>
                         <th>Status</th>
-                        <th class="nsa-sortable" data-col="8">Joined</th>
+                        <th class="nsa-sortable" data-col="7">Joined</th>
                         <th class="nsa-th-action">Action</th>
                     </tr>
                 </thead>
                 <tbody id="staffTbody">
                     <?php if (empty($staff)): ?>
                     <tr>
-                        <td colspan="10" class="nsa-empty-row"><!-- 10 cols: check, sno, staff, designation, dept, phone, subjects, status, joined, action -->
+                        <td colspan="9" class="nsa-empty-row"><!-- 9 cols: sno, staff, designation, dept, phone, subjects, status, joined, action -->
                             <i class="fa fa-users-slash"></i>
                             <p>No staff records found.</p>
                             <a href="<?= base_url('staff/new_staff') ?>" class="nsa-btn nsa-btn-primary nsa-btn-sm">
@@ -223,18 +220,26 @@
                                 elseif ($cat === 'Non-Teaching') { $avatarClass = 'nsa-badge-green'; break; }
                             }
                         }
+
+                        // Teaching flag — same rule as the stat strip above, emitted per
+                        // row so the cards can be recomputed live after a delete.
+                        $rowTeaching = false;
+                        if (!empty($sRolesCheck) && is_array($sRolesCheck)) {
+                            foreach ($sRolesCheck as $_rid) {
+                                if (($staff_role_defs[$_rid]['category'] ?? '') === 'Teaching') { $rowTeaching = true; break; }
+                            }
+                        } else {
+                            $rowTeaching = (stripos($position, 'teacher') !== false || stripos($position, 'lecturer') !== false);
+                        }
                     ?>
                     <tr class="nsa-staff-row"
                         data-name="<?= strtolower($name) ?>"
                         data-id="<?= strtolower($uid) ?>"
                         data-position="<?= strtolower($position) ?>"
                         data-dept="<?= strtolower($dept) ?>"
+                        data-teaching="<?= $rowTeaching ? '1' : '0' ?>"
                         data-phone="<?= $phone ?>"
                         data-email="<?= strtolower($email) ?>">
-
-                        <td class="nsa-td-check">
-                            <input type="checkbox" class="row-checkbox-staff nsa-checkbox">
-                        </td>
 
                         <td class="nsa-td-sno"><?= $i++ ?></td>
 
@@ -313,12 +318,20 @@
 
                         <td class="nsa-td-action">
                             <?php
+                              $adminRole = $this->session->userdata('admin_role');
                               $canResetPw = in_array(
-                                $this->session->userdata('admin_role'),
+                                $adminRole,
                                 ['Super Admin', 'School Super Admin', 'Admin', 'Principal'],
                                 true
                               );
+                              // Delete is gated to the same roles the controller allows (MANAGE_ROLES).
+                              $canDelete = in_array(
+                                $adminRole,
+                                ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'HR Manager'],
+                                true
+                              );
                             ?>
+                            <?php $sName = htmlspecialchars($s['Name'] ?? $s['name'] ?? $userId); ?>
                             <div class="nsa-action-group">
                                 <a href="<?= base_url('staff/teacher_profile/' . $userId) ?>"
                                    class="nsa-action-btn nsa-action-view" title="View Profile">
@@ -328,37 +341,44 @@
                                    class="nsa-action-btn nsa-action-edit" title="Edit Staff">
                                     <i class="fa fa-pencil"></i>
                                 </a>
-                                <?php if ($canResetPw): ?>
-                                <button type="button"
-                                        class="nsa-action-btn js-reset-pw-btn"
-                                        data-user-id="<?= htmlspecialchars($userId) ?>"
-                                        data-user-name="<?= htmlspecialchars($s['Name'] ?? $s['name'] ?? $userId) ?>"
-                                        title="Reset Password"
-                                        style="background:rgba(56,189,248,.08);color:#0284c7;border:none;cursor:pointer">
-                                    <i class="fa fa-key"></i>
-                                </button>
-                                <?php endif; ?>
-                                <?php if ($status === 'Active'): ?>
-                                <button type="button"
-                                        class="nsa-action-btn staff-status-toggle"
-                                        data-user-id="<?= htmlspecialchars($userId) ?>"
-                                        data-staff-name="<?= htmlspecialchars($s['Name'] ?? $s['name'] ?? $userId) ?>"
-                                        data-target-status="Inactive"
-                                        title="Deactivate Staff"
-                                        style="background:rgba(220,38,38,.08);color:#dc2626;border:none;cursor:pointer">
-                                    <i class="fa fa-ban"></i>
-                                </button>
-                                <?php else: ?>
-                                <button type="button"
-                                        class="nsa-action-btn staff-status-toggle"
-                                        data-user-id="<?= htmlspecialchars($userId) ?>"
-                                        data-staff-name="<?= htmlspecialchars($s['Name'] ?? $s['name'] ?? $userId) ?>"
-                                        data-target-status="Active"
-                                        title="Reactivate Staff"
-                                        style="background:rgba(22,163,74,.08);color:#16a34a;border:none;cursor:pointer">
-                                    <i class="fa fa-check-circle"></i>
-                                </button>
-                                <?php endif; ?>
+                                <div class="nsa-menu-wrap">
+                                    <button type="button" class="nsa-action-btn nsa-menu-trigger"
+                                            title="More actions" aria-haspopup="true" aria-expanded="false">
+                                        <i class="fa fa-ellipsis-v"></i>
+                                    </button>
+                                    <div class="nsa-menu" role="menu" hidden>
+                                        <?php if ($canResetPw): ?>
+                                        <button type="button" class="nsa-menu-item js-reset-pw-btn"
+                                                data-user-id="<?= htmlspecialchars($userId) ?>"
+                                                data-user-name="<?= $sName ?>">
+                                            <i class="fa fa-key"></i> Reset Password
+                                        </button>
+                                        <?php endif; ?>
+                                        <?php if ($status === 'Active'): ?>
+                                        <button type="button" class="nsa-menu-item staff-status-toggle"
+                                                data-user-id="<?= htmlspecialchars($userId) ?>"
+                                                data-staff-name="<?= $sName ?>"
+                                                data-target-status="Inactive">
+                                            <i class="fa fa-ban"></i> Deactivate
+                                        </button>
+                                        <?php else: ?>
+                                        <button type="button" class="nsa-menu-item staff-status-toggle"
+                                                data-user-id="<?= htmlspecialchars($userId) ?>"
+                                                data-staff-name="<?= $sName ?>"
+                                                data-target-status="Active">
+                                            <i class="fa fa-check-circle"></i> Reactivate
+                                        </button>
+                                        <?php endif; ?>
+                                        <?php if ($canDelete): ?>
+                                        <div class="nsa-menu-sep"></div>
+                                        <button type="button" class="nsa-menu-item nsa-menu-danger js-delete-staff-btn"
+                                                data-user-id="<?= htmlspecialchars($userId) ?>"
+                                                data-user-name="<?= $sName ?>">
+                                            <i class="fa fa-trash"></i> Delete Staff
+                                        </button>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
                             </div>
                         </td>
                     </tr>
@@ -371,12 +391,6 @@
         <!-- Table footer -->
         <div class="nsa-table-footer">
             <span id="rowCountText" class="nsa-row-count"></span>
-            <div class="nsa-selection-actions" id="selectionActions" style="display:none;">
-                <span id="selectedCount" class="nsa-selected-count"></span>
-                <button class="nsa-btn nsa-btn-ghost nsa-btn-sm" onclick="clearSelection()">
-                    <i class="fa fa-times"></i> Deselect All
-                </button>
-            </div>
         </div>
 
     </div><!-- /.nsa-card -->
@@ -463,14 +477,10 @@
             }
             if (targetStatus === 'Active') {
                 btn.setAttribute('data-target-status', 'Inactive');
-                btn.setAttribute('title', 'Deactivate Staff');
-                btn.setAttribute('style', DEACT_BTN_STYLE);
-                btn.innerHTML = '<i class="fa fa-ban"></i>';
+                btn.innerHTML = '<i class="fa fa-ban"></i> Deactivate';
             } else {
                 btn.setAttribute('data-target-status', 'Active');
-                btn.setAttribute('title', 'Reactivate Staff');
-                btn.setAttribute('style', REACT_BTN_STYLE);
-                btn.innerHTML = '<i class="fa fa-check-circle"></i>';
+                btn.innerHTML = '<i class="fa fa-check-circle"></i> Reactivate';
             }
             btn.disabled = false;
         })
@@ -480,6 +490,129 @@
             btn.innerHTML = originalHtml;
         });
     });
+})();
+
+/* ── Delete staff (hard delete + live-link cascade) ──
+ * Removes the staff doc, phone index, push devices, subject assignments and
+ * the Firebase Auth account. Historical records (attendance, salary, marks,
+ * leave, appraisals) are intentionally kept server-side. Vanilla JS — no
+ * jQuery dependency.
+ */
+(function() {
+    var DELETE_URL = '<?= base_url("staff/delete_staff/") ?>';
+    var CSRF_NAME  = '<?= $this->security->get_csrf_token_name() ?>';
+    var CSRF_VALUE = '<?= $this->security->get_csrf_hash() ?>';
+
+    document.addEventListener('click', function(e) {
+        var btn = e.target.closest && e.target.closest('.js-delete-staff-btn');
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        var userId   = btn.getAttribute('data-user-id');
+        var userName = btn.getAttribute('data-user-name') || userId;
+
+        var msg = 'Permanently delete ' + userName + '?\n\n'
+                + 'This removes their staff record, login account, push devices and '
+                + 'all class/subject assignments.\n\n'
+                + 'Historical records (attendance, salary slips, marks, leave, appraisals) '
+                + 'are kept.\n\nThis cannot be undone.';
+        if (!window.confirm(msg)) return;
+
+        btn.disabled = true;
+        var originalHtml = btn.innerHTML;
+        btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i>';
+        // Shared ZenXii loading animation (same as school_config).
+        if (window.ZXLoader) ZXLoader.show('Deleting ' + userName + '…');
+
+        var body = new URLSearchParams();
+        body.append(CSRF_NAME, CSRF_VALUE);
+
+        fetch(DELETE_URL + encodeURIComponent(userId), {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+            body:    body.toString(),
+            credentials: 'same-origin'
+        })
+        .then(function(r) { return r.json().catch(function() { return { status: 'error', message: 'Server returned non-JSON.' }; }); })
+        .then(function(res) {
+            if (window.ZXLoader) ZXLoader.hide(true);
+            if (!res || res.status !== 'success') {
+                alert((res && res.message) ? res.message : 'Delete failed.');
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+                return;
+            }
+            // Live update — collapse just this row out, then refresh the
+            // counters/stats in place. No full-page reload.
+            var row = btn.closest('tr');
+            if (row) {
+                row.style.transition = 'opacity .18s ease';
+                row.style.opacity = '0';
+                setTimeout(function() {
+                    if (row.parentNode) row.parentNode.removeChild(row);
+                    if (window.refreshStaffTable) window.refreshStaffTable();
+                }, 180);
+            } else if (window.refreshStaffTable) {
+                window.refreshStaffTable();
+            }
+        })
+        .catch(function(err) {
+            if (window.ZXLoader) ZXLoader.hide(true);
+            alert('Network error: ' + (err && err.message ? err.message : 'unknown'));
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        });
+    });
+})();
+
+/* ── Row action menu (⋮) — open/position/close ──
+ * Menu is position:fixed and coordinates are computed from the trigger so it
+ * is never clipped by the table's overflow. One menu open at a time; closes
+ * on outside-click, item-click, scroll, resize or Escape.
+ */
+(function() {
+    function closeAll(except) {
+        document.querySelectorAll('.nsa-menu').forEach(function(m) {
+            if (m === except || m.hidden) return;
+            m.hidden = true;
+            var wrap = m.closest('.nsa-menu-wrap');
+            var t = wrap && wrap.querySelector('.nsa-menu-trigger');
+            if (t) t.setAttribute('aria-expanded', 'false');
+        });
+    }
+    function place(trigger, menu) {
+        menu.hidden = false;                 // unhide to measure
+        var r  = trigger.getBoundingClientRect();
+        var mw = menu.offsetWidth, mh = menu.offsetHeight;
+        var left = Math.max(8, r.right - mw);
+        var top  = r.bottom + 6;
+        if (top + mh > window.innerHeight - 8) {   // flip up if no room below
+            top = Math.max(8, r.top - mh - 6);
+        }
+        menu.style.left = left + 'px';
+        menu.style.top  = top + 'px';
+    }
+    document.addEventListener('click', function(e) {
+        var trigger = e.target.closest && e.target.closest('.nsa-menu-trigger');
+        if (trigger) {
+            e.preventDefault(); e.stopPropagation();
+            var wrap = trigger.closest('.nsa-menu-wrap');
+            var menu = wrap && wrap.querySelector('.nsa-menu');
+            if (!menu) return;
+            var wasOpen = !menu.hidden;
+            closeAll();
+            if (wasOpen) { menu.hidden = true; trigger.setAttribute('aria-expanded', 'false'); }
+            else         { place(trigger, menu); trigger.setAttribute('aria-expanded', 'true'); }
+            return;
+        }
+        // Clicking a menu item runs its own handler (delegated elsewhere) — just close.
+        if (e.target.closest && e.target.closest('.nsa-menu-item')) { closeAll(); return; }
+        closeAll();
+    });
+    window.addEventListener('scroll', function() { closeAll(); }, true);
+    window.addEventListener('resize', function() { closeAll(); });
+    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeAll(); });
 })();
 
 /* ── Migrate Staff Roles (one-shot) ── */
@@ -526,13 +659,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
         allRows.forEach(function (row, idx) {
             var d = row.dataset;
+            // Search by ID, Name, Phone and Department (position/email kept too).
+            // Guard each field so a row missing one data-* attribute can't throw
+            // and silently kill the whole filter loop.
             var matchSearch = !query ||
-                d.name.includes(query)     ||
-                d.id.includes(query)       ||
-                d.position.includes(query) ||
-                d.dept.includes(query)     ||
-                d.phone.includes(query)    ||
-                d.email.includes(query);
+                (d.id       || '').includes(query) ||
+                (d.name     || '').includes(query) ||
+                (d.phone    || '').includes(query) ||
+                (d.dept     || '').includes(query) ||
+                (d.position || '').includes(query) ||
+                (d.email    || '').includes(query);
 
             var matchDept = !dept || d.dept.includes(dept);
             var matchPos  = !pos  || d.position.includes(pos);
@@ -598,66 +734,44 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
-    /* ── Select all ── */
-    var selectAll = document.getElementById('selectAllStaff');
-    var selActions = document.getElementById('selectionActions');
-    var selCount   = document.getElementById('selectedCount');
+    /* ── Recompute the stat cards from the rows currently in the DOM ── */
+    function recomputeStats() {
+        var rows = Array.prototype.slice.call(tbody.querySelectorAll('.nsa-staff-row'));
+        var total = rows.length, teaching = 0, depts = {};
+        rows.forEach(function (r) {
+            if (r.dataset.teaching === '1') teaching++;
+            var d = (r.dataset.dept || '').trim();
+            if (d && d !== '—') depts[d] = true;
+        });
+        setStat('statTotal', total);
+        setStat('statTeaching', teaching);
+        setStat('statNonTeaching', total - teaching);
+        setStat('statDepartments', Object.keys(depts).length);
+    }
+    function setStat(id, n) { var el = document.getElementById(id); if (el) el.textContent = n; }
 
-    function updateSelectionUI() {
-        var checked = document.querySelectorAll('.row-checkbox-staff:checked').length;
-        if (selActions) selActions.style.display = checked > 0 ? 'flex' : 'none';
-        if (selCount)   selCount.textContent = checked + ' selected';
-        if (selectAll) {
-            var visible = allRows.filter(function(r) { return r.style.display !== 'none'; });
-            var visChecked = visible.filter(function(r) { return r.querySelector('.row-checkbox-staff').checked; });
-            selectAll.indeterminate = visChecked.length > 0 && visChecked.length < visible.length;
-            selectAll.checked = visible.length > 0 && visChecked.length === visible.length;
+    /* ── Live refresh after a row is removed (no page reload) ──
+     * Re-derives the working set, recomputes filters/counts/stats, and drops
+     * in the empty-state if the table is now empty. Exposed for the delete
+     * handler to call. */
+    window.refreshStaffTable = function () {
+        allRows = Array.prototype.slice.call(tbody.querySelectorAll('.nsa-staff-row'));
+        applyFilters();      // recount + re-number under the active filters
+        recomputeStats();
+        if (allRows.length === 0) {
+            tbody.innerHTML =
+                '<tr><td colspan="9" class="nsa-empty-row">' +
+                '<i class="fa fa-users-slash"></i>' +
+                '<p>No staff records found.</p>' +
+                '<a href="<?= base_url('staff/new_staff') ?>" class="nsa-btn nsa-btn-primary nsa-btn-sm">' +
+                '<i class="fa fa-plus"></i> Add First Staff</a></td></tr>';
+            if (rowCountText) rowCountText.textContent = 'Showing 0 of 0 staff';
         }
-    }
-
-    if (selectAll) {
-        selectAll.addEventListener('click', function (e) {
-            e.stopPropagation();
-            var visibleRows = allRows.filter(function(r) { return r.style.display !== 'none'; });
-            visibleRows.forEach(function (row) {
-                var cb = row.querySelector('.row-checkbox-staff');
-                if (cb) cb.checked = selectAll.checked;
-            });
-            updateSelectionUI();
-        });
-    }
-
-    document.querySelectorAll('.row-checkbox-staff').forEach(function (cb) {
-        cb.addEventListener('change', function (e) {
-            e.stopPropagation();
-            updateSelectionUI();
-        });
-    });
-
-    /* ── Row click to select ── */
-    allRows.forEach(function (row) {
-        row.addEventListener('click', function (e) {
-            if (e.target.tagName === 'A' || e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON' ||
-                e.target.closest('a') || e.target.closest('.nsa-action-group')) return;
-            var cb = row.querySelector('.row-checkbox-staff');
-            if (cb) {
-                cb.checked = !cb.checked;
-                updateSelectionUI();
-            }
-        });
-    });
+    };
 
     /* initial count */
     updateCounts(allRows.length);
 });
-
-function clearSelection() {
-    document.querySelectorAll('.row-checkbox-staff').forEach(function(cb) { cb.checked = false; });
-    var sa = document.getElementById('selectAllStaff');
-    if (sa) { sa.checked = false; sa.indeterminate = false; }
-    var sel = document.getElementById('selectionActions');
-    if (sel) sel.style.display = 'none';
-}
 
 function resetAllFilters() {
     var s = document.getElementById('staffSearch');
@@ -881,7 +995,6 @@ function resetAllFilters() {
 .nsa-table tbody tr {
     border-bottom: 1px solid var(--nsa-border);
     transition: background .1s;
-    cursor: pointer;
 }
 .nsa-table tbody tr:last-child { border-bottom: none; }
 .nsa-table tbody tr:hover { background: var(--nsa-sky); }
@@ -895,10 +1008,9 @@ function resetAllFilters() {
 }
 
 /* Column widths */
-.nsa-th-check, .nsa-td-check { width: 40px; text-align: center; }
 .nsa-th-sno,   .nsa-td-sno   { width: 50px; text-align: center; color: var(--nsa-muted); font-weight: 600; }
 .nsa-th-avatar, .nsa-td-avatar { width: 64px; text-align: center; }
-.nsa-th-action, .nsa-td-action { width: 90px; text-align: center; }
+.nsa-th-action, .nsa-td-action { width: 120px; text-align: center; }
 .nsa-td-email { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Avatar ── */
@@ -946,7 +1058,7 @@ function resetAllFilters() {
 .nsa-phone-link:hover { text-decoration: underline; }
 
 /* ── Action buttons ── */
-.nsa-action-group { display: flex; gap: 6px; justify-content: center; }
+.nsa-action-group { display: flex; gap: 6px; justify-content: center; align-items: center; flex-wrap: nowrap; }
 .nsa-action-btn {
     width: 30px; height: 30px; border-radius: 7px;
     display: inline-flex; align-items: center; justify-content: center;
@@ -958,12 +1070,40 @@ function resetAllFilters() {
 .nsa-action-view { background: #e0f2fe; color: #0369a1; }
 .nsa-action-edit { background: #fef3c7; color: #d97706; }
 
-/* ── Checkbox ── */
-.nsa-checkbox {
-    width: 15px; height: 15px;
-    accent-color: var(--nsa-teal);
-    cursor: pointer;
+/* ── Row action menu (⋮) ── */
+.nsa-menu-wrap { position: relative; display: inline-flex; }
+.nsa-menu-trigger { background: #f1f5f9; color: var(--nsa-muted); }
+.nsa-menu-trigger:hover { background: #e2e8f0; color: var(--nsa-text); }
+.nsa-menu[aria-hidden], .nsa-menu[hidden] { display: none; }
+.nsa-menu {
+    position: fixed;
+    z-index: 1000;
+    min-width: 188px;
+    padding: 6px;
+    background: var(--nsa-white);
+    border: 1px solid var(--nsa-border);
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(12,30,56,.16);
+    text-align: left;
 }
+.nsa-menu-item {
+    display: flex; align-items: center; gap: 10px;
+    width: 100%;
+    padding: 9px 11px;
+    border: none; background: none; cursor: pointer;
+    border-radius: 7px;
+    font-family: 'Instrument Sans', sans-serif;
+    font-size: 13px; font-weight: 500; color: var(--nsa-text);
+    text-align: left; white-space: nowrap;
+}
+.nsa-menu-item i { width: 16px; text-align: center; color: var(--nsa-muted); font-size: 13px; }
+.nsa-menu-item:hover { background: var(--nsa-sky); }
+.nsa-menu-item:hover i { color: var(--nsa-teal); }
+.nsa-menu-sep { height: 1px; background: var(--nsa-border); margin: 5px 4px; }
+.nsa-menu-danger { color: var(--nsa-red); }
+.nsa-menu-danger i { color: var(--nsa-red); }
+.nsa-menu-danger:hover { background: #fef2f2; }
+.nsa-menu-danger:hover i { color: var(--nsa-red); }
 
 /* ── Table footer ── */
 .nsa-table-footer {

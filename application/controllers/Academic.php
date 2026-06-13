@@ -1276,18 +1276,40 @@ class Academic extends MY_Controller
         $classes  = $this->_get_session_classes();
         $schedule = [];
 
-        // Firestore-first: check substitute assignments for this date
+        // Firestore-first: check substitute assignments for this date.
+        // A candidate is "busy" if they are already the SUBSTITUTE on any period
+        // that day. The modern substitute model stores this inside assignments[]
+        // (camelCase substituteTeacherId + periodNumber) with a single top-level
+        // `date`; older records carried top-level substitute_teacher_id/periods/
+        // date_end. Both shapes are handled below.
         $busyPeriods = [];
         try {
             $fsSubs = $this->fs->sessionWhere('substitutes', []);
             foreach ($fsSubs as $doc) {
                 $sub = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
                 if (($sub['status'] ?? '') === 'cancelled') continue;
+
                 $subDate    = $sub['date'] ?? '';
                 $subDateEnd = $sub['date_end'] ?? $subDate;
-                if ($date < $subDate || $date > $subDateEnd) continue;
-                if (($sub['substitute_teacher_id'] ?? '') === $teacherId) {
-                    $busyPeriods = array_merge($busyPeriods, is_array($sub['periods'] ?? null) ? $sub['periods'] : []);
+                if ($subDate === '' || $date < $subDate || $date > $subDateEnd) continue;
+
+                // Modern model: per-period assignments[].
+                if (is_array($sub['assignments'] ?? null)) {
+                    foreach ($sub['assignments'] as $a) {
+                        if (!is_array($a)) continue;
+                        $aSubId = $a['substituteTeacherId'] ?? $a['substitute_teacher_id'] ?? '';
+                        if ($aSubId === $teacherId && isset($a['periodNumber'])) {
+                            $busyPeriods[] = (int) $a['periodNumber'];
+                        }
+                    }
+                }
+
+                // Legacy model: top-level substitute_teacher_id + periods[].
+                $legacySubId = $sub['substitute_teacher_id'] ?? '';
+                if ($legacySubId === $teacherId && is_array($sub['periods'] ?? null)) {
+                    foreach ($sub['periods'] as $p) {
+                        $busyPeriods[] = (int) $p;
+                    }
                 }
             }
         } catch (\Exception $e) {
@@ -1856,6 +1878,37 @@ class Academic extends MY_Controller
                     $pn  = (int) ($p['periodNumber'] ?? 0);
                     if ($tid !== '' && ($p['subject'] ?? '') !== '') {
                         $busyMap[$tid][$pn] = true;
+                    }
+                }
+            }
+        } catch (\Exception $e) {}
+
+        // Also mark teachers busy from EXISTING substitute assignments on this
+        // date. A teacher already covering another absentee that period is NOT
+        // free — without this they get wrongly suggested as available a second
+        // time. Handles both the modern assignments[] model and legacy docs.
+        try {
+            $fsSubs = $this->fs->sessionWhere('substitutes', []);
+            foreach ($fsSubs as $doc) {
+                $sub = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                if (($sub['status'] ?? '') === 'cancelled') continue;
+
+                $subDate    = $sub['date'] ?? '';
+                $subDateEnd = $sub['date_end'] ?? $subDate;
+                if ($subDate === '' || $dateStr < $subDate || $dateStr > $subDateEnd) continue;
+
+                foreach (($sub['assignments'] ?? []) as $a) {
+                    if (!is_array($a)) continue;
+                    $aSubId = $a['substituteTeacherId'] ?? $a['substitute_teacher_id'] ?? '';
+                    if ($aSubId !== '' && isset($a['periodNumber'])) {
+                        $busyMap[$aSubId][(int) $a['periodNumber']] = true;
+                    }
+                }
+
+                $legacySubId = $sub['substitute_teacher_id'] ?? '';
+                if ($legacySubId !== '' && is_array($sub['periods'] ?? null)) {
+                    foreach ($sub['periods'] as $p) {
+                        $busyMap[$legacySubId][(int) $p] = true;
                     }
                 }
             }

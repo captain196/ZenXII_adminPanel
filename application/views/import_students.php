@@ -21,7 +21,7 @@
 
                 <div class="card-body">
 
-                    <form action="<?= base_url('student/import_students') ?>"
+                    <form action="<?= base_url('sis/import_preview') ?>"
                         method="post"
                         enctype="multipart/form-data">
                         <input type="hidden" name="<?= $this->security->get_csrf_token_name() ?>"
@@ -36,28 +36,26 @@
                         </div>
 
                         <div class="alert alert-info mt-3">
-                            <strong>Instructions:</strong>
+                            <strong>How it works:</strong>
                             <ul>
-                                <li>File must follow the exact header format given below.</li>
-                                <li><b>Required columns:</b> Name, Class, Section</li>
-                                <li>All other columns are optional — leave blank if not available.</li>
-                                <li>Class format: <b>8</b> or <b>Class 8</b></li>
-                                <li>Section: <b>A / B / C</b></li>
-                                <li>DOB format: <b>30-06-2018</b> or <b>2018-06-30</b></li>
+                                <li><b>Any column layout is accepted</b> — after upload you'll map your file's columns to the right fields (we pre-guess them for you), then preview before anything is saved.</li>
+                                <li><b>Required fields:</b> Name, Class, Section. Everything else is optional.</li>
+                                <li>We auto-clean common formats: dates (<b>30-06-2018</b>, <b>2018-06-30</b>, <b>04/12/2019</b>), class (<b>8</b>, <b>Class 8</b>, <b>VIII</b>, <b>Eighth</b>), section (<b>A</b> / <b>Sec A</b>), phone (drops <b>+91</b>), gender, blood group.</li>
+                                <li>Rows with problems are flagged in the preview — you can fix them inline or import just the valid rows.</li>
+                                <li><b>Safe to re-run:</b> students already in the system (matched by phone) can be skipped or have their details updated — you won't get duplicates.</li>
+                                <li>No fee chart yet? Students still import — set up <b>Fees &rarr; Chart</b> afterwards and fee demands are assigned automatically.</li>
                                 <li>Photo & Documents can be uploaded later via Edit Student.</li>
                             </ul>
-                        </div>
-
-                        <div class="alert alert-secondary mt-2">
-                            <strong>Excel Headers (in order):</strong><br>
-                            <code>Name | Class | Section | DOB | Admission Date | Gender | Blood Group | Category | Religion | Nationality | Father Name | Father Occupation | Mother Name | Mother Occupation | Guard Contact | Guard Relation | Phone Number | Email | Street | City | State | PostalCode | Pre School | Pre Class | Pre Marks</code>
+                            <a href="<?= base_url('sis/import_template') ?>" class="btn btn-sm btn-outline-primary mt-1">
+                                <i class="fa fa-download"></i> Download standard template (CSV)
+                            </a>
                         </div>
 
                         <button type="submit" class="btn btn-success" id="importBtn">
-                            <i class="fa fa-check"></i> Upload & Import
+                            <i class="fa fa-arrow-right"></i> Upload &amp; Map Columns
                         </button>
 
-                        <a href="<?= base_url('student/all_student') ?>"
+                        <a href="<?= base_url('sis/all_student') ?>"
                             class="btn btn-secondary">
                             Cancel
                         </a>

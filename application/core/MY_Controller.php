@@ -139,6 +139,20 @@ class MY_Controller extends CI_Controller
         $route_key  = $controller . '/' . $method;
         $is_public  = in_array($route_key, $this->public_routes, true);
 
+        // Read-only dashboard AJAX fan-out: the dashboard fires 4-5 of these in
+        // parallel on load. They must NOT each re-run the throttled push/sub
+        // Firestore checks below — those already ran on the full-page load, and
+        // running them N times across concurrent requests is pure double-work
+        // that serializes/duplicates on the session lock. Cheap session-based
+        // expiry enforcement still runs for these routes.
+        $skip_periodic_checks = in_array($route_key, [
+            'admin/get_dashboard_data',
+            'admin/get_dashboard_charts',
+            'admin/get_dashboard_activity',
+            'admin/get_subscription_info',
+            'notifications/get_tasks',
+        ], true);
+
         // ── [FIX-1] Authentication guard ─────────────────────────────────
         if (! $is_public) {
             if (! $this->admin_id || ! $this->school_id) {
@@ -230,7 +244,7 @@ class MY_Controller extends CI_Controller
             // the admin needing to visit any specific page. The check is
             // lightweight: one Firestore query, runs at most every 30s.
             $lastPushCheck = (int) $this->session->userdata('push_check_ts');
-            if ($this->school_id && ($now - $lastPushCheck >= 30)) {
+            if (!$skip_periodic_checks && $this->school_id && ($now - $lastPushCheck >= 30)) {
                 $this->session->set_userdata('push_check_ts', $now);
                 try {
                     $this->_auto_process_push_requests();
@@ -248,41 +262,23 @@ class MY_Controller extends CI_Controller
             // Subscription re-check every 5 minutes.
             // Previously 60s — too aggressive, causes excessive Firebase reads and
             // contributes to "unreachable" errors under rate-limit pressure.
-            if ($now - $lastCheck >= 300) {
-                // ── B2.3.2-A: flag-gated single-source status read ──────────
-                // When b2.registry_firestore=TRUE, lifecycle.state is read from
-                // Firestore schoolControl/{schoolId} only (no RTDB read, no
-                // fallback). When FALSE (current), legacy RTDB path is the sole
-                // authority. Branching is tight: only the subscription status
-                // read swaps; the admin-account status check and RBAC refresh
-                // below are non-B2 surfaces and run identically in both paths.
+            if (!$skip_periodic_checks && $now - $lastCheck >= 300) {
+                // Single-source status read — Firestore schoolControl/{schoolId}
+                // via B2_registry_service::lifecycle_access(). Firestore is the
+                // sole authority for school lifecycle state (no RTDB read, no
+                // fallback). The admin-account status check and RBAC refresh
+                // below are non-B2 surfaces and run unchanged.
                 $check = ['known' => false, 'allowed' => false, 'detail' => ''];
 
-                if ($this->_b23a_registry_firestore_on()) {
-                    $this->load->library('B2_registry_service');
-                    $this->b2_registry_service->init($this->firebase);
-                    $r = $this->b2_registry_service->lifecycle_access((string) $this->school_id);
-                    if (!empty($r['known'])) {
-                        $check = [
-                            'known'   => true,
-                            'allowed' => !empty($r['allowed']),
-                            'detail'  => (string) ($r['state'] ?? ''),
-                        ];
-                    }
-                } else {
-                    // ── Legacy RTDB path (unchanged) ─────────────────────────
-                    $liveStatus = $this->firebase->get("System/Schools/{$this->school_id}/subscription/status");
-                    if ($liveStatus === null || $liveStatus === false || $liveStatus === '') {
-                        $liveStatus = $this->firebase->get("Users/Schools/{$this->school_id}/subscription/status");
-                    }
-                    if ($liveStatus !== null && $liveStatus !== false && $liveStatus !== '') {
-                        $liveStatus = (string) $liveStatus;
-                        $check = [
-                            'known'   => true,
-                            'allowed' => in_array(strtolower($liveStatus), ['active', 'grace_period'], true),
-                            'detail'  => $liveStatus,
-                        ];
-                    }
+                $this->load->library('B2_registry_service');
+                $this->b2_registry_service->init($this->firebase);
+                $r = $this->b2_registry_service->lifecycle_access((string) $this->school_id);
+                if (!empty($r['known'])) {
+                    $check = [
+                        'known'   => true,
+                        'allowed' => !empty($r['allowed']),
+                        'detail'  => (string) ($r['state'] ?? ''),
+                    ];
                 }
 
                 // [A-01] Only act if status is authoritatively known
@@ -516,27 +512,6 @@ class MY_Controller extends CI_Controller
         $normalized['Subject Management'] = true;
 
         return array_keys($normalized);
-    }
-
-    /**
-     * B2.3.2-A: single-source check for the b2.registry_firestore atomic
-     * co-cutover flag. Cached per-request via static so the config is loaded
-     * at most once per request. Returns FALSE during the build phase (flag
-     * value is `false` in [application/config/b2_migration_flags.php]).
-     *
-     * When TRUE, MY_Controller (and every other B2 caller) MUST route through
-     * B2_registry_service for the B2 data surface — NO RTDB read, NO RTDB
-     * write, NO fallback, NO dual-write, NO shadow.
-     */
-    private function _b23a_registry_firestore_on(): bool
-    {
-        static $cached = null;
-        if ($cached === null) {
-            $this->config->load('b2_migration_flags', FALSE, TRUE);
-            $flags  = $this->config->item('b2_migration_flags') ?: [];
-            $cached = !empty($flags['b2.registry_firestore']);
-        }
-        return $cached;
     }
 
     /**

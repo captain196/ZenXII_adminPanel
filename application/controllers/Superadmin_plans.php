@@ -53,41 +53,19 @@ class Superadmin_plans extends MY_Superadmin_Controller
     {
         $plans = [];
 
-        // ── B2.3.2-B: flag-gated single-source plan list ─────────────────
-        if ($this->_b23b_registry_firestore_on()) {
-            $svc = $this->_b23b_registry();
-            $fsPlans = $svc->list_plans();
-            // PL-1: count schools per plan from a SINGLE schoolControl fetch
-            // grouped in memory, instead of one filtered query per plan (N+1).
-            // Equivalent to count_schools_on_plan() applied to every plan.
-            $planCounts = $svc->count_schools_by_plan();
-            foreach ($fsPlans as $fs) {
-                $row = $this->_b23b_plan_view_shape($fs);
-                $row['school_count'] = $planCounts[$row['plan_id']] ?? 0;
-                $plans[] = $row;
-            }
-            usort($plans, fn($a, $b) => ($a['sort_order'] ?? 99) - ($b['sort_order'] ?? 99));
-        } else {
-            // ── Legacy RTDB path (unchanged) ─────────────────────────────
-            try {
-                $raw     = $this->firebase->get('System/Plans') ?? [];
-                $schools = $this->firebase->get('System/Schools') ?? [];
-
-                foreach ($raw as $pid => $p) {
-                    // Count schools on this plan (check System/Schools subscription)
-                    $school_count = 0;
-                    foreach ($schools as $s) {
-                        if (!is_array($s)) continue;
-                        $sub = is_array($s['subscription'] ?? null) ? $s['subscription'] : [];
-                        if (($sub['plan_id'] ?? '') === $pid) $school_count++;
-                    }
-                    $plans[] = array_merge(['plan_id' => $pid, 'school_count' => $school_count], $p);
-                }
-                usort($plans, fn($a, $b) => ($a['sort_order'] ?? 99) - ($b['sort_order'] ?? 99));
-            } catch (Exception $e) {
-                log_message('error', 'SA plans/index: ' . $e->getMessage());
-            }
+        // ── B2.3.2-B: single-source plan list ────────────────────────────
+        $svc = $this->_b23b_registry();
+        $fsPlans = $svc->list_plans();
+        // PL-1: count schools per plan from a SINGLE schoolControl fetch
+        // grouped in memory, instead of one filtered query per plan (N+1).
+        // Equivalent to count_schools_on_plan() applied to every plan.
+        $planCounts = $svc->count_schools_by_plan();
+        foreach ($fsPlans as $fs) {
+            $row = $this->_b23b_plan_view_shape($fs);
+            $row['school_count'] = $planCounts[$row['plan_id']] ?? 0;
+            $plans[] = $row;
         }
+        usort($plans, fn($a, $b) => ($a['sort_order'] ?? 99) - ($b['sort_order'] ?? 99));
 
         $data = [
             'page_title'        => 'Subscription Plans',
@@ -128,47 +106,23 @@ class Superadmin_plans extends MY_Superadmin_Controller
 
         $plan_id = 'PLAN_' . strtoupper(substr(md5(uniqid($name, true)), 0, 6));
 
-        // ── B2.3.2-B: flag-gated single-source plan create ───────────────
-        if ($this->_b23b_registry_firestore_on()) {
-            $ok = $this->_b23b_registry()->create_plan($plan_id, [
-                'name'         => $name,
-                'description'  => '',
-                'price'        => $price,
-                'billingCycle' => $billing,
-                'graceDays'    => $grace_days,
-                'sortOrder'    => $sort_order,
-                'modules'      => $modules,
-                'limits'       => ['maxStudents' => $max_students, 'maxStaff' => $max_staff],
-                'status'       => 'active',
-                'createdAt'    => date('Y-m-d H:i:s'),
-                'createdBy'    => (string) $this->sa_id,
-            ]);
-            if (!$ok) { $this->json_error('Failed to create plan.'); return; }
-            $this->sa_log('plan_created', '', ['plan_id' => $plan_id, 'name' => $name]);
-            $this->json_success(['plan_id' => $plan_id, 'message' => "Plan '{$name}' created."]);
-            return;
-        }
-
-        try {
-            $this->firebase->set("System/Plans/{$plan_id}", [
-                'name'         => $name,
-                'price'        => $price,
-                'billing_cycle'=> $billing,
-                'max_students' => $max_students,
-                'max_staff'    => $max_staff,
-                'grace_days'   => $grace_days,
-                'sort_order'   => $sort_order,
-                'modules'      => $modules,
-                'created_at'   => date('Y-m-d H:i:s'),
-                'created_by'   => $this->sa_id,
-            ]);
-
-            $this->sa_log('plan_created', '', ['plan_id' => $plan_id, 'name' => $name]);
-            $this->json_success(['plan_id' => $plan_id, 'message' => "Plan '{$name}' created."]);
-        } catch (Exception $e) {
-            log_message('error', 'SA plans/create: ' . $e->getMessage());
-            $this->json_error('Failed to create plan.');
-        }
+        // ── B2.3.2-B: single-source plan create ──────────────────────────
+        $ok = $this->_b23b_registry()->create_plan($plan_id, [
+            'name'         => $name,
+            'description'  => '',
+            'price'        => $price,
+            'billingCycle' => $billing,
+            'graceDays'    => $grace_days,
+            'sortOrder'    => $sort_order,
+            'modules'      => $modules,
+            'limits'       => ['maxStudents' => $max_students, 'maxStaff' => $max_staff],
+            'status'       => 'active',
+            'createdAt'    => date('Y-m-d H:i:s'),
+            'createdBy'    => (string) $this->sa_id,
+        ]);
+        if (!$ok) { $this->json_error('Failed to create plan.'); return; }
+        $this->sa_log('plan_created', '', ['plan_id' => $plan_id, 'name' => $name]);
+        $this->json_success(['plan_id' => $plan_id, 'message' => "Plan '{$name}' created."]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -200,53 +154,27 @@ class Superadmin_plans extends MY_Superadmin_Controller
             $modules[$mod] = in_array($mod, (array)$modules_raw);
         }
 
-        $update = [
+        // ── B2.3.2-B: single-source plan update ──────────────────────────
+        $fsPatch = [
             'name'        => $name,
             'price'       => $price,
-            'grace_days'  => $grace_days,
+            'graceDays'   => $grace_days,
             'modules'     => $modules,
-            'updated_at'  => date('Y-m-d H:i:s'),
-            'updated_by'  => $this->sa_id,
+            'updatedAt'   => date('Y-m-d H:i:s'),
+            'updatedBy'   => (string) $this->sa_id,
         ];
         if ($billing !== '' && in_array($billing, ['monthly', 'quarterly', 'annual'])) {
-            $update['billing_cycle'] = $billing;
+            $fsPatch['billingCycle'] = $billing;
         }
-        if ($max_students !== null) $update['max_students'] = (int)$max_students;
-        if ($max_staff    !== null) $update['max_staff']    = (int)$max_staff;
-        if ($sort_order   !== null) $update['sort_order']   = (int)$sort_order;
-
-        // ── B2.3.2-B: flag-gated single-source plan update ───────────────
-        if ($this->_b23b_registry_firestore_on()) {
-            $fsPatch = [
-                'name'        => $name,
-                'price'       => $price,
-                'graceDays'   => $grace_days,
-                'modules'     => $modules,
-                'updatedAt'   => date('Y-m-d H:i:s'),
-                'updatedBy'   => (string) $this->sa_id,
-            ];
-            if ($billing !== '' && in_array($billing, ['monthly', 'quarterly', 'annual'])) {
-                $fsPatch['billingCycle'] = $billing;
-            }
-            $limitsPatch = [];
-            if ($max_students !== null) $limitsPatch['maxStudents'] = (int) $max_students;
-            if ($max_staff    !== null) $limitsPatch['maxStaff']    = (int) $max_staff;
-            if (!empty($limitsPatch)) $fsPatch['limits'] = $limitsPatch;
-            if ($sort_order   !== null) $fsPatch['sortOrder']  = (int) $sort_order;
-            $ok = $this->_b23b_registry()->update_plan($plan_id, $fsPatch);
-            if (!$ok) { $this->json_error('Failed to update plan.'); return; }
-            $this->sa_log('plan_updated', '', ['plan_id' => $plan_id]);
-            $this->json_success(['message' => "Plan '{$name}' updated."]);
-            return;
-        }
-
-        try {
-            $this->firebase->update("System/Plans/{$plan_id}", $update);
-            $this->sa_log('plan_updated', '', ['plan_id' => $plan_id]);
-            $this->json_success(['message' => "Plan '{$name}' updated."]);
-        } catch (Exception $e) {
-            $this->json_error('Failed to update plan.');
-        }
+        $limitsPatch = [];
+        if ($max_students !== null) $limitsPatch['maxStudents'] = (int) $max_students;
+        if ($max_staff    !== null) $limitsPatch['maxStaff']    = (int) $max_staff;
+        if (!empty($limitsPatch)) $fsPatch['limits'] = $limitsPatch;
+        if ($sort_order   !== null) $fsPatch['sortOrder']  = (int) $sort_order;
+        $ok = $this->_b23b_registry()->update_plan($plan_id, $fsPatch);
+        if (!$ok) { $this->json_error('Failed to update plan.'); return; }
+        $this->sa_log('plan_updated', '', ['plan_id' => $plan_id]);
+        $this->json_success(['message' => "Plan '{$name}' updated."]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -261,37 +189,17 @@ class Superadmin_plans extends MY_Superadmin_Controller
             $this->json_error('Invalid plan ID format.'); return;
         }
 
-        // ── B2.3.2-B: flag-gated single-source plan delete ───────────────
-        if ($this->_b23b_registry_firestore_on()) {
-            $svc = $this->_b23b_registry();
-            if ($svc->count_schools_on_plan($plan_id) > 0) {
-                $this->json_error('Cannot delete: one or more schools are on this plan. Reassign them first.');
-                return;
-            }
-            $ok = $svc->delete_plan($plan_id);
-            if (!$ok) { $this->json_error('Failed to delete plan.'); return; }
-            $this->sa_log('plan_deleted', '', ['plan_id' => $plan_id]);
-            $this->json_success(['message' => 'Plan deleted.']);
+        // ── B2.3.2-B: single-source plan delete ──────────────────────────
+        // Safety: refuse if schools are on this plan
+        $svc = $this->_b23b_registry();
+        if ($svc->count_schools_on_plan($plan_id) > 0) {
+            $this->json_error('Cannot delete: one or more schools are on this plan. Reassign them first.');
             return;
         }
-
-        // Safety: refuse if schools are on this plan
-        try {
-            $schools = $this->firebase->get('System/Schools') ?? [];
-            foreach ($schools as $s) {
-                if (!is_array($s)) continue;
-                $sub = is_array($s['subscription'] ?? null) ? $s['subscription'] : [];
-                if (($sub['plan_id'] ?? '') === $plan_id) {
-                    $this->json_error('Cannot delete: one or more schools are on this plan. Reassign them first.');
-                    return;
-                }
-            }
-            $this->firebase->delete("System/Plans", $plan_id);
-            $this->sa_log('plan_deleted', '', ['plan_id' => $plan_id]);
-            $this->json_success(['message' => 'Plan deleted.']);
-        } catch (Exception $e) {
-            $this->json_error('Failed to delete plan.');
-        }
+        $ok = $svc->delete_plan($plan_id);
+        if (!$ok) { $this->json_error('Failed to delete plan.'); return; }
+        $this->sa_log('plan_deleted', '', ['plan_id' => $plan_id]);
+        $this->json_success(['message' => 'Plan deleted.']);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -303,47 +211,23 @@ class Superadmin_plans extends MY_Superadmin_Controller
     {
         $plan_id = trim($this->input->post('plan_id', TRUE) ?? '');
 
-        // ── B2.3.2-B: flag-gated single-source plan fetch ────────────────
-        if ($this->_b23b_registry_firestore_on()) {
-            $svc = $this->_b23b_registry();
-            if ($plan_id !== '') {
-                if (!preg_match('/^PLAN_[A-Z0-9]+$/', $plan_id)) {
-                    $this->json_error('Invalid plan ID format.'); return;
-                }
-                $fs = $svc->get_plan($plan_id);
-                $plan = $fs === null ? [] : $this->_b23b_plan_view_shape($fs);
-                $this->json_success(['plan' => $plan, 'plans' => [$plan_id => $plan]]);
-                return;
+        // ── B2.3.2-B: single-source plan fetch ───────────────────────────
+        $svc = $this->_b23b_registry();
+        if ($plan_id !== '') {
+            if (!preg_match('/^PLAN_[A-Z0-9]+$/', $plan_id)) {
+                $this->json_error('Invalid plan ID format.'); return;
             }
-            $plans = [];
-            foreach ($svc->list_plans() as $fs) {
-                $row = $this->_b23b_plan_view_shape($fs);
-                $plans[$row['plan_id']] = $row;
-            }
-            $this->json_success(['plans' => $plans, 'total' => count($plans)]);
+            $fs = $svc->get_plan($plan_id);
+            $plan = $fs === null ? [] : $this->_b23b_plan_view_shape($fs);
+            $this->json_success(['plan' => $plan, 'plans' => [$plan_id => $plan]]);
             return;
         }
-
-        try {
-            if ($plan_id !== '') {
-                if (!preg_match('/^PLAN_[A-Z0-9]+$/', $plan_id)) {
-                    $this->json_error('Invalid plan ID format.'); return;
-                }
-                // Fetch a single plan
-                $plan = $this->firebase->get("System/Plans/{$plan_id}") ?? [];
-                $this->json_success(['plan' => $plan, 'plans' => [$plan_id => $plan]]);
-            } else {
-                // No plan_id — return all plans
-                $raw   = $this->firebase->get('System/Plans') ?? [];
-                $plans = [];
-                foreach ($raw as $pid => $p) {
-                    if (is_array($p)) $plans[$pid] = $p;
-                }
-                $this->json_success(['plans' => $plans, 'total' => count($plans)]);
-            }
-        } catch (Exception $e) {
-            $this->json_error('Failed to fetch plans.');
+        $plans = [];
+        foreach ($svc->list_plans() as $fs) {
+            $row = $this->_b23b_plan_view_shape($fs);
+            $plans[$row['plan_id']] = $row;
         }
+        $this->json_success(['plans' => $plans, 'total' => count($plans)]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -404,69 +288,36 @@ class Superadmin_plans extends MY_Superadmin_Controller
         $now    = date('Y-m-d H:i:s');
         $seeded = [];
 
-        // ── B2.3.2-B: flag-gated single-source seed ──────────────────────
-        if ($this->_b23b_registry_firestore_on()) {
-            $svc = $this->_b23b_registry();
-            $existingPlans = $svc->list_plans();
-            $existingNames = array_map(fn($p) => strtolower((string)($p['name'] ?? '')), $existingPlans);
-            foreach ($defaults as $planName => $config) {
-                if (in_array(strtolower($planName), $existingNames, true)) continue;
-                $plan_id = 'PLAN_' . strtoupper(substr(md5(uniqid($planName, true)), 0, 6));
-                $svc->create_plan($plan_id, [
-                    'name'         => $planName,
-                    'description'  => (string) ($config['description'] ?? ''),
-                    'price'        => (float)  ($config['price']        ?? 0),
-                    'billingCycle' => (string) ($config['billing_cycle']?? 'annual'),
-                    'graceDays'    => (int)    ($config['grace_days']   ?? 7),
-                    'sortOrder'    => (int)    ($config['sort_order']   ?? 99),
-                    'modules'      => is_array($config['modules'] ?? null) ? $config['modules'] : [],
-                    'limits'       => [
-                        'maxStudents' => (int) ($config['max_students'] ?? 0),
-                        'maxStaff'    => (int) ($config['max_staff']    ?? 0),
-                    ],
-                    'status'       => 'active',
-                    'createdAt'    => $now,
-                    'createdBy'    => (string) $this->sa_id,
-                ]);
-                $seeded[] = $planName;
-            }
-            if (empty($seeded)) {
-                $this->json_success(['message' => 'Default plans already exist — no changes made.', 'seeded' => []]);
-            } else {
-                $this->sa_log('plans_seeded', '', ['plans' => $seeded]);
-                $this->json_success(['message' => 'Created: ' . implode(', ', $seeded) . '.', 'seeded' => $seeded]);
-            }
-            return;
+        // ── B2.3.2-B: single-source seed ─────────────────────────────────
+        $svc = $this->_b23b_registry();
+        $existingPlans = $svc->list_plans();
+        $existingNames = array_map(fn($p) => strtolower((string)($p['name'] ?? '')), $existingPlans);
+        foreach ($defaults as $planName => $config) {
+            if (in_array(strtolower($planName), $existingNames, true)) continue;
+            $plan_id = 'PLAN_' . strtoupper(substr(md5(uniqid($planName, true)), 0, 6));
+            $svc->create_plan($plan_id, [
+                'name'         => $planName,
+                'description'  => (string) ($config['description'] ?? ''),
+                'price'        => (float)  ($config['price']        ?? 0),
+                'billingCycle' => (string) ($config['billing_cycle']?? 'annual'),
+                'graceDays'    => (int)    ($config['grace_days']   ?? 7),
+                'sortOrder'    => (int)    ($config['sort_order']   ?? 99),
+                'modules'      => is_array($config['modules'] ?? null) ? $config['modules'] : [],
+                'limits'       => [
+                    'maxStudents' => (int) ($config['max_students'] ?? 0),
+                    'maxStaff'    => (int) ($config['max_staff']    ?? 0),
+                ],
+                'status'       => 'active',
+                'createdAt'    => $now,
+                'createdBy'    => (string) $this->sa_id,
+            ]);
+            $seeded[] = $planName;
         }
-
-        try {
-            $existing      = $this->firebase->get('System/Plans') ?? [];
-            $existingNames = array_map(fn($p) => strtolower($p['name'] ?? ''), array_filter((array)$existing, 'is_array'));
-
-            foreach ($defaults as $planName => $config) {
-                if (in_array(strtolower($planName), $existingNames)) continue;
-
-                $plan_id = 'PLAN_' . strtoupper(substr(md5(uniqid($planName, true)), 0, 6));
-                $this->firebase->set("System/Plans/{$plan_id}", array_merge($config, [
-                    'name'       => $planName,
-                    'plan_id'    => $plan_id,
-                    'created_at' => $now,
-                    'created_by' => $this->sa_id,
-                ]));
-                $seeded[] = $planName;
-            }
-
-            if (empty($seeded)) {
-                $this->json_success(['message' => 'Default plans already exist — no changes made.', 'seeded' => []]);
-            } else {
-                $this->sa_log('plans_seeded', '', ['plans' => $seeded]);
-                $this->json_success([
-                    'message' => 'Created: ' . implode(', ', $seeded) . '.',
-                    'seeded'  => $seeded,
-                ]);
-            }
-        } catch (Exception $e) {
-            $this->json_error('Failed to seed plans: ' . $e->getMessage());
+        if (empty($seeded)) {
+            $this->json_success(['message' => 'Default plans already exist — no changes made.', 'seeded' => []]);
+        } else {
+            $this->sa_log('plans_seeded', '', ['plans' => $seeded]);
+            $this->json_success(['message' => 'Created: ' . implode(', ', $seeded) . '.', 'seeded' => $seeded]);
         }
     }
 
@@ -490,12 +341,11 @@ class Superadmin_plans extends MY_Superadmin_Controller
 
     public function fetch_subscriptions()
     {
-        // ── B2.3.2-B-2: flag-gated single-source subscription rollup ────
-        if ($this->_b23b_registry_firestore_on()) {
-            $svc       = $this->_b23b_registry();
-            $tenants   = $svc->list_tenants_summary();
-            $planById  = [];
-            foreach ($svc->list_plans() as $fs) {
+        // ── B2.3.2-B-2: single-source subscription rollup ────────────────
+        $svc       = $this->_b23b_registry();
+        $tenants   = $svc->list_tenants_summary();
+        $planById  = [];
+        foreach ($svc->list_plans() as $fs) {
                 $pid = (string) ($fs['planFamilyId'] ?? '');
                 if ($pid !== '') $planById[$pid] = $fs;
             }
@@ -546,73 +396,7 @@ class Superadmin_plans extends MY_Superadmin_Controller
                 $d = $r['display'] ?? 'inactive';
                 $buckets[$d] = ($buckets[$d] ?? 0) + 1;
             }
-            $this->json_success(array_merge(['rows' => $rows], $buckets));
-            return;
-        }
-
-        try {
-            $schools = $this->firebase->get('System/Schools') ?? [];
-            $today   = date('Y-m-d');
-            $rows    = [];
-
-            foreach ($schools as $name => $school) {
-                if (!is_array($school)) continue;
-
-                $sub      = is_array($school['subscription'] ?? null) ? $school['subscription'] : [];
-                $saP      = is_array($school['profile']       ?? null) ? $school['profile']      : [];
-                $expiry   = $sub['expiry_date'] ?? ($sub['duration']['endDate'] ?? '');
-                $grace_end= $sub['grace_end']   ?? '';
-                $status      = $sub['status'] ?? 'Inactive';
-                $statusLower = strtolower($status);
-
-                // Compute display classification
-                if ($statusLower === 'suspended') {
-                    $display = 'suspended';
-                } elseif ($statusLower === 'grace_period') {
-                    $display = 'grace';
-                } elseif (empty($expiry)) {
-                    $display = 'inactive';
-                } elseif ($expiry < $today) {
-                    $display = (!empty($grace_end) && $grace_end >= $today) ? 'grace' : 'expired';
-                } elseif ((int)ceil((strtotime($expiry) - time()) / 86400) <= 30) {
-                    $display = 'expiring_soon';
-                } else {
-                    $display = 'active';
-                }
-
-                $rows[] = [
-                    'uid'          => $name,
-                    'name'         => $saP['name']      ?? $name,
-                    'school_code'  => $saP['school_code'] ?? '',
-                    'plan_name'    => $sub['plan_name']  ?? '—',
-                    'expiry_date'  => $expiry,
-                    'grace_end'    => $grace_end,
-                    'sub_status'   => $status,
-                    'display'      => $display,
-                    'days_left'    => $expiry ? (int)ceil((strtotime($expiry) - time()) / 86400) : null,
-                    'grace_left'   => $grace_end ? (int)ceil((strtotime($grace_end) - time()) / 86400) : null,
-                    'last_payment' => $sub['last_payment_date'] ?? '',
-                ];
-            }
-
-            // Sort: soonest expiry first; null (inactive) at end
-            usort($rows, function ($a, $b) {
-                if ($a['days_left'] === null) return 1;
-                if ($b['days_left'] === null) return -1;
-                return $a['days_left'] - $b['days_left'];
-            });
-
-            // Build bucketed counts for dashboard/tests
-            $buckets = ['active' => 0, 'expiring_soon' => 0, 'grace' => 0, 'expired' => 0, 'suspended' => 0, 'inactive' => 0];
-            foreach ($rows as $r) {
-                $d = $r['display'] ?? 'inactive';
-                $buckets[$d] = ($buckets[$d] ?? 0) + 1;
-            }
-
-            $this->json_success(array_merge(['rows' => $rows], $buckets));
-        } catch (Exception $e) {
-            $this->json_error('Failed to load subscriptions.');
-        }
+        $this->json_success(array_merge(['rows' => $rows], $buckets));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -623,17 +407,16 @@ class Superadmin_plans extends MY_Superadmin_Controller
 
     public function expire_check()
     {
-        // ── B2.3.2-B-2: flag-gated single-source expire check ───────────
+        // ── B2.3.2-B-2: single-source expire check ───────────────────────
         // Canonical Firestore lifecycle is COMPUTED at write time. This
         // method re-derives state from current dates and persists transitions
         // via write_lifecycle_state(). NO RTDB read, NO RTDB write.
-        if ($this->_b23b_registry_firestore_on()) {
-            $svc       = $this->_b23b_registry();
-            $tenants   = $svc->list_tenants_summary();
-            $today     = date('Y-m-d');
-            $suspended = [];
-            $graced    = [];
-            foreach ($tenants as $t) {
+        $svc       = $this->_b23b_registry();
+        $tenants   = $svc->list_tenants_summary();
+        $today     = date('Y-m-d');
+        $suspended = [];
+        $graced    = [];
+        foreach ($tenants as $t) {
                 $sid       = (string) $t['schoolId'];
                 $state     = (string) $t['lifecycleState'];
                 $expiry    = (string) $t['subscriptionPeriodEnd'];
@@ -660,81 +443,20 @@ class Superadmin_plans extends MY_Superadmin_Controller
                     }
                 }
             }
-            $this->json_success([
-                'suspended'       => $suspended,
-                'suspended_count' => count($suspended),
-                'graced'          => $graced,
-                'graced_count'    => count($graced),
-                'message'         => sprintf('Check complete. %d suspended, %d moved to grace period.',
-                    count($suspended), count($graced)),
-            ]);
-            return;
-        }
-
-        try {
-            $schools   = $this->firebase->get('System/Schools') ?? [];
-            $today     = date('Y-m-d');
-            $suspended = [];
-            $graced    = [];
-
-            foreach ($schools as $name => $school) {
-                if (!is_array($school)) continue;
-                if (!preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $name)) continue;
-
-                $sub      = is_array($school['subscription'] ?? null) ? $school['subscription'] : [];
-                $status   = $sub['status'] ?? 'Inactive';
-                $expiry   = $sub['expiry_date']  ?? ($sub['duration']['endDate'] ?? '');
-                $grace_end= $sub['grace_end']    ?? '';
-
-                if (empty($expiry)) continue;
-
-                // Normalise legacy lowercase statuses for comparison
-                $statusLower = strtolower($status);
-
-                if ($statusLower === 'active' && $expiry < $today) {
-                    if (!empty($grace_end) && $grace_end >= $today) {
-                        // Move to grace period — reduce access but not yet suspended
-                        $this->firebase->update("System/Schools/{$name}/subscription", ['status' => 'Grace_Period']);
-                        $this->firebase->update("System/Schools/{$name}/profile",      ['status' => 'grace_period']);
-                        $graced[]    = $name;
-                        $this->sa_log('auto_grace', $name);
-                    } else {
-                        // Fully suspend — top-level status gates all SA reads
-                        $this->firebase->update("System/Schools/{$name}",             ['status' => 'suspended']);
-                        $this->firebase->update("System/Schools/{$name}/subscription", ['status' => 'Suspended']);
-                        $this->firebase->update("System/Schools/{$name}/profile",      ['status' => 'suspended']);
-                        $suspended[] = $name;
-                        $this->sa_log('auto_suspended', $name);
-                    }
-                } elseif ($statusLower === 'grace_period' && !empty($grace_end) && $grace_end < $today) {
-                    // Grace period ended — fully suspend
-                    $this->firebase->update("System/Schools/{$name}",             ['status' => 'suspended']);
-                    $this->firebase->update("System/Schools/{$name}/subscription", ['status' => 'Suspended']);
-                    $this->firebase->update("System/Schools/{$name}/profile",      ['status' => 'suspended']);
-                    $suspended[] = $name;
-                    $this->sa_log('auto_suspended', $name);
-                }
-            }
-
-            $this->json_success([
-                'suspended'       => $suspended,
-                'suspended_count' => count($suspended),
-                'graced'          => $graced,
-                'graced_count'    => count($graced),
-                'message'         => sprintf(
-                    'Check complete. %d suspended, %d moved to grace period.',
-                    count($suspended), count($graced)
-                ),
-            ]);
-        } catch (Exception $e) {
-            $this->json_error('Expire check failed: ' . $e->getMessage());
-        }
+        $this->json_success([
+            'suspended'       => $suspended,
+            'suspended_count' => count($suspended),
+            'graced'          => $graced,
+            'graced_count'    => count($graced),
+            'message'         => sprintf('Check complete. %d suspended, %d moved to grace period.',
+                count($suspended), count($graced)),
+        ]);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     //  PAYMENT / INVOICE MANAGEMENT
     //
-    //  Data model (System/Payments/{INV_ID}):
+    //  Data model (Firestore canonical payments collection, keyed by INV_ID):
     //    amount       – total invoice amount for the billing period
     //    amount_paid  – sum of all collections against this invoice
     //    balance      – amount − amount_paid  (auto-computed)
@@ -743,52 +465,6 @@ class Superadmin_plans extends MY_Superadmin_Controller
     //    + school_uid, plan_id, plan_name, billing_cycle, invoice_date,
     //      due_date, period_start, period_end, notes, created_*
     // ═══════════════════════════════════════════════════════════════════════
-
-    /**
-     * Migrate a legacy flat record to the new invoice model.
-     * Called lazily on read – adds amount_paid, balance, transactions if missing.
-     */
-    private function _migrate_payment(string $pid, array &$p): void
-    {
-        if (isset($p['balance'])) return; // already migrated
-
-        $amount      = (float)($p['amount'] ?? 0);
-        $status      = $p['status'] ?? 'pending';
-        $amount_paid = ($status === 'paid') ? $amount : 0.0;
-        $balance     = $amount - $amount_paid;
-        $txns        = [];
-
-        if ($status === 'paid') {
-            $txnId = 'TXN_' . strtoupper(substr(md5($pid . 'legacy'), 0, 8));
-            $txns[$txnId] = [
-                'date'        => $p['paid_date'] ?? ($p['created_at'] ?? date('Y-m-d')),
-                'amount'      => $amount,
-                'mode'        => '—',
-                'note'        => 'Migrated from legacy record',
-                'recorded_by' => 'system',
-                'recorded_at' => date('Y-m-d H:i:s'),
-            ];
-        }
-
-        $patch = [
-            'amount_paid'  => $amount_paid,
-            'balance'      => $balance,
-            'transactions' => !empty($txns) ? $txns : null,
-        ];
-
-        // Derive correct status
-        if ($status !== 'failed') {
-            $patch['status'] = $this->_derive_status($amount, $amount_paid, $p['due_date'] ?? '');
-        }
-
-        $this->firebase->update("System/Payments/{$pid}", $patch);
-
-        // Merge into local array so caller sees updated values
-        $p['amount_paid']  = $amount_paid;
-        $p['balance']      = $balance;
-        $p['status']       = $patch['status'] ?? $status;
-        if (!empty($txns)) $p['transactions'] = $txns;
-    }
 
     /**
      * Derive invoice status from balance + due_date.
@@ -801,35 +477,6 @@ class Superadmin_plans extends MY_Superadmin_Controller
             return ($due_date && $due_date < $today) ? 'overdue' : 'partial';
         }
         return ($due_date && $due_date < $today) ? 'overdue' : 'pending';
-    }
-
-    /**
-     * Sync school subscription when an invoice is fully paid.
-     */
-    private function _sync_school_sub(string $school_uid, array $invoice, string $paid_date): void
-    {
-        if (!preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $school_uid)) return;
-
-        $subUpdate = [
-            'last_payment_date'   => $paid_date,
-            'last_payment_amount' => (float)($invoice['amount'] ?? 0),
-        ];
-
-        $periodEnd = $invoice['period_end'] ?? '';
-        if ($periodEnd) {
-            $planInfo = [];
-            try { $planInfo = $this->firebase->get("System/Plans/" . ($invoice['plan_id'] ?? '')) ?? []; } catch (Exception $e) {}
-            $grace = (int)($planInfo['grace_days'] ?? 7);
-            $subUpdate['expiry_date'] = $periodEnd;
-            $subUpdate['grace_end']   = date('Y-m-d', strtotime($periodEnd . " +{$grace} days"));
-            $subUpdate['status']      = 'Active';
-        }
-
-        $this->firebase->update("System/Schools/{$school_uid}/subscription", $subUpdate);
-        $this->firebase->update("System/Schools/{$school_uid}", ['status' => 'active']);
-        if ($periodEnd) {
-            $this->firebase->update("System/Schools/{$school_uid}/profile", ['status' => 'active']);
-        }
     }
 
     /**
@@ -881,54 +528,30 @@ class Superadmin_plans extends MY_Superadmin_Controller
         $schools = [];
         $plans   = [];
 
-        // ── B2.3.2-B-2: flag-gated single-source dropdown context ────────
-        if ($this->_b23b_registry_firestore_on()) {
-            $svc      = $this->_b23b_registry();
-            $tenants  = $svc->list_tenants_summary();
-            $planById = [];
-            foreach ($svc->list_plans() as $fs) {
-                $pid = (string) ($fs['planFamilyId'] ?? '');
-                if ($pid !== '') $planById[$pid] = $fs;
-            }
-            foreach ($tenants as $t) {
-                $sid  = (string) $t['schoolId'];
-                $pfid = (string) $t['planFamilyId'];
-                $planName = isset($planById[$pfid]) ? (string) ($planById[$pfid]['name'] ?? '—') : '—';
-                $schools[$sid] = [
-                    'name'        => $t['schoolName'] !== '' ? $t['schoolName'] : $sid,
-                    'plan_name'   => $planName,
-                    'school_code' => $t['schoolCode'],
-                ];
-            }
-            foreach ($planById as $pid => $fs) {
-                $plans[$pid] = [
-                    'name'          => (string) ($fs['name'] ?? $pid),
-                    'price'         => (float)  ($fs['price'] ?? 0),
-                    'billing_cycle' => (string) ($fs['billingCycle'] ?? 'annual'),
-                ];
-            }
-        } else {
-            try {
-                $raw = $this->firebase->get('System/Schools') ?? [];
-                foreach ($raw as $name => $school) {
-                    if (!is_array($school)) continue;
-                    $saP = is_array($school['profile']      ?? null) ? $school['profile']      : [];
-                    $sub = is_array($school['subscription'] ?? null) ? $school['subscription'] : [];
-                    $schools[$name] = [
-                        'name'        => $saP['name']      ?? $name,
-                        'plan_name'   => $sub['plan_name'] ?? '—',
-                        'school_code' => $saP['school_code'] ?? '',
-                    ];
-                }
-                $rawPlans = $this->firebase->get('System/Plans') ?? [];
-                foreach ($rawPlans as $pid => $p) {
-                    $plans[$pid] = [
-                        'name'          => $p['name']  ?? $pid,
-                        'price'         => (float)($p['price'] ?? 0),
-                        'billing_cycle' => $p['billing_cycle'] ?? 'annual',
-                    ];
-                }
-            } catch (Exception $e) {}
+        // ── B2.3.2-B-2: single-source dropdown context ───────────────────
+        $svc      = $this->_b23b_registry();
+        $tenants  = $svc->list_tenants_summary();
+        $planById = [];
+        foreach ($svc->list_plans() as $fs) {
+            $pid = (string) ($fs['planFamilyId'] ?? '');
+            if ($pid !== '') $planById[$pid] = $fs;
+        }
+        foreach ($tenants as $t) {
+            $sid  = (string) $t['schoolId'];
+            $pfid = (string) $t['planFamilyId'];
+            $planName = isset($planById[$pfid]) ? (string) ($planById[$pfid]['name'] ?? '—') : '—';
+            $schools[$sid] = [
+                'name'        => $t['schoolName'] !== '' ? $t['schoolName'] : $sid,
+                'plan_name'   => $planName,
+                'school_code' => $t['schoolCode'],
+            ];
+        }
+        foreach ($planById as $pid => $fs) {
+            $plans[$pid] = [
+                'name'          => (string) ($fs['name'] ?? $pid),
+                'price'         => (float)  ($fs['price'] ?? 0),
+                'billing_cycle' => (string) ($fs['billingCycle'] ?? 'annual'),
+            ];
         }
 
         $data = [
@@ -948,92 +571,39 @@ class Superadmin_plans extends MY_Superadmin_Controller
 
     public function fetch_payments()
     {
-        // ── B2.3.2-B-2: flag-gated single-source payments list ───────────
-        if ($this->_b23b_registry_firestore_on()) {
-            $svc       = $this->_b23b_registry();
-            $tenants   = $svc->list_tenants_summary();
-            $payments  = $svc->list_payments();
-            $today     = date('Y-m-d');
-            $schoolNames = [];
-            foreach ($tenants as $t) {
-                $schoolNames[(string) $t['schoolId']] = $t['schoolName'] !== '' ? $t['schoolName'] : (string) $t['schoolId'];
-            }
-            $rows = [];
-            foreach ($payments as $p) {
-                if (!is_array($p)) continue;
-                $pid      = (string) ($p['paymentId'] ?? '');
-                $status   = (string) ($p['status']   ?? 'pending');
-                $due_date = (string) ($p['due_date'] ?? $p['dueDate'] ?? '');
-                // Auto-mark overdue (canonical Firestore field names: snake_case
-                // preserved at this layer — view template reads these keys).
-                if (in_array($status, ['pending', 'partial'], true) && $due_date !== '' && $due_date < $today) {
-                    $svc->update_payment($pid, [
-                        'status'     => 'overdue',
-                        'updated_at' => date('Y-m-d H:i:s'),
-                        'updated_by' => 'system_auto',
-                    ]);
-                    $p['status'] = 'overdue';
-                }
-                $days_due = ($due_date !== '') ? (int) round((strtotime($due_date) - strtotime($today)) / 86400) : null;
-                $p['payment_id']  = $pid;
-                $p['school_name'] = $schoolNames[$p['school_uid'] ?? ''] ?? ($p['school_uid'] ?? '—');
-                $p['days_due']    = $days_due;
-                $rows[] = $p;
-            }
-            usort($rows, fn($a, $b) => strcmp((string)($b['created_at'] ?? ''), (string)($a['created_at'] ?? '')));
-            $this->json_success(['rows' => $rows]);
-            return;
+        // ── B2.3.2-B-2: single-source payments list ──────────────────────
+        $svc       = $this->_b23b_registry();
+        $tenants   = $svc->list_tenants_summary();
+        $payments  = $svc->list_payments();
+        $today     = date('Y-m-d');
+        $schoolNames = [];
+        foreach ($tenants as $t) {
+            $schoolNames[(string) $t['schoolId']] = $t['schoolName'] !== '' ? $t['schoolName'] : (string) $t['schoolId'];
         }
-
-        try {
-            $raw     = $this->firebase->get('System/Payments') ?? [];
-            $schools = $this->firebase->get('System/Schools')  ?? [];
-            $today   = date('Y-m-d');
-            $rows    = [];
-
-            // Build school name lookup
-            $schoolNames = [];
-            foreach ($schools as $uid => $s) {
-                if (!is_array($s)) continue;
-                $prof = is_array($s['profile'] ?? null) ? $s['profile'] : [];
-                $schoolNames[$uid] = $prof['name'] ?? $uid;
+        $rows = [];
+        foreach ($payments as $p) {
+            if (!is_array($p)) continue;
+            $pid      = (string) ($p['paymentId'] ?? '');
+            $status   = (string) ($p['status']   ?? 'pending');
+            $due_date = (string) ($p['due_date'] ?? $p['dueDate'] ?? '');
+            // Auto-mark overdue (canonical Firestore field names: snake_case
+            // preserved at this layer — view template reads these keys).
+            if (in_array($status, ['pending', 'partial'], true) && $due_date !== '' && $due_date < $today) {
+                $svc->update_payment($pid, [
+                    'status'     => 'overdue',
+                    'updated_at' => date('Y-m-d H:i:s'),
+                    'updated_by' => 'system_auto',
+                ]);
+                $p['status'] = 'overdue';
             }
-
-            foreach ($raw as $pid => $p) {
-                if (!is_array($p)) continue;
-
-                // Lazy migration of legacy flat records
-                $this->_migrate_payment($pid, $p);
-
-                // Auto-mark overdue: (pending|partial) + due_date in the past
-                $status   = $p['status'] ?? 'pending';
-                $due_date = $p['due_date'] ?? '';
-                if (in_array($status, ['pending', 'partial']) && $due_date && $due_date < $today) {
-                    $this->firebase->update("System/Payments/{$pid}", [
-                        'status'     => 'overdue',
-                        'updated_at' => date('Y-m-d H:i:s'),
-                        'updated_by' => 'system_auto',
-                    ]);
-                    $p['status'] = 'overdue';
-                }
-
-                // Compute days until due / days overdue
-                $days_due = null;
-                if ($due_date) {
-                    $days_due = (int) round((strtotime($due_date) - strtotime($today)) / 86400);
-                }
-
-                $p['payment_id']  = $pid;
-                $p['school_name'] = $schoolNames[$p['school_uid'] ?? ''] ?? ($p['school_uid'] ?? '—');
-                $p['days_due']    = $days_due;
-                $rows[] = $p;
-            }
-
-            usort($rows, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
-            $this->json_success(['rows' => $rows]);
-        } catch (Exception $e) {
-            $this->json_error('Failed to load payments.');
+            $days_due = ($due_date !== '') ? (int) round((strtotime($due_date) - strtotime($today)) / 86400) : null;
+            $p['payment_id']  = $pid;
+            $p['school_name'] = $schoolNames[$p['school_uid'] ?? ''] ?? ($p['school_uid'] ?? '—');
+            $p['days_due']    = $days_due;
+            $rows[] = $p;
         }
+        usort($rows, fn($a, $b) => strcmp((string)($b['created_at'] ?? ''), (string)($a['created_at'] ?? '')));
+        $this->json_success(['rows' => $rows]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1049,8 +619,8 @@ class Superadmin_plans extends MY_Superadmin_Controller
             $this->json_error('Invalid school identifier.'); return;
         }
 
-        // ── B2.3.2-B-2: flag-gated single-source school-plan detail ──────
-        if ($this->_b23b_registry_firestore_on()) {
+        // ── B2.3.2-B-2: single-source school-plan detail ─────────────────
+        {
             $svc    = $this->_b23b_registry();
             $detail = $svc->get_tenant_detail($school_uid);
             if (!is_array($detail)) {
@@ -1118,60 +688,6 @@ class Superadmin_plans extends MY_Superadmin_Controller
                 'outstanding_balance' => $outstanding_balance,
                 'outstanding_id'      => $outstanding_id,
             ]);
-            return;
-        }
-
-        try {
-            $sub       = $this->firebase->get("System/Schools/{$school_uid}/subscription") ?? [];
-            $plan_id   = $sub['plan_id']   ?? '';
-            $plan_name = $sub['plan_name'] ?? '';
-            $price     = 0;
-            $plan_data = [];
-
-            if ($plan_id) {
-                $plan_data = $this->firebase->get("System/Plans/{$plan_id}") ?? [];
-                $plan_name = $plan_data['name']          ?? $plan_name;
-                $price     = (float)($plan_data['price'] ?? 0);
-            }
-
-            $billing_cycle = $plan_data['billing_cycle'] ?? ($sub['billing_cycle'] ?? 'annual');
-            $allPayments   = $this->firebase->get('System/Payments') ?? [];
-
-            // Compute outstanding balance across all unpaid invoices
-            $outstanding_balance = 0;
-            $outstanding_id      = '';
-            foreach ($allPayments as $payId => $pay) {
-                if (!is_array($pay)) continue;
-                if (($pay['school_uid'] ?? '') !== $school_uid) continue;
-                $st = $pay['status'] ?? '';
-                if (in_array($st, ['pending', 'partial', 'overdue'])) {
-                    $bal = isset($pay['balance']) ? (float)$pay['balance'] : ((float)($pay['amount'] ?? 0) - (float)($pay['amount_paid'] ?? 0));
-                    $outstanding_balance += $bal;
-                    if (!$outstanding_id) $outstanding_id = $payId;
-                }
-            }
-
-            $next = $this->_next_billing_period($school_uid, $sub, $plan_data, $allPayments);
-
-            $this->json_success([
-                'plan_id'             => $plan_id,
-                'plan_name'           => $plan_name,
-                'price'               => $price,
-                'billing_cycle'       => $billing_cycle,
-                'expiry_date'         => $sub['expiry_date'] ?? '',
-                'sub_status'          => $sub['status'] ?? 'Inactive',
-                'last_paid_date'      => $next['last_paid_date'],
-                'last_period_end'     => $next['last_period_end'],
-                'next_due_date'       => $next['due_date'],
-                'next_period_start'   => $next['period_start'],
-                'next_period_end'     => $next['period_end'],
-                'cycle_months'        => $next['cycle_months'],
-                'grace_days'          => (int)($plan_data['grace_days'] ?? 7),
-                'outstanding_balance' => $outstanding_balance,
-                'outstanding_id'      => $outstanding_id,
-            ]);
-        } catch (Exception $e) {
-            $this->json_error('Failed to fetch school plan.');
         }
     }
 
@@ -1192,13 +708,12 @@ class Superadmin_plans extends MY_Superadmin_Controller
         $hardenOn   = false;
         $payment_id = '';
 
-        // ── B2.3.2-B-3: flag-gated single-source generate_invoice ────────
+        // ── B2.3.2-B-3: single-source generate_invoice ───────────────────
         // Billing_integrity claim ledger is already Firestore-only (B2.3α).
-        // Only the surrounding read/write data-store flips when the cutover
-        // flag is ON: subscription + plan + payment reads/writes target
-        // Firestore canonical collections. NO RTDB read, NO RTDB write,
-        // NO fallback, NO dual-write, NO shadow.
-        if ($this->_b23b_registry_firestore_on()) {
+        // Subscription + plan + payment reads/writes target Firestore canonical
+        // collections. NO RTDB read, NO RTDB write, NO fallback, NO dual-write,
+        // NO shadow.
+        {
             try {
                 $svc    = $this->_b23b_registry();
                 $detail = $svc->get_tenant_detail($school_uid);
@@ -1307,107 +822,6 @@ class Superadmin_plans extends MY_Superadmin_Controller
                 return;
             }
         }
-
-        try {
-            $sub     = $this->firebase->get("System/Schools/{$school_uid}/subscription") ?? [];
-            $plan_id = $sub['plan_id'] ?? '';
-            if (empty($plan_id)) { $this->json_error('No plan assigned to this school.'); return; }
-
-            $plan_data     = $this->firebase->get("System/Plans/{$plan_id}") ?? [];
-            $billing_cycle = $plan_data['billing_cycle'] ?? 'annual';
-            $price         = (float)($plan_data['price'] ?? 0);
-            if ($price <= 0) { $this->json_error('Plan has no price set.'); return; }
-
-            $allPayments = $this->firebase->get('System/Payments') ?? [];
-
-            // B2.3α-BRIDGE: decide gate once; when flag ON, Billing_integrity::claimOpenInvoice
-            // replaces this legacy O(N) RTDB-scan as the sole conflict gate. Both the legacy
-            // scan AND the flag-branch retire at B2.7.
-            $hardenOn = $this->_bi_active();
-            if (!$hardenOn) {
-                // Block if there's an existing unpaid invoice with balance remaining (legacy gate).
-                foreach ($allPayments as $payId => $pay) {
-                    if (!is_array($pay)) continue;
-                    if (($pay['school_uid'] ?? '') !== $school_uid) continue;
-                    $st = $pay['status'] ?? '';
-                    if (in_array($st, ['pending', 'partial', 'overdue'])) {
-                        $bal = isset($pay['balance']) ? (float)$pay['balance'] : ((float)($pay['amount'] ?? 0) - (float)($pay['amount_paid'] ?? 0));
-                        if ($bal > 0) {
-                            $this->json_error("Outstanding invoice {$payId} has ₹" . number_format($bal, 2) . " remaining. Collect or write off before generating a new invoice.");
-                            return;
-                        }
-                    }
-                }
-            }
-
-            $next       = $this->_next_billing_period($school_uid, $sub, $plan_data, $allPayments);
-            $payment_id = 'INV_' . strtoupper(substr(md5(uniqid($school_uid, true)), 0, 8));
-            $now        = date('Y-m-d H:i:s');
-
-            // ── B2.3α-BRIDGE: per-school open-invoice lock via Billing_integrity. ──
-            // Permanent: claimOpenInvoice semantics. Bridge: this flag-gated wrapper (deleted at B2.7).
-            if ($hardenOn) {
-                $bi = $this->billing_integrity->claimOpenInvoice($school_uid, (string) $next['period_start'], $payment_id);
-                if (!empty($bi['conflict'])) {
-                    $this->_bi_telem('B2_BILLING_CLAIM', [
-                        'outcome'           => 'conflict',
-                        'op'                => 'generate_invoice',
-                        'schoolId'          => $school_uid,
-                        'existingInvoiceId' => (string) ($bi['existingInvoiceId'] ?? ''),
-                        'existingPeriod'    => (string) ($bi['existingPeriod']    ?? ''),
-                    ]);
-                    $this->json_error('Outstanding open invoice ' . ($bi['existingInvoiceId'] ?? '') . ' (period ' . ($bi['existingPeriod'] ?? '') . '). Collect or write off first.', 409);
-                    return;
-                }
-                if (!empty($bi['error'])) {
-                    $this->json_error('Billing service unavailable. Please retry.', 503);
-                    return;
-                }
-                $this->_bi_telem('B2_BILLING_CLAIM', [
-                    'outcome' => 'locked', 'op' => 'generate_invoice',
-                    'schoolId' => $school_uid, 'invoiceId' => $payment_id,
-                ]);
-            }
-
-            $this->firebase->set("System/Payments/{$payment_id}", [
-                'school_uid'    => $school_uid,
-                'amount'        => $price,
-                'amount_paid'   => 0,
-                'balance'       => $price,
-                'plan_id'       => $plan_id,
-                'plan_name'     => $plan_data['name'] ?? $plan_id,
-                'billing_cycle' => $billing_cycle,
-                'status'        => 'pending',
-                'invoice_date'  => date('Y-m-d'),
-                'due_date'      => $next['due_date'],
-                'paid_date'     => '',
-                'period_start'  => $next['period_start'],
-                'period_end'    => $next['period_end'],
-                'transactions'  => null,
-                'notes'         => 'Auto-generated invoice',
-                'created_by'    => $this->sa_id,
-                'created_at'    => $now,
-            ]);
-
-            $this->sa_log('invoice_generated', $school_uid, ['payment_id' => $payment_id, 'amount' => $price]);
-            $this->json_success([
-                'payment_id' => $payment_id,
-                'due_date'   => $next['due_date'],
-                'amount'     => $price,
-                'message'    => "Invoice {$payment_id} created — ₹" . number_format($price, 2)
-                              . " due " . $next['due_date'],
-            ]);
-        } catch (Exception $e) {
-            // B2.3α-BRIDGE: release the open-invoice lock on failure (CAS — idempotent).
-            if ($hardenOn && $payment_id !== '') {
-                try { $this->billing_integrity->releaseOpenInvoice($school_uid, $payment_id); } catch (\Throwable $eR) {}
-                $this->_bi_telem('B2_BILLING_CLAIM', [
-                    'outcome' => 'lock_released_on_failure', 'op' => 'generate_invoice',
-                    'schoolId' => $school_uid, 'invoiceId' => $payment_id,
-                ]);
-            }
-            $this->json_error('Failed to generate invoice.');
-        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1473,11 +887,11 @@ class Superadmin_plans extends MY_Superadmin_Controller
             ]);
         }
 
-        // ── B2.3.2-B-3: flag-gated single-source collect_payment ─────────
-        // Billing_integrity claim ledger (above) is Firestore-only in both
-        // branches. Only the invoice read/write and the subscription-sync
-        // post-action flip stores when the cutover flag is ON.
-        if ($this->_b23b_registry_firestore_on()) {
+        // ── B2.3.2-B-3: single-source collect_payment ────────────────────
+        // Billing_integrity claim ledger (above) is Firestore-only. The
+        // invoice read/write and subscription-sync post-action target
+        // Firestore canonical collections.
+        {
             try {
                 $svc = $this->_b23b_registry();
                 $inv = $svc->get_payment($invoice_id);
@@ -1569,111 +983,6 @@ class Superadmin_plans extends MY_Superadmin_Controller
                 return;
             }
         }
-
-        try {
-            $inv = $this->firebase->get("System/Payments/{$invoice_id}");
-            if (empty($inv) || !is_array($inv)) {
-                $this->json_error('Invoice not found.'); return;
-            }
-
-            // Migrate legacy records if needed
-            $this->_migrate_payment($invoice_id, $inv);
-
-            $amount      = (float)($inv['amount']      ?? 0);
-            $amount_paid = (float)($inv['amount_paid']  ?? 0);
-            $balance     = (float)($inv['balance']      ?? ($amount - $amount_paid));
-
-            if ($balance <= 0) {
-                $this->json_error('This invoice is already fully paid.'); return;
-            }
-
-            // Cap payment at balance (no overpayment on a single invoice)
-            $actual_pay = min($pay_amount, $balance);
-            $new_paid   = $amount_paid + $actual_pay;
-            $new_bal    = $amount - $new_paid;
-            $new_status = $this->_derive_status($amount, $new_paid, $inv['due_date'] ?? '');
-
-            // Create transaction record
-            $txnId = 'TXN_' . strtoupper(substr(md5(uniqid($invoice_id, true)), 0, 8));
-            $now   = date('Y-m-d H:i:s');
-
-            $update = [
-                'amount_paid'           => $new_paid,
-                'balance'               => $new_bal,
-                'status'                => $new_status,
-                'updated_at'            => $now,
-                'updated_by'            => $this->sa_id,
-                "transactions/{$txnId}" => [
-                    'date'        => $pay_date,
-                    'amount'      => $actual_pay,
-                    'mode'        => $pay_mode,
-                    'note'        => $pay_note,
-                    'recorded_by' => $this->sa_id,
-                    'recorded_at' => $now,
-                ],
-            ];
-
-            // If fully paid, set paid_date
-            if ($new_status === 'paid') {
-                $update['paid_date'] = $pay_date;
-            }
-
-            $this->firebase->update("System/Payments/{$invoice_id}", $update);
-
-            // B2.3α-BRIDGE: complete the claim (permanent dedup ledger) after RTDB write succeeds.
-            if ($hardenOn && $idempKey !== null) {
-                $this->billing_integrity->completePayment($idempKey, [
-                    'txn_id'      => $txnId,
-                    'amount_paid' => $actual_pay,
-                    'new_balance' => $new_bal,
-                    'new_status'  => $new_status,
-                ]);
-            }
-
-            // If fully paid, sync school subscription
-            if ($new_status === 'paid') {
-                $this->_sync_school_sub($inv['school_uid'] ?? '', $inv, $pay_date);
-
-                // B2.3α-BRIDGE: release the per-school open-invoice lock on full settle (CAS).
-                if ($hardenOn) {
-                    try { $this->billing_integrity->releaseOpenInvoice((string) ($inv['school_uid'] ?? ''), $invoice_id); } catch (\Throwable $eR) {}
-                    $this->_bi_telem('B2_BILLING_CLAIM', [
-                        'outcome' => 'invoice_released', 'op' => 'collect_payment',
-                        'invoiceId' => $invoice_id, 'schoolId' => (string) ($inv['school_uid'] ?? ''),
-                    ]);
-                }
-            }
-
-            $this->sa_log('payment_collected', $inv['school_uid'] ?? '', [
-                'invoice_id' => $invoice_id, 'txn_id' => $txnId, 'amount' => $actual_pay,
-            ]);
-
-            $msg = "₹" . number_format($actual_pay, 2) . " collected against {$invoice_id}.";
-            if ($new_bal > 0) {
-                $msg .= " Balance remaining: ₹" . number_format($new_bal, 2);
-            } else {
-                $msg .= " Invoice fully paid!";
-            }
-
-            $this->json_success([
-                'txn_id'      => $txnId,
-                'amount_paid' => $actual_pay,
-                'new_balance' => $new_bal,
-                'new_status'  => $new_status,
-                'message'     => $msg,
-            ]);
-        } catch (Exception $e) {
-            // B2.3α-BRIDGE: fail the claim so future retries can reclaim cleanly.
-            if ($hardenOn && $idempKey !== null) {
-                try { $this->billing_integrity->failPayment($idempKey, 'rtdb_update_failed'); } catch (\Throwable $eR) {}
-                $this->_bi_telem('B2_BILLING_CLAIM', [
-                    'outcome' => 'failed', 'op' => 'collect_payment',
-                    'invoiceId' => $invoice_id, 'idempKey' => $idempKey,
-                    'reason' => 'rtdb_update_failed',
-                ]);
-            }
-            $this->json_error('Failed to record payment.');
-        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1711,23 +1020,18 @@ class Superadmin_plans extends MY_Superadmin_Controller
             $this->json_error('Paid date cannot be before invoice date.'); return;
         }
 
-        // ── B2.3.2-B-3: flag-gated plan-lookup source ────────────────────
+        // ── B2.3.2-B-3: single-source plan lookup ────────────────────────
         $plan_data = [];
-        $usingFirestore = $this->_b23b_registry_firestore_on();
-        if ($usingFirestore) {
-            $svc       = $this->_b23b_registry();
-            $fsPlan    = $svc->get_plan($plan_id);
-            // Translate to legacy-shape keys the legacy block below reads.
-            if (is_array($fsPlan)) {
-                $plan_data = [
-                    'name'          => (string) ($fsPlan['name']        ?? $plan_id),
-                    'billing_cycle' => (string) ($fsPlan['billingCycle'] ?? 'annual'),
-                    'price'         => (float)  ($fsPlan['price']       ?? 0),
-                    'grace_days'    => (int)    ($fsPlan['graceDays']   ?? 7),
-                ];
-            }
-        } else {
-            try { $plan_data = $this->firebase->get("System/Plans/{$plan_id}") ?? []; } catch (Exception $e) {}
+        $svc       = $this->_b23b_registry();
+        $fsPlan    = $svc->get_plan($plan_id);
+        // Translate to legacy-shape keys the payment-doc builder below reads.
+        if (is_array($fsPlan)) {
+            $plan_data = [
+                'name'          => (string) ($fsPlan['name']        ?? $plan_id),
+                'billing_cycle' => (string) ($fsPlan['billingCycle'] ?? 'annual'),
+                'price'         => (float)  ($fsPlan['price']       ?? 0),
+                'grace_days'    => (int)    ($fsPlan['graceDays']   ?? 7),
+            ];
         }
 
         $now        = date('Y-m-d H:i:s');
@@ -1807,12 +1111,8 @@ class Superadmin_plans extends MY_Superadmin_Controller
                 'created_at'    => $now,
             ];
 
-            // ── B2.3.2-B-3: flag-gated payment write + subscription sync ──
-            if ($usingFirestore) {
-                $this->_b23b_registry()->create_payment($payment_id, $payDoc);
-            } else {
-                $this->firebase->set("System/Payments/{$payment_id}", $payDoc);
-            }
+            // ── B2.3.2-B-3: single-source payment write + subscription sync ──
+            $this->_b23b_registry()->create_payment($payment_id, $payDoc);
 
             // B2.3α-BRIDGE: complete the claim (permanent dedup ledger) after data-store write succeeds.
             if ($hardenOn && $idempKey !== null) {
@@ -1822,18 +1122,12 @@ class Superadmin_plans extends MY_Superadmin_Controller
             }
 
             if ($status === 'paid') {
-                if ($usingFirestore) {
-                    $this->_b23b_registry()->record_payment_completion($school_uid, [
-                        'paidDate'     => ($paid_date ?: date('Y-m-d')),
-                        'amount'       => $amount,
-                        'periodEnd'    => $period_end,
-                        'planFamilyId' => $plan_id,
-                    ]);
-                } else {
-                    $this->_sync_school_sub($school_uid, [
-                        'amount' => $amount, 'period_end' => $period_end, 'plan_id' => $plan_id,
-                    ], $paid_date ?: date('Y-m-d'));
-                }
+                $this->_b23b_registry()->record_payment_completion($school_uid, [
+                    'paidDate'     => ($paid_date ?: date('Y-m-d')),
+                    'amount'       => $amount,
+                    'periodEnd'    => $period_end,
+                    'planFamilyId' => $plan_id,
+                ]);
 
                 // B2.3α-BRIDGE: defensive open-invoice release (no-op if no lock owned for this id).
                 if ($hardenOn) {
@@ -1878,12 +1172,9 @@ class Superadmin_plans extends MY_Superadmin_Controller
             $this->json_error('Invalid payment status.'); return;
         }
 
-        // ── B2.3.2-B-3: flag-gated single-source payment-record read/write ──
-        $usingFirestoreUpd = $this->_b23b_registry_firestore_on();
+        // ── B2.3.2-B-3: single-source payment-record read/write ──────────
         try {
-            $existing = $usingFirestoreUpd
-                ? $this->_b23b_registry()->get_payment($payment_id)
-                : $this->firebase->get("System/Payments/{$payment_id}");
+            $existing = $this->_b23b_registry()->get_payment($payment_id);
             if (empty($existing)) { $this->json_error('Invoice not found.'); return; }
 
             $update = ['updated_at' => date('Y-m-d H:i:s'), 'updated_by' => $this->sa_id];
@@ -1918,30 +1209,18 @@ class Superadmin_plans extends MY_Superadmin_Controller
                 ]);
             }
 
-            if ($usingFirestoreUpd) {
-                $this->_b23b_registry()->update_payment($payment_id, $update);
-            } else {
-                $this->firebase->update("System/Payments/{$payment_id}", $update);
-            }
+            $this->_b23b_registry()->update_payment($payment_id, $update);
 
             if ($status === 'paid') {
-                if ($usingFirestoreUpd) {
-                    $this->_b23b_registry()->record_payment_completion(
-                        (string) ($existing['school_uid'] ?? ''),
-                        [
-                            'paidDate'     => (string) $update['paid_date'],
-                            'amount'       => (float)  ($existing['amount']     ?? 0),
-                            'periodEnd'    => (string) ($existing['period_end'] ?? ''),
-                            'planFamilyId' => (string) ($existing['plan_id']     ?? ''),
-                        ]
-                    );
-                } else {
-                    $this->_sync_school_sub(
-                        $existing['school_uid'] ?? '',
-                        $existing,
-                        $update['paid_date']
-                    );
-                }
+                $this->_b23b_registry()->record_payment_completion(
+                    (string) ($existing['school_uid'] ?? ''),
+                    [
+                        'paidDate'     => (string) $update['paid_date'],
+                        'amount'       => (float)  ($existing['amount']     ?? 0),
+                        'periodEnd'    => (string) ($existing['period_end'] ?? ''),
+                        'planFamilyId' => (string) ($existing['plan_id']     ?? ''),
+                    ]
+                );
             }
 
             $this->sa_log('payment_updated', $existing['school_uid'] ?? '', ['payment_id' => $payment_id]);
@@ -1962,12 +1241,9 @@ class Superadmin_plans extends MY_Superadmin_Controller
             $this->json_error('Invalid invoice ID.'); return;
         }
 
-        // ── B2.3.2-B-3: flag-gated single-source payment delete ──────────
-        $usingFirestoreDel = $this->_b23b_registry_firestore_on();
+        // ── B2.3.2-B-3: single-source payment delete ─────────────────────
         try {
-            $existing = $usingFirestoreDel
-                ? $this->_b23b_registry()->get_payment($payment_id)
-                : $this->firebase->get("System/Payments/{$payment_id}");
+            $existing = $this->_b23b_registry()->get_payment($payment_id);
             if (empty($existing)) { $this->json_error('Invoice not found.'); return; }
 
             // ── B2.3α-BRIDGE: destructive-path guardrail (release-and-audit; claim ledger preserved). ──
@@ -1987,11 +1263,7 @@ class Superadmin_plans extends MY_Superadmin_Controller
                 ]);
             }
 
-            if ($usingFirestoreDel) {
-                $this->_b23b_registry()->delete_payment($payment_id);
-            } else {
-                $this->firebase->delete('System/Payments', $payment_id);
-            }
+            $this->_b23b_registry()->delete_payment($payment_id);
             $this->sa_log('payment_deleted', $existing['school_uid'] ?? '', ['payment_id' => $payment_id]);
             $this->json_success(['message' => 'Invoice deleted.']);
         } catch (Exception $e) {
@@ -2009,8 +1281,8 @@ class Superadmin_plans extends MY_Superadmin_Controller
         $school_uid = trim($this->input->post('school_uid', TRUE) ?? '');
         if (empty($school_uid)) { $this->json_error('School ID required.'); return; }
 
-        // ── B2.3.2-B-2: flag-gated single-source per-school payments ─────
-        if ($this->_b23b_registry_firestore_on()) {
+        // ── B2.3.2-B-2: single-source per-school payments ────────────────
+        {
             $svc        = $this->_b23b_registry();
             $detail     = $svc->get_tenant_detail($school_uid);
             $payments   = $svc->list_payments_for_school($school_uid);
@@ -2043,49 +1315,6 @@ class Superadmin_plans extends MY_Superadmin_Controller
                 'expiry_date'   => (string) ($subDoc['periodEnd'] ?? ''),
                 'sub_status'    => (string) ($life['state'] ?? 'inactive'),
             ]);
-            return;
-        }
-
-        try {
-            $allPayments = $this->firebase->get('System/Payments') ?? [];
-            $sub         = $this->firebase->get("System/Schools/{$school_uid}/subscription") ?? [];
-            $plan_id     = $sub['plan_id'] ?? '';
-            $plan_data   = [];
-            if ($plan_id) {
-                $plan_data = $this->firebase->get("System/Plans/{$plan_id}") ?? [];
-            }
-
-            $rows     = [];
-            $totalPaid     = 0;
-            $totalBilled   = 0;
-            $totalBalance  = 0;
-
-            foreach ($allPayments as $pid => $p) {
-                if (!is_array($p)) continue;
-                if (($p['school_uid'] ?? '') !== $school_uid) continue;
-                $this->_migrate_payment($pid, $p);
-                $p['payment_id'] = $pid;
-                $rows[] = $p;
-
-                $totalBilled  += (float)($p['amount']      ?? 0);
-                $totalPaid    += (float)($p['amount_paid']  ?? 0);
-                $totalBalance += (float)($p['balance']      ?? 0);
-            }
-
-            usort($rows, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
-
-            $this->json_success([
-                'rows'          => $rows,
-                'total_billed'  => $totalBilled,
-                'total_paid'    => $totalPaid,
-                'total_balance' => $totalBalance,
-                'plan_name'     => $plan_data['name'] ?? ($sub['plan_name'] ?? '—'),
-                'billing_cycle' => $plan_data['billing_cycle'] ?? ($sub['billing_cycle'] ?? '—'),
-                'expiry_date'   => $sub['expiry_date'] ?? '',
-                'sub_status'    => $sub['status'] ?? 'Inactive',
-            ]);
-        } catch (Exception $e) {
-            $this->json_error('Failed to fetch school payments.');
         }
     }
 
@@ -2096,24 +1325,6 @@ class Superadmin_plans extends MY_Superadmin_Controller
     // survive into the Firestore-authoritative writer at B2.7. Only the
     // flag-gated bridge wrapper retires at B2.8.
     // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * B2.3.2-B: single-source check for the b2.registry_firestore atomic
-     * co-cutover flag. Cached per-request via static. Returns FALSE during
-     * the build phase. When TRUE, every B2 read/write path in this
-     * controller MUST route through B2_registry_service — NO RTDB read,
-     * NO RTDB write, NO fallback, NO dual-write, NO shadow.
-     */
-    private function _b23b_registry_firestore_on(): bool
-    {
-        static $cached = null;
-        if ($cached === null) {
-            $this->config->load('b2_migration_flags', FALSE, TRUE);
-            $flags  = $this->config->item('b2_migration_flags') ?: [];
-            $cached = !empty($flags['b2.registry_firestore']);
-        }
-        return $cached;
-    }
 
     /**
      * B2.3.2-B helper: lazy-load + bind the B2_registry_service. Idempotent.

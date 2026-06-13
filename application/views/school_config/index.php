@@ -746,9 +746,7 @@
 
             <!-- Bulk matrix -->
             <div id="sectionMatrixWrap" style="position:relative;min-height:80px;">
-                <div id="sectionMatrixLoader" style="text-align:center;padding:30px 0;color:var(--t3);">
-                    <i class="fa fa-spinner fa-spin"></i> Loading sections...
-                </div>
+                <div id="sectionMatrixLoader" style="text-align:center;padding:30px 0;color:var(--t3);display:none;"></div>
                 <div id="sectionMatrix"></div>
             </div>
 
@@ -1169,10 +1167,10 @@ document.getElementById('scTabs').addEventListener('click', function(e) {
     if (pane) pane.classList.add('active');
 
     if (btn.dataset.tab === 'sessions') {
-        syncSessions();
+        syncSessions(true);   // silent background refresh — no blocking overlay on tab switch
     }
     if (btn.dataset.tab === 'sections') {
-        loadAllSections();
+        loadAllSections();    // uses its own inline (scoped) loader, not the overlay
     }
 });
 
@@ -1181,7 +1179,7 @@ function _readCsrfCookie() {
     var match = document.cookie.match(new RegExp('(?:^|;\\s*)' + CSRFN + '=([^;]+)'));
     return match ? decodeURIComponent(match[1]) : CSRFT;
 }
-function post(url, data, cb) {
+function post(url, data, cb, opts) {
     // Always read the latest CSRF token from the cookie to avoid stale-token errors
     // (e.g., when switching between SA panel and school panel tabs)
     CSRFT = _readCsrfCookie();
@@ -1189,6 +1187,17 @@ function post(url, data, cb) {
     var body = Object.keys(data).map(function(k) {
         return encodeURIComponent(k) + '=' + encodeURIComponent(data[k]);
     }).join('&');
+
+    // 2026-06-09 — Centralised ZenXii loading animation for every school_config
+    // AJAX call (all tabs). Ref-counted ZXLoader.show/hide pair so concurrent or
+    // nested posts behave. Pass {loader:false} to suppress (silent background
+    // calls), or {loader:'message…'} for a custom overlay message.
+    opts = opts || {};
+    var useLoader = (opts.loader !== false) && !!window.ZXLoader;
+    var loaderMsg = (typeof opts.loader === 'string') ? opts.loader : 'Loading…';
+    var loaderDone = false;
+    function hideLoader() { if (useLoader && !loaderDone) { loaderDone = true; ZXLoader.hide(); } }
+    if (useLoader) ZXLoader.show(loaderMsg);
 
     fetch(BASE + url, {
         method: 'POST',
@@ -1218,8 +1227,9 @@ function post(url, data, cb) {
         }
         return r.json();
     })
-    .then(function(d) { if (d.csrf_token) CSRFT = d.csrf_token; cb(d); })
+    .then(function(d) { hideLoader(); if (d.csrf_token) CSRFT = d.csrf_token; cb(d); })
     .catch(function(e) {
+        hideLoader();
         console.error('POST ' + url + ' failed:', e);
         var msg = (e && e.message) ? e.message : 'Network error — check console for details.';
         cb({ status: 'error', message: msg });
@@ -1280,7 +1290,13 @@ function saveProfile() {
     });
     post('school_config/save_profile', data, function(d) {
         toast(d.message || (d.status === 'success' ? 'Saved!' : d.message), d.status === 'success');
-    });
+        // Live-update the school name in the sidebar header (no reload needed).
+        if (d.status === 'success' && d.display_name) {
+            document.querySelectorAll('.g-school-name').forEach(function(el) {
+                el.textContent = d.display_name.toUpperCase();
+            });
+        }
+    }, { loader: 'Saving school details…' });
 }
 
 /* Logo upload */
@@ -1289,7 +1305,8 @@ document.getElementById('logoFile').addEventListener('change', function() {
     var fd = new FormData();
     fd.append('logo', this.files[0]);
     fd.append(CSRFN, CSRFT);
-    document.getElementById('logoMsg').textContent = 'Uploading...';
+    document.getElementById('logoMsg').textContent = '';
+    if (window.ZXLoader) ZXLoader.show('Uploading logo…');
     fetch(BASE + 'school_config/upload_logo', {
         method: 'POST',
         headers: { 'X-CSRF-Token': CSRFT },
@@ -1309,7 +1326,8 @@ document.getElementById('logoFile').addEventListener('change', function() {
             toast(d.message, false);
         }
     })
-    .catch(function() { toast('Upload failed.', false); });
+    .catch(function() { toast('Upload failed.', false); })
+    .finally(function() { if (window.ZXLoader) ZXLoader.hide(); });
 });
 
 /* Document upload (Holidays / Academic Calendar) */
@@ -1321,8 +1339,8 @@ function uploadDoc(inputId, docType, msgId, linkId) {
     fd.append('doc_type', docType);
     fd.append(CSRFN, CSRFT);
     var msg = document.getElementById(msgId);
-    msg.textContent = 'Uploading...';
-    msg.style.color = 'var(--t3)';
+    msg.textContent = '';
+    if (window.ZXLoader) ZXLoader.show('Uploading document…');
     fetch(BASE + 'school_config/upload_document', {
         method: 'POST',
         headers: { 'X-CSRF-Token': CSRFT },
@@ -1343,7 +1361,8 @@ function uploadDoc(inputId, docType, msgId, linkId) {
             toast(d.message, false);
         }
     })
-    .catch(function() { msg.textContent = 'Upload failed.'; toast('Upload failed.', false); });
+    .catch(function() { msg.textContent = 'Upload failed.'; toast('Upload failed.', false); })
+    .finally(function() { if (window.ZXLoader) ZXLoader.hide(); });
 }
 document.getElementById('docHolidays').addEventListener('change', function() {
     uploadDoc('docHolidays', 'holidays_calendar', 'docHolidaysMsg', 'docHolidaysLink');
@@ -1413,6 +1432,7 @@ function loadSessionStats(sessions) {
     // Only fetch once per tab visit; cheap endpoint but avoid spamming.
     if (loadSessionStats._inflight) return;
     loadSessionStats._inflight = true;
+    // Background enrichment — sessions are already on screen; don't block with the overlay.
     post('school_config/session_stats', {}, function(d) {
         loadSessionStats._inflight = false;
         if (d.status !== 'success' || !Array.isArray(d.stats)) return;
@@ -1420,7 +1440,7 @@ function loadSessionStats(sessions) {
         d.stats.forEach(function(r) { _sessStats[r.session] = r; });
         // Re-render with stats now populated.
         renderSessionsOnly(CFG.sessions || sessions, CFG.active_session || '');
-    });
+    }, { loader: false });
 }
 
 // Re-render without re-triggering stats fetch (avoids loop).
@@ -1535,13 +1555,13 @@ window.rollExecute = function() {
         if (!ok) return;
 
         var btn = document.getElementById('rollExecBtn');
-        btn.disabled = true; btn.innerHTML = '<i class="fa fa-refresh sc-spin"></i> Rolling over...';
+        btn.disabled = true;
 
         post('school_config/rollover_session', {
             from_session: from, to_session: to,
             copy_sections: copy, promote_students: prom, set_active: act,
         }, function(d) {
-            btn.disabled = false; btn.innerHTML = '<i class="fa fa-play"></i> Execute Rollover';
+            btn.disabled = false;
             toast(d.message, d.status === 'success');
             if (d.status === 'success') {
                 CFG.sessions = d.sessions || CFG.sessions;
@@ -1687,10 +1707,8 @@ window.rollFeesExecute = function() {
         if (!ok) return;
         var btn = document.getElementById('rollFeesExecBtn');
         btn.disabled = true;
-        btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Rolling over...';
         post('fees/year_rollover_execute', { new_session: to }, function(d) {
             btn.disabled = false;
-            btn.innerHTML = '<i class="fa fa-snowflake-o"></i> Freeze old session + carry forward';
             if (d.status !== 'success') {
                 toast(d.message || 'Rollover failed.', false);
                 return;
@@ -2055,10 +2073,10 @@ window.suggestNextSession = function() {
 
 window.checkSessions = function() {
     var btn = document.getElementById('checkSessBtn');
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-refresh sc-spin"></i> Checking...'; }
+    if (btn) { btn.disabled = true; }
     var box = document.getElementById('sessCheckResult');
     post('school_config/check_sessions', {}, function(d) {
-        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-stethoscope"></i> Consistency Check'; }
+        if (btn) { btn.disabled = false; }
         if (d.status !== 'success') { toast(d.message || 'Check failed.', false); return; }
         var healthy = d.healthy;
         var bg   = healthy ? 'rgba(16,185,129,.10)' : 'rgba(217,119,6,.10)';
@@ -2080,12 +2098,16 @@ window.checkSessions = function() {
     });
 };
 
-window.syncSessions = function() {
+// `silent` (passed when triggered by a Sessions-tab switch) does a background
+// refresh with no full-screen overlay and no success toast — the list is
+// already on screen from the initial load, so switching tabs shouldn't block
+// the page. An explicit "Sync from Firebase" button click shows the overlay.
+window.syncSessions = function(silent) {
     var btn = document.getElementById('syncSessBtn');
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-refresh sc-spin"></i> Syncing...'; }
+    if (btn) { btn.disabled = true; }
 
     post('school_config/sync_sessions', {}, function(d) {
-        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-refresh"></i> Sync from Firebase'; }
+        if (btn) { btn.disabled = false; }
 
         if (d.status === 'success') {
             CFG.sessions = d.sessions || [];
@@ -2099,11 +2121,11 @@ window.syncSessions = function() {
             // dropdown retains any stale <li>s (e.g. a session that was
             // deleted in Firebase Console) until full page reload.
             refreshHeaderSessList(d.sessions || [], act);
-            toast(d.message || 'Sessions refreshed from Firebase.');
-        } else {
+            if (!silent) toast(d.message || 'Sessions refreshed from Firebase.');
+        } else if (!silent) {
             toast(d.message || 'Sync failed.', false);
         }
-    });
+    }, silent ? { loader: false } : { loader: 'Syncing sessions…' });
 };
 
 window.addSession = function() {
@@ -2507,11 +2529,17 @@ var _availableStreams = []; // from server
 function loadAllSections() {
     var sess = document.getElementById('secSessSel').value;
     if (!sess) { toast('Select a session first.', false); return; }
-    document.getElementById('sectionMatrixLoader').style.display = 'block';
+    // Inline (scoped) loader inside the matrix area — NOT the full-screen overlay,
+    // so switching to the Sections tab doesn't blank the whole page.
+    var loaderEl = document.getElementById('sectionMatrixLoader');
+    loaderEl.innerHTML = '';
+    loaderEl.style.display = 'block';
+    var secLoaderH = (window.ZXLoader) ? ZXLoader.mount(loaderEl, { size: 96, message: 'Loading sections…' }) : null;
     document.getElementById('sectionMatrix').innerHTML = '';
     document.getElementById('secBulkBar').style.display = 'none';
 
     post('school_config/get_all_sections', { session: sess }, function(d) {
+        if (secLoaderH) secLoaderH.destroy();
         document.getElementById('sectionMatrixLoader').style.display = 'none';
         if (d.status !== 'success') { toast(d.message, false); return; }
         _secOriginal = {};
@@ -2861,11 +2889,9 @@ window.saveBulkSections = function() {
 
     var btn = document.getElementById('secBulkSaveBtn');
     btn.disabled = true;
-    btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Saving...';
 
     post('school_config/bulk_save_sections', { session: sess, changes: JSON.stringify(changes) }, function(d) {
         btn.disabled = false;
-        btn.innerHTML = '<i class="fa fa-check"></i> Save All Changes';
         toast(d.message, d.status === 'success');
 
         // 2026-05-15 Phase 3 — surface per-row failures. Phase 2 server-side
@@ -3198,14 +3224,12 @@ window.subSaveAll = function() {
 
     var btn = document.getElementById('subSaveBtn');
     btn.disabled = true;
-    btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Saving...';
 
     post('school_config/save_bulk_subjects', {
         class_key: _subClassKey,
         subjects: JSON.stringify(valid)
     }, function(d) {
         btn.disabled = false;
-        btn.innerHTML = '<i class="fa fa-save"></i> Save All Subjects';
         toast(d.message, d.status === 'success');
 
         // 2026-05-15 Phase 3 — surface per-subject failures so a
@@ -3406,12 +3430,15 @@ window.saveAllStreams = function() {
     var saved = 0, total = keys.length;
     var failed = [];
     var btn = document.querySelector('#streamsSaveBar button');
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Saving...'; }
+    if (btn) { btn.disabled = true; }
+    // One overlay for the whole sequential batch (per-call loaders suppressed below).
+    if (window.ZXLoader) ZXLoader.show('Saving streams…');
 
     // Save each stream via the existing save_stream endpoint
     function saveNext(i) {
         if (i >= keys.length) {
-            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-save"></i> Save All Streams'; }
+            if (btn) { btn.disabled = false; }
+            if (window.ZXLoader) ZXLoader.hide();
             // Keep save bar visible when any failed so retry is one click
             document.getElementById('streamsSaveBar').style.display = failed.length ? 'block' : 'none';
             renderBulkStreamFailures(failed);
@@ -3439,7 +3466,7 @@ window.saveAllStreams = function() {
                 });
             }
             saveNext(i + 1);
-        });
+        }, { loader: false });
     }
     saveNext(0);
 };
@@ -3679,6 +3706,7 @@ function renderRcPreview() {
             box.innerHTML = '<span class="rcc-asset-ph">Uploading…</span>';
             var fd = new FormData();
             fd.append('asset', file); fd.append('slot', slot); fd.append(CSRFN, CSRFT);
+            if (window.ZXLoader) ZXLoader.show('Uploading image…');
             fetch(BASE + 'school_config/upload_reportcard_asset', { method:'POST', headers:{ 'X-CSRF-Token':CSRFT }, body:fd })
             .then(function(r){ return r.json(); })
             .then(function(d){
@@ -3689,7 +3717,8 @@ function renderRcPreview() {
                 } else { _renderAssetThumb(slot); toast(d.message || 'Upload failed.', false); }
                 self.value = '';
             })
-            .catch(function(){ _renderAssetThumb(slot); toast('Upload failed.', false); self.value=''; });
+            .catch(function(){ _renderAssetThumb(slot); toast('Upload failed.', false); self.value=''; })
+            .finally(function(){ if (window.ZXLoader) ZXLoader.hide(); });
         });
     });
     // Asset remove

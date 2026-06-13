@@ -181,6 +181,26 @@ html{font-size:16px !important}
 /* ── Empty State ── */
 .ac-empty{text-align:center;padding:50px 20px;color:var(--t3)}
 .ac-empty i{font-size:2.2rem;display:block;margin-bottom:10px;opacity:.4}
+/* ── Shimmer / skeleton placeholders for first-time data load ── */
+@keyframes ac-shim{100%{transform:translateX(100%)}}
+.ac-shim{padding:4px 0}
+/* shared animated sweep — any skeleton block gets it */
+.ac-shim-bar,.ac-shim-cell,.ac-shim-inp,.ac-shim-pill,.ac-shim-chip,.ac-shim-lbl{position:relative;overflow:hidden;display:block;background:var(--bg3)}
+.ac-shim-bar::after,.ac-shim-cell::after,.ac-shim-inp::after,.ac-shim-pill::after,.ac-shim-chip::after,.ac-shim-lbl::after{content:'';position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,var(--gold-dim),transparent);animation:ac-shim 1.25s infinite}
+.ac-shim-bar{display:block;border-radius:6px;height:13px}
+.ac-shim-row{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:14px;padding:11px 12px;border-bottom:1px solid var(--border)}
+.ac-shim-row.hd .ac-shim-bar{height:9px;opacity:.7}
+.ac-shim-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.ac-shim-card{padding:14px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;display:flex;flex-direction:column;gap:9px}
+.ac-shim-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.ac-shim-cell{height:64px;border-radius:8px}
+/* full-card cover skeleton (for static multi-section panes like Period Scheduling) */
+.ac-shim-cover{position:absolute;inset:0;z-index:5;background:var(--bg2);padding:18px;overflow:auto}
+.ac-shim-sec{margin-bottom:20px}
+.ac-shim-lbl{height:10px;width:130px;border-radius:5px;margin-bottom:12px}
+.ac-shim-inp{height:34px;border-radius:6px}
+.ac-shim-pill{height:30px;width:72px;border-radius:6px}
+.ac-shim-chip{height:38px;width:96px;border-radius:8px;flex:0 0 auto}
 
 /* ── Day Tabs (Timetable) ── */
 .ac-day-tabs{display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap}
@@ -296,7 +316,7 @@ html{font-size:16px !important}
                 <h3><i class="fa fa-clock-o" style="color:var(--gold);margin-right:6px"></i>Period Scheduling</h3>
                 <button class="ac-btn ac-btn-s ac-btn-sm" style="margin-left:auto" onclick="AC.ps.load(this)"><i class="fa fa-refresh"></i> Refresh</button>
             </div>
-            <div class="ac-card-body">
+            <div class="ac-card-body" id="psCardBody" style="position:relative">
                 <!-- Current Schedule Summary -->
                 <div id="psCurrentSummary" style="margin-bottom:20px;padding:14px 18px;background:var(--bg3);border:1px solid var(--border);border-radius:10px">
                     <h4 style="font-size:12px;font-weight:700;color:var(--t2);margin-bottom:8px"><i class="fa fa-info-circle" style="color:var(--gold)"></i> Current Schedule</h4>
@@ -827,6 +847,77 @@ function withBtn(btn,promise){
     return promise.then(function(d){btn.classList.remove('loading');btn.disabled=false;return d})
                   .catch(function(e){btn.classList.remove('loading');btn.disabled=false;throw e});
 }
+/* Shimmer skeleton — fills a container with animated placeholders while its
+   first-time data is loading. type: 'table' | 'cards' | 'grid'. Replaced by
+   real content as soon as the render call sets innerHTML. */
+function acShim(target,type,opts){
+    var el=(typeof target==='string')?document.getElementById(target):target;
+    if(!el)return;
+    opts=opts||{};
+    var bar=function(w){return '<span class="ac-shim-bar" style="width:'+(w||'100%')+'"></span>'};
+    var html='';
+    if(type==='cards'){
+        var cards=opts.cards||4;
+        html='<div class="ac-shim ac-shim-cards">';
+        for(var c=0;c<cards;c++) html+='<div class="ac-shim-card">'+bar('55%')+bar('85%')+bar('40%')+'</div>';
+        html+='</div>';
+    } else if(type==='grid'){
+        var cells=opts.cells||42;
+        html='<div class="ac-shim ac-shim-grid">';
+        for(var g=0;g<cells;g++) html+='<div class="ac-shim-cell"></div>';
+        html+='</div>';
+    } else { // table
+        var rows=opts.rows||6, cols=opts.cols||5;
+        var widths=['70%','85%','60%','75%','50%','80%','65%'];
+        html='<div class="ac-shim"><div class="ac-shim-row hd">';
+        for(var h=0;h<cols;h++) html+=bar(widths[h%widths.length]);
+        html+='</div>';
+        for(var r=0;r<rows;r++){
+            html+='<div class="ac-shim-row">';
+            for(var k=0;k<cols;k++) html+=bar(widths[(r+k)%widths.length]);
+            html+='</div>';
+        }
+        html+='</div>';
+    }
+    el.innerHTML=html;
+}
+/* Overlay an opaque skeleton on top of a static multi-section pane (without
+   destroying its real markup). Returns {destroy()} to remove the overlay once
+   data is rendered. */
+function acShimCover(target,html){
+    var el=(typeof target==='string')?document.getElementById(target):target;
+    if(!el)return {destroy:function(){}};
+    var prev=el.querySelector('.ac-shim-cover');
+    if(prev&&prev.parentNode===el) el.removeChild(prev);
+    var cover=document.createElement('div');
+    cover.className='ac-shim-cover';
+    cover.innerHTML=html||'';
+    el.appendChild(cover);
+    return {destroy:function(){if(cover.parentNode)cover.parentNode.removeChild(cover);}};
+}
+/* Full skeleton for the Period Scheduling pane — mirrors its sections:
+   Current Schedule cards, School Timings inputs, Working Days pills,
+   Recess inputs, Timeline chips. */
+function acPsSkeletonHTML(){
+    var lbl='<span class="ac-shim-lbl"></span>';
+    var h='';
+    h+='<div class="ac-shim-sec">'+lbl+'<div class="ac-shim-cards">';
+    for(var i=0;i<4;i++) h+='<div class="ac-shim-card"><span class="ac-shim-bar" style="width:45%;height:9px"></span><span class="ac-shim-bar" style="width:80%"></span></div>';
+    h+='</div></div>';
+    h+='<div class="ac-shim-sec">'+lbl+'<div class="ac-row">';
+    for(var j=0;j<4;j++) h+='<div class="ac-fg" style="flex:1;min-width:140px"><span class="ac-shim-lbl" style="width:78px;margin-bottom:4px"></span><span class="ac-shim-inp"></span></div>';
+    h+='</div></div>';
+    h+='<div class="ac-shim-sec">'+lbl+'<div style="display:flex;gap:8px;flex-wrap:wrap">';
+    for(var k=0;k<7;k++) h+='<span class="ac-shim-pill"></span>';
+    h+='</div></div>';
+    h+='<div class="ac-shim-sec">'+lbl+'<div class="ac-row" style="max-width:380px">';
+    for(var r=0;r<2;r++) h+='<div class="ac-fg" style="flex:1;min-width:120px"><span class="ac-shim-lbl" style="width:66px;margin-bottom:4px"></span><span class="ac-shim-inp"></span></div>';
+    h+='</div></div>';
+    h+='<div class="ac-shim-sec">'+lbl+'<div style="display:flex;gap:6px;flex-wrap:wrap">';
+    for(var t=0;t<6;t++) h+='<span class="ac-shim-chip"></span>';
+    h+='</div></div>';
+    return h;
+}
 
 /* ── RBAC ── */
 var _role='<?= htmlspecialchars($admin_role ?? "Admin", ENT_QUOTES) ?>';
@@ -884,6 +975,7 @@ AC.sa = {
 
     init:function(){
         AC.sa._loaded=true;
+        acShim('saContent','table',{rows:5,cols:6});
         post('academic/get_subject_assignments').then(function(d){
             if(d.status!=='success'){
                 document.getElementById('saContent').innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i> '+esc(d.message||'Failed to load')+'</div>';
@@ -1263,11 +1355,13 @@ AC.sa = {
             return;
         }
 
-        withBtn(btn,post('academic/save_subject_assignments',{
+        if(window.ZXLoader) ZXLoader.show('Saving assignments…');
+        post('academic/save_subject_assignments',{
             class_key:AC.sa._currentClassKey||AC.sa._currentKey,
             section_key:AC.sa._currentSection||'', // Phase 4: per-section or class-wide
             subjects:JSON.stringify(AC.sa._currentSubs)
-        })).then(function(d){
+        }).then(function(d){
+            if(window.ZXLoader) ZXLoader.hide(true);
             if(d.status==='success'){
                 toast('Saved '+d.count+' subject assignments',true);
                 AC.sa._assignments[AC.sa._currentKey]=AC.sa._currentSubs.slice();
@@ -1282,6 +1376,9 @@ AC.sa = {
                     toast('Warning: '+d.warnings.join('; '),false);
                 }
             } else toast(d.message,false);
+        }).catch(function(e){
+            if(window.ZXLoader) ZXLoader.hide(true);
+            toast('Failed to save assignments',false);
         });
     },
 
@@ -1329,7 +1426,9 @@ AC.ps = {
     },
 
     load:function(btn){
+        var _cov=acShimCover('psCardBody',acPsSkeletonHTML());
         withBtn(btn,post('academic/get_timetable_settings')).then(function(d){
+            _cov.destroy();
             if(d.status!=='success'){
                 document.getElementById('psSummaryContent').innerHTML='<span style="color:var(--t3)">No schedule configured yet. Set your timings below and save.</span>';
                 return;
@@ -1339,6 +1438,7 @@ AC.ps = {
             AC.ps._fillForm(d);
             AC.ps._renderTimeline();
         }).catch(function(){
+            _cov.destroy();
             document.getElementById('psSummaryContent').innerHTML='<span style="color:#dc2626"><i class="fa fa-exclamation-triangle"></i> Failed to load schedule</span>';
         });
     },
@@ -1495,16 +1595,21 @@ AC.ps = {
         });
         if(workingDays.length===0){toast('Select at least one working day',false);return}
 
-        withBtn(btn,post('academic/save_timetable_settings',{
+        if(window.ZXLoader) ZXLoader.show('Saving schedule…');
+        post('academic/save_timetable_settings',{
             start_time:start,end_time:end,no_of_periods:periods,
             recesses:JSON.stringify(recesses),
             working_days:JSON.stringify(workingDays)
-        })).then(function(d){
+        }).then(function(d){
+            if(window.ZXLoader) ZXLoader.hide(true);
             if(d.status==='success'){
                 toast('Schedule saved (period = '+d.length_of_period+' min)',true);
                 AC.ps.load(); // Refresh summary
                 if(AC.tt._loaded) AC.tt.load();
             } else toast(d.message,false);
+        }).catch(function(e){
+            if(window.ZXLoader) ZXLoader.hide(true);
+            toast('Failed to save schedule',false);
         });
     },
 
@@ -1618,6 +1723,7 @@ AC.cur = {
         var cs=document.getElementById('curClass').value;
         var sub=document.getElementById('curSubject').value;
         if(!cs||!sub){toast('Select class and subject first',false);return}
+        acShim('curTopics','table',{rows:6,cols:6});
         withBtn(btn,post('academic/get_curriculum',{class_section:cs,subject:sub})).then(function(d){
             if(d.status==='success'){
                 AC.cur.topics = d.topics || [];
@@ -1801,6 +1907,7 @@ AC.cal = {
         var mm=(AC.cal.month+1).toString().padStart(2,'0');
         var ym=AC.cal.year+'-'+mm;
         document.getElementById('calMonthLabel').textContent=new Date(AC.cal.year,AC.cal.month,1).toLocaleString('en',{month:'long',year:'numeric'});
+        acShim('calGrid','grid',{cells:42});
         post('academic/get_calendar_events',{month:ym}).then(function(d){
             AC.cal.events=(d.status==='success')?(d.events||[]):[];
             AC.cal.renderGrid();
@@ -1942,7 +2049,7 @@ AC.tt = {
     load:function(btn){
         AC.tt._loaded=true;
         if(btn){btn.classList.add('loading');btn.disabled=true}
-        document.getElementById('ttGridWrap').innerHTML='<div class="ac-empty"><i class="fa fa-spinner fa-spin"></i> Loading timetable data...</div>';
+        acShim('ttGridWrap','table',{rows:8,cols:7});
         loadSharedData(function(){
             var teacherPromise=(_teachers.length>0)?Promise.resolve():post('academic/get_all_teachers').then(function(d){
                 if(d.status==='success') _teachers=d.teachers||[];
@@ -3100,6 +3207,7 @@ AC.sub = {
     /* ── Load all substitute records ── */
     load:function(btn){
         var date=document.getElementById('subDateFilter').value||'';
+        acShim('subList','table',{rows:5,cols:8});
         withBtn(btn,post('academic/get_substitutes',{date:date})).then(function(d){
             AC.sub.records=(d.status==='success')?(d.substitutes||[]):[];
             AC.sub.render();
@@ -3260,7 +3368,7 @@ AC.wl = {
         if(btn){btn.classList.add('loading');btn.disabled=true}
         // Ensure timetable data is available
         if(!AC.tt._loaded){
-            document.getElementById('wlTable').innerHTML='<div class="ac-empty"><i class="fa fa-spinner fa-spin"></i> Loading timetable data...</div>';
+            acShim('wlTable','table',{rows:7,cols:6});
             loadSharedData(function(){
                 var teacherPromise=(_teachers.length>0)?Promise.resolve():post('academic/get_all_teachers').then(function(d){
                     if(d.status==='success') _teachers=d.teachers||[];
@@ -3609,6 +3717,7 @@ AC.lp = {
 
     _loadDaily:function(){
         var s=AC.lp._state;
+        acShim('lpDailyContent','table',{rows:6,cols:5});
         // 1. Read the day's cells from cached master timetable
         var dayName=AC.lp._dayOfWeek(s.date);
         var label=s.className+' ('+s.sectionLabel+')';
@@ -3822,7 +3931,7 @@ AC.lp = {
         if(!s.teacherId){ toast('Pick a teacher',false); return; }
         var label=new Date(s.monthY, s.monthM-1, 1).toLocaleString(undefined,{month:'long',year:'numeric'});
         document.getElementById('lpMonthLabel').textContent=label;
-        document.getElementById('lpCalContent').innerHTML='<div class="ac-empty"><i class="fa fa-spinner fa-spin"></i> Loading…</div>';
+        acShim('lpCalContent','grid',{cells:35});
         return post('academic/get_monthly_plan',{teacher_id:s.teacherId, year:s.monthY, month:s.monthM}).then(function(d){
             if(d.status!=='success'){ toast(d.message||'Failed',false); return; }
             AC.lp._renderMonth(d);

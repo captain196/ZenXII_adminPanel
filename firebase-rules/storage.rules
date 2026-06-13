@@ -137,15 +137,20 @@ service firebase.storage {
                    && request.auth.token.school_id == schoolId;
     }
 
-    // ─── L6: SCHOOL CONFIG (logo, holidays, academic, circulars) ────────
-    // Covers School_config::upload_logo / upload_document AND
-    // Communication.php circular attachments.
-    // Paths:
-    //   schools/{schoolId}/logo/{file=**}
-    //   schools/{schoolId}/holidays/{file=**}
-    //   schools/{schoolId}/academic/{file=**}
-    //   schools/{schoolId}/circulars/{file=**}
-    // Broad `{path=**}` covers all four sub-trees and any future additions
+    // ─── L6: CANONICAL SCHOOL TREE — schools/{schoolId}/... ─────────────
+    // As of 2026-06-13 this is the ONE canonical, ID-keyed root for every
+    // file a school owns. schoolId is the SCH_XXXXXX id (== auth token
+    // school_id claim), NOT the school name or login code.
+    // Sub-trees and their writers:
+    //   schools/{schoolId}/logo|logos/{file}            School_config::upload_logo, Superadmin_schools
+    //   schools/{schoolId}/holidays|academic/{file}     School_config::upload_document
+    //   schools/{schoolId}/reportcard/{file}            School_config report-card template
+    //   schools/{schoolId}/circulars/{file}             Communication.php attachments
+    //   schools/{schoolId}/students/{userId}/profile|documents/...   Sis.php (admission + docs page)
+    //   schools/{schoolId}/staff/{staffId}/profile|documents/...     Staff.php
+    //   schools/{schoolId}/events/{eventId}/...          Schools.php gallery
+    //   schools/{schoolId}/stories/{adminId}/...         Stories.php
+    // Broad `{path=**}` covers all sub-trees and any future additions
     // under schools/{schoolId}/ without rule churn.
     match /schools/{schoolId}/{path=**} {
       allow read:  if request.auth != null
@@ -167,9 +172,14 @@ service firebase.storage {
     }
 
     // ════════════════════════════════════════════════════════════════════
-    //  LEGACY {schoolName}/... PATH SCHEME
+    //  LEGACY PATH SCHEMES — pre-2026-06-13 files only
     //  (See CRITICAL INVARIANT block at top of file.)
     // ════════════════════════════════════════════════════════════════════
+    // KEEP these blocks: existing files uploaded before the 2026-06-13
+    // canonical cutover still live at these paths and their stored download
+    // URLs must keep resolving. NEW writes no longer land here — they all go
+    // to schools/{schoolId}/... (L6 above). The L7 Students/{schoolId}/ and
+    // G1–G3 {schoolName}/ blocks are frozen legacy, not active write targets.
     // The blocks below cover the older path scheme where the school
     // identifier is the FIRST path segment rather than nested under
     // 'schools/'. Each block uses an explicit literal second segment

@@ -1665,6 +1665,27 @@ class FeeCollectionService
                     log_message('error', "submit_fees: deferred summary refresh failed for {$userId}: " . $e->getMessage());
                 }
 
+                // Dashboard fee-collection rollup — increment this receipt's
+                // amount into the maintained rollup so the dashboard renders
+                // the fee chart/breakdown WITHOUT scanning receipts. Reads the
+                // just-written receipt for the canonical allocated_amount.
+                // Post-response + best-effort; the dashboard cross-check
+                // (count+sum aggregation) rebuilds if this is ever dropped.
+                try {
+                    $schoolFs = (string) ($defaulterCtx['schoolFs'] ?? '');
+                    if ($schoolFs !== '') {
+                        $rcpt = $firebase->firestoreGet('feeReceipts', "{$schoolFs}_{$receiptKey}");
+                        if (is_array($rcpt)) {
+                            $amt = (float) ($rcpt['allocated_amount'] ?? $rcpt['allocatedAmount'] ?? $rcpt['amount'] ?? 0);
+                            $dt  = (string) ($rcpt['paidAt'] ?? $rcpt['date'] ?? date('Y-m-d'));
+                            $ci->load->library('Fee_collection_rollup');
+                            Fee_collection_rollup::applyDelta($firebase, $schoolFs, $sessionYear, $amt, $dt, 1);
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    log_message('error', "submit_fees: deferred rollup increment failed for {$receiptKey}: " . $e->getMessage());
+                }
+
                 // Log timings including deferred phases — reveals whether
                 // the 44s the user sees is on the critical path or if PHP
                 // is holding the connection open for the shutdown handler.

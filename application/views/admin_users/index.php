@@ -58,9 +58,6 @@
 .au-perm-chip.selected{background:var(--gold-dim);color:var(--gold);border-color:var(--gold-ring);font-weight:600;}
 .au-perm-chip:hover{border-color:var(--gold-ring);}
 
-/* Log filter active state */
-.log-filter.active{background:var(--gold) !important;color:#fff !important;border-color:var(--gold) !important;font-weight:600;}
-
 /* Section box */
 .au-box{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:18px;}
 .au-box-head{font-size:14px;font-weight:700;color:var(--t1);font-family:var(--font-b);margin-bottom:14px;
@@ -86,7 +83,7 @@
         <div class="au-tab active" data-tab="dashboard"><i class="fa fa-dashboard" style="margin-right:5px;"></i>Dashboard</div>
         <div class="au-tab" data-tab="admins"><i class="fa fa-user-circle" style="margin-right:5px;"></i>Admin Users</div>
         <div class="au-tab" data-tab="roles"><i class="fa fa-key" style="margin-right:5px;"></i>Roles &amp; Permissions</div>
-        <div class="au-tab" data-tab="logs"><i class="fa fa-history" style="margin-right:5px;"></i>Login Activity</div>
+        <div class="au-tab" data-tab="logs"><i class="fa fa-history" style="margin-right:5px;"></i>Last Login</div>
     </div>
 
     <!-- ═══════════════════════════════════════════ DASHBOARD ═══ -->
@@ -99,12 +96,12 @@
         </div>
 
         <div class="au-box">
-            <div class="au-box-head"><i class="fa fa-history" style="color:var(--gold);"></i> Recent Login Activity</div>
+            <div class="au-box-head"><i class="fa fa-history" style="color:var(--gold);"></i> Recent Logins</div>
             <div class="au-wrap" style="max-height:320px;">
                 <table class="au-table">
-                    <thead><tr><th>Time</th><th>Admin</th><th>IP</th><th>Device</th><th>Status</th></tr></thead>
+                    <thead><tr><th>Time</th><th>Admin</th><th>IP Address</th></tr></thead>
                     <tbody id="dashRecentBody">
-                        <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--t3);"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr>
+                        <tr><td colspan="3" style="text-align:center;padding:24px;color:var(--t3);"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -116,8 +113,9 @@
 
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
             <input type="text" id="adminSearch" placeholder="Search by name, email, role..." class="form-control"
+                aria-label="Search admins by name, email, or role"
                 style="width:260px;font-size:12.5px;height:34px;">
-            <?php if (in_array($admin_role, ['Super Admin', 'School Super Admin', 'Admin', 'Principal'])): ?>
+            <?php if (in_array($admin_role, ['Super Admin', 'School Super Admin', 'Admin'])): ?>
             <div style="margin-left:auto;">
                 <button class="au-btn au-btn-p" id="addAdminBtn"><i class="fa fa-plus"></i> Add Admin</button>
             </div>
@@ -205,20 +203,17 @@
     <div class="au-pane" id="pane-logs">
 
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
-            <div style="display:flex;gap:5px;">
-                <button class="au-btn au-btn-sm au-btn-s log-filter active" data-filter="all">All</button>
-                <button class="au-btn au-btn-sm au-btn-s log-filter" data-filter="success">Success</button>
-                <button class="au-btn au-btn-sm au-btn-s log-filter" data-filter="failed" style="color:#dc2626;">Failed</button>
-            </div>
+            <span style="font-size:11.5px;color:var(--t3);font-family:var(--font-m);">Most recent login per admin</span>
             <input type="text" id="logSearch" placeholder="Filter admin, IP..." class="form-control"
+                aria-label="Filter logins by admin or IP"
                 style="width:200px;font-size:12.5px;height:30px;margin-left:auto;">
         </div>
 
         <div class="au-wrap">
             <table class="au-table">
-                <thead><tr><th>Time</th><th>Admin</th><th>IP Address</th><th>Device</th><th>Status</th></tr></thead>
+                <thead><tr><th>Time</th><th>Admin</th><th>IP Address</th></tr></thead>
                 <tbody id="logsTbody">
-                    <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--t3);"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr>
+                    <tr><td colspan="3" style="text-align:center;padding:24px;color:var(--t3);"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -250,12 +245,18 @@
                     </div>
                     <div class="row">
                         <div class="col-sm-6"><div class="au-fg"><label>Phone</label><input type="text" id="aPhone" maxlength="20"></div></div>
-                        <div class="col-sm-6"><div class="au-fg"><label>Role *</label><select id="aRole"><option value="">Select role...</option></select></div></div>
+                        <div class="col-sm-6"><div class="au-fg"><label>Role *</label><select id="aRole" required><option value="">Select role...</option></select></div></div>
                     </div>
                     <div class="row" id="passwordRow">
-                        <div class="col-sm-6"><div class="au-fg"><label>Password *</label><input type="password" id="aPassword" minlength="8"></div></div>
+                        <div class="col-sm-6"><div class="au-fg"><label>Password *</label>
+                            <div style="position:relative;">
+                                <input type="password" id="aPassword" minlength="8" style="width:100%;padding-right:36px;">
+                                <button type="button" id="aPwToggle" tabindex="-1" aria-label="Show password"
+                                    style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--t3);cursor:pointer;padding:0;font-size:13px;line-height:1;"><i class="fa fa-eye"></i></button>
+                            </div>
+                        </div></div>
                         <div class="col-sm-6" style="display:flex;align-items:flex-end;padding-bottom:12px;">
-                            <span style="font-size:11px;color:var(--t3);">Min 8 characters. Stored as bcrypt hash.</span>
+                            <span style="font-size:11px;color:var(--t3);">8–72 chars, incl. one uppercase, one lowercase, and a digit.</span>
                         </div>
                     </div>
                 </div>
@@ -284,7 +285,9 @@
                     <p style="font-size:12.5px;color:var(--t2);margin-bottom:12px;">
                         Reset password for <strong id="resetPwName"></strong>
                     </p>
-                    <div class="au-fg"><label>New Password *</label><input type="password" id="resetPwInput" minlength="8" required></div>
+                    <div class="au-fg"><label>New Password *</label><input type="password" id="resetPwInput" minlength="8" required>
+                        <span style="font-size:11px;color:var(--t3);margin-top:3px;">8–72 chars, one upper, one lower, one digit.</span>
+                    </div>
                 </div>
                 <div class="modal-footer" style="border-color:var(--border);">
                     <button type="button" class="au-btn au-btn-s" data-dismiss="modal">Cancel</button>
@@ -324,6 +327,10 @@
                         <div style="font-size:14px;font-weight:700;color:#dc2626;font-family:var(--font-m);letter-spacing:.5px;" id="credPassword"></div>
                     </div>
                 </div>
+                <p style="font-size:11.5px;color:var(--t2);margin:0 0 8px;line-height:1.5;">
+                    <i class="fa fa-sign-in" style="color:var(--gold);margin-right:4px;"></i>
+                    They sign in with their <strong>Admin ID</strong> (<span id="credLoginId" style="font-family:var(--font-m);"></span>) and this password — not the email address.
+                </p>
                 <p style="font-size:11.5px;color:var(--t3);margin:0;line-height:1.5;">
                     <i class="fa fa-exclamation-triangle" style="color:#f59e0b;margin-right:4px;"></i>
                     Share these credentials securely. The password cannot be retrieved later.
@@ -348,19 +355,47 @@ var MODULES = <?= json_encode($available_modules ?? []) ?>;
 function esc(s){ return $('<div>').text(s||'').html(); }
 function ts(s){ return (s||'').substring(0,19).replace('T',' '); }
 function csrf(extra){ var o={}; if(typeof csrfName!=='undefined') o[csrfName]=csrfToken; return $.extend(o,extra||{}); }
+// Mirror of the server-side rule (create_admin / reset_password / change_my_password).
+function pwError(pw){
+    pw = pw || '';
+    if(pw.length < 8 || pw.length > 72) return 'Password must be 8–72 characters.';
+    if(!/[A-Z]/.test(pw) || !/[a-z]/.test(pw) || !/[0-9]/.test(pw))
+        return 'Password must contain an uppercase letter, a lowercase letter, and a digit.';
+    return '';
+}
 function toast(msg,ok){var t=$('<div style="position:fixed;top:20px;right:20px;z-index:99999;padding:12px 20px;border-radius:8px;font-size:.85rem;color:#fff;box-shadow:0 4px 12px rgba(0,0,0,.15);background:'+(ok?'var(--gold)':'#dc2626')+'">'+esc(msg)+'</div>');$('body').append(t);setTimeout(function(){t.fadeOut(300,function(){t.remove()})},3000);}
 
-/* ── Tab switching ─────────────────────────────────────────────── */
-$('.au-tab').on('click', function(){
-    $('.au-tab').removeClass('active');
-    $(this).addClass('active');
+/* ── Tab switching (ARIA tablist + keyboard nav) ───────────────── */
+var $tabs = $('.au-tab');
+$('.au-tabs').attr('role','tablist');
+$tabs.attr('role','tab').each(function(){
     var t = $(this).attr('data-tab');
+    var active = $(this).hasClass('active');
+    $(this).attr({tabindex: active?'0':'-1', 'aria-selected': active?'true':'false', id:'tab-'+t, 'aria-controls':'pane-'+t});
+    $('#pane-'+t).attr({role:'tabpanel', 'aria-labelledby':'tab-'+t});
+});
+
+function activateTab($tab, focus){
+    var t = $tab.attr('data-tab');
+    $tabs.removeClass('active').attr({tabindex:'-1', 'aria-selected':'false'});
+    $tab.addClass('active').attr({tabindex:'0', 'aria-selected':'true'});
+    if(focus) $tab.focus();
     $('.au-pane').removeClass('active');
     $('#pane-'+t).addClass('active');
     if(t==='dashboard') loadDashboard();
     if(t==='admins')    loadAdmins();
     if(t==='roles')     loadRoles();
     if(t==='logs')      loadLogs();
+}
+
+$tabs.on('click', function(){ activateTab($(this), false); });
+$tabs.on('keydown', function(e){
+    var idx = $tabs.index(this), n = $tabs.length;
+    if(e.key==='ArrowRight'||e.key==='ArrowDown'){ e.preventDefault(); activateTab($tabs.eq((idx+1)%n), true); }
+    else if(e.key==='ArrowLeft'||e.key==='ArrowUp'){ e.preventDefault(); activateTab($tabs.eq((idx-1+n)%n), true); }
+    else if(e.key==='Home'){ e.preventDefault(); activateTab($tabs.first(), true); }
+    else if(e.key==='End'){ e.preventDefault(); activateTab($tabs.last(), true); }
+    else if(e.key==='Enter'||e.key===' '){ e.preventDefault(); activateTab($(this), false); }
 });
 
 /* ══════════════════════════════════ DASHBOARD ══════════════════ */
@@ -371,16 +406,14 @@ function loadDashboard(){
         $('#kpi-active').text(r.active);
         $('#kpi-disabled').text(r.disabled);
         if(!r.recent||!r.recent.length){
-            $('#dashRecentBody').html('<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--t3);">No login activity yet.</td></tr>');
+            $('#dashRecentBody').html('<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--t3);">No login activity yet.</td></tr>');
             return;
         }
         var h = r.recent.map(function(l){
-            var st = (l.status||'success')==='success' ? '<span class="au-badge au-b-green">Success</span>' : '<span class="au-badge au-b-red">Failed</span>';
+            var online = l.isOnline ? ' <span class="au-badge au-b-green" style="font-size:9px;">Online</span>' : '';
             return '<tr><td style="font-size:11.5px;font-family:var(--font-m);color:var(--t3);">'+esc(ts(l.loginTime))+'</td>'
-                +'<td>'+esc(l.adminName||l.adminId||'')+'<div style="font-size:10px;color:var(--t3);">'+esc(l.adminId||'')+'</div></td>'
-                +'<td style="font-size:11.5px;font-family:var(--font-m);">'+esc(l.ipAddress||'')+'</td>'
-                +'<td style="font-size:11.5px;color:var(--t3);">'+esc(l.device||'-')+'</td>'
-                +'<td>'+st+'</td></tr>';
+                +'<td>'+esc(l.adminName||l.adminId||'')+online+'<div style="font-size:10px;color:var(--t3);">'+esc(l.adminId||'')+'</div></td>'
+                +'<td style="font-size:11.5px;font-family:var(--font-m);">'+esc(l.ipAddress||'')+'</td></tr>';
         }).join('');
         $('#dashRecentBody').html(h);
     },'json');
@@ -414,10 +447,10 @@ function renderAdmins(){
         var aid = esc(a.adminId);
         var aname = esc(a.name);
         var acts = '<div style="display:flex;gap:4px;flex-wrap:wrap;">';
-        acts += '<button class="au-btn au-btn-sm au-btn-s act-edit" data-id="'+aid+'"><i class="fa fa-pencil"></i></button>';
         if(isAdmin){
-            acts += '<button class="au-btn au-btn-sm au-btn-s act-resetpw" data-id="'+aid+'" data-name="'+aname+'" title="Reset Password"><i class="fa fa-key"></i></button>';
+            acts += '<button class="au-btn au-btn-sm au-btn-s act-edit" data-id="'+aid+'" title="Edit"><i class="fa fa-pencil"></i></button>';
             if(!isSelf){
+                acts += '<button class="au-btn au-btn-sm au-btn-s act-resetpw" data-id="'+aid+'" data-name="'+aname+'" title="Reset Password"><i class="fa fa-key"></i></button>';
                 var toggleSt = (a.status||'active')==='active' ? 'disabled' : 'active';
                 var toggleIc = toggleSt==='disabled' ? 'fa-ban' : 'fa-check';
                 acts += '<button class="au-btn au-btn-sm au-btn-s act-toggle" data-id="'+aid+'" data-status="'+toggleSt+'" title="'+(toggleSt==='disabled'?'Disable':'Enable')+'"><i class="fa '+toggleIc+'"></i></button>';
@@ -445,6 +478,8 @@ $('#addAdminBtn').on('click', function(){
     if(!isAdmin){ alert('Only Admin role can create administrators.'); return; }
     $('#editAdminId').val('');
     $('#adminForm')[0].reset();
+    $('#aPassword').attr('type','password');
+    $('#aPwToggle').attr('aria-label','Show password').find('i').attr('class','fa fa-eye');
     $('#autoIdNotice').show();
     $('#passwordRow').show();
     $('#adminModalTitle').html('<i class="fa fa-user-plus" style="color:var(--gold);margin-right:8px;"></i>Add Admin');
@@ -453,8 +488,13 @@ $('#addAdminBtn').on('click', function(){
 });
 
 function loadRoleOptions(selected){
+    $('#aRole').html('<option value="">Loading roles…</option>');
     $.post(B+'admin_users/get_roles',csrf(),function(r){
-        if(r.status!=='success') return;
+        if(r.status!=='success'){
+            $('#aRole').html('<option value="">Select role...</option>');
+            toast(r.message||'Failed to load roles.',false);
+            return;
+        }
         _roles = r.roles||[];
         var opts = '<option value="">Select role...</option>';
         var tierLabels = {1:'Full Access',2:'Leadership',3:'Department Heads',4:'Operational Staff',5:'Specialist Roles',6:'Minimal Access',7:'Custom Roles'};
@@ -470,8 +510,20 @@ function loadRoleOptions(selected){
         });
         if(lastTier !== 0) opts += '</optgroup>';
         $('#aRole').html(opts);
-    },'json');
+    },'json').fail(function(){
+        $('#aRole').html('<option value="">Select role...</option>');
+        toast('Network error loading roles.',false);
+    });
 }
+
+// Show/hide password toggle (create modal)
+$('#aPwToggle').on('click', function(){
+    var $i = $('#aPassword');
+    var show = $i.attr('type') === 'password';
+    $i.attr('type', show ? 'text' : 'password');
+    $(this).attr('aria-label', show ? 'Hide password' : 'Show password')
+           .find('i').attr('class', show ? 'fa fa-eye-slash' : 'fa fa-eye');
+});
 
 // Edit Admin (delegated)
 $(document).on('click', '.act-edit', function(){
@@ -495,7 +547,12 @@ $('#adminForm').on('submit', function(e){
     var url = isEdit ? B+'admin_users/update_admin' : B+'admin_users/create_admin';
     var payload = { name:$('#aName').val(), email:$('#aEmail').val(), phone:$('#aPhone').val(), role:$('#aRole').val() };
     if(isEdit) payload.admin_id = id;
-    else { payload.password = $('#aPassword').val(); }
+    else {
+        var pw = $('#aPassword').val();
+        var pe = pwError(pw);
+        if(pe){ toast(pe,false); $('#aPassword').focus(); return; }
+        payload.password = pw;
+    }
 
     var $btn = $('#saveAdminBtn').prop('disabled',true);
     $.post(url, csrf(payload), function(r){
@@ -505,6 +562,7 @@ $('#adminForm').on('submit', function(e){
             if(!isEdit && r.admin_id){
                 // Show credentials dialog for newly created admin
                 $('#credAdminId').text(r.admin_id);
+                $('#credLoginId').text(r.admin_id);
                 $('#credName').text(r.name||payload.name);
                 $('#credRole').text(r.role||payload.role);
                 $('#credPassword').text(r.password||'********');
@@ -554,7 +612,8 @@ $(document).on('click', '.act-resetpw', function(){
 $('#resetPwForm').on('submit', function(e){
     e.preventDefault();
     var pw = $('#resetPwInput').val();
-    if(pw.length<8){ alert('Password must be at least 8 characters.'); return; }
+    var pe = pwError(pw);
+    if(pe){ toast(pe,false); $('#resetPwInput').focus(); return; }
     $.post(B+'admin_users/reset_password',csrf({admin_id:$('#resetPwAdminId').val(), new_password:pw}),function(r){
         if(r.status==='success'){ $('#resetPwModal').modal('hide'); toast(r.message,true); }
         else { toast(r.message,false); }
@@ -690,48 +749,37 @@ $('#roleForm').on('submit', function(e){
 
 /* ══════════════════════════════════ LOGIN ACTIVITY ═════════════ */
 var _logs = [];
-var _logFilter = 'all';
 
 function loadLogs(){
     $.post(B+'admin_users/get_login_logs',csrf(),function(r){
         if(r.status!=='success') return;
         _logs = r.logs||[];
         renderLogs();
-        $('#logsMeta').text(r.total+' total entries'+(r.total>200?' (showing 200)':''));
+        $('#logsMeta').text(r.total+' admin'+(r.total===1?'':'s')+' with a recorded login');
     },'json');
 }
 
 function renderLogs(){
     var q = ($('#logSearch').val()||'').toLowerCase();
     var rows = _logs.filter(function(l){
-        if(_logFilter!=='all' && (l.status||'success')!==_logFilter) return false;
         if(q && (l.adminId||'').toLowerCase().indexOf(q)<0 && (l.adminName||'').toLowerCase().indexOf(q)<0 && (l.ipAddress||'').toLowerCase().indexOf(q)<0) return false;
         return true;
     });
     if(!rows.length){
-        $('#logsTbody').html('<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--t3);">No matching entries.</td></tr>');
+        $('#logsTbody').html('<tr><td colspan="3" style="text-align:center;padding:24px;color:var(--t3);">No matching entries.</td></tr>');
         return;
     }
     var h = rows.map(function(l){
-        var st = (l.status||'success')==='success' ? '<span class="au-badge au-b-green">Success</span>' : '<span class="au-badge au-b-red">Failed</span>';
         var online = l.isOnline ? ' <span class="au-badge au-b-green" style="font-size:9px;">Online</span>' : '';
         return '<tr>'
             +'<td style="font-size:11.5px;font-family:var(--font-m);color:var(--t3);">'+esc(ts(l.loginTime))+'</td>'
             +'<td>'+esc(l.adminName||l.adminId||'')+online+'<div style="font-size:10px;color:var(--t3);">'+esc(l.adminId||'')+'</div></td>'
-            +'<td style="font-size:11.5px;font-family:var(--font-m);">'+esc(l.ipAddress||'')+'</td>'
-            +'<td style="font-size:11.5px;color:var(--t3);">'+esc(l.device||'-')+'</td>'
-            +'<td>'+st+'</td></tr>';
+            +'<td style="font-size:11.5px;font-family:var(--font-m);">'+esc(l.ipAddress||'')+'</td></tr>';
     }).join('');
     $('#logsTbody').html(h);
 }
 
 $('#logSearch').on('input', renderLogs);
-$(document).on('click', '.log-filter', function(){
-    $('.log-filter').removeClass('active');
-    $(this).addClass('active');
-    _logFilter = $(this).attr('data-filter');
-    renderLogs();
-});
 
 /* ── Init ──────────────────────────────────────────────────────── */
 loadDashboard();

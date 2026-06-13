@@ -154,6 +154,20 @@ class Firestore_service
     public function session(): string { return $this->session; }
     public function isReady(): bool { return $this->ready; }
 
+    /**
+     * Cache key for a list snapshot of a collection (students / staff / …),
+     * scoped to school + session so every admin context has its own entry.
+     * Exposed publicly so the reader (controller) and the writer-side bust
+     * hook (_bustDashboard) always derive an identical key.
+     */
+    public function listCacheKey(string $name): string
+    {
+        return 'sis_' . $name . '_list_' . md5($this->schoolId . '|' . $this->session);
+    }
+    // Back-compat alias — Sis::search_student already calls this.
+    public function studentsListCacheKey(): string { return $this->listCacheKey('students'); }
+    public function staffListCacheKey(): string     { return $this->listCacheKey('staff'); }
+
     // ══════════════════════════════════════════════════════════════════
     //  DOCUMENT ID BUILDERS
     // ══════════════════════════════════════════════════════════════════
@@ -208,6 +222,24 @@ class Firestore_service
         return self::classKey($className) . '/' . self::sectionKey($section);
     }
 
+    /**
+     * Normalize a DOB string to a "MM-DD" token for birthday matching.
+     * Mirrors the dashboard's DOB parsing: handles "YYYY-MM-DD…" (ISO) and
+     * "DD/MM/YYYY" / "DD-MM-YYYY" (Indian). Returns '' when unparseable.
+     */
+    public static function birthMonthDay(string $dob): string
+    {
+        $dob = trim($dob);
+        if ($dob === '') return '';
+        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $dob, $m)) {
+            return $m[2] . '-' . $m[3];                 // ISO: YYYY-MM-DD
+        }
+        if (preg_match('/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})/', $dob, $m)) {
+            return $m[2] . '-' . $m[1];                 // Indian: DD/MM/YYYY
+        }
+        return '';
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //  CRUD OPERATIONS
     // ══════════════════════════════════════════════════════════════════
@@ -244,6 +276,7 @@ class Firestore_service
         try {
             $result = $this->client->setDocument($collection, $docId, $data, $merge);
             $this->_track(microtime(true) - $t, !$result);
+            if ($result) $this->_bustDashboard($collection);
             return $result;
         } catch (\Exception $e) {
             $this->_track(microtime(true) - $t, true);
@@ -262,12 +295,54 @@ class Firestore_service
         try {
             $result = $this->client->updateDocument($collection, $docId, $data);
             $this->_track(microtime(true) - $t, !$result);
+            if ($result) $this->_bustDashboard($collection);
             return $result;
         } catch (\Exception $e) {
             $this->_track(microtime(true) - $t, true);
             log_message('error', "Firestore_service::update({$collection}/{$docId}) failed: " . $e->getMessage());
             return false;
         }
+    }
+
+    /**
+     * Bust the admin dashboard cache when a dashboard-visible collection is
+     * written, so counts/attendance/events refresh on the next load instead
+     * of waiting out the TTL. Watchlist-gated + de-duped per request (in the
+     * cache lib), and wrapped so it can never break a write. Batch-based
+     * writes (fee receipts, bulk attendance) bypass these primitives and are
+     * busted explicitly at their own call sites.
+     */
+    private function _bustDashboard(string $collection): void
+    {
+        static $watch = [
+            'schools' => 1, 'students' => 1, 'staff' => 1, 'sections' => 1, 'events' => 1,
+            'attendance' => 1, 'attendanceSummary' => 1,
+            'feeReceipts' => 1, 'feeDefaulters' => 1,
+        ];
+        if (!isset($watch[$collection]) || $this->schoolId === '') return;
+        try {
+            $CI =& get_instance();
+            if ($CI === null) return;
+            $CI->load->library('dashboard_cache');
+            $CI->dashboard_cache->bustDashboard($this->schoolId, $this->session !== '' ? $this->session : null);
+
+            // Also drop the cached list snapshot for the matching module so the
+            // Student List / Staff List page reflects admissions, deletions and
+            // status changes on the very next load instead of waiting out its
+            // TTL. Every write that touches these collections routes through
+            // set/update/remove (incl. the *Entity wrappers) → here, so all of
+            // their mutation endpoints are covered with no per-endpoint edits.
+            if ($collection === 'students' || $collection === 'staff') {
+                $CI->load->driver('cache', ['adapter' => 'file']);
+                $CI->cache->delete($this->listCacheKey($collection));
+                // The students module also keeps a raw full-collection snapshot
+                // (shared by the SIS dashboard, ID-card page and enrolled-ID
+                // lookups). Drop it on the same write so those pages refresh too.
+                if ($collection === 'students') {
+                    $CI->cache->delete($this->listCacheKey('students_raw'));
+                }
+            }
+        } catch (\Throwable $e) { /* never break a write */ }
     }
 
     /**
@@ -280,6 +355,7 @@ class Firestore_service
         try {
             $result = $this->client->deleteDocument($collection, $docId);
             $this->_track(microtime(true) - $t, !$result);
+            if ($result) $this->_bustDashboard($collection);
             return $result;
         } catch (\Exception $e) {
             $this->_track(microtime(true) - $t, true);
@@ -656,6 +732,9 @@ class Firestore_service
             'email'       => $data['Email'] ?? $data['Parent_email'] ?? $data['email'] ?? '',
             'gender'      => $data['Gender'] ?? $data['gender'] ?? '',
             'dob'         => $data['DOB'] ?? $data['dob'] ?? '',
+            // Precomputed MM-DD for the dashboard "Birthdays Today" query —
+            // avoids scanning all students to parse heterogeneous DOB strings.
+            'birthMonthDay' => self::birthMonthDay($data['DOB'] ?? $data['dob'] ?? ''),
             'address'     => $data['Address'] ?? $data['address'] ?? '',
             'profilePic'  => $data['Doc']['ProfilePic'] ?? $data['profilePic'] ?? $data['Profile Pic'] ?? $data['profile_pic'] ?? '',
             'status'      => $data['Status'] ?? $data['status'] ?? 'Active',
@@ -769,6 +848,22 @@ class Firestore_service
             }
         }
 
+        // Keep `schoolName` in sync with `name`. The Superadmin panel
+        // (B2_registry_service::list_tenants_summary / get_tenant_detail) and
+        // the canonical readers display `schoolName ?? name`, so a profile save
+        // that only updated `name` would leave the panel showing the stale
+        // `schoolName`. Writing both on every name change keeps them converged.
+        if (isset($doc['name'])) {
+            $doc['schoolName'] = $doc['name'];
+        }
+
+        // Mirror address ↔ street. The Superadmin panel writes/reads `street`
+        // while the school panel + Android apps use `address`; writing both on
+        // every save keeps the two panels converged on the same value.
+        if (isset($doc['address'])) {
+            $doc['street'] = $doc['address'];
+        }
+
         // Always write these identity/status fields (Android SchoolDoc expects them)
         $doc['schoolCode']      = $this->schoolCode;
 
@@ -781,12 +876,16 @@ class Firestore_service
         // Defensive seed retained for legacy/new tenants without explicit
         // active-session set.
         try {
-            $existing = $this->firebase->firestoreGet('schools', $this->schoolId);
+            // Use this service's own reader. The previous `$this->firebase->firestoreGet()`
+            // referenced a property that doesn't exist on this class ($this->firebase),
+            // which raised an \Error (not \Exception) — slipping past the catch below and
+            // surfacing as an HTTP 500 on every saveSchool() (e.g. logo upload).
+            $existing = $this->get(self::SCHOOLS, $this->schoolId);
             if (!is_array($existing) || empty($existing['currentSession'])) {
                 $doc['currentSession'] = $this->session;  // defensive seed
             }
             // else: populated — DO NOT include currentSession in $doc (preserve canonical)
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             log_message('error',
                 "SC-Step1: Firestore_service::saveSchool currentSession DEMOTE read failed for {$this->schoolId}: " . $e->getMessage());
             // Conservative: do NOT include currentSession on read failure (fail-safe)

@@ -1358,8 +1358,9 @@ class Communication extends MY_Controller
                 // Try Firebase Storage first
                 $firebaseOk = false;
                 try {
-                    $safe       = preg_replace('/[^A-Za-z0-9_\-]/', '_', $this->school_name);
-                    $remotePath = "schools/{$safe}/circulars/{$uploadData['file_name']}";
+                    // Canonical Storage scheme: schools/{schoolId}/... (ID-keyed,
+                    // rename-proof). Previously keyed by sanitized school NAME.
+                    $remotePath = "schools/{$this->school_id}/circulars/{$uploadData['file_name']}";
                     $uploaded   = $this->firebase->uploadFile($localPath, $remotePath);
                     if ($uploaded) {
                         $attachmentUrl = $this->firebase->getDownloadUrl($remotePath);

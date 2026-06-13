@@ -126,8 +126,9 @@ class Sis extends MY_Controller
         $school_name = $this->school_name;
         $session     = $this->session_year;
 
-        // Read all students from Firestore
-        $studentList = $this->fs->schoolList('students');
+        // Read all students from the cached snapshot (one Firestore read per
+        // 90s, busted on write) — same smoothing as the student-list page.
+        $studentList = $this->_cached_student_docs();
         $index = [];
         foreach ($studentList as $s) {
             $d = $s['data'] ?? $s;
@@ -458,13 +459,20 @@ class Sis extends MY_Controller
         $monthFeeInit = [];
         foreach ($months as $m) $monthFeeInit[$m] = 0;
         $monthFeeOk = false;
-        try {
-            $monthFeeOk = (bool) $this->fs->updateEntity('students', $userId, ['monthFee' => $monthFeeInit]);
-        } catch (Exception $e) {
-            log_message('error', "SIS admit fee init failed for {$userId}: " . $e->getMessage());
+        for ($attempt = 1; $attempt <= 3 && !$monthFeeOk; $attempt++) {
+            try {
+                $monthFeeOk = (bool) $this->fs->updateEntity('students', $userId, ['monthFee' => $monthFeeInit]);
+            } catch (\Throwable $e) {
+                log_message('error', "SIS admit fee init failed for {$userId} (attempt {$attempt}): " . $e->getMessage());
+            }
         }
         if (!$monthFeeOk) {
-            return $this->json_error('Failed to initialize fee tracking for student. Please retry. The student record was not created.');
+            // The student doc, phone index and section strength were ALREADY
+            // written above — the student DOES exist. The old message ("the
+            // student record was not created") was false and made the operator
+            // re-submit → a duplicate person + a burned student ID. Tell the
+            // truth and direct them to re-initialize fees instead of re-adding.
+            return $this->json_error('Student ' . $userId . ' was created, but fee tracking could not be initialized. Do NOT re-add the student — open their Fees page and retry fee initialization.');
         }
 
         // Subject assignment
@@ -2015,7 +2023,26 @@ class Sis extends MY_Controller
         // 1. Update Firebase Auth password.
         $updated = $this->firebase->updateFirebaseUser($user_id, ['password' => $new_password]);
         if ($updated === null) {
-            return $this->json_error('Failed to update Firebase Auth password.');
+            // Self-heal: a student can have a Firestore/RTDB record but no
+            // Firebase Auth account (never created at admission, or later
+            // deleted). In that case updateUser throws "no user record" and the
+            // reset would dead-end. Detect the missing account and create it now
+            // with uid = studentId + the requested password, so the reset
+            // succeeds. A genuine failure on an EXISTING account still errors.
+            if ($this->firebase->getFirebaseUser($user_id) === null) {
+                $authEmail = Firebase::authEmail($user_id);
+                $created   = $this->firebase->createFirebaseUser($authEmail, $new_password, [
+                    'uid'         => $user_id,
+                    'displayName' => $name,
+                ]);
+                if ($created === null) {
+                    log_message('error', "Sis::reset_password self-heal create failed for {$user_id}");
+                    return $this->json_error('Failed to update Firebase Auth password.');
+                }
+                log_message('info', "Sis::reset_password self-healed missing Auth account for {$user_id}");
+            } else {
+                return $this->json_error('Failed to update Firebase Auth password.');
+            }
         }
 
         // 2. Set must-change-password claim — Parent app gates on this.
@@ -2125,7 +2152,11 @@ class Sis extends MY_Controller
             return $this->json_error($quota['reason']);
         }
 
-        $storagePath = "Students/{$school_id}/{$userId}/docs/{$docLabel}";
+        // Canonical Storage scheme: schools/{schoolId}/students/{userId}/documents/...
+        // matches _uploadStudentFile() so admission-time and later doc uploads share
+        // ONE tree. Keyed by school_id (SCH_XXXXXX), not parent_db_key (which can be a
+        // login code). Was: Students/{parent_db_key}/{userId}/docs/{label}.
+        $storagePath = "schools/{$this->school_id}/students/{$userId}/documents/{$docLabel}";
 
         // ─────────────────────────────────────────────────────────────────
         // Storage-orphan fix (2026-05-30): delete the previous Storage
@@ -2296,14 +2327,17 @@ class Sis extends MY_Controller
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
 
-        $allStudentDocs = $this->fs->schoolWhere('students', [['status', '==', 'Active']], 'name', 'ASC');
-        if (empty($allStudentDocs)) {
-            $allStudentDocs = $this->fs->schoolWhere('students', [['Status', '==', 'Active']], 'Name', 'ASC');
-        }
+        // Active students from the cached snapshot (one Firestore read per 90s,
+        // busted on write). The status=='Active' gate that used to be a
+        // Firestore `where` is applied in PHP — checking both field casings,
+        // so it's strictly more tolerant than the old camelCase/TitleCase pair.
+        $allStudentDocs = $this->_cached_student_docs();
         $allStudents = [];
         foreach ($allStudentDocs as $doc) {
             $d = $doc['data'] ?? $doc;
-            $s = $this->_normalizeStudentDoc($doc['data']);
+            $rowStatus = (string) ($d['status'] ?? $d['Status'] ?? 'Active');
+            if (strcasecmp($rowStatus, 'Active') !== 0) continue;
+            $s = $this->_normalizeStudentDoc($d);
             if (!$s) continue;
             $uid = $s['User Id'] ?? $s['studentId'] ?? $d['id'];
             $s['User Id'] = $uid;
@@ -2450,44 +2484,70 @@ class Sis extends MY_Controller
         // memory so the per-row `_getStudent()` calls are gone, and
         // the enrolled-set is derived from the same in-memory map
         // instead of re-querying. Net: ~32 reads → 1 read.
-        $studentList = $this->fs->schoolList('students');
-
+        //
+        // PERF-2 (2026-06-13) — that one read still fired on EVERY request:
+        // every debounced keystroke, every filter flip, every page change
+        // re-downloaded the whole students collection and rebuilt the index,
+        // which is why search-as-you-type felt like it "loaded first, then
+        // showed". The session/Deleted-filtered snapshot below does not depend
+        // on the query/class/section/gender/status filters (those are applied
+        // afterwards), so we cache it under a school+session key for 90s. The
+        // snapshot is busted immediately on any students write (see
+        // Firestore_service::_bustDashboard), so admissions/deletions/status
+        // changes still show up on the next load with no staleness.
         $currentSession = $this->session_year;
-        $index   = [];   // [uid => filter-fields]
-        $rawDocs = [];   // [uid => full Firestore doc]   ← used for the page's row data
-        foreach ($studentList as $s) {
-            $d = $s['data'] ?? $s;
-            $uid = $d['studentId'] ?? $d['User Id'] ?? $d['userId'] ?? '';
-            if ($uid === '') continue;
 
-            // Session enrollment check (mirrors _get_enrolled_ids).
-            // SW-CONVERGE-STUDENTS-A (2026-05-26): canonical `session` singular
-            // takes precedence; legacy `sessions[]` array is honored ONLY when
-            // the singular field is absent/empty (back-compat for pre-convergence
-            // admission records). v7 target = singular as sole student-side
-            // authority across all filter sites.
-            $session  = $d['session']  ?? null;
-            $sessions = $d['sessions'] ?? null;
-            if (is_string($session) && $session !== '') {
-                if ($session !== $currentSession) continue;
-            } elseif (is_array($sessions) && !empty($sessions)) {
-                if (!in_array($currentSession, $sessions, true)) continue;
+        $this->load->driver('cache', ['adapter' => 'file']);
+        $cacheKey = $this->fs->studentsListCacheKey();
+        $snapshot = $this->cache->get($cacheKey);
+
+        if (is_array($snapshot) && isset($snapshot['index'], $snapshot['rawDocs'])) {
+            $index   = $snapshot['index'];
+            $rawDocs = $snapshot['rawDocs'];
+        } else {
+            $studentList = $this->fs->schoolList('students');
+
+            $index   = [];   // [uid => filter-fields]
+            $rawDocs = [];   // [uid => full Firestore doc]   ← used for the page's row data
+            foreach ($studentList as $s) {
+                $d = $s['data'] ?? $s;
+                $uid = $d['studentId'] ?? $d['User Id'] ?? $d['userId'] ?? '';
+                if ($uid === '') continue;
+
+                // Session enrollment check (mirrors _get_enrolled_ids).
+                // SW-CONVERGE-STUDENTS-A (2026-05-26): canonical `session` singular
+                // takes precedence; legacy `sessions[]` array is honored ONLY when
+                // the singular field is absent/empty (back-compat for pre-convergence
+                // admission records). v7 target = singular as sole student-side
+                // authority across all filter sites.
+                $session  = $d['session']  ?? null;
+                $sessions = $d['sessions'] ?? null;
+                if (is_string($session) && $session !== '') {
+                    if ($session !== $currentSession) continue;
+                } elseif (is_array($sessions) && !empty($sessions)) {
+                    if (!in_array($currentSession, $sessions, true)) continue;
+                }
+                // else: no enrollment record on doc — preserve prior behavior
+                // (do not skip here; downstream filters apply).
+
+                $rowStatus = (string) ($d['status'] ?? $d['Status'] ?? 'Active');
+                // Always exclude hard-deleted rows from the listing.
+                if (strcasecmp($rowStatus, 'Deleted') === 0) continue;
+
+                $rawDocs[$uid] = $d;
+                $index[$uid] = [
+                    'name'    => $d['name']     ?? $d['Name']    ?? '',
+                    'class'   => $d['className']?? $d['Class']   ?? '',
+                    'section' => $d['section']  ?? $d['Section'] ?? '',
+                    'status'  => $rowStatus,
+                    'gender'  => $d['gender']   ?? $d['Gender']  ?? '',
+                ];
             }
-            // else: no enrollment record on doc — preserve prior behavior
-            // (do not skip here; downstream filters apply).
 
-            $rowStatus = (string) ($d['status'] ?? $d['Status'] ?? 'Active');
-            // Always exclude hard-deleted rows from the listing.
-            if (strcasecmp($rowStatus, 'Deleted') === 0) continue;
-
-            $rawDocs[$uid] = $d;
-            $index[$uid] = [
-                'name'    => $d['name']     ?? $d['Name']    ?? '',
-                'class'   => $d['className']?? $d['Class']   ?? '',
-                'section' => $d['section']  ?? $d['Section'] ?? '',
-                'status'  => $rowStatus,
-                'gender'  => $d['gender']   ?? $d['Gender']  ?? '',
-            ];
+            // 90s TTL — short enough that a TTL-only expiry is barely
+            // perceptible, but the explicit write-bust means it's almost
+            // always the bust (not the TTL) that refreshes the data.
+            $this->cache->save($cacheKey, ['index' => $index, 'rawDocs' => $rawDocs], 90);
         }
 
         // Filter using index fields (name, class, section, status) + userId
@@ -2504,7 +2564,13 @@ class Sis extends MY_Controller
             if ($secFilter   && $entrySec   !== $secFilter) continue;
             if ($filterGender !== '' && strcasecmp($entry['gender'] ?? '', $filterGender) !== 0) continue;
             if ($query) {
-                $haystack = strtolower(($entry['name'] ?? '') . ' ' . $uid);
+                // Searchable by ID, Name, Class and Phone.
+                $p     = $rawDocs[$uid] ?? [];
+                $phone = (string) ($p['Phone Number'] ?? $p['phone'] ?? $p['Phone'] ?? '');
+                $haystack = strtolower(
+                    ($entry['name'] ?? '') . ' ' . $uid . ' '
+                    . ($entry['class'] ?? '') . ' ' . $phone
+                );
                 if (strpos($haystack, $query) === false) continue;
             }
             $filtered[$uid] = $entry;
@@ -2810,11 +2876,15 @@ class Sis extends MY_Controller
         $random    = substr(md5(uniqid()), 0, 6);
         $safeLabel = str_replace([' ', '.', '#', '$', '[', ']'], '_', $folderLabel);
         $fileName  = "{$safeLabel}_{$timestamp}_{$random}.{$ext}";
-        $basePath  = "{$schoolName}/Students/{$combinedClassPath}/{$studentId}/";
+        // Canonical Storage scheme: schools/{schoolId}/students/{studentId}/... so a
+        // school's whole footprint sits under one ID-keyed prefix, matching
+        // upload_document(). Previously rooted at the bare school id string with a
+        // class segment ({schoolName}/Students/{class}/{studentId}/...).
+        $basePath  = "schools/{$this->school_id}/students/{$studentId}/";
 
         $documentPath = ($type === 'profile')
-            ? $basePath . "Profile_pic/{$fileName}"
-            : $basePath . "Documents/{$fileName}";
+            ? $basePath . "profile/{$fileName}"
+            : $basePath . "documents/{$fileName}";
 
         if ($this->firebase->uploadFile($file['tmp_name'], $documentPath) !== true) return false;
 
@@ -2823,7 +2893,7 @@ class Sis extends MY_Controller
 
         // Image thumbnail (document mode)
         if ($type === 'document' && in_array($ext, ['jpg','jpeg','png','webp'])) {
-            $thumbPath = $basePath . "Documents/thumbnail/{$fileName}";
+            $thumbPath = $basePath . "documents/thumbnail/{$fileName}";
             if ($this->firebase->uploadFile($file['tmp_name'], $thumbPath) === true) {
                 $thumbnailUrl = $this->firebase->getDownloadUrl($thumbPath);
             }
@@ -2831,12 +2901,12 @@ class Sis extends MY_Controller
 
         // PDF thumbnail (document mode)
         if ($type === 'document' && $ext === 'pdf') {
-            $thumbnailUrl = $this->_generatePdfThumbnail($file['tmp_name'], $basePath."Documents/", $safeLabel, $timestamp, $random);
+            $thumbnailUrl = $this->_generatePdfThumbnail($file['tmp_name'], $basePath."documents/", $safeLabel, $timestamp, $random);
         }
 
         // Profile photo thumbnail
         if ($type === 'profile' && in_array($ext, ['jpg','jpeg','png','webp'])) {
-            $thumbPath = $basePath . "Profile_pic/thumbnail/{$fileName}";
+            $thumbPath = $basePath . "profile/thumbnail/{$fileName}";
             if ($this->firebase->uploadFile($file['tmp_name'], $thumbPath) === true) {
                 $thumbnailUrl = $this->firebase->getDownloadUrl($thumbPath);
             }
@@ -3358,6 +3428,31 @@ class Sis extends MY_Controller
      *
      * OPT 3: Single bulk read of the session root instead of 1 + C + S per-section reads.
      */
+    /**
+     * Cached raw snapshot of the school's full `students` collection.
+     *
+     * Same "smooth" pattern as Sis::search_student / Staff::all_staff — one
+     * Firestore read per 90s instead of one per page visit, busted instantly
+     * on any students write (see Firestore_service::_bustDashboard). Returns
+     * the `[['id'=>…, 'data'=>[…]], …]` shape (schoolWhere), so callers that
+     * read `$doc['data']` / `$doc['id']` work unchanged. Filtering by status /
+     * session stays in PHP at each call site, which is exactly what the
+     * read-only display pages (dashboard, ID cards, enrolled-id lookups)
+     * already do — so this is a drop-in source swap, not a behaviour change.
+     */
+    private function _cached_student_docs(): array
+    {
+        $this->load->driver('cache', ['adapter' => 'file']);
+        $cacheKey = $this->fs->listCacheKey('students_raw');
+        $docs = $this->cache->get($cacheKey);
+        if (!is_array($docs)) {
+            $docs = $this->fs->schoolWhere('students');
+            if (!is_array($docs)) $docs = [];
+            $this->cache->save($cacheKey, $docs, 90);
+        }
+        return $docs;
+    }
+
     private function _get_enrolled_ids(bool $includeNonActive = false): array
     {
         // Get students for this school. By default `status='Active'` only,
@@ -3371,15 +3466,12 @@ class Sis extends MY_Controller
         //   - 'status' (camelCase, new docs)
         //   - 'Status' (Title Case, legacy docs)
         //   - 'session' (single string) or 'sessions' (array)
-        if ($includeNonActive) {
-            $studentDocs = $this->fs->schoolWhere('students');
-        } else {
-            $studentDocs = $this->fs->schoolWhere('students', [['status', '==', 'Active']]);
-            // Fallback: if no results with camelCase, try Title Case
-            if (empty($studentDocs)) {
-                $studentDocs = $this->fs->schoolWhere('students', [['Status', '==', 'Active']]);
-            }
-        }
+        //
+        // Sourced from the cached full-collection snapshot; the status gate
+        // that used to be a Firestore `where` is applied in PHP below (it
+        // checks both field-name casings, so it's strictly more tolerant
+        // than the old camelCase-then-TitleCase fallback query).
+        $studentDocs = $this->_cached_student_docs();
 
         $enrolledIds = [];
         $currentSession = $this->session_year;
@@ -3387,11 +3479,14 @@ class Sis extends MY_Controller
             $d   = $doc['data'];
             $uid = $d['studentId'] ?? $d['User Id'] ?? $d['userId'] ?? $d['id'];
 
-            // When pulling all statuses, drop hard-deleted rows — they
-            // shouldn't surface in any list. Active / Inactive / TC pass.
+            // Status gate (now applied in PHP since the snapshot is unfiltered):
+            //   - default        → Active only (legacy contract)
+            //   - includeNonActive→ any status except hard-deleted
+            $rowStatus = (string) ($d['status'] ?? $d['Status'] ?? 'Active');
             if ($includeNonActive) {
-                $rowStatus = (string) ($d['status'] ?? $d['Status'] ?? '');
                 if (strcasecmp($rowStatus, 'Deleted') === 0) continue;
+            } else {
+                if (strcasecmp($rowStatus, 'Active') !== 0) continue;
             }
 
             // Check session enrollment: canonical `session` singular takes
@@ -3477,15 +3572,17 @@ class Sis extends MY_Controller
         $this->load->view('include/footer');
     }
 
+    /**
+     * Legacy direct-upload import (exact-template path). Parses the file and
+     * runs every row through the shared importer. Kept as a fallback; the
+     * primary UX is now the map → validate → commit flow (import_preview /
+     * import_commit), which accepts any column layout.
+     */
     public function import_students()
     {
         $this->_require_role(self::MANAGE_ROLES);
         try {
             if (defined('GRADER_DEBUG') && GRADER_DEBUG) log_message('debug', '=== IMPORT FUNCTION STARTED ===');
-
-            $school_id    = $this->parent_db_key;
-            $school_name  = $this->school_name;
-            $session_year = $this->session_year;
 
             if (!isset($_FILES['excelFile']) || $_FILES['excelFile']['error'] !== UPLOAD_ERR_OK) {
                 redirect('sis/all_student');
@@ -3507,29 +3604,131 @@ class Sis extends MY_Controller
             unset($sheetData[0]);
             $sheetData = array_values($sheetData);
 
-            $success = 0;
-            $error   = 0;
-            $skipped = [];
-
-            // Load ID generator for globally unique student IDs
-            $this->load->library('id_generator');
-
-            $subjectCache = [];
-
+            // Build canonical associative rows (exact-template: header names
+            // already match the canonical keys) and hand to the shared importer.
+            $rows = [];
             foreach ($sheetData as $row) {
                 if (!array_filter($row)) continue;
-                if (count($headers) != count($row)) { $error++; continue; }
+                if (count($headers) != count($row)) continue;
+                $rows[] = array_combine($headers, $row);
+            }
 
-                $rowData = array_combine($headers, $row);
+            $res = $this->_runStudentImport($rows);
+            $this->session->set_flashdata('import_result', $this->_formatImportSummary($res));
+            redirect('sis/all_student');
+        } catch (Exception $e) {
+            log_message('error', 'IMPORT ERROR: ' . $e->getMessage());
+            $this->session->set_flashdata('import_result', "Import Failed! Check logs.");
+            redirect('sis/all_student');
+        }
+    }
+
+    /**
+     * Shared per-row student persistence. Accepts a list of associative rows
+     * keyed by canonical field names ("Name", "Class", "Section", "DOB", …).
+     * Both the legacy exact-template path and the new mapped/validated commit
+     * path funnel through here, so admission/fee/Auth/sync semantics stay
+     * identical regardless of how the file was shaped.
+     *
+     * Returns ['success' => int, 'error' => int, 'skipped' => string[], 'feesPending' => string[]].
+     */
+    private function _runStudentImport(array $rows, array $opts = []): array
+    {
+        $school_id    = $this->parent_db_key;
+        $school_name  = $this->school_name;
+        $session_year = $this->session_year;
+
+        // Duplicate policy (Phase 3, 2026-06-12):
+        //   'create' — always create (legacy behaviour; default so the direct
+        //              exact-template path is byte-for-byte unchanged).
+        //   'skip'   — if a student with the same phone already exists (in the
+        //              DB or earlier in this file), don't create; report it.
+        //   'update' — merge the row's contact/demographic fields onto the
+        //              existing student (class/section/status/fees preserved).
+        // Default to the SAFE 'skip' (was 'create'): the legacy one-shot
+        // import_students() path passes no opts, so defaulting to 'create' there
+        // meant a re-run silently duplicated the whole roster. Callers that
+        // truly want create-always must request it explicitly.
+        $dupPolicy = in_array(($opts['dupPolicy'] ?? 'skip'), ['create', 'skip', 'update'], true)
+            ? $opts['dupPolicy'] : 'skip';
+
+        $success     = 0;
+        $error       = 0;
+        $skipped     = [];
+        $feesPending = []; // imported students whose class/section has no fee chart yet
+        $duplicates  = []; // rows skipped as duplicates (skip policy)
+        $updated     = 0;  // existing students updated (update policy)
+
+        $seenPhones  = []; // phone(10) => studentId created earlier in THIS file
+        $seenNameDob = []; // "name|dob" => studentId created earlier in THIS file
+
+        // Each row does ~13-15 sequential network writes. Relax the limit on
+        // EVERY call — the commit is chunked into 25-row batches, so the old
+        // `> 50` guard never fired on the chunked path, leaving each batch
+        // exposed to the default max_execution_time.
+        @set_time_limit(0);
+        @ignore_user_abort(true);
+
+        // Load ID generator for globally unique student IDs
+        $this->load->library('id_generator');
+
+        $subjectCache = [];
+
+        foreach ($rows as $idx => $rowData) {
+            if (!is_array($rowData)) { $error++; continue; }
+            $rowNo = $idx + 1;
 
                 $studentName = trim($rowData['Name'] ?? '');
                 $classRaw    = trim($rowData['Class'] ?? '');
                 $section     = trim($rowData['Section'] ?? '');
-                if (!$studentName || !$classRaw || !$section) { $error++; continue; }
+                if (!$studentName || !$classRaw || !$section) {
+                    $skipped[] = "Row {$rowNo}: missing required Name/Class/Section";
+                    $error++;
+                    continue;
+                }
 
                 preg_match('/\d+/', $classRaw, $match);
-                if (!isset($match[0])) { $error++; continue; }
+                if (!isset($match[0])) {
+                    $skipped[] = "Row {$rowNo}: {$studentName} — Class \"{$classRaw}\" has no recognizable number (1–12)";
+                    $error++;
+                    continue;
+                }
                 $classNumber = (int)$match[0];
+
+                // ── Duplicate detection (skip/update policies) ───────────────
+                $phone10 = preg_replace('/\D+/', '', (string) ($rowData['Phone Number'] ?? ''));
+                if (strlen($phone10) > 10) $phone10 = substr($phone10, -10);
+                $dobKey  = trim((string) ($rowData['DOB'] ?? ''));
+                $nameKey = strtolower($studentName) . '|' . $dobKey;
+
+                if ($dupPolicy !== 'create') {
+                    $existingId = null; $dupReason = '';
+                    if ($phone10 !== '' && strlen($phone10) === 10) {
+                        if (isset($seenPhones[$phone10])) {
+                            $existingId = $seenPhones[$phone10]; $dupReason = 'duplicate phone within file';
+                        } else {
+                            $dbId = $this->_existingStudentIdByPhone($phone10);
+                            if ($dbId) { $existingId = $dbId; $dupReason = 'existing student (phone match)'; }
+                        }
+                    }
+                    if (!$existingId && $dobKey !== '' && isset($seenNameDob[$nameKey])) {
+                        $existingId = $seenNameDob[$nameKey]; $dupReason = 'duplicate name+DOB within file';
+                    }
+
+                    if ($existingId) {
+                        if ($dupPolicy === 'update') {
+                            if ($this->_updateExistingStudent($existingId, $rowData)) {
+                                $updated++;
+                            } else {
+                                $skipped[] = "Row {$rowNo}: {$studentName} — update of {$existingId} failed (see log)";
+                                $error++;
+                            }
+                        } else {
+                            $duplicates[] = "Row {$rowNo}: {$studentName} — {$dupReason} ({$existingId})";
+                        }
+                        continue;
+                    }
+                }
 
                 $suffix = 'th';
                 if (!in_array(($classNumber % 100), [11, 12, 13])) {
@@ -3544,29 +3743,27 @@ class Sis extends MY_Controller
                 $section   = Firestore_service::sectionKey($section);
                 $combinedClass = "{$className}/{$section}";
 
-                // SIS Tier-1 fix B6 (2026-05-31): destination fee-structure
-                // pre-flight per row, mirroring the promotion guard at
-                // Sis.php:965-974 and the enroll_student sibling above.
-                // Without this check, an imported row whose class/section
-                // has no feeStructure doc would still get a studentId
-                // consumed, saveStudent, indexes, Auth, syncStudent — and
-                // assignInitialFees would then silently return [] leaving
-                // the student Active-with-zero-demands. Block the row here,
-                // before any studentId is consumed; the row appears in the
-                // import-summary skipped list with a specific reason.
+                // Phase 1 (2026-06-12): admission is no longer hard-blocked on a
+                // missing fee chart. The earlier B6 guard (2026-05-31) skipped
+                // the whole row when feeStructures/{school}_{session}_{class}_{section}
+                // was absent, which meant a school that imports its roster BEFORE
+                // configuring Fees → Chart got zero students imported and a
+                // summary it never saw (redirect target didn't render it).
+                //
+                // New behaviour: import the student as Active regardless, and
+                // record rows with no chart in $feesPending so the summary can
+                // tell the operator which class/sections still need a chart.
+                // assignInitialFees() below is a graceful no-op when the chart
+                // is absent and is re-runnable once Fees → Chart is set up, which
+                // back-fills demands — so no student is left silently un-billable.
                 $destFeeStructDocId = "{$school_name}_{$session_year}_{$className}_{$section}";
                 $destFeeStruct      = $this->fs->get('feeStructures', $destFeeStructDocId);
-                if (!is_array($destFeeStruct) || empty($destFeeStruct['feeHeads'])) {
-                    $skipped[] = "Row " . ($success + $error + count($skipped) + 1)
-                        . ": {$studentName} — No fee structure for {$className}/{$section} in session {$session_year}";
-                    $error++;
-                    continue;
-                }
+                $hasFeeChart        = is_array($destFeeStruct) && !empty($destFeeStruct['feeHeads']);
 
                 // Generate globally unique student ID from central counter
                 $studentId = $this->_nextStudentId($school_id);
                 if (!$studentId) {
-                    $skipped[] = "Row " . ($success + $error + count($skipped) + 1) . ": {$studentName} — ID generation failed";
+                    $skipped[] = "Row {$rowNo}: {$studentName} — ID generation failed";
                     $error++;
                     continue;
                 }
@@ -3624,7 +3821,9 @@ class Sis extends MY_Controller
                     log_message('error', "SIS import saveStudent failed for {$studentId}: " . $e->getMessage());
                 }
                 if (!$studentSaved) {
-                    $skipped[] = "Row " . ($success + $error + count($skipped) + 1) . ": {$studentName} — Firestore save failed (see log)";
+                    // Release the claimed STU id so a failed write doesn't burn the number.
+                    $this->id_generator->releaseClaim('STU', (int) preg_replace('/\D/', '', $studentId));
+                    $skipped[] = "Row {$rowNo}: {$studentName} — Firestore save failed (see log)";
                     $error++;
                     continue;
                 }
@@ -3670,8 +3869,7 @@ class Sis extends MY_Controller
                     log_message('error', "SIS import fee init failed for {$studentId}: " . $e->getMessage());
                 }
                 if (!$monthFeeOk) {
-                    $skipped[] = "Row " . ($success + $error + count($skipped) + 1)
-                        . ": {$studentName} — monthFee init failed (see log); student doc remains without fee tracking";
+                    $skipped[] = "Row {$rowNo}: {$studentName} — monthFee init failed (see log); student doc remains without fee tracking";
                     $error++;
                     continue;
                 }
@@ -3750,20 +3948,477 @@ class Sis extends MY_Controller
                     ['class' => $className, 'section' => $section, 'session' => $session_year]
                 );
 
+                // Imported, but flag if this class/section had no fee chart so the
+                // operator knows to set one up (Fees → Chart) to generate demands.
+                if (!$hasFeeChart) {
+                    $feesPending[] = "{$studentName} ({$className}/{$section})";
+                }
+
+                // Record keys so a later row in the SAME file matching this
+                // student (skip/update policies) is caught as a duplicate.
+                if ($phone10 !== '' && strlen($phone10) === 10) $seenPhones[$phone10] = $studentId;
+                if ($dobKey !== '') $seenNameDob[$nameKey] = $studentId;
+
                 $success++;
+        }
+
+        return [
+            'success'     => $success,
+            'error'       => $error,
+            'skipped'     => $skipped,
+            'feesPending' => $feesPending,
+            'duplicates'  => $duplicates,
+            'updated'     => $updated,
+        ];
+    }
+
+    /**
+     * Look up an existing student in this school by 10-digit phone via the
+     * indexPhones index. Returns the studentId or null. (Phase 3 dedup.)
+     */
+    private function _existingStudentIdByPhone(string $phone): ?string
+    {
+        if ($phone === '') return null;
+        try {
+            $rec = $this->fs->get('indexPhones', $this->fs->docId($phone));
+            if (is_array($rec)) {
+                $uid  = (string) ($rec['userId'] ?? '');
+                $type = (string) ($rec['type'] ?? 'student');
+                if ($uid !== '' && $type === 'student') return $uid;
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'dedup phone lookup failed: ' . $e->getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * Merge a row's contact/demographic fields onto an existing student
+     * (update policy). Class/Section/Status/Password/fees are PRESERVED —
+     * this is a profile refresh, not a promotion or re-admission, so it never
+     * touches fee state. saveStudent() is a merge-write, so untouched fields
+     * (Doc, Profile Pic, subjects, monthFee) survive. Returns true on success.
+     */
+    private function _updateExistingStudent(string $existingId, array $rowData): bool
+    {
+        try {
+            $existing = $this->fs->get('students', $this->fs->docId($existingId));
+            if (!is_array($existing)) $existing = [];
+
+            $keepClass   = (string) ($existing['Class']   ?? $existing['className'] ?? '');
+            $keepSection = (string) ($existing['Section'] ?? $existing['section']   ?? '');
+            $keepStatus  = (string) ($existing['Status']  ?? $existing['status']    ?? 'Active');
+            $keepPass    = (string) ($existing['Password'] ?? '');
+
+            // Prefer incoming non-empty value, else keep what's on the doc.
+            $val = function (string $k) use ($rowData, $existing) {
+                $v = trim((string) ($rowData[$k] ?? ''));
+                return $v !== '' ? $v : (string) ($existing[$k] ?? '');
+            };
+            $ea = is_array($existing['Address'] ?? null) ? $existing['Address'] : [];
+            $addr = function (string $k) use ($rowData, $ea) {
+                $v = trim((string) ($rowData[$k] ?? ''));
+                return $v !== '' ? $v : (string) ($ea[$k] ?? '');
+            };
+
+            $dob = trim((string) ($rowData['DOB'] ?? ''));
+            $formattedDOB = $dob !== '' ? date('d-m-Y', strtotime($dob)) : (string) ($existing['DOB'] ?? '');
+            $adm = trim((string) ($rowData['Admission Date'] ?? ''));
+            $formattedAdm = $adm !== '' ? date('d-m-Y', strtotime($adm)) : (string) ($existing['Admission Date'] ?? '');
+
+            $merged = [
+                'Name' => $val('Name'), 'User Id' => $existingId, 'DOB' => $formattedDOB,
+                'Admission Date' => $formattedAdm, 'Class' => $keepClass, 'Section' => $keepSection,
+                'Status' => $keepStatus, 'Password' => $keepPass,
+                'Gender' => $val('Gender'), 'Blood Group' => $val('Blood Group'),
+                'Category' => $val('Category'), 'Religion' => $val('Religion'), 'Nationality' => $val('Nationality'),
+                'Father Name' => $val('Father Name'), 'Father Occupation' => $val('Father Occupation'),
+                'Mother Name' => $val('Mother Name'), 'Mother Occupation' => $val('Mother Occupation'),
+                'Guard Contact' => $val('Guard Contact'), 'Guard Relation' => $val('Guard Relation'),
+                'Phone Number' => $val('Phone Number'), 'Email' => $val('Email'),
+                'Address' => [
+                    'Street' => $addr('Street'), 'City' => $addr('City'),
+                    'State' => $addr('State'), 'PostalCode' => $addr('PostalCode'),
+                ],
+                'Pre School' => $val('Pre School'), 'Pre Class' => $val('Pre Class'), 'Pre Marks' => $val('Pre Marks'),
+            ];
+
+            if (!$this->fs->saveStudent($existingId, $merged)) return false;
+
+            try {
+                $this->entity_sync->syncStudent($existingId, $merged);
+                $this->entity_sync->syncParent($existingId, $merged);
+            } catch (\Throwable $e) {
+                log_message('warning', "import update sync failed for {$existingId}: " . $e->getMessage());
             }
 
-            $msg = "Imported Successfully: {$success} | Failed: {$error}";
-            if (!empty($skipped)) {
-                $msg .= " | Skipped (ID collision): " . count($skipped) . " — " . implode('; ', $skipped);
+            // Refresh phone index if a phone is present.
+            $ph = preg_replace('/\D+/', '', $merged['Phone Number']);
+            if (strlen($ph) > 10) $ph = substr($ph, -10);
+            if ($ph !== '' && strlen($ph) === 10) {
+                try {
+                    $this->fs->set('indexPhones', $this->fs->docId($ph), [
+                        'schoolId' => $this->school_id, 'phone' => $ph,
+                        'userId' => $existingId, 'type' => 'student',
+                    ]);
+                } catch (\Throwable $e) { /* index refresh best-effort */ }
             }
-            $this->session->set_flashdata('import_result', $msg);
-            redirect('sis/all_student');
-        } catch (Exception $e) {
-            log_message('error', 'IMPORT ERROR: ' . $e->getMessage());
-            $this->session->set_flashdata('import_result', "Import Failed! Check logs.");
-            redirect('sis/all_student');
+
+            $this->_log_history($this->parent_db_key, $existingId, 'UPDATE',
+                'Profile updated via bulk import', []);
+
+            return true;
+        } catch (\Throwable $e) {
+            log_message('error', "import update failed for {$existingId}: " . $e->getMessage());
+            return false;
         }
+    }
+
+    /** Build the human-readable one-line summary shown after an import. */
+    private function _formatImportSummary(array $res): string
+    {
+        $success     = (int) ($res['success'] ?? 0);
+        $error       = (int) ($res['error'] ?? 0);
+        $updated     = (int) ($res['updated'] ?? 0);
+        $skipped     = is_array($res['skipped'] ?? null) ? $res['skipped'] : [];
+        $feesPending = is_array($res['feesPending'] ?? null) ? $res['feesPending'] : [];
+        $duplicates  = is_array($res['duplicates'] ?? null) ? $res['duplicates'] : [];
+
+        $msg = "Imported Successfully: {$success} | Failed: {$error}";
+        if ($updated > 0) {
+            $msg .= " | Updated existing: {$updated}";
+        }
+        if (!empty($duplicates)) {
+            $msg .= " | Duplicates skipped: " . count($duplicates) . " — " . implode('; ', $duplicates);
+        }
+        if (!empty($feesPending)) {
+            $msg .= " | Fees pending for " . count($feesPending)
+                 . " (no fee chart yet — set up Fees → Chart for these class/sections, then demands auto-assign): "
+                 . implode('; ', $feesPending);
+        }
+        if (!empty($skipped)) {
+            $msg .= " | Skipped: " . count($skipped) . " — " . implode('; ', $skipped);
+        }
+        return $msg;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+       FLEXIBLE IMPORT (Phase 2, 2026-06-12) — map → validate → commit.
+       Accepts any column layout: the uploaded file's headers are fuzzy-mapped
+       to canonical fields (Import_schema), values are normalized, and every
+       row is dry-run validated in a preview before a single write happens.
+    ══════════════════════════════════════════════════════════════════════ */
+
+    /**
+     * Step 1 — parse the uploaded file and render the mapping + preview UI.
+     * No writes. The parsed rows are embedded in the page; the browser drives
+     * mapping/validation against import_validate, then commits.
+     */
+    public function import_preview()
+    {
+        $this->_require_role(self::MANAGE_ROLES);
+
+        if (!isset($_FILES['excelFile']) || $_FILES['excelFile']['error'] !== UPLOAD_ERR_OK) {
+            $this->session->set_flashdata('import_result', 'No file received, or the upload failed. Please choose a CSV or XLSX file.');
+            redirect('sis/master_student');
+            return;
+        }
+
+        $file      = $_FILES['excelFile'];
+        $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        if (!in_array($extension, ['csv', 'xlsx', 'xls'], true)) {
+            $this->session->set_flashdata('import_result', 'Unsupported file type. Please upload a .csv or .xlsx file.');
+            redirect('sis/master_student');
+            return;
+        }
+
+        try {
+            $reader      = ($extension === 'csv') ? IOFactory::createReader('Csv') : IOFactory::createReader('Xlsx');
+            $spreadsheet = $reader->load($file['tmp_name']);
+            // Formatted values, numeric column indices.
+            $sheetData   = $spreadsheet->getActiveSheet()->toArray(null, true, true, false);
+        } catch (\Throwable $e) {
+            log_message('error', 'IMPORT PREVIEW read error: ' . $e->getMessage());
+            $this->session->set_flashdata('import_result', 'Could not read the file. It may be corrupt or password-protected.');
+            redirect('sis/master_student');
+            return;
+        }
+
+        // Drop fully-empty rows; first remaining row is the header.
+        $sheetData = array_values(array_filter($sheetData, function ($r) {
+            if (!is_array($r)) return false;
+            foreach ($r as $v) { if (trim((string) $v) !== '') return true; }
+            return false;
+        }));
+
+        if (count($sheetData) < 2) {
+            $this->session->set_flashdata('import_result', 'The file has no data rows below the header.');
+            redirect('sis/master_student');
+            return;
+        }
+
+        $headers  = array_map(function ($h) { return trim((string) $h); }, $sheetData[0]);
+        $dataRows = array_slice($sheetData, 1);
+
+        // Normalise ragged rows to header width so column alignment holds.
+        $width = count($headers);
+        foreach ($dataRows as &$r) {
+            $r = array_map(function ($v) { return (string) $v; }, array_values($r));
+            if (count($r) < $width) $r = array_pad($r, $width, '');
+            elseif (count($r) > $width) $r = array_slice($r, 0, $width);
+        }
+        unset($r);
+
+        // v1 cap — very large files belong on a background job (Phase 3).
+        $cap    = 1500;
+        $capped = count($dataRows) > $cap;
+        if ($capped) $dataRows = array_slice($dataRows, 0, $cap);
+
+        $this->load->library('import_schema');
+
+        // Apply this school's learned header→field mappings from past imports.
+        $learned = $this->_loadImportMapping();
+
+        $data = [
+            'headers'        => $headers,
+            'rows'           => $dataRows,
+            'autoMap'        => $this->import_schema->autoMap($headers, $learned),
+            'schema'         => $this->import_schema->fieldsForUi(),
+            'capped'         => $capped,
+            'capLimit'       => $cap,
+            'fileName'       => $file['name'],
+            'learnedApplied' => $this->import_schema->learnedHitCount($headers, $learned),
+        ];
+
+        $this->load->view('include/header');
+        $this->load->view('import_students_map', $data);
+        $this->load->view('include/footer');
+    }
+
+    /**
+     * Step 2 — dry-run validation (AJAX). Receives canonical rows as a JSON
+     * string in the `payload` POST field; returns per-row normalized values
+     * and OK/warning/error status. No writes.
+     */
+    public function import_validate()
+    {
+        $this->_require_role(self::MANAGE_ROLES);
+        $this->output->set_content_type('application/json');
+
+        $payload = json_decode((string) $this->input->post('payload'), true);
+        $rows    = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
+
+        $this->load->library('import_schema');
+
+        $out = [];
+        $ok = 0; $warn = 0; $err = 0;
+        foreach ($rows as $r) {
+            $v = $this->import_schema->validateRow(is_array($r) ? $r : []);
+            if ($v['status'] === 'error') $err++;
+            elseif ($v['status'] === 'warning') $warn++;
+            else $ok++;
+            $out[] = $v;
+        }
+
+        echo json_encode([
+            'rows'    => $out,
+            'summary' => ['ok' => $ok, 'warning' => $warn, 'error' => $err, 'total' => count($rows)],
+        ]);
+    }
+
+    /**
+     * Step 3 — commit (AJAX). Receives canonical rows (`payload` JSON field),
+     * re-validates server-side (never trust the client), imports every non-error
+     * row via the shared importer, and returns the summary as JSON.
+     */
+    public function import_commit()
+    {
+        $this->_require_role(self::MANAGE_ROLES);
+        $this->output->set_content_type('application/json');
+
+        $payload = json_decode((string) $this->input->post('payload'), true);
+        $rows    = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
+
+        // Duplicate policy chosen in the UI; default to the safe 'skip'.
+        // 'create' is intentionally NOT accepted here — it would bypass dedupe
+        // and let a re-run of the same file create a full duplicate roster. The
+        // flexible (preview) path must only skip or update existing students.
+        $dupPolicy = in_array(($payload['dupPolicy'] ?? 'skip'), ['skip', 'update'], true)
+            ? $payload['dupPolicy'] : 'skip';
+
+        if (empty($rows)) {
+            echo json_encode(['status' => 'error', 'message' => 'No rows to import.']);
+            return;
+        }
+
+        $this->load->library('import_schema');
+
+        // Re-validate authoritatively; only OK/warning rows are written.
+        $toImport  = [];
+        $preErrors = 0;
+        foreach ($rows as $r) {
+            $v = $this->import_schema->validateRow(is_array($r) ? $r : []);
+            if ($v['status'] === 'error') { $preErrors++; continue; }
+            $toImport[] = $v['data'];
+        }
+
+        try {
+            $res = $this->_runStudentImport($toImport, ['dupPolicy' => $dupPolicy]);
+        } catch (\Throwable $e) {
+            log_message('error', 'IMPORT COMMIT error: ' . $e->getMessage());
+            echo json_encode(['status' => 'error', 'message' => 'Import failed — check server logs.']);
+            return;
+        }
+
+        // Learn this school's column layout from a successful import so the next
+        // upload of the same format auto-maps. Only persist when something was
+        // actually imported/updated (don't memorise a failed/empty attempt).
+        if (((int) ($res['success'] ?? 0) + (int) ($res['updated'] ?? 0)) > 0
+            && is_array($payload['mapping'] ?? null)) {
+            $this->_saveImportMapping($payload['mapping']);
+        }
+
+        // Rows the client sent that we refused before writing (defense-in-depth;
+        // the UI already excludes error rows from the commit set).
+        $res['error'] = (int) ($res['error'] ?? 0) + $preErrors;
+
+        echo json_encode([
+            'status'  => 'success',
+            'summary' => $this->_formatImportSummary($res),
+            'counts'  => [
+                'success'     => (int) ($res['success'] ?? 0),
+                'updated'     => (int) ($res['updated'] ?? 0),
+                'duplicates'  => count($res['duplicates'] ?? []),
+                'error'       => (int) ($res['error'] ?? 0),
+                'feesPending' => count($res['feesPending'] ?? []),
+            ],
+            'skipped'     => $res['skipped'] ?? [],
+            'duplicates'  => $res['duplicates'] ?? [],
+            'feesPending' => $res['feesPending'] ?? [],
+        ]);
+    }
+
+    /**
+     * Pre-commit duplicate scan (AJAX, no writes). Receives canonical rows in
+     * the `payload` field; for each row with a phone, checks the DB phone index
+     * and earlier rows in the same file. Returns per-row match info so the
+     * preview can flag duplicates BEFORE the operator commits. Costs one
+     * indexed read per row-with-phone, so it is opt-in (a button), not part of
+     * every validate.
+     */
+    public function import_dedupe_check()
+    {
+        $this->_require_role(self::MANAGE_ROLES);
+        $this->output->set_content_type('application/json');
+
+        $payload = json_decode((string) $this->input->post('payload'), true);
+        $rows    = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
+
+        $seenPhones  = [];
+        $seenNameDob = [];
+        $out = [];
+        $dupCount = 0;
+
+        foreach ($rows as $i => $r) {
+            $r = is_array($r) ? $r : [];
+            $name = trim((string) ($r['Name'] ?? ''));
+            $phone10 = preg_replace('/\D+/', '', (string) ($r['Phone Number'] ?? ''));
+            if (strlen($phone10) > 10) $phone10 = substr($phone10, -10);
+            $dob = trim((string) ($r['DOB'] ?? ''));
+            $nameKey = strtolower($name) . '|' . $dob;
+
+            $match = null; $reason = '';
+            if ($phone10 !== '' && strlen($phone10) === 10) {
+                if (isset($seenPhones[$phone10])) { $match = '(earlier row)'; $reason = 'duplicate phone in file'; }
+                else {
+                    $dbId = $this->_existingStudentIdByPhone($phone10);
+                    if ($dbId) { $match = $dbId; $reason = 'existing student (phone)'; }
+                }
+            }
+            if (!$match && $dob !== '' && isset($seenNameDob[$nameKey])) { $match = '(earlier row)'; $reason = 'duplicate name+DOB in file'; }
+
+            if ($match !== null) {
+                $dupCount++;
+                $out[] = ['index' => $i, 'duplicate' => true, 'existingId' => $match, 'reason' => $reason];
+            } else {
+                $out[] = ['index' => $i, 'duplicate' => false];
+            }
+
+            if ($phone10 !== '' && strlen($phone10) === 10) $seenPhones[$phone10] = true;
+            if ($dob !== '') $seenNameDob[$nameKey] = true;
+        }
+
+        echo json_encode(['rows' => $out, 'duplicates' => $dupCount, 'total' => count($rows)]);
+    }
+
+    /**
+     * Download the canonical CSV template (headers + one example row).
+     */
+    /**
+     * Load this school's learned header→field mappings (Phase 3 saved mappings).
+     * Returns [normalizedHeaderKey => fieldKey]; empty on first-ever import.
+     */
+    private function _loadImportMapping(): array
+    {
+        try {
+            $doc = $this->fs->get('importMappings', $this->fs->docId('student_import'));
+            if (is_array($doc) && is_array($doc['headerMap'] ?? null)) {
+                return $doc['headerMap'];
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'load import mapping failed: ' . $e->getMessage());
+        }
+        return [];
+    }
+
+    /**
+     * Merge the column layout the operator used into this school's saved
+     * mapping. Keys are normalized (Firestore-safe) so "D.O.B" and "DOB" learn
+     * the same slot; values are canonical field keys. $mapping = [{header, field}].
+     */
+    private function _saveImportMapping(array $mapping): void
+    {
+        try {
+            $this->load->library('import_schema');
+            $docId    = $this->fs->docId('student_import');
+            $existing = $this->fs->get('importMappings', $docId);
+            $headerMap = is_array($existing['headerMap'] ?? null) ? $existing['headerMap'] : [];
+
+            foreach ($mapping as $m) {
+                if (!is_array($m)) continue;
+                $key   = $this->import_schema->normalizeHeaderKey((string) ($m['header'] ?? ''));
+                $field = trim((string) ($m['field'] ?? ''));
+                if ($key !== '' && $field !== '') $headerMap[$key] = $field;
+            }
+
+            $this->fs->set('importMappings', $docId, [
+                'schoolId'  => $this->school_id,
+                'type'      => 'student',
+                'headerMap' => $headerMap,
+                'updatedAt' => date('c'),
+            ], true);
+        } catch (\Throwable $e) {
+            log_message('error', 'save import mapping failed: ' . $e->getMessage());
+        }
+    }
+
+    public function import_template()
+    {
+        $this->_require_role(self::VIEW_ROLES);
+        $this->load->library('import_schema');
+
+        $fh = fopen('php://temp', 'r+');
+        fputcsv($fh, $this->import_schema->templateHeaders());
+        fputcsv($fh, $this->import_schema->exampleRow());
+        rewind($fh);
+        $csv = stream_get_contents($fh);
+        fclose($fh);
+
+        $this->output
+            ->set_content_type('text/csv')
+            ->set_header('Content-Disposition: attachment; filename="ZenXii_student_import_template.csv"')
+            ->set_header('Cache-Control: no-store, no-cache')
+            ->set_output($csv);
     }
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -4182,7 +4837,10 @@ class Sis extends MY_Controller
             $this->dw->removeFromRoster($class, $section, $id);
             $this->dw->hardDeleteStudent($id);
 
-            // Clean storage
+            // Clean storage. Canonical path first (all post-2026-06-13 uploads
+            // live here); the two legacy paths below are best-effort cleanup for
+            // files admitted before the storage-path cutover and not yet migrated.
+            $this->CM->delete_folder_from_firebase_storage("schools/{$this->school_id}/students/{$id}");
             $this->CM->delete_folder_from_firebase_storage("{$school_name}/Students/{$combinedClassPath}/{$id}");
             $this->CM->delete_folder_from_firebase_storage("Students/{$school_id}/{$id}");
 
@@ -4504,16 +5162,27 @@ class Sis extends MY_Controller
     /** CRM counter — allocates sequential IDs (INQ0001, APP0001, WL0001). */
     private function _crm_next_id(string $type, string $prefix, int $pad = 4): string
     {
-        $flatKey = "crmCounters.{$type}";
-        $profileDocId = $this->fs->docId('profile');
-        $doc = null;
-        try { $doc = $this->fs->get('schools', $profileDocId); } catch (\Exception $e) {}
-        $cur = (is_array($doc) && isset($doc[$flatKey]) && is_numeric($doc[$flatKey]))
-            ? (int) $doc[$flatKey] : 0;
-        $next = $cur + 1;
-        try { $this->fs->update('schools', $profileDocId, [$flatKey => $next]); }
-        catch (\Exception $e) { log_message('error', "CRM counter update failed for {$type}: " . $e->getMessage()); }
-        return $prefix . str_pad($next, $pad, '0', STR_PAD_LEFT);
+        // Atomic claim-doc allocator (the same primitive TC uses). Replaces the
+        // old racy read-increment-write that could hand two concurrent
+        // submit_online_form / save_application calls the SAME id and then
+        // silently overwrite one lead. Seed from any legacy crmCounters value so
+        // a switchover never re-issues an existing id.
+        $seed = 0;
+        try {
+            $doc = $this->fs->get('schools', $this->fs->docId('profile'));
+            $flatKey = "crmCounters.{$type}";
+            if (is_array($doc) && isset($doc[$flatKey]) && is_numeric($doc[$flatKey])) {
+                $seed = (int) $doc[$flatKey];
+            }
+        } catch (\Throwable $e) { /* non-fatal — allocator handles base itself */ }
+
+        $next = $this->fs->nextSchoolCounter('crm_' . $type, $seed);
+        if ($next <= 0) {
+            // Allocator unavailable (Firestore not ready) — degraded last resort.
+            log_message('error', "CRM atomic counter unavailable for {$type}; using seed fallback");
+            $next = $seed + 1;
+        }
+        return $prefix . str_pad((string) $next, $pad, '0', STR_PAD_LEFT);
     }
 
     /** CRM settings — single doc per school. */

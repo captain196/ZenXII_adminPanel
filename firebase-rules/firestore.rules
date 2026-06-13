@@ -971,7 +971,32 @@ service cloud.firestore {
     // ── Stories ──────────────────────────────────────────────────
     match /stories/{docId} {
       allow read: if isSameSchool();
-      allow write: if isStaff();
+      // Staff author/moderate stories. Parents (non-staff) may bump only
+      // the engagement counters (view + reaction aggregates) on a
+      // same-school story — never content or moderation fields. The
+      // field-level guard restricts a non-staff update to exactly those
+      // two keys; the story doc carries schoolId so isSameSchool() works.
+      allow create, delete: if isStaff();
+      allow update: if isStaff()
+        || (isSameSchool()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['viewCount', 'reactionCounts']));
+    }
+
+    // Per-user story engagement markers (viewers + reactions). Declared
+    // with the {path=**} collection-group form because the parent app
+    // hydrates "already viewed" / "my reaction" via collectionGroup()
+    // queries — a rule nested under /stories/{id}/... would NOT authorize
+    // those. The doc id is the app userId (e.g. "P0001"), NOT
+    // request.auth.uid (synthetic-email auth), and these docs carry no
+    // schoolId, so we gate on isAuth() (consistent with the open
+    // mobile-app model; scope is enforced app-side + by the same-school
+    // read on the parent story).
+    match /{path=**}/viewers/{uid} {
+      allow read, write: if isAuth();
+    }
+    match /{path=**}/reactions/{uid} {
+      allow read, write: if isAuth();
     }
 
     // ── Timetables ───────────────────────────────────────────────

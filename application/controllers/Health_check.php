@@ -200,27 +200,26 @@ class Health_check extends MY_Controller
 
     private function _checks_config()
     {
-        $school    = $this->school_name;
-        $school_id = $this->parent_db_key;
-        $fb        = $this->firebase;
+        $school     = $this->school_name;
+        $school_id  = $this->parent_db_key;
+        $schoolFsId = $this->school_id;
+        $fb         = $this->firebase;
 
         return [
             [
                 'name' => 'School Profile Exists',
-                'fn'   => function() use ($fb, $school) {
+                'fn'   => function() use ($fb, $school, $schoolFsId) {
                     // Config/Profile is set via School_config module
                     $p = $fb->get("Schools/{$school}/Config/Profile");
                     if (is_array($p) && !empty($p['display_name'] ?? $p['name'] ?? ''))
                         return $this->_p('Config profile: ' . ($p['display_name'] ?? $p['name']));
-                    // Fallback: onboarding writes to System/Schools/{school_name}/profile
-                    $p2 = $fb->get("System/Schools/{$school}/profile");
-                    if (is_array($p2) && !empty($p2['display_name'] ?? $p2['name'] ?? ''))
-                        return $this->_p('Onboarding profile: ' . ($p2['display_name'] ?? $p2['name']) . ' (Config/Profile not yet set)');
-                    // Check if school node at least exists (legacy schools without profile node)
-                    $sub = $fb->get("System/Schools/{$school}/subscription");
-                    if (is_array($sub) || !empty($sub))
-                        return $this->_p('School node exists (subscription active) — no profile node yet. Set up via Configuration page.');
-                    return $this->_f('No profile found at Config/Profile or System/Schools/' . $school);
+                    // Fallback: canonical Firestore schools/{schoolId} profile
+                    if ($schoolFsId !== '') {
+                        $fsDoc = $fb->firestoreGet('schools', $schoolFsId);
+                        if (is_array($fsDoc) && !empty($fsDoc['schoolName'] ?? $fsDoc['name'] ?? ''))
+                            return $this->_p('Firestore profile: ' . ($fsDoc['schoolName'] ?? $fsDoc['name']) . ' (Config/Profile not yet set)');
+                    }
+                    return $this->_f('No profile found at Config/Profile or Firestore schools/' . ($schoolFsId ?: $school));
                 },
             ],
             [

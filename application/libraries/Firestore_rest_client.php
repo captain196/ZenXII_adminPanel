@@ -836,6 +836,48 @@ class FirestoreRestClient
         return false;
     }
 
+    /**
+     * Atomically increment numeric fields on a single document, creating the
+     * doc if it does not exist. Uses Firestore server-side `increment` field
+     * transforms (no read-modify-write → concurrency-safe). $increments maps
+     * a (pre-escaped) field path to a delta: int → integerValue, float →
+     * doubleValue. Map-key paths must be backtick-escaped by the caller,
+     * e.g. "monthly.`2026-06`".
+     */
+    public function incrementDoc(string $collection, string $docId, array $increments): bool
+    {
+        if (empty($increments)) return true;
+        if ($this->_blockWrite('INCREMENT', "$collection/$docId")) return false;
+
+        $dbPrefix = "projects/{$this->projectId}/databases/{$this->databaseId}/documents";
+        $path = "$dbPrefix/$collection/$docId";
+
+        $transforms = [];
+        foreach ($increments as $fieldPath => $delta) {
+            $val = is_int($delta)
+                ? ['integerValue' => (string) $delta]
+                : ['doubleValue' => (float) $delta];
+            $transforms[] = ['fieldPath' => (string) $fieldPath, 'increment' => $val];
+        }
+
+        // update with an empty field-set + empty mask touches no existing
+        // fields (so it never wipes the doc) but upserts it; updateTransforms
+        // then apply atomically, creating missing fields from 0.
+        $writes = [[
+            'update'           => ['name' => $path, 'fields' => new \stdClass()],
+            'updateMask'       => ['fieldPaths' => []],
+            'updateTransforms' => $transforms,
+        ]];
+
+        $url = "https://firestore.googleapis.com/v1/{$dbPrefix}:commit";
+        $r = $this->request('POST', $url, ['writes' => $writes]);
+        if ($r['code'] >= 200 && $r['code'] < 300) return true;
+        if (function_exists('log_message')) {
+            log_message('error', "FirestoreREST::incrementDoc HTTP {$r['code']} {$collection}/{$docId} body=" . json_encode($r['body']));
+        }
+        return false;
+    }
+
     public function setDocument(string $collection, string $docId, array $data, bool $merge = false): bool
     {
         if ($this->_blockWrite('SET', "$collection/$docId")) return false;

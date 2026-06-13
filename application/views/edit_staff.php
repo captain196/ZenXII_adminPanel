@@ -49,35 +49,35 @@
                         <div class="nsa-grid">
 
                             <div class="nsa-field">
-                                <label>Staff ID</label>
+                                <label for="user_id">Staff ID</label>
                                 <input type="text" name="user_id" id="user_id"
                                        value="<?= htmlspecialchars($staff_data['User ID'] ?? '') ?>"
                                        class="nsa-input" readonly>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Staff Name <span class="req">*</span></label>
+                                <label for="name">Staff Name <span class="req">*</span></label>
                                 <input type="text" id="name" name="Name"
                                        value="<?= htmlspecialchars($staff_data['Name'] ?? '') ?>"
                                        class="nsa-input" placeholder="Full name" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Date of Birth <span class="req">*</span></label>
+                                <label for="dob">Date of Birth</label>
                                 <input type="date" id="dob" name="DOB"
                                        value="<?= !empty($staff_data['DOB']) ? date('Y-m-d', strtotime($staff_data['DOB'])) : '' ?>"
                                        class="nsa-input" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Email <span class="req">*</span></label>
+                                <label for="email_user">Email</label>
                                 <input type="email" id="email_user" name="Email"
                                        value="<?= htmlspecialchars($staff_data['Email'] ?? '') ?>"
                                        class="nsa-input" placeholder="staff@email.com" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Gender <span class="req">*</span></label>
+                                <label for="gender">Gender</label>
                                 <select id="gender" name="gender" class="nsa-select" required>
                                     <option value="">Select Gender</option>
                                     <?php foreach (['Male','Female','Other'] as $g): ?>
@@ -87,7 +87,7 @@
                             </div>
 
                             <div class="nsa-field">
-                                <label>Blood Group <span class="req">*</span></label>
+                                <label for="blood_group">Blood Group</label>
                                 <select id="blood_group" name="blood_group" class="nsa-select" required>
                                     <option value="">Select</option>
                                     <?php
@@ -100,7 +100,7 @@
                             </div>
 
                             <div class="nsa-field">
-                                <label>Religion <span class="req">*</span></label>
+                                <label for="religion">Religion</label>
                                 <select id="religion" name="religion" class="nsa-select" required>
                                     <option value="">Select Religion</option>
                                     <?php foreach (['Hindu','Muslim','Sikh','Jain','Buddh','Christian','Other'] as $r): ?>
@@ -110,7 +110,7 @@
                             </div>
 
                             <div class="nsa-field">
-                                <label>Category <span class="req">*</span></label>
+                                <label for="category">Category</label>
                                 <select id="category" name="category" class="nsa-select" required>
                                     <option value="">Select</option>
                                     <?php foreach (['General','OBC','SC','ST'] as $c): ?>
@@ -124,51 +124,65 @@
                                 $existingPrimary = $staff_data['primary_role'] ?? '';
                                 if (!is_array($existingRoles)) $existingRoles = [];
                             ?>
-                            <!-- Staff roles auto-assigned from Designation via backend -->
+                            <!-- Staff roles are chosen here in the picker below;
+                                 the first chip is the primary role. -->
                             <input type="hidden" name="staff_roles" id="staffRolesHidden"
                                    value="<?= htmlspecialchars(implode(',', $existingRoles)) ?>">
                             <input type="hidden" name="primary_role" id="primaryRoleHidden"
                                    value="<?= htmlspecialchars($existingPrimary) ?>">
 
-                            <div class="nsa-field">
-                                <label>Designation / Title <span class="req">*</span></label>
-                                <?php $curPos = $staff_data['Position'] ?? ''; ?>
-                                <select id="staff_position" name="position" class="nsa-input" required>
-                                    <option value="">-- Select Designation --</option>
-                                    <?php
-                                    $designations = ['Teacher','Senior Teacher','Head of Department','Vice Principal','Principal','Accountant','Librarian','Lab Assistant','Clerk','Receptionist','IT Administrator','Sports Coach','Counselor','Driver','Security Guard','Peon / Attendant','Other'];
-                                    foreach ($designations as $dsg):
-                                        $sel = ($curPos === $dsg) ? ' selected' : '';
-                                    ?>
-                                    <option value="<?= $dsg ?>"<?= $sel ?>><?= $dsg ?></option>
-                                    <?php endforeach;
-                                    // If current position doesn't match any preset, add it
-                                    if ($curPos !== '' && !in_array($curPos, $designations, true)):
-                                    ?>
-                                    <option value="<?= htmlspecialchars($curPos) ?>" selected><?= htmlspecialchars($curPos) ?></option>
-                                    <?php endif; ?>
+                            <div class="nsa-field nsa-col-2">
+                                <label for="staffRoleSelect">Staff Role <span class="req">*</span></label>
+                                <select id="staffRoleSelect" class="nsa-select">
+                                    <option value="">+ Add role (Teacher, Accountant, Librarian, etc.)...</option>
                                 </select>
+                                <div id="selectedRolesChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">
+                                    <span id="noRolesHint" style="display:none;font-size:12px;color:var(--nsa-red,#dc2626);">
+                                        <i class="fa fa-exclamation-circle"></i> No role yet — add at least one.
+                                    </span>
+                                </div>
+                                <small style="color:var(--nsa-muted);font-size:11px;">
+                                    <i class="fa fa-info-circle"></i>
+                                    Pick one or more roles. The first (&#9733;) is the primary designation. Adding a <strong>Teacher</strong> role reveals the subjects field below.
+                                </small>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Date of Joining</label>
+                                <label for="date_of_joining">Date of Joining</label>
                                 <input type="date" id="date_of_joining" name="date_of_joining"
                                        value="<?= !empty($staff_data['Date Of Joining']) ? date('Y-m-d', strtotime($staff_data['Date Of Joining'])) : '' ?>"
                                        class="nsa-input" readonly>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Employment Type <span class="req">*</span></label>
+                                <label for="employment_type">Employment Type</label>
                                 <input type="text" id="employment_type" name="employment_type"
                                        value="<?= htmlspecialchars($staff_data['Employment Type'] ?? '') ?>"
                                        class="nsa-input" placeholder="e.g. Full-time" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Department <span class="req">*</span></label>
+                                <label for="teacher_department">Department</label>
                                 <select id="teacher_department" name="department" class="nsa-input" required>
                                     <option value="">-- Select Department --</option>
                                 </select>
+                            </div>
+
+                            <!-- Teacher capability — shown only when a Teacher role is selected -->
+                            <div id="teacherExtraFields" class="nsa-col-2" style="display:none;">
+                                <div class="nsa-field">
+                                    <label for="teachingSubjectsHidden">Subjects this teacher can teach</label>
+                                    <input type="hidden" name="teaching_subjects" id="teachingSubjectsHidden"
+                                           value="<?= htmlspecialchars(implode(',', array_map('strval', (array)($staff_data['teaching_subjects'] ?? [])))) ?>">
+                                    <select id="subjectPicker" class="nsa-input">
+                                        <option value="">+ Add subject...</option>
+                                    </select>
+                                    <div id="subjectChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;"></div>
+                                    <small style="color:var(--nsa-muted);font-size:11px;">
+                                        <i class="fa fa-info-circle"></i>
+                                        Capability list only. Actual class &amp; section assignments are done in <strong>Academic Planner &rarr; Subject Assignments</strong>.
+                                    </small>
+                                </div>
                             </div>
 
                         </div>
@@ -185,26 +199,26 @@
                         <div class="nsa-grid nsa-grid-2">
 
                             <div class="nsa-field">
-                                <label>Father's Name <span class="req">*</span></label>
+                                <label for="father_name">Father's Name</label>
                                 <input type="text" id="father_name" name="father_name"
                                        value="<?= htmlspecialchars($staff_data['Father Name'] ?? '') ?>"
                                        class="nsa-input" placeholder="Father's full name" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Phone Number <span class="req">*</span></label>
-                                <input type="tel" id="phone_number" name="phone_number"
+                                <label for="phone_number">Phone Number <span class="req">*</span></label>
+                                <div class="phone-ig"><span class="phone-pfx">+91</span><input type="tel" id="phone_number" name="phone_number"
                                        value="<?= htmlspecialchars($staff_data['Phone Number'] ?? '') ?>"
                                        class="nsa-input" placeholder="10-digit number"
-                                       pattern="[0-9]{10}" maxlength="10" required>
+                                       pattern="[0-9]{10}" maxlength="10" required></div>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Alternate Phone</label>
-                                <input type="tel" id="alt_phone" name="alt_phone"
+                                <label for="alt_phone">Alternate Phone</label>
+                                <div class="phone-ig"><span class="phone-pfx">+91</span><input type="tel" id="alt_phone" name="alt_phone"
                                        value="<?= htmlspecialchars($staff_data['altPhone'] ?? '') ?>"
                                        class="nsa-input" placeholder="10-digit number"
-                                       pattern="[0-9]{10}" maxlength="10">
+                                       pattern="[0-9]{10}" maxlength="10"></div>
                             </div>
 
                             <div class="nsa-field">
@@ -220,18 +234,18 @@
                             </div>
 
                             <div class="nsa-field">
-                                <label>Emergency Contact Name <span class="req">*</span></label>
+                                <label for="emergency_contact_name">Emergency Contact Name</label>
                                 <input type="text" id="emergency_contact_name" name="emergency_contact_name"
                                        value="<?= htmlspecialchars($staff_data['emergencyContact']['name'] ?? '') ?>"
                                        class="nsa-input" placeholder="Full name" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Emergency Contact Number <span class="req">*</span></label>
-                                <input type="tel" id="emergency_contact_phone" name="emergency_contact_phone"
+                                <label for="emergency_contact_phone">Emergency Contact Number</label>
+                                <div class="phone-ig"><span class="phone-pfx">+91</span><input type="tel" id="emergency_contact_phone" name="emergency_contact_phone"
                                        value="<?= htmlspecialchars($staff_data['emergencyContact']['phoneNumber'] ?? '') ?>"
                                        class="nsa-input" placeholder="10-digit number"
-                                       pattern="[0-9]{10}" maxlength="10" required>
+                                       pattern="[0-9]{10}" maxlength="10"></div>
                             </div>
 
                             <div class="nsa-field">
@@ -249,7 +263,7 @@
                             </div>
 
                             <div class="nsa-field">
-                                <label>Designation</label>
+                                <label for="designation">Designation</label>
                                 <input type="text" id="designation" name="designation"
                                        value="<?= htmlspecialchars($staff_data['designation'] ?? '') ?>"
                                        class="nsa-input" placeholder="e.g. Senior Teacher, HOD">
@@ -269,7 +283,7 @@
                         <div class="nsa-grid nsa-grid-2">
 
                             <div class="nsa-field">
-                                <label>PAN Number</label>
+                                <label for="pan_number">PAN Number</label>
                                 <input type="text" id="pan_number" name="pan_number"
                                        value="<?= htmlspecialchars($staff_data['panNumber'] ?? '') ?>"
                                        class="nsa-input" placeholder="ABCDE1234F"
@@ -278,7 +292,7 @@
                             </div>
 
                             <div class="nsa-field">
-                                <label>Aadhar Number</label>
+                                <label for="aadhar_number">Aadhar Number</label>
                                 <input type="text" id="aadhar_number" name="aadhar_number"
                                        value="<?= htmlspecialchars($staff_data['aadharNumber'] ?? '') ?>"
                                        class="nsa-input" placeholder="12-digit number"
@@ -286,14 +300,14 @@
                             </div>
 
                             <div class="nsa-field">
-                                <label>PF Number (UAN)</label>
+                                <label for="pf_number">PF Number (UAN)</label>
                                 <input type="text" id="pf_number" name="pf_number"
                                        value="<?= htmlspecialchars($staff_data['pfNumber'] ?? '') ?>"
                                        class="nsa-input" placeholder="UAN or PF Account No.">
                             </div>
 
                             <div class="nsa-field">
-                                <label>ESI Number</label>
+                                <label for="esi_number">ESI Number</label>
                                 <input type="text" id="esi_number" name="esi_number"
                                        value="<?= htmlspecialchars($staff_data['esiNumber'] ?? '') ?>"
                                        class="nsa-input" placeholder="ESI IP Number">
@@ -313,28 +327,28 @@
                         <div class="nsa-grid nsa-grid-2">
 
                             <div class="nsa-field nsa-col-2">
-                                <label>Street <span class="req">*</span></label>
+                                <label for="street">Street</label>
                                 <input type="text" id="street" name="street"
                                        value="<?= htmlspecialchars($staff_data['Address']['Street'] ?? '') ?>"
                                        class="nsa-input" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>City <span class="req">*</span></label>
+                                <label for="city">City</label>
                                 <input type="text" id="city" name="city"
                                        value="<?= htmlspecialchars($staff_data['Address']['City'] ?? '') ?>"
                                        class="nsa-input" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>State <span class="req">*</span></label>
+                                <label for="state">State</label>
                                 <input type="text" id="state" name="state"
                                        value="<?= htmlspecialchars($staff_data['Address']['State'] ?? '') ?>"
                                        class="nsa-input" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Postal Code <span class="req">*</span></label>
+                                <label for="postal_code">Postal Code</label>
                                 <input type="text" id="postal_code" name="postal_code"
                                        value="<?= htmlspecialchars($staff_data['Address']['PostalCode'] ?? '') ?>"
                                        class="nsa-input" required>
@@ -356,25 +370,25 @@
                             <h4 style="font-size:13px;color:var(--t2);margin-bottom:8px;font-weight:600">Permanent Address</h4>
                             <div class="nsa-grid nsa-grid-2">
                                 <div class="nsa-field nsa-col-2">
-                                    <label>Street</label>
+                                    <label for="perm_street">Street</label>
                                     <input type="text" id="perm_street" name="perm_street"
                                            value="<?= htmlspecialchars($staff_data['permanentAddress']['street'] ?? '') ?>"
                                            class="nsa-input" placeholder="House no., Street name">
                                 </div>
                                 <div class="nsa-field">
-                                    <label>City</label>
+                                    <label for="perm_city">City</label>
                                     <input type="text" id="perm_city" name="perm_city"
                                            value="<?= htmlspecialchars($staff_data['permanentAddress']['city'] ?? '') ?>"
                                            class="nsa-input" placeholder="City / District">
                                 </div>
                                 <div class="nsa-field">
-                                    <label>State</label>
+                                    <label for="perm_state">State</label>
                                     <input type="text" id="perm_state" name="perm_state"
                                            value="<?= htmlspecialchars($staff_data['permanentAddress']['state'] ?? '') ?>"
                                            class="nsa-input" placeholder="State">
                                 </div>
                                 <div class="nsa-field">
-                                    <label>Postal Code</label>
+                                    <label for="perm_postal_code">Postal Code</label>
                                     <input type="text" id="perm_postal_code" name="perm_postal_code"
                                            value="<?= htmlspecialchars($staff_data['permanentAddress']['postalCode'] ?? '') ?>"
                                            class="nsa-input" placeholder="6-digit PIN">
@@ -395,28 +409,28 @@
                         <div class="nsa-grid nsa-grid-3">
 
                             <div class="nsa-field">
-                                <label>Highest Qualification <span class="req">*</span></label>
+                                <label for="qualification">Highest Qualification</label>
                                 <input type="text" id="qualification" name="qualification"
                                        value="<?= htmlspecialchars($staff_data['qualificationDetails']['highestQualification'] ?? '') ?>"
                                        class="nsa-input" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>University <span class="req">*</span></label>
+                                <label for="university">University</label>
                                 <input type="text" id="university" name="university"
                                        value="<?= htmlspecialchars($staff_data['qualificationDetails']['university'] ?? '') ?>"
                                        class="nsa-input" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Year of Passing <span class="req">*</span></label>
+                                <label for="year_of_passing">Year of Passing</label>
                                 <input type="text" id="year_of_passing" name="year_of_passing"
                                        value="<?= htmlspecialchars($staff_data['qualificationDetails']['yearOfPassing'] ?? '') ?>"
                                        class="nsa-input" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Work Experience (Years) <span class="req">*</span></label>
+                                <label for="teacher_experience">Work Experience (Years)</label>
                                 <input type="text" id="teacher_experience" name="teacher_experience"
                                        value="<?= htmlspecialchars($staff_data['qualificationDetails']['experience'] ?? '') ?>"
                                        class="nsa-input" required>
@@ -436,28 +450,28 @@
                         <div class="nsa-grid nsa-grid-2">
 
                             <div class="nsa-field">
-                                <label>Bank Name <span class="req">*</span></label>
+                                <label for="bank_name">Bank Name</label>
                                 <input type="text" id="bank_name" name="bank_name"
                                        value="<?= htmlspecialchars($staff_data['bankDetails']['bankName'] ?? '') ?>"
                                        class="nsa-input" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Account Holder Name <span class="req">*</span></label>
+                                <label for="account_holder">Account Holder Name</label>
                                 <input type="text" id="account_holder" name="account_holder"
                                        value="<?= htmlspecialchars($staff_data['bankDetails']['accountHolderName'] ?? '') ?>"
                                        class="nsa-input" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Account Number <span class="req">*</span></label>
+                                <label for="account_number">Account Number</label>
                                 <input type="text" id="account_number" name="account_number"
                                        value="<?= htmlspecialchars($staff_data['bankDetails']['accountNumber'] ?? '') ?>"
                                        class="nsa-input" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>IFSC Code <span class="req">*</span></label>
+                                <label for="bank_ifsc">IFSC Code</label>
                                 <input type="text" id="bank_ifsc" name="bank_ifsc"
                                        value="<?= htmlspecialchars($staff_data['bankDetails']['ifscCode'] ?? '') ?>"
                                        class="nsa-input" required>
@@ -477,14 +491,14 @@
                         <div class="nsa-grid nsa-grid-2">
 
                             <div class="nsa-field">
-                                <label>Basic Salary (₹) <span class="req">*</span></label>
+                                <label for="basicSalary">Basic Salary (₹)</label>
                                 <input type="number" id="basicSalary" name="basicSalary"
                                        value="<?= htmlspecialchars($staff_data['salaryDetails']['basicSalary'] ?? '') ?>"
                                        class="nsa-input" min="0" required>
                             </div>
 
                             <div class="nsa-field">
-                                <label>Allowances (₹) <span class="req">*</span></label>
+                                <label for="allowances">Allowances (₹)</label>
                                 <input type="number" id="allowances" name="allowances"
                                        value="<?= htmlspecialchars($staff_data['salaryDetails']['Allowances'] ?? '') ?>"
                                        class="nsa-input" min="0" required>
@@ -743,27 +757,14 @@ function validateEditForm() {
         isValid = false;
     }
 
-    if (!getValue('name'))                   showError('name',                   'Name is required');
-    if (!getValue('dob'))                    showError('dob',                    'Date of birth is required');
-    // Staff roles auto-assigned from designation — no validation needed
-    if (!getValue('father_name'))            showError('father_name',            'Father name is required');
-    if (!getValue('street'))                 showError('street',                 'Street is required');
-    if (!getValue('city'))                   showError('city',                   'City is required');
-    if (!getValue('state'))                  showError('state',                  'State is required');
-    if (!getValue('postal_code'))            showError('postal_code',            'Postal code is required');
-    if (!getValue('qualification'))          showError('qualification',          'Qualification is required');
-    if (!getValue('university'))             showError('university',             'University is required');
-    if (!getValue('year_of_passing'))        showError('year_of_passing',        'Year of passing is required');
-    if (!getValue('teacher_experience'))     showError('teacher_experience',     'Experience is required');
-    if (!getValue('teacher_department'))     showError('teacher_department',     'Department is required');
-    if (!getValue('bank_name'))              showError('bank_name',              'Bank name is required');
-    if (!getValue('account_holder'))         showError('account_holder',         'Account holder is required');
-    if (!getValue('account_number'))         showError('account_number',         'Account number is required');
-    if (!getValue('bank_ifsc'))              showError('bank_ifsc',              'IFSC code is required');
-    if (!getValue('emergency_contact_name')) showError('emergency_contact_name', 'Emergency contact name is required');
+    // Single-source, permissive validation — matches the import model: only
+    // Name + Phone are hard-required, so a sparsely-imported staff can be saved
+    // after fixing just one field. Format checks fire only when a value exists.
+    if (!getValue('name')) showError('name', 'Name is required');
 
+    var emailVal = getValue('email_user');
     var emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailPattern.test(getValue('email_user')))
+    if (emailVal && !emailPattern.test(emailVal))
         showError('email_user', 'Enter a valid email address');
 
     var phonePattern = /^[6-9]\d{9}$/;
@@ -772,8 +773,9 @@ function validateEditForm() {
     if (getValue('emergency_contact_phone') && !phonePattern.test(getValue('emergency_contact_phone')))
         showError('emergency_contact_phone', 'Enter valid 10-digit mobile number');
 
+    var postalVal = getValue('postal_code');
     var postalPattern = /^[1-9][0-9]{5}$/;
-    if (!postalPattern.test(getValue('postal_code')))
+    if (postalVal && !postalPattern.test(postalVal))
         showError('postal_code', 'Enter valid 6-digit PIN code');
 
     /* Photo validation — only if new file selected */
@@ -919,6 +921,10 @@ document.addEventListener('DOMContentLoaded', function() {
     function renderRoleChips() {
         var container = document.getElementById('selectedRolesChips');
         container.innerHTML = '';
+        if (!_selectedRoles.length) {
+            container.innerHTML = '<span style="font-size:12px;color:var(--nsa-red,#dc2626);">'
+                + '<i class="fa fa-exclamation-circle"></i> No role yet — add at least one.</span>';
+        }
         _selectedRoles.forEach(function(rid) {
             var r = _roleData[rid] || { label: rid, category: '?' };
             var isPrimary = rid === _primaryRole;
@@ -947,7 +953,104 @@ document.addEventListener('DOMContentLoaded', function() {
         });
         document.getElementById('staffRolesHidden').value = _selectedRoles.join(',');
         document.getElementById('primaryRoleHidden').value = _primaryRole;
+        if (typeof recheckTeachingVisibility === 'function') recheckTeachingVisibility();
     }
+
+    /* ── Teaching subjects (capability list — visible only for Teacher role) ── */
+    var _subjHidden = document.getElementById('teachingSubjectsHidden');
+    var _selectedSubjects = ((_subjHidden && _subjHidden.value) || '')
+        .split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+    var _subjectsLoading = false, _subjectsLoaded = false;
+
+    function isTeacherSelected() {
+        return _selectedRoles.indexOf('ROLE_TEACHER') !== -1;
+    }
+
+    function recheckTeachingVisibility() {
+        var section = document.getElementById('teacherExtraFields');
+        if (!section) return;
+        var show = isTeacherSelected();
+        section.style.display = show ? 'block' : 'none';
+        if (show) loadSubjectOptions();
+    }
+
+    function loadSubjectOptions() {
+        var sel = document.getElementById('subjectPicker');
+        if (!sel || _subjectsLoaded || _subjectsLoading) return;
+        _subjectsLoading = true;
+        fetch('<?= base_url("school_config/get_all_subjects") ?>', {
+            method: 'POST',
+            headers: {'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
+            body: '<?= $this->security->get_csrf_token_name() ?>=<?= $this->security->get_csrf_hash() ?>'
+        })
+        .then(function(r){ return r.json(); })
+        .then(function(r){
+            while (sel.options.length > 1) sel.remove(1);
+            if (r.status === 'success' && r.subjects) {
+                var seen = {};
+                r.subjects.forEach(function(s){
+                    var nm = (s.name || s.code || '').trim();
+                    if (!nm) return;
+                    var key = nm.toLowerCase();
+                    if (seen[key]) return;
+                    seen[key] = true;
+                    var opt = document.createElement('option');
+                    opt.value = nm;
+                    opt.textContent = nm + (s.category ? ' (' + s.category + ')' : '');
+                    sel.appendChild(opt);
+                });
+            }
+            _subjectsLoaded = true; _subjectsLoading = false;
+        })
+        .catch(function(){
+            while (sel.options.length > 1) sel.remove(1);
+            ['English','Hindi','Mathematics','Science','Social Science','Computer Science',
+             'Physics','Chemistry','Biology','Accountancy','Business Studies','Economics',
+             'History','Geography','Political Science','Sanskrit','Physical Education','Art'].forEach(function(s){
+                var opt = document.createElement('option');
+                opt.value = s; opt.textContent = s;
+                sel.appendChild(opt);
+            });
+            _subjectsLoaded = true; _subjectsLoading = false;
+        });
+    }
+
+    (function(){
+        var picker = document.getElementById('subjectPicker');
+        if (!picker) return;
+        picker.addEventListener('change', function(){
+            var val = this.value;
+            if (!val || _selectedSubjects.indexOf(val) !== -1) { this.value = ''; return; }
+            _selectedSubjects.push(val);
+            renderSubjectChips();
+            this.value = '';
+        });
+    })();
+
+    function renderSubjectChips() {
+        var container = document.getElementById('subjectChips');
+        if (!container) return;
+        container.innerHTML = '';
+        _selectedSubjects.forEach(function(s){
+            var chip = document.createElement('span');
+            chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:rgba(15,118,110,.1);color:#0f766e;border-radius:14px;font-size:12px;font-weight:500;';
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.style.cssText = 'background:none;border:none;color:inherit;cursor:pointer;font-weight:700;padding:0 2px;';
+            btn.innerHTML = '&times;';
+            btn.addEventListener('click', function(){
+                _selectedSubjects = _selectedSubjects.filter(function(x){ return x !== s; });
+                renderSubjectChips();
+            });
+            chip.textContent = s + ' ';
+            chip.appendChild(btn);
+            container.appendChild(chip);
+        });
+        var hidden = document.getElementById('teachingSubjectsHidden');
+        if (hidden) hidden.value = _selectedSubjects.join(',');
+    }
+    renderSubjectChips();
+    recheckTeachingVisibility();
 
     /* Sidebar active scroll highlight */
     var sections = document.querySelectorAll('.nsa-section');
@@ -1289,10 +1392,23 @@ function submitEditForm() {
 .nsa-action-bar {
     background: var(--nsa-white);
     border-radius: var(--nsa-radius);
-    box-shadow: var(--nsa-shadow);
+    box-shadow: 0 -4px 16px rgba(15,23,42,.10);
     padding: 16px 22px;
     display: flex; align-items: center; justify-content: flex-end; gap: 12px;
+    /* Keep Save reachable on a long form without scrolling to the bottom. */
+    position: sticky; bottom: 12px; z-index: 20;
+    border: 1px solid var(--nsa-border, #e2e8f0);
 }
+
+/* ── Phone input-group (+91 prefix), parity with Add Staff ── */
+.phone-ig { display: flex; align-items: stretch; }
+.phone-ig .phone-pfx {
+    display: flex; align-items: center; padding: 0 11px;
+    background: var(--nsa-sky, #e6f4f1); color: var(--nsa-text, #1a2535);
+    border: 1px solid var(--nsa-border, #e2e8f0); border-right: none;
+    border-radius: 8px 0 0 8px; font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+.phone-ig .nsa-input { border-radius: 0 8px 8px 0; flex: 1; min-width: 0; }
 
 /* ── Buttons ── */
 .nsa-btn {

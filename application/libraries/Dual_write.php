@@ -607,14 +607,6 @@ class Dual_write
         return true;
     }
 
-    public function writeSchool(array $data): bool
-    {
-        if (!$this->ready) return false;
-        if (!$this->writeToRTDB("System/Schools/{$this->schoolId}/profile", $data, 'update')) return false;
-        $this->writeToFirestore('syncSchool', [$data]);
-        return true;
-    }
-
     public function writeAttendance(string $stuId, string $date, array $data, string $rtdbPath): bool
     {
         if (!$this->ready) return false;

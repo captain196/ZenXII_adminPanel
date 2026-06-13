@@ -1,6 +1,14 @@
 {
   "indexes": [
     {
+      "collectionGroup": "stories",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",    "order": "ASCENDING" },
+        { "fieldPath": "expiresAtTs", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "ptmEvents",
       "queryScope": "COLLECTION",
       "fields": [

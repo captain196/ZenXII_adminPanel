@@ -46,6 +46,14 @@ class Admin extends MY_Controller
             return;
         }
 
+        // Release the session file-lock now: MY_Controller's construct has
+        // finished its session writes (rbac etc.), and the dashboard render +
+        // its views below only READ the session. Holding the lock through the
+        // school-doc fetch + view render would make the dashboard's parallel
+        // AJAX widgets queue behind this page. (Same pattern the dashboard
+        // AJAX endpoints already use.)
+        if (function_exists('session_write_close')) @session_write_close();
+
         $school_id    = $this->school_id;
         $school_name  = $this->school_name;
         $session_year = $this->session_year;
@@ -221,8 +229,9 @@ class Admin extends MY_Controller
             'calendar_events'   => [],
         ];
 
-        // SC-Step4: session-keyed cache write.
-        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600, $this->session_year);
+        // SC-Step4: session-keyed cache write. Short TTL (120s) is just a
+        // backstop — write paths bust this key on data change (invalidate-on-write).
+        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 120, $this->session_year);
         echo json_encode($payload);
     }
 
@@ -251,88 +260,101 @@ class Admin extends MY_Controller
         }
         log_message('debug', "DASHBOARD_CACHE MISS key={$cacheKey} school={$this->school_name}");
 
-        // ── Students scan (for class + gender + section distribution) ───
-        $studentDocs    = $this->fs->schoolWhere('students', [['status', '==', 'Active']]);
-        $studentCount   = 0;
-        $classDist      = [];
-        $genderDist     = ['Male' => 0, 'Female' => 0, 'Other' => 0];
-        $sectionSet     = [];
+        // ── Class / section counts — from the configured `sections` collection
+        //    (small, one doc per section) instead of scanning every student. ──
+        $sectionDocs  = $this->fs->schoolWhere('sections', []);
+        $classSet     = [];
+        $sectionCount = 0;
+        foreach ((array) $sectionDocs as $doc) {
+            $sd  = $doc['data'] ?? [];
+            $cls = trim((string) ($sd['className'] ?? ''));
+            if ($cls !== '') $classSet[$cls] = true;
+            $sectionCount++;
+        }
+        $classCount = count($classSet);
+
+        // ── Active student count — cheap server-side aggregation (no docs). ──
+        //    Used only as a fallback denominator for fee_defaulters below.
+        $studentCount = $this->fs->count('students', [
+            ['schoolId', '==', $this->school_id],
+            ['status',   '==', 'Active'],
+        ]);
+
+        // ── Birthdays today — precomputed `birthMonthDay` equality query, so
+        //    we no longer scan every student to parse DOB strings. Equality-
+        //    only filters use single-field indexes (no composite index needed).
+        //    NOTE: requires the one-time birthMonthDay backfill to have run;
+        //    new/edited students get it automatically via Firestore_service.
         $birthdaysToday = [];
         $todayMd        = date('m-d');
-        foreach ((array) $studentDocs as $doc) {
-            $s = $doc['data'];
-            $studentCount++;
-            $cls = trim($s['className'] ?? $s['Class'] ?? 'Unknown');
-            $sec = trim($s['section']   ?? $s['Section'] ?? '');
-            $classDist[$cls] = ($classDist[$cls] ?? 0) + 1;
-            if ($cls && $sec) $sectionSet["{$cls}|{$sec}"] = true;
-            $g = strtolower(trim($s['gender'] ?? $s['Gender'] ?? ''));
-            if ($g === 'male' || $g === 'm')        $genderDist['Male']++;
-            elseif ($g === 'female' || $g === 'f')  $genderDist['Female']++;
-            elseif ($g !== '')                        $genderDist['Other']++;
-
-            // Birthdays today — DOB formats in the wild include
-            // "YYYY-MM-DD", "DD/MM/YYYY", "DD-MM-YYYY", and ISO timestamp.
-            // Extract month-day tokens from each.
-            $dob = (string) ($s['dob'] ?? $s['DOB'] ?? $s['dateOfBirth'] ?? '');
-            if ($dob !== '') {
-                $mdCandidate = '';
-                if (preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $dob, $m)) {
-                    // ISO: YYYY-MM-DD
-                    $mdCandidate = $m[2] . '-' . $m[3];
-                } elseif (preg_match('/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})/', $dob, $m)) {
-                    // Indian: DD/MM/YYYY or DD-MM-YYYY
-                    $mdCandidate = $m[2] . '-' . $m[1];
-                }
-                if ($mdCandidate === $todayMd) {
-                    $birthdaysToday[] = [
-                        'studentId' => (string) ($s['studentId'] ?? $s['userId'] ?? $s['user_id'] ?? ''),
-                        'name'      => (string) ($s['name'] ?? $s['Name'] ?? 'Student'),
-                        'class'     => trim($cls . ' ' . $sec),
-                        'className' => $cls,
-                        'section'   => $sec,
-                    ];
-                }
+        try {
+            $bdayDocs = $this->fs->schoolWhere('students', [
+                ['status',        '==', 'Active'],
+                ['birthMonthDay', '==', $todayMd],
+            ]);
+            foreach ((array) $bdayDocs as $doc) {
+                $s   = $doc['data'];
+                $cls = trim((string) ($s['className'] ?? $s['Class'] ?? ''));
+                $sec = trim((string) ($s['section']   ?? $s['Section'] ?? ''));
+                $birthdaysToday[] = [
+                    'studentId' => (string) ($s['studentId'] ?? $s['userId'] ?? $s['user_id'] ?? ''),
+                    'name'      => (string) ($s['name'] ?? $s['Name'] ?? 'Student'),
+                    'class'     => trim($cls . ' ' . $sec),
+                    'className' => $cls,
+                    'section'   => $sec,
+                ];
             }
+        } catch (\Exception $e) {
+            log_message('error', 'birthdays query failed: ' . $e->getMessage());
         }
-        uksort($classDist, 'strnatcasecmp');
-        $classCount   = count($classDist);
-        $sectionCount = count($sectionSet);
 
-        // ── Receipts scan (monthly breakdown + fee breakdown + unique paid students) ────
-        $monthlyFees    = [];
-        $paidStudentIds = [];
-        $feeBreakdown   = ['today' => 0.0, 'month' => 0.0, 'year' => 0.0];
-        $todayStr       = date('Y-m-d');
-        $monthStartStr  = date('Y-m-01');
-        $yearStartStr   = date('Y-01-01');
+        // ── Fee collection (monthly chart + today/month/year breakdown) ──
+        //    Read the maintained `feeCollectionRollup` doc instead of scanning
+        //    every receipt. Cross-check its total/count against the cheap
+        //    authoritative aggregation; rebuild from receipts only if it's
+        //    missing or has drifted, so the numbers are ALWAYS exact.
+        $monthlyFees  = [];
+        $feeBreakdown = ['today' => 0.0, 'month' => 0.0, 'year' => 0.0];
         if ($role !== 'Teacher') {
-            $receiptDocs = $this->fs->sessionWhere('feeReceipts', []);
-            foreach ((array) $receiptDocs as $doc) {
-                $r = $doc['data'];
-                $amt = (float) ($r['allocated_amount']
-                              ?? $r['allocatedAmount']
-                              ?? $r['amount']
-                              ?? 0);
-                $uid = $r['studentId'] ?? $r['userId'] ?? $r['user_id'] ?? '';
-                if ($uid) $paidStudentIds[$uid] = true;
-                $dateStr = $r['paidAt'] ?? $r['date'] ?? '';
-                if ($dateStr) {
-                    $ts = strtotime($dateStr);
-                    if ($ts) {
-                        $monthKey = date('Y-m', $ts);
-                        $monthlyFees[$monthKey] = ($monthlyFees[$monthKey] ?? 0) + $amt;
-                        // Fee breakdown by date bucket.
-                        $iso = date('Y-m-d', $ts);
-                        if ($iso >= $yearStartStr)  $feeBreakdown['year']  += $amt;
-                        if ($iso >= $monthStartStr) $feeBreakdown['month'] += $amt;
-                        if ($iso === $todayStr)     $feeBreakdown['today'] += $amt;
-                    }
-                }
+            $this->load->library('fee_collection_rollup');
+
+            // Authoritative totals — one server-side aggregation (indexed, no docs).
+            $auth = $this->fs->aggregate('feeReceipts', [
+                ['schoolId', '==', $this->school_id],
+                ['session',  '==', $this->session_year],
+            ], [
+                ['op' => 'count', 'alias' => 'n'],
+                ['op' => 'sum',   'field' => 'allocated_amount', 'alias' => 'total'],
+            ]);
+            $authCount = (int)   ($auth['n']     ?? 0);
+            $authTotal = (float) ($auth['total'] ?? 0);
+
+            $roll = Fee_collection_rollup::read($this->firebase, $this->school_id, $this->session_year);
+            $consistent = is_array($roll)
+                && (int) ($roll['receiptCount'] ?? -1) === $authCount
+                && abs((float) ($roll['total'] ?? 0) - $authTotal) < 0.5;
+
+            if (!$consistent) {
+                // Missing or drifted → recompute once from receipts (persisted).
+                $roll = Fee_collection_rollup::rebuild($this->firebase, $this->school_id, $this->session_year);
             }
-            ksort($monthlyFees);
+
+            $monthly = is_array($roll['monthly'] ?? null) ? $roll['monthly'] : [];
+            $daily   = is_array($roll['daily']   ?? null) ? $roll['daily']   : [];
+            ksort($monthly);
+            $monthlyFees = $monthly;
+
+            $curMonth = date('Y-m');
+            $curYear  = date('Y');
+            $feeBreakdown['today'] = (float) ($daily[date('Y-m-d')] ?? 0);
+            $feeBreakdown['month'] = (float) ($monthly[$curMonth]   ?? 0);
+            foreach ($monthly as $k => $v) {
+                if (strpos((string) $k, $curYear . '-') === 0) $feeBreakdown['year'] += (float) $v;
+            }
         }
-        $feeDefaulters = max(0, $studentCount - count($paidStudentIds));
+        // Authoritative defaulter count comes from the feeDefaulters collection
+        // below (overrides this); 0 is a safe fallback if that query fails.
+        $feeDefaulters = 0;
 
         // ── Events scan (ongoing + recent + calendar) ───────────────────
         $eventDocs      = $this->fs->schoolWhere('events', []);
@@ -453,8 +475,9 @@ class Admin extends MY_Controller
             'calendar_events'   => $calendarEvents,
         ];
 
-        // SC-Step4: session-keyed cache write.
-        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 600, $this->session_year);
+        // SC-Step4: session-keyed cache write. Short TTL (120s) is just a
+        // backstop — write paths bust this key on data change (invalidate-on-write).
+        $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 120, $this->session_year);
         echo json_encode($payload);
     }
 

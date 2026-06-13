@@ -2618,12 +2618,13 @@ class Attendance extends MY_Controller
 
         // ── C-05 FIX: Verify person_id belongs to the authenticated school ──
         $schoolName_pre = $auth['school_name'];
-        // Resolve parent_db_key for this school (legacy schools use school_code, SCH_ schools use school_id)
-        $schoolMeta = $this->firebase->get("System/Schools/{$schoolName_pre}");
+        // Resolve parent_db_key (legacy schools use school_code) from the
+        // canonical Firestore schools/{schoolId} doc.
+        $schoolMeta = $this->firebase->firestoreGet('schools', $auth['school_id'] ?? $this->school_id);
         $parentDbKey = $schoolName_pre; // default
         if (is_array($schoolMeta)) {
-            if (!empty($schoolMeta['school_code']) && strpos($schoolName_pre, 'SCH_') !== 0) {
-                $parentDbKey = $schoolMeta['school_code'];
+            if (!empty($schoolMeta['schoolCode']) && strpos($schoolName_pre, 'SCH_') !== 0) {
+                $parentDbKey = $schoolMeta['schoolCode'];
             }
         }
         if ($personType === 'student') {

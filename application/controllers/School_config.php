@@ -418,12 +418,26 @@ class School_config extends MY_Controller
 
         $data['updated_at'] = date('Y-m-d H:i:s');
 
-        // Firestore (sole write target)
+        // Firestore (sole write target). This routes through Firestore_service::set
+        // → _bustDashboard, so the dashboard data cache is invalidated automatically.
         $this->fs->saveSchool($data);
+
+        // Live-refresh the operator's session so the new name shows immediately
+        // across the UI (sidebar header + dashboard "Welcome" line read the
+        // school name from session['school_display_name'], which is otherwise
+        // only seeded at login — hence a renamed school looked unchanged until
+        // re-login). Only the acting user's session is updated here; other
+        // signed-in admins pick it up on their next login.
+        if (!empty($data['display_name'])) {
+            $this->session->set_userdata('school_display_name', $data['display_name']);
+        }
 
         log_audit('Configuration', 'save_profile', $school, 'Updated school profile');
 
-        $this->json_success(['message' => 'Profile saved successfully.']);
+        $this->json_success([
+            'message'      => 'Profile saved successfully.',
+            'display_name' => $data['display_name'] ?? null, // let the page update the header live
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -562,9 +576,10 @@ class School_config extends MY_Controller
 
         $info       = $this->upload->data();
         $localPath  = $info['full_path'];
-        $safe       = preg_replace('/[^A-Za-z0-9_\-]/', '_', $school);
         $folder     = $type === 'holidays_calendar' ? 'holidays' : 'academic';
-        $remotePath = "schools/{$safe}/{$folder}/" . $info['file_name'];
+        // Canonical Storage scheme: schools/{schoolId}/... (ID-keyed, rename-proof).
+        // Previously keyed by sanitized school NAME.
+        $remotePath = "schools/{$this->school_id}/{$folder}/" . $info['file_name'];
 
         $uploaded = $this->firebase->uploadFile($localPath, $remotePath);
         @unlink($localPath);
@@ -1459,6 +1474,15 @@ class School_config extends MY_Controller
     public function bulk_save_sections()
     {
         $this->_require_role(self::ADMIN_ROLES, 'school_config_bulk_save_sections');
+
+        // 2026-06-09 — This batch runs two sequential Firestore round-trips
+        // per section (existence-check + write), each ~1-3s. A bulk add across
+        // many classes/sections easily exceeds PHP's default 30s
+        // max_execution_time, which fatals mid-curl (Firestore_rest_client.php:405)
+        // and surfaces to the client as an opaque HTTP 500. Give the batch
+        // generous headroom; the per-curl timeout (15s) still bounds any single op.
+        @set_time_limit(180);
+
         $school      = $this->school_name;
         $sessionYear = trim((string) $this->input->post('session', TRUE));
         $changesRaw  = $this->input->post('changes', TRUE);
@@ -4447,8 +4471,9 @@ class School_config extends MY_Controller
 
         $info       = $this->upload->data();
         $localPath  = $info['full_path'];
-        $safe       = preg_replace('/[^A-Za-z0-9_\-]/', '_', $school);
-        $remotePath = "schools/{$safe}/reportcard/{$slot}_" . $info['file_name'];
+        // Canonical Storage scheme: schools/{schoolId}/... (ID-keyed, rename-proof).
+        // Previously keyed by sanitized school NAME.
+        $remotePath = "schools/{$this->school_id}/reportcard/{$slot}_" . $info['file_name'];
 
         // Capture previous asset path for orphan cleanup.
         $prevPath = '';

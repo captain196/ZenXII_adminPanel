@@ -897,6 +897,17 @@
             border-radius: 6px;
         }
         @keyframes dbSkelShimmer { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }
+        /* skeleton shapes — number tiles + list rows, replaced on data load */
+        .db-skel-num { display:inline-block; height:24px; width:64px; vertical-align:middle; border-radius:6px; }
+        .db-skel-item { display:flex; align-items:center; gap:12px; padding:11px 2px; border-bottom:1px solid rgba(127,127,127,.13); }
+        .db-skel-item:last-child { border-bottom:none; }
+        .db-skel-av { width:38px; height:38px; border-radius:50%; flex:0 0 auto; }
+        .db-skel-lines { flex:1; display:flex; flex-direction:column; gap:7px; }
+        .db-skel-l1 { height:11px; width:55%; }
+        .db-skel-l2 { height:9px; width:80%; opacity:.7; }
+        .db-skel-chip { width:46px; height:22px; border-radius:6px; flex:0 0 auto; }
+        .db-skel-block { width:100%; height:100%; min-height:160px; border-radius:8px; }
+        .db-skel-chartov { position:absolute; inset:0; border-radius:8px; z-index:1; }
 
         /* ══════════════════════════════════════════════
            ANIMATIONS
@@ -1097,7 +1108,7 @@
                             <div class="fee-chip-lbl">Active Months</div>
                         </div>
                     </div>
-                    <div style="position:relative;height:200px;">
+                    <div id="feeChartWrap" style="position:relative;height:200px;">
                         <canvas id="feeChart"></canvas>
                     </div>
                 </div>
@@ -1389,7 +1400,7 @@
     </div><!-- /db-body -->
 </div><!-- /db-root -->
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 (function() {
 
@@ -1426,10 +1437,49 @@
         document.querySelectorAll('.db-finance-only').forEach(function(el) { el.style.display = 'none'; });
     }
 
+    /* ── Loading skeletons (shown until each fetch backfills its region) ── */
+    function dbSkelNum(id) {
+        var el = document.getElementById(id);
+        if (el) el.innerHTML = '<span class="db-skel db-skel-num"></span>';
+    }
+    function dbSkelRows(id, n, opts) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        opts = opts || {};
+        var av   = opts.av === false ? '' : '<span class="db-skel db-skel-av"></span>';
+        var chip = opts.chip ? '<span class="db-skel db-skel-chip"></span>' : '';
+        var h = '';
+        for (var i = 0; i < n; i++) {
+            h += '<div class="db-skel-item">' + av
+               + '<span class="db-skel-lines"><span class="db-skel db-skel-l1"></span><span class="db-skel db-skel-l2"></span></span>'
+               + chip + '</div>';
+        }
+        el.innerHTML = h;
+    }
+    function dbApplySkeletons() {
+        // KPI stat numbers
+        ['valStudents','valTeachers','valClasses','valAttendance','attRingVal'].forEach(dbSkelNum);
+        // finance KPIs + chips + breakdown (hidden when !CAN_FEES, harmless either way)
+        ['valFees','valDefaulters','feeTotalCollected','feeTotalReceipts','feeTotalMonths','fbToday','fbMonth','fbYear'].forEach(dbSkelNum);
+        // list panels
+        dbSkelRows('evtList', 4, { chip: true });
+        dbSkelRows('topDefaultersList', 5, { chip: true });
+        dbSkelRows('absentStudentsList', 4, { chip: true });
+        dbSkelRows('dbTaskList', 4, { chip: true });
+        dbSkelRows('activityList', 5);
+        dbSkelRows('birthdayList', 3, { chip: true });
+        // fee chart — overlay skeleton block until Chart.js draws
+        var fcw = document.getElementById('feeChartWrap');
+        if (fcw && !fcw.querySelector('.db-skel-chartov')) {
+            fcw.insertAdjacentHTML('afterbegin', '<div class="db-skel db-skel-chartov"></div>');
+        }
+    }
+    dbApplySkeletons();
+
     /* ── Counter animation ── */
     function animateValue(el, target) {
         if (!el) return;
-        var start = null, dur = 1000;
+        var start = null, dur = 450;
         function step(ts) {
             if (!start) start = ts;
             var p = Math.min((ts - start) / dur, 1);
@@ -1442,7 +1492,7 @@
 
     function animateINR(el, target) {
         if (!el) return;
-        var start = null, dur = 1000;
+        var start = null, dur = 450;
         function step(ts) {
             if (!start) start = ts;
             var p = Math.min((ts - start) / dur, 1);
@@ -1471,45 +1521,68 @@
                 charts once they arrive so the user sees the page land
                 in <2s even when the heavier scans take longer.
     ══════════════════════════════════════════ */
-    fetch(BASE + '/admin/get_dashboard_data')
-        .then(function(r) { return r.json(); })
-        .then(function(D) {
-            populateStats(D.stats);
-            populateAttendance(D.attendance || {});
-            populateEvents(D.events);
+    /* Fail-safe: clear stranded skeletons with a dash / retry message so a
+       failed fetch never leaves a region shimmering forever. */
+    function _dbDash(id) { var el = document.getElementById(id); if (el) el.textContent = '—'; }
+    function _dbErr(id, msg) {
+        var el = document.getElementById(id);
+        if (el) el.innerHTML = '<div style="text-align:center;padding:18px 0;color:var(--muted);font-size:12px;">'
+            + '<i class="fa fa-exclamation-triangle" style="margin-right:6px;opacity:.6;"></i>'
+            + (msg || 'Couldn’t load — refresh to retry') + '</div>';
+    }
+    function dbFailStats() {
+        ['valStudents','valTeachers','valClasses','valAttendance','attRingVal','valFees','valDefaulters'].forEach(_dbDash);
+        _dbErr('evtList', 'Couldn’t load events');
+    }
+    function dbFailCharts() {
+        ['valClasses','valDefaulters','fbToday','fbMonth','fbYear','feeTotalCollected','feeTotalReceipts','feeTotalMonths'].forEach(_dbDash);
+        _dbErr('topDefaultersList'); _dbErr('absentStudentsList'); _dbErr('birthdayList');
+        var sk = document.querySelector('#feeChartWrap .db-skel-chartov'); if (sk) sk.remove();
+    }
 
-            // Fire the heavy charts endpoint after the fast one lands.
-            fetch(BASE + '/admin/get_dashboard_charts')
-                .then(function(r) { return r.json(); })
-                .then(function(C) {
-                    if (!C) return;
-                    // Backfill lazy stat tiles
-                    if (D.stats) {
-                        D.stats.classes        = C.classes        || 0;
-                        D.stats.sections       = C.sections       || 0;
-                        D.stats.fee_defaulters = C.fee_defaulters || 0;
-                        populateStats(D.stats);
-                    }
-                    // Charts
-                    buildFeeChart(C.monthly_fees || {}, D.stats.fees_collected, D.stats.receipt_count);
-                    // New widgets (replaced Students-by-Class + Gender charts)
-                    populateTopDefaulters(C.top_defaulters || []);
-                    populateAbsentToday(C.absent_today || { count: 0, students: [] });
-                    storeCalendarEvents(C.calendar_events || []);
-                    renderCalendar(window._dbCalY, window._dbCalM);
-                    // Merge ongoing/recent into the already-rendered events section
-                    populateEvents({
-                        upcoming: (D.events && D.events.upcoming) || [],
-                        ongoing:  (C.events && C.events.ongoing)  || [],
-                        recent:   (C.events && C.events.recent)   || [],
-                    });
-                    // New widgets: fee breakdown + birthdays
-                    populateFeeBreakdown(C.fee_breakdown || {});
-                    populateBirthdays(C.birthdays_today || []);
-                })
-                .catch(function(e) { console.warn('Dashboard charts load failed:', e); });
-        })
-        .catch(function(e) { console.error('Dashboard load failed:', e); });
+    // Fire both heavy endpoints in PARALLEL — charts no longer waits for data.
+    var _dataP   = fetch(BASE + '/admin/get_dashboard_data').then(function(r) { return r.json(); });
+    var _chartsP = fetch(BASE + '/admin/get_dashboard_charts').then(function(r) { return r.json(); });
+
+    // Stage 1 — render KPIs/attendance/events the moment the fast endpoint lands.
+    _dataP.then(function(D) {
+        window._dbData = D;
+        populateStats(D.stats || {});
+        populateAttendance(D.attendance || {});
+        populateEvents(D.events || {});
+    }).catch(function(e) {
+        console.error('Dashboard data load failed:', e);
+        dbFailStats();
+    });
+
+    // Stage 2 — charts need a couple of fields from data, so join both promises.
+    Promise.all([_dataP.catch(function() { return null; }), _chartsP]).then(function(res) {
+        var D = res[0] || { stats: {}, events: {} };
+        var C = res[1];
+        if (!C) { dbFailCharts(); return; }
+        if (D.stats) {
+            D.stats.classes        = C.classes        || 0;
+            D.stats.sections       = C.sections       || 0;
+            D.stats.fee_defaulters = C.fee_defaulters || 0;
+            backfillLazyStats(D.stats);
+        }
+        buildFeeChart(C.monthly_fees || {}, (D.stats && D.stats.fees_collected) || 0, (D.stats && D.stats.receipt_count) || 0);
+        populateTopDefaulters(C.top_defaulters || []);
+        populateAbsentToday(C.absent_today || { count: 0, students: [] });
+        storeCalendarEvents(C.calendar_events || []);
+        renderCalendar(window._dbCalY, window._dbCalM);
+        // Merge ongoing/recent into the already-rendered events section
+        populateEvents({
+            upcoming: (D.events && D.events.upcoming) || [],
+            ongoing:  (C.events && C.events.ongoing)  || [],
+            recent:   (C.events && C.events.recent)   || [],
+        });
+        populateFeeBreakdown(C.fee_breakdown || {});
+        populateBirthdays(C.birthdays_today || []);
+    }).catch(function(e) {
+        console.warn('Dashboard charts load failed:', e);
+        dbFailCharts();
+    });
 
     /* ══════════════════════════════════════════
        ACTIVITY FEED — lazy, fires after main dashboard lands.
@@ -1731,14 +1804,16 @@
     ══════════════════════════════════════════ */
     (window.__graderTasksPromise || fetch(BASE + '/notifications/get_tasks').then(function(r){return r.json();}))
         .then(function(D) {
-            if (!D || D.status !== 'success') return;
-            renderTasks(D.tasks || []);
+            if (!D || D.status !== 'success') {
+                // Server reachable but errored — don't claim "all clear".
+                _dbErr('dbTaskList', 'Couldn’t load tasks');
+                return;
+            }
+            renderTasks(D.tasks || []);   // handles the genuine empty case
             renderAlerts(D.alerts || []);
         })
         .catch(function() {
-            var el = document.getElementById('dbTaskList');
-            if (el) el.innerHTML = '<div style="text-align:center;padding:18px 0;color:var(--muted);font-size:12px;">'
-                + '<i class="fa fa-check-circle" style="color:var(--brand);margin-right:6px;"></i>No pending tasks</div>';
+            _dbErr('dbTaskList', 'Couldn’t load tasks');
         });
 
     function renderTasks(tasks) {
@@ -1811,17 +1886,25 @@
         animateValue(document.getElementById('valStudents'), s.students);
         animateValue(document.getElementById('valTeachers'), s.teachers);
 
+        if (CAN_FEES) {
+            animateINR(document.getElementById('valFees'), s.fees_collected);
+            var rcBadge = document.getElementById('receiptCountBadge');
+            if (rcBadge) rcBadge.innerHTML = '<i class="fa fa-minus"></i> ' + (s.receipt_count || 0) + ' receipts';
+        }
+        // classes/sections/defaulters are lazy (come from the charts endpoint) —
+        // backfill them separately so we don't restart the counters above.
+        if (s.classes != null) backfillLazyStats(s);
+    }
+
+    // Set the charts-fed KPI fields once they arrive (no counter restart).
+    function backfillLazyStats(s) {
         var classEl = document.getElementById('valClasses');
         if (classEl) classEl.textContent = s.classes;
         var ccEl = document.getElementById('classCount');
         if (ccEl) ccEl.innerHTML = '<i class="fa fa-minus"></i> ' + s.classes + ' classes';
         var scEl = document.getElementById('sectionCount');
         if (scEl) scEl.innerHTML = '<i class="fa fa-minus"></i> ' + s.sections + ' sections';
-
         if (CAN_FEES) {
-            animateINR(document.getElementById('valFees'), s.fees_collected);
-            var rcBadge = document.getElementById('receiptCountBadge');
-            if (rcBadge) rcBadge.innerHTML = '<i class="fa fa-minus"></i> ' + (s.receipt_count || 0) + ' receipts';
             animateValue(document.getElementById('valDefaulters'), s.fee_defaulters || 0);
         }
     }
@@ -1845,22 +1928,15 @@
             return;
         }
 
-        // Animate stat card percentage
+        // Animate stat card percentage (single RAF loop, snappy)
         if (valEl) {
-            var start = null, dur = 1000, target = att.rate;
-            (function animate(ts) {
+            var start = null, dur = 450, target = att.rate;
+            requestAnimationFrame(function animate(ts) {
                 if (!start) start = ts;
                 var p = Math.min((ts - start) / dur, 1);
                 var ease = 1 - Math.pow(1 - p, 3);
                 valEl.textContent = (ease * target).toFixed(1) + '%';
                 if (p < 1) requestAnimationFrame(animate);
-            })(performance.now());
-            requestAnimationFrame(function re(ts) {
-                if (!start) start = ts;
-                var p = Math.min((ts - start) / dur, 1);
-                var ease = 1 - Math.pow(1 - p, 3);
-                valEl.textContent = (ease * target).toFixed(1) + '%';
-                if (p < 1) requestAnimationFrame(re);
             });
         }
 
@@ -1973,6 +2049,9 @@
         if (tcEl) tcEl.textContent = fmtINR(totalCollected);
         if (trEl) trEl.textContent = (receiptCount || 0).toLocaleString('en-IN');
         if (tmEl) tmEl.textContent = keys.length;
+
+        var _fcSkel = document.querySelector('#feeChartWrap .db-skel-chartov');
+        if (_fcSkel) _fcSkel.remove();
 
         var ctx = document.getElementById('feeChart');
         if (!ctx) return;

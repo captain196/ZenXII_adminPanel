@@ -4,10 +4,9 @@ require_once APPPATH . 'core/MY_Superadmin_Controller.php';
 
 /**
  * Superadmin — Global SaaS Dashboard controller
- * Primary data: System/Schools/{name}/
- * SA metadata  : System/Schools/{name}/
- * Payments     : System/Payments/{id}/
- * Stats cache  : System/Stats/Summary
+ * Primary data: Firestore schools/{schoolId} + schoolControl/{schoolId}
+ * Subscriptions: Firestore subscriptions/{id}
+ * Summary/charts: live-computed via B2_registry_service (no RTDB cache)
  */
 class Superadmin extends MY_Superadmin_Controller
 {
@@ -23,45 +22,11 @@ class Superadmin extends MY_Superadmin_Controller
         $expiry_alerts = [];
 
         try {
-            // B2.3.2-C: when registry is Firestore-authoritative, bypass the
-            // RTDB summary cache (NO RTDB policy) and live-compute from the
-            // canonical schools/schoolControl/subscriptions surface. Cache
-            // skip is acceptable — tenant count is small and Firestore
-            // queries are sub-second.
-            if ($this->_b23_registry_firestore_on()) {
-                $summary       = $this->_compute_summary_firestore();
-                $expiry_alerts = $this->_expiry_alerts_firestore();
-            } else {
-                $cached = $this->firebase->get('System/Stats/Summary');
-                if (is_array($cached) && !empty($cached['total_schools'])) {
-                    $summary = $cached;
-                } else {
-                    $summary = $this->_compute_summary();
-                    $this->firebase->set('System/Stats/Summary', $summary);
-                }
-
-                // Expiry alerts — always live (needs accurate timing, small payload)
-                $schools = $this->firebase->get('System/Schools') ?? [];
-                foreach ($schools as $name => $schoolData) {
-                    if (!is_array($schoolData)) continue;
-                    $sub     = is_array($schoolData['subscription'] ?? null) ? $schoolData['subscription'] : [];
-                    $saP     = is_array($schoolData['profile']     ?? null) ? $schoolData['profile']     : [];
-                    $endDate = $sub['expiry_date'] ?? ($sub['duration']['endDate'] ?? '');
-                    if ($endDate && strtotime($endDate) !== false) {
-                        $days = (int)ceil((strtotime($endDate) - time()) / 86400);
-                        if ($days >= 0 && $days <= 15) {
-                            $expiry_alerts[] = [
-                                'uid'         => $name,
-                                'name'        => $saP['name']      ?? $name,
-                                'expiry_date' => $endDate,
-                                'days_left'   => $days,
-                                'plan_name'   => $sub['plan_name'] ?? '—',
-                            ];
-                        }
-                    }
-                }
-                usort($expiry_alerts, fn($a, $b) => $a['days_left'] - $b['days_left']);
-            }
+            // Live-compute from the canonical Firestore schools/schoolControl/
+            // subscriptions surface. Cache skip is acceptable — tenant count is
+            // small and Firestore queries are sub-second.
+            $summary       = $this->_compute_summary_firestore();
+            $expiry_alerts = $this->_expiry_alerts_firestore();
         } catch (Exception $e) {
             log_message('error', 'SA Dashboard: ' . $e->getMessage());
         }
@@ -236,8 +201,7 @@ class Superadmin extends MY_Superadmin_Controller
     public function refresh_stats()
     {
         try {
-            $summary = $this->_compute_summary();
-            $this->firebase->set('System/Stats/Summary', $summary);
+            $summary = $this->_compute_summary_firestore();
             $this->sa_log('refresh_stats');
             $this->json_success($summary);
         } catch (Exception $e) {
@@ -254,45 +218,62 @@ class Superadmin extends MY_Superadmin_Controller
     public function dashboard_charts()
     {
         try {
-            $schools    = $this->firebase->get('System/Schools') ?? [];
-            $payments   = $this->firebase->get('System/Payments') ?? [];
+            $svc     = $this->_b23_registry();
+            $tenants = $svc->list_tenants_summary();
             $thirty_ago = date('Y-m-d', strtotime('-30 days'));
+
+            // planFamilyId → planName map (small N).
+            $planMap = [];
+            foreach ($svc->list_plans() as $pf) {
+                $pid = (string) ($pf['planFamilyId'] ?? '');
+                if ($pid !== '') $planMap[$pid] = (string) ($pf['name'] ?? $pid);
+            }
+
+            // createdAt is not on the summary row — build a schoolId → createdAt
+            // map from the schools collection once (cheap, small N).
+            $createdMap = [];
+            try {
+                foreach ((array) $this->firebase->firestoreQuery('schools', []) as $row) {
+                    $d  = is_array($row['data'] ?? null) ? $row['data'] : (is_array($row) ? $row : []);
+                    $id = (string) ($row['id'] ?? $d['schoolId'] ?? $d['__firestoreId'] ?? '');
+                    if ($id !== '') $createdMap[$id] = (string) ($d['createdAt'] ?? '');
+                }
+            } catch (\Throwable $e) { /* best-effort */ }
 
             $status_counts = ['active' => 0, 'grace' => 0, 'expired' => 0, 'suspended' => 0, 'inactive' => 0];
             $plan_dist     = [];
             $top_schools   = [];
             $recent_regs   = [];
 
-            foreach ($schools as $name => $school) {
-                if (!is_array($school)) continue;
+            foreach ($tenants as $t) {
+                $sid = (string) ($t['schoolId'] ?? '');
 
-                $sub   = is_array($school['subscription'] ?? null) ? $school['subscription'] : [];
-                $cache = is_array($school['stats_cache']  ?? null) ? $school['stats_cache']  : [];
-                $saP   = is_array($school['profile']      ?? null) ? $school['profile']      : [];
-
-                // Status distribution — stored lowercase in Firebase
-                $status = strtolower($sub['status'] ?? 'inactive');
+                // Status distribution — disabled tenants count as inactive.
+                $status = !empty($t['adminDisabled'])
+                    ? 'inactive'
+                    : strtolower((string) ($t['lifecycleState'] ?? 'inactive'));
                 if (isset($status_counts[$status])) $status_counts[$status]++;
                 else $status_counts['inactive']++;
 
                 // Plan distribution
-                $plan_name = $sub['plan_name'] ?? '— No Plan';
+                $planFid   = (string) ($t['planFamilyId'] ?? '');
+                $plan_name = $planMap[$planFid] ?? ($planFid !== '' ? $planFid : '— No Plan');
                 $plan_dist[$plan_name] = ($plan_dist[$plan_name] ?? 0) + 1;
 
                 // Top schools by students
-                $students = (int)($cache['total_students'] ?? 0);
+                $students = (int) ($t['totalStudents'] ?? 0);
                 if ($students > 0) {
-                    $top_schools[] = ['name' => $saP['name'] ?? $name, 'count' => $students];
+                    $top_schools[] = ['name' => $t['schoolName'] ?? $sid, 'count' => $students];
                 }
 
                 // Recent registrations
-                $created = $saP['created_at'] ?? '';
+                $created = $createdMap[$sid] ?? '';
                 if ($created && substr($created, 0, 10) >= $thirty_ago) {
                     $recent_regs[] = [
-                        'name'        => $saP['name']        ?? $name,
-                        'city'        => $saP['city']        ?? '',
+                        'name'        => $t['schoolName'] ?? $sid,
+                        'city'        => $t['city']       ?? '',
                         'plan_name'   => $plan_name,
-                        'school_code' => $saP['school_code'] ?? '',
+                        'school_code' => $t['schoolCode'] ?? '',
                         'created_at'  => $created,
                         'status'      => $status,
                     ];
@@ -306,15 +287,15 @@ class Superadmin extends MY_Superadmin_Controller
             // Recent regs — newest first
             usort($recent_regs, fn($a, $b) => strcmp($b['created_at'], $a['created_at']));
 
-            // Revenue by month — last 6 months
+            // Revenue by month — last 6 months, from canonical paid payments.
             $revenue_trend = [];
             for ($i = 5; $i >= 0; $i--) {
                 $revenue_trend[date('Y-m', strtotime("-{$i} months"))] = 0.0;
             }
-            foreach ($payments as $p) {
-                if (!is_array($p) || ($p['status'] ?? '') !== 'paid' || empty($p['paid_date'])) continue;
-                $mk = substr($p['paid_date'], 0, 7);
-                if (isset($revenue_trend[$mk])) $revenue_trend[$mk] += (float)($p['amount'] ?? 0);
+            foreach ($svc->list_paid_payments() as $p) {
+                if (empty($p['paid_date'])) continue;
+                $mk = substr((string) $p['paid_date'], 0, 7);
+                if (isset($revenue_trend[$mk])) $revenue_trend[$mk] += (float) ($p['amount'] ?? 0);
             }
 
             $this->json_success([
@@ -348,25 +329,26 @@ class Superadmin extends MY_Superadmin_Controller
         $results = [];
 
         try {
-            // Search schools
-            $schools = $this->firebase->get('System/Schools') ?? [];
-            foreach ($schools as $uid => $school) {
-                if (!is_array($school)) continue;
-                $profile = is_array($school['profile'] ?? null) ? $school['profile'] : [];
-                $name    = $profile['school_name'] ?? ($profile['name'] ?? $uid);
-                $code    = $profile['school_code'] ?? '';
-                $city    = $profile['city'] ?? '';
+            // Search schools — canonical Firestore tenant registry.
+            $tenants = $this->_b23_registry()->list_tenants_summary();
+            foreach ($tenants as $t) {
+                $uid  = (string) ($t['schoolId']   ?? '');
+                $name = (string) ($t['schoolName'] ?? $uid);
+                $code = (string) ($t['schoolCode'] ?? '');
+                $city = (string) ($t['city']       ?? '');
 
                 if (stripos($name, $q) !== false || stripos($code, $q) !== false
                     || stripos($city, $q) !== false || stripos($uid, $q) !== false) {
-                    $sub = is_array($school['subscription'] ?? null) ? $school['subscription'] : [];
+                    $status = !empty($t['adminDisabled'])
+                        ? 'inactive'
+                        : strtolower((string) ($t['lifecycleState'] ?? 'inactive'));
                     $results[] = [
                         'type'   => 'school',
                         'icon'   => 'fa-building',
                         'title'  => $name,
                         'detail' => ($code ? "Code: {$code}" : '') . ($city ? " · {$city}" : ''),
                         'url'    => 'superadmin/schools/view/' . urlencode($uid),
-                        'status' => $sub['status'] ?? 'inactive',
+                        'status' => $status,
                     ];
                 }
                 if (count($results) >= 15) break;
@@ -400,70 +382,8 @@ class Superadmin extends MY_Superadmin_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PRIVATE: Compute full summary from Firebase (writes to cache)
+    // Canonical Firestore registry accessor + summary/expiry helpers
     // ─────────────────────────────────────────────────────────────────────────
-
-    private function _compute_summary(): array
-    {
-        $schools    = $this->firebase->get('System/Schools') ?? [];
-        $payments   = $this->firebase->get('System/Payments') ?? [];
-        $thirty_ago = date('Y-m-d', strtotime('-30 days'));
-
-        $total_schools  = 0;
-        $active_schools = 0;
-        $total_students = 0;
-        $total_staff    = 0;
-        $recent_regs    = 0;
-
-        foreach ($schools as $name => $schoolData) {
-            if (!is_array($schoolData)) continue;
-            $total_schools++;
-
-            $sub    = is_array($schoolData['subscription'] ?? null) ? $schoolData['subscription'] : [];
-            $cache  = is_array($schoolData['stats_cache']  ?? null) ? $schoolData['stats_cache']  : [];
-            $profile= is_array($schoolData['profile']      ?? null) ? $schoolData['profile']      : [];
-
-            if (strtolower((string)($sub['status'] ?? '')) === 'active') $active_schools++;
-            $total_students += (int)($cache['total_students'] ?? 0);
-            $total_staff    += (int)($cache['total_staff']    ?? 0);
-
-            $created = $profile['created_at'] ?? '';
-            if ($created && substr($created, 0, 10) >= $thirty_ago) $recent_regs++;
-        }
-
-        // Revenue from paid payments only
-        $total_revenue = 0.0;
-        foreach ($payments as $p) {
-            if (is_array($p) && ($p['status'] ?? '') === 'paid') {
-                $total_revenue += (float)($p['amount'] ?? 0);
-            }
-        }
-
-        return [
-            'total_schools'  => $total_schools,
-            'active_schools' => $active_schools,
-            'total_students' => $total_students,
-            'total_staff'    => $total_staff,
-            'total_revenue'  => $total_revenue,
-            'recent_regs'    => $recent_regs,
-            'last_refreshed' => date('Y-m-d\TH:i:sP'), // ISO 8601 with local timezone offset for JS Date parsing
-        ];
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // B2.3.2-C helpers (flag-gated Firestore-canonical paths)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private function _b23_registry_firestore_on(): bool
-    {
-        static $cached = null;
-        if ($cached === null) {
-            $this->config->load('b2_migration_flags', FALSE, TRUE);
-            $flags  = $this->config->item('b2_migration_flags') ?: [];
-            $cached = !empty($flags['b2.registry_firestore']);
-        }
-        return $cached;
-    }
 
     private function _b23_registry()
     {
@@ -473,11 +393,9 @@ class Superadmin extends MY_Superadmin_Controller
     }
 
     /**
-     * Firestore-canonical dashboard summary. Mirrors the shape of
-     * _compute_summary() but sources every value from the B2 canonical
-     * surface (schools + schoolControl + subscriptions + payments).
-     * Never writes back to the RTDB cache — caller must skip the cache
-     * write path when this branch is taken (NO RTDB policy).
+     * Firestore-canonical dashboard summary — sources every value from the
+     * B2 canonical surface (schools + schoolControl + subscriptions +
+     * payments). Never reads or writes RTDB.
      */
     private function _compute_summary_firestore(): array
     {

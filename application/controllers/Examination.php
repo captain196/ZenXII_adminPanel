@@ -838,8 +838,8 @@ class Examination extends MY_Controller
             $this->json_error('Exam not found.', 404);
         }
 
-        // Load school profile for header
-        $profile = $this->firebase->get("System/Schools/{$school}/profile") ?? [];
+        // Load school profile for header — canonical Firestore schools/{schoolId}.
+        $profile = $this->firebase->firestoreGet('schools', $this->school_id) ?: [];
 
         $structure = $this->exam_engine->get_class_structure();
         $sections  = $structure[$classKey] ?? [];
@@ -908,8 +908,8 @@ class Examination extends MY_Controller
 
         $this->json_success([
             'printData' => [
-                'schoolName'  => $school,
-                'schoolLogo'  => $profile['logo'] ?? '',
+                'schoolName'  => $profile['schoolName'] ?? $profile['name'] ?? $school,
+                'schoolLogo'  => $profile['logoUrl'] ?? $profile['logo'] ?? '',
                 'address'     => $profile['address'] ?? '',
                 'examName'    => $exam['Name'] ?? $examId,
                 'examType'    => $exam['Type'] ?? '',

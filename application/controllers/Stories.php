@@ -691,7 +691,9 @@ class Stories extends MY_Controller
         $ext = $extMap[$mime] ?? ($type === 'image' ? 'jpg' : 'mp4');
 
         $ts         = (int) (microtime(true) * 1000);
-        $remotePath = "stories/admin/{$schoolId}/{$adminId}/{$ts}.{$ext}";
+        // Canonical Storage scheme: schools/{schoolId}/stories/... so a school's
+        // entire footprint lives under one ID-keyed prefix (was stories/admin/...).
+        $remotePath = "schools/{$schoolId}/stories/{$adminId}/{$ts}.{$ext}";
 
         // ── 4. Upload to Firebase Storage ─────────────────────────────
         $okUp = $this->firebase->uploadFile($file['tmp_name'], $remotePath);

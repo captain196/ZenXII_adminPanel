@@ -61,23 +61,31 @@
 
 <!-- ═══════════════ SCRIPTS ═══════════════ -->
 <script src="<?= base_url() ?>tools/bower_components/jquery/dist/jquery.min.js"></script>
-<script src="<?= base_url() ?>tools/bower_components/jquery-ui/jquery-ui.min.js"></script>
-<script>
-    $.widget.bridge('uibutton', $.ui.button);
-</script>
-<script src="<?= base_url() ?>tools/bower_components/bootstrap/dist/js/bootstrap.min.js"></script>
-<script src="<?= base_url() ?>tools/bower_components/raphael/raphael.min.js"></script>
-<script src="<?= base_url() ?>tools/bower_components/morris.js/morris.min.js"></script>
-<script src="<?= base_url() ?>tools/bower_components/jquery-sparkline/dist/jquery.sparkline.min.js"></script>
-<script src="<?= base_url() ?>tools/bower_components/jquery-knob/dist/jquery.knob.min.js"></script>
-<script src="<?= base_url() ?>tools/bower_components/moment/min/moment.min.js"></script>
-<script src="<?= base_url() ?>tools/bower_components/bootstrap-daterangepicker/daterangepicker.js"></script>
-<script src="<?= base_url() ?>tools/bower_components/bootstrap-datepicker/dist/js/bootstrap-datepicker.min.js"></script>
-<script src="<?= base_url() ?>tools/bower_components/jquery-slimscroll/jquery.slimscroll.min.js"></script>
-<script src="<?= base_url() ?>tools/bower_components/fastclick/lib/fastclick.js"></script>
-<script src="<?= base_url() ?>tools/dist/js/adminlte.min.js"></script>
-<script src="<?= base_url() ?>tools/dist/js/demo.js"></script>
-<script src="<?= base_url() ?>tools/js/custom.js"></script>
+<?php /* jquery-ui (253KB) removed for performance: audit found zero jQuery UI
+   widget usage in admin views (no sortable/draggable/dialog/autocomplete/etc.),
+   no ui-* theme classes, and the .datepicker() calls use bootstrap-datepicker.
+   The only consumer was the AdminLTE `uibutton` bridge below, which renamed
+   jQuery UI's button to avoid a Bootstrap clash and was never invoked. The file
+   remains on disk under tools/bower_components/jquery-ui/ if a re-add is needed. */ ?>
+<?php /* QW2 PERF: every script below is used only inside $(document).ready()
+   handlers (or is event-driven), so `defer` is safe AND correct — deferred
+   scripts always finish executing before DOMContentLoaded, so they are present
+   when any ready() init fires. This unblocks HTML render/paint (~1MB of JS no
+   longer parser-blocking) without changing execution order (defer preserves
+   document order). jQuery ABOVE is intentionally NOT deferred: the inline
+   $(document).ajaxComplete handler further down runs during parse and needs $. */ ?>
+<script defer src="<?= base_url() ?>tools/bower_components/bootstrap/dist/js/bootstrap.min.js"></script>
+<script defer src="<?= base_url() ?>tools/bower_components/raphael/raphael.min.js"></script>
+<script defer src="<?= base_url() ?>tools/bower_components/morris.js/morris.min.js"></script>
+<script defer src="<?= base_url() ?>tools/bower_components/jquery-sparkline/dist/jquery.sparkline.min.js"></script>
+<script defer src="<?= base_url() ?>tools/bower_components/jquery-knob/dist/jquery.knob.min.js"></script>
+<script defer src="<?= base_url() ?>tools/bower_components/moment/min/moment.min.js"></script>
+<script defer src="<?= base_url() ?>tools/bower_components/bootstrap-daterangepicker/daterangepicker.js"></script>
+<script defer src="<?= base_url() ?>tools/bower_components/bootstrap-datepicker/dist/js/bootstrap-datepicker.min.js"></script>
+<script defer src="<?= base_url() ?>tools/bower_components/jquery-slimscroll/jquery.slimscroll.min.js"></script>
+<script defer src="<?= base_url() ?>tools/bower_components/fastclick/lib/fastclick.js"></script>
+<script defer src="<?= base_url() ?>tools/dist/js/adminlte.min.js"></script>
+<script defer src="<?= base_url() ?>tools/js/custom.js"></script>
 
 <?php
     // Fees Exemption v2 — expose feature-flag state + base url to JS so the
@@ -102,18 +110,21 @@
         smartConfirmEnabled:  <?= (!$_fv2_phase3 && ($_fv2_unified || $_fv2_uiEnabled)) ? 'true' : 'false' ?>
     };
 </script>
-<script src="<?= base_url() ?>tools/js/fees_v2_smart_confirm.js"></script>
+<script defer src="<?= base_url() ?>tools/js/fees_v2_smart_confirm.js"></script>
 
-<!-- Crypto + DataTables -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
-<script src="https://cdn.datatables.net/2.0.8/js/dataTables.js"></script>
-<script src="https://cdn.datatables.net/buttons/3.0.2/js/dataTables.buttons.js"></script>
-<script src="https://cdn.datatables.net/buttons/3.0.2/js/buttons.dataTables.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/pdfmake.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/vfs_fonts.js"></script>
-<script src="https://cdn.datatables.net/buttons/3.0.2/js/buttons.html5.min.js"></script>
-<script src="https://cdn.datatables.net/buttons/3.0.2/js/buttons.print.min.js"></script>
+<!-- Crypto + DataTables — deferred (used only in ready()/click handlers).
+     defer preserves document order, so jszip->excel and pdfmake->vfs_fonts
+     dependency ordering is retained, and DataTables Buttons' available()
+     checks still see jszip/pdfmake at init time (all run before DOMContentLoaded). -->
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+<script defer src="https://cdn.datatables.net/2.0.8/js/dataTables.js"></script>
+<script defer src="https://cdn.datatables.net/buttons/3.0.2/js/dataTables.buttons.js"></script>
+<script defer src="https://cdn.datatables.net/buttons/3.0.2/js/buttons.dataTables.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/pdfmake.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/vfs_fonts.js"></script>
+<script defer src="https://cdn.datatables.net/buttons/3.0.2/js/buttons.html5.min.js"></script>
+<script defer src="https://cdn.datatables.net/buttons/3.0.2/js/buttons.print.min.js"></script>
 
 <script>
     /* ── Global 401/403 handler: redirect to login on session expiry ── */
