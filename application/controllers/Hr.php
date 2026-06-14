@@ -3786,7 +3786,6 @@ HTML;
 
             // Read existing attendance — Firestore summary first
             $attStr = '';
-            $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
             try {
                 $monthKeyISO = sprintf('%04d-%02d', $yearNum, $monthNum);
                 $fsSummary = $this->firebase->firestoreGet('staffAttendanceSummary', "{$school}_{$staffId}_{$monthKeyISO}");
@@ -3954,7 +3953,6 @@ HTML;
             $daysInMonth = (int) $cursor->format('t');
 
             // Read attendance — Firestore summary first
-            $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
             $attStr = '';
             try {
                 $mkISO = sprintf('%04d-%02d', $yearNum, $monthNum);

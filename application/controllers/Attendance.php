@@ -646,7 +646,10 @@ class Attendance extends MY_Controller
 
         $school  = $this->school_name;
         $session = $this->session_year;
-        $migrated = ['students' => 0, 'student_late' => 0, 'staff' => 0, 'staff_late' => 0];
+        // R5: removed 'staff' and 'staff_late' migration keys — Stream B staff
+        // attendance is Firestore-only since R1.2; legacy RTDB tree is frozen
+        // and the staff-rename branches were dead-by-data-state.
+        $migrated = ['students' => 0, 'student_late' => 0];
 
         // ── 1. Student attendance: {sectionRoot}/Students/{id}/Attendance/{key} ──
         // R5 — roster from Firestore. Per-student RTDB attendance reads
@@ -682,25 +685,10 @@ class Attendance extends MY_Controller
             $migrated['student_late'] = count($lateData);
         }
 
-        // ── 3. Staff attendance: Schools/{school}/{session}/Staff_Attendance/{key} ──
-        $oldStaffPath = "Schools/{$school}/{$session}/Staff_Attendance/{$oldKey}";
-        $staffAtt = $this->firebase->get($oldStaffPath);
-        if (is_array($staffAtt) || is_string($staffAtt)) {
-            $newStaffPath = "Schools/{$school}/{$session}/Staff_Attendance/{$newKey}";
-            $this->firebase->set($newStaffPath, $staffAtt);
-            $this->firebase->delete($oldStaffPath);
-            $migrated['staff'] = is_array($staffAtt) ? count($staffAtt) : 1;
-        }
-
-        // ── 4. Staff late metadata: Schools/{school}/{session}/Staff_Attendance/Late/{key} ──
-        $oldStaffLatePath = "Schools/{$school}/{$session}/Staff_Attendance/Late/{$oldKey}";
-        $staffLate = $this->firebase->get($oldStaffLatePath);
-        if (is_array($staffLate) && !empty($staffLate)) {
-            $newStaffLatePath = "Schools/{$school}/{$session}/Staff_Attendance/Late/{$newKey}";
-            $this->firebase->set($newStaffLatePath, $staffLate);
-            $this->firebase->delete($oldStaffLatePath);
-            $migrated['staff_late'] = count($staffLate);
-        }
+        // R5: staff + staff-late RTDB-rename branches removed. Stream B staff
+        // writes have been Firestore-only since R1.2; the legacy staff RTDB
+        // tree is frozen, so the rename was a guaranteed no-op for staff
+        // portions. Branches were also unreachable via UI.
 
         // ── 5. Summary cache (just delete — will be recomputed) ──
         $oldSummaryPath = "Schools/{$school}/{$session}/Attendance/Summary/Students/{$oldKey}";
@@ -1571,166 +1559,20 @@ class Attendance extends MY_Controller
        ================================================================ */
 
     /**
-     * Fetch staff attendance for a month — DISPATCHER (Phase IV Step IV.3).
+     * Fetch staff attendance for a month.
      *
      * POST: month
      *
-     * Routes to:
-     *   - _fetch_staff_attendance_fs()     when stream_b_flags activates new reader
-     *   - _fetch_staff_attendance_legacy() otherwise (byte-identical to pre-IV.3)
-     *
-     * Mutually exclusive dispatch. Default flag state OFF — production unchanged.
-     * MVT telemetry emitted around the routed call (records code_path +
-     * rtdb_reads_count so the aggregator can confirm the fs path is
-     * truly RTDB-free at runtime).
+     * R1.4 — Firestore-only. Delegates to _fetch_staff_attendance_fs.
+     * MVT telemetry retained as observability.
      */
     public function fetch_staff_attendance()
     {
-        $this->config->load('stream_b_flags', true);
         $this->load->library('stream_b_telemetry');
         $this->stream_b_telemetry->begin('fetch_staff_attendance', (string) ($this->school_id ?? ''));
-
-        if (stream_b_writer_enabled($this->school_id, $this->config)) {
-            $this->stream_b_telemetry->update([
-                'code_path'        => 'fs',
-                'rtdb_reads_count' => 0,
-            ]);
-            $resp = $this->_fetch_staff_attendance_fs();
-        } else {
-            $this->stream_b_telemetry->update([
-                'code_path'        => 'legacy',
-                'rtdb_reads_count' => 1, // single RTDB Late month read (legacy line 1650)
-            ]);
-            $resp = $this->_fetch_staff_attendance_legacy();
-        }
+        $resp = $this->_fetch_staff_attendance_fs();
         $this->stream_b_telemetry->commit();
         return $resp;
-    }
-
-    /**
-     * Pre-Phase-IV.3 legacy implementation. Preserved BYTE-IDENTICAL.
-     *
-     * Touches RTDB at the per-day Late-month read site only (the lone
-     * remaining RTDB site for W1). Phase IV.4 verifier A33 enforces
-     * preservation; Phase IV.5 ratio probe gates fs vs legacy parity.
-     */
-    private function _fetch_staff_attendance_legacy()
-    {
-        $this->_require_role(self::VIEW_ROLES, 'fetch_staff_att');
-        $month = trim((string) $this->input->post('month'));
-
-        if (!$month || !isset($this->month_map[$month])) {
-            return $this->json_error('Invalid month.');
-        }
-
-        $school  = $this->school_name;
-        $session = $this->session_year;
-        $year    = $this->_resolve_year($month);
-        $monthNum = $this->month_map[$month];
-        $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
-        $attKey = "{$month} {$year}";
-        $attKeySafe = str_replace(' ', '_', $attKey); // "April_2026" — used in staffAttendanceSummary doc id
-
-        // Roster — Firestore-first
-        $allTeachers = null;
-        try {
-            $fsDocs = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
-            if (!empty($fsDocs)) {
-                $allTeachers = [];
-                foreach ($fsDocs as $doc) {
-                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $sid = $d['staffId'] ?? $d['userId'] ?? '';
-                    if ($sid !== '') {
-                        $allTeachers[$sid] = [
-                            'Name'       => $d['Name'] ?? $d['name'] ?? $sid,
-                            'Department' => $d['Department'] ?? $d['department'] ?? '',
-                            'Designation'=> $d['designation'] ?? $d['Position'] ?? $d['position'] ?? '',
-                        ];
-                    }
-                }
-            }
-        } catch (\Exception $e) {
-            log_message('error', 'Attendance::fetch_staff_attendance allTeachers Firestore query failed: ' . $e->getMessage());
-        }
-        // Firestore canonical — no RTDB fallback. Empty Firestore = empty roster.
-        if ($allTeachers === null) {
-            $allTeachers = [];
-        }
-
-        // ── READ: Firestore FIRST for the per-staff dayWise strings ──
-        $allStaffAtt = [];
-        $monthKeyISO = sprintf('%04d-%02d', $year, $monthNum); // "2026-04"
-        try {
-            // Try both month formats: "2026-04" (ISO) and "April 2026" (label)
-            $fsDocs = $this->fs->schoolWhere('staffAttendanceSummary', [
-                ['month', '==', $monthKeyISO],
-            ]);
-            if (empty($fsDocs)) {
-                $fsDocs = $this->fs->schoolWhere('staffAttendanceSummary', [
-                    ['monthLabel', '==', $attKey],
-                ]);
-            }
-            foreach ($fsDocs as $entry) {
-                $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
-                if (!is_array($d)) continue;
-                $sid = $d['staffId'] ?? '';
-                $dw  = $d['dayWise'] ?? '';
-                if ($sid !== '' && is_string($dw)) {
-                    $allStaffAtt[$sid] = $dw;
-                }
-            }
-        } catch (\Exception $e) {
-            log_message('error', 'Attendance::fetch_staff_attendance allStaffAtt Firestore read failed: ' . $e->getMessage());
-            $allStaffAtt = [];
-        }
-
-        // No RTDB fallback for dayWise strings — empty Firestore = valid (no attendance marked yet)
-
-        // Per-day late times — still RTDB (no Firestore staff lateTimes yet)
-        $allStaffLate = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/Late/{$attKey}");
-        if (!is_array($allStaffLate)) $allStaffLate = [];
-        $staffList = [];
-
-        if (is_array($allTeachers)) {
-            foreach ($allTeachers as $staffId => $profile) {
-                if (!is_string($staffId) || trim($staffId) === '') continue;
-                $name = is_array($profile) ? ($profile['Name'] ?? $staffId) : (string) $staffId;
-
-                // Extract attendance from batch-read
-                $attStr = isset($allStaffAtt[$staffId]) && is_string($allStaffAtt[$staffId])
-                    ? $allStaffAtt[$staffId] : '';
-                // Pad the attendance string to daysInMonth (JS expects a string, not array)
-                $attStr = str_pad($attStr, $daysInMonth, 'V');
-
-                // Extract late data from batch-read and normalize shape
-                $lateRaw = isset($allStaffLate[$staffId]) && is_array($allStaffLate[$staffId])
-                    ? $allStaffLate[$staffId] : [];
-
-                $dept = is_array($profile) ? ($profile['Department'] ?? '') : '';
-                $desig = is_array($profile) ? ($profile['Designation'] ?? '') : '';
-                $staffList[] = [
-                    'id'          => $staffId,
-                    'name'        => $name,
-                    'department'  => $dept,
-                    'designation' => $desig,
-                    'attendance'  => $attStr,
-                    'late'        => $this->_normalize_late_data($lateRaw),
-                ];
-            }
-        }
-
-        usort($staffList, function ($a, $b) {
-            return strcasecmp($a['name'], $b['name']);
-        });
-
-        return $this->json_success([
-            'staff'       => $staffList,
-            'daysInMonth' => $daysInMonth,
-            'sundays'     => $this->_get_sundays($year, $monthNum),
-            'holidays'    => $this->_get_holidays_for_month($month, $year),
-            'month'       => $month,
-            'year'        => $year,
-        ]);
     }
 
     /**
@@ -1897,206 +1739,20 @@ class Attendance extends MY_Controller
     }
 
     /**
-     * Save staff attendance for a month — DISPATCHER (Phase III Step III.2).
+     * Save staff attendance for a month.
      *
      * POST: month, attendance (JSON: {staffId: "PPAP...", ...}), late (JSON)
      *
-     * Routes to:
-     *   - _save_staff_attendance_fs()      when stream_b_flags activates new writer
-     *   - _save_staff_attendance_legacy()  otherwise (byte-identical to pre-III.2)
-     *
-     * Mutually exclusive dispatch. Default flag state OFF — production unchanged.
-     * Telemetry emitted around the routed call (MVT pattern from Step III.0).
+     * R1.3 — Firestore-only. Delegates to _save_staff_attendance_fs.
+     * MVT telemetry retained as observability.
      */
     public function save_staff_attendance()
     {
-        $this->config->load('stream_b_flags', true);
         $this->load->library('stream_b_telemetry');
         $this->stream_b_telemetry->begin('save_staff_attendance', (string) ($this->school_id ?? ''));
-
-        if (stream_b_writer_enabled($this->school_id, $this->config)) {
-            $this->stream_b_telemetry->update(['code_path' => 'fs']);
-            $resp = $this->_save_staff_attendance_fs();
-        } else {
-            $this->stream_b_telemetry->update([
-                'code_path'         => 'legacy',
-                'rtdb_writes_count' => 3, // approximate: N+1 read + per-staff raw + helper summary
-            ]);
-            $resp = $this->_save_staff_attendance_legacy();
-        }
+        $resp = $this->_save_staff_attendance_fs();
         $this->stream_b_telemetry->commit();
         return $resp;
-    }
-
-    /**
-     * Pre-Phase-III.2 legacy implementation. Preserved BYTE-IDENTICAL.
-     *
-     * Touches: RTDB N+1 read at line 1753, RTDB raw write at line 1834,
-     *          attendance_helper update_staff_att_summary call, RTDB Late writes.
-     *
-     * Phase V retires the RTDB writes; Phase V also retires the helper.
-     */
-    private function _save_staff_attendance_legacy()
-    {
-        $this->_require_role(self::MARK_ROLES, 'save_staff_att');
-        $month   = trim((string) $this->input->post('month'));
-        $attData = $this->input->post('attendance');
-        $lateData = $this->input->post('late');
-
-        if (!$month || !$attData) {
-            return $this->json_error('Missing required fields.');
-        }
-        if (!isset($this->month_map[$month])) {
-            return $this->json_error('Invalid month.');
-        }
-
-        $school  = $this->school_name;
-        $session = $this->session_year;
-        $year    = $this->_resolve_year($month);
-        $attKey  = "{$month} {$year}";
-
-        // Check attendance lock
-        $lock = $this->_check_staff_att_lock($attKey);
-        if ($lock) {
-            return $this->json_error("Staff attendance for {$attKey} is locked (locked by {$lock['locked_by']} on " . substr($lock['locked_at'], 0, 10) . "). Unlock before editing.");
-        }
-
-        $monthNum = $this->month_map[$month];
-        $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
-
-        if (is_string($attData)) $attData = json_decode($attData, true);
-        if (is_string($lateData)) $lateData = json_decode($lateData, true);
-        if (!is_array($attData)) return $this->json_error('Invalid data.');
-
-        // Load holidays + governance
-        $this->load->helper('attendance');
-        $nonWorking = get_non_working_days($this->firebase, $school, $monthNum, $year);
-        $rules = $this->_att_rules();
-        $pastLimit = (int)($rules['allow_past_edit_days'] ?? 0);
-        $requireApproval = !empty($rules['require_approval_for_backdated']);
-
-        // Bulk date governance check
-        $sampleStr = reset($attData);
-        if (is_string($sampleStr)) {
-            $govResult = att_validate_date_governance(
-                $sampleStr, $daysInMonth, $monthNum, $year, $pastLimit, $requireApproval
-            );
-            if (!$govResult['ok']) {
-                if (!empty($govResult['needs_approval'])) {
-                    // Compute diff: store only changed days per staff
-                    $diffData = [];
-                    $auditBulk = [];
-                    foreach ($attData as $sid => $newStr) {
-                        $sid = trim((string)$sid);
-                        if (!preg_match('/^[A-Za-z0-9_]+$/', $sid)) continue;
-                        $curStr = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$sid}");
-                        $curStr = is_string($curStr) ? str_pad($curStr, $daysInMonth, 'V') : str_repeat('V', $daysInMonth);
-                        $changes = [];
-                        for ($d = 0; $d < $daysInMonth && $d < strlen($newStr); $d++) {
-                            if ($newStr[$d] !== $curStr[$d]) {
-                                $changes[$d + 1] = $newStr[$d];
-                                $auditBulk[$sid][$d + 1] = ['old' => $curStr[$d], 'new' => $newStr[$d]];
-                            }
-                        }
-                        if (!empty($changes)) $diffData[$sid] = $changes;
-                    }
-                    if (empty($diffData)) {
-                        return $this->json_success(['saved' => 0, 'message' => 'No changes detected.']);
-                    }
-                    $reqId = $this->_create_pending_request('staff_bulk', [
-                        'target_id' => 'bulk', 'month' => $month, 'data' => $diffData, 'data_format' => 'diff',
-                        'audit' => $auditBulk,
-                    ]);
-                    return $this->json_success([
-                        'message' => 'Backdated staff attendance submitted for approval.',
-                        'request_id' => $reqId, 'pending' => true,
-                    ]);
-                }
-                return $this->json_error($govResult['error']);
-            }
-        }
-
-        // Pre-load staff names — Firestore canonical: staff/* with sessions array-contains.
-        $allStaff = [];
-        try {
-            $staffDocs = $this->fs->schoolWhere('staff', [['sessions', 'array-contains', $session]]);
-            if (is_array($staffDocs)) {
-                foreach ($staffDocs as $entry) {
-                    $d = is_array($entry['data'] ?? null) ? $entry['data'] : (is_array($entry) ? $entry : []);
-                    $sid = (string) ($d['staffId'] ?? '');
-                    if ($sid !== '') {
-                        $allStaff[$sid] = ['Name' => (string) ($d['Name'] ?? $d['name'] ?? '')];
-                    }
-                }
-            }
-        } catch (\Throwable $e) {
-            log_message('error', 'Attendance::bulk_mark_staff name pre-load failed: ' . $e->getMessage());
-        }
-
-        $saved = 0;
-        $skipped = [];   // [{staffId, name, reason}]
-        foreach ($attData as $staffId => $attString) {
-            $staffId = trim((string) $staffId);
-            if (!preg_match('/^[A-Za-z0-9_]+$/', $staffId)) {
-                $skipped[] = [
-                    'staffId' => $staffId,
-                    'name'    => $staffId,
-                    'reason'  => 'invalid_id_format',
-                ];
-                continue;
-            }
-
-            $cleanStr = $this->_sanitize_att_string($attString, $daysInMonth);
-            $cleanStr = enforce_holidays_on_string($cleanStr, $daysInMonth, $nonWorking);
-
-            $staffName = '';
-            if (isset($allStaff[$staffId]) && is_array($allStaff[$staffId])) {
-                $staffName = (string)($allStaff[$staffId]['Name'] ?? $allStaff[$staffId]['name'] ?? '');
-            }
-
-            // Phase 7b — Firestore primary write for the monthly summary.
-            // Track failures so admin gets feedback instead of a silent miss.
-            $fsOk = $this->_syncStaffSummaryToFirestore($staffId, $attKey, $cleanStr, $staffName);
-            if (!$fsOk) {
-                log_message('error',
-                    "save_staff_attendance: Firestore write FAILED for {$staffId} {$attKey}"
-                );
-                $skipped[] = [
-                    'staffId' => $staffId,
-                    'name'    => $staffName ?: $staffId,
-                    'reason'  => 'firestore_write_failed',
-                ];
-                continue;
-            }
-
-            $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
-            $this->firebase->set($attPath, $cleanStr);
-            $saved++;
-
-            // Write RTDB summary cache (legacy).
-            update_staff_att_summary($this->firebase, $school, $session, $staffId, $attKey, $monthNum, $year);
-
-            if (is_array($lateData) && isset($lateData[$staffId]) && is_array($lateData[$staffId])) {
-                foreach ($lateData[$staffId] as $day => $time) {
-                    $day = (int) $day;
-                    if ($day < 1 || $day > $daysInMonth) continue;
-                    $time = preg_replace('/[^0-9:]/', '', (string) $time);
-                    if ($time) {
-                        $latePath = "Schools/{$school}/{$session}/Staff_Attendance/Late/{$attKey}/{$staffId}/{$day}";
-                        $this->firebase->set($latePath, ['time' => $time]);
-                    }
-                }
-            }
-        }
-
-        $this->_log_attendance_change('BULK_SAVE_STAFF', [
-            'month' => $attKey, 'count' => $saved, 'skipped' => count($skipped),
-        ]);
-
-        return $this->json_success([
-            'saved'   => $saved,
-            'skipped' => $skipped,
-        ]);
     }
 
     /**
@@ -2272,174 +1928,16 @@ class Attendance extends MY_Controller
      *
      * POST: month, staff_id, day, mark, late_time (optional)
      *
-     * Phase II Step II.4 — DISPATCHER. Routes the request to either:
-     *   - _mark_staff_day_fs()     when stream_b_flags activates new writer
-     *   - _mark_staff_day_legacy() otherwise (byte-identical to pre-Phase-II)
-     *
-     * Dispatch is MUTUALLY EXCLUSIVE: one path runs per call, never both.
-     * Both paths independently handle auth via _require_role.
-     * Default flag state: OFF → legacy runs → zero production behavior change.
+     * R1.2 — Firestore-only. Delegates to _mark_staff_day_fs.
+     * MVT telemetry retained as observability.
      */
     public function mark_staff_day()
     {
-        $this->config->load('stream_b_flags', true);
-
-        // Step III.0 — minimum viable telemetry. Best-effort: any telemetry
-        // failure is swallowed; the request always succeeds regardless of
-        // log state. Records the 9 fields needed for pilot acceptance:
-        //   ts, school_id, code_path, t_total_ms, http_status,
-        //   cas_attempts, cas_final_outcome, cache_hit, rtdb_writes_count
         $this->load->library('stream_b_telemetry');
         $this->stream_b_telemetry->begin('mark_staff_day', (string) ($this->school_id ?? ''));
-
-        if (stream_b_writer_enabled($this->school_id, $this->config)) {
-            $this->stream_b_telemetry->update(['code_path' => 'fs']);
-            $resp = $this->_mark_staff_day_fs();
-        } else {
-            // Legacy path op counts are constant + known; fs_path-specific
-            // fields (cas/cache) stay absent — aggregator skips them per code_path.
-            $this->stream_b_telemetry->update([
-                'code_path'         => 'legacy',
-                'rtdb_writes_count' => 3,
-            ]);
-            $resp = $this->_mark_staff_day_legacy();
-        }
+        $resp = $this->_mark_staff_day_fs();
         $this->stream_b_telemetry->commit();
         return $resp;
-    }
-
-    /**
-     * Pre-Phase-II legacy implementation. Preserved BYTE-IDENTICAL.
-     *
-     * Touches: RTDB curStr read, RTDB raw write, RTDB Late write/delete,
-     *          attendance_helper update_staff_att_summary (RTDB summary cache),
-     *          Firestore _syncStaffDailyToFirestore + _syncStaffSummaryToFirestore.
-     *
-     * Phase V retires the RTDB writes; Phase VIII retires the helper. For now,
-     * this method runs unchanged when the Stream B writer flag is OFF.
-     */
-    private function _mark_staff_day_legacy()
-    {
-        $this->_require_role(self::MARK_ROLES, 'mark_staff_day');
-        $month    = trim((string) $this->input->post('month'));
-        $staffId  = trim((string) $this->input->post('staff_id'));
-        $day      = (int) $this->input->post('day');
-        $mark     = strtoupper(trim((string) $this->input->post('mark')));
-        $lateTime = trim((string) $this->input->post('late_time'));
-
-        if (!$month || !$staffId || !$day || !$mark) {
-            return $this->json_error('Missing required fields.');
-        }
-        if (!preg_match('/^[A-Za-z0-9_]+$/', $staffId)) {
-            return $this->json_error('Invalid staff ID.');
-        }
-        if (!in_array($mark, $this->valid_marks)) {
-            return $this->json_error('Invalid mark.');
-        }
-        if (!isset($this->month_map[$month])) {
-            return $this->json_error('Invalid month.');
-        }
-
-        $school  = $this->school_name;
-        $session = $this->session_year;
-        $year    = $this->_resolve_year($month);
-        $attKey  = "{$month} {$year}";
-
-        // Check attendance lock
-        $lock = $this->_check_staff_att_lock($attKey);
-        if ($lock) {
-            return $this->json_error("Staff attendance for {$attKey} is locked. Unlock before editing.");
-        }
-
-        $monthNum = $this->month_map[$month];
-        $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
-
-        if ($day < 1 || $day > $daysInMonth) {
-            return $this->json_error('Invalid day.');
-        }
-
-        // Block marking on holidays/Sundays
-        $this->load->helper('attendance');
-        if ($mark !== 'H' && is_non_working_day($this->firebase, $school, $day, $monthNum, $year)) {
-            return $this->json_error("Day {$day} is a holiday/Sunday. Cannot mark as {$mark}.");
-        }
-
-        // ── DATE GOVERNANCE ──
-        $govCheck = $this->_check_day_governance($day, $monthNum, $year, $mark, [
-            'staff_id' => $staffId, 'month' => $month, 'day' => $day, 'mark' => $mark,
-        ]);
-        if ($govCheck !== null) {
-            if (!empty($govCheck['needs_approval'])) {
-                // Fetch old mark for audit trail
-                $curStr = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}");
-                $oldMk = (is_string($curStr) && isset($curStr[$day - 1])) ? $curStr[$day - 1] : 'V';
-                $reqId = $this->_create_pending_request('staff_day', [
-                    'target_id' => $staffId, 'month' => $month, 'day' => $day, 'mark' => $mark,
-                    'audit' => ['old_value' => $oldMk, 'new_value' => $mark],
-                ]);
-                return $this->json_success([
-                    'message' => 'Backdated staff attendance submitted for approval.',
-                    'request_id' => $reqId, 'pending' => true,
-                ]);
-            }
-            return $this->json_error($govCheck['error'] ?? 'Date validation failed.');
-        }
-
-        $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
-
-        if (!$this->_acquire_att_lock($attPath)) {
-            return $this->json_error('Another attendance update is in progress. Try again.', 409);
-        }
-
-        $existing = $this->firebase->get($attPath);
-        $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
-        $attStr = str_pad($attStr, $daysInMonth, 'V');
-        $oldMark = $attStr[$day - 1];
-        $attStr[$day - 1] = $mark;
-
-        // ── Firestore-first (Phase 7b) ─────────────────────────────────
-        // Daily staff doc is the canonical store. Staff identity from Firestore staff/*.
-        $staffName = '';
-        try {
-            $staffDoc = $this->fs->getEntity('staff', "{$this->school_id}_{$staffId}");
-            if (is_array($staffDoc)) {
-                $staffName = (string)($staffDoc['Name'] ?? $staffDoc['name'] ?? '');
-            }
-        } catch (\Throwable $e) {
-            log_message('error', 'Attendance::mark_staff_day staff lookup failed: ' . $e->getMessage());
-        }
-        $fsOk = $this->_syncStaffDailyToFirestore(
-            $staffId, $mark, $day, $attKey, $staffName, $mark === 'T'
-        );
-        if (!$fsOk) {
-            $this->_release_att_lock($attPath);
-            return $this->json_error('Firestore write failed; staff attendance not saved. Please retry.');
-        }
-        // Monthly summary mirror — best-effort, don't fail the request.
-        $this->_syncStaffSummaryToFirestore($staffId, $attKey, $attStr, $staffName);
-
-        // ── RTDB mirror ────────────────────────────────────────────────
-        $this->firebase->set($attPath, $attStr);
-        $this->_release_att_lock($attPath);
-
-        // Handle late time — set if T, clean up if changed FROM T
-        $latePath = "Schools/{$school}/{$session}/Staff_Attendance/Late/{$attKey}/{$staffId}/{$day}";
-        if ($mark === 'T' && $lateTime) {
-            $lateTime = preg_replace('/[^0-9:]/', '', $lateTime);
-            $this->firebase->set($latePath, ['time' => $lateTime]);
-        } elseif ($mark !== 'T') {
-            $this->firebase->delete($latePath);
-        }
-
-        $this->_log_attendance_change('MARK_STAFF_DAY', [
-            'target' => $staffId, 'day' => $day, 'month' => $attKey,
-            'old' => $oldMark, 'new' => $mark,
-        ]);
-
-        // Update RTDB summary cache (legacy — Firestore summary already written above).
-        update_staff_att_summary($this->firebase, $school, $session, $staffId, $attKey, $monthNum, $year);
-
-        return $this->json_success(['mark' => $mark, 'day' => $day]);
     }
 
     /**
@@ -2554,7 +2052,10 @@ class Attendance extends MY_Controller
     }
 
     /**
-     * Bulk-mark all staff for a day
+     * Bulk-mark all staff for a day.
+     *
+     * R2 — Firestore-only via Staff_attendance_writer::bulkMarkDay.
+     *
      * POST: month, day, mark
      */
     public function bulk_mark_staff()
@@ -2571,69 +2072,62 @@ class Attendance extends MY_Controller
             return $this->json_error('Invalid input.');
         }
 
-        $school  = $this->school_name;
-        $session = $this->session_year;
-        $year    = $this->_resolve_year($month);
-        $attKey  = "{$month} {$year}";
+        $year     = $this->_resolve_year($month);
         $monthNum = $this->month_map[$month];
         $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
-
         if ($day < 1 || $day > $daysInMonth) {
             return $this->json_error('Invalid day.');
         }
+        $dateISO = sprintf('%04d-%02d-%02d', $year, $monthNum, $day);
+        $attKey  = "{$month} {$year}";
 
-        // Roster + names from Firestore canonical staff/* (one query covers both keys + names).
-        $teacherKeys = [];
-        $staffMeta   = [];
+        // Roster from Firestore canonical staff/*.
         try {
-            $staffDocs = $this->fs->schoolWhere('staff', [['sessions', 'array-contains', $session]]);
-            if (is_array($staffDocs)) {
-                foreach ($staffDocs as $entry) {
-                    $d = is_array($entry['data'] ?? null) ? $entry['data'] : (is_array($entry) ? $entry : []);
-                    $sid = (string) ($d['staffId'] ?? '');
-                    if ($sid === '') continue;
-                    $teacherKeys[$sid] = true;
-                    $staffMeta[$sid]   = ['Name' => (string) ($d['Name'] ?? $d['name'] ?? '')];
-                }
-            }
+            $staffDocs = $this->fs->schoolWhere('staff', [['sessions', 'array-contains', $this->session_year]]);
         } catch (\Throwable $e) {
-            log_message('error', 'Attendance::autofill_staff_today roster query failed: ' . $e->getMessage());
+            log_message('error', 'Attendance::bulk_mark_staff roster query failed: ' . $e->getMessage());
+            return $this->json_error('Failed to load staff roster.');
         }
-        if (empty($teacherKeys)) {
+        $statusByStaffId = [];
+        if (is_array($staffDocs)) {
+            foreach ($staffDocs as $entry) {
+                $d = is_array($entry['data'] ?? null) ? $entry['data'] : (is_array($entry) ? $entry : []);
+                $sid = (string) ($d['staffId'] ?? '');
+                if ($sid !== '') $statusByStaffId[$sid] = $mark;
+            }
+        }
+        if (empty($statusByStaffId)) {
             return $this->json_error('No staff found.');
         }
 
-        // Batch-read all staff attendance for this month in 1 read (instead of N)
-        $allStaffAtt = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}");
-        if (!is_array($allStaffAtt)) $allStaffAtt = [];
-
-        $count = 0;
-        foreach ($teacherKeys as $staffId => $v) {
-            if (!is_string($staffId) || trim($staffId) === '') continue;
-            $existing = isset($allStaffAtt[$staffId]) && is_string($allStaffAtt[$staffId])
-                ? $allStaffAtt[$staffId] : '';
-            $attStr = $existing ?: str_repeat('V', $daysInMonth);
-            $attStr = str_pad($attStr, $daysInMonth, 'V');
-            $attStr[$day - 1] = $mark;
-
-            $name = isset($staffMeta[$staffId]) && is_array($staffMeta[$staffId])
-                ? (string)($staffMeta[$staffId]['Name'] ?? $staffMeta[$staffId]['name'] ?? '')
-                : '';
-
-            // Phase 7b — best-effort Firestore mirror per staff.
-            $this->_syncStaffDailyToFirestore($staffId, $mark, $day, $attKey, $name, $mark === 'T');
-            $this->_syncStaffSummaryToFirestore($staffId, $attKey, $attStr, $name);
-
-            $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
-            $this->firebase->set($attPath, $attStr);
-            $count++;
+        // Delegate to Firestore-only writer (Lock_cache + F-SB-4 + per-staff CAS).
+        $this->load->library('staff_attendance_writer');
+        try {
+            $this->staff_attendance_writer->init(
+                $this->firebase, $this->school_id, $this->session_year
+            );
+            $result = $this->staff_attendance_writer->bulkMarkDay(
+                $statusByStaffId, $dateISO, [
+                    'markedBy' => (string) ($this->admin_id ?? 'unknown'),
+                    'source'   => 'bulk_mark',
+                ]
+            );
+        } catch (MonthLockedException $e) {
+            return $this->json_error("Staff attendance for {$month} {$year} is locked. Unlock before editing.");
+        } catch (\Throwable $e) {
+            log_message('error', 'Attendance::bulk_mark_staff writer failed: ' . $e->getMessage());
+            return $this->json_error('Bulk mark failed; please retry.');
         }
 
         $this->_log_attendance_change('BULK_MARK_STAFF', [
-            'day' => $day, 'month' => $attKey, 'mark' => $mark, 'count' => $count,
+            'day' => $day, 'month' => $attKey, 'mark' => $mark,
+            'count' => (int) ($result['committed'] ?? 0),
         ]);
 
-        return $this->json_success(['marked' => $count]);
+        return $this->json_success([
+            'marked'     => (int) ($result['committed']  ?? 0),
+            'failed_ids' => (array) ($result['failed_ids'] ?? []),
+        ]);
     }
 
     /**
@@ -2653,81 +2147,63 @@ class Attendance extends MY_Controller
     public function autofill_staff_today()
     {
         $this->_require_role(self::MARK_ROLES, 'autofill_staff');
-        $school  = $this->school_name;
-        $session = $this->session_year;
 
-        $now       = new DateTime();
-        $monthName = $now->format('F');        // "March"
-        $day       = (int)$now->format('j');   // 23
-        $year      = (int)$now->format('Y');
-        $monthNum  = (int)$now->format('n');
-        $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
-        $attKey    = "{$monthName} {$year}";
+        $now      = new DateTime();
+        $year     = (int) $now->format('Y');
+        $monthNum = (int) $now->format('n');
+        $day      = (int) $now->format('j');
+        $dateISO  = $now->format('Y-m-d');
+        $attKey   = $now->format('F') . " {$year}";
 
-        // Roster + names from Firestore canonical staff/* (one query covers both keys + names).
-        $teacherKeys = [];
-        $staffMeta   = [];
+        // Roster from Firestore canonical staff/*.
         try {
-            $staffDocs = $this->fs->schoolWhere('staff', [['sessions', 'array-contains', $session]]);
-            if (is_array($staffDocs)) {
-                foreach ($staffDocs as $entry) {
-                    $d = is_array($entry['data'] ?? null) ? $entry['data'] : (is_array($entry) ? $entry : []);
-                    $sid = (string) ($d['staffId'] ?? '');
-                    if ($sid === '') continue;
-                    $teacherKeys[$sid] = true;
-                    $staffMeta[$sid]   = ['Name' => (string) ($d['Name'] ?? $d['name'] ?? '')];
-                }
-            }
+            $staffDocs = $this->fs->schoolWhere('staff', [['sessions', 'array-contains', $this->session_year]]);
         } catch (\Throwable $e) {
-            log_message('error', 'Attendance::bulk_autofill roster query failed: ' . $e->getMessage());
+            log_message('error', 'Attendance::autofill_staff_today roster query failed: ' . $e->getMessage());
+            return $this->json_error('Failed to load staff roster.');
         }
-        if (empty($teacherKeys)) {
-            return $this->json_success(['marked' => 0, 'skipped' => 0, 'message' => 'No staff found in session.']);
-        }
-
-        // Batch-read all staff attendance for this month
-        $allStaffAtt = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}");
-        if (!is_array($allStaffAtt)) $allStaffAtt = [];
-
-        $marked  = 0;
-        $skipped = 0;
-        foreach ($teacherKeys as $staffId => $v) {
-            if (!is_string($staffId) || trim($staffId) === '') continue;
-
-            $existing = isset($allStaffAtt[$staffId]) && is_string($allStaffAtt[$staffId])
-                ? $allStaffAtt[$staffId] : '';
-            $attStr = str_pad($existing, $daysInMonth, 'V');
-
-            // Only mark if today is vacant (V) — don't overwrite existing marks
-            $currentMark = $attStr[$day - 1] ?? 'V';
-            if ($currentMark === 'V') {
-                $attStr[$day - 1] = 'P';
-
-                $name = isset($staffMeta[$staffId]) && is_array($staffMeta[$staffId])
-                    ? (string)($staffMeta[$staffId]['Name'] ?? $staffMeta[$staffId]['name'] ?? '')
-                    : '';
-
-                // Phase 7b — best-effort Firestore mirror per staff (bulk op).
-                $this->_syncStaffDailyToFirestore($staffId, 'P', $day, $attKey, $name, false);
-                $this->_syncStaffSummaryToFirestore($staffId, $attKey, $attStr, $name);
-
-                $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
-                $this->firebase->set($attPath, $attStr);
-                $marked++;
-            } else {
-                $skipped++;
+        $staffIds = [];
+        if (is_array($staffDocs)) {
+            foreach ($staffDocs as $entry) {
+                $d = is_array($entry['data'] ?? null) ? $entry['data'] : (is_array($entry) ? $entry : []);
+                $sid = (string) ($d['staffId'] ?? '');
+                if ($sid !== '') $staffIds[] = $sid;
             }
+        }
+        if (empty($staffIds)) {
+            return $this->json_success(['marked' => 0, 'message' => 'No staff found in session.']);
+        }
+
+        // Delegate to Firestore-only writer (Lock_cache + F-SB-4 + per-staff CAS).
+        // bulkAutofillDay broadcasts 'P' to all staff. Idempotent: staff already
+        // marked 'P' produce delta=0 (no count change). The legacy "skipped"
+        // semantic is dropped (in dev environment per ZERO-RTDB policy).
+        $this->load->library('staff_attendance_writer');
+        try {
+            $this->staff_attendance_writer->init(
+                $this->firebase, $this->school_id, $this->session_year
+            );
+            $result = $this->staff_attendance_writer->bulkAutofillDay(
+                $staffIds, $dateISO, 'P', [
+                    'markedBy' => (string) ($this->admin_id ?? 'unknown'),
+                ]
+            );
+        } catch (MonthLockedException $e) {
+            return $this->json_error('Staff attendance for this month is locked.');
+        } catch (\Throwable $e) {
+            log_message('error', 'Attendance::autofill_staff_today writer failed: ' . $e->getMessage());
+            return $this->json_error('Autofill failed; please retry.');
         }
 
         $this->_log_attendance_change('AUTOFILL_STAFF_TODAY', [
-            'day' => $day, 'month' => $attKey, 'marked' => $marked, 'skipped' => $skipped,
+            'day' => $day, 'month' => $attKey,
+            'marked' => (int) ($result['committed'] ?? 0),
         ]);
 
         return $this->json_success([
-            'marked'  => $marked,
-            'skipped' => $skipped,
-            'date'    => $now->format('d M Y'),
-            'message' => "{$marked} staff marked Present for today. {$skipped} already had attendance.",
+            'marked'     => (int) ($result['committed']  ?? 0),
+            'failed_ids' => (array) ($result['failed_ids'] ?? []),
+            'date'       => $now->format('d M Y'),
         ]);
     }
 
@@ -3428,30 +2904,48 @@ class Attendance extends MY_Controller
                     );
                 }
             } elseif ($personType === 'staff') {
-                $attPath = "Schools/{$schoolName}/{$session}/Staff_Attendance/{$attKey}/{$personId}";
+                // R6: Firestore-only via Staff_attendance_writer (lock-aware CAS).
+                // - Concurrency: writer's Firestore CAS preconditions supersede the
+                //   process-local `_acquire_att_lock` mutex; the staff branch no
+                //   longer takes that lock.
+                // - "First IN punch of the day wins" semantic preserved by a
+                //   pre-write peek at staffAttendanceSummary.dayWise[day-1].
+                // - lateMinutes computed from (punch_time - threshold) so the
+                //   canonical staffAttendance daily doc carries the late precision
+                //   that the retired RTDB Staff_Attendance/Late record used to hold
+                //   (the legacy record had zero readers anywhere in the codebase).
+                $dateISO          = date('Y-m-d', $ts);
+                $monthKey         = sprintf('%04d-%02d', $yearNum, $monthNum);
+                $schoolIdForWrite = (string) ($auth['school_id'] ?? $this->school_id);
 
-                if ($this->_acquire_att_lock($attPath)) {
-                    $existing = $this->firebase->get($attPath);
-                    $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
-                    $attStr = str_pad($attStr, $daysInMonth, 'V');
-                    if ($attStr[$dayOfMonth - 1] === 'V') {
-                        $attStr[$dayOfMonth - 1] = $mark;
+                $summaryDocId    = "{$schoolIdForWrite}_{$personId}_{$monthKey}";
+                $summarySnapshot = $this->firebase->firestoreGet('staffAttendanceSummary', $summaryDocId);
+                $existingDayWise = is_array($summarySnapshot) ? (string) ($summarySnapshot['dayWise'] ?? '') : '';
+                $existingChar    = strlen($existingDayWise) >= $dayOfMonth
+                    ? $existingDayWise[$dayOfMonth - 1]
+                    : 'V';
 
-                        // ── Firestore FIRST (canonical) ──
-                        $this->_syncStaffDailyToFirestore($personId, $mark, $dayOfMonth, $attKey, '', $mark === 'T');
-                        $this->_syncStaffSummaryToFirestore($personId, $attKey, $attStr, '');
-
-                        // ── RTDB mirror (best-effort, stays until Phase 8) ──
-                        $this->firebase->set($attPath, $attStr);
+                if ($existingChar === 'V') {
+                    $lateMinutes = 0;
+                    if ($mark === 'T') {
+                        $thrTs = strtotime("{$dateStr} {$threshold}");
+                        if ($thrTs) $lateMinutes = max(0, (int) round(($ts - $thrTs) / 60));
                     }
-                    $this->_release_att_lock($attPath);
-                }
-
-                if ($mark === 'T') {
-                    $this->firebase->set(
-                        "Schools/{$schoolName}/{$session}/Staff_Attendance/Late/{$attKey}/{$personId}/{$dayOfMonth}",
-                        ['time' => $timeStr, 'threshold' => $threshold]
-                    );
+                    try {
+                        $this->load->library('staff_attendance_writer');
+                        $this->staff_attendance_writer->init($this->firebase, $schoolIdForWrite, $session);
+                        $this->staff_attendance_writer->markSingleDay($personId, $dateISO, $mark, [
+                            'markedBy'     => 'device:' . $deviceId,
+                            'source'       => 'punch',
+                            'lateMinutes'  => $lateMinutes,
+                            'punchEventId' => $eventId ?: '',
+                        ]);
+                    } catch (MonthLockedException $e) {
+                        return $this->json_error('Attendance for this month is locked.', 409);
+                    } catch (\Throwable $e) {
+                        log_message('error', 'api_punch staff markSingleDay failed: ' . $e->getMessage());
+                        return $this->json_error('Could not record staff attendance. Please retry.', 500);
+                    }
                 }
             }
         }
@@ -3896,14 +3390,13 @@ class Attendance extends MY_Controller
             // ── Firestore FIRST ──
             $attStr = $monthKey !== '' ? ($fsByMonth[$monthKey] ?? '') : '';
 
-            // ── RTDB fallback ──
-            if ($attStr === '') {
-                if ($personType === 'student') {
-                    $secRoot = $this->_resolve_section_root($class, $section);
-                    $attPath = "{$secRoot}/Students/{$personId}/Attendance/{$attKey}";
-                } else {
-                    $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$personId}";
-                }
+            // R7: staff RTDB fallback removed. staffAttendanceSummary is the
+            // sole source of truth for staff history; the legacy RTDB tree was
+            // migrated at Phase II and now receives zero writes. Student RTDB
+            // fallback retained (Stream A out of scope).
+            if ($attStr === '' && $personType === 'student') {
+                $secRoot = $this->_resolve_section_root($class, $section);
+                $attPath = "{$secRoot}/Students/{$personId}/Attendance/{$attKey}";
                 $rtdbVal = $this->firebase->get($attPath);
                 if (is_string($rtdbVal)) $attStr = $rtdbVal;
             }
@@ -5858,27 +5351,32 @@ class Attendance extends MY_Controller
 
             if (!$monthNum || !$day || !$targetId) return $this->json_error('Invalid request data.');
             $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
-            $attKey = "{$month} {$year}";
+            $attKey   = "{$month} {$year}";
+            $monthKey = sprintf('%04d-%02d', $year, $monthNum);
 
-            $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$targetId}";
-            $existing = $this->firebase->get($attPath);
-            $attStr = is_string($existing) ? $existing : str_repeat('V', $daysInMonth);
+            // R4: enforce month-lock (parity with writer-protected W2/W3/W4/W5).
+            $this->load->library('lock_cache');
+            $lock = $this->lock_cache->is_locked($this->school_id, $this->session_year, $monthKey);
+            if (!empty($lock['is_locked'])) {
+                return $this->json_error("Cannot approve: month {$attKey} is locked.");
+            }
+
+            // R4: Firestore read of canonical staffAttendanceSummary doc.
+            $summaryDocId    = "{$school}_{$targetId}_{$monthKey}";
+            $existingSummary = $this->firebase->firestoreGet('staffAttendanceSummary', $summaryDocId);
+            $existing        = is_array($existingSummary) ? (string)($existingSummary['dayWise'] ?? '') : '';
+            $attStr = $existing !== '' ? $existing : str_repeat('V', $daysInMonth);
             $attStr = str_pad($attStr, $daysInMonth, 'V');
             $attStr[$day - 1] = $mark;
 
             $nonWorking = get_non_working_days($this->firebase, $school, $monthNum, $year);
             $attStr = enforce_holidays_on_string($attStr, $daysInMonth, $nonWorking);
 
-            // ── WRITE: Firestore FIRST (canonical) ──
+            // ── WRITE: Firestore (canonical) ──
             $fsOk = $this->_syncStaffSummaryToFirestore($targetId, $attKey, $attStr, '');
             if (!$fsOk) {
                 return $this->json_error('Firestore write failed; backdated staff attendance not approved. Please retry.');
             }
-
-            // ── RTDB mirror (best-effort, stays until Phase 8) ──
-            $this->firebase->set($attPath, $attStr);
-
-            update_staff_att_summary($this->firebase, $school, $session, $targetId, $attKey, $monthNum, $year);
 
         } elseif ($type === 'student_bulk') {
             $data = $req['data'] ?? [];
@@ -5937,18 +5435,33 @@ class Attendance extends MY_Controller
 
             if (!$monthNum || empty($data)) return $this->json_error('Invalid staff bulk request.');
             $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
-            $attKey = "{$month} {$year}";
+            $attKey   = "{$month} {$year}";
+            $monthKey = sprintf('%04d-%02d', $year, $monthNum);
+
+            // R4: enforce month-lock once for the entire bulk request.
+            $this->load->library('lock_cache');
+            $lock = $this->lock_cache->is_locked($this->school_id, $this->session_year, $monthKey);
+            if (!empty($lock['is_locked'])) {
+                return $this->json_error("Cannot approve: month {$attKey} is locked.");
+            }
+
             $nonWorking = get_non_working_days($this->firebase, $school, $monthNum, $year);
+
+            $bulkCommitted = 0;
+            $bulkFailedIds = [];
 
             foreach ($data as $staffId => $payload) {
                 $staffId = trim((string)$staffId);
                 if (!preg_match('/^[A-Za-z0-9_]+$/', $staffId)) continue;
-                $attPath = "Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}";
+
+                // R4: Firestore read of canonical staffAttendanceSummary doc.
+                $summaryDocId    = "{$school}_{$staffId}_{$monthKey}";
+                $existingSummary = $this->firebase->firestoreGet('staffAttendanceSummary', $summaryDocId);
+                $existing        = is_array($existingSummary) ? (string)($existingSummary['dayWise'] ?? '') : '';
 
                 // Build the new dayWise string in memory before any write.
                 if ($isDiff && is_array($payload)) {
-                    $existing = $this->firebase->get($attPath);
-                    $attStr = is_string($existing) ? str_pad($existing, $daysInMonth, 'V') : str_repeat('V', $daysInMonth);
+                    $attStr = $existing !== '' ? str_pad($existing, $daysInMonth, 'V') : str_repeat('V', $daysInMonth);
                     foreach ($payload as $d => $mk) {
                         $d = (int)$d;
                         if ($d >= 1 && $d <= $daysInMonth) $attStr[$d - 1] = strtoupper((string)$mk);
@@ -5959,13 +5472,12 @@ class Attendance extends MY_Controller
                     $attStr = enforce_holidays_on_string($attStr, $daysInMonth, $nonWorking);
                 }
 
-                // ── WRITE: Firestore FIRST (canonical) ──
+                // ── WRITE: Firestore (canonical) ──
                 $fsOk = $this->_syncStaffSummaryToFirestore($staffId, $attKey, $attStr, '');
-
-                // ── RTDB mirror (best-effort, only on Firestore success) ──
                 if ($fsOk) {
-                    $this->firebase->set($attPath, $attStr);
-                    update_staff_att_summary($this->firebase, $school, $session, $staffId, $attKey, $monthNum, $year);
+                    $bulkCommitted++;
+                } else {
+                    $bulkFailedIds[] = $staffId;
                 }
             }
         } else {
@@ -6041,24 +5553,19 @@ class Attendance extends MY_Controller
 
     // ====================================================================
     //  ATTENDANCE LOCK (prevents edits after payroll)
+    //
+    //  R3 (Stream B): canonical store is Firestore collection
+    //  `staffAttendanceLocks`, doc id `{schoolId}_{session}_{monthKey}`,
+    //  schema { schoolId, session, month, isLocked, lockedBy, lockedAtMs,
+    //  unlockedBy?, unlockedAtMs? }. The dead `_check_staff_att_lock`
+    //  helper (RTDB read; no callers) was removed at R3. The write-gate
+    //  is enforced by Staff_attendance_writer via Lock_cache::is_locked();
+    //  payroll/month-close must call Lock_cache::is_locked_live().
     // ====================================================================
 
     /**
-     * Check if staff attendance for a month is locked (e.g., after payroll).
-     * Returns lock data if locked, null if not.
-     */
-    private function _check_staff_att_lock(string $attKey): ?array
-    {
-        $lockPath = "Schools/{$this->school_name}/{$this->session_year}/Staff_Attendance/Locks/{$attKey}";
-        $lock = $this->firebase->get($lockPath);
-        if (is_array($lock) && !empty($lock['locked'])) {
-            return $lock;
-        }
-        return null;
-    }
-
-    /**
      * POST — Lock staff attendance for a month (called after payroll finalization).
+     * Writes a Firestore staffAttendanceLocks doc and invalidates Lock_cache.
      */
     public function lock_staff_attendance()
     {
@@ -6066,20 +5573,44 @@ class Attendance extends MY_Controller
         $month = trim((string) $this->input->post('month'));
         if (!$month) return $this->json_error('Month is required.');
 
-        $year = $this->_resolve_year($month);
-        $attKey = "{$month} {$year}";
+        $year     = $this->_resolve_year($month);
+        $monthNum = (int) date('n', strtotime("1 {$month} {$year}"));
+        if ($monthNum < 1 || $monthNum > 12) {
+            return $this->json_error('Invalid month name.');
+        }
+        $monthKey = sprintf('%04d-%02d', $year, $monthNum);
+        $attKey   = "{$month} {$year}";
 
-        $lockPath = "Schools/{$this->school_name}/{$this->session_year}/Staff_Attendance/Locks/{$attKey}";
-        $this->firebase->set($lockPath, [
-            'locked'    => true,
-            'locked_at' => date('c'),
-            'locked_by' => $this->admin_name ?? $this->admin_id ?? 'system',
+        $docId = "{$this->school_id}_{$this->session_year}_{$monthKey}";
+
+        try {
+            $this->firebase->firestoreSet('staffAttendanceLocks', $docId, [
+                'schoolId'   => $this->school_id,
+                'session'    => $this->session_year,
+                'month'      => $monthKey,
+                'isLocked'   => true,
+                'lockedBy'   => $this->admin_name ?? $this->admin_id ?? 'system',
+                'lockedAtMs' => (int) (microtime(true) * 1000),
+            ], false);
+        } catch (\Throwable $e) {
+            log_message('error', 'lock_staff_attendance Firestore write failed: ' . $e->getMessage());
+            return $this->json_error('Failed to lock attendance. Please retry.');
+        }
+
+        $this->load->library('lock_cache');
+        $this->lock_cache->invalidate($this->school_id, $this->session_year, $monthKey);
+
+        $this->_log_attendance_change('LOCK_STAFF_ATTENDANCE', [
+            'attKey'   => $attKey,
+            'monthKey' => $monthKey,
         ]);
+
         return $this->json_success(['message' => "Staff attendance locked for {$attKey}."]);
     }
 
     /**
      * POST — Unlock staff attendance for a month (admin override).
+     * Marks the Firestore lock doc isLocked=false (preserves audit trail).
      */
     public function unlock_staff_attendance()
     {
@@ -6087,11 +5618,40 @@ class Attendance extends MY_Controller
         $month = trim((string) $this->input->post('month'));
         if (!$month) return $this->json_error('Month is required.');
 
-        $year = $this->_resolve_year($month);
-        $attKey = "{$month} {$year}";
+        $year     = $this->_resolve_year($month);
+        $monthNum = (int) date('n', strtotime("1 {$month} {$year}"));
+        if ($monthNum < 1 || $monthNum > 12) {
+            return $this->json_error('Invalid month name.');
+        }
+        $monthKey = sprintf('%04d-%02d', $year, $monthNum);
+        $attKey   = "{$month} {$year}";
 
-        $lockPath = "Schools/{$this->school_name}/{$this->session_year}/Staff_Attendance/Locks/{$attKey}";
-        $this->firebase->delete($lockPath);
+        $docId = "{$this->school_id}_{$this->session_year}_{$monthKey}";
+
+        try {
+            // merge=true so unlock is idempotent even if the doc was never
+            // explicitly locked (e.g., schema-init edge cases).
+            $this->firebase->firestoreSet('staffAttendanceLocks', $docId, [
+                'schoolId'     => $this->school_id,
+                'session'      => $this->session_year,
+                'month'        => $monthKey,
+                'isLocked'     => false,
+                'unlockedBy'   => $this->admin_name ?? $this->admin_id ?? 'system',
+                'unlockedAtMs' => (int) (microtime(true) * 1000),
+            ], true);
+        } catch (\Throwable $e) {
+            log_message('error', 'unlock_staff_attendance Firestore write failed: ' . $e->getMessage());
+            return $this->json_error('Failed to unlock attendance. Please retry.');
+        }
+
+        $this->load->library('lock_cache');
+        $this->lock_cache->invalidate($this->school_id, $this->session_year, $monthKey);
+
+        $this->_log_attendance_change('UNLOCK_STAFF_ATTENDANCE', [
+            'attKey'   => $attKey,
+            'monthKey' => $monthKey,
+        ]);
+
         return $this->json_success(['message' => "Staff attendance unlocked for {$attKey}."]);
     }
 

@@ -25,13 +25,27 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *   A24 — Phase II: markSingleDay happy-path against synthetic tenant
  *   A25 — Phase II: writer defines fail-loud exception types
  *   A26 — Phase II: staffAttendance write has NO precondition; summary write HAS precondition
- *   A8  — Phase II: mark_staff_day dispatcher exists; _mark_staff_day_fs body uses ZERO RTDB calls
- *   A9  — Phase II: _mark_staff_day_legacy preserved; flag-OFF dispatch reaches it
+ *   A8  — R1.2: mark_staff_day public method body is Firestore-only + delegates to _mark_staff_day_fs (legacy removed)
  *   A27 — Step III.0: Stream_b_telemetry library + dispatcher emit + fs-path emit (MVT)
  *   A28 — Step III.1: bulkMarkDay implementation is sequential CAS (structural)
  *   A29 — Step III.1: bulkMarkDay happy-path against synthetic tenant (integration)
- *   A30 — Step III.2: save_staff_attendance dispatcher routes + FS path RTDB-free
- *   A31 — Step III.2: _save_staff_attendance_legacy preserved (RTDB writes + helper)
+ *   A30 — R1.3: save_staff_attendance public method is Firestore-only + delegates to fs (legacy removed)
+ *   A32 — R1.4: fetch_staff_attendance public method is Firestore-only + delegates to fs (legacy removed)
+ *   A33 — R2:   bulk_mark_staff body is Firestore-only + delegates to writer.bulkMarkDay (W3)
+ *   A34 — R2:   autofill_staff_today body is Firestore-only + delegates to writer.bulkAutofillDay (W4)
+ *   A35 — R3:   dead `_check_staff_att_lock` method is removed (lock-check moved to Lock_cache)
+ *   A36 — R3:   lock_staff_attendance body is Firestore-only + writes staffAttendanceLocks + invalidates cache
+ *   A37 — R3:   unlock_staff_attendance body is Firestore-only + writes staffAttendanceLocks + invalidates cache
+ *   A38 — R4:   approve_attendance_request staff_day branch is Firestore-only (reads/writes summary doc; lock-aware)
+ *   A39 — R4:   approve_attendance_request staff_bulk branch is Firestore-only (reads/writes summary doc; lock-aware)
+ *   A40 — R5:   update_staff_att_summary + get_staff_attendance_summary helpers fully removed
+ *   A41 — R5:   fix_attendance_keys staff + staff_late branches removed (student branches preserved)
+ *   A42 — R5:   attendance_helper.php carries zero Staff_Attendance literal refs
+ *   A43 — R6:   api_punch staff branch is Firestore-only + delegates to Staff_attendance_writer.markSingleDay (W6)
+ *   A44 — R7:   fetch_individual_report RTDB staff fallback removed (Firestore-only)
+ *   A45 — R7:   Health_check "Today's Staff Coverage" probe is Firestore-only (F-SB-3 query)
+ *
+ * Stream B target state: ZERO active in-scope RTDB sites.
  *
  * INVOCATION:
  *   php index.php stream_b_verifier verify
@@ -61,9 +75,10 @@ class Stream_b_verifier extends CI_Controller
      * As migration progresses Phase II..VIII, both numbers trend monotonically to docblock-only / zero.
      */
     private const EXPECTED_SITE_COUNTS = [
-        'Attendance.php'        => ['total_refs' => 25, 'active_ops_min' => 6],  // 23 active path-refs + 2 docblock; regex catches 6 inline calls + assignments
-        'attendance_helper.php' => ['total_refs' => 4,  'active_ops_min' => 4],  // 4 inline firebase->X calls
+        'Attendance.php'        => ['total_refs' => 1,  'active_ops_min' => 0],  // R7: -1 ref after deleting fetch_individual_report staff RTDB fallback (1 docblock comment remains in api_punch)
+        'attendance_helper.php' => ['total_refs' => 0,  'active_ops_min' => 0],  // R5: helpers deleted (update_staff_att_summary + get_staff_attendance_summary)
         'Hr.php'                => ['total_refs' => 1,  'active_ops_min' => 0],  // 1 docblock-only line; 0 active firebase->X
+        'Health_check.php'      => ['total_refs' => 0,  'active_ops_min' => 0],  // R7: probe migrated to Firestore F-SB-3 query (zero refs/ops)
     ];
 
     public function __construct()
@@ -110,12 +125,24 @@ class Stream_b_verifier extends CI_Controller
         $results['A25'] = $this->_assert_writer_exception_types();
         $results['A26'] = $this->_assert_writer_precondition_scope();
         $results['A8']  = $this->_assert_dispatcher_fs_zero_rtdb();
-        $results['A9']  = $this->_assert_dispatcher_legacy_preserved();
         $results['A27'] = $this->_assert_mvt_telemetry();
         $results['A28'] = $this->_assert_bulk_mark_structural();
         $results['A29'] = $this->_assert_bulk_mark_happy_path();
         $results['A30'] = $this->_assert_save_dispatcher_fs_zero_rtdb();
-        $results['A31'] = $this->_assert_save_dispatcher_legacy_preserved();
+        $results['A32'] = $this->_assert_fetch_dispatcher_fs_zero_rtdb();
+        $results['A33'] = $this->_assert_w3_bulk_mark_staff_fs_only();
+        $results['A34'] = $this->_assert_w4_autofill_staff_fs_only();
+        $results['A35'] = $this->_assert_check_staff_att_lock_removed();
+        $results['A36'] = $this->_assert_lock_staff_attendance_fs_only();
+        $results['A37'] = $this->_assert_unlock_staff_attendance_fs_only();
+        $results['A38'] = $this->_assert_approve_staff_day_fs_only();
+        $results['A39'] = $this->_assert_approve_staff_bulk_fs_only();
+        $results['A40'] = $this->_assert_legacy_helpers_removed();
+        $results['A41'] = $this->_assert_fix_attendance_keys_staff_branches_removed();
+        $results['A42'] = $this->_assert_attendance_helper_zero_staff_refs();
+        $results['A43'] = $this->_assert_api_punch_staff_fs_only();
+        $results['A44'] = $this->_assert_fetch_individual_report_staff_fallback_removed();
+        $results['A45'] = $this->_assert_health_check_staff_probe_fs_only();
 
         echo "\n{$hdr}\n";
         echo "  Summary\n";
@@ -225,6 +252,7 @@ class Stream_b_verifier extends CI_Controller
             'Attendance.php'        => $appPath . DIRECTORY_SEPARATOR . 'controllers' . DIRECTORY_SEPARATOR . 'Attendance.php',
             'attendance_helper.php' => $appPath . DIRECTORY_SEPARATOR . 'helpers'     . DIRECTORY_SEPARATOR . 'attendance_helper.php',
             'Hr.php'                => $appPath . DIRECTORY_SEPARATOR . 'controllers' . DIRECTORY_SEPARATOR . 'Hr.php',
+            'Health_check.php'      => $appPath . DIRECTORY_SEPARATOR . 'controllers' . DIRECTORY_SEPARATOR . 'Health_check.php',
         ];
 
         $ok = true;
@@ -681,28 +709,25 @@ class Stream_b_verifier extends CI_Controller
     }
 
     /* ─────────────────────────────────────────────────────────────────── */
-    /*  A8 — dispatcher present; _mark_staff_day_fs body is RTDB-free      */
+    /*  A8 — R1.2: public mark_staff_day is Firestore-only; delegates to fs */
     /* ─────────────────────────────────────────────────────────────────── */
     private function _assert_dispatcher_fs_zero_rtdb(): array
     {
-        echo "\n── A8: mark_staff_day dispatcher + _mark_staff_day_fs zero-RTDB ──\n";
+        echo "\n── A8: mark_staff_day public method is Firestore-only ──\n";
         $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
 
-        // Dispatcher present + flag check + routes
-        $hasDispatcher    = (bool) preg_match('/public function mark_staff_day\s*\(\s*\)\s*\{\s*\$this->config->load\(\s*[\'"]stream_b_flags[\'"]/', $src);
-        $hasFlagBranch    = (bool) preg_match('/stream_b_writer_enabled\(\$this->school_id\s*,\s*\$this->config\)/', $src);
-        // Dispatcher may either `return $this->_mark_staff_day_*()` directly
-        // or `$resp = $this->_mark_staff_day_*()` for post-call telemetry commit.
-        $routesToFs       = (bool) preg_match('/\$this->_mark_staff_day_fs\(\)/', $src);
-        $routesToLegacy   = (bool) preg_match('/\$this->_mark_staff_day_legacy\(\)/', $src);
+        // Public method delegates to _mark_staff_day_fs
+        $delegatesToFs    = (bool) preg_match('/public function mark_staff_day\s*\(\s*\).*?\$this->_mark_staff_day_fs\(\)/s', $src);
+        // No legacy method exists
+        $noLegacyMethod   = !(bool) preg_match('/private function _mark_staff_day_legacy\s*\(\s*\)/', $src);
+        // No flag-based dispatch
+        $noFlagCheck      = !(bool) preg_match('/public function mark_staff_day\s*\(\s*\).*?stream_b_writer_enabled/s', $src);
 
-        echo "  public dispatcher present:       " . ($hasDispatcher ? 'yes' : 'no') . "\n";
-        echo "  stream_b_writer_enabled check:   " . ($hasFlagBranch ? 'yes' : 'no') . "\n";
-        echo "  routes to _mark_staff_day_fs:    " . ($routesToFs ? 'yes' : 'no') . "\n";
-        echo "  routes to _mark_staff_day_legacy:" . ($routesToLegacy ? 'yes' : 'no') . "\n";
+        echo "  delegates to _mark_staff_day_fs:  " . ($delegatesToFs    ? 'yes' : 'no') . "\n";
+        echo "  no _mark_staff_day_legacy method: " . ($noLegacyMethod   ? 'yes' : 'no') . "\n";
+        echo "  no flag-based dispatch:           " . ($noFlagCheck      ? 'yes' : 'no') . "\n";
 
-        // Extract _mark_staff_day_fs body and grep for RTDB calls
-        // Match from "private function _mark_staff_day_fs" up to the next "private function" or "public function"
+        // Extract _mark_staff_day_fs body and confirm RTDB-free
         $fsBody = '';
         if (preg_match('/private function _mark_staff_day_fs\s*\(\s*\).*?(?=\n    (?:public|private|protected)\s+function)/s', $src, $m)) {
             $fsBody = $m[0];
@@ -711,63 +736,29 @@ class Stream_b_verifier extends CI_Controller
             return ['pass' => false, 'msg' => '_mark_staff_day_fs method body not extractable'];
         }
 
-        // RTDB API calls
         preg_match_all('/\$this->firebase->(get|set|update|delete|push)\s*\(/', $fsBody, $rtdb);
         $rtdbApiCalls = count($rtdb[0]);
 
-        // Known RTDB-touching helpers that must NOT be called from the FS path
         $rtdbHelpers = [
-            'update_staff_att_summary',  // attendance_helper RTDB summary cache
-            '_check_staff_att_lock',     // legacy RTDB lock-doc read
-            '_acquire_att_lock',         // legacy RTDB soft-lock
-            '_release_att_lock',         // legacy RTDB soft-lock release
+            'update_staff_att_summary',
+            '_check_staff_att_lock',
+            '_acquire_att_lock',
+            '_release_att_lock',
         ];
         $helperHits = [];
         foreach ($rtdbHelpers as $h) {
-            if (strpos($fsBody, $h) !== false) $helperHits[] = $h;
+            if (preg_match('/\$this->' . preg_quote($h, '/') . '\s*\(/', $fsBody)) $helperHits[] = $h;
         }
 
-        echo "  _mark_staff_day_fs body length: " . strlen($fsBody) . " chars\n";
-        echo "  RTDB API calls in FS body:      {$rtdbApiCalls} (expected: 0)\n";
-        echo "  RTDB-helper calls in FS body:   " . (empty($helperHits) ? '0' : implode(',', $helperHits)) . " (expected: 0)\n";
+        echo "  _mark_staff_day_fs body length:    " . strlen($fsBody) . " chars\n";
+        echo "  RTDB API calls in fs body:         {$rtdbApiCalls} (expected: 0)\n";
+        echo "  RTDB-helper calls in fs body:      " . (empty($helperHits) ? '0' : implode(',', $helperHits)) . " (expected: 0)\n";
 
-        $ok = $hasDispatcher && $hasFlagBranch && $routesToFs && $routesToLegacy
+        $ok = $delegatesToFs && $noLegacyMethod && $noFlagCheck
             && ($rtdbApiCalls === 0) && empty($helperHits);
         return ['pass' => $ok, 'msg' => $ok
-            ? 'dispatcher routes correctly; FS path is RTDB-free'
-            : 'dispatcher or FS-path zero-RTDB invariant violated'];
-    }
-
-    /* ─────────────────────────────────────────────────────────────────── */
-    /*  A9 — _mark_staff_day_legacy preserved + reachable under flag OFF   */
-    /* ─────────────────────────────────────────────────────────────────── */
-    private function _assert_dispatcher_legacy_preserved(): array
-    {
-        echo "\n── A9: _mark_staff_day_legacy preserved + flag-OFF routes to it ──\n";
-        $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
-
-        // Legacy method exists and is private
-        $hasLegacyMethod = (bool) preg_match('/private function _mark_staff_day_legacy\s*\(\s*\)/', $src);
-        echo "  private _mark_staff_day_legacy() defined: " . ($hasLegacyMethod ? 'yes' : 'no') . "\n";
-
-        // Legacy body retains the RTDB write at attPath (signature of original method) — proves byte-identity wasn't lost
-        $hasLegacyRtdb = (bool) preg_match('/private function _mark_staff_day_legacy.*?firebase->set\(\$attPath/s', $src);
-        echo "  legacy retains RTDB \$firebase->set(\$attPath) (proves preserved): " . ($hasLegacyRtdb ? 'yes' : 'no') . "\n";
-
-        // Legacy still calls update_staff_att_summary helper (proves preserved)
-        $hasLegacyHelper = (bool) preg_match('/private function _mark_staff_day_legacy.*?update_staff_att_summary/s', $src);
-        echo "  legacy retains update_staff_att_summary call:                     " . ($hasLegacyHelper ? 'yes' : 'no') . "\n";
-
-        // Dispatcher routes to legacy when flag is OFF (legacy callsite present)
-        $flagOffRoutes = (bool) preg_match('/public function mark_staff_day.*?\$this->_mark_staff_day_legacy\(\)/s', $src);
-        echo "  flag-OFF dispatcher reaches legacy:                               " . ($flagOffRoutes ? 'yes' : 'no') . "\n";
-
-        // Stream B verifier A7 already confirmed flag defaults to false → production stays on legacy
-
-        $ok = $hasLegacyMethod && $hasLegacyRtdb && $hasLegacyHelper && $flagOffRoutes;
-        return ['pass' => $ok, 'msg' => $ok
-            ? 'legacy method preserved with RTDB writes + helper; dispatcher routes to it when flag OFF'
-            : 'legacy preservation invariant violated'];
+            ? 'public mark_staff_day delegates to fs; legacy removed; fs body is RTDB-free'
+            : 'Firestore-only contract violated'];
     }
 
     /* ─────────────────────────────────────────────────────────────────── */
@@ -797,13 +788,12 @@ class Stream_b_verifier extends CI_Controller
         echo "  abort()  : " . ($hasAbort   ? 'yes' : 'no') . "\n";
 
         // 2. Dispatcher in Attendance.php emits telemetry around mark_staff_day
+        // (R1.2/R1.3: legacy branches removed — telemetry is single-path observability now)
         $attSrc = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
         $dispBegin  = (bool) preg_match("/public function mark_staff_day.*?stream_b_telemetry->begin\\(/s", $attSrc);
         $dispCommit = (bool) preg_match("/public function mark_staff_day.*?stream_b_telemetry->commit\\(/s", $attSrc);
-        $dispLegacyRtdb = (bool) preg_match("/'code_path'\\s*=>\\s*'legacy'.*?'rtdb_writes_count'\\s*=>\\s*3/s", $attSrc);
         echo "  dispatcher emits begin():         " . ($dispBegin     ? 'yes' : 'no') . "\n";
         echo "  dispatcher emits commit():        " . ($dispCommit    ? 'yes' : 'no') . "\n";
-        echo "  legacy path records rtdb_writes=3: " . ($dispLegacyRtdb ? 'yes' : 'no') . "\n";
 
         // 3. _mark_staff_day_fs body emits CAS + cache + rtdb=0 fields
         if (!preg_match('/private function _mark_staff_day_fs\\s*\\(.*?(?=\\n    (?:public|private|protected)\\s+function)/s', $attSrc, $m)) {
@@ -851,7 +841,7 @@ class Stream_b_verifier extends CI_Controller
         }
 
         $ok = $hasBegin && $hasUpdate && $hasCommit && $hasAbort
-            && $dispBegin && $dispCommit && $dispLegacyRtdb
+            && $dispBegin && $dispCommit
             && $emitsCasAttempts && $emitsCasOutcome && $emitsCacheHit && $emitsRtdbZero
             && $emittedOk;
         return ['pass' => $ok, 'msg' => $ok
@@ -979,25 +969,25 @@ class Stream_b_verifier extends CI_Controller
     }
 
     /* ─────────────────────────────────────────────────────────────────── */
-    /*  A30 — Step III.2: save_staff_attendance dispatcher + FS RTDB-free  */
+    /*  A30 — R1.3: public save_staff_attendance is Firestore-only           */
     /* ─────────────────────────────────────────────────────────────────── */
     private function _assert_save_dispatcher_fs_zero_rtdb(): array
     {
-        echo "\n── A30: save_staff_attendance dispatcher + FS path zero-RTDB ──\n";
+        echo "\n── A30: save_staff_attendance public method is Firestore-only ──\n";
         $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
 
-        // Dispatcher pattern present
-        $hasDispatcher  = (bool) preg_match('/public function save_staff_attendance\s*\(\s*\)\s*\{\s*\$this->config->load\(\s*[\'"]stream_b_flags[\'"]/', $src);
-        $hasFlagBranch  = (bool) preg_match('/save_staff_attendance.*?stream_b_writer_enabled\s*\(\s*\$this->school_id/s', $src);
-        $routesToFs     = (bool) preg_match('/\$this->_save_staff_attendance_fs\(\)/', $src);
-        $routesToLegacy = (bool) preg_match('/\$this->_save_staff_attendance_legacy\(\)/', $src);
+        // Public method delegates to _save_staff_attendance_fs
+        $delegatesToFs   = (bool) preg_match('/public function save_staff_attendance\s*\(\s*\).*?\$this->_save_staff_attendance_fs\(\)/s', $src);
+        // No legacy method exists
+        $noLegacyMethod  = !(bool) preg_match('/private function _save_staff_attendance_legacy\s*\(\s*\)/', $src);
+        // No flag-based dispatch
+        $noFlagCheck     = !(bool) preg_match('/public function save_staff_attendance\s*\(\s*\).*?stream_b_writer_enabled/s', $src);
 
-        echo "  public dispatcher present:                " . ($hasDispatcher  ? 'yes' : 'no') . "\n";
-        echo "  stream_b_writer_enabled flag check:       " . ($hasFlagBranch  ? 'yes' : 'no') . "\n";
-        echo "  routes to _save_staff_attendance_fs:      " . ($routesToFs     ? 'yes' : 'no') . "\n";
-        echo "  routes to _save_staff_attendance_legacy:  " . ($routesToLegacy ? 'yes' : 'no') . "\n";
+        echo "  delegates to _save_staff_attendance_fs:        " . ($delegatesToFs   ? 'yes' : 'no') . "\n";
+        echo "  no _save_staff_attendance_legacy method:       " . ($noLegacyMethod  ? 'yes' : 'no') . "\n";
+        echo "  no flag-based dispatch:                        " . ($noFlagCheck     ? 'yes' : 'no') . "\n";
 
-        // Extract _save_staff_attendance_fs body and assert zero RTDB
+        // Extract _save_staff_attendance_fs body and confirm RTDB-free
         $fsBody = '';
         if (preg_match('/private function _save_staff_attendance_fs\s*\(\s*\).*?(?=\n    (?:public|private|protected)\s+function)/s', $src, $m)) {
             $fsBody = $m[0];
@@ -1006,69 +996,182 @@ class Stream_b_verifier extends CI_Controller
             return ['pass' => false, 'msg' => '_save_staff_attendance_fs body not extractable'];
         }
 
-        // RTDB API calls
         preg_match_all('/\$this->firebase->(get|set|update|delete|push)\s*\(/', $fsBody, $rtdb);
         $rtdbApiCalls = count($rtdb[0]);
-        // RTDB-touching helpers that must NOT be called from the FS path
+
         $rtdbHelpers = [
             'update_staff_att_summary',
             '_check_staff_att_lock',
             '_acquire_att_lock',
             '_release_att_lock',
         ];
-        // Match actual method calls only (not docstring references).
-        // Pattern: $this-><helper>(  with optional whitespace.
         $helperHits = [];
         foreach ($rtdbHelpers as $h) {
             if (preg_match('/\$this->' . preg_quote($h, '/') . '\s*\(/', $fsBody)) $helperHits[] = $h;
         }
-
-        echo "  _save_staff_attendance_fs body length:    " . strlen($fsBody) . " chars\n";
-        echo "  RTDB API calls in FS body:                {$rtdbApiCalls} (expected: 0)\n";
-        echo "  RTDB-helper calls in FS body:             " . (empty($helperHits) ? '0' : implode(',', $helperHits)) . " (expected: 0)\n";
 
         // FS path uses Lock_cache, F-SB-4 query, commitBatch with CAS
         $usesLockCache  = (strpos($fsBody, '$this->lock_cache->is_locked') !== false);
         $usesQuery      = (strpos($fsBody, "firestoreQuery('staffAttendanceSummary'") !== false);
         $usesCommit     = (strpos($fsBody, 'firestoreCommitBatch') !== false);
         $usesCAS        = (strpos($fsBody, "'precondition' => \$precondition") !== false);
-        echo "  uses Lock_cache::is_locked:               " . ($usesLockCache ? 'yes' : 'no') . "\n";
-        echo "  uses firestoreQuery on summaries:         " . ($usesQuery     ? 'yes' : 'no') . "\n";
-        echo "  uses firestoreCommitBatch:                " . ($usesCommit    ? 'yes' : 'no') . "\n";
-        echo "  uses CAS precondition:                    " . ($usesCAS       ? 'yes' : 'no') . "\n";
 
-        $ok = $hasDispatcher && $hasFlagBranch && $routesToFs && $routesToLegacy
+        echo "  _save_staff_attendance_fs body length:         " . strlen($fsBody) . " chars\n";
+        echo "  RTDB API calls in fs body:                     {$rtdbApiCalls} (expected: 0)\n";
+        echo "  RTDB-helper calls in fs body:                  " . (empty($helperHits) ? '0' : implode(',', $helperHits)) . " (expected: 0)\n";
+        echo "  uses Lock_cache::is_locked:                    " . ($usesLockCache ? 'yes' : 'no') . "\n";
+        echo "  uses firestoreQuery on summaries:              " . ($usesQuery     ? 'yes' : 'no') . "\n";
+        echo "  uses firestoreCommitBatch:                     " . ($usesCommit    ? 'yes' : 'no') . "\n";
+        echo "  uses CAS precondition:                         " . ($usesCAS       ? 'yes' : 'no') . "\n";
+
+        $ok = $delegatesToFs && $noLegacyMethod && $noFlagCheck
             && ($rtdbApiCalls === 0) && empty($helperHits)
             && $usesLockCache && $usesQuery && $usesCommit && $usesCAS;
         return ['pass' => $ok, 'msg' => $ok
-            ? 'dispatcher routes correctly; FS path is RTDB-free; uses Lock_cache + F-SB-4 + CAS'
-            : 'dispatcher or FS-path contract violated'];
+            ? 'public save_staff_attendance delegates to fs; legacy removed; fs body is RTDB-free; uses Lock_cache + F-SB-4 + CAS'
+            : 'Firestore-only contract violated'];
     }
 
     /* ─────────────────────────────────────────────────────────────────── */
-    /*  A31 — _save_staff_attendance_legacy preserved                       */
+    /*  A32 — R1.4: public fetch_staff_attendance is Firestore-only         */
     /* ─────────────────────────────────────────────────────────────────── */
-    private function _assert_save_dispatcher_legacy_preserved(): array
+    private function _assert_fetch_dispatcher_fs_zero_rtdb(): array
     {
-        echo "\n── A31: _save_staff_attendance_legacy preserved + flag-OFF routes there ──\n";
+        echo "\n── A32: fetch_staff_attendance public method is Firestore-only ──\n";
         $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
 
-        $hasLegacyMethod   = (bool) preg_match('/private function _save_staff_attendance_legacy\s*\(\s*\)/', $src);
-        $hasLegacyN1Read   = (bool) preg_match('/private function _save_staff_attendance_legacy.*?firebase->get\("Schools\/\{?\$school\}?\/\{?\$session\}?\/Staff_Attendance/s', $src);
-        $hasLegacyRtdbSet  = (bool) preg_match('/private function _save_staff_attendance_legacy.*?firebase->set\(\$attPath/s', $src);
-        $hasLegacyHelper   = (bool) preg_match('/private function _save_staff_attendance_legacy.*?update_staff_att_summary/s', $src);
-        $flagOffRoutes     = (bool) preg_match('/public function save_staff_attendance.*?\$this->_save_staff_attendance_legacy\(\)/s', $src);
+        // Public method delegates to _fetch_staff_attendance_fs
+        $delegatesToFs   = (bool) preg_match('/public function fetch_staff_attendance\s*\(\s*\).*?\$this->_fetch_staff_attendance_fs\(\)/s', $src);
+        // No legacy method exists
+        $noLegacyMethod  = !(bool) preg_match('/private function _fetch_staff_attendance_legacy\s*\(\s*\)/', $src);
+        // No flag-based dispatch
+        $noFlagCheck     = !(bool) preg_match('/public function fetch_staff_attendance\s*\(\s*\).*?stream_b_writer_enabled/s', $src);
 
-        echo "  private _save_staff_attendance_legacy() defined: " . ($hasLegacyMethod ? 'yes' : 'no') . "\n";
-        echo "  legacy retains N+1 RTDB curStr read:             " . ($hasLegacyN1Read ? 'yes' : 'no') . "\n";
-        echo "  legacy retains firebase->set(\$attPath):          " . ($hasLegacyRtdbSet ? 'yes' : 'no') . "\n";
-        echo "  legacy retains update_staff_att_summary call:    " . ($hasLegacyHelper ? 'yes' : 'no') . "\n";
-        echo "  flag-OFF dispatcher reaches legacy:              " . ($flagOffRoutes ? 'yes' : 'no') . "\n";
+        echo "  delegates to _fetch_staff_attendance_fs:       " . ($delegatesToFs   ? 'yes' : 'no') . "\n";
+        echo "  no _fetch_staff_attendance_legacy method:      " . ($noLegacyMethod  ? 'yes' : 'no') . "\n";
+        echo "  no flag-based dispatch:                        " . ($noFlagCheck     ? 'yes' : 'no') . "\n";
 
-        $ok = $hasLegacyMethod && $hasLegacyN1Read && $hasLegacyRtdbSet && $hasLegacyHelper && $flagOffRoutes;
+        // Extract _fetch_staff_attendance_fs body and confirm RTDB-free
+        $fsBody = '';
+        if (preg_match('/private function _fetch_staff_attendance_fs\s*\(\s*\).*?(?=\n    (?:public|private|protected)\s+function)/s', $src, $m)) {
+            $fsBody = $m[0];
+        }
+        if ($fsBody === '') {
+            return ['pass' => false, 'msg' => '_fetch_staff_attendance_fs body not extractable'];
+        }
+
+        preg_match_all('/\$this->firebase->(get|set|update|delete|push)\s*\(/', $fsBody, $rtdb);
+        $rtdbApiCalls = count($rtdb[0]);
+
+        $rtdbHelpers = [
+            'update_staff_att_summary',
+            '_check_staff_att_lock',
+            '_acquire_att_lock',
+            '_release_att_lock',
+        ];
+        $helperHits = [];
+        foreach ($rtdbHelpers as $h) {
+            if (preg_match('/\$this->' . preg_quote($h, '/') . '\s*\(/', $fsBody)) $helperHits[] = $h;
+        }
+
+        // FS path uses F-SB-3 range query for late metadata (per Phase IV design package §3)
+        $usesFsbRangeQuery = (strpos($fsBody, "firestoreQuery('staffAttendance'") !== false);
+        $usesLateMinutes   = (strpos($fsBody, 'lateMinutes') !== false);
+
+        echo "  _fetch_staff_attendance_fs body length:        " . strlen($fsBody) . " chars\n";
+        echo "  RTDB API calls in fs body:                     {$rtdbApiCalls} (expected: 0)\n";
+        echo "  RTDB-helper calls in fs body:                  " . (empty($helperHits) ? '0' : implode(',', $helperHits)) . " (expected: 0)\n";
+        echo "  uses firestoreQuery on staffAttendance F-SB-3: " . ($usesFsbRangeQuery ? 'yes' : 'no') . "\n";
+        echo "  reads lateMinutes from per-day docs:           " . ($usesLateMinutes ? 'yes' : 'no') . "\n";
+
+        $ok = $delegatesToFs && $noLegacyMethod && $noFlagCheck
+            && ($rtdbApiCalls === 0) && empty($helperHits)
+            && $usesFsbRangeQuery && $usesLateMinutes;
         return ['pass' => $ok, 'msg' => $ok
-            ? 'legacy method preserved with N+1 read + RTDB writes + helper; dispatcher routes to it when flag OFF'
-            : 'legacy preservation invariant violated'];
+            ? 'public fetch_staff_attendance delegates to fs; legacy removed; fs body is RTDB-free; uses F-SB-3 + lateMinutes'
+            : 'Firestore-only contract violated'];
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /*  A33 — R2: W3 bulk_mark_staff body is Firestore-only                 */
+    /* ─────────────────────────────────────────────────────────────────── */
+    private function _assert_w3_bulk_mark_staff_fs_only(): array
+    {
+        echo "\n── A33: bulk_mark_staff body is Firestore-only ──\n";
+        $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
+
+        // Extract method body
+        $body = '';
+        if (preg_match('/public function bulk_mark_staff\s*\(\s*\).*?(?=\n    (?:public|private|protected)\s+function)/s', $src, $m)) {
+            $body = $m[0];
+        }
+        if ($body === '') {
+            return ['pass' => false, 'msg' => 'bulk_mark_staff body not extractable'];
+        }
+
+        preg_match_all('/\$this->firebase->(get|set|update|delete|push)\s*\(/', $body, $rtdb);
+        $rtdbApiCalls = count($rtdb[0]);
+
+        $rtdbHelpers = ['update_staff_att_summary', '_check_staff_att_lock', '_acquire_att_lock', '_release_att_lock'];
+        $helperHits = [];
+        foreach ($rtdbHelpers as $h) {
+            if (preg_match('/\$this->' . preg_quote($h, '/') . '\s*\(/', $body)) $helperHits[] = $h;
+        }
+
+        $delegatesToWriter = (strpos($body, '$this->staff_attendance_writer->bulkMarkDay') !== false);
+        $loadsWriter       = (strpos($body, "load->library('staff_attendance_writer')") !== false);
+
+        echo "  bulk_mark_staff body length:                {$body}";
+        echo strlen($body) . " chars\n";
+        echo "  RTDB API calls in body:                     {$rtdbApiCalls} (expected: 0)\n";
+        echo "  RTDB-helper calls in body:                  " . (empty($helperHits) ? '0' : implode(',', $helperHits)) . " (expected: 0)\n";
+        echo "  loads staff_attendance_writer library:      " . ($loadsWriter ? 'yes' : 'no') . "\n";
+        echo "  delegates to writer.bulkMarkDay:            " . ($delegatesToWriter ? 'yes' : 'no') . "\n";
+
+        $ok = ($rtdbApiCalls === 0) && empty($helperHits) && $loadsWriter && $delegatesToWriter;
+        return ['pass' => $ok, 'msg' => $ok
+            ? 'W3 bulk_mark_staff body is RTDB-free + delegates to writer.bulkMarkDay'
+            : 'W3 Firestore-only contract violated'];
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /*  A34 — R2: W4 autofill_staff_today body is Firestore-only            */
+    /* ─────────────────────────────────────────────────────────────────── */
+    private function _assert_w4_autofill_staff_fs_only(): array
+    {
+        echo "\n── A34: autofill_staff_today body is Firestore-only ──\n";
+        $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
+
+        $body = '';
+        if (preg_match('/public function autofill_staff_today\s*\(\s*\).*?(?=\n    (?:public|private|protected)\s+function|\n\s*\/\*\s*=+)/s', $src, $m)) {
+            $body = $m[0];
+        }
+        if ($body === '') {
+            return ['pass' => false, 'msg' => 'autofill_staff_today body not extractable'];
+        }
+
+        preg_match_all('/\$this->firebase->(get|set|update|delete|push)\s*\(/', $body, $rtdb);
+        $rtdbApiCalls = count($rtdb[0]);
+
+        $rtdbHelpers = ['update_staff_att_summary', '_check_staff_att_lock', '_acquire_att_lock', '_release_att_lock'];
+        $helperHits = [];
+        foreach ($rtdbHelpers as $h) {
+            if (preg_match('/\$this->' . preg_quote($h, '/') . '\s*\(/', $body)) $helperHits[] = $h;
+        }
+
+        $delegatesToWriter = (strpos($body, '$this->staff_attendance_writer->bulkAutofillDay') !== false);
+        $loadsWriter       = (strpos($body, "load->library('staff_attendance_writer')") !== false);
+
+        echo "  autofill_staff_today body length:           " . strlen($body) . " chars\n";
+        echo "  RTDB API calls in body:                     {$rtdbApiCalls} (expected: 0)\n";
+        echo "  RTDB-helper calls in body:                  " . (empty($helperHits) ? '0' : implode(',', $helperHits)) . " (expected: 0)\n";
+        echo "  loads staff_attendance_writer library:      " . ($loadsWriter ? 'yes' : 'no') . "\n";
+        echo "  delegates to writer.bulkAutofillDay:        " . ($delegatesToWriter ? 'yes' : 'no') . "\n";
+
+        $ok = ($rtdbApiCalls === 0) && empty($helperHits) && $loadsWriter && $delegatesToWriter;
+        return ['pass' => $ok, 'msg' => $ok
+            ? 'W4 autofill_staff_today body is RTDB-free + delegates to writer.bulkAutofillDay'
+            : 'W4 Firestore-only contract violated'];
     }
 
     /* ─────────────────────────────────────────────────────────────────── */
@@ -1100,5 +1203,451 @@ class Stream_b_verifier extends CI_Controller
             }
         }
         return ['pass' => $ok, 'msg' => $ok ? "6/6 probed indexes resolve (F-SB-6 covered by Node post-deploy probe)" : "one or more index queries failed"];
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /*  A35 — R3: dead `_check_staff_att_lock` method is removed           */
+    /* ─────────────────────────────────────────────────────────────────── */
+    private function _assert_check_staff_att_lock_removed(): array
+    {
+        echo "\n── A35: dead _check_staff_att_lock method is removed ──\n";
+        $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
+
+        $defined = (bool) preg_match('/function\s+_check_staff_att_lock\s*\(/', $src);
+        $called  = (bool) preg_match('/\$this->_check_staff_att_lock\s*\(/', $src);
+
+        echo "  method definition present:    " . ($defined ? 'yes (FAIL)' : 'no  (PASS)') . "\n";
+        echo "  caller invocations present:   " . ($called  ? 'yes (FAIL)' : 'no  (PASS)') . "\n";
+
+        $ok = !$defined && !$called;
+        return ['pass' => $ok, 'msg' => $ok
+            ? '_check_staff_att_lock fully removed; lock-check now via Lock_cache only'
+            : 'dead method or stale caller still present'];
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /*  A36 — R3: lock_staff_attendance body is Firestore-only              */
+    /* ─────────────────────────────────────────────────────────────────── */
+    private function _assert_lock_staff_attendance_fs_only(): array
+    {
+        echo "\n── A36: lock_staff_attendance body is Firestore-only ──\n";
+        $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
+
+        $body = '';
+        if (preg_match('/public function lock_staff_attendance\s*\(\s*\).*?(?=\n    (?:public|private|protected)\s+function)/s', $src, $m)) {
+            $body = $m[0];
+        }
+        if ($body === '') {
+            return ['pass' => false, 'msg' => 'lock_staff_attendance body not extractable'];
+        }
+
+        preg_match_all('/\$this->firebase->(get|set|update|delete|push)\s*\(/', $body, $rtdb);
+        $rtdbApiCalls = count($rtdb[0]);
+
+        $rtdbHelpers = ['update_staff_att_summary', '_check_staff_att_lock', '_acquire_att_lock', '_release_att_lock'];
+        $helperHits = [];
+        foreach ($rtdbHelpers as $h) {
+            if (preg_match('/\$this->' . preg_quote($h, '/') . '\s*\(/', $body)) $helperHits[] = $h;
+        }
+
+        $writesLocks    = (strpos($body, "firestoreSet('staffAttendanceLocks'") !== false);
+        $invalidatesCache = (strpos($body, '$this->lock_cache->invalidate(') !== false);
+        $loadsCache     = (strpos($body, "load->library('lock_cache')") !== false);
+
+        echo "  lock_staff_attendance body length:          " . strlen($body) . " chars\n";
+        echo "  RTDB API calls in body:                     {$rtdbApiCalls} (expected: 0)\n";
+        echo "  RTDB-helper calls in body:                  " . (empty($helperHits) ? '0' : implode(',', $helperHits)) . " (expected: 0)\n";
+        echo "  firestoreSet('staffAttendanceLocks',...):   " . ($writesLocks ? 'yes' : 'no') . "\n";
+        echo "  loads lock_cache library:                   " . ($loadsCache ? 'yes' : 'no') . "\n";
+        echo "  invalidates Lock_cache:                     " . ($invalidatesCache ? 'yes' : 'no') . "\n";
+
+        $ok = ($rtdbApiCalls === 0) && empty($helperHits) && $writesLocks && $loadsCache && $invalidatesCache;
+        return ['pass' => $ok, 'msg' => $ok
+            ? 'lock_staff_attendance writes Firestore staffAttendanceLocks + invalidates cache; zero RTDB'
+            : 'lock_staff_attendance Firestore-only contract violated'];
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /*  A37 — R3: unlock_staff_attendance body is Firestore-only            */
+    /* ─────────────────────────────────────────────────────────────────── */
+    private function _assert_unlock_staff_attendance_fs_only(): array
+    {
+        echo "\n── A37: unlock_staff_attendance body is Firestore-only ──\n";
+        $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
+
+        $body = '';
+        if (preg_match('/public function unlock_staff_attendance\s*\(\s*\).*?(?=\n    (?:public|private|protected)\s+function|\n\s*\/\*\s*=+)/s', $src, $m)) {
+            $body = $m[0];
+        }
+        if ($body === '') {
+            return ['pass' => false, 'msg' => 'unlock_staff_attendance body not extractable'];
+        }
+
+        preg_match_all('/\$this->firebase->(get|set|update|delete|push)\s*\(/', $body, $rtdb);
+        $rtdbApiCalls = count($rtdb[0]);
+
+        $rtdbHelpers = ['update_staff_att_summary', '_check_staff_att_lock', '_acquire_att_lock', '_release_att_lock'];
+        $helperHits = [];
+        foreach ($rtdbHelpers as $h) {
+            if (preg_match('/\$this->' . preg_quote($h, '/') . '\s*\(/', $body)) $helperHits[] = $h;
+        }
+
+        $writesLocks    = (strpos($body, "firestoreSet('staffAttendanceLocks'") !== false);
+        $invalidatesCache = (strpos($body, '$this->lock_cache->invalidate(') !== false);
+        $loadsCache     = (strpos($body, "load->library('lock_cache')") !== false);
+
+        echo "  unlock_staff_attendance body length:        " . strlen($body) . " chars\n";
+        echo "  RTDB API calls in body:                     {$rtdbApiCalls} (expected: 0)\n";
+        echo "  RTDB-helper calls in body:                  " . (empty($helperHits) ? '0' : implode(',', $helperHits)) . " (expected: 0)\n";
+        echo "  firestoreSet('staffAttendanceLocks',...):   " . ($writesLocks ? 'yes' : 'no') . "\n";
+        echo "  loads lock_cache library:                   " . ($loadsCache ? 'yes' : 'no') . "\n";
+        echo "  invalidates Lock_cache:                     " . ($invalidatesCache ? 'yes' : 'no') . "\n";
+
+        $ok = ($rtdbApiCalls === 0) && empty($helperHits) && $writesLocks && $loadsCache && $invalidatesCache;
+        return ['pass' => $ok, 'msg' => $ok
+            ? 'unlock_staff_attendance writes Firestore staffAttendanceLocks + invalidates cache; zero RTDB'
+            : 'unlock_staff_attendance Firestore-only contract violated'];
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /*  A38 — R4: approve_attendance_request staff_day branch is FS-only   */
+    /* ─────────────────────────────────────────────────────────────────── */
+    private function _assert_approve_staff_day_fs_only(): array
+    {
+        echo "\n── A38: approve_attendance_request staff_day branch is Firestore-only ──\n";
+        $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
+
+        // Extract: from "elseif ($type === 'staff_day')" up to next "} elseif (" or method-level "} else {".
+        // Anchor terminator on the controller-method indent depth (8 spaces) so we don't stop at an
+        // inner `} else {` of the branch.
+        $body = '';
+        if (preg_match("/elseif\s*\(\s*\\\$type\s*===\s*'staff_day'\s*\).*?(?=\n {8}\}\s*elseif\s*\(|\n {8}\}\s*else\s*\{)/s", $src, $m)) {
+            $body = $m[0];
+        }
+        if ($body === '') {
+            return ['pass' => false, 'msg' => 'staff_day branch body not extractable'];
+        }
+
+        preg_match_all('/\$this->firebase->(get|set|update|delete|push)\s*\(/', $body, $rtdb);
+        $rtdbApiCalls = count($rtdb[0]);
+
+        $rtdbHelperPatterns = [
+            'update_staff_att_summary\s*\(',
+            '\$this->_check_staff_att_lock\s*\(',
+            '\$this->_acquire_att_lock\s*\(',
+            '\$this->_release_att_lock\s*\(',
+        ];
+        $helperHits = [];
+        foreach ($rtdbHelperPatterns as $p) {
+            if (preg_match('/' . $p . '/', $body)) $helperHits[] = $p;
+        }
+
+        $readsSummary    = (strpos($body, "firestoreGet('staffAttendanceSummary'") !== false);
+        $writesSummary   = (strpos($body, '$this->_syncStaffSummaryToFirestore(') !== false);
+        $loadsLockCache  = (strpos($body, "load->library('lock_cache')") !== false);
+        $checksLock      = (strpos($body, '$this->lock_cache->is_locked(') !== false);
+
+        echo "  staff_day branch length:               " . strlen($body) . " chars\n";
+        echo "  RTDB API calls in branch:              {$rtdbApiCalls} (expected: 0)\n";
+        echo "  RTDB-helper calls in branch:           " . (empty($helperHits) ? '0' : count($helperHits)) . " (expected: 0)\n";
+        echo "  firestoreGet('staffAttendanceSummary'): " . ($readsSummary ? 'yes' : 'no') . "\n";
+        echo "  _syncStaffSummaryToFirestore(...):     " . ($writesSummary ? 'yes' : 'no') . "\n";
+        echo "  loads lock_cache + is_locked check:    " . ($loadsLockCache && $checksLock ? 'yes' : 'no') . "\n";
+
+        $ok = ($rtdbApiCalls === 0) && empty($helperHits) && $readsSummary && $writesSummary && $loadsLockCache && $checksLock;
+        return ['pass' => $ok, 'msg' => $ok
+            ? 'staff_day branch reads + writes Firestore summary; lock-aware; zero RTDB'
+            : 'staff_day branch Firestore-only contract violated'];
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /*  A39 — R4: approve_attendance_request staff_bulk branch is FS-only  */
+    /* ─────────────────────────────────────────────────────────────────── */
+    private function _assert_approve_staff_bulk_fs_only(): array
+    {
+        echo "\n── A39: approve_attendance_request staff_bulk branch is Firestore-only ──\n";
+        $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
+
+        // Anchor terminator on the controller-method indent depth (8 spaces) so an inner
+        // `} else {` (e.g., from the `$isDiff` check) doesn't cut the body short.
+        $body = '';
+        if (preg_match("/elseif\s*\(\s*\\\$type\s*===\s*'staff_bulk'\s*\).*?(?=\n {8}\}\s*elseif\s*\(|\n {8}\}\s*else\s*\{)/s", $src, $m)) {
+            $body = $m[0];
+        }
+        if ($body === '') {
+            return ['pass' => false, 'msg' => 'staff_bulk branch body not extractable'];
+        }
+
+        preg_match_all('/\$this->firebase->(get|set|update|delete|push)\s*\(/', $body, $rtdb);
+        $rtdbApiCalls = count($rtdb[0]);
+
+        $rtdbHelperPatterns = [
+            'update_staff_att_summary\s*\(',
+            '\$this->_check_staff_att_lock\s*\(',
+            '\$this->_acquire_att_lock\s*\(',
+            '\$this->_release_att_lock\s*\(',
+        ];
+        $helperHits = [];
+        foreach ($rtdbHelperPatterns as $p) {
+            if (preg_match('/' . $p . '/', $body)) $helperHits[] = $p;
+        }
+
+        $readsSummary    = (strpos($body, "firestoreGet('staffAttendanceSummary'") !== false);
+        $writesSummary   = (strpos($body, '$this->_syncStaffSummaryToFirestore(') !== false);
+        $loadsLockCache  = (strpos($body, "load->library('lock_cache')") !== false);
+        $checksLock      = (strpos($body, '$this->lock_cache->is_locked(') !== false);
+
+        echo "  staff_bulk branch length:              " . strlen($body) . " chars\n";
+        echo "  RTDB API calls in branch:              {$rtdbApiCalls} (expected: 0)\n";
+        echo "  RTDB-helper calls in branch:           " . (empty($helperHits) ? '0' : count($helperHits)) . " (expected: 0)\n";
+        echo "  firestoreGet('staffAttendanceSummary'): " . ($readsSummary ? 'yes' : 'no') . "\n";
+        echo "  _syncStaffSummaryToFirestore(...):     " . ($writesSummary ? 'yes' : 'no') . "\n";
+        echo "  loads lock_cache + is_locked check:    " . ($loadsLockCache && $checksLock ? 'yes' : 'no') . "\n";
+
+        $ok = ($rtdbApiCalls === 0) && empty($helperHits) && $readsSummary && $writesSummary && $loadsLockCache && $checksLock;
+        return ['pass' => $ok, 'msg' => $ok
+            ? 'staff_bulk branch reads + writes Firestore summary; lock-aware; zero RTDB'
+            : 'staff_bulk branch Firestore-only contract violated'];
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /*  A40 — R5: legacy staff-summary helpers fully removed               */
+    /* ─────────────────────────────────────────────────────────────────── */
+    private function _assert_legacy_helpers_removed(): array
+    {
+        echo "\n── A40: legacy staff-summary helpers fully removed ──\n";
+        $helperSrc = (string) file_get_contents(APPPATH . 'helpers/attendance_helper.php');
+
+        $updDefined = (bool) preg_match('/function\s+update_staff_att_summary\s*\(/', $helperSrc);
+        $getDefined = (bool) preg_match('/function\s+get_staff_attendance_summary\s*\(/', $helperSrc);
+
+        // Also confirm no callers remain anywhere in application/ (excluding the verifier's
+        // own negative-assertion guards, which mention the name as a literal string).
+        $controllerSrc = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
+        $updCalls = preg_match_all('/\bupdate_staff_att_summary\s*\(/', $controllerSrc, $tmp);
+        $getCalls = preg_match_all('/\bget_staff_attendance_summary\s*\(/', $controllerSrc, $tmp);
+
+        echo "  update_staff_att_summary defined:      " . ($updDefined ? 'yes (FAIL)' : 'no  (PASS)') . "\n";
+        echo "  get_staff_attendance_summary defined:  " . ($getDefined ? 'yes (FAIL)' : 'no  (PASS)') . "\n";
+        echo "  callers in Attendance.php (upd):       {$updCalls} (expected: 0)\n";
+        echo "  callers in Attendance.php (get):       {$getCalls} (expected: 0)\n";
+
+        $ok = !$updDefined && !$getDefined && $updCalls === 0 && $getCalls === 0;
+        return ['pass' => $ok, 'msg' => $ok
+            ? 'both legacy staff-summary helpers deleted + zero callers in Attendance.php'
+            : 'helpers still defined or callers remain'];
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /*  A41 — R5: fix_attendance_keys staff/staff_late branches removed    */
+    /* ─────────────────────────────────────────────────────────────────── */
+    private function _assert_fix_attendance_keys_staff_branches_removed(): array
+    {
+        echo "\n── A41: fix_attendance_keys staff + staff_late branches removed ──\n";
+        $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
+
+        $body = '';
+        if (preg_match('/public function fix_attendance_keys\s*\(\s*\).*?(?=\n    (?:public|private|protected)\s+function)/s', $src, $m)) {
+            $body = $m[0];
+        }
+        if ($body === '') {
+            return ['pass' => false, 'msg' => 'fix_attendance_keys body not extractable'];
+        }
+
+        // After R5, the staff/staff_late variable names + the staff $migrated keys
+        // should all be absent from the method body.
+        $hasOldStaffPath     = (bool) preg_match('/\$oldStaffPath\b/', $body);
+        $hasNewStaffPath     = (bool) preg_match('/\$newStaffPath\b/', $body);
+        $hasOldStaffLatePath = (bool) preg_match('/\$oldStaffLatePath\b/', $body);
+        $hasNewStaffLatePath = (bool) preg_match('/\$newStaffLatePath\b/', $body);
+        $hasStaffKey         = (bool) preg_match("/\\\$migrated\\['staff'\\]/", $body);
+        $hasStaffLateKey     = (bool) preg_match("/\\\$migrated\\['staff_late'\\]/", $body);
+
+        // Student branches must remain.
+        $hasStudentBranch  = (strpos($body, "{\$secRoot}/Students/") !== false);
+        $hasStudentLateKey = (strpos($body, "'student_late'") !== false);
+
+        echo "  staff vars/keys present in method:      "
+            . ($hasOldStaffPath || $hasNewStaffPath || $hasOldStaffLatePath || $hasNewStaffLatePath
+                  || $hasStaffKey || $hasStaffLateKey ? 'yes (FAIL)' : 'no  (PASS)') . "\n";
+        echo "  student branch preserved:               " . ($hasStudentBranch ? 'yes (PASS)' : 'no  (FAIL)') . "\n";
+        echo "  student_late key preserved:             " . ($hasStudentLateKey ? 'yes (PASS)' : 'no  (FAIL)') . "\n";
+
+        $staffRemoved = !$hasOldStaffPath && !$hasNewStaffPath && !$hasOldStaffLatePath
+                        && !$hasNewStaffLatePath && !$hasStaffKey && !$hasStaffLateKey;
+        $studentKept  = $hasStudentBranch && $hasStudentLateKey;
+        $ok = $staffRemoved && $studentKept;
+        return ['pass' => $ok, 'msg' => $ok
+            ? 'staff + staff_late branches removed; student branches intact'
+            : 'staff branches not fully removed or student branches damaged'];
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /*  A42 — R5: attendance_helper.php carries zero Staff_Attendance refs */
+    /* ─────────────────────────────────────────────────────────────────── */
+    private function _assert_attendance_helper_zero_staff_refs(): array
+    {
+        echo "\n── A42: attendance_helper.php zero Staff_Attendance refs ──\n";
+        $src = (string) file_get_contents(APPPATH . 'helpers/attendance_helper.php');
+
+        $refCount = preg_match_all('/Staff_Attendance/', $src, $tmp);
+        preg_match_all('/\$firebase->(get|set|update|delete|push)\s*\(/', $src, $rtdb);
+        $rtdbCalls = count($rtdb[0]);
+
+        echo "  Staff_Attendance literal refs:         {$refCount} (expected: 0)\n";
+        echo "  \$firebase->X(...) RTDB calls in file:  {$rtdbCalls}\n";
+
+        $ok = ($refCount === 0);
+        return ['pass' => $ok, 'msg' => $ok
+            ? 'attendance_helper.php is clean of Staff_Attendance refs after R5'
+            : "{$refCount} Staff_Attendance refs still present in helper"];
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /*  A43 — R6: api_punch staff branch is Firestore-only (W6)            */
+    /* ─────────────────────────────────────────────────────────────────── */
+    private function _assert_api_punch_staff_fs_only(): array
+    {
+        echo "\n── A43: api_punch staff branch is Firestore-only ──\n";
+        $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
+
+        // Extract the staff branch inside api_punch (under `if ($direction === 'in')`):
+        // its `} elseif ($personType === 'staff') {` opener has 12 leading spaces, and
+        // the branch terminator is the next 12-indent closing brace.
+        //
+        // NB: an earlier, unrelated `elseif ($personType === 'staff')` exists at
+        // 8-space indent (the tenant-membership check at the top of api_punch); the
+        // 12-space anchor here is what makes the match select the attendance writer.
+        $body = '';
+        if (preg_match("/\n {12}\}\s*elseif\s*\(\\\$personType\s*===\s*'staff'\s*\).*?(?=\n {12}\})/s", $src, $m)) {
+            $body = $m[0];
+        }
+        if ($body === '') {
+            return ['pass' => false, 'msg' => 'api_punch staff branch body not extractable'];
+        }
+
+        preg_match_all('/\$this->firebase->(get|set|update|delete|push)\s*\(/', $body, $rtdb);
+        $rtdbApiCalls = count($rtdb[0]);
+
+        $rtdbHelperPatterns = [
+            '\$this->_acquire_att_lock\s*\(',
+            '\$this->_release_att_lock\s*\(',
+            'update_staff_att_summary\s*\(',
+            '\$this->_check_staff_att_lock\s*\(',
+        ];
+        $helperHits = [];
+        foreach ($rtdbHelperPatterns as $p) {
+            if (preg_match('/' . $p . '/', $body)) $helperHits[] = $p;
+        }
+
+        $loadsWriter      = (strpos($body, "load->library('staff_attendance_writer')") !== false);
+        $delegatesToWriter = (strpos($body, '$this->staff_attendance_writer->markSingleDay(') !== false);
+        $peeksSummary     = (strpos($body, "firestoreGet('staffAttendanceSummary'") !== false);
+        $handlesLock      = (strpos($body, 'MonthLockedException') !== false);
+
+        echo "  api_punch staff branch length:         " . strlen($body) . " chars\n";
+        echo "  RTDB API calls in branch:              {$rtdbApiCalls} (expected: 0)\n";
+        echo "  RTDB-helper/mutex calls in branch:     " . (empty($helperHits) ? '0' : count($helperHits)) . " (expected: 0)\n";
+        echo "  loads staff_attendance_writer:         " . ($loadsWriter ? 'yes' : 'no') . "\n";
+        echo "  delegates to writer.markSingleDay:     " . ($delegatesToWriter ? 'yes' : 'no') . "\n";
+        echo "  peeks Firestore summary for first-win: " . ($peeksSummary ? 'yes' : 'no') . "\n";
+        echo "  catches MonthLockedException:          " . ($handlesLock ? 'yes' : 'no') . "\n";
+
+        $ok = ($rtdbApiCalls === 0) && empty($helperHits)
+              && $loadsWriter && $delegatesToWriter && $peeksSummary && $handlesLock;
+        return ['pass' => $ok, 'msg' => $ok
+            ? 'W6 api_punch staff branch is RTDB-free + delegates to writer.markSingleDay; lock-aware; first-IN-wins preserved'
+            : 'W6 Firestore-only contract violated'];
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /*  A44 — R7: fetch_individual_report staff RTDB fallback removed      */
+    /* ─────────────────────────────────────────────────────────────────── */
+    private function _assert_fetch_individual_report_staff_fallback_removed(): array
+    {
+        echo "\n── A44: fetch_individual_report staff RTDB fallback removed ──\n";
+        $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
+
+        $body = '';
+        if (preg_match('/public function fetch_individual_report\s*\(\s*\).*?(?=\n    (?:public|private|protected)\s+function)/s', $src, $m)) {
+            $body = $m[0];
+        }
+        if ($body === '') {
+            return ['pass' => false, 'msg' => 'fetch_individual_report body not extractable'];
+        }
+
+        // Three invariants after R7:
+        //   1. No "Schools/.../Staff_Attendance" RTDB-path literal anywhere in the body.
+        //   2. Every $this->firebase->get($attPath) call is gated by a "personType
+        //      === 'student'" check in the same conditional block (this verifies the
+        //      retired `else { staff }` arm is not silently reintroduced).
+        //   3. The student fallback signature remains.
+        $hasStaffAttendanceLiteral = (bool) preg_match('/Schools\/.*Staff_Attendance/', $body);
+
+        // For each firebase->get($attPath), check the preceding ~300 chars contain a
+        // "personType === 'student'" gate.
+        $attPathReadsGated = true;
+        $attPathReadCount  = 0;
+        if (preg_match_all('/\$this->firebase->get\(\s*\$attPath\s*\)/', $body, $matches, PREG_OFFSET_CAPTURE)) {
+            foreach ($matches[0] as $hit) {
+                $attPathReadCount++;
+                $pos      = (int) $hit[1];
+                $preceding = substr($body, max(0, $pos - 300), min(300, $pos));
+                if (!preg_match("/\\\$personType\s*===\s*'student'/", $preceding)) {
+                    $attPathReadsGated = false;
+                }
+            }
+        }
+        $studentFallbackKept = (strpos($body, "/Students/{\$personId}/Attendance/{\$attKey}") !== false);
+
+        echo "  Staff_Attendance literal in body:      " . ($hasStaffAttendanceLiteral ? 'yes (FAIL)' : 'no  (PASS)') . "\n";
+        echo "  firebase->get(attPath) call count:     {$attPathReadCount}\n";
+        echo "  all attPath reads student-gated:       " . ($attPathReadsGated ? 'yes (PASS)' : 'no  (FAIL)') . "\n";
+        echo "  student RTDB fallback preserved:       " . ($studentFallbackKept ? 'yes (PASS)' : 'no  (FAIL)') . "\n";
+
+        $ok = !$hasStaffAttendanceLiteral && $attPathReadsGated && $studentFallbackKept;
+        return ['pass' => $ok, 'msg' => $ok
+            ? 'staff RTDB fallback removed; student fallback intact + gated (Stream A out of scope)'
+            : 'staff fallback still present or student fallback damaged'];
+    }
+
+    /* ─────────────────────────────────────────────────────────────────── */
+    /*  A45 — R7: Health_check Today's Staff Coverage probe Firestore-only */
+    /* ─────────────────────────────────────────────────────────────────── */
+    private function _assert_health_check_staff_probe_fs_only(): array
+    {
+        echo "\n── A45: Health_check Today's Staff Coverage probe Firestore-only ──\n";
+        $src = (string) file_get_contents(APPPATH . 'controllers/Health_check.php');
+
+        // Extract the staff-coverage probe block by anchoring on its display name.
+        $body = '';
+        if (preg_match("/'name'\s*=>\s*\"Today's Staff Coverage\".*?(?=\n            \],)/s", $src, $m)) {
+            $body = $m[0];
+        }
+        if ($body === '') {
+            return ['pass' => false, 'msg' => "Today's Staff Coverage probe block not extractable"];
+        }
+
+        $hasStaffAttendanceLiteral = (bool) preg_match('/Staff_Attendance/', $body);
+        $usesFsQuery               = (strpos($body, "schoolWhere('staffAttendance'") !== false);
+        $filtersByDate             = (strpos($body, "['date', '==', \$todayDate]") !== false);
+        $catchesFsErrors           = (strpos($body, 'log_message') !== false);
+
+        // The probe still legitimately reads RTDB Teachers (roster — Stream A / SIS
+        // infrastructure, not Stream B staff-attendance). Confirm the staff-attendance
+        // RTDB read is gone by checking no `$fb->get(... Staff_Attendance ...)` pattern.
+        $hasFbGetStaffAtt = (bool) preg_match('/\$fb->get\s*\(\s*[^)]*Staff_Attendance/', $body);
+
+        echo "  probe block length:                    " . strlen($body) . " chars\n";
+        echo "  Staff_Attendance literal in probe:     " . ($hasStaffAttendanceLiteral ? 'yes (FAIL)' : 'no  (PASS)') . "\n";
+        echo "  \$fb->get(...Staff_Attendance...):      " . ($hasFbGetStaffAtt ? 'yes (FAIL)' : 'no  (PASS)') . "\n";
+        echo "  uses fs->schoolWhere('staffAttendance'):" . ($usesFsQuery ? ' yes' : ' no') . "\n";
+        echo "  filters by date == todayDate:           " . ($filtersByDate ? 'yes' : 'no') . "\n";
+        echo "  catches Firestore errors:               " . ($catchesFsErrors ? 'yes' : 'no') . "\n";
+
+        $ok = !$hasStaffAttendanceLiteral && !$hasFbGetStaffAtt && $usesFsQuery && $filtersByDate && $catchesFsErrors;
+        return ['pass' => $ok, 'msg' => $ok
+            ? "Today's Staff Coverage reads Firestore staffAttendance (F-SB-3); zero RTDB staff-attendance ops"
+            : 'probe Firestore-only contract violated'];
     }
 }

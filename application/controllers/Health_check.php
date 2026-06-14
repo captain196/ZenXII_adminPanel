@@ -1012,16 +1012,36 @@ class Health_check extends MY_Controller
             /* 7. Today's Staff Attendance */
             [
                 'name' => "Today's Staff Coverage",
-                'fn'   => function() use ($fb, $school, $session, $attKey, $todayDay) {
+                'fn'   => function() use ($fb, $school, $session, $todayDate) {
                     $teachers = $fb->get("Schools/{$school}/{$session}/Teachers");
                     if (!is_array($teachers) || empty($teachers)) return $this->_p('No staff in session');
-                    $staffAtt = $fb->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}");
+
+                    // R7: canonical source is Firestore staffAttendance (index
+                    // F-SB-3 covers schoolId + date). Replaces the legacy RTDB
+                    // probe that had been reading a frozen post-migration tree
+                    // — operators now see fresh data again.
+                    $markedByStaff = [];
+                    try {
+                        $todayDocs = $this->fs->schoolWhere('staffAttendance', [
+                            ['date', '==', $todayDate],
+                        ]);
+                        foreach ($todayDocs as $entry) {
+                            $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                            if (!is_array($d)) continue;
+                            $sid    = (string) ($d['staffId'] ?? '');
+                            $status = (string) ($d['status']  ?? 'V');
+                            if ($sid !== '' && $status !== 'V') $markedByStaff[$sid] = true;
+                        }
+                    } catch (\Throwable $e) {
+                        log_message('error', "Health_check Today's Staff Coverage Firestore query failed: " . $e->getMessage());
+                        return $this->_f('Cannot read staff attendance from Firestore');
+                    }
+
                     $total = 0; $marked = 0;
                     foreach ($teachers as $sid => $prof) {
                         if (!is_string($sid) || trim($sid) === '') continue;
                         $total++;
-                        $sAtt = isset($staffAtt[$sid]) && is_string($staffAtt[$sid]) ? $staffAtt[$sid] : '';
-                        if (strlen($sAtt) >= $todayDay && $sAtt[$todayDay - 1] !== 'V') $marked++;
+                        if (isset($markedByStaff[$sid])) $marked++;
                     }
                     $pct = $total > 0 ? round($marked / $total * 100) : 0;
                     $detail = "{$marked}/{$total} staff marked ({$pct}%)";

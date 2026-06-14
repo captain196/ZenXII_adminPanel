@@ -171,28 +171,10 @@ function update_student_att_summary(
     return $summary;
 }
 
-/**
- * Recompute + write staff attendance summary for a month.
- */
-function update_staff_att_summary(
-    $firebase, string $school, string $session,
-    string $staffId, string $attKey, int $monthNum, int $year
-): array {
-    $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
-
-    $attStr = $firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}");
-    $attStr = is_string($attStr) ? $attStr : '';
-
-    $summary = parse_attendance_string($attStr, $daysInMonth, false);
-    $summary['updated_at'] = date('c');
-
-    try {
-        $firebase->set("Schools/{$school}/{$session}/Staff_Attendance/Summary/{$staffId}/{$attKey}", $summary);
-    } catch (\Exception $e) {
-        log_message('error', 'update_staff_att_summary failed: ' . $e->getMessage());
-    }
-    return $summary;
-}
+// R5: update_staff_att_summary() removed — orphaned by R4 (approve_attendance_request
+// staff branches migrated to Firestore). The canonical staff-attendance summary store
+// is Firestore `staffAttendanceSummary` written by `_syncStaffSummaryToFirestore` /
+// `Staff_attendance_writer`. The retired helper wrote a stranded RTDB mirror.
 
 // ═══════════════════════════════════════════════════════════════════
 //  POLICY CONFIG
@@ -296,28 +278,9 @@ function get_absent_days($firebase, string $studentBase, string $school, string 
     return parse_attendance_string(is_string($attStr) ? $attStr : '', $dim)['absent'];
 }
 
-/**
- * Get staff attendance summary. Cache-first.
- */
-function get_staff_attendance_summary(
-    $firebase, string $school, string $session,
-    string $staffId, string $monthName, int $year
-): array {
-    $monthMap = [
-        'January'=>1,'February'=>2,'March'=>3,'April'=>4,'May'=>5,'June'=>6,
-        'July'=>7,'August'=>8,'September'=>9,'October'=>10,'November'=>11,'December'=>12,
-    ];
-    $num = $monthMap[$monthName] ?? 0;
-    if ($num === 0) return parse_attendance_string('', 30);
-
-    $attKey = "{$monthName} {$year}";
-    $cached = $firebase->get("Schools/{$school}/{$session}/Staff_Attendance/Summary/{$staffId}/{$attKey}");
-    if (is_array($cached) && isset($cached['present'])) return $cached;
-
-    $dim = cal_days_in_month(CAL_GREGORIAN, $num, $year);
-    $attStr = $firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}/{$staffId}");
-    return parse_attendance_string(is_string($attStr) ? $attStr : '', $dim);
-}
+// R5: get_staff_attendance_summary() removed — vestigial dead code (zero callers
+// since creation, audit-confirmed). Staff summaries are read directly from Firestore
+// `staffAttendanceSummary` by canonical workflows.
 
 // ═══════════════════════════════════════════════════════════════════
 //  COMPLETION CHECK (Task 5)
