@@ -9,6 +9,122 @@
       ]
     },
     {
+      "collectionGroup": "examTemplates",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "examId",    "order": "ASCENDING" },
+        { "fieldPath": "className", "order": "ASCENDING" },
+        { "fieldPath": "section",   "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "marks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "examId",    "order": "ASCENDING" },
+        { "fieldPath": "className", "order": "ASCENDING" },
+        { "fieldPath": "section",   "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "marks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "examId",    "order": "ASCENDING" },
+        { "fieldPath": "className", "order": "ASCENDING" },
+        { "fieldPath": "section",   "order": "ASCENDING" },
+        { "fieldPath": "subject",   "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "marks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "studentId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "results",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "examId",    "order": "ASCENDING" },
+        { "fieldPath": "className", "order": "ASCENDING" },
+        { "fieldPath": "section",   "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "results",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "examId",    "order": "ASCENDING" },
+        { "fieldPath": "className", "order": "ASCENDING" },
+        { "fieldPath": "section",   "order": "ASCENDING" },
+        { "fieldPath": "rank",      "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "results",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "examId",    "order": "ASCENDING" },
+        { "fieldPath": "studentId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "results",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "session",   "order": "ASCENDING" },
+        { "fieldPath": "studentId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "resultsStaging",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "examId",    "order": "ASCENDING" },
+        { "fieldPath": "className", "order": "ASCENDING" },
+        { "fieldPath": "section",   "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "marksAudit",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "examId",    "order": "ASCENDING" },
+        { "fieldPath": "studentId", "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "resultsAudit",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "examId",    "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "exams",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",  "order": "ASCENDING" },
+        { "fieldPath": "session",   "order": "ASCENDING" },
+        { "fieldPath": "status",    "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "ptmEvents",
       "queryScope": "COLLECTION",
       "fields": [
@@ -1320,6 +1436,76 @@
         { "fieldPath": "studentId",    "order": "ASCENDING"  },
         { "fieldPath": "status",       "order": "ASCENDING"  },
         { "fieldPath": "effectiveFrom","order": "DESCENDING" }
+      ]
+    },
+    { "_comment": "Staff/SSA Convergence Unit C.1 (2026-06-10): Superadmin_school_admins last-login lookup. security_events ADMIN_LOGIN_SUCCESS by adminId, newest first. Replaces the RTDB Users/Admin AccessHistory.SA_LastLogin read.",
+      "collectionGroup": "security_events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "event_type",     "order": "ASCENDING"  },
+        { "fieldPath": "detail.adminId", "order": "ASCENDING"  },
+        { "fieldPath": "ts",             "order": "DESCENDING" }
+      ]
+    },
+
+    { "_comment": "Stream B Phase I — F-SB-1 (HARD): per-staff attendance history reads. Used by Phase IV admin Last-30-days drawer + payroll-prep + audit. Without this composite Firestore returns FAILED_PRECONDITION on first cutover read.",
+      "collectionGroup": "staffAttendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING"  },
+        { "fieldPath": "staffId",  "order": "ASCENDING"  },
+        { "fieldPath": "date",     "order": "DESCENDING" }
+      ]
+    },
+    { "_comment": "Stream B Phase I — F-SB-2 (HARD): per-staff monthly summary timeline. Used by Phase IV salary-slip preview + Hr profile drawer. Without this composite Firestore returns FAILED_PRECONDITION.",
+      "collectionGroup": "staffAttendanceSummary",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING"  },
+        { "fieldPath": "staffId",  "order": "ASCENDING"  },
+        { "fieldPath": "month",    "order": "DESCENDING" }
+      ]
+    },
+    { "_comment": "Stream B Phase I — F-SB-3 (explicit): per-day all-staff fetch. Replaces RTDB whole-month read. Auto-resolves today but pinned for prod-stability + future filter expansion.",
+      "collectionGroup": "staffAttendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "date",     "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "Stream B Phase I — F-SB-4 (explicit): payroll per-month read across all staff. Already used by Hr.php:4451 + Hr.php:4784 schoolWhere. Pinned for prod stability.",
+      "collectionGroup": "staffAttendanceSummary",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "month",    "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "Stream B Phase I — F-SB-5 (explicit): absence/late filter analytics. Phase VIII reporting uses this. Auto-resolves today; explicit for analytics-readiness.",
+      "collectionGroup": "staffAttendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "date",     "order": "ASCENDING" },
+        { "fieldPath": "status",   "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "Stream B Phase I — F-SB-6 (Phase VIII analytics): date-range queries with status equality. Field order (schoolId, status, date) — status equality first, date as range. Resolves 'absences in May' / 'late this week' analytics queries that F-SB-5 cannot serve (range field must be last).",
+      "collectionGroup": "staffAttendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "status",   "order": "ASCENDING" },
+        { "fieldPath": "date",     "order": "ASCENDING" }
+      ]
+    },
+    { "_comment": "Stream B Phase I — F-SB-7 (Phase VI admin lock UI): list all month-locks for tenant ordered by month. Lock doc id = {schoolId}_{session}_{month} but admin UI lists across all sessions.",
+      "collectionGroup": "staffAttendanceLocks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING"  },
+        { "fieldPath": "month",    "order": "DESCENDING" }
       ]
     }
   ],

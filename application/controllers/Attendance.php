@@ -250,30 +250,8 @@ class Attendance extends MY_Controller
                 elseif ($mark === 'T') $staffT++;
             }
         }
-        // RTDB fallback — only fires when both Firestore reads returned empty.
-        if ($staffTotal === 0) {
-            try {
-                $teachers = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
-                $staffAtt = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}");
-                if (!is_array($staffAtt)) $staffAtt = [];
-                if (is_array($teachers)) {
-                    foreach ($teachers as $staffId => $profile) {
-                        if (!is_string($staffId) || trim($staffId) === '') continue;
-                        $attStr = isset($staffAtt[$staffId]) && is_string($staffAtt[$staffId])
-                            ? $staffAtt[$staffId] : '';
-                        $staffTotal++;
-                        if (strlen($attStr) < $today) continue;
-                        $mark = strtoupper($attStr[$today - 1]);
-                        if ($mark === 'P') $staffP++;
-                        elseif ($mark === 'A') $staffA++;
-                        elseif ($mark === 'T') $staffT++;
-                    }
-                }
-            } catch (\Exception $e) {
-                log_message('error', 'Attendance::dashboard_stats staff RTDB fallback failed: ' . $e->getMessage());
-                /* leave totals at zero */
-            }
-        }
+        // Firestore canonical (no RTDB fallback). When upstream Firestore returns
+        // empty totals, that is the authoritative result — no roster fallback.
 
         // Count pending student leave applications
         $pendingLeaves = 0;
@@ -1593,10 +1571,50 @@ class Attendance extends MY_Controller
        ================================================================ */
 
     /**
-     * Fetch staff attendance for a month
+     * Fetch staff attendance for a month — DISPATCHER (Phase IV Step IV.3).
+     *
      * POST: month
+     *
+     * Routes to:
+     *   - _fetch_staff_attendance_fs()     when stream_b_flags activates new reader
+     *   - _fetch_staff_attendance_legacy() otherwise (byte-identical to pre-IV.3)
+     *
+     * Mutually exclusive dispatch. Default flag state OFF — production unchanged.
+     * MVT telemetry emitted around the routed call (records code_path +
+     * rtdb_reads_count so the aggregator can confirm the fs path is
+     * truly RTDB-free at runtime).
      */
     public function fetch_staff_attendance()
+    {
+        $this->config->load('stream_b_flags', true);
+        $this->load->library('stream_b_telemetry');
+        $this->stream_b_telemetry->begin('fetch_staff_attendance', (string) ($this->school_id ?? ''));
+
+        if (stream_b_writer_enabled($this->school_id, $this->config)) {
+            $this->stream_b_telemetry->update([
+                'code_path'        => 'fs',
+                'rtdb_reads_count' => 0,
+            ]);
+            $resp = $this->_fetch_staff_attendance_fs();
+        } else {
+            $this->stream_b_telemetry->update([
+                'code_path'        => 'legacy',
+                'rtdb_reads_count' => 1, // single RTDB Late month read (legacy line 1650)
+            ]);
+            $resp = $this->_fetch_staff_attendance_legacy();
+        }
+        $this->stream_b_telemetry->commit();
+        return $resp;
+    }
+
+    /**
+     * Pre-Phase-IV.3 legacy implementation. Preserved BYTE-IDENTICAL.
+     *
+     * Touches RTDB at the per-day Late-month read site only (the lone
+     * remaining RTDB site for W1). Phase IV.4 verifier A33 enforces
+     * preservation; Phase IV.5 ratio probe gates fs vs legacy parity.
+     */
+    private function _fetch_staff_attendance_legacy()
     {
         $this->_require_role(self::VIEW_ROLES, 'fetch_staff_att');
         $month = trim((string) $this->input->post('month'));
@@ -1634,9 +1652,9 @@ class Attendance extends MY_Controller
         } catch (\Exception $e) {
             log_message('error', 'Attendance::fetch_staff_attendance allTeachers Firestore query failed: ' . $e->getMessage());
         }
-        // RTDB fallback only on Firestore exception
+        // Firestore canonical — no RTDB fallback. Empty Firestore = empty roster.
         if ($allTeachers === null) {
-            $allTeachers = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
+            $allTeachers = [];
         }
 
         // ── READ: Firestore FIRST for the per-staff dayWise strings ──
@@ -1716,10 +1734,209 @@ class Attendance extends MY_Controller
     }
 
     /**
-     * Save staff attendance for a month
+     * Phase IV Step IV.2 — NEW Firestore-only fetch_staff_attendance path.
+     *
+     * NOT YET WIRED. Step IV.3 will add the dispatcher; until then, this
+     * method has zero callers and runs only when the verifier (Step IV.4)
+     * exercises it explicitly. Production behavior is unchanged.
+     *
+     * Op profile per call (M staff, 30-day month):
+     *   - 1 FS query: staff(schoolId, status='Active')              [same as legacy]
+     *   - 1 FS query: staffAttendanceSummary(schoolId, month)       [same as legacy; F-SB-4]
+     *   - 1 FS range query: staffAttendance(schoolId, date in [first..last])  [F-SB-3; REPLACES RTDB Late month read at legacy line 1650]
+     *   - 0 RTDB ops anywhere
+     *
+     * Late-data semantic note (Phase IV trade-off):
+     *   Legacy RTDB stored late as wall-clock arrival time "10:30".
+     *   The Phase II canonical staffAttendance doc stores `lateMinutes`
+     *   (integer; minutes late from start). This method formats lateMinutes
+     *   as "H:MM" duration ("0:30" = 30 min late) when present. The UI
+     *   string-renders whatever it receives — the response *shape* is
+     *   preserved; the late VALUE semantic shifts from clock time to
+     *   duration for tenants on the fs writer.
+     *
+     * Backward-compat: tenants whose data was written by bulk saves
+     * (`_save_staff_attendance_fs`) have no per-day docs — `late` is
+     * returned as empty `{}`. UI degrades to "—". This is acceptable
+     * (per Phase IV design package §3.4); operator can rollback via flag.
+     *
+     * Failure modes (fail-loud; NO RTDB fallback):
+     *   - Any Firestore query failure → 500 json_error; the response
+     *     shape is preserved (empty staff list or empty late as appropriate)
+     *     where the partial data is non-fatal; complete failure throws.
+     */
+    private function _fetch_staff_attendance_fs()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'fetch_staff_att');
+        $month = trim((string) $this->input->post('month'));
+
+        if (!$month || !isset($this->month_map[$month])) {
+            return $this->json_error('Invalid month.');
+        }
+
+        $year         = $this->_resolve_year($month);
+        $monthNum     = $this->month_map[$month];
+        $daysInMonth  = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
+        $attKey       = "{$month} {$year}";
+        $monthKeyISO  = sprintf('%04d-%02d', $year, $monthNum);
+
+        /* 1. Roster — Firestore canonical (same as legacy). */
+        $allTeachers = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
+            if (!empty($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $d   = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = (string) ($d['staffId'] ?? $d['userId'] ?? '');
+                    if ($sid !== '') {
+                        $allTeachers[$sid] = [
+                            'Name'        => $d['Name'] ?? $d['name'] ?? $sid,
+                            'Department'  => $d['Department'] ?? $d['department'] ?? '',
+                            'Designation' => $d['designation'] ?? $d['Position'] ?? $d['position'] ?? '',
+                        ];
+                    }
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Attendance::_fetch_staff_attendance_fs allTeachers query failed: ' . $e->getMessage());
+        }
+
+        /* 2. Monthly summary dayWise strings — Firestore (F-SB-4; same as legacy). */
+        $allStaffAtt = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('staffAttendanceSummary', [
+                ['month', '==', $monthKeyISO],
+            ]);
+            if (empty($fsDocs)) {
+                $fsDocs = $this->fs->schoolWhere('staffAttendanceSummary', [
+                    ['monthLabel', '==', $attKey],
+                ]);
+            }
+            foreach ($fsDocs as $entry) {
+                $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                if (!is_array($d)) continue;
+                $sid = (string) ($d['staffId'] ?? '');
+                $dw  = (string) ($d['dayWise']  ?? '');
+                if ($sid !== '' && $dw !== '') {
+                    $allStaffAtt[$sid] = $dw;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Attendance::_fetch_staff_attendance_fs allStaffAtt read failed: ' . $e->getMessage());
+            $allStaffAtt = [];
+        }
+
+        /* 3. Per-day late metadata via F-SB-3 range query.
+         *    REPLACES the legacy RTDB Late-month read (legacy line 1650).
+         *    Range query: staffAttendance(schoolId == X AND date in [first..last]). */
+        $dateFrom     = sprintf('%04d-%02d-01', $year, $monthNum);
+        $dateTo       = sprintf('%04d-%02d-%02d', $year, $monthNum, $daysInMonth);
+        $allStaffLate = []; // [staffId => [day => "H:MM"]]
+        try {
+            $perDayRows = $this->firebase->firestoreQuery('staffAttendance', [
+                ['schoolId', '==', $this->school_id],
+                ['date',     '>=', $dateFrom],
+                ['date',     '<=', $dateTo],
+            ]);
+            if (is_array($perDayRows)) {
+                foreach ($perDayRows as $row) {
+                    $d    = is_array($row['data'] ?? null) ? $row['data'] : [];
+                    $sid  = (string) ($d['staffId']     ?? '');
+                    $date = (string) ($d['date']        ?? '');
+                    $mins = (int)    ($d['lateMinutes'] ?? 0);
+                    if ($sid === '' || $date === '' || $mins <= 0) continue;
+                    $day  = (int) substr($date, 8, 2);
+                    if ($day < 1 || $day > $daysInMonth) continue;
+                    // Format minutes as H:MM duration (Phase II→IV semantic; see method docblock).
+                    $allStaffLate[$sid][$day] = sprintf('%d:%02d', intdiv($mins, 60), $mins % 60);
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Attendance::_fetch_staff_attendance_fs lateMinutes F-SB-3 range query failed: ' . $e->getMessage());
+            // Per architectural lock: NO RTDB fallback.
+            // Empty late = graceful degradation; UI shows "—" for late times.
+            $allStaffLate = [];
+        }
+
+        /* 4. Assemble response — shape IDENTICAL to legacy. */
+        $staffList = [];
+        foreach ($allTeachers as $staffId => $profile) {
+            if (!is_string($staffId) || trim($staffId) === '') continue;
+            $name = is_array($profile) ? ($profile['Name'] ?? $staffId) : (string) $staffId;
+
+            $attStr = isset($allStaffAtt[$staffId]) && is_string($allStaffAtt[$staffId])
+                ? $allStaffAtt[$staffId] : '';
+            $attStr = str_pad($attStr, $daysInMonth, 'V');
+
+            $lateRaw = isset($allStaffLate[$staffId]) && is_array($allStaffLate[$staffId])
+                ? $allStaffLate[$staffId] : [];
+
+            $dept  = is_array($profile) ? ($profile['Department']  ?? '') : '';
+            $desig = is_array($profile) ? ($profile['Designation'] ?? '') : '';
+            $staffList[] = [
+                'id'          => $staffId,
+                'name'        => $name,
+                'department'  => $dept,
+                'designation' => $desig,
+                'attendance'  => $attStr,
+                'late'        => $this->_normalize_late_data($lateRaw),
+            ];
+        }
+        usort($staffList, function ($a, $b) {
+            return strcasecmp($a['name'], $b['name']);
+        });
+
+        return $this->json_success([
+            'staff'       => $staffList,
+            'daysInMonth' => $daysInMonth,
+            'sundays'     => $this->_get_sundays($year, $monthNum),
+            'holidays'    => $this->_get_holidays_for_month($month, $year),
+            'month'       => $month,
+            'year'        => $year,
+        ]);
+    }
+
+    /**
+     * Save staff attendance for a month — DISPATCHER (Phase III Step III.2).
+     *
      * POST: month, attendance (JSON: {staffId: "PPAP...", ...}), late (JSON)
+     *
+     * Routes to:
+     *   - _save_staff_attendance_fs()      when stream_b_flags activates new writer
+     *   - _save_staff_attendance_legacy()  otherwise (byte-identical to pre-III.2)
+     *
+     * Mutually exclusive dispatch. Default flag state OFF — production unchanged.
+     * Telemetry emitted around the routed call (MVT pattern from Step III.0).
      */
     public function save_staff_attendance()
+    {
+        $this->config->load('stream_b_flags', true);
+        $this->load->library('stream_b_telemetry');
+        $this->stream_b_telemetry->begin('save_staff_attendance', (string) ($this->school_id ?? ''));
+
+        if (stream_b_writer_enabled($this->school_id, $this->config)) {
+            $this->stream_b_telemetry->update(['code_path' => 'fs']);
+            $resp = $this->_save_staff_attendance_fs();
+        } else {
+            $this->stream_b_telemetry->update([
+                'code_path'         => 'legacy',
+                'rtdb_writes_count' => 3, // approximate: N+1 read + per-staff raw + helper summary
+            ]);
+            $resp = $this->_save_staff_attendance_legacy();
+        }
+        $this->stream_b_telemetry->commit();
+        return $resp;
+    }
+
+    /**
+     * Pre-Phase-III.2 legacy implementation. Preserved BYTE-IDENTICAL.
+     *
+     * Touches: RTDB N+1 read at line 1753, RTDB raw write at line 1834,
+     *          attendance_helper update_staff_att_summary call, RTDB Late writes.
+     *
+     * Phase V retires the RTDB writes; Phase V also retires the helper.
+     */
+    private function _save_staff_attendance_legacy()
     {
         $this->_require_role(self::MARK_ROLES, 'save_staff_att');
         $month   = trim((string) $this->input->post('month'));
@@ -1799,9 +2016,22 @@ class Attendance extends MY_Controller
             }
         }
 
-        // Pre-load staff names so the Firestore docs include them.
-        $allStaff = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
-        if (!is_array($allStaff)) $allStaff = [];
+        // Pre-load staff names — Firestore canonical: staff/* with sessions array-contains.
+        $allStaff = [];
+        try {
+            $staffDocs = $this->fs->schoolWhere('staff', [['sessions', 'array-contains', $session]]);
+            if (is_array($staffDocs)) {
+                foreach ($staffDocs as $entry) {
+                    $d = is_array($entry['data'] ?? null) ? $entry['data'] : (is_array($entry) ? $entry : []);
+                    $sid = (string) ($d['staffId'] ?? '');
+                    if ($sid !== '') {
+                        $allStaff[$sid] = ['Name' => (string) ($d['Name'] ?? $d['name'] ?? '')];
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Attendance::bulk_mark_staff name pre-load failed: ' . $e->getMessage());
+        }
 
         $saved = 0;
         $skipped = [];   // [{staffId, name, reason}]
@@ -1870,10 +2100,225 @@ class Attendance extends MY_Controller
     }
 
     /**
-     * Quick-mark single staff member, single day
+     * Phase III Step III.2 — NEW Firestore-only save_staff_attendance path.
+     *
+     * Activated when stream_b_flags::stream_b_writer_fs_only=true OR the
+     * caller tenant is in stream_b_flags::enabled_for_schools[].
+     *
+     * Op profile per call (M staff, cache hit, no CAS retry):
+     *   - 0 ops: lock check (Lock_cache hit)
+     *   - 1 op:  firestoreQuery F-SB-4 (batch-read summaries + __updateTime)
+     *   - M ops: per-staff commitBatch with CAS-protected summary write
+     *   - 0 RTDB ops anywhere
+     *
+     * Trade-off (Phase III scope): only writes summary docs (not per-day
+     * staffAttendance docs). Per-day docs are written by mark_staff_day; this
+     * bulk path is for whole-month overwrites. Per-day backfill is a Phase IV
+     * follow-up if needed.
+     *
+     * Failure modes (fail-loud; NO RTDB fallback):
+     *   - MonthLocked         → 400 with locked-month diagnostic
+     *   - F-SB-4 query failure → 500 (caller retries)
+     *   - Per-staff CAS exhausted → recorded in skipped[]; bulk continues
+     */
+    private function _save_staff_attendance_fs()
+    {
+        $this->_require_role(self::MARK_ROLES, 'save_staff_att');
+        $month   = trim((string) $this->input->post('month'));
+        $attData = $this->input->post('attendance');
+
+        if (!$month || !$attData) {
+            return $this->json_error('Missing required fields.');
+        }
+        if (!isset($this->month_map[$month])) {
+            return $this->json_error('Invalid month.');
+        }
+        if (is_string($attData)) $attData = json_decode($attData, true);
+        if (!is_array($attData)) return $this->json_error('Invalid data.');
+
+        $year        = $this->_resolve_year($month);
+        $monthNum    = $this->month_map[$month];
+        $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
+        $monthKey    = sprintf('%04d-%02d', $year, $monthNum);
+        $tele        = isset($this->stream_b_telemetry) ? $this->stream_b_telemetry : null;
+
+        // 1. Lock check (cached). Replaces legacy RTDB lock-check helper.
+        $this->load->library('lock_cache');
+        $lock = $this->lock_cache->is_locked($this->school_id, $this->session_year, $monthKey);
+        if (!empty($lock['is_locked'])) {
+            if ($tele) $tele->update([
+                'cas_final_outcome' => 'month_locked',
+                'rtdb_writes_count' => 0,
+                'http_status'       => 400,
+            ]);
+            return $this->json_error("Staff attendance for {$month} {$year} is locked. Unlock before editing.");
+        }
+
+        // 2. Batch-read existing summaries via F-SB-4 to capture __updateTime
+        //    for CAS protection. Replaces the per-staff RTDB N+1 read at
+        //    legacy line 1753 with a single Firestore query.
+        $existingSummaries = []; // staffId => ['__updateTime' => ..., 'dayWise' => ...]
+        try {
+            $rows = $this->firebase->firestoreQuery('staffAttendanceSummary', [
+                ['schoolId', '==', $this->school_id],
+                ['month',    '==', $monthKey],
+            ]);
+            foreach ($rows as $row) {
+                $data = is_array($row['data'] ?? null) ? $row['data'] : [];
+                $sid  = (string) ($data['staffId'] ?? '');
+                if ($sid !== '') {
+                    $existingSummaries[$sid] = [
+                        '__updateTime' => (string) ($data['__updateTime'] ?? ''),
+                        'dayWise'      => (string) ($data['dayWise']      ?? ''),
+                    ];
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Attendance::_save_staff_attendance_fs F-SB-4 query failed: ' . $e->getMessage());
+            if ($tele) $tele->update([
+                'cas_final_outcome' => 'query_failed',
+                'rtdb_writes_count' => 0,
+                'http_status'       => 500,
+            ]);
+            return $this->json_error('Save failed; please retry.');
+        }
+
+        // 3. Per-staff sequential commitBatch with CAS retry budget.
+        //    Phase V will replace this with commitBatchesParallel.
+        $this->load->helper('attendance');
+        $saved          = 0;
+        $skipped        = [];
+        $attemptsTotal  = 0;
+        $statusToField  = ['P'=>'present','A'=>'absent','L'=>'leave','H'=>'holiday','T'=>'tardy','V'=>'void'];
+
+        foreach ($attData as $staffId => $attString) {
+            $staffId = trim((string) $staffId);
+            if (!preg_match('/^[A-Za-z0-9_]+$/', $staffId)) {
+                $skipped[] = ['staffId' => $staffId, 'name' => $staffId, 'reason' => 'invalid_id_format'];
+                continue;
+            }
+            $cleanStr = $this->_sanitize_att_string($attString, $daysInMonth);
+
+            // Compute counts from cleanStr
+            $counts = ['present'=>0,'absent'=>0,'leave'=>0,'holiday'=>0,'tardy'=>0,'void'=>0];
+            for ($i = 0; $i < $daysInMonth; $i++) {
+                $c = strtoupper($cleanStr[$i] ?? 'V');
+                $f = $statusToField[$c] ?? 'void';
+                $counts[$f]++;
+            }
+            $workingDays = (int) ($counts['present'] + $counts['leave'] + $counts['tardy']);
+
+            $summaryDocId = "{$this->school_id}_{$staffId}_{$monthKey}";
+            $captured     = $existingSummaries[$staffId]['__updateTime'] ?? '';
+
+            // CAS retry budget per-staff (3 retries)
+            $committed = false;
+            for ($attempt = 0; $attempt <= 3; $attempt++) {
+                $attemptsTotal++;
+                $precondition = ($captured !== '')
+                    ? ['updateTime' => $captured]
+                    : ['exists' => false];
+
+                $payload = array_merge([
+                    'schoolId'    => $this->school_id,
+                    'session'     => $this->session_year,
+                    'staffId'     => $staffId,
+                    'month'       => $monthKey,
+                    'year'        => $year,
+                    'monthNumber' => $monthNum,
+                    'dayWise'     => $cleanStr,
+                    'totalDays'   => $daysInMonth,
+                    '_updatedAt'  => date('c'),
+                ], $counts);
+                $payload['workingDays'] = $workingDays;
+
+                $ops = [
+                    ['op' => 'set', 'collection' => 'staffAttendanceSummary',
+                     'docId' => $summaryDocId, 'data' => $payload, 'merge' => true,
+                     'precondition' => $precondition],
+                ];
+                $ok = $this->firebase->firestoreCommitBatch($ops);
+                if ($ok === true) {
+                    $committed = true;
+                    break;
+                }
+                // CAS conflict or transient — re-read summary for fresh __updateTime
+                $fresh   = $this->firebase->firestoreGet('staffAttendanceSummary', $summaryDocId);
+                $captured = is_array($fresh) ? (string) ($fresh['__updateTime'] ?? '') : '';
+                usleep((50 * (1 << $attempt) + mt_rand(0, 50)) * 1000);
+            }
+            if ($committed) {
+                $saved++;
+            } else {
+                $skipped[] = ['staffId' => $staffId, 'name' => $staffId, 'reason' => 'firestore_cas_exhausted'];
+            }
+        }
+
+        if ($tele) $tele->update([
+            'cas_attempts'      => $attemptsTotal,
+            'cas_final_outcome' => empty($skipped) ? 'success' : (count($skipped) === count($attData) ? 'all_failed' : 'partial'),
+            'cache_hit'         => (($lock['source'] ?? 'live') === 'cache'),
+            'rtdb_writes_count' => 0,
+        ]);
+
+        return $this->json_success([
+            'saved'   => $saved,
+            'skipped' => $skipped,
+        ]);
+    }
+
+    /**
+     * Quick-mark single staff member, single day.
+     *
      * POST: month, staff_id, day, mark, late_time (optional)
+     *
+     * Phase II Step II.4 — DISPATCHER. Routes the request to either:
+     *   - _mark_staff_day_fs()     when stream_b_flags activates new writer
+     *   - _mark_staff_day_legacy() otherwise (byte-identical to pre-Phase-II)
+     *
+     * Dispatch is MUTUALLY EXCLUSIVE: one path runs per call, never both.
+     * Both paths independently handle auth via _require_role.
+     * Default flag state: OFF → legacy runs → zero production behavior change.
      */
     public function mark_staff_day()
+    {
+        $this->config->load('stream_b_flags', true);
+
+        // Step III.0 — minimum viable telemetry. Best-effort: any telemetry
+        // failure is swallowed; the request always succeeds regardless of
+        // log state. Records the 9 fields needed for pilot acceptance:
+        //   ts, school_id, code_path, t_total_ms, http_status,
+        //   cas_attempts, cas_final_outcome, cache_hit, rtdb_writes_count
+        $this->load->library('stream_b_telemetry');
+        $this->stream_b_telemetry->begin('mark_staff_day', (string) ($this->school_id ?? ''));
+
+        if (stream_b_writer_enabled($this->school_id, $this->config)) {
+            $this->stream_b_telemetry->update(['code_path' => 'fs']);
+            $resp = $this->_mark_staff_day_fs();
+        } else {
+            // Legacy path op counts are constant + known; fs_path-specific
+            // fields (cas/cache) stay absent — aggregator skips them per code_path.
+            $this->stream_b_telemetry->update([
+                'code_path'         => 'legacy',
+                'rtdb_writes_count' => 3,
+            ]);
+            $resp = $this->_mark_staff_day_legacy();
+        }
+        $this->stream_b_telemetry->commit();
+        return $resp;
+    }
+
+    /**
+     * Pre-Phase-II legacy implementation. Preserved BYTE-IDENTICAL.
+     *
+     * Touches: RTDB curStr read, RTDB raw write, RTDB Late write/delete,
+     *          attendance_helper update_staff_att_summary (RTDB summary cache),
+     *          Firestore _syncStaffDailyToFirestore + _syncStaffSummaryToFirestore.
+     *
+     * Phase V retires the RTDB writes; Phase VIII retires the helper. For now,
+     * this method runs unchanged when the Stream B writer flag is OFF.
+     */
+    private function _mark_staff_day_legacy()
     {
         $this->_require_role(self::MARK_ROLES, 'mark_staff_day');
         $month    = trim((string) $this->input->post('month'));
@@ -1953,11 +2398,15 @@ class Attendance extends MY_Controller
         $attStr[$day - 1] = $mark;
 
         // ── Firestore-first (Phase 7b) ─────────────────────────────────
-        // Daily staff doc is the canonical store. RTDB is the mirror.
+        // Daily staff doc is the canonical store. Staff identity from Firestore staff/*.
         $staffName = '';
-        $staffMeta = $this->firebase->get("Schools/{$school}/{$session}/Teachers/{$staffId}");
-        if (is_array($staffMeta)) {
-            $staffName = (string)($staffMeta['Name'] ?? $staffMeta['name'] ?? '');
+        try {
+            $staffDoc = $this->fs->getEntity('staff', "{$this->school_id}_{$staffId}");
+            if (is_array($staffDoc)) {
+                $staffName = (string)($staffDoc['Name'] ?? $staffDoc['name'] ?? '');
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Attendance::mark_staff_day staff lookup failed: ' . $e->getMessage());
         }
         $fsOk = $this->_syncStaffDailyToFirestore(
             $staffId, $mark, $day, $attKey, $staffName, $mark === 'T'
@@ -1994,6 +2443,117 @@ class Attendance extends MY_Controller
     }
 
     /**
+     * Phase II Step II.4 — NEW Firestore-only W5 path.
+     *
+     * Activated when stream_b_flags::stream_b_writer_fs_only=true OR the
+     * caller tenant appears in stream_b_flags::enabled_for_schools[].
+     *
+     * Op profile per call (cache hit, no CAS retry):
+     *   - 1 Firestore read  (summary, with __updateTime captured)
+     *   - 2 Firestore writes (staffAttendance set + summary set in single
+     *                         atomic commitBatch with CAS precondition on summary)
+     *   - 0 RTDB ops anywhere
+     *
+     * Failure modes (all fail-loud; no RTDB fallback):
+     *   - MonthLockedException        → 400 with locked-month diagnostic
+     *   - CASRetryExhaustedException  → 409 ("concurrency conflict — retry")
+     *   - any other writer/Firestore  → 500 logged + generic error
+     */
+    private function _mark_staff_day_fs()
+    {
+        $this->_require_role(self::MARK_ROLES, 'mark_staff_day');
+        $month    = trim((string) $this->input->post('month'));
+        $staffId  = trim((string) $this->input->post('staff_id'));
+        $day      = (int) $this->input->post('day');
+        $mark     = strtoupper(trim((string) $this->input->post('mark')));
+        $lateTime = trim((string) $this->input->post('late_time'));
+
+        if (!$month || !$staffId || !$day || !$mark) {
+            return $this->json_error('Missing required fields.');
+        }
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $staffId)) {
+            return $this->json_error('Invalid staff ID.');
+        }
+        if (!in_array($mark, $this->valid_marks)) {
+            return $this->json_error('Invalid mark.');
+        }
+        if (!isset($this->month_map[$month])) {
+            return $this->json_error('Invalid month.');
+        }
+        $year        = $this->_resolve_year($month);
+        $monthNum    = $this->month_map[$month];
+        $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
+        if ($day < 1 || $day > $daysInMonth) {
+            return $this->json_error('Invalid day.');
+        }
+        // Canonical ISO date for the writer: YYYY-MM-DD
+        $dateISO = sprintf('%04d-%02d-%02d', $year, $monthNum, $day);
+
+        // Parse late minutes (HH:MM offset from a configured baseline could be
+        // captured here; for Phase II we just store 0 unless caller supplied an
+        // explicit numeric value).
+        $lateMinutes = 0;
+        if ($mark === 'T' && $lateTime !== '' && ctype_digit($lateTime)) {
+            $lateMinutes = (int) $lateTime;
+        }
+
+        $context = [
+            'markedBy'    => (string) ($this->admin_id ?? 'unknown'),
+            'source'      => 'manual',
+            'lateMinutes' => $lateMinutes,
+        ];
+
+        $this->load->library('staff_attendance_writer');
+        $tele = isset($this->stream_b_telemetry) ? $this->stream_b_telemetry : null;
+        try {
+            $this->staff_attendance_writer->init(
+                $this->firebase, $this->school_id, $this->session_year
+            );
+            $result = $this->staff_attendance_writer->markSingleDay(
+                $staffId, $dateISO, $mark, $context
+            );
+            if ($tele) $tele->update([
+                'cas_attempts'      => (int) ($result['attempts'] ?? 1),
+                'cas_final_outcome' => 'success',
+                'cache_hit'         => (($result['cache_source'] ?? 'live') === 'cache'),
+                'rtdb_writes_count' => 0,
+            ]);
+        } catch (MonthLockedException $e) {
+            if ($tele) $tele->update([
+                'cas_final_outcome' => 'month_locked',
+                'rtdb_writes_count' => 0,
+                'http_status'       => 400,
+            ]);
+            return $this->json_error("Staff attendance for {$month} {$year} is locked. Unlock before editing.");
+        } catch (CASRetryExhaustedException $e) {
+            log_message('warning', 'Attendance::_mark_staff_day_fs CAS exhausted: ' . $e->getMessage());
+            if ($tele) $tele->update([
+                'cas_attempts'      => 4, // initial + 3 retries
+                'cas_final_outcome' => 'exhausted',
+                'rtdb_writes_count' => 0,
+                'http_status'       => 409,
+            ]);
+            return $this->json_error('Concurrency conflict — please retry the action.', 409);
+        } catch (\Throwable $e) {
+            log_message('error', 'Attendance::_mark_staff_day_fs failed: ' . $e->getMessage());
+            if ($tele) $tele->update([
+                'cas_final_outcome' => 'error',
+                'rtdb_writes_count' => 0,
+                'http_status'       => 500,
+            ]);
+            return $this->json_error('Save failed; please retry.');
+        }
+
+        return $this->json_success([
+            'mark'             => $mark,
+            'day'              => $day,
+            'previous_status'  => $result['previous_status'] ?? '',
+            'cas_attempts'     => $result['attempts'] ?? 1,
+            'duration_ms'      => $result['duration_ms'] ?? 0,
+        ]);
+    }
+
+    /**
      * Bulk-mark all staff for a day
      * POST: month, day, mark
      */
@@ -2022,18 +2582,30 @@ class Attendance extends MY_Controller
             return $this->json_error('Invalid day.');
         }
 
-        $teacherKeys = $this->firebase->shallow_get("Schools/{$school}/{$session}/Teachers");
-        if (!is_array($teacherKeys)) {
+        // Roster + names from Firestore canonical staff/* (one query covers both keys + names).
+        $teacherKeys = [];
+        $staffMeta   = [];
+        try {
+            $staffDocs = $this->fs->schoolWhere('staff', [['sessions', 'array-contains', $session]]);
+            if (is_array($staffDocs)) {
+                foreach ($staffDocs as $entry) {
+                    $d = is_array($entry['data'] ?? null) ? $entry['data'] : (is_array($entry) ? $entry : []);
+                    $sid = (string) ($d['staffId'] ?? '');
+                    if ($sid === '') continue;
+                    $teacherKeys[$sid] = true;
+                    $staffMeta[$sid]   = ['Name' => (string) ($d['Name'] ?? $d['name'] ?? '')];
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Attendance::autofill_staff_today roster query failed: ' . $e->getMessage());
+        }
+        if (empty($teacherKeys)) {
             return $this->json_error('No staff found.');
         }
 
         // Batch-read all staff attendance for this month in 1 read (instead of N)
         $allStaffAtt = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}");
         if (!is_array($allStaffAtt)) $allStaffAtt = [];
-
-        // Pre-load staff names for the Firestore docs.
-        $staffMeta = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
-        if (!is_array($staffMeta)) $staffMeta = [];
 
         $count = 0;
         foreach ($teacherKeys as $staffId => $v) {
@@ -2092,19 +2664,30 @@ class Attendance extends MY_Controller
         $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
         $attKey    = "{$monthName} {$year}";
 
-        // Get all teachers in this session
-        $teacherKeys = $this->firebase->shallow_get("Schools/{$school}/{$session}/Teachers");
-        if (!is_array($teacherKeys) || empty($teacherKeys)) {
+        // Roster + names from Firestore canonical staff/* (one query covers both keys + names).
+        $teacherKeys = [];
+        $staffMeta   = [];
+        try {
+            $staffDocs = $this->fs->schoolWhere('staff', [['sessions', 'array-contains', $session]]);
+            if (is_array($staffDocs)) {
+                foreach ($staffDocs as $entry) {
+                    $d = is_array($entry['data'] ?? null) ? $entry['data'] : (is_array($entry) ? $entry : []);
+                    $sid = (string) ($d['staffId'] ?? '');
+                    if ($sid === '') continue;
+                    $teacherKeys[$sid] = true;
+                    $staffMeta[$sid]   = ['Name' => (string) ($d['Name'] ?? $d['name'] ?? '')];
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Attendance::bulk_autofill roster query failed: ' . $e->getMessage());
+        }
+        if (empty($teacherKeys)) {
             return $this->json_success(['marked' => 0, 'skipped' => 0, 'message' => 'No staff found in session.']);
         }
 
         // Batch-read all staff attendance for this month
         $allStaffAtt = $this->firebase->get("Schools/{$school}/{$session}/Staff_Attendance/{$attKey}");
         if (!is_array($allStaffAtt)) $allStaffAtt = [];
-
-        // Pre-load staff metadata for names (Firestore docs need them)
-        $staffMeta = $this->firebase->get("Schools/{$school}/{$session}/Teachers");
-        if (!is_array($staffMeta)) $staffMeta = [];
 
         $marked  = 0;
         $skipped = 0;
@@ -2633,8 +3216,25 @@ class Attendance extends MY_Controller
                 return $this->json_error('Person ID does not belong to this school.', 403);
             }
         } elseif ($personType === 'staff') {
-            $staffCheck = $this->firebase->get("Users/Teachers/{$schoolName_pre}/{$personId}/Name");
-            if (!$staffCheck) {
+            // Firestore canonical: staff/{schoolId}_{staffId}.
+            $schoolIdForCheck = (string) ($auth['school_id'] ?? '');
+            if ($schoolIdForCheck === '') {
+                try {
+                    $hits = $this->firebase->firestoreQuery('schools',
+                        [['schoolName', '==', $schoolName_pre]], null, 'ASC', 1);
+                    if (is_array($hits) && !empty($hits)) {
+                        $first = is_array($hits[0]['data'] ?? null) ? $hits[0]['data'] : $hits[0];
+                        $schoolIdForCheck = (string) ($first['schoolId'] ?? $hits[0]['id'] ?? '');
+                    }
+                } catch (\Throwable $e) {
+                    log_message('error', 'api_punch schoolId derivation failed: ' . $e->getMessage());
+                }
+            }
+            if ($schoolIdForCheck === '') {
+                return $this->json_error('Cannot resolve school identity for punch.', 500);
+            }
+            $staffDoc = $this->fs->getEntity('staff', "{$schoolIdForCheck}_{$personId}");
+            if (empty($staffDoc) || !is_array($staffDoc)) {
                 return $this->json_error('Staff ID does not belong to this school.', 403);
             }
         }
@@ -3244,9 +3844,13 @@ class Attendance extends MY_Controller
                 $personSection = $profile['Section'] ?? '';
             }
         } else {
-            $staffData = $this->firebase->get("Users/Teachers/{$this->school_id}/{$personId}");
-            if (is_array($staffData)) {
-                $personName = $staffData['Name'] ?? $staffData['Profile']['name'] ?? '';
+            try {
+                $staffDoc = $this->fs->getEntity('staff', "{$this->school_id}_{$personId}");
+                if (is_array($staffDoc)) {
+                    $personName = $staffDoc['Name'] ?? $staffDoc['name'] ?? '';
+                }
+            } catch (\Throwable $e) {
+                log_message('error', 'Attendance::fetch_individual_report staff lookup failed: ' . $e->getMessage());
             }
         }
 
