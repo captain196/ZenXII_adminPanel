@@ -1516,6 +1516,15 @@
         { "fieldPath": "schoolId", "order": "ASCENDING"  },
         { "fieldPath": "month",    "order": "DESCENDING" }
       ]
+    },
+    { "_comment": "COMM-DEVICE Package 3A — P0.6 (2026-06-15): Device_management admin device-list view query: where schoolId AND where status ORDER BY lastActive DESC.",
+      "collectionGroup": "userDevices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId",   "order": "ASCENDING"  },
+        { "fieldPath": "status",     "order": "ASCENDING"  },
+        { "fieldPath": "lastActive", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

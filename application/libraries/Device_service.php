@@ -2,34 +2,45 @@
 defined('BASEPATH') or exit('No direct script access allowed');
 
 /**
- * Device_service — Mobile device management via Firebase RTDB.
+ * Device_service — Mobile device registry on Firestore canonical.
  *
- * Replaces Node.js Auth API device binding endpoints.
- * Stores device info at: Users/Devices/{userId}/{deviceId}/
+ * Stores device info at: userDevices/{userId}_{safeDeviceId}
  *
- * Each device record:
+ * Each canonical record:
+ *   schoolId    : Tenant id (SCH_XXXXXXXXXX)
+ *   userId      : Login user id (STA0001 / STU0001 / SSA0001 / …)
+ *   deviceId    : Original (unsanitized) device id from the mobile app
+ *   fcmToken    : Firebase Cloud Messaging registration token (may be empty
+ *                 when device registered before FCM enrollment completed)
  *   platform    : "android" | "ios" | "web"
- *   deviceName  : Human-readable name (e.g. "Samsung Galaxy S23")
- *   appVersion  : App version string
- *   os          : OS version string
- *   boundAt     : ISO 8601 timestamp
- *   lastActive  : ISO 8601 timestamp
  *   status      : "active" | "blocked"
- *   fcmToken    : Firebase Cloud Messaging token (optional)
+ *   appRole     : "teacher" | "parent" | "admin"
+ *   lastActive  : ISO 8601 timestamp of last token refresh / heartbeat
+ *
+ * Optional fields preserved when present:
+ *   deviceName, appVersion, os, boundAt, blockedAt, staleAt
+ *
+ * Tenant context is required for every operation — see init() + _schoolId().
+ *
+ * Package 3A P2 (2026-06-15): legacy RTDB device subtree retired;
+ * Firestore is the sole source of truth. All 8 prior RTDB API calls
+ * replaced with their Firestore canonical equivalents on the
+ * `userDevices` collection.
  */
 class Device_service
 {
-    /** @var object Firebase library */
-    private $firebase;
-
     /** @var Firestore_service|null Firestore service (loaded lazily via CI). */
     private $fs = null;
 
+    /**
+     * Tenant context for Firestore-canonical operations. Populated via
+     * either init() (explicit) or get_instance()->school_id (auto). Stored
+     * as a trimmed string; empty string means "not yet set, fall back".
+     */
+    private string $schoolId = '';
+
     /** Max devices per user */
     private const MAX_DEVICES = 5;
-
-    /** RTDB base path (mirror only — Firestore is canonical per the Firestore-first contract). */
-    private const BASE_PATH = 'Users/Devices';
 
     /** Firestore canonical collection for user devices. */
     private const FS_COLLECTION = 'userDevices';
@@ -37,11 +48,6 @@ class Device_service
     public function __construct()
     {
         $CI =& get_instance();
-        if (!isset($CI->firebase)) {
-            $CI->load->library('firebase');
-        }
-        $this->firebase = $CI->firebase;
-
         // Firestore_service is autoloaded as $this->fs in MY_Controller, but
         // libraries don't inherit that — pull it from the controller.
         if (isset($CI->fs)) {
@@ -50,31 +56,125 @@ class Device_service
     }
 
     /**
+     * Set the tenant context for subsequent Device_service calls.
+     *
+     * Callers with explicit tenant id (typically MY_Controller-derived
+     * controllers) may call this once after loading the library. When
+     * init() is NOT called, _schoolId() falls back to
+     * get_instance()->school_id — which covers every web-request context
+     * that runs through MY_Controller.
+     *
+     * Use init() explicitly in CLI / cron / verifier scopes where no CI
+     * controller is on the call stack.
+     *
+     * Backward-compatible — existing callers do not need to invoke this.
+     *
+     * @param string $schoolId The tenant id (e.g. "SCH_XXXXXX"). Empty
+     *                         string is treated as "not set" so callers
+     *                         can pass an optional value safely.
+     */
+    public function init(string $schoolId): void
+    {
+        $this->schoolId = trim($schoolId);
+    }
+
+    /**
+     * Resolve the tenant id for the current call.
+     *
+     * Resolution order:
+     *   1. Explicitly injected via init() — preferred for non-web contexts
+     *      (CLI, verifier, jobs).
+     *   2. CodeIgniter session userdata 'school_id' — the canonical source
+     *      every MY_Controller-derived controller writes from session at
+     *      construct time, and the only one externally visible (the
+     *      controller's $school_id field is `protected` and so unreadable
+     *      via get_instance()->school_id from a library context).
+     *
+     * Fails loud with RuntimeException when neither source carries a tenant
+     * id — Firestore queries cannot be safely scoped across tenants without
+     * one, so silent fall-through is never acceptable.
+     *
+     * @throws \RuntimeException when no tenant context is available
+     */
+    private function _schoolId(): string
+    {
+        if ($this->schoolId !== '') {
+            return $this->schoolId;
+        }
+        $CI = get_instance();
+        if ($CI !== null && isset($CI->session)) {
+            $sid = (string) $CI->session->userdata('school_id');
+            if ($sid !== '') {
+                return $sid;
+            }
+        }
+        throw new \RuntimeException(
+            'Device_service: tenant context absent — call init($schoolId) before use, '
+            . 'or invoke from a context with an active CodeIgniter session.'
+        );
+    }
+
+    /**
+     * Sanitize a raw device id into the canonical safe segment used in
+     * doc ids. Mirrors the regex used by Parent + Teacher app
+     * AuthRepository.registerFcmToken() so server + client write to the
+     * same doc id for the same hardware install.
+     */
+    private function _safeDeviceId(string $raw): string
+    {
+        return preg_replace('/[^A-Za-z0-9_\-]/', '_', $raw);
+    }
+
+    /**
+     * Compose the canonical doc id for a (userId, deviceId) pair.
+     */
+    private function _docId(string $userId, string $deviceId): string
+    {
+        return $userId . '_' . $this->_safeDeviceId($deviceId);
+    }
+
+    /**
      * List all devices for a user.
+     *
+     * Return shape (preserved from pre-P2):
+     *   array keyed by original (unsanitized) deviceId, each entry has
+     *   { deviceId, platform, deviceName, appVersion, os, boundAt,
+     *     lastActive, status, fcmToken }.
      *
      * @return array  Array of device records, keyed by deviceId
      */
     public function listDevices(string $userId): array
     {
-        $data = $this->firebase->get(self::BASE_PATH . "/{$userId}");
-        if (!is_array($data)) return [];
-
-        $devices = [];
-        foreach ($data as $deviceId => $info) {
-            if (!is_array($info)) continue;
-            $devices[$deviceId] = [
-                'deviceId'   => $deviceId,
-                'platform'   => $info['platform']   ?? 'unknown',
-                'deviceName' => $info['deviceName']  ?? 'Unknown Device',
-                'appVersion' => $info['appVersion']  ?? '',
-                'os'         => $info['os']          ?? '',
-                'boundAt'    => $info['boundAt']     ?? '',
-                'lastActive' => $info['lastActive']  ?? '',
-                'status'     => $info['status']      ?? 'active',
-                'fcmToken'   => $info['fcmToken']    ?? '',
-            ];
+        if ($this->fs === null) return [];
+        try {
+            $rows = $this->fs->where(self::FS_COLLECTION, [
+                ['schoolId', '==', $this->_schoolId()],
+                ['userId',   '==', $userId],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', "Device_service::listDevices({$userId}): " . $e->getMessage());
+            return [];
         }
 
+        $devices = [];
+        if (!is_array($rows)) return $devices;
+        foreach ($rows as $row) {
+            $d = is_array($row) ? ($row['data'] ?? $row) : [];
+            if (!is_array($d)) continue;
+            $rawDeviceId = (string) ($d['deviceId'] ?? '');
+            if ($rawDeviceId === '') continue;
+            $devices[$rawDeviceId] = [
+                'deviceId'   => $rawDeviceId,
+                'platform'   => $d['platform']   ?? 'unknown',
+                'deviceName' => $d['deviceName']  ?? 'Unknown Device',
+                'appVersion' => $d['appVersion']  ?? '',
+                'os'         => $d['os']          ?? '',
+                'boundAt'    => $d['boundAt']     ?? '',
+                'lastActive' => $d['lastActive']  ?? '',
+                'status'     => $d['status']      ?? 'active',
+                'fcmToken'   => $d['fcmToken']    ?? '',
+            ];
+        }
         return $devices;
     }
 
@@ -88,14 +188,24 @@ class Device_service
      */
     public function bindDevice(string $userId, string $deviceId, array $meta = []): array
     {
-        // Check if already bound
-        $existing = $this->firebase->get(self::BASE_PATH . "/{$userId}/{$deviceId}");
-        if ($existing && is_array($existing) && ($existing['status'] ?? '') === 'blocked') {
+        if ($this->fs === null) {
+            return ['success' => false, 'message' => 'Firestore service unavailable.'];
+        }
+        $docId = $this->_docId($userId, $deviceId);
+
+        $existing = null;
+        try {
+            $existing = $this->fs->get(self::FS_COLLECTION, $docId);
+        } catch (\Throwable $e) {
+            log_message('error', "Device_service::bindDevice({$userId}/{$deviceId}) existence-check: " . $e->getMessage());
+        }
+
+        if (is_array($existing) && ($existing['status'] ?? '') === 'blocked') {
             return ['success' => false, 'message' => 'This device has been blocked.'];
         }
 
-        // Check device limit (only for new devices)
-        if (!$existing) {
+        // Enforce per-user device limit only for net-new bindings.
+        if (!is_array($existing) || empty($existing)) {
             $devices = $this->listDevices($userId);
             $activeCount = count(array_filter($devices, fn($d) => ($d['status'] ?? '') !== 'blocked'));
             if ($activeCount >= self::MAX_DEVICES) {
@@ -105,20 +215,29 @@ class Device_service
 
         $now = date('c');
         $record = [
+            'schoolId'   => $this->_schoolId(),
+            'userId'     => $userId,
+            'deviceId'   => $deviceId,
             'platform'   => $meta['platform']   ?? 'android',
             'deviceName' => $meta['deviceName']  ?? 'Unknown Device',
             'appVersion' => $meta['appVersion']  ?? '',
             'os'         => $meta['os']          ?? '',
-            'boundAt'    => $existing['boundAt'] ?? $now,
+            'boundAt'    => (is_array($existing) && !empty($existing['boundAt']))
+                             ? (string) $existing['boundAt']
+                             : $now,
             'lastActive' => $now,
             'status'     => 'active',
         ];
-
         if (!empty($meta['fcmToken'])) {
             $record['fcmToken'] = $meta['fcmToken'];
         }
 
-        $ok = $this->firebase->set(self::BASE_PATH . "/{$userId}/{$deviceId}", $record);
+        try {
+            $ok = (bool) $this->fs->set(self::FS_COLLECTION, $docId, $record, /* merge */ true);
+        } catch (\Throwable $e) {
+            log_message('error', "Device_service::bindDevice({$userId}/{$deviceId}) write: " . $e->getMessage());
+            return ['success' => false, 'message' => 'Failed to register device.'];
+        }
 
         return $ok
             ? ['success' => true, 'message' => 'Device registered successfully.']
@@ -130,7 +249,15 @@ class Device_service
      */
     public function removeDevice(string $userId, string $deviceId): array
     {
-        $ok = $this->firebase->delete(self::BASE_PATH . "/{$userId}/{$deviceId}");
+        if ($this->fs === null) {
+            return ['success' => false, 'message' => 'Firestore service unavailable.'];
+        }
+        try {
+            $ok = (bool) $this->fs->remove(self::FS_COLLECTION, $this->_docId($userId, $deviceId));
+        } catch (\Throwable $e) {
+            log_message('error', "Device_service::removeDevice({$userId}/{$deviceId}): " . $e->getMessage());
+            return ['success' => false, 'message' => 'Failed to remove device.'];
+        }
         return $ok
             ? ['success' => true, 'message' => 'Device removed.']
             : ['success' => false, 'message' => 'Failed to remove device.'];
@@ -141,16 +268,30 @@ class Device_service
      */
     public function blockDevice(string $userId, string $deviceId): array
     {
-        $existing = $this->firebase->get(self::BASE_PATH . "/{$userId}/{$deviceId}");
-        if (!$existing || !is_array($existing)) {
+        if ($this->fs === null) {
+            return ['success' => false, 'message' => 'Firestore service unavailable.'];
+        }
+        $docId = $this->_docId($userId, $deviceId);
+
+        $existing = null;
+        try {
+            $existing = $this->fs->get(self::FS_COLLECTION, $docId);
+        } catch (\Throwable $e) {
+            log_message('error', "Device_service::blockDevice({$userId}/{$deviceId}) existence-check: " . $e->getMessage());
+        }
+        if (!is_array($existing) || empty($existing)) {
             return ['success' => false, 'message' => 'Device not found.'];
         }
 
-        $ok = $this->firebase->update(self::BASE_PATH . "/{$userId}/{$deviceId}", [
-            'status'    => 'blocked',
-            'blockedAt' => date('c'),
-        ]);
-
+        try {
+            $ok = (bool) $this->fs->update(self::FS_COLLECTION, $docId, [
+                'status'    => 'blocked',
+                'blockedAt' => date('c'),
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', "Device_service::blockDevice({$userId}/{$deviceId}) write: " . $e->getMessage());
+            return ['success' => false, 'message' => 'Failed to block device.'];
+        }
         return $ok
             ? ['success' => true, 'message' => 'Device blocked.']
             : ['success' => false, 'message' => 'Failed to block device.'];
@@ -161,7 +302,12 @@ class Device_service
      */
     public function isDeviceBound(string $userId, string $deviceId): bool
     {
-        $data = $this->firebase->get(self::BASE_PATH . "/{$userId}/{$deviceId}");
+        if ($this->fs === null) return false;
+        try {
+            $data = $this->fs->get(self::FS_COLLECTION, $this->_docId($userId, $deviceId));
+        } catch (\Throwable $e) {
+            return false;
+        }
         return is_array($data) && ($data['status'] ?? '') === 'active';
     }
 
@@ -170,88 +316,62 @@ class Device_service
      */
     public function touchDevice(string $userId, string $deviceId, ?string $fcmToken = null): bool
     {
+        if ($this->fs === null) return false;
         $updates = ['lastActive' => date('c')];
         if ($fcmToken !== null) {
             $updates['fcmToken'] = $fcmToken;
         }
-        return $this->firebase->update(self::BASE_PATH . "/{$userId}/{$deviceId}", $updates);
+        try {
+            return (bool) $this->fs->update(self::FS_COLLECTION, $this->_docId($userId, $deviceId), $updates);
+        } catch (\Throwable $e) {
+            log_message('error', "Device_service::touchDevice({$userId}/{$deviceId}): " . $e->getMessage());
+            return false;
+        }
     }
 
     /**
      * Get all active FCM tokens for a user (for sending push notifications).
      *
-     * Phase 7x (2026-04-09): only excludes devices that are
-     * EXPLICITLY blocked. Devices with a missing/empty status are
-     * still considered eligible — the parent + teacher apps write
-     * just the `fcmToken` field on `onNewToken`, without explicitly
-     * setting `status` to "active", so the old strict filter
-     * (`status === 'active'`) was rejecting every legitimate token
-     * and returning an empty list, which made every push silently
-     * no-op.
+     * Firestore-only. Returns every non-blocked device's fcmToken for the
+     * tenant-scoped user. Blocked devices and devices with empty tokens
+     * are excluded. Tokens are deduplicated before return.
+     *
+     * Package 3A P2 (2026-06-15): the RTDB fallback that previously
+     * shadowed this method has been removed; tokens are read only from
+     * the Firestore `userDevices` canonical collection.
      *
      * @return array  List of FCM tokens
      */
     public function getFcmTokens(string $userId): array
     {
-        // ── READ: Firestore FIRST (canonical) ──
-        // Phase 8a (2026-04-09): canonical store is the `userDevices`
-        // Firestore collection. RTDB path stays as a mirror until
-        // Phase 9 cleanup.
+        if ($this->fs === null) {
+            log_message('error', "Device_service::getFcmTokens({$userId}) — Firestore service not loaded; cannot resolve tokens");
+            return [];
+        }
+
+        try {
+            $docs = $this->fs->where(self::FS_COLLECTION, [
+                ['schoolId', '==', $this->_schoolId()],
+                ['userId',   '==', $userId],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', "Device_service::getFcmTokens({$userId}) Firestore query failed: " . $e->getMessage());
+            return [];
+        }
+
         $tokens = [];
-        $sourceTried = [];
-
-        if ($this->fs !== null) {
-            try {
-                $docs = $this->fs->where(self::FS_COLLECTION, [
-                    ['userId', '==', $userId],
-                ]);
-                $sourceTried[] = 'firestore';
-                log_message('info', "Device_service::getFcmTokens({$userId}) — Firestore returned " . count($docs) . " doc(s)");
-                foreach ($docs as $entry) {
-                    $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
-                    if (!is_array($d)) continue;
-                    $status = (string) ($d['status'] ?? '');
-                    if ($status === 'blocked') continue;
-                    if (!empty($d['fcmToken'])) {
-                        $tokens[] = $d['fcmToken'];
-                    }
+        if (is_array($docs)) {
+            foreach ($docs as $entry) {
+                $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                if (!is_array($d)) continue;
+                if (($d['status'] ?? '') === 'blocked') continue;
+                if (!empty($d['fcmToken'])) {
+                    $tokens[] = (string) $d['fcmToken'];
                 }
-                if (!empty($tokens)) {
-                    log_message('info', "Device_service::getFcmTokens({$userId}) — returning " . count($tokens) . " token(s) from Firestore");
-                    return array_values(array_unique($tokens));
-                }
-            } catch (\Exception $e) {
-                log_message('error', "Device_service::getFcmTokens({$userId}) — Firestore query failed: " . $e->getMessage());
             }
-        } else {
-            log_message('info', "Device_service::getFcmTokens({$userId}) — Firestore service not loaded, skipping to RTDB");
         }
 
-        // ── RTDB fallback ──
-        $sourceTried[] = 'rtdb';
-        $devices = $this->listDevices($userId);
-        log_message('info', "Device_service::getFcmTokens({$userId}) — RTDB Users/Devices/{$userId} returned " . count($devices) . " device(s)");
-
-        $skipped = [];
-        foreach ($devices as $deviceId => $d) {
-            $status = (string) ($d['status'] ?? '');
-            $hasToken = !empty($d['fcmToken']);
-            if ($status === 'blocked') {
-                $skipped[] = "{$deviceId}=blocked";
-                continue;
-            }
-            if (!$hasToken) {
-                $skipped[] = "{$deviceId}=no-token";
-                continue;
-            }
-            $tokens[] = $d['fcmToken'];
-        }
-
-        if (!empty($skipped)) {
-            log_message('info', "Device_service::getFcmTokens({$userId}) — RTDB skipped: " . implode(', ', $skipped));
-        }
-        log_message('info', "Device_service::getFcmTokens({$userId}) — final: " . count($tokens) . " token(s) (sources tried: " . implode(', ', $sourceTried) . ")");
-
+        log_message('info', "Device_service::getFcmTokens({$userId}) — returning " . count($tokens) . " token(s) from Firestore userDevices");
         return array_values(array_unique($tokens));
     }
 }

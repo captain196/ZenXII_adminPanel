@@ -6,14 +6,12 @@ defined('BASEPATH') OR exit('No direct script access allowed');
  *
  * Communicates with the Node.js Auth API via the Auth_client library to
  * list, bind, remove, and block devices for teachers and students.
- * User profile data is read from Firebase RTDB.
+ *
+ * Profile data sources (Firestore canonical — Package 3A P4 cutover, 2026-06-26):
+ *   Teachers / SAs:  Firestore staff/{schoolId}_{staffId}
+ *   Students:        Firestore students/{schoolId}_{studentId}
  *
  * Access: Super Admin, Admin, Principal
- *
- * Firebase paths:
- *   Teachers:     Users/Admin/{parent_db_key}/{teacherId}/
- *   Students:     Users/Parents/{parent_db_key}/{studentId}/
- *   Staff list:   Schools/{school_name}/{session_year}/Teachers/
  */
 class Device_management extends MY_Controller
 {
@@ -165,39 +163,47 @@ class Device_management extends MY_Controller
         try {
             $matches = [];
 
-            // Search teachers
-            $teachers = $this->firebase->get(
-                "Users/Admin/{$this->parent_db_key}"
-            );
-            if (is_array($teachers)) {
-                foreach ($teachers as $tid => $t) {
-                    if (!is_array($t)) continue;
-                    $name = $t['Name'] ?? $t['name'] ?? '';
+            // Search teachers / SAs — Firestore canonical staff/*
+            $staffDocs = $this->fs->schoolWhere('staff', []);
+            if (is_array($staffDocs)) {
+                foreach ($staffDocs as $entry) {
+                    $d = is_array($entry['data'] ?? null) ? $entry['data'] : [];
+                    $sid = (string) ($d['staffId'] ?? '');
+                    if ($sid === '' && isset($entry['id'])) {
+                        $pos = strrpos((string) $entry['id'], '_');
+                        if ($pos !== false) $sid = (string) substr((string) $entry['id'], $pos + 1);
+                    }
+                    if ($sid === '') continue;
+                    $name = $d['Name'] ?? $d['name'] ?? '';
                     if (
-                        stripos($tid, $query) !== false ||
+                        stripos($sid, $query) !== false ||
                         stripos($name, $query) !== false
                     ) {
                         $matches[] = [
-                            'userId' => $tid,
+                            'userId' => $sid,
                             'name'   => $name,
                             'role'   => 'Teacher',
-                            'email'  => $t['Email'] ?? $t['email'] ?? '',
-                            'phone'  => $t['Phone'] ?? $t['phone'] ?? '',
-                            'status' => $t['Status'] ?? $t['status'] ?? 'active',
+                            'email'  => $d['Email'] ?? $d['email'] ?? '',
+                            'phone'  => $d['Phone Number'] ?? $d['phone'] ?? $d['Phone'] ?? '',
+                            'status' => $d['Status'] ?? $d['status'] ?? 'active',
                         ];
                     }
                     if (count($matches) >= 20) break;
                 }
             }
 
-            // Search students
-            $students = $this->firebase->get(
-                "Users/Parents/{$this->parent_db_key}"
-            );
-            if (is_array($students)) {
-                foreach ($students as $sid => $s) {
-                    if (!is_array($s)) continue;
-                    $name = $s['Name'] ?? $s['name'] ?? $s['StudentName'] ?? '';
+            // Search students — Firestore canonical students/{schoolId}_{studentId}
+            $studentDocs = $this->fs->schoolWhere('students', []);
+            if (is_array($studentDocs)) {
+                foreach ($studentDocs as $entry) {
+                    $s = is_array($entry['data'] ?? null) ? $entry['data'] : [];
+                    $sid = (string) ($s['studentId'] ?? $s['userId'] ?? '');
+                    if ($sid === '' && isset($entry['id'])) {
+                        $pos = strrpos((string) $entry['id'], '_');
+                        if ($pos !== false) $sid = (string) substr((string) $entry['id'], $pos + 1);
+                    }
+                    if ($sid === '') continue;
+                    $name = $s['name'] ?? $s['Name'] ?? $s['StudentName'] ?? '';
                     if (
                         stripos($sid, $query) !== false ||
                         stripos($name, $query) !== false
@@ -206,9 +212,9 @@ class Device_management extends MY_Controller
                             'userId' => $sid,
                             'name'   => $name,
                             'role'   => 'Student',
-                            'email'  => $s['Email'] ?? $s['email'] ?? '',
-                            'phone'  => $s['Phone'] ?? $s['phone'] ?? $s['ParentPhone'] ?? '',
-                            'status' => $s['Status'] ?? $s['status'] ?? 'active',
+                            'email'  => $s['email'] ?? $s['Email'] ?? '',
+                            'phone'  => $s['phone'] ?? $s['Phone'] ?? $s['phoneNumber'] ?? $s['Phone Number'] ?? $s['parentPhone'] ?? $s['ParentPhone'] ?? '',
+                            'status' => $s['status'] ?? $s['Status'] ?? 'active',
                         ];
                     }
                     if (count($matches) >= 40) break;
@@ -655,27 +661,39 @@ class Device_management extends MY_Controller
     {
         $users = [];
 
-        // Teachers from Users/Admin/{parent_db_key}
-        $teachers = $this->firebase->get("Users/Admin/{$this->parent_db_key}");
-        if (is_array($teachers)) {
-            foreach ($teachers as $tid => $t) {
-                if (!is_array($t)) continue;
+        // Teachers / SAs from Firestore staff/* canonical store
+        $staffDocs = $this->fs->schoolWhere('staff', []);
+        if (is_array($staffDocs)) {
+            foreach ($staffDocs as $entry) {
+                $d = is_array($entry['data'] ?? null) ? $entry['data'] : [];
+                $sid = (string) ($d['staffId'] ?? '');
+                if ($sid === '' && isset($entry['id'])) {
+                    $pos = strrpos((string) $entry['id'], '_');
+                    if ($pos !== false) $sid = (string) substr((string) $entry['id'], $pos + 1);
+                }
+                if ($sid === '') continue;
                 $users[] = [
-                    'userId' => $tid,
-                    'name'   => $t['Name'] ?? $t['name'] ?? $tid,
+                    'userId' => $sid,
+                    'name'   => $d['Name'] ?? $d['name'] ?? $sid,
                     'role'   => 'Teacher',
                 ];
             }
         }
 
-        // Students from Users/Parents/{parent_db_key}
-        $students = $this->firebase->get("Users/Parents/{$this->parent_db_key}");
-        if (is_array($students)) {
-            foreach ($students as $sid => $s) {
-                if (!is_array($s)) continue;
+        // Students from Firestore canonical students/{schoolId}_{studentId}
+        $studentDocs = $this->fs->schoolWhere('students', []);
+        if (is_array($studentDocs)) {
+            foreach ($studentDocs as $entry) {
+                $s = is_array($entry['data'] ?? null) ? $entry['data'] : [];
+                $sid = (string) ($s['studentId'] ?? $s['userId'] ?? '');
+                if ($sid === '' && isset($entry['id'])) {
+                    $pos = strrpos((string) $entry['id'], '_');
+                    if ($pos !== false) $sid = (string) substr((string) $entry['id'], $pos + 1);
+                }
+                if ($sid === '') continue;
                 $users[] = [
                     'userId' => $sid,
-                    'name'   => $s['Name'] ?? $s['name'] ?? $s['StudentName'] ?? $sid,
+                    'name'   => $s['name'] ?? $s['Name'] ?? $s['StudentName'] ?? $sid,
                     'role'   => 'Student',
                 ];
             }

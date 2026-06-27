@@ -840,24 +840,30 @@ class Admin extends MY_Controller
             log_message('error', '_send_birthday_wish_core: push failed — ' . $e->getMessage());
         }
 
-        // 3. Parent-app inbox entry
+        // 3. Parent-app inbox entry — CircularDoc canonical shape so the
+        //    Parent + Teacher app CommunicationFirestoreRepository surfaces
+        //    the wish (whereEqualTo("status", "sent") + body/author/target).
         try {
             $this->fs->set('notices', $wishId, [
                 'noticeId'        => $wishId,
                 'schoolId'        => $schoolId,
                 'title'           => $title,
+                'body'            => $body,
                 'description'     => $body,
+                'author'          => $sentByName,
+                'authorId'        => $sentBy,
+                'authorRole'      => (string) ($this->admin_role ?? ''),
                 'category'        => 'Birthday',
                 'priority'        => 'Normal',
-                'targetGroup'     => "Student {$studentId}",
+                'targetType'      => 'role',
+                'targetClasses'   => [],
+                'targetRoles'     => ['parent'],
                 'targetStudentId' => $studentId,
-                'status'          => 'published',
+                'status'          => 'sent',
+                'sentAt'          => $nowIso,
                 'source'          => 'birthday_wish',
                 'sentBySource'    => $source,
-                'createdBy'       => $sentBy,
                 'createdAt'       => $nowIso,
-                'publishedAt'     => $nowIso,
-                'sentAt'          => $nowIso,
             ]);
         } catch (\Exception $e) {
             log_message('error', '_send_birthday_wish_core: notice write failed — ' . $e->getMessage());

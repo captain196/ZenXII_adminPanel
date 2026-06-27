@@ -11,7 +11,7 @@ use Kreait\Firebase\Exception\Messaging\NotFound;
 /**
  * Push_service — sends Firebase Cloud Messaging push notifications via the
  * Kreait Admin SDK (FCM HTTP v1). The previous "push" pipeline only wrote
- * RTDB notice records, which only reached the app while it was open.
+ * legacy notice records, which only reached the app while it was open.
  *
  * Usage:
  *     $this->load->library('push_service');
@@ -21,13 +21,13 @@ use Kreait\Firebase\Exception\Messaging\NotFound;
  *         'data'  => ['type' => 'student_absent', 'student_id' => $studentId],
  *     ]);
  *
- * Tokens are read via Device_service from
- *   Users/Devices/{userId}/{deviceId}/fcmToken
- * which is the same path the parent + teacher apps write to on
- * `onNewToken`.
+ * Tokens are read via Device_service from the Firestore `userDevices`
+ * canonical collection — the same store the parent + teacher apps write
+ * to on `onNewToken` via registerFcmToken().
  *
  * Stale tokens (NotFound) are pruned automatically so the next send
- * doesn't waste a round-trip on them.
+ * doesn't waste a round-trip on them. The prune writes back to the
+ * same `userDevices` Firestore doc (Package 3A P3 cutover, 2026-06-15).
  */
 class Push_service
 {
@@ -37,17 +37,18 @@ class Push_service
     /** @var Device_service */
     private $devices;
 
-    /** @var Firebase */
-    private $firebase;
+    /** @var Firestore_service|null Firestore service (loaded lazily via CI). */
+    private $fs = null;
 
     public function __construct()
     {
         $CI =& get_instance();
 
-        if (!isset($CI->firebase)) {
-            $CI->load->library('firebase');
+        // Firestore_service is autoloaded as $this->fs in MY_Controller; pull
+        // it opportunistically so _pruneTokens() can update userDevices docs.
+        if (isset($CI->fs)) {
+            $this->fs = $CI->fs;
         }
-        $this->firebase = $CI->firebase;
 
         if (!isset($CI->device_service)) {
             $CI->load->library('device_service');
@@ -67,7 +68,7 @@ class Push_service
     /**
      * Send a push notification to all active devices of a single user.
      *
-     * @param string $userId  Parent or teacher userId (matches Users/Devices/{userId})
+     * @param string $userId  Parent or teacher userId (matches userDevices.userId)
      * @param array  $payload {title, body, data}
      * @return int            Number of devices that accepted the message
      */
@@ -85,7 +86,7 @@ class Push_service
         log_message('info', "Push_service::sendToUser({$userId}) — looking up tokens, payload title='" . ($payload['title'] ?? '') . "'");
         $tokens = $this->devices->getFcmTokens($userId);
         if (empty($tokens)) {
-            log_message('error', "Push_service::sendToUser({$userId}) — NO TOKENS FOUND. Either Users/Devices/{$userId} is empty, or every device is missing fcmToken / blocked. Push aborted.");
+            log_message('error', "Push_service::sendToUser({$userId}) — NO TOKENS FOUND. Either userDevices(schoolId, userId={$userId}) is empty, or every device is missing fcmToken / blocked. Push aborted.");
             return 0;
         }
 
@@ -171,23 +172,34 @@ class Push_service
     }
 
     /**
-     * Remove stale FCM tokens from RTDB so they aren't retried next time.
+     * Remove stale FCM tokens from the Firestore `userDevices` canonical
+     * collection so they aren't retried next time. The matching doc is
+     * located by docId pattern `{userId}_{safeDeviceId}` — the same shape
+     * Parent + Teacher app `registerFcmToken()` writes to.
+     *
+     * Package 3A P3 (2026-06-15): cut over from the legacy RTDB device
+     * subtree to the Firestore canonical collection.
      */
     private function _pruneTokens(string $userId, array $staleTokens): void
     {
         if (empty($staleTokens)) return;
+        if ($this->fs === null) {
+            log_message('error', 'Push_service::_pruneTokens — Firestore service not loaded; cannot prune stale tokens');
+            return;
+        }
         $devices = $this->devices->listDevices($userId);
         foreach ($devices as $deviceId => $info) {
             $tok = $info['fcmToken'] ?? '';
             if ($tok === '') continue;
             if (in_array($tok, $staleTokens, true)) {
                 try {
-                    $this->firebase->update("Users/Devices/{$userId}/{$deviceId}", [
-                        'fcmToken'   => '',
-                        'staleAt'    => date('c'),
+                    $safeDeviceId = preg_replace('/[^A-Za-z0-9_\-]/', '_', $deviceId);
+                    $this->fs->update('userDevices', "{$userId}_{$safeDeviceId}", [
+                        'fcmToken' => '',
+                        'staleAt'  => date('c'),
                     ]);
                     log_message('info', "Push_service: pruned stale token for {$userId}/{$deviceId}");
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     log_message('error', 'Push_service prune failed: ' . $e->getMessage());
                 }
             }

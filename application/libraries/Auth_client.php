@@ -232,50 +232,92 @@ class Auth_client
         return $this->_post('/internal/delete-admin', ['adminId' => $student_id]);
     }
 
+    // ─────────────────────────────────────────────────────────────
+    //  Device operations — Package 3C (2026-06-26):
+    //
+    //  Device data is canonical in Firestore `userDevices`. These four
+    //  methods previously POSTed to the Node Auth API's /internal/*-device
+    //  endpoints, which read from a non-Firestore store. After Packages
+    //  3A (server) + 3B (mobile) the mobile apps write Firestore only, so
+    //  the Node API never sees fresh device data.
+    //
+    //  Per architecture policy (Firestore-only, no bridge, no compatibility
+    //  layer), these methods now delegate in-process to Device_service —
+    //  the Firestore-canonical reader/writer verified by CH-A36..A38 PASS.
+    //  Public signatures + return shape preserved; Device_management
+    //  callers are unaffected.
+    //
+    //  The dead `verify_device` method (zero callers across all audited
+    //  codebases per the 3C dependency audit) is retired.
+    // ─────────────────────────────────────────────────────────────
+
     /**
-     * Bind a device to a user account (teacher/student mobile auth).
+     * Bind a device to a user account.
+     * Delegates to Device_service::bindDevice (Firestore `userDevices`).
+     *
+     * @return array  ['success' => bool, 'message' => string]
      */
     public function bind_device(string $user_id, string $device_id, array $meta = []): array
     {
-        return $this->_post('/internal/bind-device', array_merge([
-            'userId'   => $user_id,
-            'deviceId' => $device_id,
-        ], $meta));
-    }
-
-    /**
-     * Verify if a device is bound to a user.
-     */
-    public function verify_device(string $user_id, string $device_id): array
-    {
-        return $this->_post('/internal/verify-device', [
-            'userId'   => $user_id,
-            'deviceId' => $device_id,
-        ]);
+        return $this->_device_service()->bindDevice($user_id, $device_id, $meta);
     }
 
     /**
      * Get list of devices bound to a student/teacher account.
+     * Delegates to Device_service::listDevices (Firestore `userDevices`).
+     *
+     * @return array  ['success' => true, 'devices' => array<int, array>]
+     *                Devices preserve the {deviceId, platform, deviceName,
+     *                appVersion, os, boundAt, lastActive, status, fcmToken}
+     *                shape the Node API returned.
      */
     public function list_devices(string $user_id): array
     {
-        return $this->_post('/internal/list-devices', ['userId' => $user_id]);
+        $devices = $this->_device_service()->listDevices($user_id);
+        return [
+            'success' => true,
+            'devices' => array_values($devices),
+        ];
     }
 
     /**
-     * Remove a bound device from a student/teacher account.
+     * Remove a bound device from a user account.
+     * Delegates to Device_service::removeDevice (Firestore `userDevices`).
+     * Idempotent — removing a non-existent device still returns success
+     * (a tighter semantic than the previous Node API contract).
+     *
+     * @return array  ['success' => bool, 'message' => string]
      */
     public function remove_device(string $user_id, string $device_id): array
     {
-        return $this->_post('/internal/remove-device', ['userId' => $user_id, 'deviceId' => $device_id]);
+        return $this->_device_service()->removeDevice($user_id, $device_id);
     }
 
     /**
      * Block a device (e.g. stolen/compromised).
+     * Delegates to Device_service::blockDevice (Firestore `userDevices`).
+     *
+     * @return array  ['success' => bool, 'message' => string]
      */
     public function block_device(string $user_id, string $device_id): array
     {
-        return $this->_post('/internal/block-device', ['userId' => $user_id, 'deviceId' => $device_id]);
+        return $this->_device_service()->blockDevice($user_id, $device_id);
+    }
+
+    /**
+     * Lazy-load Device_service via CodeIgniter loader and return the shared
+     * instance. Tenant context resolves automatically through MY_Controller's
+     * $school_id auto-fallback inside Device_service::_schoolId().
+     *
+     * @return \Device_service
+     */
+    private function _device_service()
+    {
+        $CI =& get_instance();
+        if (!isset($CI->device_service)) {
+            $CI->load->library('device_service');
+        }
+        return $CI->device_service;
     }
 
     /**

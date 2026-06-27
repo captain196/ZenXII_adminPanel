@@ -159,7 +159,7 @@ class Communication_helper
         $lastErr = null;
         for ($attempt = 0; $attempt < self::CAS_MAX_RETRIES; $attempt++) {
             $profile = $this->fs->get('schools', $profileDocId);
-            $current = $this->_readCommCounterValue($profile, $type, $field);
+            $current = $this->_readCommCounterValue($profile, $type);
             if ($current < 0) {
                 $current = $this->_seedCommCounter($type);
             }
@@ -177,7 +177,7 @@ class Communication_helper
                 // equals $next. If a racing writer pushed it past $next,
                 // their ID is theirs and we re-mint from the fresh state.
                 $verify  = $this->fs->get('schools', $profileDocId);
-                $landed  = $this->_readCommCounterValue($verify, $type, $field);
+                $landed  = $this->_readCommCounterValue($verify, $type);
                 if ($landed === $next) {
                     return $prefix . str_pad((string) $next, $width, '0', STR_PAD_LEFT);
                 }
@@ -195,21 +195,24 @@ class Communication_helper
     }
 
     /**
-     * Read the current value of a commCounters.{type} field from a profile
-     * doc, supporting both the nested commCounters.{type} map (canonical,
-     * written by fs->update) and the legacy flat-keyed form (for any docs
-     * still carrying historical Communication::_next_id writes).
+     * Read the current value of commCounters.{type} from a profile doc.
+     * Source of truth is the NESTED commCounters: {type: N} map written
+     * by fs->update (post-R5 dotted-key reshape). Returns -1 when the
+     * nested map or the requested type key is absent, signalling the
+     * caller to self-heal via collection scan.
+     *
+     * The legacy flat-keyed form ("commCounters.{type}" as a literal
+     * top-level field with a dot in its name) is no longer read — the
+     * one-shot data convergence script eliminates it tenant-wide so
+     * this code path stays purely nested.
      */
-    private function _readCommCounterValue(?array $profile, string $type, string $flatKey): int
+    private function _readCommCounterValue(?array $profile, string $type): int
     {
         if (!is_array($profile)) return -1;
         if (isset($profile['commCounters']) && is_array($profile['commCounters'])
             && isset($profile['commCounters'][$type])
             && is_numeric($profile['commCounters'][$type])) {
             return (int) $profile['commCounters'][$type];
-        }
-        if (isset($profile[$flatKey]) && is_numeric($profile[$flatKey])) {
-            return (int) $profile[$flatKey];
         }
         return -1;
     }
@@ -357,13 +360,32 @@ class Communication_helper
     /**
      * Write an announcement notice for a school event.
      *
-     * @param string $eventId  e.g. 'EVT0001'
-     * @param array  $data     Event data (title, category, start_date, etc.)
-     * @param string $adminId  Admin who created the event
-     * @return string          The notice ID created
+     * Writes the canonical Firestore CircularDoc shape consumed by the
+     * Parent + Teacher Android apps' CommunicationFirestoreRepository.
+     * Both apps filter via whereEqualTo("status", "sent") and render
+     * `body`, `author`, `authorId`, `authorRole`, `targetType`,
+     * `targetClasses`, `targetRoles`. Helper-specific event metadata
+     * (eventCategory / startDate / endDate / location / organizer /
+     * source / eventRef) is preserved alongside the canonical fields.
+     *
+     * @param string $eventId    e.g. 'EVT0001'
+     * @param array  $data       Event data (title, category, start_date, etc.).
+     *                           May also carry `adminName`, `adminRole`,
+     *                           `targetClasses`, `targetRoles` for finer control.
+     * @param string $adminId    Admin who created the event
+     * @param string $adminName  Author display name (CircularDoc.author).
+     *                           Falls back to $data['adminName'] then $adminId.
+     * @param string $adminRole  Author role (CircularDoc.authorRole).
+     *                           Falls back to $data['adminRole'] then ''.
+     * @return string            The notice ID created
      */
-    public function write_event_notice(string $eventId, array $data, string $adminId): string
-    {
+    public function write_event_notice(
+        string $eventId,
+        array $data,
+        string $adminId,
+        string $adminName = '',
+        string $adminRole = ''
+    ): string {
         if (empty($this->school_name) || empty($this->firebase)) {
             log_message('error', 'Communication_helper: not initialized for write_event_notice');
             return '';
@@ -409,26 +431,50 @@ class Communication_helper
         $noticeId = $this->_nextCommCounter('Notice', 4);
         $nowIso   = date('c');
 
+        // Resolve canonical author trio. Helper signature accepts adminName/
+        // adminRole; callers that haven't been updated can pass them in
+        // $data (adminName/adminRole) or omit them — fallback chain is
+        // explicit so the failure mode is empty strings, never a wrong value.
+        $authorName = $adminName !== ''
+            ? $adminName
+            : (string) ($data['adminName'] ?? $data['admin_name'] ?? $adminId);
+        $authorRole = $adminRole !== ''
+            ? $adminRole
+            : (string) ($data['adminRole'] ?? $data['admin_role'] ?? '');
+
+        // Resolve canonical target trio. Event notices default to All-school;
+        // callers can narrow via $data['targetClasses'] / $data['targetRoles'].
+        $targetClasses = is_array($data['targetClasses'] ?? null) ? $data['targetClasses'] : [];
+        $targetRoles   = is_array($data['targetRoles']   ?? null) ? $data['targetRoles']   : [];
+        $targetType    = (!empty($targetClasses)) ? 'class'
+                         : ((!empty($targetRoles)) ? 'role' : 'All');
+
         $this->fs->set(self::FS_COL_NOTICES, $this->fs->docId($noticeId), [
+            // CircularDoc canonical contract (Parent + Teacher app shape)
             'noticeId'      => $noticeId,
             'schoolId'      => $this->school_id ?: $this->school_name,
             'title'         => $title,
+            'body'          => $description,
             'description'   => $description,
+            'author'        => $authorName,
+            'authorId'      => $adminId,
+            'authorRole'    => $authorRole,
             'category'      => 'Event',
+            'priority'      => 'Normal',
+            'targetType'    => $targetType,
+            'targetClasses' => $targetClasses,
+            'targetRoles'   => $targetRoles,
+            'status'        => 'sent',
+            'sentAt'        => $nowIso,
+            // Event-source metadata (preserved alongside canonical fields)
             'eventCategory' => $catKey,
             'startDate'     => $startDate,
             'endDate'       => $endDate,
             'location'      => (string) ($data['location']  ?? ''),
             'organizer'     => (string) ($data['organizer'] ?? ''),
-            'priority'      => 'Normal',
-            'targetGroup'   => 'All School',
-            'status'        => 'published',
             'source'        => 'event',
             'eventRef'      => $eventId,
-            'createdBy'     => $adminId,
             'createdAt'     => $nowIso,
-            'publishedAt'   => $nowIso,
-            'sentAt'        => $nowIso,
         ]);
 
         return $noticeId;
