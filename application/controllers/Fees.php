@@ -1435,28 +1435,61 @@ class Fees extends MY_Controller
         }
 
         // ── Auto-generate demands for this class/section ──
-        // Best-effort background-style invocation. We log but don't
-        // block the save — the fee structure is already saved, and
-        // administrators can re-generate demands manually if this step
-        // fails (via `generate_monthly_demands`). Replaces the legacy
-        // "Generate Demands" sidebar button for the 95% happy path.
+        // Best-effort: the fee structure is ALREADY saved above, so this
+        // step must never fail the request. Previously this ran an inline
+        // per-student loop (_auto_generate_student_demands) doing serial,
+        // un-batched Firestore REST writes WITHOUT raising PHP's default
+        // 30s max_execution_time. For any real-sized section that loop did
+        // hundreds of sequential round-trips and blew past 30s → fatal
+        // "Maximum execution time exceeded" at curl_exec() → HTTP 500
+        // (even though the structure had saved). Fix: route through the
+        // same hardened, batched generator the "Generate Demands" button
+        // uses (_processGenerationJob — 400-doc batches, set_time_limit,
+        // soft-deadline + idempotent resume, retry/failure tracking), and
+        // wrap it so demand generation can NEVER turn a successful save
+        // into a 500. set_time_limit is bumped as a belt-and-braces guard.
+        @set_time_limit(600);
         $demandsGenerated = 0;
-        $demandsFailed = 0;
+        $demandsFailed    = 0;
+        $genJobId         = null;
         try {
             if (!empty($roster)) {
-                foreach ($roster as $studentId => $_stu) {
-                    try {
-                        $ok = $this->_auto_generate_student_demands($studentId, $class, $section, $mergedChart);
-                        if ($ok) $demandsGenerated++; else $demandsFailed++;
-                    } catch (\Exception $e) {
-                        $demandsFailed++;
-                        log_message('error', "auto-demands failed for {$studentId}: " . $e->getMessage());
-                    }
-                }
-                log_message('info', "save_updated_fees: auto-demands {$class}/{$section} generated={$demandsGenerated} failed={$demandsFailed}");
+                $schoolId = $this->fs->schoolId();
+                $genJobId = 'job_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
+                $this->firebase->firestoreSet('fee_generation_jobs', $genJobId, [
+                    'jobId'             => $genJobId,
+                    'schoolId'          => $schoolId,
+                    'session'           => $this->session_year,
+                    'class'             => $class,
+                    'section'           => $section,
+                    'months'            => array_values(self::ACADEMIC_MONTHS),
+                    'requestedBy'       => (string) ($this->admin_id   ?? ''),
+                    'requestedByName'   => (string) ($this->admin_name ?? ''),
+                    'requestedAt'       => date('c'),
+                    'status'            => 'pending',
+                    'totalStudents'     => 0,
+                    'processedStudents' => 0,
+                    'successCount'      => 0,
+                    'failureCount'      => 0,
+                    'demandsCreated'    => 0,
+                    'demandsSkipped'    => 0,
+                    'errors'            => [],
+                    'source'            => 'save_updated_fees',
+                ]);
+
+                $this->_processGenerationJob(
+                    $genJobId, $class, $section, self::ACADEMIC_MONTHS, $schoolId
+                );
+
+                $finalJob = $this->firebase->firestoreGet('fee_generation_jobs', $genJobId) ?? [];
+                $demandsGenerated = (int) ($finalJob['successCount'] ?? 0);
+                $demandsFailed    = (int) ($finalJob['failureCount'] ?? 0);
+                log_message('info', "save_updated_fees: auto-demands {$class}/{$section} job={$genJobId} students_ok={$demandsGenerated} students_fail={$demandsFailed} demands_created=" . (int)($finalJob['demandsCreated'] ?? 0) . " status=" . (string)($finalJob['status'] ?? '?'));
             }
-        } catch (\Exception $e) {
-            log_message('error', "save_updated_fees: auto-demands outer failure: " . $e->getMessage());
+        } catch (\Throwable $e) {
+            // Swallow — the structure save already succeeded. Admins can
+            // regenerate via the "Generate Demands" button if needed.
+            log_message('error', "save_updated_fees: auto-demands failed (structure saved OK) for {$class}/{$section}: " . $e->getMessage());
         }
 
         log_audit('Fees', 'update_fees', "{$class} {$section}", "Updated fee structure for {$class} Section {$section} (demands gen={$demandsGenerated} fail={$demandsFailed})");

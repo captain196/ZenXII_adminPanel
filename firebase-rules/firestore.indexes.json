@@ -1448,6 +1448,15 @@
       ]
     },
 
+    { "_comment": "security_events lookup scoped by school, newest first.",
+      "collectionGroup": "security_events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "detail.schoolId", "order": "ASCENDING"  },
+        { "fieldPath": "ts",              "order": "DESCENDING" }
+      ]
+    },
+
     { "_comment": "Stream B Phase I — F-SB-1 (HARD): per-staff attendance history reads. Used by Phase IV admin Last-30-days drawer + payroll-prep + audit. Without this composite Firestore returns FAILED_PRECONDITION on first cutover read.",
       "collectionGroup": "staffAttendance",
       "queryScope": "COLLECTION",

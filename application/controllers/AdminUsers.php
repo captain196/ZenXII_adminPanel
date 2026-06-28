@@ -156,6 +156,12 @@ class AdminUsers extends MY_Controller
         'Academic','Reports','Configuration','Admin Users','Stories',
     ];
 
+    /* -- Login audit lives in security_events (Wave C). These are the
+          admin-login event types the Login Activity tab surfaces. -------- */
+    private const LOGIN_EVENTS = [
+        'ADMIN_LOGIN_SUCCESS', 'ADMIN_LOGIN_FAILED', 'ADMIN_LOGIN_LOCKED',
+    ];
+
     public function __construct()
     {
         parent::__construct();
@@ -356,23 +362,14 @@ class AdminUsers extends MY_Controller
         $this->_require_role(['Super Admin', 'Admin'], 'admin_users_dashboard');
 
         try {
-            $adminDocs = $this->fs->schoolWhere('admins', []);
+            $names = $this->_admin_name_map($total, $active, $disabled);
 
-            $total = 0; $active = 0; $disabled = 0;
-            $recent = [];
-
-            foreach ($adminDocs as $doc) {
-                $a = $doc['data'];
-                $total++;
-                if (($a['Status'] ?? 'Active') === 'Active') $active++;
-                else $disabled++;
-
-                $row = $this->_login_row($doc);
-                if ($row !== null) $recent[] = $row;
+            // Recent successful logins from the security_events audit trail.
+            $recent = $this->_login_events(10, true);
+            foreach ($recent as &$r) {
+                $r['adminName'] = $names[$r['adminId']] ?? $r['adminId'];
             }
-
-            usort($recent, fn($a, $b) => strcmp($b['loginTime'] ?? '', $a['loginTime'] ?? ''));
-            $recent = array_slice($recent, 0, 10);
+            unset($r);
 
             $this->json_success([
                 'total'    => $total,
@@ -386,28 +383,75 @@ class AdminUsers extends MY_Controller
     }
 
     /**
-     * Build one "last login" row from an admins doc, or null if the admin
-     * has never logged in. Shared by get_dashboard + get_login_logs.
-     *
-     * Note: this is last-login-per-admin, not a full event log — there is no
-     * failed-login or device data source, so neither is reported.
+     * Build adminId => display-name map for the current school. Optionally
+     * returns total/active/disabled counts via reference params (the dashboard
+     * needs both from the same single read).
      */
-    private function _login_row(array $doc): ?array
+    private function _admin_name_map(int &$total = 0, int &$active = 0, int &$disabled = 0): array
     {
-        $d   = $doc['data'] ?? $doc;
-        $a   = $doc['data'];
-        $aid = $a['adminId'] ?? $d['id'];
-        $access    = $a['AccessHistory'] ?? [];
-        $lastLogin = $access['LastLogin'] ?? '';
-        if (empty($lastLogin)) return null;
+        $total = 0; $active = 0; $disabled = 0;
+        $map = [];
+        try {
+            foreach ($this->fs->schoolWhere('admins', []) as $doc) {
+                $d   = $doc['data'] ?? $doc;
+                $a   = $doc['data'];
+                $aid = $a['adminId'] ?? $d['id'];
+                $map[$aid] = $a['Name'] ?? $a['Profile']['name'] ?? $aid;
+                $total++;
+                if (($a['Status'] ?? 'Active') === 'Active') $active++;
+                else $disabled++;
+            }
+        } catch (Exception $e) {
+            log_message('error', 'AdminUsers::_admin_name_map — ' . $e->getMessage());
+        }
+        return $map;
+    }
 
-        return [
-            'adminId'   => $aid,
-            'adminName' => $a['Name'] ?? $a['Profile']['name'] ?? $aid,
-            'loginTime' => $lastLogin,
-            'ipAddress' => $access['LoginIP'] ?? '',
-            'isOnline'  => !empty($access['IsLoggedIn']),
-        ];
+    /**
+     * Read admin-login events from the security_events collection (Wave C
+     * audit trail), newest first. event_type is filtered client-side so the
+     * query only needs the detail.schoolId + ts composite index.
+     *
+     * NOTE: Admin_login inits telemetry with a synthetic top-level
+     * schoolId='ADMIN_PANEL' (no school context pre-auth), so the real
+     * tenant lives in detail.schoolId — that's what we scope on here.
+     *
+     * @param int  $limit       Max login rows to return.
+     * @param bool $successOnly Restrict to ADMIN_LOGIN_SUCCESS.
+     * @return array  rows: adminId, loginTime, ipAddress, device, status
+     */
+    private function _login_events(int $limit, bool $successOnly = false): array
+    {
+        try {
+            $docs = $this->fs->where(
+                'security_events',
+                [['detail.schoolId', '==', $this->school_id]],
+                'ts', 'DESC',
+                max($limit * 4, 400)
+            );
+        } catch (Exception $e) {
+            log_message('error', 'AdminUsers::_login_events — ' . $e->getMessage());
+            return [];
+        }
+
+        $rows = [];
+        foreach ($docs as $doc) {
+            $d    = $doc['data'] ?? $doc;
+            $type = $d['event_type'] ?? '';
+            if (!in_array($type, self::LOGIN_EVENTS, true)) continue;
+            if ($successOnly && $type !== 'ADMIN_LOGIN_SUCCESS') continue;
+
+            $rows[] = [
+                'adminId'   => (string) ($d['subject']['id'] ?? ''),
+                'loginTime' => (string) ($d['ts'] ?? ''),
+                'ipAddress' => (string) ($d['context']['ip'] ?? ''),
+                'device'    => (string) ($d['context']['user_agent'] ?? ''),
+                'status'    => $type === 'ADMIN_LOGIN_SUCCESS' ? 'success'
+                             : ($type === 'ADMIN_LOGIN_LOCKED' ? 'locked' : 'failed'),
+            ];
+            if (count($rows) >= $limit) break;
+        }
+        return $rows;
     }
 
     // -------------------------------------------------------------------------
@@ -420,12 +464,24 @@ class AdminUsers extends MY_Controller
 
         try {
             $adminDocs = $this->fs->schoolWhere('admins', [], 'Name', 'ASC');
+
+            // Most-recent successful login per admin, from the audit trail.
+            $lastMap = [];
+            foreach ($this->_login_events(500, true) as $ev) {
+                $aid = $ev['adminId'];
+                if ($aid !== '' && !isset($lastMap[$aid])) {
+                    $lastMap[$aid] = $ev['loginTime']; // first seen = newest (ts DESC)
+                }
+            }
+
             $rows = [];
             foreach ($adminDocs as $doc) {
                 $d = $doc['data'] ?? $doc;
                 $a   = $doc['data'];
                 $aid = $a['adminId'] ?? $d['id'];
-                $rows[] = $this->_normalize_admin($aid, $a);
+                $row = $this->_normalize_admin($aid, $a);
+                $row['lastLogin'] = $lastMap[$aid] ?? '';
+                $rows[] = $row;
             }
             $this->json_success(['admins' => $rows]);
         } catch (Exception $e) {
@@ -1187,7 +1243,8 @@ class AdminUsers extends MY_Controller
 
     // -------------------------------------------------------------------------
     // POST  /admin_users/get_login_logs
-    // Aggregates AccessHistory from each admin record (no centralized log exists)
+    // Reads admin-login events (success / failed / locked) from the
+    // security_events audit trail — the Wave C canonical login audit source.
     // -------------------------------------------------------------------------
 
     public function get_login_logs(): void
@@ -1195,19 +1252,17 @@ class AdminUsers extends MY_Controller
         $this->_require_role(['Super Admin', 'Admin'], 'view_login_logs');
 
         try {
-            $adminDocs = $this->fs->schoolWhere('admins', []);
-            $rows = [];
-
-            foreach ($adminDocs as $doc) {
-                $row = $this->_login_row($doc);
-                if ($row !== null) $rows[] = $row;
+            $names = $this->_admin_name_map();
+            $logs  = $this->_login_events(200);
+            foreach ($logs as &$l) {
+                $l['adminName'] = $names[$l['adminId']] ?? $l['adminId'];
             }
-
-            usort($rows, fn($a, $b) => strcmp($b['loginTime'] ?? '', $a['loginTime'] ?? ''));
+            unset($l);
 
             $this->json_success([
-                'logs'  => $rows,
-                'total' => count($rows),
+                'logs'    => $logs,
+                'total'   => count($logs),
+                'capped'  => count($logs) >= 200,
             ]);
         } catch (Exception $e) {
             $this->json_error('Failed to load login logs.');

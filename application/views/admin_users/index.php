@@ -58,6 +58,9 @@
 .au-perm-chip.selected{background:var(--gold-dim);color:var(--gold);border-color:var(--gold-ring);font-weight:600;}
 .au-perm-chip:hover{border-color:var(--gold-ring);}
 
+/* Log filter active state */
+.log-filter.active{background:var(--gold) !important;color:#fff !important;border-color:var(--gold) !important;font-weight:600;}
+
 /* Section box */
 .au-box{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:18px;}
 .au-box-head{font-size:14px;font-weight:700;color:var(--t1);font-family:var(--font-b);margin-bottom:14px;
@@ -83,7 +86,7 @@
         <div class="au-tab active" data-tab="dashboard"><i class="fa fa-dashboard" style="margin-right:5px;"></i>Dashboard</div>
         <div class="au-tab" data-tab="admins"><i class="fa fa-user-circle" style="margin-right:5px;"></i>Admin Users</div>
         <div class="au-tab" data-tab="roles"><i class="fa fa-key" style="margin-right:5px;"></i>Roles &amp; Permissions</div>
-        <div class="au-tab" data-tab="logs"><i class="fa fa-history" style="margin-right:5px;"></i>Last Login</div>
+        <div class="au-tab" data-tab="logs"><i class="fa fa-history" style="margin-right:5px;"></i>Login Activity</div>
     </div>
 
     <!-- ═══════════════════════════════════════════ DASHBOARD ═══ -->
@@ -125,11 +128,11 @@
         <div class="au-wrap">
             <table class="au-table" id="adminsTable">
                 <thead><tr>
-                    <th>Name</th><th>Email</th><th>Phone</th><th>Role</th>
+                    <th style="width:110px;">Admin ID</th><th>Name</th><th>Email</th><th>Phone</th><th>Role</th>
                     <th>Status</th><th>Created</th><th>Last Login</th><th style="width:140px;">Actions</th>
                 </tr></thead>
                 <tbody id="adminsTbody">
-                    <tr><td colspan="8" style="text-align:center;padding:24px;color:var(--t3);"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr>
+                    <tr><td colspan="9" style="text-align:center;padding:24px;color:var(--t3);"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -203,7 +206,12 @@
     <div class="au-pane" id="pane-logs">
 
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
-            <span style="font-size:11.5px;color:var(--t3);font-family:var(--font-m);">Most recent login per admin</span>
+            <div style="display:flex;gap:5px;">
+                <button class="au-btn au-btn-sm au-btn-s log-filter active" data-filter="all">All</button>
+                <button class="au-btn au-btn-sm au-btn-s log-filter" data-filter="success">Success</button>
+                <button class="au-btn au-btn-sm au-btn-s log-filter" data-filter="failed" style="color:#dc2626;">Failed</button>
+                <button class="au-btn au-btn-sm au-btn-s log-filter" data-filter="locked" style="color:#d97706;">Locked</button>
+            </div>
             <input type="text" id="logSearch" placeholder="Filter admin, IP..." class="form-control"
                 aria-label="Filter logins by admin or IP"
                 style="width:200px;font-size:12.5px;height:30px;margin-left:auto;">
@@ -211,9 +219,9 @@
 
         <div class="au-wrap">
             <table class="au-table">
-                <thead><tr><th>Time</th><th>Admin</th><th>IP Address</th></tr></thead>
+                <thead><tr><th>Time</th><th>Admin</th><th>IP Address</th><th>Device</th><th>Status</th></tr></thead>
                 <tbody id="logsTbody">
-                    <tr><td colspan="3" style="text-align:center;padding:24px;color:var(--t3);"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr>
+                    <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--t3);"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -438,7 +446,7 @@ function renderAdmins(){
         return (a.name||'').toLowerCase().indexOf(q)>=0 || (a.email||'').toLowerCase().indexOf(q)>=0 || (a.role||'').toLowerCase().indexOf(q)>=0;
     });
     if(!rows.length){
-        $('#adminsTbody').html('<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--t3);">No admin users found.</td></tr>');
+        $('#adminsTbody').html('<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--t3);">No admin users found.</td></tr>');
         return;
     }
     var h = rows.map(function(a){
@@ -459,6 +467,7 @@ function renderAdmins(){
         }
         acts += '</div>';
         return '<tr>'
+            +'<td style="font-family:var(--font-m);color:var(--gold);font-size:11.5px;font-weight:600;">'+aid+'</td>'
             +'<td><strong>'+esc(a.name)+'</strong>'+(isSelf?' <span class="au-badge au-b-blue" style="font-size:9px;">You</span>':'')+'</td>'
             +'<td style="font-size:12px;">'+esc(a.email)+'</td>'
             +'<td style="font-size:12px;">'+esc(a.phone||'-')+'</td>'
@@ -555,7 +564,9 @@ $('#adminForm').on('submit', function(e){
     }
 
     var $btn = $('#saveAdminBtn').prop('disabled',true);
+    if(window.ZXLoader) ZXLoader.show(isEdit ? 'Saving changes…' : 'Creating admin…');
     $.post(url, csrf(payload), function(r){
+        if(window.ZXLoader) ZXLoader.hide(true);
         $btn.prop('disabled',false);
         if(r.status==='success'){
             $('#adminModal').modal('hide');
@@ -575,7 +586,11 @@ $('#adminForm').on('submit', function(e){
         } else {
             toast(r.message,false);
         }
-    },'json').fail(function(){ $btn.prop('disabled',false); });
+    },'json').fail(function(){
+        if(window.ZXLoader) ZXLoader.hide(true);
+        $btn.prop('disabled',false);
+        toast('Network error — please try again.',false);
+    });
 });
 
 // Toggle status (delegated)
@@ -749,37 +764,64 @@ $('#roleForm').on('submit', function(e){
 
 /* ══════════════════════════════════ LOGIN ACTIVITY ═════════════ */
 var _logs = [];
+var _logFilter = 'all';
+var _logsCapped = false;
+
+// Condense a raw user-agent into a short "Browser · OS" label.
+function shortUA(ua){
+    ua = ua || '';
+    if(!ua) return '-';
+    var b = /Edg/.test(ua)?'Edge':/OPR|Opera/.test(ua)?'Opera':/Chrome/.test(ua)?'Chrome':/Firefox/.test(ua)?'Firefox':/Safari/.test(ua)?'Safari':'';
+    var o = /Windows/.test(ua)?'Windows':/Android/.test(ua)?'Android':/iPhone|iPad|iOS/.test(ua)?'iOS':/Mac OS X|Macintosh/.test(ua)?'macOS':/Linux/.test(ua)?'Linux':'';
+    var label = [b,o].filter(Boolean).join(' · ');
+    return label || ua.substring(0,28);
+}
+
+function statusBadge(s){
+    if(s==='failed') return '<span class="au-badge au-b-red">Failed</span>';
+    if(s==='locked') return '<span class="au-badge au-b-amber">Locked</span>';
+    return '<span class="au-badge au-b-green">Success</span>';
+}
 
 function loadLogs(){
     $.post(B+'admin_users/get_login_logs',csrf(),function(r){
-        if(r.status!=='success') return;
+        if(r.status!=='success'){ toast(r.message||'Failed to load login activity.',false); return; }
         _logs = r.logs||[];
+        _logsCapped = !!r.capped;
         renderLogs();
-        $('#logsMeta').text(r.total+' admin'+(r.total===1?'':'s')+' with a recorded login');
-    },'json');
+    },'json').fail(function(){ toast('Network error loading login activity.',false); });
 }
 
 function renderLogs(){
     var q = ($('#logSearch').val()||'').toLowerCase();
     var rows = _logs.filter(function(l){
+        if(_logFilter!=='all' && (l.status||'success')!==_logFilter) return false;
         if(q && (l.adminId||'').toLowerCase().indexOf(q)<0 && (l.adminName||'').toLowerCase().indexOf(q)<0 && (l.ipAddress||'').toLowerCase().indexOf(q)<0) return false;
         return true;
     });
+    $('#logsMeta').text(rows.length+' of '+_logs.length+' event'+(_logs.length===1?'':'s')+(_logsCapped?' (showing latest 200)':''));
     if(!rows.length){
-        $('#logsTbody').html('<tr><td colspan="3" style="text-align:center;padding:24px;color:var(--t3);">No matching entries.</td></tr>');
+        $('#logsTbody').html('<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--t3);">No matching entries.</td></tr>');
         return;
     }
     var h = rows.map(function(l){
-        var online = l.isOnline ? ' <span class="au-badge au-b-green" style="font-size:9px;">Online</span>' : '';
         return '<tr>'
             +'<td style="font-size:11.5px;font-family:var(--font-m);color:var(--t3);">'+esc(ts(l.loginTime))+'</td>'
-            +'<td>'+esc(l.adminName||l.adminId||'')+online+'<div style="font-size:10px;color:var(--t3);">'+esc(l.adminId||'')+'</div></td>'
-            +'<td style="font-size:11.5px;font-family:var(--font-m);">'+esc(l.ipAddress||'')+'</td></tr>';
+            +'<td>'+esc(l.adminName||l.adminId||'')+'<div style="font-size:10px;color:var(--t3);">'+esc(l.adminId||'')+'</div></td>'
+            +'<td style="font-size:11.5px;font-family:var(--font-m);">'+esc(l.ipAddress||'')+'</td>'
+            +'<td style="font-size:11px;color:var(--t3);" title="'+esc(l.device||'')+'">'+esc(shortUA(l.device))+'</td>'
+            +'<td>'+statusBadge(l.status)+'</td></tr>';
     }).join('');
     $('#logsTbody').html(h);
 }
 
 $('#logSearch').on('input', renderLogs);
+$(document).on('click', '.log-filter', function(){
+    $('.log-filter').removeClass('active');
+    $(this).addClass('active');
+    _logFilter = $(this).attr('data-filter');
+    renderLogs();
+});
 
 /* ── Init ──────────────────────────────────────────────────────── */
 loadDashboard();
