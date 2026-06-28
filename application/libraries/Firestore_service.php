@@ -688,9 +688,24 @@ class Firestore_service
      *                            already-used numbers).
      * @param int    $maxAttempts Burst tolerance for concurrent writers /
      *                            pointer drift.
+     * @param array  $metadata    Optional whitelisted audit fields written onto
+     *                            the claim doc alongside the core fields.
+     *                            Recognized keys: 'claimedBy', 'claimedFor',
+     *                            'idempotencyKey'. Other keys are ignored.
+     *                            Used by Numbering_service for audit-actor
+     *                            tracking; existing callers may omit.
+     * @param callable|null $missingPointerCallback
+     *                            Optional callback invoked ONLY when the
+     *                            pointer doc is missing (i.e. on the first
+     *                            allocation for this (schoolId, kind) over
+     *                            the lifetime of the system). The callback
+     *                            must return an int to use as the starting
+     *                            base. Lets callers seed from legacy data
+     *                            without paying any cost on subsequent
+     *                            allocations. Existing callers may omit.
      * @return int   The claimed value (>= 1), or 0 if every attempt failed.
      */
-    public function nextSchoolCounter(string $kind, int $seedFloor = 0, int $maxAttempts = 8): int
+    public function nextSchoolCounter(string $kind, int $seedFloor = 0, int $maxAttempts = 8, array $metadata = [], ?callable $missingPointerCallback = null): int
     {
         if (!$this->ready || $this->client === null) return 0;
 
@@ -702,6 +717,19 @@ class Firestore_service
             $cur  = $this->client->getDocument($col, $pointerId);
             $base = is_array($cur) ? (int) ($cur['value'] ?? 0) : 0;
         } catch (\Exception $_) { /* missing pointer → start at 0 */ }
+
+        // Missing-pointer seed: invoke the caller-supplied callback ONLY
+        // when the pointer doc has no recorded value. Once the pointer
+        // doc is written (after the first successful allocation), this
+        // branch is never re-entered — the caller's seed cost is paid
+        // exactly once per (schoolId, kind) for the lifetime of the system.
+        if ($base === 0 && $missingPointerCallback !== null) {
+            try {
+                $base = (int) call_user_func($missingPointerCallback);
+            } catch (\Throwable $e) {
+                log_message('warning', "Firestore_service::nextSchoolCounter({$kind}) missing-pointer callback failed: " . $e->getMessage());
+            }
+        }
         if ($seedFloor > $base) $base = $seedFloor;
 
         $candidate = $base;
@@ -710,13 +738,23 @@ class Firestore_service
             $claimId = "{$this->schoolId}_{$kind}_claim_{$candidate}";
             $created = false;
             try {
-                $created = $this->client->createDocument($col, $claimId, [
+                $claimDoc = [
                     'schoolId'  => $this->schoolId,
                     'session'   => $this->session,
                     'kind'      => $kind,
                     'value'     => $candidate,
                     'claimedAt' => date('c'),
-                ]);
+                ];
+                // Whitelist-merge optional audit fields supplied by caller
+                // (Numbering_service passes these; legacy callers do not).
+                // Null values are treated as "not supplied" and omitted from
+                // the claim doc to keep Firestore documents clean.
+                foreach (['claimedBy', 'claimedFor', 'idempotencyKey'] as $k) {
+                    if (isset($metadata[$k])) {
+                        $claimDoc[$k] = $metadata[$k];
+                    }
+                }
+                $created = $this->client->createDocument($col, $claimId, $claimDoc);
             } catch (\Exception $e) {
                 log_message('error', "Firestore_service::nextSchoolCounter({$kind}) claim attempt {$i}: " . $e->getMessage());
                 $created = false;

@@ -133,6 +133,14 @@ class MY_Controller extends CI_Controller
             );
         }
 
+        // Initialize Numbering_service — platform allocator for sequential
+        // business document IDs. Phase 2: Communication consumer (notice,
+        // circular, template, trigger, queue, log).
+        $this->load->library('numbering_service', null, 'numbering');
+        if ($this->school_id && $this->session_year) {
+            $this->numbering->init($this->fs, $this->school_id, $this->session_year);
+        }
+
         // ── Determine current route ───────────────────────────────────────
         $controller = strtolower($this->router->fetch_class());
         $method     = strtolower($this->router->fetch_method());
@@ -295,20 +303,25 @@ class MY_Controller extends CI_Controller
                     }
 
                     // ── Admin account status re-check (piggyback on same interval) ──
-                    // NON-B2 surface (Users/Admin/...) — runs identically under both flag states.
-                    // If another admin disables this account mid-session, force logout.
-                    if (!empty($this->admin_id) && !empty($this->parent_db_key)) {
-                        $adminStatus = $this->firebase->get(
-                            "Users/Admin/{$this->parent_db_key}/{$this->admin_id}/Status"
-                        );
-                        if (is_string($adminStatus) && strtolower($adminStatus) !== 'active') {
-                            log_message('info',
-                                "Admin status=[{$adminStatus}] admin=[{$this->admin_id}]"
-                                . " school=[{$this->school_name}] — forcing logout."
-                            );
-                            $this->_force_logout(
-                                'Your account has been deactivated. Please contact your administrator.'
-                            );
+                    // Firestore canonical: staff/{schoolId}_{adminId}.status. If
+                    // another admin disables this account mid-session, force logout.
+                    if (!empty($this->admin_id) && !empty($this->school_id)) {
+                        try {
+                            $staffDoc = $this->fs->getEntity('staff', "{$this->school_id}_{$this->admin_id}");
+                            $adminStatus = is_array($staffDoc)
+                                ? (string) ($staffDoc['status'] ?? $staffDoc['Status'] ?? 'Active')
+                                : '';
+                            if ($adminStatus !== '' && strtolower($adminStatus) !== 'active') {
+                                log_message('info',
+                                    "Admin status=[{$adminStatus}] admin=[{$this->admin_id}]"
+                                    . " school=[{$this->school_name}] — forcing logout."
+                                );
+                                $this->_force_logout(
+                                    'Your account has been deactivated. Please contact your administrator.'
+                                );
+                            }
+                        } catch (\Throwable $e) {
+                            log_message('error', 'MY_Controller admin status re-check failed: ' . $e->getMessage());
                         }
                     }
 

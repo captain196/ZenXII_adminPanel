@@ -454,57 +454,66 @@ class Communication_verifier extends CI_Controller
     /*  RUNTIME ASSERTIONS (CH-A13..A20)                                   */
     /* ------------------------------------------------------------------ */
 
-    /** CH-A13: CAS counter increments monotonically across 3 calls. */
+    /**
+     * CH-A13 (Phase 2): _nextCommCounter delegates to Numbering_service::next.
+     *
+     * Pre-Phase-2 this was a runtime probe of monotonic increment via direct
+     * invocation. Post-Phase-2 monotonic increment is delivered by the
+     * platform Numbering_service (verified independently by numbering_verifier
+     * CH-NUM-6 pad-width utilisation tracking). The helper's responsibility
+     * here is purely to delegate correctly — verified structurally.
+     */
     private function _assert_cas_counter_monotonic(): array
     {
-        echo "\n── CH-A13: CAS counter monotonic (3 sequential calls) ──\n";
-        if (!$this->_helper_has_method('_nextCommCounter')) {
-            return $this->_fail('_nextCommCounter not yet implemented (expected during H2 baseline)');
+        echo "\n── CH-A13: helper _nextCommCounter delegates to Numbering_service ──\n";
+        $helperBody = $this->_extract_method_body($this->_helper_src(), '_nextCommCounter');
+        if ($helperBody === '') {
+            return $this->_fail('_nextCommCounter method body not extractable');
         }
-        try {
-            $helper = $this->_init_helper();
-            $ref = new ReflectionMethod($helper, '_nextCommCounter');
-            $ref->setAccessible(true);
-            $ids = [];
-            for ($i = 0; $i < 3; $i++) {
-                $ids[] = (string) $ref->invoke($helper, 'QueueProbe', 5);
-            }
-            echo "  IDs returned: " . implode(', ', $ids) . "\n";
-            $nums = array_map(fn($id) => (int) preg_replace('/\D+/', '', $id), $ids);
-            $ok = ($nums[1] === $nums[0] + 1) && ($nums[2] === $nums[1] + 1);
-            return $ok
-                ? $this->_ok('3 calls produced monotonically increasing IDs')
-                : $this->_fail('IDs are not monotonic: ' . implode(',', $nums));
-        } catch (\Throwable $e) {
-            return $this->_fail('exception during probe: ' . substr($e->getMessage(), 0, 140));
-        }
+        $hasGetInstance   = preg_match('/get_instance\s*\(\s*\)/', $helperBody);
+        $hasNumberingNext = preg_match('/->numbering->next\s*\(/', $helperBody);
+        $hasLowercaseKind = preg_match('/strtolower\s*\(\s*\$type\s*\)/', $helperBody);
+        echo "  retrieves CI via get_instance():       " . ($hasGetInstance   ? 'yes' : 'no') . "\n";
+        echo "  calls Numbering_service::next():       " . ($hasNumberingNext ? 'yes' : 'no') . "\n";
+        echo "  passes lowercased \$type as kind:       " . ($hasLowercaseKind ? 'yes' : 'no') . "\n";
+        return ($hasGetInstance && $hasNumberingNext && $hasLowercaseKind)
+            ? $this->_ok('_nextCommCounter delegates to Numbering_service::next with correct kind mapping')
+            : $this->_fail('_nextCommCounter delegation pattern incomplete');
     }
 
-    /** CH-A14: CAS counter self-seeds when commCounters.QueueProbe is absent. */
+    /**
+     * CH-A14 (Phase 2): _nextCommCounter body contains no legacy CAS loop /
+     * commCounters pattern.
+     *
+     * Pre-Phase-2 this was a runtime probe of self-seed behaviour. Post-
+     * Phase-2 the self-seed lives inside Numbering_service (via the
+     * primitive's missing-pointer callback, verified independently by the
+     * numbering_verifier). The helper must no longer carry any commCounters
+     * storage logic — verified structurally.
+     */
     private function _assert_cas_counter_self_seeds(): array
     {
-        echo "\n── CH-A14: CAS counter self-seeds when field absent ──\n";
-        if (!$this->_helper_has_method('_nextCommCounter')) {
-            return $this->_fail('_nextCommCounter not yet implemented (expected during H2 baseline)');
+        echo "\n── CH-A14: helper _nextCommCounter free of legacy CAS / commCounters pattern ──\n";
+        $helperBody = $this->_extract_method_body($this->_helper_src(), '_nextCommCounter');
+        if ($helperBody === '') {
+            return $this->_fail('_nextCommCounter method body not extractable');
         }
-        try {
-            // Probe-side: blank the QueueProbe counter via a Firestore update,
-            // then call _nextCommCounter and verify it returned a positive value.
-            $profileDocId = $this->schoolFs . '_profile';
-            $this->firebase->firestoreSet('schools', $profileDocId,
-                ['commCounters.QueueProbe' => null], /* merge */ true);
-            $helper = $this->_init_helper();
-            $ref = new ReflectionMethod($helper, '_nextCommCounter');
-            $ref->setAccessible(true);
-            $id = (string) $ref->invoke($helper, 'QueueProbe', 5);
-            $n  = (int) preg_replace('/\D+/', '', $id);
-            echo "  self-seed produced: {$id} (n={$n})\n";
-            return ($n > 0)
-                ? $this->_ok('self-seed produced a positive counter value')
-                : $this->_fail('self-seed returned non-positive value');
-        } catch (\Throwable $e) {
-            return $this->_fail('exception during probe: ' . substr($e->getMessage(), 0, 140));
+        // _extract_method_body's lookahead stops at the next method declaration,
+        // so it can over-capture the trailing docblock of the next method. Trim
+        // at this method's own closing brace (4-space indent at end of method).
+        $endPos = strpos($helperBody, "\n    }\n");
+        if ($endPos !== false) {
+            $helperBody = substr($helperBody, 0, $endPos);
         }
+        $hasLegacyCommCounter = preg_match('/commCounters/', $helperBody);
+        $hasLegacyHelperCalls = preg_match('/_readCommCounterValue|_seedCommCounter|CAS_MAX_RETRIES/', $helperBody);
+        $hasLegacyProfileWrite = preg_match('/\$this->fs->update\s*\(\s*[\'"]schools[\'"]/', $helperBody);
+        echo "  contains 'commCounters' literal:       " . ($hasLegacyCommCounter ? 'yes (FAIL)' : 'no') . "\n";
+        echo "  calls legacy CAS helper methods:       " . ($hasLegacyHelperCalls ? 'yes (FAIL)' : 'no') . "\n";
+        echo "  writes to schools profile doc:         " . ($hasLegacyProfileWrite ? 'yes (FAIL)' : 'no') . "\n";
+        return (!$hasLegacyCommCounter && !$hasLegacyHelperCalls && !$hasLegacyProfileWrite)
+            ? $this->_ok('_nextCommCounter body is a pure delegation; no legacy storage path remains')
+            : $this->_fail('_nextCommCounter still contains legacy commCounters / CAS pattern');
     }
 
     /** CH-A15: CAS exhaustion path is fail-loud (CAS_MAX_RETRIES + exception). */
@@ -895,15 +904,23 @@ class Communication_verifier extends CI_Controller
     /* ------------------------------------------------------------------ */
 
     /**
-     * CH-A31: Communication.php (_next_id + bulk-allocate) and
-     * Communication_helper.php (_readCommCounterValue) read commCounters
-     * exclusively from the nested map. No flat-key access remains.
+     * CH-A31 (Phase 2): live Communication allocation paths no longer touch
+     * commCounters.* fields. Counter storage has moved entirely to
+     * systemCounters/ via Numbering_service; the helper and controller
+     * methods are pure delegations.
+     *
+     * Pre-Phase-2 this assertion enforced "nested-only commCounters reads
+     * with no flat-key fallback". Post-Phase-2 the equivalent stronger
+     * invariant is "no commCounters touches at all in the live paths".
+     * The _readCommCounterValue method is preserved in Communication_helper
+     * as dead code for transitional reasons; this assertion validates the
+     * LIVE allocation paths (_next_id and _nextCommCounter bodies).
      */
     private function _assert_counter_reads_nested_only(): array
     {
-        echo "\n── CH-A31: counter reads target nested commCounters only ──\n";
+        echo "\n── CH-A31: live allocation paths no longer touch commCounters.* (Phase 2) ──\n";
 
-        // ── Communication.php controller ─────────────────────────────
+        // ── Communication.php controller: _next_id body ───────────────────
         $commPath = APPPATH . 'controllers/Communication.php';
         $commSrc  = is_file($commPath) ? (string) file_get_contents($commPath) : '';
         if ($commSrc === '') return $this->_fail('Communication.php not readable');
@@ -912,32 +929,35 @@ class Communication_verifier extends CI_Controller
         if ($nextIdBody === '') {
             return $this->_fail('_next_id method body not extractable from Communication.php');
         }
-        $nextNested = preg_match("/\\\$doc\\[['\"]commCounters['\"]\\]\\[\\\$type\\]/", $nextIdBody);
-        $nextFlat   = preg_match("/\\\$doc\\[\\\$flatKey\\]/", $nextIdBody);
-        echo "  _next_id reads \$doc['commCounters'][\$type] (nested): " . ($nextNested ? 'yes' : 'no') . "\n";
-        echo "  _next_id reads \$doc[\$flatKey] (legacy flat):           " . ($nextFlat ? 'yes (FAIL)' : 'no') . "\n";
-
-        // Bulk-allocate region — line 2109-2125 in Communication.php.
-        $bulkNested = preg_match("/\\\$profileDoc\\[['\"]commCounters['\"]\\]\\[['\"]Queue['\"]\\]/", $commSrc);
-        $bulkFlat   = preg_match("/\\\$profileDoc\\[['\"]commCounters\\.Queue['\"]\\]/", $commSrc);
-        echo "  bulk-allocate reads \$profileDoc['commCounters']['Queue'] (nested): " . ($bulkNested ? 'yes' : 'no') . "\n";
-        echo "  bulk-allocate reads \$profileDoc['commCounters.Queue'] (legacy):    " . ($bulkFlat ? 'yes (FAIL)' : 'no') . "\n";
-
-        // ── Communication_helper.php library ──────────────────────────
-        $helperBody = $this->_extract_method_body($this->_helper_src(), '_readCommCounterValue');
-        if ($helperBody === '') {
-            return $this->_fail('_readCommCounterValue method body not extractable from Communication_helper.php');
+        // Trim to this method's own closing brace (see CH-A14 note).
+        $endPos = strpos($nextIdBody, "\n    }\n");
+        if ($endPos !== false) {
+            $nextIdBody = substr($nextIdBody, 0, $endPos);
         }
-        $helperNested = preg_match("/\\\$profile\\[['\"]commCounters['\"]\\]\\[\\\$type\\]/", $helperBody);
-        $helperFlat   = preg_match("/\\\$profile\\[\\\$flatKey\\]/", $helperBody);
-        echo "  _readCommCounterValue reads \$profile['commCounters'][\$type] (nested): " . ($helperNested ? 'yes' : 'no') . "\n";
-        echo "  _readCommCounterValue reads \$profile[\$flatKey] (legacy fallback):       " . ($helperFlat ? 'yes (FAIL)' : 'no') . "\n";
+        $nextIdTouches   = preg_match('/commCounters/', $nextIdBody);
+        $nextIdDelegates = preg_match('/->numbering->next\s*\(/', $nextIdBody);
+        echo "  _next_id contains 'commCounters' literal:      " . ($nextIdTouches   ? 'yes (FAIL)' : 'no') . "\n";
+        echo "  _next_id delegates to numbering->next():       " . ($nextIdDelegates ? 'yes' : 'no') . "\n";
 
-        $allNested = ($nextNested > 0) && ($bulkNested > 0) && ($helperNested > 0);
-        $anyFlat   = ($nextFlat > 0)   || ($bulkFlat > 0)   || ($helperFlat > 0);
-        return ($allNested && !$anyFlat)
-            ? $this->_ok('Communication.php + helper read commCounters from nested map only')
-            : $this->_fail('counter read path divergence detected (nested coverage='.($allNested ? 'full' : 'partial').', flat fallback='.($anyFlat ? 'PRESENT' : 'absent').')');
+        // ── Communication_helper.php library: _nextCommCounter body ───────
+        $helperBody = $this->_extract_method_body($this->_helper_src(), '_nextCommCounter');
+        if ($helperBody === '') {
+            return $this->_fail('_nextCommCounter method body not extractable');
+        }
+        $endPos = strpos($helperBody, "\n    }\n");
+        if ($endPos !== false) {
+            $helperBody = substr($helperBody, 0, $endPos);
+        }
+        $helperTouches   = preg_match('/commCounters/', $helperBody);
+        $helperDelegates = preg_match('/->numbering->next\s*\(/', $helperBody);
+        echo "  _nextCommCounter contains 'commCounters':      " . ($helperTouches   ? 'yes (FAIL)' : 'no') . "\n";
+        echo "  _nextCommCounter delegates to numbering:       " . ($helperDelegates ? 'yes' : 'no') . "\n";
+
+        $clean     = (!$nextIdTouches && !$helperTouches);
+        $delegated = ($nextIdDelegates && $helperDelegates);
+        return ($clean && $delegated)
+            ? $this->_ok('live counter allocation paths fully delegate to Numbering_service; no commCounters.* touches')
+            : $this->_fail('counter allocation path still references commCounters or fails to delegate');
     }
 
     /**

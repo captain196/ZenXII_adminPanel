@@ -231,69 +231,34 @@ class Communication extends MY_Controller
     ];
 
     /**
-     * Firestore-only ID minting. Counter map lives on schools/{schoolId}_profile
-     * as a NESTED `commCounters: {Notice: N, Queue: N, ...}` map. Reads and
-     * writes target the nested path exclusively. Post-R5 Firestore_service::
-     * update reshapes the dotted update key into a nested updateMask path so a
-     * single update call mutates only the targeted counter, never the sibling
-     * keys in the map.
+     * Allocate the next ID for a Communication kind via Numbering_service.
      *
-     * Non-atomic get-then-update — acceptable at school scale with the self-
-     * healing seed: when nested.{type} is absent we scan the canonical
-     * collection for the highest existing prefix-NNNN doc id and seed from
-     * that, so we never collide with past records.
+     * Phase 2: replaced the legacy commCounters.{type} read-modify-write
+     * with delegation to the platform Numbering_service. Storage moves
+     * from schools/{schoolId}_profile.commCounters.{Type} (legacy) to
+     * systemCounters/{schoolId}_{kind}_claim_{N} (Pattern A claim-doc
+     * CAS). All 5 call sites in this controller are unchanged.
+     *
+     * Parameter contract:
+     *   $type   — capitalised counter name ('Notice', 'Circular', etc.);
+     *             lower-cased into the registry kind.
+     *   $prefix — ignored. The registry (application/config/numbering.php)
+     *             owns the canonical prefix for every kind.
+     *   $pad    — ignored. Same — registry owns padWidth.
+     *
+     * Failure behaviour:
+     *   - Service or kind disabled  → \LogicException (propagates)
+     *   - CAS retry exhaustion      → \RuntimeException (propagates)
+     *   - No silent fallback to a random or timestamp-based ID — the
+     *     caller's action fails entirely, preserving sequential audit
+     *     integrity (same fail-loud contract as the legacy retry path).
      */
     private function _next_id(string $type, string $prefix, int $pad = 4): string
     {
-        $profileDocId = $this->fs->docId('profile');
-        $doc = null;
-        try { $doc = $this->fs->get('schools', $profileDocId); } catch (\Exception $e) {}
-
-        $cur = (is_array($doc)
-                && isset($doc['commCounters'])
-                && is_array($doc['commCounters'])
-                && isset($doc['commCounters'][$type])
-                && is_numeric($doc['commCounters'][$type]))
-            ? (int) $doc['commCounters'][$type]
-            : -1;
-
-        if ($cur < 0) {
-            // Self-heal: scan the target collection for the highest existing prefix-NNNN.
-            $cur = 0;
-            $src = self::COUNTER_SEED_SOURCES[$type] ?? null;
-            if (is_array($src)) {
-                [$collection, $seedPrefix] = $src;
-                try {
-                    $docs = $this->fs->schoolWhere($collection, []);
-                    if (is_array($docs)) {
-                        $schoolPrefix = $this->school_id . '_';
-                        foreach ($docs as $d) {
-                            $d = $d['data'] ?? $d;
-                            $rawId = (string) ($d['id'] ?? '');
-                            $trimmed = (strpos($rawId, $schoolPrefix) === 0)
-                                ? substr($rawId, strlen($schoolPrefix))
-                                : $rawId;
-                            if (preg_match('/^' . preg_quote($seedPrefix, '/') . '(\d+)$/', $trimmed, $m)) {
-                                $n = (int) $m[1];
-                                if ($n > $cur) $cur = $n;
-                            }
-                        }
-                    }
-                } catch (\Exception $e) {
-                    log_message('error', "Comm counter seed failed for {$type}: " . $e->getMessage());
-                }
-            }
-        }
-
-        $next = $cur + 1;
-        try {
-            // Firestore_service::update reshapes the dotted key into a nested
-            // path write — only the {type} field inside commCounters is touched.
-            $this->fs->update('schools', $profileDocId, ["commCounters.{$type}" => $next]);
-        } catch (\Exception $e) {
-            log_message('error', "Comm counter update failed for {$type}: " . $e->getMessage());
-        }
-        return $prefix . str_pad($next, $pad, '0', STR_PAD_LEFT);
+        return $this->numbering->next(strtolower($type), [
+            'claimedBy'  => $this->admin_id,
+            'claimedFor' => 'COMM:' . strtoupper($type),
+        ]);
     }
 
     /**

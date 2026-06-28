@@ -128,70 +128,46 @@ class Communication_helper
     }
 
     /**
-     * Mint the next monotonic counter value for a Communication-domain
-     * counter, with verify-after-write CAS semantics.
+     * Allocate the next ID for a Communication kind via Numbering_service.
      *
-     * Self-seeds the first call by scanning the canonical collection for
-     * the highest existing prefix-NNNN doc, so a missing field cannot
-     * collide with historical IDs. Subsequent calls increment normally.
+     * Phase 2: replaced the legacy verify-after-write CAS on
+     * schools/{schoolId}_profile.commCounters.{Type} with delegation to
+     * the platform Numbering_service. Storage moves to
+     * systemCounters/{schoolId}_{kind}_claim_{N} (Pattern A claim-doc CAS
+     * — race-safe by construction; no verify-after-write needed).
      *
-     * Concurrency: writes go through fs->update which correctly nests the
-     * dotted field path (commCounters.{type}) into the commCounters map
-     * without disturbing sibling counters. After each write we re-read
-     * and verify the landed value equals $next; mismatch means a racing
-     * writer reached the same $next first, so we retry from a fresh read.
+     * The helper retrieves the service via get_instance() because the
+     * controller that invoked us has Numbering_service loaded by
+     * MY_Controller as $this->numbering. Both call sites in this helper
+     * (lines 305, 431, 777) keep their existing signature.
      *
-     * Fails loud (RuntimeException) on CAS_MAX_RETRIES exhaustion — V7
-     * contract: never silently lose a counter increment.
+     * Parameter contract:
+     *   $type   — capitalised counter name ('Queue', 'Notice'); lower-cased
+     *             into the registry kind.
+     *   $width  — ignored. Registry owns padWidth (queue/log = 5,
+     *             notice = 4). Preserved in the signature for call-site
+     *             backward compatibility.
+     *
+     * Failure behaviour:
+     *   - Numbering_service not available on calling controller →
+     *     \RuntimeException (caller misuse)
+     *   - Kind disabled or CAS exhaustion → propagates the service's
+     *     \LogicException / \RuntimeException (fail-loud, no fallback ID).
      *
      * @return string  Formatted ID, e.g. "QUE00001" / "NOT0001".
      */
     private function _nextCommCounter(string $type, int $width = 5): string
     {
-        if ($this->fs === null) {
-            throw new \RuntimeException("Communication_helper::_nextCommCounter requires Firestore_service.");
+        $ci = function_exists('get_instance') ? get_instance() : null;
+        if ($ci === null || !isset($ci->numbering)) {
+            throw new \RuntimeException(
+                'Communication_helper::_nextCommCounter requires Numbering_service '
+                . '(loaded by MY_Controller as $this->numbering).'
+            );
         }
-
-        $profileDocId = $this->school_id . '_profile';
-        $field        = "commCounters.{$type}";
-        $prefix       = self::COUNTER_SEED_SOURCES[$type][1] ?? $type;
-
-        $lastErr = null;
-        for ($attempt = 0; $attempt < self::CAS_MAX_RETRIES; $attempt++) {
-            $profile = $this->fs->get('schools', $profileDocId);
-            $current = $this->_readCommCounterValue($profile, $type);
-            if ($current < 0) {
-                $current = $this->_seedCommCounter($type);
-            }
-            $next = $current + 1;
-
-            $ok = false;
-            try {
-                $ok = (bool) $this->fs->update('schools', $profileDocId, [$field => $next]);
-            } catch (\Throwable $e) {
-                $lastErr = $e->getMessage();
-            }
-
-            if ($ok) {
-                // Verify-after-write: re-read and confirm the landed value
-                // equals $next. If a racing writer pushed it past $next,
-                // their ID is theirs and we re-mint from the fresh state.
-                $verify  = $this->fs->get('schools', $profileDocId);
-                $landed  = $this->_readCommCounterValue($verify, $type);
-                if ($landed === $next) {
-                    return $prefix . str_pad((string) $next, $width, '0', STR_PAD_LEFT);
-                }
-            }
-
-            // Backoff up to ~640ms then retry on write failure or CAS miss.
-            usleep(10000 * (1 << min($attempt, 5)));
-        }
-
-        throw new \RuntimeException(
-            "Communication_helper: CAS counter '{$type}' exhausted after "
-            . self::CAS_MAX_RETRIES . " retries"
-            . ($lastErr ? " (last error: {$lastErr})" : '')
-        );
+        return $ci->numbering->next(strtolower($type), [
+            'claimedFor' => 'COMM_HELPER:' . strtoupper($type),
+        ]);
     }
 
     /**
