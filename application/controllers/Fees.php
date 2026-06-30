@@ -1519,10 +1519,16 @@ class Fees extends MY_Controller
         ];
         $existing  = $this->fsTxn->demandsForStudent($studentId);
         $headIdMap = $this->fsTxn->readFeeHeadIds($class, $section);
+        $canonMap  = $this->fsTxn->canonicalHeadIdMap(); // name(lower) -> canonical feeHeadId
 
-        $haveIds = [];
-        foreach ($existing as $docId => $_d) {
-            if ($docId !== '') $haveIds[$docId] = true;
+        // Fees V7: duplicate-detection by canonical key (periodKey + canonicalFeeHeadId)
+        // among NON-archived demands — id-agnostic, rename-safe, archive-aware.
+        $haveKeys = [];
+        foreach ($existing as $_docId => $d) {
+            if (($d['status'] ?? '') === 'archived') continue;
+            $pk  = (string) ($d['periodKey'] ?? $d['period_key'] ?? '');
+            $cid = (string) ($d['canonicalFeeHeadId'] ?? '');
+            if ($pk !== '' && $cid !== '') $haveKeys[$pk . '|' . $cid] = true;
         }
 
         $today = date('Y-m-d');
@@ -1538,30 +1544,32 @@ class Fees extends MY_Controller
                     ? "Yearly Fees {$this->session_year}"
                     : "{$month} " . $this->_year_for_month($month);
                 $feeHeadId   = (string) ($headIdMap[$title] ?? '');
-                $demandId    = $this->_buildDemandId($studentId, $periodKey, $feeHeadId, $title);
+                $canonicalId = (string) ($canonMap[strtolower(trim($title))] ?? $feeHeadId);
 
-                if (isset($haveIds[$demandId])) continue; // already exists, leave it alone
+                if (isset($haveKeys[$periodKey . '|' . $canonicalId])) continue; // already exists
 
-                $this->fsTxn->writeDemand($demandId, [
-                    'studentId'    => $studentId,
-                    'className'    => $class,
-                    'section'      => $section,
-                    'feeHead'      => $title,
-                    'feeHeadId'    => $feeHeadId,
-                    'period'       => $periodLabel,
-                    'periodKey'    => $periodKey,
-                    'frequency'    => $month === 'Yearly Fees' ? 'yearly' : 'monthly',
-                    'grossAmount'  => $amt,
-                    'netAmount'    => $amt,
-                    'paidAmount'   => 0.0,
-                    'balance'      => $amt,
-                    'status'       => 'unpaid',
-                    'generatedAt'  => $today,
+                $this->fsTxn->writeDemand($this->fsTxn->newDemandId(), [
+                    'studentId'          => $studentId,
+                    'className'          => $class,
+                    'section'            => $section,
+                    'feeHead'            => $title,
+                    'feeHeadId'          => $feeHeadId,
+                    'canonicalFeeHeadId' => $canonicalId,
+                    'period'             => $periodLabel,
+                    'periodKey'          => $periodKey,
+                    'frequency'          => $month === 'Yearly Fees' ? 'yearly' : 'monthly',
+                    'grossAmount'        => $amt,
+                    'netAmount'          => $amt,
+                    'paidAmount'         => 0.0,
+                    'balance'            => $amt,
+                    'status'             => 'unpaid',
+                    'generatedAt'        => $today,
                 ]);
+                $haveKeys[$periodKey . '|' . $canonicalId] = true; // guard within this run
                 $wrote = true;
             }
         }
-        return $wrote || !empty($haveIds);
+        return $wrote || !empty($haveKeys);
     }
 
     /** Map a month name to its YYYY-MM key inside the current session. */
@@ -2210,7 +2218,15 @@ class Fees extends MY_Controller
                 $label = ($sub === 'CASH' || $sub === 'BANK ACCOUNT')
                     ? $sub
                     : ($isBank ? 'BANK ACCOUNT' : 'CASH');
-                $filteredAccounts[$name] = $label;
+                // CORE-1: carry the Accounting ledger `code` + is_bank so the
+                // counter can send the selected bank ledger's code to posting.
+                // Accounting remains the single source of truth.
+                $filteredAccounts[] = [
+                    'name'    => $name,
+                    'code'    => (string) ($entry['code'] ?? $code),
+                    'is_bank' => $isBank ? 1 : 0,
+                    'label'   => $label,
+                ];
             }
         }
         $data['accounts'] = $filteredAccounts;
@@ -4681,8 +4697,19 @@ class Fees extends MY_Controller
             $this->fsTxn->init($this->firebase, $this->fs, $this->fs->schoolId(), $this->session_year);
         }
         $existingDemands = $this->fsTxn->demandsForStudent($studentId);
+        $canonMap = $this->fsTxn->canonicalHeadIdMap();
 
-        $newDemands = []; // demandId => demand row, only the rows we will create
+        // Fees V7: canonical duplicate-detection key (periodKey|canonicalFeeHeadId),
+        // NON-archived only — id-agnostic, rename-safe, archive-aware.
+        $haveKeys = [];
+        foreach ($existingDemands as $_did => $_d) {
+            if (($_d['status'] ?? '') === 'archived') continue;
+            $pk  = (string) ($_d['periodKey'] ?? $_d['period_key'] ?? '');
+            $cid = (string) ($_d['canonicalFeeHeadId'] ?? '');
+            if ($pk !== '' && $cid !== '') $haveKeys[$pk . '|' . $cid] = true;
+        }
+
+        $newDemands = []; // autoId => demand row, only the rows we will create
 
         foreach ($monthFees as $feeHead => $rawAmount) {
             $amount = floatval($rawAmount);
@@ -4698,8 +4725,9 @@ class Fees extends MY_Controller
                 continue;
             }
 
-            $feeHeadId = (string) ($feeHeadIdByName[$feeHead] ?? '');
-            $demandId  = $this->_buildDemandId($studentId, $periodKey, $feeHeadId, $feeHead);
+            $feeHeadId   = (string) ($feeHeadIdByName[$feeHead] ?? '');
+            $canonicalId = (string) ($canonMap[strtolower(trim($feeHead))] ?? $feeHeadId);
+            $demandId    = $this->fsTxn->newDemandId();
 
             // Idempotency pre-check — applies to BOTH inline and bulk
             // paths.
@@ -4714,10 +4742,11 @@ class Fees extends MY_Controller
             // paid state. Removing the bulk-path bypass restores
             // true idempotency: a re-run never touches an existing
             // demand regardless of mode.
-            if (isset($existingDemands[$demandId])) {
+            if (isset($haveKeys[$periodKey . '|' . $canonicalId])) {
                 $result['skipped']++;
                 continue;
             }
+            $haveKeys[$periodKey . '|' . $canonicalId] = true; // guard within this run
 
             // Calculate discount for this fee head
             $discountAmount = 0;
@@ -4758,6 +4787,7 @@ class Fees extends MY_Controller
                 'section'         => $section,
                 'feeHead'         => $feeHead,
                 'feeHeadId'       => $feeHeadId,
+                'canonicalFeeHeadId' => $canonicalId,
                 'category'        => $category,
                 'frequency'       => $frequency,
                 'period'          => "{$monthName} " . $this->_resolveCalendarYear($monthName),
@@ -4809,6 +4839,7 @@ class Fees extends MY_Controller
                     'sectionKey'     => $sectionKey,
                     'feeHead'        => (string) ($demand['feeHead'] ?? ''),
                     'feeHeadId'      => (string) ($demand['feeHeadId'] ?? ''),
+                    'canonicalFeeHeadId' => (string) ($demand['canonicalFeeHeadId'] ?? ''),
                     'category'       => (string) ($demand['category'] ?? ''),
                     'frequency'      => $freq,
                     'period'         => $period,
@@ -4816,6 +4847,7 @@ class Fees extends MY_Controller
                     'periodKey'      => (string) ($demand['periodKey'] ?? ''),
                     'periodType'     => $periodType,
                     'isYearly'       => $isYearly,
+                    'billingType'    => $isYearly ? 'Yearly' : 'Monthly',
                     'grossAmount'    => (float) ($demand['grossAmount'] ?? 0),
                     'discountAmount' => (float) ($demand['discountAmount'] ?? 0),
                     'fineAmount'     => (float) ($demand['fineAmount'] ?? 0),

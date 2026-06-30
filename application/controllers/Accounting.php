@@ -910,14 +910,27 @@ class Accounting extends MY_Controller
         if (!$acct) {
             return $this->json_error('Account not found.');
         }
-        if (!empty($acct['is_system'])) {
-            return $this->json_error('Cannot delete system accounts.');
+
+        // Professional rule: a group/header ledger is structural and not
+        // postable — deleting it would break the chart hierarchy.
+        if (!empty($acct['is_group'])) {
+            return $this->json_error('Cannot delete a group/header ledger. Reassign or remove its child accounts first.');
         }
 
-        // Check if account has ledger entries
-        $idx = [] /* index query removed — use Firestore accounting where queries */;
-        if (!empty($idx)) {
-            return $this->json_error('Cannot delete — account has ledger entries. Deactivate instead.');
+        // Professional rule: a ledger that has posted journal entries can NEVER
+        // be deleted (it would orphan accounting history) — it must be
+        // DEACTIVATED instead. A ledger with ZERO entries may be deleted, even
+        // a system-seeded default the school does not need (matches the current
+        // seed, which now creates ledgers as is_system=false).
+        $hasEntries = false;
+        foreach ((array) $this->_fs_ledger_all() as $entry) {
+            if (!is_array($entry)) continue;
+            foreach ((array) ($entry['lines'] ?? []) as $line) {
+                if ((string) ($line['account_code'] ?? '') === $code) { $hasEntries = true; break 2; }
+            }
+        }
+        if ($hasEntries) {
+            return $this->json_error('Cannot delete — this ledger has accounting entries. Deactivate it instead.');
         }
 
         $this->_fs_coa_delete($code);
@@ -3807,7 +3820,14 @@ class Accounting extends MY_Controller
         // Assets (1000-1999)
         $add('1000', 'Current Assets',        'Asset', 'Current Assets',  null, true);
         $add('1010', 'Cash in Hand',           'Asset', 'Current Assets',  '1000');
-        $add('1020', 'Bank Account',            'Asset', 'Current Assets',  '1000', false, true);
+        $add('1020', 'SBI Bank A/c',            'Asset', 'Current Assets',  '1000', false, true);
+        // Additional system-seeded bank ledgers so multi-bank schools have
+        // ready ledgers out-of-the-box. These are starting templates — rename
+        // to the school's real banks and delete any unused ones via Chart of
+        // Accounts (deletable while they carry zero entries).
+        $add('1021', 'HDFC Bank A/c',           'Asset', 'Current Assets',  '1000', false, true);
+        $add('1022', 'ICICI Bank A/c',          'Asset', 'Current Assets',  '1000', false, true);
+        $add('1023', 'Axis Bank A/c',           'Asset', 'Current Assets',  '1000', false, true);
         $add('1030', 'Accounts Receivable',    'Asset', 'Current Assets',  '1000');
         $add('1040', 'Advance to Staff',       'Asset', 'Current Assets',  '1000');
         $add('1050', 'Deposits & Prepayments', 'Asset', 'Current Assets',  '1000');

@@ -863,6 +863,13 @@ class Fee_firestore_txn
                     || ($monthName === 'Yearly Fees');
         $periodType = $isYearly ? 'yearly' : 'monthly';
 
+        // Fees V7: canonical billingType — caller-provided, else derived from cadence
+        // so every demand is self-describing (INV-1). Only {Monthly,Yearly} permitted.
+        $billingType = (string) $pick($data, ['billingType']);
+        if ($billingType !== 'Monthly' && $billingType !== 'Yearly') {
+            $billingType = $isYearly ? 'Yearly' : 'Monthly';
+        }
+
         $classNorm = (string) $pick($data, ['className', 'class']);
 
         // BUG-075 fix (2026-05-26): build structural fields first; emit
@@ -892,6 +899,7 @@ class Fee_firestore_txn
             'periodKey'      => (string) $pick($data, ['periodKey', 'period_key']),
             'periodType'     => $periodType,
             'isYearly'       => $isYearly,
+            'billingType'    => $billingType,
             'grossAmount'    => (float) $pick($data, ['grossAmount', 'original_amount'], 0),
             'discountAmount' => (float) $pick($data, ['discountAmount', 'discount_amount'], 0),
             'fineAmount'     => (float) $pick($data, ['fineAmount', 'fine_amount'], 0),
@@ -916,6 +924,18 @@ class Fee_firestore_txn
         // (conditional — keeps non-concession demands byte-identical; no snake alias needed).
         if (array_key_exists('concessionApplied', $data)) {
             $doc['concessionApplied'] = (float) $pick($data, ['concessionApplied'], 0);
+        }
+        // Fees V7: canonical head identity. Caller-provided wins; otherwise resolve
+        // from the school-level feeHeads registry by the demand's feeHead NAME
+        // (owner-by-name). Original feeHeadId above remains the demand's
+        // historical/issued identity (immutable). This guarantees INV-1 for every
+        // create path without editing each generator.
+        $canonical = (string) $pick($data, ['canonicalFeeHeadId']);
+        if ($canonical === '') {
+            $canonical = $this->canonicalHeadIdMap()[strtolower(trim((string) $doc['feeHead']))] ?? '';
+        }
+        if ($canonical !== '') {
+            $doc['canonicalFeeHeadId'] = $canonical;
         }
 
         return $doc;
@@ -1012,6 +1032,37 @@ class Fee_firestore_txn
             }
             return $chart;
         } catch (\Exception $_) { return []; }
+    }
+
+    /** @var array|null cached normalized-name -> canonical feeHeadId map */
+    private $_canonHeadMap = null;
+
+    /**
+     * Fees V7: name(lowercased) -> canonical feeHeadId from the school-level
+     * `feeHeads` registry (the owner). Cached per request. Used by
+     * _buildDemandDoc (stamp canonicalFeeHeadId) and by generators (canonical
+     * duplicate-detection key) so dedup is correct regardless of chart re-point.
+     */
+    public function canonicalHeadIdMap(): array
+    {
+        if ($this->_canonHeadMap !== null) return $this->_canonHeadMap;
+        $map = [];
+        try {
+            $rows = $this->firebase->firestoreQuery('feeHeads', [['schoolId', '==', $this->schoolId]]);
+            foreach ((array) $rows as $r) {
+                $d  = $r['data'] ?? $r;
+                $nm = strtolower(trim((string) ($d['name'] ?? '')));
+                $id = (string) ($d['feeHeadId'] ?? '');
+                if ($nm !== '' && $id !== '') $map[$nm] = $id;
+            }
+        } catch (\Throwable $_) {}
+        return $this->_canonHeadMap = $map;
+    }
+
+    /** Fees V7: opaque demand document id (no business meaning encoded). */
+    public function newDemandId(): string
+    {
+        return bin2hex(random_bytes(10));
     }
 
     /**

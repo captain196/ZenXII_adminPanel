@@ -1321,7 +1321,10 @@ class AccountingReconciler extends CI_Controller
             'date'             => (string) ($receipt['date']        ?? date('Y-m-d')),
             'amount'           => $amount,
             'payment_mode'     => strtolower((string) ($receipt['paymentMode'] ?? 'cash')),
-            'bank_code'        => '',  // reconciler uses CoA default — fine for repair
+            // CORE-1: repair path must debit the SAME bank ledger the primary
+            // posting used. Reuse the additive receipt field; '' (cash/legacy)
+            // keeps the prior CoA-default behaviour.
+            'bank_code'        => (string) ($receipt['bankLedgerCode'] ?? ''),
             'receipt_no'       => $receiptKey,
             'student_name'     => (string) ($receipt['studentName'] ?? ''),
             'student_id'       => (string) ($receipt['studentId']   ?? ''),

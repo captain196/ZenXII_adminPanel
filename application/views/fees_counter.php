@@ -111,6 +111,9 @@ $accounts          = $accounts          ?? [];
                             <div id="idFeedback" class="fc-id-feedback" style="display:none;"></div>
                         </div>
 
+                        <!-- Progressive disclosure: student details appear only
+                             after a student is found via Find/Browse. -->
+                        <div id="studentDetailsSection" style="display:none;">
                         <div class="fc-grid-2 fc-mb">
                             <div class="fc-field">
                                 <label class="fc-label">Student Name</label>
@@ -133,6 +136,7 @@ $accounts          = $accounts          ?? [];
                                 <input type="text" id="fcSection" class="fc-input" placeholder="Auto-filled" readonly>
                             </div>
                         </div>
+                        </div><!-- /studentDetailsSection -->
 
                         <!-- Discount / Scholarship banner — appears when the
                              student has a discount on file (or to invite a
@@ -182,7 +186,7 @@ $accounts          = $accounts          ?? [];
                 </div>
 
                 <!-- STEP 2 -->
-                <div class="fc-card">
+                <div class="fc-card" id="selectMonthsCard" style="display:none;">
                     <div class="fc-card-head">
                         <span class="fc-step">2</span>
                         <i class="fa fa-calendar"></i>
@@ -273,9 +277,11 @@ $accounts          = $accounts          ?? [];
                             <div class="fc-select-wrap pay-mode-wrap">
                                 <select id="accountSelect" class="fc-select pay-mode-select" required>
                                     <option value="" disabled selected>— Select payment mode —</option>
-                                    <?php foreach ($accounts as $aName => $under): ?>
-                                        <option value="<?= htmlspecialchars($aName) ?>">
-                                            <?= htmlspecialchars($aName) ?> (<?= htmlspecialchars($under) ?>)
+                                    <?php foreach ($accounts as $acc): ?>
+                                        <option value="<?= htmlspecialchars($acc['name']) ?>"
+                                                data-code="<?= htmlspecialchars($acc['code']) ?>"
+                                                data-isbank="<?= (int) $acc['is_bank'] ?>">
+                                            <?= htmlspecialchars($acc['name']) ?> (<?= htmlspecialchars($acc['label']) ?>)
                                         </option>
                                     <?php endforeach; ?>
                                     <?php if (empty($accounts)): ?>
@@ -1466,6 +1472,14 @@ $accounts          = $accounts          ?? [];
         document.getElementById('fcClass').value = FC.className;
         document.getElementById('fcSection').value = FC.sectionName;
 
+        // Progressive disclosure: reveal the student-detail block AND the
+        // "Select Months" card now that a student has been found (both hidden
+        // on page load until Find/Browse).
+        var _sd = document.getElementById('studentDetailsSection');
+        if (_sd) _sd.style.display = '';
+        var _mc = document.getElementById('selectMonthsCard');
+        if (_mc) _mc.style.display = '';
+
         // Summary panel
         var displayClassSection = getDisplayClassSection();
         document.getElementById('sumName').textContent = FC.studentName;
@@ -1776,6 +1790,12 @@ $accounts          = $accounts          ?? [];
         fd.append(CSRF_NAME, CSRF_HASH); /* ← layer 1: CI built-in filter */
         fd.append('receiptNo', RECEIPT_NO);
         fd.append('paymentMode', paymentMode);
+        // CORE-1: for a Bank ledger selection, send its Accounting `code` so the
+        // posting debits the chosen bank ledger. Cash sends nothing → unchanged.
+        var _selOpt = document.getElementById('accountSelect').selectedOptions[0];
+        if (_selOpt && _selOpt.getAttribute('data-isbank') === '1') {
+            fd.append('bankLedgerCode', _selOpt.getAttribute('data-code') || '');
+        }
         fd.append('class', FC.className); // e.g. "Class 8th"
         fd.append('section', FC.sectionName); // e.g. "Section B"
         fd.append('userId', FC.userId);
