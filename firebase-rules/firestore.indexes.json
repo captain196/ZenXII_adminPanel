@@ -1517,6 +1517,15 @@
         { "fieldPath": "month",    "order": "DESCENDING" }
       ]
     },
+    { "_comment": "GPS Staff Attendance Phase 10 — attendancePunches audit reads: Staff_attendance::me today-punches (schoolId==, staffId==, date==) + per-staff punch history. Composite makes the multi-equality query a single index scan (no collection scan).",
+      "collectionGroup": "attendancePunches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "staffId",  "order": "ASCENDING" },
+        { "fieldPath": "date",     "order": "ASCENDING" }
+      ]
+    },
     { "_comment": "COMM-DEVICE Package 3A — P0.6 (2026-06-15): Device_management admin device-list view query: where schoolId AND where status ORDER BY lastActive DESC.",
       "collectionGroup": "userDevices",
       "queryScope": "COLLECTION",
