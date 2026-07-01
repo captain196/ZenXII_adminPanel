@@ -936,9 +936,9 @@ a.ac-tab.active { color: var(--ac-primary); }
                 + '<td class="ac-num">' + fmt(a.opening_balance) + '</td>'
                 + '<td class="ac-num" style="font-weight:600;' + curBalCls + '">' + fmt(curBal) + '</td>'
                 + '<td>'
-                + (a.is_system ? '<span style="font-size:11px;color:var(--ac-text3)">System</span>'
-                    : '<button class="ac-btn ac-btn-ghost ac-btn-sm" onclick="AC.editAccount(\'' + code + '\')"><i class="fa fa-pencil"></i></button> '
-                    + (IS_ADMIN ? '<button class="ac-btn ac-btn-danger ac-btn-sm" onclick="AC.deleteAccount(\'' + code + '\')"><i class="fa fa-trash"></i></button>' : ''))
+                + (a.is_system ? '<span style="font-size:11px;color:var(--ac-text3);margin-right:6px">System</span>' : '')
+                + '<button class="ac-btn ac-btn-ghost ac-btn-sm" onclick="AC.editAccount(\'' + code + '\')"><i class="fa fa-pencil"></i></button> '
+                + (IS_ADMIN ? '<button class="ac-btn ac-btn-danger ac-btn-sm" onclick="AC.deleteAccount(\'' + code + '\')"><i class="fa fa-trash"></i></button>' : '')
                 + '</td></tr>';
         });
         body.innerHTML = html;
@@ -1011,8 +1011,31 @@ a.ac-tab.active { color: var(--ac-primary); }
     }
 
     document.getElementById('amIsBank').addEventListener('change', function(){
-        document.getElementById('amBankFields').style.display = this.checked ? 'block' : 'none';
+        var on = this.checked;
+        document.getElementById('amBankFields').style.display = on ? 'block' : 'none';
+        if (on) {
+            // Auto-classify a bank ledger (a bank is always an Asset → prevents
+            // mis-categorisation) and suggest the next free code — saves typing.
+            document.getElementById('amCategory').value = 'Asset';
+            var sub = document.getElementById('amSubCat');
+            if (!sub.value.trim()) sub.value = 'Bank Accounts';
+            var codeEl = document.getElementById('amCode');
+            if (!codeEl.value.trim()) codeEl.value = AC_suggestNextBankCode();
+        }
     });
+
+    // Next free bank-ledger code: highest existing bank code in the 10xx asset
+    // range + 1, skipping any taken code. Read-only — only fills a blank field.
+    function AC_suggestNextBankCode() {
+        var max = 1019;
+        Object.keys(coaCache).forEach(function (c) {
+            var a = coaCache[c]; var n = parseInt(c, 10);
+            if (!isNaN(n) && a && a.is_bank && n >= 1000 && n < 1100) max = Math.max(max, n);
+        });
+        var next = max + 1;
+        while (coaCache[String(next)] && next < 1200) next++;
+        return String(next);
+    }
 
     function saveAccount() {
         var btn = document.getElementById('btnSaveAccount');
@@ -1214,8 +1237,11 @@ a.ac-tab.active { color: var(--ac-primary); }
         document.getElementById('jeTotalDr').textContent = fmt(dr);
         document.getElementById('jeTotalCr').textContent = fmt(cr);
         var errEl = document.getElementById('jeError');
-        if (Math.abs(dr - cr) > 0.01 && dr > 0 && cr > 0) {
-            errEl.textContent = 'Debit (' + fmt(dr) + ') does not equal Credit (' + fmt(cr) + ')';
+        // Show the out-of-balance warning whenever Debit ≠ Credit and ANY value
+        // has been entered — including all-Debit or all-Credit entries (the
+        // earlier `dr>0 && cr>0` hid the warning for one-sided entries).
+        if (Math.abs(dr - cr) > 0.01 && (dr > 0 || cr > 0)) {
+            errEl.textContent = 'Out of balance — Debit (' + fmt(dr) + ') ≠ Credit (' + fmt(cr) + '). Difference: ' + fmt(Math.abs(dr - cr));
             errEl.style.display = 'block';
         } else {
             errEl.style.display = 'none';

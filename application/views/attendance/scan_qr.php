@@ -50,6 +50,11 @@
     <div class="scan-hdr">
         <h1><i class="fa fa-qrcode" style="color: var(--gold); margin-right: 8px;"></i>Attendance — QR Scan</h1>
         <p>Scan a student's ID-card QR (or paste the encoded token below) to mark Present for today.</p>
+        <ol style="list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0;padding:0;font-size:12px;color:#8a8a8a;">
+            <li><a href="<?= base_url('admin') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Dashboard</a></li>
+            <li>/&nbsp;<a href="<?= base_url('attendance') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Attendance</a></li>
+            <li>/&nbsp;QR Scan</li>
+        </ol>
     </div>
 
     <div class="scan-card">

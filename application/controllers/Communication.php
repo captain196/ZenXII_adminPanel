@@ -51,9 +51,6 @@ class Communication extends MY_Controller
     const MAX_BODY_LENGTH     = 10000;
     const MAX_BULK_RECIPIENTS = 500;
 
-    /** @var Messaging_service */
-    public $msg_svc;
-
     public function __construct()
     {
         parent::__construct();
@@ -68,17 +65,29 @@ class Communication extends MY_Controller
             $this->school_id
         );
 
-        // Phase 5 — Firestore-first messaging primitives. The service
-        // dual-writes (Firestore canonical, RTDB best-effort mirror) so
-        // older mobile builds keep working until Phase 5d/5e ship.
-        $this->load->library('messaging_service', null, 'msg_svc');
-        $this->msg_svc->init(
-            $this->fs,
-            $this->firebase,
-            $this->school_id,
-            $this->school_name,
-            $this->session_year
-        );
+        // Direct Messaging has been retired (Package 2A — COMM-MSG runtime retirement).
+        // The user-facing surface is now a Coming Soon experience; the AJAX endpoints
+        // below (get_conversations, get_messages, create_conversation, delete_conversation,
+        // send_message, mark_read, search_recipients) return HTTP 410 Gone so older
+        // mobile-app builds receive an explicit retirement signal. Existing conversation
+        // history is preserved in Firestore (`conversations`, `messages`, `messageInboxes`)
+        // for archive purposes; no data has been deleted.
+    }
+
+    /**
+     * Common 410 Gone response for retired Messaging endpoints.
+     * Returns the same JSON envelope shape as the other endpoints so older mobile
+     * builds can detect retirement via HTTP status + `status: "gone"` flag.
+     */
+    private function _messaging_gone(): void
+    {
+        $this->output->set_status_header(410);
+        $this->output->set_content_type('application/json');
+        $this->output->set_output(json_encode([
+            'status'  => 'gone',
+            'code'    => 410,
+            'message' => 'Direct messaging has been retired. Please use Notices or Circulars to communicate. Existing conversation history is preserved.',
+        ]));
     }
 
     // ── Access helpers ──────────────────────────────────────────────────
@@ -222,58 +231,34 @@ class Communication extends MY_Controller
     ];
 
     /**
-     * Firestore-only ID minting. Counter map lives on schools/{schoolId}_profile.
-     * Keys are FLAT field names "commCounters.{type}" (literal) — this matches
-     * the existing hrCounters.* / acctCounters.* convention written by HR and
-     * Accounting via Firestore_service::update (which does not expand dot-paths
-     * into nested maps). Non-atomic get-then-update — acceptable at school
-     * scale with the self-healing seed so we never collide with past records.
+     * Allocate the next ID for a Communication kind via Numbering_service.
+     *
+     * Phase 2: replaced the legacy commCounters.{type} read-modify-write
+     * with delegation to the platform Numbering_service. Storage moves
+     * from schools/{schoolId}_profile.commCounters.{Type} (legacy) to
+     * systemCounters/{schoolId}_{kind}_claim_{N} (Pattern A claim-doc
+     * CAS). All 5 call sites in this controller are unchanged.
+     *
+     * Parameter contract:
+     *   $type   — capitalised counter name ('Notice', 'Circular', etc.);
+     *             lower-cased into the registry kind.
+     *   $prefix — ignored. The registry (application/config/numbering.php)
+     *             owns the canonical prefix for every kind.
+     *   $pad    — ignored. Same — registry owns padWidth.
+     *
+     * Failure behaviour:
+     *   - Service or kind disabled  → \LogicException (propagates)
+     *   - CAS retry exhaustion      → \RuntimeException (propagates)
+     *   - No silent fallback to a random or timestamp-based ID — the
+     *     caller's action fails entirely, preserving sequential audit
+     *     integrity (same fail-loud contract as the legacy retry path).
      */
     private function _next_id(string $type, string $prefix, int $pad = 4): string
     {
-        $profileDocId = $this->fs->docId('profile');
-        $flatKey = "commCounters.{$type}";
-        $doc = null;
-        try { $doc = $this->fs->get('schools', $profileDocId); } catch (\Exception $e) {}
-        $cur = (is_array($doc) && isset($doc[$flatKey]) && is_numeric($doc[$flatKey]))
-            ? (int) $doc[$flatKey]
-            : -1;
-
-        if ($cur < 0) {
-            // Self-heal: scan the target collection for the highest existing prefix-NNNN.
-            $cur = 0;
-            $src = self::COUNTER_SEED_SOURCES[$type] ?? null;
-            if (is_array($src)) {
-                [$collection, $seedPrefix] = $src;
-                try {
-                    $docs = $this->fs->schoolWhere($collection, []);
-                    if (is_array($docs)) {
-                        $schoolPrefix = $this->school_id . '_';
-                        foreach ($docs as $d) {
-                            $d = $d['data'] ?? $d;
-                            $rawId = (string) ($d['id'] ?? '');
-                            $trimmed = (strpos($rawId, $schoolPrefix) === 0)
-                                ? substr($rawId, strlen($schoolPrefix))
-                                : $rawId;
-                            if (preg_match('/^' . preg_quote($seedPrefix, '/') . '(\d+)$/', $trimmed, $m)) {
-                                $n = (int) $m[1];
-                                if ($n > $cur) $cur = $n;
-                            }
-                        }
-                    }
-                } catch (\Exception $e) {
-                    log_message('error', "Comm counter seed failed for {$type}: " . $e->getMessage());
-                }
-            }
-        }
-
-        $next = $cur + 1;
-        try {
-            $this->fs->update('schools', $profileDocId, [$flatKey => $next]);
-        } catch (\Exception $e) {
-            log_message('error', "Comm counter update failed for {$type}: " . $e->getMessage());
-        }
-        return $prefix . str_pad($next, $pad, '0', STR_PAD_LEFT);
+        return $this->numbering->next(strtolower($type), [
+            'claimedBy'  => $this->admin_id,
+            'claimedFor' => 'COMM:' . strtoupper($type),
+        ]);
     }
 
     /**
@@ -470,580 +455,52 @@ class Communication extends MY_Controller
         return 'admin';
     }
 
-    /**
-     * Map a participant role label ("Teacher", "Parent", "Admin", ...) to
-     * its lowercase inbox path segment.
-     */
-    private function _inbox_role_for(string $participantRole): string
-    {
-        $r = strtolower(trim($participantRole));
-        if ($r === 'teacher') return 'teacher';
-        if ($r === 'parent' || $r === 'student') return 'parent';
-        if ($r === 'hr' || $r === 'hr manager') return 'hr';
-        return 'admin';
-    }
-
     public function get_conversations()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_conversations');
-        $this->_require_view();
-        $role  = $this->_inbox_role();
-
-        // Firestore-first via the messaging service. Inbox entries are
-        // already enriched with conversation metadata (lastMessage,
-        // lastMessageTime, ...) so we don't need a second read per row.
-        $inbox = $this->msg_svc->listInbox($role, $this->admin_id, 200);
-
-        $list = [];
-        foreach ($inbox as $entry) {
-            $convId = $entry['conversationId'] ?? ($entry['id'] ?? null);
-            if (!$convId) continue;
-
-            // Pull the conversation doc for fields the inbox stub doesn't
-            // carry (participants, participantNames, context). Single
-            // direct getDoc — no query.
-            $conv = $this->msg_svc->getConversation($convId);
-            if (!is_array($conv)) {
-                // Inbox stub orphaned (conversation deleted) — synthesize
-                // a minimal row so the UI still renders something.
-                $conv = ['conversationId' => $convId];
-            }
-            $conv['id']               = $convId;
-            $conv['unreadCount']      = (int) ($entry['unreadCount'] ?? $entry['unread_count'] ?? 0);
-            $conv['lastSeenAt']       = $entry['lastSeenAt'] ?? $entry['last_seen_at'] ?? '';
-            // Inbox stub fields override conversation snapshot for the
-            // values that change per-message (so we never show a stale
-            // preview).
-            if (isset($entry['lastMessage']))     $conv['lastMessage']     = $entry['lastMessage'];
-            if (isset($entry['lastMessageTime'])) $conv['lastMessageTime'] = $entry['lastMessageTime'];
-            $list[] = $conv;
-        }
-
-        $page  = max(1, (int) ($this->input->get('page') ?? 1));
-        $limit = min(100, max(1, (int) ($this->input->get('limit') ?? 20)));
-        $total = count($list);
-        $list  = array_slice($list, ($page - 1) * $limit, $limit);
-
-        $this->json_success(['conversations' => $list, 'page' => $page, 'limit' => $limit, 'total' => $total]);
+        // RETIRED — Direct Messaging deprecated; conversations preserved in Firestore archive.
+        $this->_messaging_gone();
     }
 
     public function get_messages()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_messages');
-        $this->_require_view();
-        $convId = $this->safe_path_segment(trim($this->input->get('conversation_id') ?? ''), 'conversation_id');
-
-        // Verify participant — Firestore-first via service.
-        $conv = $this->msg_svc->getConversation($convId);
-        if (!is_array($conv)) $this->json_error('Conversation not found.');
-        $participants = $conv['participants'] ?? [];
-        if (!isset($participants[$this->admin_id])) $this->json_error('Access denied.', 403);
-
-        // Fetch messages — Firestore-first via service.
-        $msgs = $this->msg_svc->listMessages($convId, 500);
-
-        // Mark as read
-        $role = $this->_inbox_role();
-        $this->msg_svc->markRead($role, $this->admin_id, $convId);
-
-        // Always paginate — default 50, max 100
-        $page  = max(1, (int) ($this->input->get('page') ?? 1));
-        $limit = min(100, max(1, (int) ($this->input->get('limit') ?? 50)));
-        $total = count($msgs);
-        // Reverse paginate: page 1 = newest messages
-        $reversed = array_reverse($msgs);
-        $slice = array_slice($reversed, ($page - 1) * $limit, $limit);
-        $msgs = array_reverse($slice);
-
-        $this->json_success([
-            'messages'     => $msgs,
-            'conversation' => $conv,
-            'page'         => $page,
-            'limit'        => $limit,
-            'total'        => $total,
-        ]);
+        // RETIRED — Direct Messaging deprecated; messages preserved in Firestore archive.
+        $this->_messaging_gone();
     }
 
     public function create_conversation()
     {
-        $this->_require_role(self::RBAC_MANAGE_ROLES, 'create_conversation');
-        $this->_require_teacher();
-        $recipientId    = $this->safe_path_segment(trim($this->input->post('recipient_id') ?? ''), 'recipient_id');
-        // Defensive: older recipient pickers posted the full Firestore doc id
-        // (`{schoolId}_{entityId}`) instead of the raw entity id. Strip the
-        // schoolId prefix so getEntity() doesn't double-prepend and 400.
-        $schoolPrefix = $this->school_id . '_';
-        if ($schoolPrefix !== '_' && strpos($recipientId, $schoolPrefix) === 0) {
-            $recipientId = substr($recipientId, strlen($schoolPrefix));
-        }
-        $recipientRole  = trim($this->input->post('recipient_role') ?? '');
-        $recipientName  = $this->_sanitize_html(trim($this->input->post('recipient_name') ?? ''));
-        $studentId      = trim($this->input->post('student_id') ?? '');
-        $studentClass   = trim($this->input->post('student_class') ?? '');
-        $studentSection = trim($this->input->post('student_section') ?? '');
-        $initialMsg     = trim($this->input->post('message') ?? '');
-
-        if ($recipientId === '' || $recipientName === '') $this->json_error('Recipient is required.');
-        if ($initialMsg === '') $this->json_error('Message is required.');
-        $this->_validate_length($initialMsg, 'Message', self::MAX_MESSAGE_LENGTH);
-        $this->_validate_length($recipientName, 'Recipient name', self::MAX_TITLE_LENGTH);
-
-        // Validate recipient exists (Admin, Teacher, or Student/Parent)
-        $session = $this->session_year;
-        $recipientExists = false;
-        $studentData = null;
-
-        // Check Admins (Firestore `admins` collection)
-        try {
-            $adminData = $this->fs->getEntity('admins', $recipientId);
-            if (is_array($adminData) && !empty($adminData)) { $recipientExists = true; }
-        } catch (\Exception $e) {}
-
-        // Check Staff/Teachers (Firestore `staff` collection)
-        if (!$recipientExists) {
-            try {
-                $teacherData = $this->fs->getEntity('staff', $recipientId);
-                if (is_array($teacherData) && !empty($teacherData)) { $recipientExists = true; }
-            } catch (\Exception $e) {}
-        }
-
-        // Check Students from Firestore (role=Parent means messaging a student's parent)
-        if (!$recipientExists && ($recipientRole === 'Parent' || $recipientRole === 'Student')) {
-            try {
-                $studentData = $this->fs->getEntity('students', $recipientId);
-                if ($studentData) {
-                    $recipientExists = true;
-                    $recipientRole = 'Parent'; // always route to parent
-                    // Auto-fill student context
-                    if ($studentId === '') $studentId = $recipientId;
-                    if ($studentClass === '') $studentClass = $studentData['className'] ?? $studentData['Class'] ?? '';
-                    if ($studentSection === '') $studentSection = $studentData['section'] ?? $studentData['Section'] ?? '';
-                    // Use parent name if available
-                    $fatherName = $studentData['fatherName'] ?? $studentData['Father Name'] ?? '';
-                    if ($fatherName) $recipientName = $recipientName . ' (Parent: ' . $fatherName . ')';
-                }
-            } catch (\Exception $e) { /* non-fatal */ }
-        }
-
-        if (!$recipientExists) $this->json_error('Recipient not found.');
-
-        // Sanitize student context path segments
-        if ($studentId !== '') $studentId = $this->safe_path_segment($studentId, 'student_id');
-        if ($studentClass !== '') $studentClass = $this->_sanitize_html($studentClass);
-        if ($studentSection !== '') $studentSection = $this->_sanitize_html($studentSection);
-
-        // Find an existing direct conversation between these two users
-        // about the same student, via the Messaging_service Firestore
-        // dedup query (`array-contains` on participantIds). Falls back
-        // through the service helper.
-        $myRole = $this->_inbox_role();
-        $existingConvId = null;
-        $existingConv = $this->msg_svc->findDirectConversation($this->admin_id, $recipientId, $studentId);
-        if (is_array($existingConv)) {
-            $existingConvId = $existingConv['conversationId'] ?? ($existingConv['id'] ?? null);
-        }
-
-        if ($existingConvId) {
-            // Add message to existing conversation
-            $convId = $existingConvId;
-        } else {
-            // Create new conversation
-            $convId = $this->_next_id('Conversation', 'CONV');
-            $participants = [
-                $this->admin_id => $myRole,
-                $recipientId    => $recipientRole,
-            ];
-            $nowMs0 = round(microtime(true) * 1000);
-            // Firestore-first via the service. The RTDB mirror under
-            // Communication/Messages/Conversations/{convId} happens
-            // inside writeConversation().
-            $this->msg_svc->writeConversation($convId, [
-                'participants'      => $participants,
-                'participantNames'  => [
-                    $this->admin_id => $this->admin_name,
-                    $recipientId    => $recipientName,
-                ],
-                'type'              => 'direct',
-                'title'             => '',
-                'context'           => [
-                    'studentId' => $studentId,
-                    'className' => $studentClass,
-                    'section'   => $studentSection,
-                ],
-                'lastMessage'       => '',
-                'lastMessageTime'   => 0,
-                'lastSenderId'      => '',
-                'lastSenderName'    => '',
-                'createdBy'         => $this->admin_id,
-                'createdAt'         => $nowMs0,
-                'status'            => 'active',
-            ], false);
-
-            // ── Create rich inbox entries for web admin + mobile apps ──
-            $now = round(microtime(true) * 1000);
-            // Lowercase, single source of truth — same path admin web AND
-            // mobile apps read.
-            $recipientInboxRole = $this->_inbox_role_for($recipientRole);
-
-            // Sender's inbox entry (admin web)
-            $senderInbox = [
-                'unreadCount'    => 0,
-                'lastSeenAt'     => $now,
-                'conversationId' => $convId,
-                'otherName'      => $recipientName,
-                'otherPartyId'   => $recipientId,
-                'otherPartyName' => $recipientName,
-                'otherPartyRole' => $recipientRole,
-                'studentName'    => '',
-                'studentClass'   => $studentClass,
-                'className'      => $studentClass,
-                'section'        => $studentSection,
-                'lastMessage'    => '',
-                'lastMessageTime'=> $now,
-            ];
-            $this->msg_svc->writeInbox($myRole, $this->admin_id, $convId, $senderInbox, false);
-
-            // Recipient's inbox entry (admin web)
-            $recipientInbox = [
-                'unreadCount'    => 0,
-                'lastSeenAt'     => 0,
-                'conversationId' => $convId,
-                'otherName'      => $this->admin_name,
-                'otherPartyId'   => $this->admin_id,
-                'otherPartyName' => $this->admin_name,
-                'otherPartyRole' => $myRole,
-                'studentName'    => '',
-                'studentClass'   => $studentClass,
-                'className'      => $studentClass,
-                'section'        => $studentSection,
-                'lastMessage'    => '',
-                'lastMessageTime'=> $now,
-            ];
-            $this->msg_svc->writeInbox($recipientInboxRole, $recipientId, $convId, $recipientInbox, false);
-
-            // Parent app reads: Communication/Messages/Inbox/parent/{parentDbKey}/{convId}
-            // Always create parent inbox when:
-            //   a) recipient is Parent (messaging a student's parent)
-            //   b) conversation has student context
-            if ($recipientRole === 'Parent' || $studentId !== '') {
-                // The parentDbKey for the parent app is the student's parent_db_key
-                // For the school's parent DB, this is the school_code (numeric)
-                $parentDbKey = $this->parent_db_key;
-
-                // Determine student name from context
-                $studentDisplayName = '';
-                if ($studentData) {
-                    $studentDisplayName = $studentData['name'] ?? $studentData['Name'] ?? '';
-                }
-
-                $senderLabel = $this->admin_name;
-                if ($myRole === 'Teacher') $senderLabel .= ' (Teacher)';
-                else $senderLabel .= ' (School)';
-
-                // Combine class + section so the parent app's chat header
-                // can show "Class 8th · Section A" instead of just the class.
-                // The section is normalized (strip any leading "Section " so
-                // we don't end up with "Section Section A").
-                $sectionLabel = trim((string) $studentSection);
-                if ($sectionLabel !== '' && stripos($sectionLabel, 'section') !== 0) {
-                    $sectionLabel = "Section {$sectionLabel}";
-                }
-                $studentClassFull = trim($studentClass);
-                if ($sectionLabel !== '') {
-                    $studentClassFull = $studentClassFull === ''
-                        ? $sectionLabel
-                        : "{$studentClassFull} · {$sectionLabel}";
-                }
-
-                $parentInbox = [
-                    'unreadCount'    => 0,
-                    'lastSeenAt'     => 0,
-                    'conversationId' => $convId,
-                    'otherName'      => $senderLabel,
-                    'otherPartyId'   => $this->admin_id,
-                    'otherPartyName' => $this->admin_name,
-                    'otherPartyRole' => $myRole,
-                    'senderName'     => $this->admin_name,
-                    'studentName'    => $studentDisplayName,
-                    'studentClass'   => $studentClassFull,
-                    'className'      => $studentClass,
-                    'section'        => $studentSection,
-                    'lastMessage'    => '',
-                    'lastMessageTime'=> $now,
-                    'teacherDbKey'   => $recipientRole === 'Teacher' ? $recipientId : $this->admin_id,
-                    'recipientDbKey' => $this->admin_id,
-                    'otherDbKey'     => $this->admin_id,
-                ];
-                $this->msg_svc->writeInbox('parent', $parentDbKey, $convId, $parentInbox, false);
-            }
-        }
-
-        // Send the initial message
-        $this->_add_message($convId, $initialMsg);
-
-        $this->json_success(['conversation_id' => $convId, 'message' => 'Conversation created.']);
+        // RETIRED — Direct Messaging deprecated; conversation archive is read-only.
+        $this->_messaging_gone();
     }
 
-    /**
-     * "Delete chat for me" — removes ONLY the current admin's inbox stub
-     * for this conversation. The shared Conversations/{id} doc and the
-     * chat history under Chat/{id} are left intact, so the parent and
-     * teacher continue to see the conversation. Mirrors the
-     * deleteConversationForMe() flow in the parent + teacher Android apps.
-     */
     public function delete_conversation()
     {
-        $this->_require_role(self::RBAC_MANAGE_ROLES, 'delete_conversation');
-        $this->_require_teacher();
-
-        $convId = $this->safe_path_segment(trim($this->input->post('conversation_id') ?? ''), 'conversation_id');
-
-        // Verify the admin actually participates in this conversation —
-        // a non-participant has no inbox entry to delete and shouldn't be
-        // able to probe for paths.
-        $conv = $this->msg_svc->getConversation($convId);
-        if (!is_array($conv)) $this->json_error('Conversation not found.');
-        if (!isset($conv['participants'][$this->admin_id])) $this->json_error('Access denied.', 403);
-
-        $role = $this->_inbox_role();
-        $this->msg_svc->deleteInbox($role, $this->admin_id, $convId);
-
-        $this->json_success(['message' => 'Conversation removed from your inbox.']);
+        // RETIRED — Direct Messaging deprecated; inbox archive is read-only.
+        $this->_messaging_gone();
     }
 
     public function send_message()
     {
-        $this->_require_role(self::RBAC_MANAGE_ROLES, 'send_message');
-        $this->_require_teacher();
-        $convId  = $this->safe_path_segment(trim($this->input->post('conversation_id') ?? ''), 'conversation_id');
-        $message = trim($this->input->post('message') ?? '');
-
-        if ($message === '') $this->json_error('Message is required.');
-        $this->_validate_length($message, 'Message', self::MAX_MESSAGE_LENGTH);
-
-        // Verify participant — Firestore-only lookup on 'conversations' collection.
-        $conv = null;
-        try { $conv = $this->fs->getEntity('conversations', $convId); } catch (\Exception $e) {}
-        if (!is_array($conv)) $this->json_error('Conversation not found.');
-        $participants = is_array($conv['participants'] ?? null) ? $conv['participants'] : [];
-        $participantIds = is_array($conv['participantIds'] ?? null) ? $conv['participantIds'] : [];
-        $isParticipant = isset($participants[$this->admin_id]) || in_array($this->admin_id, $participantIds, true);
-        if (!$isParticipant) $this->json_error('Access denied.', 403);
-
-        $msgId = $this->_add_message($convId, $message);
-        $this->json_success(['message_id' => $msgId, 'message' => 'Sent.']);
-    }
-
-    private function _add_message(string $convId, string $text, string $type = 'text'): string
-    {
-        $msgId = $this->_next_id('Message', 'MSG', 5);
-        $nowMs = round(microtime(true) * 1000);
-        $role  = $this->_inbox_role();
-        $preview = mb_substr($text, 0, 100);
-
-        // Canonical chat message — Firestore-first via service.
-        $this->msg_svc->writeMessage($convId, $msgId, [
-            'senderId'       => $this->admin_id,
-            'senderRole'     => strtolower($role),
-            'senderName'     => $this->admin_name,
-            'text'           => $text,
-            'timestamp'      => $nowMs,
-            'type'           => $type,
-            'attachmentUrl'  => '',
-            'attachmentName' => '',
-            'readBy'         => [$this->admin_id => true],
-        ]);
-
-        // Fetch conversation once (for participants) — Firestore-first.
-        $conv = $this->msg_svc->getConversation($convId);
-        if (!is_array($conv)) return $msgId;
-
-        // Update conversation metadata (Firestore-first via service).
-        $this->msg_svc->writeConversation($convId, [
-            'lastMessage'     => $preview,
-            'lastMessageTime' => $nowMs,
-            'lastSenderName'  => $this->admin_name,
-            'lastSenderId'    => $this->admin_id,
-            'updatedAt'       => $nowMs,
-        ], true);
-
-        // Update inbox for all other participants (admin + mobile paths) — camelCase only.
-        $inboxUpdate = [
-            'lastMessage'     => $preview,
-            'lastMessageTime' => $nowMs,
-            'lastMessageType' => $type,
-            'lastSenderId'    => $this->admin_id,
-            'lastSenderName'  => $this->admin_name,
-        ];
-
-        if (is_array($conv['participants'] ?? null)) {
-            foreach ($conv['participants'] as $pid => $pRole) {
-                if ($pid === $this->admin_id) continue;
-                $inboxRole = $this->_inbox_role_for((string) $pRole);
-                $this->msg_svc->incrementUnread($inboxRole, $pid, $convId, $inboxUpdate);
-            }
-
-            // Also update parent inbox if conversation has student context
-            $ctx = $conv['context'] ?? [];
-            $ctxStudentId = $ctx['studentId'] ?? $ctx['student_id'] ?? '';
-            if (!empty($ctxStudentId)) {
-                $this->msg_svc->incrementUnread('parent', $this->parent_db_key, $convId, $inboxUpdate);
-            }
-        }
-
-        // Update sender's own inbox (0 unread).
-        $this->msg_svc->writeInbox($role, $this->admin_id, $convId, array_merge($inboxUpdate, [
-            'unreadCount' => 0,
-            'lastSeenAt'  => $nowMs,
-        ]), true);
-
-        // Push request — Cloud Function fans out FCM to all participants
-        // except the sender. Per-user targeting (unlike notices/circulars).
-        try {
-            $recipientIds = [];
-            if (is_array($conv['participantIds'] ?? null)) {
-                foreach ($conv['participantIds'] as $pid) {
-                    if ($pid !== $this->admin_id) $recipientIds[] = $pid;
-                }
-            } elseif (is_array($conv['participants'] ?? null)) {
-                foreach (array_keys($conv['participants']) as $pid) {
-                    if ($pid !== $this->admin_id) $recipientIds[] = $pid;
-                }
-            }
-            if (!empty($recipientIds)) {
-                $this->fs->set('pushRequests', $this->fs->docId("message_received_{$msgId}"), [
-                    'schoolId'       => $this->school_id,
-                    'mark'           => 'MESSAGE_RECEIVED',
-                    'source'         => 'message_received',
-                    'status'         => 'pending',
-                    'conversationId' => $convId,
-                    'messageId'      => $msgId,
-                    'senderId'       => $this->admin_id,
-                    'senderName'     => $this->admin_name,
-                    'recipientIds'   => $recipientIds,
-                    'body'           => $preview,
-                    'createdAt'      => date('c'),
-                ], false);
-            }
-        } catch (\Exception $e) {
-            log_message('error', 'Comm message push enqueue failed: ' . $e->getMessage());
-        }
-
-        return $msgId;
+        // RETIRED — Direct Messaging deprecated; message-send is disabled.
+        $this->_messaging_gone();
     }
 
     public function mark_read()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'mark_read');
-        $this->_require_view();
-        $convId = $this->safe_path_segment(trim($this->input->post('conversation_id') ?? ''), 'conversation_id');
-        $role   = $this->_inbox_role();
-        $this->msg_svc->markRead($role, $this->admin_id, $convId);
-        $this->json_success(['message' => 'Marked as read.']);
+        // RETIRED — Direct Messaging deprecated; read-state tracking is disabled.
+        $this->_messaging_gone();
     }
 
     public function get_unread_count()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'get_unread_count');
-        $this->_require_view();
-        $total = $this->msg_svc->getUnreadCount($this->_inbox_role(), $this->admin_id);
-        $this->json_success(['unread' => $total]);
+        // RETIRED — Direct Messaging deprecated; unread-count is disabled.
+        $this->_messaging_gone();
     }
 
     public function search_recipients()
     {
-        $this->_require_role(self::RBAC_VIEW_ROLES, 'search_recipients');
-        $this->_require_teacher();
-        $query = strtolower(trim($this->input->get('q') ?? ''));
-        if (mb_strlen($query) < 2) $this->json_error('Enter at least 2 characters.');
-        if (mb_strlen($query) > 100) $this->json_error('Search query too long.');
-
-        $results = [];
-        $session = $this->session_year;
-        $maxResults = 20;
-
-        // Search Admins (Firestore `admins` collection)
-        try {
-            $adminDocs = $this->fs->schoolWhere('admins', []);
-            if (is_array($adminDocs)) {
-                $prefix = $this->school_id . '_';
-                foreach ($adminDocs as $doc) {
-                    $d = $doc['data'] ?? $doc;
-                    if (count($results) >= $maxResults) break;
-                    $a = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $rawId = (string) ($d['id'] ?? '');
-                    $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
-                    if ($id === $this->admin_id) continue;
-                    $name = $a['Name'] ?? $a['name'] ?? '';
-                    if (stripos($name, $query) !== false || stripos($id, $query) !== false) {
-                        $results[] = ['id' => $id, 'name' => $this->_sanitize_html($name), 'role' => 'Admin', 'label' => $this->_sanitize_html("{$name} ({$id}) - Admin")];
-                    }
-                }
-            }
-        } catch (\Exception $e) {}
-
-        // Search Staff/Teachers (Firestore `staff` collection)
-        if (count($results) < $maxResults) {
-            try {
-                $staffDocs = $this->fs->schoolWhere('staff', []);
-                if (is_array($staffDocs)) {
-                    $prefix = $this->school_id . '_';
-                    foreach ($staffDocs as $doc) {
-                        $d = $doc['data'] ?? $doc;
-                        if (count($results) >= $maxResults) break;
-                        $t = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                        $rawId = (string) ($d['id'] ?? '');
-                        $id = (strpos($rawId, $prefix) === 0) ? substr($rawId, strlen($prefix)) : $rawId;
-                        if ($id === $this->admin_id) continue;
-                        $name = $t['Name'] ?? $t['name'] ?? '';
-                        if (stripos($name, $query) !== false || stripos($id, $query) !== false) {
-                            $results[] = ['id' => $id, 'name' => $this->_sanitize_html($name), 'role' => 'Teacher', 'label' => $this->_sanitize_html("{$name} ({$id}) - Teacher")];
-                        }
-                    }
-                }
-            } catch (\Exception $e) {}
-        }
-
-        // Search Students from Firestore (name, userId, fatherName)
-        if (count($results) < $maxResults) {
-            try {
-                $studentDocs = $this->fs->schoolWhere('students', [['status', '==', 'Active']]);
-                foreach ($studentDocs as $doc) {
-                    $d = $doc['data'] ?? $doc;
-                    if (count($results) >= $maxResults) break;
-                    $s = $doc['data'];
-                    // Firestore student doc IDs are stored as `{schoolId}_{studentUserId}`.
-                    // Downstream code (create_conversation → fs->getEntity) re-prepends
-                    // the schoolId, so we MUST strip it here or the lookup double-prefixes
-                    // and 400s with "Recipient not found.".
-                    $rawId = $d['id'];
-                    $prefix = $this->school_id . '_';
-                    $sid = (strpos($rawId, $prefix) === 0)
-                        ? substr($rawId, strlen($prefix))
-                        : $rawId;
-                    $sName = $s['name'] ?? $s['Name'] ?? '';
-                    $fatherName = $s['fatherName'] ?? $s['Father Name'] ?? '';
-                    $cls = $s['className'] ?? $s['Class'] ?? '';
-                    $sec = $s['section'] ?? $s['Section'] ?? '';
-                    if (stripos($sName, $query) !== false || stripos($sid, $query) !== false || stripos($fatherName, $query) !== false) {
-                        $classLabel = $cls ? " - Class {$cls}" . ($sec ? " {$sec}" : '') : '';
-                        $results[] = [
-                            'id'       => $sid,
-                            'name'     => $this->_sanitize_html($sName),
-                            'role'     => 'Parent',
-                            'label'    => $this->_sanitize_html("{$sName} ({$fatherName}){$classLabel} - Student"),
-                            'class'    => $cls,
-                            'section'  => $sec,
-                            'father'   => $this->_sanitize_html($fatherName),
-                        ];
-                    }
-                }
-            } catch (\Exception $e) {
-                // Non-fatal — students search failed
-            }
-        }
-
-        $this->json_success(['recipients' => $results]);
+        // RETIRED — Direct Messaging deprecated; recipient search is disabled.
+        $this->_messaging_gone();
     }
 
     // ====================================================================
@@ -2107,14 +1564,20 @@ class Communication extends MY_Controller
             $this->json_error('No recipients found for the selected target group.');
         }
 
-        // Bulk-allocate queue IDs from the Firestore commCounters.Queue field
-        // (Phase 2 convention). Single read + single update regardless of N.
+        // Bulk-allocate queue IDs from the nested commCounters.Queue counter
+        // on schools/{schoolId}_profile. Single read + single update regardless
+        // of N. fs->update reshapes the dotted key into a nested path write so
+        // only the Queue counter is mutated.
         $totalRecipients = count($recipients);
         $profileDocId    = $this->fs->docId('profile');
         $profileDoc      = null;
         try { $profileDoc = $this->fs->get('schools', $profileDocId); } catch (\Exception $e) {}
-        $curCounter = (is_array($profileDoc) && isset($profileDoc['commCounters.Queue']) && is_numeric($profileDoc['commCounters.Queue']))
-            ? (int) $profileDoc['commCounters.Queue']
+        $curCounter = (is_array($profileDoc)
+                       && isset($profileDoc['commCounters'])
+                       && is_array($profileDoc['commCounters'])
+                       && isset($profileDoc['commCounters']['Queue'])
+                       && is_numeric($profileDoc['commCounters']['Queue']))
+            ? (int) $profileDoc['commCounters']['Queue']
             : 0;
         $newCounter = $curCounter + $totalRecipients;
         try {

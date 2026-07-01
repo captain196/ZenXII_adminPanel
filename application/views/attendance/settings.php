@@ -1,5 +1,11 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
 
+<!-- Leaflet (OpenStreetMap) — used by the GPS Attendance campus map picker -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
 <style>
 /* ── Attendance Settings ────────────────────────────────── */
 :root {
@@ -297,6 +303,7 @@
         <div class="att-tab active" data-tab="general"><i class="fa fa-sliders"></i> General</div>
         <div class="att-tab" data-tab="holidays"><i class="fa fa-calendar-times-o"></i> Holiday Calendar</div>
         <div class="att-tab" data-tab="devices"><i class="fa fa-microchip"></i> Device Management</div>
+        <div class="att-tab" data-tab="gps"><i class="fa fa-map-marker"></i> GPS Attendance</div>
     </div>
 
     <!-- ═══════════════════════════════════════════════════ -->
@@ -381,29 +388,37 @@
     <!-- ═══════════════════════════════════════════════════ -->
     <div id="pane-holidays" class="att-pane">
 
-        <!-- Add holiday form -->
+        <!-- Read-only Holiday Management — authoring is the Academic Calendar -->
         <div class="att-card">
-            <div class="att-card-title"><i class="fa fa-plus-circle"></i> Add Holiday</div>
+            <div class="att-card-title"><i class="fa fa-info-circle"></i> Holiday Management</div>
+            <div style="font-size:12.5px;color:var(--att-t2);margin-bottom:14px;">
+                Holidays are authored in the <strong>Academic Calendar</strong> — the single source of truth.
+                This page is read-only.
+            </div>
             <div class="att-grid att-grid-3">
-                <div class="att-field">
-                    <label>Date</label>
-                    <input type="date" id="holidayDate">
-                </div>
-                <div class="att-field">
-                    <label>Holiday Name</label>
-                    <input type="text" id="holidayName" placeholder="e.g. Republic Day">
-                </div>
-                <div class="att-field" style="display:flex;align-items:flex-end;">
-                    <button class="att-btn att-btn-primary" id="btnAddHoliday" style="width:100%;">
-                        <i class="fa fa-plus"></i> Add
-                    </button>
-                </div>
+                <div class="att-field"><label>Canonical Source</label>
+                    <div id="holSource" style="font-size:14px;font-weight:700;color:var(--att-t1);">Academic Calendar</div></div>
+                <div class="att-field"><label>Academic Session</label>
+                    <div id="holSession" style="font-size:14px;font-weight:700;color:var(--att-t1);">—</div></div>
+                <div class="att-field"><label>Last Updated</label>
+                    <div id="holUpdated" style="font-size:14px;font-weight:700;color:var(--att-t1);">—</div></div>
+            </div>
+            <div class="att-grid att-grid-2" style="margin-top:12px;">
+                <div class="att-field"><label>Total Holidays</label>
+                    <div id="holTotal" style="font-size:18px;font-weight:700;color:var(--att-primary);">—</div></div>
+                <div class="att-field"><label>Upcoming Holidays</label>
+                    <div id="holUpcoming" style="font-size:18px;font-weight:700;color:var(--att-primary);">—</div></div>
+            </div>
+            <div style="margin-top:16px;">
+                <a class="att-btn att-btn-primary" id="btnOpenCalendar" href="<?= base_url('academic') ?>#calendar">
+                    <i class="fa fa-calendar"></i> Open Academic Calendar
+                </a>
             </div>
         </div>
 
-        <!-- Holiday list -->
+        <!-- Read-only holiday list -->
         <div class="att-card">
-            <div class="att-card-title"><i class="fa fa-calendar"></i> Holidays</div>
+            <div class="att-card-title"><i class="fa fa-calendar"></i> Holidays (read-only)</div>
             <div class="att-table-wrap">
                 <table class="att-table">
                     <thead>
@@ -411,11 +426,10 @@
                             <th>#</th>
                             <th>Date</th>
                             <th>Holiday Name</th>
-                            <th style="text-align:right;">Action</th>
                         </tr>
                     </thead>
                     <tbody id="holidayTableBody">
-                        <tr><td colspan="4"><div class="att-empty"><i class="fa fa-calendar-o"></i>No holidays added yet</div></td></tr>
+                        <tr><td colspan="3"><div class="att-empty"><i class="fa fa-calendar-o"></i>No holidays defined. Add them in the Academic Calendar.</div></td></tr>
                     </tbody>
                 </table>
             </div>
@@ -486,6 +500,111 @@
                 </table>
             </div>
         </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════ -->
+    <!-- TAB 4: GPS Attendance                              -->
+    <!-- ═══════════════════════════════════════════════════ -->
+    <div id="pane-gps" class="att-pane">
+
+        <!-- Enable + campus geofence -->
+        <div class="att-card">
+            <div class="att-card-title"><i class="fa fa-map-marker"></i> Campus Geofence</div>
+
+            <div class="att-toggle-row">
+                <div>
+                    <div class="att-toggle-label"><i class="fa fa-location-arrow"></i> Enable GPS Attendance</div>
+                    <div class="att-toggle-desc">Allow staff to check in/out from the Teacher app when physically inside the campus geofence</div>
+                </div>
+                <label class="att-switch">
+                    <input type="checkbox" id="gpsEnabled">
+                    <span class="att-switch-slider"></span>
+                </label>
+            </div>
+
+            <div style="margin:14px 0 10px;font-size:11.5px;color:var(--att-t3);">
+                Click on the map to drop the campus pin, or drag the marker. The circle shows the allowed radius.
+            </div>
+            <button type="button" class="att-btn att-btn-ghost att-btn-sm" id="gpsUseMyLoc" style="margin-bottom:10px;">
+                <i class="fa fa-location-arrow"></i> Use my current location
+            </button>
+            <div id="gpsMap" style="height:320px;border-radius:8px;border:1px solid var(--att-border);"></div>
+
+            <div class="att-grid att-grid-3" style="margin-top:14px;">
+                <div class="att-field">
+                    <label>Campus Latitude</label>
+                    <input type="number" step="any" id="gpsLat" placeholder="e.g. 26.8512">
+                </div>
+                <div class="att-field">
+                    <label>Campus Longitude</label>
+                    <input type="number" step="any" id="gpsLng" placeholder="e.g. 80.9462">
+                </div>
+                <div class="att-field">
+                    <label>Radius (metres)</label>
+                    <input type="number" min="10" max="5000" id="gpsRadius" value="200">
+                </div>
+            </div>
+        </div>
+
+        <!-- Accuracy & anti-spoof -->
+        <div class="att-card">
+            <div class="att-card-title"><i class="fa fa-shield"></i> Accuracy &amp; Anti-Spoof</div>
+            <div class="att-grid att-grid-2">
+                <div class="att-field">
+                    <label>Max GPS Accuracy (metres)</label>
+                    <input type="number" min="10" max="1000" id="gpsMaxAccuracy" value="100">
+                </div>
+                <div class="att-field">
+                    <label>Boundary Tolerance (metres)</label>
+                    <input type="number" min="0" max="200" id="gpsTolerance" value="0">
+                </div>
+            </div>
+            <div class="att-toggle-row" style="margin-top:8px;">
+                <div>
+                    <div class="att-toggle-label"><i class="fa fa-exclamation-triangle"></i> Allow Mock Locations</div>
+                    <div class="att-toggle-desc">Leave OFF in production — mock/fake-GPS punches are rejected by the server</div>
+                </div>
+                <label class="att-switch">
+                    <input type="checkbox" id="gpsAllowMock">
+                    <span class="att-switch-slider"></span>
+                </label>
+            </div>
+        </div>
+
+        <!-- Attendance windows (default shift) -->
+        <div class="att-card">
+            <div class="att-card-title"><i class="fa fa-clock-o"></i> Attendance Windows (Default Shift)</div>
+            <div class="att-grid att-grid-3">
+                <div class="att-field">
+                    <label>Earliest Check-in</label>
+                    <input type="time" id="gpsEarliest" value="07:30">
+                </div>
+                <div class="att-field">
+                    <label>Late Threshold</label>
+                    <input type="time" id="gpsLateThreshold" value="09:00">
+                </div>
+                <div class="att-field">
+                    <label>Grace Period (min)</label>
+                    <input type="number" min="0" max="120" id="gpsGrace" value="10">
+                </div>
+                <div class="att-field">
+                    <label>Latest Check-in</label>
+                    <input type="time" id="gpsLatest" value="11:00">
+                </div>
+                <div class="att-field">
+                    <label>Check-out Opens</label>
+                    <input type="time" id="gpsCheckoutStart" value="13:00">
+                </div>
+                <div class="att-field">
+                    <label>Check-out Closes</label>
+                    <input type="time" id="gpsCheckoutLatest" value="21:00">
+                </div>
+            </div>
+        </div>
+
+        <button class="att-btn att-btn-primary" id="btnSaveGps">
+            <i class="fa fa-check"></i> Save GPS Policy
+        </button>
     </div>
 
 </div><!-- .att-wrap -->
@@ -658,97 +777,45 @@
     });
 
     /* ═════════════════════════════════════════════════════ */
-    /* TAB 2: Holiday Calendar                              */
+    /* TAB 2: Holiday Management (READ-ONLY — Option D)      */
+    /* Holidays are authored in the Academic Calendar only.  */
     /* ═════════════════════════════════════════════════════ */
-
-    var holidays = [];
-
-    function renderHolidays() {
-        var tbody = document.getElementById('holidayTableBody');
-        if (!holidays.length) {
-            tbody.innerHTML = '<tr><td colspan="4"><div class="att-empty"><i class="fa fa-calendar-o"></i>No holidays added yet</div></td></tr>';
-            return;
-        }
-        var html = '';
-        holidays.sort(function(a,b){ return (a.date || '').localeCompare(b.date || ''); });
-        holidays.forEach(function(h, i){
-            html += '<tr>'
-                + '<td>' + (i + 1) + '</td>'
-                + '<td>' + formatDate(h.date) + '</td>'
-                + '<td>' + esc(h.name) + '</td>'
-                + '<td style="text-align:right;">'
-                + '<button class="att-btn att-btn-danger att-btn-sm" data-delete-holiday="' + esc(h.id || h.date) + '"><i class="fa fa-trash"></i></button>'
-                + '</td></tr>';
-        });
-        tbody.innerHTML = html;
-
-        tbody.querySelectorAll('[data-delete-holiday]').forEach(function(btn){
-            btn.addEventListener('click', function(){
-                var id = this.getAttribute('data-delete-holiday');
-                deleteHoliday(id);
-            });
-        });
-    }
 
     function loadHolidays() {
         getData('attendance/get_holidays').then(function(r){
-            holidays = [];
-            if (r && r.status && r.holidays) {
-                var h = r.holidays;
-                if (typeof h === 'object' && !Array.isArray(h)) {
-                    Object.keys(h).forEach(function(date){
-                        holidays.push({ date: date, name: h[date] });
-                    });
-                } else if (Array.isArray(h)) {
-                    holidays = h;
-                }
+            if (!r) return;
+            // Summary
+            var setTxt = function(id, val){ var el = document.getElementById(id); if (el) el.textContent = val; };
+            setTxt('holSession',  r.session || '—');
+            setTxt('holTotal',    (r.total != null ? r.total : '—'));
+            setTxt('holUpcoming', (r.upcoming != null ? r.upcoming : '—'));
+            setTxt('holUpdated',  r.lastUpdated ? formatDate(r.lastUpdated) : 'N/A');
+            if (r.canonicalSource) setTxt('holSource', r.canonicalSource);
+            if (r.editorUrl) {
+                var openBtn = document.getElementById('btnOpenCalendar');
+                if (openBtn) openBtn.setAttribute('href', r.editorUrl);
             }
-            renderHolidays();
-        }).catch(function(){ holidays = []; renderHolidays(); });
-    }
-
-    function saveHolidays() {
-        // Convert array [{date, name},...] to object {"YYYY-MM-DD": "Name"} for controller
-        var obj = {};
-        holidays.forEach(function(h){ if (h.date) obj[h.date] = h.name || ''; });
-        return postData('attendance/save_holidays', { holidays: JSON.stringify(obj) });
-    }
-
-    document.getElementById('btnAddHoliday').addEventListener('click', function(){
-        var dateEl = document.getElementById('holidayDate');
-        var nameEl = document.getElementById('holidayName');
-        var date = dateEl.value.trim();
-        var name = nameEl.value.trim();
-
-        if (!date) { showAlert('Please select a date', 'error'); return; }
-        if (!name) { showAlert('Please enter a holiday name', 'error'); return; }
-
-        var dup = holidays.some(function(h){ return h.date === date; });
-        if (dup) { showAlert('A holiday already exists for this date', 'error'); return; }
-
-        holidays.push({ id: date + '_' + Date.now(), date: date, name: name });
-        renderHolidays();
-
-        saveHolidays().then(function(r){
-            if (r.status) {
-                showAlert('Holiday added', 'success');
-                dateEl.value = '';
-                nameEl.value = '';
-            } else {
-                showAlert(r.message || 'Failed to save holiday', 'error');
+            // Read-only list
+            var list = [];
+            var h = r.holidays || {};
+            if (typeof h === 'object' && !Array.isArray(h)) {
+                Object.keys(h).forEach(function(date){ list.push({ date: date, name: h[date] }); });
+            } else if (Array.isArray(h)) {
+                list = h;
             }
-        }).catch(function(){
-            showAlert('Network error', 'error');
-        });
-    });
+            list.sort(function(a,b){ return (a.date || '').localeCompare(b.date || ''); });
 
-    function deleteHoliday(id) {
-        holidays = holidays.filter(function(h){ return (h.id || h.date) !== id; });
-        renderHolidays();
-        saveHolidays().then(function(r){
-            if (r.status) showAlert('Holiday removed', 'success');
-            else showAlert(r.message || 'Failed to save', 'error');
-        }).catch(function(){ showAlert('Network error', 'error'); });
+            var tbody = document.getElementById('holidayTableBody');
+            if (!list.length) {
+                tbody.innerHTML = '<tr><td colspan="3"><div class="att-empty"><i class="fa fa-calendar-o"></i>No holidays defined. Add them in the Academic Calendar.</div></td></tr>';
+                return;
+            }
+            var html = '';
+            list.forEach(function(x, i){
+                html += '<tr><td>' + (i + 1) + '</td><td>' + formatDate(x.date) + '</td><td>' + esc(x.name) + '</td></tr>';
+            });
+            tbody.innerHTML = html;
+        }).catch(function(){ /* read-only: leave defaults */ });
     }
 
     /* ═════════════════════════════════════════════════════ */
@@ -927,5 +994,190 @@
     loadHolidays();
     loadDevices();
 
+})();
+</script>
+
+<script>
+/* ═══════════════════════════════════════════════════════════ */
+/* GPS Attendance tab — Leaflet campus picker + Firestore policy */
+/* Isolated IIFE: does NOT touch the legacy settings closure.    */
+/* ═══════════════════════════════════════════════════════════ */
+(function(){
+    'use strict';
+    var BASE = '<?= base_url() ?>';
+    var CSRF_NAME = '<?= $this->security->get_csrf_token_name() ?>';
+    var CSRF_HASH = '<?= $this->security->get_csrf_hash() ?>';
+
+    var DEFAULT_CENTER = [22.9734, 78.6569]; // India centroid fallback
+    var map = null, marker = null, circle = null, mapReady = false;
+
+    function $(id){ return document.getElementById(id); }
+    function esc(s){ var d=document.createElement('div'); d.appendChild(document.createTextNode(String(s==null?'':s))); return d.innerHTML; }
+
+    function gpsAlert(msg, type){
+        var el = $('attAlert');
+        el.className = 'att-alert show att-alert-' + (type || 'success');
+        el.innerHTML = '<i class="fa fa-' + (type==='error'?'exclamation-circle':type==='info'?'info-circle':'check-circle') + '"></i> ' + esc(msg);
+        clearTimeout(el._t); el._t = setTimeout(function(){ el.classList.remove('show'); }, 4000);
+    }
+
+    function postData(url, data){
+        var fd = new FormData();
+        fd.append(CSRF_NAME, CSRF_HASH);
+        if (data) Object.keys(data).forEach(function(k){ fd.append(k, data[k]); });
+        return fetch(BASE + url, { method:'POST', body:fd, credentials:'same-origin' })
+            .then(function(r){
+                var ct = r.headers.get('content-type') || '';
+                if (ct.indexOf('application/json') === -1) throw new Error('Non-JSON response (' + r.status + ')');
+                return r.json();
+            }).then(function(j){ if (j.csrf_token) CSRF_HASH = j.csrf_token; return j; });
+    }
+    function getData(url){
+        return fetch(BASE + url, { credentials:'same-origin' })
+            .then(function(r){
+                var ct = r.headers.get('content-type') || '';
+                if (ct.indexOf('application/json') === -1) throw new Error('Non-JSON response (' + r.status + ')');
+                return r.json();
+            });
+    }
+
+    function curLatLng(){
+        var lat = parseFloat($('gpsLat').value), lng = parseFloat($('gpsLng').value);
+        if (isNaN(lat) || isNaN(lng)) return null;
+        return [lat, lng];
+    }
+    function curRadius(){ var r = parseInt($('gpsRadius').value, 10); return (isNaN(r) || r <= 0) ? 200 : r; }
+
+    function syncMarker(latlng){
+        if (!mapReady) return;
+        if (!marker){
+            marker = L.marker(latlng, { draggable:true }).addTo(map);
+            marker.on('dragend', function(){
+                var p = marker.getLatLng();
+                $('gpsLat').value = p.lat.toFixed(6);
+                $('gpsLng').value = p.lng.toFixed(6);
+                if (circle) circle.setLatLng(p);
+            });
+        } else { marker.setLatLng(latlng); }
+        if (!circle){ circle = L.circle(latlng, { radius: curRadius(), color:'#2563eb', fillColor:'#2563eb', fillOpacity:0.12 }).addTo(map); }
+        else { circle.setLatLng(latlng); circle.setRadius(curRadius()); }
+    }
+
+    function initMap(){
+        if (mapReady) return;
+        var c = curLatLng();
+        map = L.map('gpsMap').setView(c || DEFAULT_CENTER, c ? 16 : 5);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+        map.on('click', function(e){
+            $('gpsLat').value = e.latlng.lat.toFixed(6);
+            $('gpsLng').value = e.latlng.lng.toFixed(6);
+            syncMarker(e.latlng);
+        });
+        mapReady = true;
+        if (c) syncMarker(c);
+        setTimeout(function(){ map.invalidateSize(); }, 60);
+    }
+
+    // Lazy-init the map the first time the GPS tab is opened (container must be visible).
+    var gpsTab = document.querySelector('.att-tab[data-tab="gps"]');
+    if (gpsTab) gpsTab.addEventListener('click', function(){
+        if (!mapReady) initMap(); else setTimeout(function(){ map.invalidateSize(); }, 60);
+    });
+
+    // "Use my current location" — browser Geolocation (works on https:// and http://localhost).
+    var useLocBtn = $('gpsUseMyLoc');
+    if (useLocBtn) useLocBtn.addEventListener('click', function(){
+        if (!navigator.geolocation){ gpsAlert('Geolocation is not supported by this browser.', 'error'); return; }
+        var orig = useLocBtn.innerHTML;
+        useLocBtn.disabled = true;
+        useLocBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Locating…';
+        navigator.geolocation.getCurrentPosition(function(pos){
+            var lat = pos.coords.latitude, lng = pos.coords.longitude;
+            $('gpsLat').value = lat.toFixed(6);
+            $('gpsLng').value = lng.toFixed(6);
+            if (!mapReady) initMap();
+            var ll = [lat, lng];
+            map.setView(ll, 17);
+            syncMarker(ll);
+            setTimeout(function(){ map.invalidateSize(); }, 60);
+            gpsAlert('Location captured (±' + Math.round(pos.coords.accuracy) + ' m). Review the pin, set the radius, then Save GPS Policy.', 'success');
+            useLocBtn.disabled = false; useLocBtn.innerHTML = orig;
+        }, function(err){
+            var m = err.code === 1 ? 'Permission denied — allow location access for this site in the browser.' :
+                    err.code === 2 ? 'Position unavailable. Check that location services are on.' :
+                    err.code === 3 ? 'Timed out while getting your location. Try again.' :
+                    'Could not get your location.';
+            gpsAlert(m, 'error');
+            useLocBtn.disabled = false; useLocBtn.innerHTML = orig;
+        }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });
+    });
+
+    // Keep the circle in sync when lat/lng/radius are typed manually.
+    ['gpsLat','gpsLng'].forEach(function(id){ $(id).addEventListener('change', function(){ var c=curLatLng(); if(c) syncMarker(c); }); });
+    $('gpsRadius').addEventListener('change', function(){ if (circle) circle.setRadius(curRadius()); });
+
+    function loadGpsPolicy(){
+        getData('attendance/get_attendance_policy').then(function(r){
+            if (!r || !r.status) return;
+            var p = r.policy || {};
+            var gps = p.gps || {}, geo = gps.geofence || {};
+            var win = (p.shifts && p.shifts.default && p.shifts.default.windows) ? p.shifts.default.windows : {};
+
+            $('gpsEnabled').checked = (geo.active === true);
+            if (geo.centerLat) $('gpsLat').value = geo.centerLat;
+            if (geo.centerLng) $('gpsLng').value = geo.centerLng;
+            if (geo.radius) $('gpsRadius').value = geo.radius;
+            if (gps.maxAccuracyMeters) $('gpsMaxAccuracy').value = gps.maxAccuracyMeters;
+            $('gpsTolerance').value = gps.boundaryToleranceMeters || 0;
+            $('gpsAllowMock').checked = (gps.allowMockLocation === true);
+
+            if (win.earliestCheckIn) $('gpsEarliest').value = win.earliestCheckIn;
+            if (win.lateThreshold)   $('gpsLateThreshold').value = win.lateThreshold;
+            else if (r.default_staff_threshold) $('gpsLateThreshold').value = r.default_staff_threshold;
+            if (typeof win.gracePeriodMin !== 'undefined') $('gpsGrace').value = win.gracePeriodMin;
+            if (win.latestCheckIn)   $('gpsLatest').value = win.latestCheckIn;
+            if (win.checkoutStart)   $('gpsCheckoutStart').value = win.checkoutStart;
+            if (win.checkoutLatest)  $('gpsCheckoutLatest').value = win.checkoutLatest;
+        }).catch(function(){ /* first-time / no policy — keep defaults */ });
+    }
+
+    $('btnSaveGps').addEventListener('click', function(){
+        var enabled = $('gpsEnabled').checked;
+        var lat = parseFloat($('gpsLat').value), lng = parseFloat($('gpsLng').value);
+        if (enabled && (isNaN(lat) || isNaN(lng))){
+            gpsAlert('Set the campus location on the map before enabling GPS attendance.', 'error');
+            return;
+        }
+        var policy = {
+            gps: {
+                enabled: enabled,
+                geofence: { active: enabled, centerLat: isNaN(lat)?null:lat, centerLng: isNaN(lng)?null:lng, radius: curRadius() },
+                maxAccuracyMeters: parseInt($('gpsMaxAccuracy').value,10) || 100,
+                allowMockLocation: $('gpsAllowMock').checked,
+                boundaryToleranceMeters: parseInt($('gpsTolerance').value,10) || 0
+            },
+            windows: {
+                earliestCheckIn: $('gpsEarliest').value,
+                lateThreshold:   $('gpsLateThreshold').value,
+                gracePeriodMin:  parseInt($('gpsGrace').value,10) || 0,
+                latestCheckIn:   $('gpsLatest').value,
+                checkoutStart:   $('gpsCheckoutStart').value,
+                checkoutLatest:  $('gpsCheckoutLatest').value
+            }
+        };
+        var btn = this; btn.disabled = true; btn.innerHTML = '<span class="att-spinner"></span> Saving...';
+        postData('attendance/save_attendance_policy', { policy: JSON.stringify(policy) }).then(function(r){
+            btn.disabled = false; btn.innerHTML = '<i class="fa fa-check"></i> Save GPS Policy';
+            if (r.status === 'success' || r.status === true) gpsAlert('GPS attendance policy saved', 'success');
+            else gpsAlert(r.message || 'Failed to save GPS policy', 'error');
+        }).catch(function(){
+            btn.disabled = false; btn.innerHTML = '<i class="fa fa-check"></i> Save GPS Policy';
+            gpsAlert('Network error while saving GPS policy', 'error');
+        });
+    });
+
+    loadGpsPolicy();
 })();
 </script>

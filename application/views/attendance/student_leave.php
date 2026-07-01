@@ -134,6 +134,11 @@
                 <i class="fa fa-calendar-check-o"></i> Student Leave Applications
             </h4>
             <p class="sl-page-sub">Review, approve, or reject student leave requests</p>
+            <ol style="list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0;padding:0;font-size:12px;color:#8a8a8a;">
+                <li><a href="<?= base_url('admin') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Dashboard</a></li>
+                <li>/&nbsp;<a href="<?= base_url('attendance') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Attendance</a></li>
+                <li>/&nbsp;Student Leave</li>
+            </ol>
         </div>
         <span class="sl-count-badge" id="slCountBadge" style="display:none;">
             <i class="fa fa-hourglass-half"></i> <span id="slCountNum">0</span> pending

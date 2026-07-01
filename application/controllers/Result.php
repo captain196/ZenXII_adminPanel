@@ -1564,10 +1564,14 @@ class Result extends MY_Controller
 
             // Add attendance percentage + low attendance flag (holidays excluded)
             if ($attEnabled) {
-                $studentBase = "{$sectionBase}/{$uid}";
-                $attData = get_student_attendance_percent(
-                    $this->firebase, $studentBase, $school,
-                    'April', $fromYear, 'March', $toYear
+                // P2: report-card attendance % now sourced from Firestore
+                // `attendanceSummary` (was RTDB {studentBase}/Attendance). The
+                // include-leave flag reuses the already-read $attRules (no new
+                // RTDB read added; the AttendanceRules config read is S6 scope).
+                $attData = get_student_attendance_percent_fs(
+                    $this->fs, $this->school_id, $uid,
+                    'April', $fromYear, 'March', $toYear,
+                    !empty($attRules['include_leave_in_percent'])
                 );
                 $row['attendance_percent'] = $attData['percent'];
                 $row['low_attendance'] = ($attData['percent'] < $minAttPercent);

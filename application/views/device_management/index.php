@@ -206,11 +206,11 @@
     <div class="dm-chart-row">
         <div class="dm-chart-box">
             <div class="dm-chart-title"><i class="fa fa-bar-chart" style="color:var(--gold);margin-right:6px"></i>Device Distribution</div>
-            <canvas id="chartDistro" height="200"></canvas>
+            <div style="position:relative;height:240px"><canvas id="chartDistro"></canvas></div>
         </div>
         <div class="dm-chart-box">
             <div class="dm-chart-title"><i class="fa fa-pie-chart" style="color:var(--gold);margin-right:6px"></i>Platform Distribution</div>
-            <canvas id="chartPlatform" height="200"></canvas>
+            <div style="position:relative;height:240px"><canvas id="chartPlatform"></canvas></div>
         </div>
     </div>
 

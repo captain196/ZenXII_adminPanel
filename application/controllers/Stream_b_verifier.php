@@ -36,8 +36,6 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *   A35 — R3:   dead `_check_staff_att_lock` method is removed (lock-check moved to Lock_cache)
  *   A36 — R3:   lock_staff_attendance body is Firestore-only + writes staffAttendanceLocks + invalidates cache
  *   A37 — R3:   unlock_staff_attendance body is Firestore-only + writes staffAttendanceLocks + invalidates cache
- *   A38 — R4:   approve_attendance_request staff_day branch is Firestore-only (reads/writes summary doc; lock-aware)
- *   A39 — R4:   approve_attendance_request staff_bulk branch is Firestore-only (reads/writes summary doc; lock-aware)
  *   A40 — R5:   update_staff_att_summary + get_staff_attendance_summary helpers fully removed
  *   A41 — R5:   fix_attendance_keys staff + staff_late branches removed (student branches preserved)
  *   A42 — R5:   attendance_helper.php carries zero Staff_Attendance literal refs
@@ -135,8 +133,7 @@ class Stream_b_verifier extends CI_Controller
         $results['A35'] = $this->_assert_check_staff_att_lock_removed();
         $results['A36'] = $this->_assert_lock_staff_attendance_fs_only();
         $results['A37'] = $this->_assert_unlock_staff_attendance_fs_only();
-        $results['A38'] = $this->_assert_approve_staff_day_fs_only();
-        $results['A39'] = $this->_assert_approve_staff_bulk_fs_only();
+        // A38/A39 retired — approve_attendance_request removed in RTDB-elimination Component 3.
         $results['A40'] = $this->_assert_legacy_helpers_removed();
         $results['A41'] = $this->_assert_fix_attendance_keys_staff_branches_removed();
         $results['A42'] = $this->_assert_attendance_helper_zero_staff_refs();
@@ -1309,106 +1306,6 @@ class Stream_b_verifier extends CI_Controller
             : 'unlock_staff_attendance Firestore-only contract violated'];
     }
 
-    /* ─────────────────────────────────────────────────────────────────── */
-    /*  A38 — R4: approve_attendance_request staff_day branch is FS-only   */
-    /* ─────────────────────────────────────────────────────────────────── */
-    private function _assert_approve_staff_day_fs_only(): array
-    {
-        echo "\n── A38: approve_attendance_request staff_day branch is Firestore-only ──\n";
-        $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
-
-        // Extract: from "elseif ($type === 'staff_day')" up to next "} elseif (" or method-level "} else {".
-        // Anchor terminator on the controller-method indent depth (8 spaces) so we don't stop at an
-        // inner `} else {` of the branch.
-        $body = '';
-        if (preg_match("/elseif\s*\(\s*\\\$type\s*===\s*'staff_day'\s*\).*?(?=\n {8}\}\s*elseif\s*\(|\n {8}\}\s*else\s*\{)/s", $src, $m)) {
-            $body = $m[0];
-        }
-        if ($body === '') {
-            return ['pass' => false, 'msg' => 'staff_day branch body not extractable'];
-        }
-
-        preg_match_all('/\$this->firebase->(get|set|update|delete|push)\s*\(/', $body, $rtdb);
-        $rtdbApiCalls = count($rtdb[0]);
-
-        $rtdbHelperPatterns = [
-            'update_staff_att_summary\s*\(',
-            '\$this->_check_staff_att_lock\s*\(',
-            '\$this->_acquire_att_lock\s*\(',
-            '\$this->_release_att_lock\s*\(',
-        ];
-        $helperHits = [];
-        foreach ($rtdbHelperPatterns as $p) {
-            if (preg_match('/' . $p . '/', $body)) $helperHits[] = $p;
-        }
-
-        $readsSummary    = (strpos($body, "firestoreGet('staffAttendanceSummary'") !== false);
-        $writesSummary   = (strpos($body, '$this->_syncStaffSummaryToFirestore(') !== false);
-        $loadsLockCache  = (strpos($body, "load->library('lock_cache')") !== false);
-        $checksLock      = (strpos($body, '$this->lock_cache->is_locked(') !== false);
-
-        echo "  staff_day branch length:               " . strlen($body) . " chars\n";
-        echo "  RTDB API calls in branch:              {$rtdbApiCalls} (expected: 0)\n";
-        echo "  RTDB-helper calls in branch:           " . (empty($helperHits) ? '0' : count($helperHits)) . " (expected: 0)\n";
-        echo "  firestoreGet('staffAttendanceSummary'): " . ($readsSummary ? 'yes' : 'no') . "\n";
-        echo "  _syncStaffSummaryToFirestore(...):     " . ($writesSummary ? 'yes' : 'no') . "\n";
-        echo "  loads lock_cache + is_locked check:    " . ($loadsLockCache && $checksLock ? 'yes' : 'no') . "\n";
-
-        $ok = ($rtdbApiCalls === 0) && empty($helperHits) && $readsSummary && $writesSummary && $loadsLockCache && $checksLock;
-        return ['pass' => $ok, 'msg' => $ok
-            ? 'staff_day branch reads + writes Firestore summary; lock-aware; zero RTDB'
-            : 'staff_day branch Firestore-only contract violated'];
-    }
-
-    /* ─────────────────────────────────────────────────────────────────── */
-    /*  A39 — R4: approve_attendance_request staff_bulk branch is FS-only  */
-    /* ─────────────────────────────────────────────────────────────────── */
-    private function _assert_approve_staff_bulk_fs_only(): array
-    {
-        echo "\n── A39: approve_attendance_request staff_bulk branch is Firestore-only ──\n";
-        $src = (string) file_get_contents(APPPATH . 'controllers/Attendance.php');
-
-        // Anchor terminator on the controller-method indent depth (8 spaces) so an inner
-        // `} else {` (e.g., from the `$isDiff` check) doesn't cut the body short.
-        $body = '';
-        if (preg_match("/elseif\s*\(\s*\\\$type\s*===\s*'staff_bulk'\s*\).*?(?=\n {8}\}\s*elseif\s*\(|\n {8}\}\s*else\s*\{)/s", $src, $m)) {
-            $body = $m[0];
-        }
-        if ($body === '') {
-            return ['pass' => false, 'msg' => 'staff_bulk branch body not extractable'];
-        }
-
-        preg_match_all('/\$this->firebase->(get|set|update|delete|push)\s*\(/', $body, $rtdb);
-        $rtdbApiCalls = count($rtdb[0]);
-
-        $rtdbHelperPatterns = [
-            'update_staff_att_summary\s*\(',
-            '\$this->_check_staff_att_lock\s*\(',
-            '\$this->_acquire_att_lock\s*\(',
-            '\$this->_release_att_lock\s*\(',
-        ];
-        $helperHits = [];
-        foreach ($rtdbHelperPatterns as $p) {
-            if (preg_match('/' . $p . '/', $body)) $helperHits[] = $p;
-        }
-
-        $readsSummary    = (strpos($body, "firestoreGet('staffAttendanceSummary'") !== false);
-        $writesSummary   = (strpos($body, '$this->_syncStaffSummaryToFirestore(') !== false);
-        $loadsLockCache  = (strpos($body, "load->library('lock_cache')") !== false);
-        $checksLock      = (strpos($body, '$this->lock_cache->is_locked(') !== false);
-
-        echo "  staff_bulk branch length:              " . strlen($body) . " chars\n";
-        echo "  RTDB API calls in branch:              {$rtdbApiCalls} (expected: 0)\n";
-        echo "  RTDB-helper calls in branch:           " . (empty($helperHits) ? '0' : count($helperHits)) . " (expected: 0)\n";
-        echo "  firestoreGet('staffAttendanceSummary'): " . ($readsSummary ? 'yes' : 'no') . "\n";
-        echo "  _syncStaffSummaryToFirestore(...):     " . ($writesSummary ? 'yes' : 'no') . "\n";
-        echo "  loads lock_cache + is_locked check:    " . ($loadsLockCache && $checksLock ? 'yes' : 'no') . "\n";
-
-        $ok = ($rtdbApiCalls === 0) && empty($helperHits) && $readsSummary && $writesSummary && $loadsLockCache && $checksLock;
-        return ['pass' => $ok, 'msg' => $ok
-            ? 'staff_bulk branch reads + writes Firestore summary; lock-aware; zero RTDB'
-            : 'staff_bulk branch Firestore-only contract violated'];
-    }
 
     /* ─────────────────────────────────────────────────────────────────── */
     /*  A40 — R5: legacy staff-summary helpers fully removed               */

@@ -579,6 +579,26 @@ service cloud.firestore {
       allow write: if isStaff();
     }
 
+    // ── Exam Templates (Phase B) ─────────────────────────────────
+    // Server-only: per-subject mark-scheme (components/maxMarks) authored by
+    // the admin compute flow via Admin SDK (bypasses rules). No client (app)
+    // reader consumes templates directly — they read `results`/`examSchedule`.
+    // Deny-all intent-lock; Admin SDK writes/reads server-side.
+    match /examTemplates/{docId} {
+      allow read, write: if false;
+    }
+
+    // ── B1 Exam-result infra (server-only; Admin SDK writes) ─────
+    // examResultMeta: stale/freshness + publication-dirty signal.
+    // marksAudit / resultsAudit: append-only change trails. No client
+    // read/write is ever legitimate — deny-all intent-lock (Admin SDK bypasses).
+    match /examResultMeta/{docId} { allow read, write: if false; }
+    match /marksAudit/{docId}     { allow read, write: if false; }
+    match /resultsAudit/{docId}   { allow read, write: if false; }
+    // resultsStaging: admin-only staged compute set; promoted to `results` on
+    // publish. Never client-visible (parents read `results` only). Server-only.
+    match /resultsStaging/{docId} { allow read, write: if false; }
+
     // ── Fee Structures ───────────────────────────────────────────
     match /feeStructures/{docId} {
       allow read: if isSameSchool();
@@ -1022,15 +1042,41 @@ service cloud.firestore {
     }
 
     // ── Staff Attendance ────────────────────────────────────────
+    // ── Staff Attendance (canonical per-day) — Phase 10 hardening ─
+    // Writes are Admin-SDK ONLY (PHP backend: Staff_attendance_writer +
+    // HR leave path). The service account bypasses these rules, so ALL
+    // client writes are denied here. Reads: a staff member may read ONLY
+    // their own records (uid == staffId convention); same-school admins
+    // may read any. Admin web / payroll / HR / dashboard read via the
+    // Admin SDK and are unaffected by these client-facing rules.
     match /staffAttendance/{docId} {
-      allow read: if isSameSchool();
-      allow write: if isStaff();
+      allow read: if isAuth() && (
+            (resource != null && resource.data.staffId == request.auth.uid)
+            || (isAdmin() && isSameSchool())
+          );
+      allow write: if false;
     }
 
-    // ── Staff Attendance Summary ────────────────────────────────
+    // ── Staff Attendance Summary (canonical per-month) ───────────
     match /staffAttendanceSummary/{docId} {
-      allow read: if isSameSchool();
-      allow write: if isStaff();
+      allow read: if isAuth() && (
+            (resource != null && resource.data.staffId == request.auth.uid)
+            || (isAdmin() && isSameSchool())
+          );
+      allow write: if false;
+    }
+
+    // ── Attendance Punches (audit trail: GPS / device / manual) ──
+    // Append-only audit written by the PHP backend (Admin SDK). Clients
+    // never write. A staff member may read ONLY their own punch events;
+    // same-school admins may read any. The attendance METHOD recorded
+    // here is audit metadata only — it never influences payroll.
+    match /attendancePunches/{docId} {
+      allow read: if isAuth() && (
+            (resource != null && resource.data.staffId == request.auth.uid)
+            || (isAdmin() && isSameSchool())
+          );
+      allow write: if false;
     }
 
     // ── Calendar Events ─────────────────────────────────────────

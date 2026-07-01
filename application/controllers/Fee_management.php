@@ -202,7 +202,15 @@ class Fee_management extends MY_Controller
                 $heads = is_array($d['feeHeads'] ?? null) ? $d['feeHeads'] : [];
                 foreach ($heads as $h) {
                     $name = trim((string) ($h['name'] ?? ''));
-                    $type = ($h['type'] ?? 'Monthly') === 'Yearly' ? 'Yearly' : 'Monthly';
+                    // Fees V7 reader migration (original-bug fix): classify by the canonical
+                    // billingType (present on chart heads + registry). Fall back to legacy
+                    // type/frequency only for titles-doc heads that predate billingType.
+                    $bt = (string) ($h['billingType'] ?? '');
+                    if ($bt === '') {
+                        $freq = strtolower((string) ($h['frequency'] ?? ''));
+                        $bt = (($h['type'] ?? '') === 'Yearly' || in_array($freq, ['annual', 'yearly'], true)) ? 'Yearly' : 'Monthly';
+                    }
+                    $type = ($bt === 'Yearly') ? 'Yearly' : 'Monthly';
                     if ($name !== '' && !isset($result[$type][$name])) {
                         $result[$type][$name] = '';
                     }

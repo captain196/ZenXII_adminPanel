@@ -192,6 +192,10 @@ $config['csrf_exclude_uris'] = [
     'fee_management/parent_verify_payment',
     // Mobile API endpoints (Firebase ID-token authenticated, not CSRF-protected)
     'auth/(.*)',
+    'staff_attendance/(.*)',
+    // Teacher app attendance POSTs (Bearer-token authenticated via _bearer_auth_bridge)
+    'attendance/save',
+    'attendance/correction/submit',
 ];
 
 $config['compress_output'] = FALSE;

@@ -272,6 +272,11 @@
             Attendance Analytics
         </h4>
         <p>View attendance trends, class-wise breakdowns, and individual reports</p>
+        <ol style="list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0;padding:0;font-size:12px;color:#8a8a8a;">
+            <li><a href="<?= base_url('admin') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Dashboard</a></li>
+            <li>/&nbsp;<a href="<?= base_url('attendance') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Attendance</a></li>
+            <li>/&nbsp;Analytics</li>
+        </ol>
     </div>
 
     <!-- Filter Bar -->
@@ -401,7 +406,7 @@
                         <option value="staff">Staff</option>
                     </select>
                 </div>
-                <div class="ana-fg">
+                <div class="ana-fg" id="anaIndClassFg">
                     <label for="anaIndClass">Class</label>
                     <select id="anaIndClass">
                         <option value="">Select Class</option>
@@ -419,7 +424,7 @@
                         ?>
                     </select>
                 </div>
-                <div class="ana-fg">
+                <div class="ana-fg" id="anaIndSectionFg">
                     <label for="anaIndSection">Section</label>
                     <select id="anaIndSection" disabled>
                         <option value="">Select Section</option>
@@ -742,6 +747,19 @@
     /* -- Individual Report -- */
     elIndBtn.addEventListener('click', loadIndividual);
 
+    /* Class/Section apply to STUDENTS only — staff aren't tied to a class/section.
+       Hide those fields (and skip their validation) when Type = Staff. */
+    function syncIndividualType() {
+        var isStudent = elPersonType.value === 'student';
+        var cfg = document.getElementById('anaIndClassFg');
+        var sfg = document.getElementById('anaIndSectionFg');
+        if (cfg) cfg.style.display = isStudent ? '' : 'none';
+        if (sfg) sfg.style.display = isStudent ? '' : 'none';
+        elPersonId.placeholder = isStudent ? 'Enter student ID' : 'Enter staff ID (e.g. STA0001)';
+    }
+    elPersonType.addEventListener('change', syncIndividualType);
+    syncIndividualType();
+
     function loadIndividual() {
         var pid = elPersonId.value.trim();
         var ptype = elPersonType.value;
@@ -749,7 +767,7 @@
         var sec = elIndSection.value;
 
         if (!pid) { showToast('Please enter a person ID.', 'error'); return; }
-        if (!cls || !sec) { showToast('Please select class and section.', 'error'); return; }
+        if (ptype === 'student' && (!cls || !sec)) { showToast('Please select class and section.', 'error'); return; }
 
         elIndResult.style.display = 'none';
         elIndEmpty.style.display = 'none';
@@ -804,11 +822,14 @@
                 var bodyHtml = '';
                 months.forEach(function(m) {
                     var st = m.stats || {};
-                    var present = parseInt(st.present, 10) || 0;
-                    var absent = parseInt(st.absent, 10) || 0;
-                    var late = parseInt(st.late, 10) || 0;
-                    var total = parseInt(st.total, 10) || 0;
-                    var pct = total > 0 ? ((present / total) * 100).toFixed(1) : '0.0';
+                    // Controller returns stats keyed P/A/L/H/T/V (+ present_pct).
+                    var present = parseInt(st.P, 10) || 0;
+                    var absent  = parseInt(st.A, 10) || 0;
+                    var late    = parseInt(st.T, 10) || 0;
+                    var leave   = parseInt(st.L, 10) || 0;
+                    var total   = present + absent + late + leave;   // working days
+                    var pct = (st.present_pct != null) ? Number(st.present_pct).toFixed(1)
+                              : (total > 0 ? (((present + late) / total) * 100).toFixed(1) : '0.0');
                     var color = barColor(parseFloat(pct));
 
                     bodyHtml += '<tr>'
@@ -822,11 +843,13 @@
                 });
                 elIndBody.innerHTML = bodyHtml;
 
-                var tPresent = parseInt(totals.present, 10) || 0;
-                var tAbsent = parseInt(totals.absent, 10) || 0;
-                var tLate = parseInt(totals.late, 10) || 0;
-                var tTotal = parseInt(totals.total, 10) || 0;
-                var tPct = tTotal > 0 ? ((tPresent / tTotal) * 100).toFixed(1) : '0.0';
+                var tPresent = parseInt(totals.P, 10) || 0;
+                var tAbsent  = parseInt(totals.A, 10) || 0;
+                var tLate    = parseInt(totals.T, 10) || 0;
+                var tLeave   = parseInt(totals.L, 10) || 0;
+                var tTotal   = tPresent + tAbsent + tLate + tLeave;
+                var tPct = (totals.present_pct != null) ? Number(totals.present_pct).toFixed(1)
+                           : (tTotal > 0 ? (((tPresent + tLate) / tTotal) * 100).toFixed(1) : '0.0');
                 var tColor = barColor(parseFloat(tPct));
 
                 elIndFoot.innerHTML = '<tr>'

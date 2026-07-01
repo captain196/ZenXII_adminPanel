@@ -112,8 +112,6 @@ $route['fees/save_updated_fees']           = 'Fees/save_updated_fees';
 $route['fees/submit_discount']             = 'Fees/submit_discount';
 $route['fees/set_student_discount']        = 'Fees/set_student_discount';
 $route['fees/recalc_unpaid_discounts']     = 'Fees/recalc_unpaid_discounts';
-$route['fees/set_student_discount']        = 'Fees/set_student_discount';
-$route['fees/recalc_unpaid_discounts']     = 'Fees/recalc_unpaid_discounts';
 $route['fees/delete_fees_structure/(:any)'] = 'Fees/delete_fees_structure/$1';
 
 // Fees Exemption v2 (Phase 0) — admin capture for concessions + service enrollments.
@@ -619,6 +617,8 @@ $route['attendance/test_push']               = 'Attendance/test_push';
 $route['attendance/student']                 = 'Attendance/student_attendance';
 $route['attendance/staff']                   = 'Attendance/staff_attendance';
 $route['attendance/settings']                = 'Attendance/settings';
+$route['attendance/get_attendance_policy']   = 'Attendance/get_attendance_policy';
+$route['attendance/save_attendance_policy']  = 'Attendance/save_attendance_policy';
 $route['attendance/analytics']               = 'Attendance/analytics';
 $route['attendance/punch_log']               = 'Attendance/punch_log';
 $route['attendance/fetch_student']           = 'Attendance/fetch_student_attendance';
@@ -633,8 +633,17 @@ $route['attendance/mark_staff_day']          = 'Attendance/mark_staff_day';
 $route['attendance/bulk_mark_staff']         = 'Attendance/bulk_mark_staff';
 $route['attendance/get_settings']            = 'Attendance/get_settings';
 $route['attendance/save_settings']           = 'Attendance/save_settings';
-$route['attendance/save_holidays']           = 'Attendance/save_holidays';
+// HC-4 (Option D): holiday WRITER retired — authoring is Academic Calendar only.
+// get_holidays is now a READ-ONLY canonical status endpoint (Holiday_service).
 $route['attendance/get_holidays']            = 'Attendance/get_holidays';
+
+// GPS staff self-attendance (Teacher app, Firebase Bearer auth) — Phase 5/6
+$route['staff_attendance/punch']             = 'Staff_attendance/punch';
+$route['staff_attendance/me']                = 'Staff_attendance/me';
+
+// Holiday Legacy Inventory — READ-ONLY informational tool (admin-gated;
+// temporary migration artifact, delete after HC convergence completes)
+$route['holiday_legacy_inventory']           = 'Holiday_legacy_inventory/index';
 $route['attendance/register_device']         = 'Attendance/register_device';
 $route['attendance/update_device']           = 'Attendance/update_device';
 $route['attendance/delete_device']           = 'Attendance/delete_device';
@@ -644,7 +653,6 @@ $route['attendance/api_punch']               = 'Attendance/api_punch';
 $route['attendance/fetch_analytics']         = 'Attendance/fetch_analytics';
 $route['attendance/fetch_monthly_trend']     = 'Attendance/fetch_monthly_trend';
 $route['attendance/fetch_individual_report'] = 'Attendance/fetch_individual_report';
-$route['attendance/compute_summary']         = 'Attendance/compute_summary';
 $route['attendance/fetch_punch_log']         = 'Attendance/fetch_punch_log';
 $route['attendance/api_get_classes']         = 'Attendance/api_get_classes';
 $route['attendance/api_get_students']        = 'Attendance/api_get_students';
@@ -663,9 +671,6 @@ $route['attendance/fix_attendance_keys']     = 'Attendance/fix_attendance_keys';
 $route['attendance/autofill_staff_today']   = 'Attendance/autofill_staff_today';
 $route['attendance/lock_staff_attendance']       = 'Attendance/lock_staff_attendance';
 $route['attendance/unlock_staff_attendance']     = 'Attendance/unlock_staff_attendance';
-$route['attendance/approve_attendance_request']  = 'Attendance/approve_attendance_request';
-$route['attendance/reject_attendance_request']   = 'Attendance/reject_attendance_request';
-$route['attendance/list_pending_attendance']     = 'Attendance/list_pending_attendance';
 $route['attendance/student_leaves']               = 'Attendance/student_leaves';
 $route['attendance/list_student_leaves']         = 'Attendance/list_student_leaves';
 $route['attendance/approve_student_leave']       = 'Attendance/approve_student_leave';
@@ -935,10 +940,6 @@ $route['fee_management/parent_verify_payment']           = 'Fee_management/paren
 // subsystem; the route was leaking a 404 to anyone who hit the URL.
 // Parent app never called this endpoint — no client breakage.
 // Parent-app (Firebase Bearer-token) endpoints
-$route['fee_management/get_blocking_policy']             = 'Fee_management/get_blocking_policy';
-$route['fee_management/save_blocking_policy']            = 'Fee_management/save_blocking_policy';
-$route['fee_management/parent_create_order']             = 'Fee_management/parent_create_order';
-$route['fee_management/parent_verify_payment']           = 'Fee_management/parent_verify_payment';
 $route['fee_management/retry_payment_processing']        = 'Fee_management/retry_payment_processing';
 $route['fee_management/payment_reconciliation']          = 'Fee_management/payment_reconciliation';
 $route['fee_management/get_reconciliation_data']         = 'Fee_management/get_reconciliation_data';
@@ -1100,7 +1101,6 @@ $route['communication/get_circulars']                = 'Communication/get_circul
 $route['communication/save_circular']                = 'Communication/save_circular';
 $route['communication/delete_circular']              = 'Communication/delete_circular';
 $route['communication/acknowledge_circular']         = 'Communication/acknowledge_circular';
-$route['communication/get_circular_acks']            = 'Communication/get_circular_acks';
 $route['communication/get_circular_acks']            = 'Communication/get_circular_acks';
 
 // (communication/firestore_backfill_circulars removed — one-shot backfill
@@ -1267,7 +1267,6 @@ $route['stories/get_teachers']                       = 'Stories/get_teachers';
 $route['stories/moderate_story']                     = 'Stories/moderate_story';
 $route['stories/delete_story']                       = 'Stories/delete_story';
 $route['stories/bulk_moderate']                      = 'Stories/bulk_moderate';
-$route['stories/upload_story']                        = 'Stories/upload_story';
 $route['stories/upload_story']                        = 'Stories/upload_story';
 
 // ─── Red Flags Dashboard ─────────────────────────────────────────────────────

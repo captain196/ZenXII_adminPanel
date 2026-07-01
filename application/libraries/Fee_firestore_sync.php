@@ -149,6 +149,22 @@ class Fee_firestore_sync
                 return 'FH_' . strtoupper(bin2hex(random_bytes(6)));
             };
 
+            // Fees V7: the school-level feeHeads registry is the OWNER of
+            // feeHeadId + billingType. Seed from it by name (registry wins over
+            // the prior chart snapshot) so chart heads stay 1:1 with the
+            // registry (INV-5). Mint remains only as a last-resort fallback.
+            $regId = []; $regBill = [];
+            try {
+                $regRows = $this->firebase->firestoreQuery('feeHeads', [['schoolId', '==', $this->schoolCode]]);
+                foreach ((array) $regRows as $rr) {
+                    $rd = $rr['data'] ?? $rr;
+                    $rn = (string) ($rd['name'] ?? '');
+                    if ($rn === '') continue;
+                    if (!empty($rd['feeHeadId']))   $regId[$rn]   = (string) $rd['feeHeadId'];
+                    if (!empty($rd['billingType'])) $regBill[$rn] = (string) $rd['billingType'];
+                }
+            } catch (\Throwable $_) {}
+
             // Build feeHeads array from the chart
             $feeHeads = [];
             $totalMonthly = 0.0;
@@ -162,10 +178,11 @@ class Fee_firestore_sync
                     $amt = floatval($amount);
                     if (!isset($seenHeads[$name])) {
                         $feeHeads[] = [
-                            'feeHeadId' => $existingIds[$name] ?? $mintFeeHeadId(),
-                            'name'      => $name,
-                            'amount'    => $amt,
-                            'frequency' => 'monthly',
+                            'feeHeadId'   => $regId[$name] ?? $existingIds[$name] ?? $mintFeeHeadId(),
+                            'name'        => $name,
+                            'amount'      => $amt,
+                            'frequency'   => 'monthly',
+                            'billingType' => $regBill[$name] ?? 'Monthly',
                         ];
                         $seenHeads[$name] = true;
                     }
@@ -180,10 +197,11 @@ class Fee_firestore_sync
                     $amt = floatval($amount);
                     if (!isset($seenHeads[$name])) {
                         $feeHeads[] = [
-                            'feeHeadId' => $existingIds[$name] ?? $mintFeeHeadId(),
-                            'name'      => $name,
-                            'amount'    => $amt,
-                            'frequency' => 'annual',
+                            'feeHeadId'   => $regId[$name] ?? $existingIds[$name] ?? $mintFeeHeadId(),
+                            'name'        => $name,
+                            'amount'      => $amt,
+                            'frequency'   => 'annual',
+                            'billingType' => $regBill[$name] ?? 'Yearly',
                         ];
                         $seenHeads[$name] = true;
                     }

@@ -945,7 +945,10 @@ class Health_check extends MY_Controller
             [
                 'name' => 'Holiday Calendar',
                 'fn'   => function() use ($fb, $school, $todayDate) {
-                    $holidays = $fb->get("Schools/{$school}/Config/Attendance/holidays");
+                    // HC-3: canonical holiday source (calendarEvents via Holiday_service); was RTDB.
+                    $this->load->library('holiday_service');
+                    $this->holiday_service->init($this->fs, (string) $this->school_id, (string) $this->session_year);
+                    $holidays = $this->holiday_service->all_holiday_dates();
                     if (!is_array($holidays) || empty($holidays)) return $this->_p('No holidays defined (optional)');
                     $future = 0;
                     foreach ($holidays as $date => $name) {

@@ -124,6 +124,22 @@
 .pl-badge-staff { background: var(--pl-purple-bg); color: var(--pl-purple); }
 .pl-badge-in { background: var(--pl-green-bg); color: var(--pl-green); }
 .pl-badge-out { background: var(--pl-red-bg); color: var(--pl-red); }
+/* OP-7 — GPS audit evidence */
+.pl-badge-accepted { background: var(--pl-green-bg); color: var(--pl-green); }
+.pl-badge-rejected { background: var(--pl-red-bg); color: var(--pl-red); }
+.pl-badge-mock { background: var(--pl-red-bg); color: var(--pl-red); }
+.pl-reason {
+    font-family: var(--pl-font); font-size: 12px; color: var(--pl-t2);
+}
+.pl-metric { font-family: var(--pl-font-m); font-size: 12px; color: var(--pl-t1); }
+.pl-metric.warn { color: var(--pl-orange); font-weight: 700; }
+.pl-metric.bad  { color: var(--pl-red); font-weight: 700; }
+.pl-loc-link {
+    font-family: var(--pl-font-m); font-size: 12px; color: var(--pl-blue);
+    text-decoration: none;
+}
+.pl-loc-link:hover { text-decoration: underline; }
+.pl-muted { color: var(--pl-t3); }
 
 /* -- Confidence Bar -- */
 .pl-conf-bar {
@@ -182,9 +198,14 @@
     <div class="pl-page-hdr">
         <h4>
             <i class="fa fa-clock-o"></i>
-            Device Punch Log
+            Attendance Punch Log
         </h4>
-        <p>View raw punch records from attendance devices</p>
+        <p>Investigate punch records and GPS attendance evidence — outcome, reason, accuracy, distance, mock-location and submitted coordinates</p>
+        <ol style="list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0;padding:0;font-size:12px;color:#8a8a8a;">
+            <li><a href="<?= base_url('admin') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Dashboard</a></li>
+            <li>/&nbsp;<a href="<?= base_url('attendance') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Attendance</a></li>
+            <li>/&nbsp;Punch Log</li>
+        </ol>
     </div>
 
     <!-- Filter Bar -->
@@ -226,11 +247,15 @@
                         <th>#</th>
                         <th>Person ID</th>
                         <th>Type</th>
-                        <th>Device</th>
-                        <th>Device Type</th>
                         <th>Direction</th>
                         <th>Time</th>
-                        <th>Confidence</th>
+                        <th>Outcome</th>
+                        <th>Reason</th>
+                        <th>Accuracy</th>
+                        <th>Distance</th>
+                        <th>Mock</th>
+                        <th>Location</th>
+                        <th>Device</th>
                     </tr>
                 </thead>
                 <tbody id="plBody"></tbody>
@@ -361,6 +386,41 @@
             });
     }
 
+    /* -- OP-7 presentation helpers (display-only; no attendance logic) -- */
+    function prettyReason(r) {
+        if (!r) return '';
+        // Pure string formatting of the server-supplied reason code — NOT a decision.
+        return String(r).replace(/[_\-]+/g, ' ').replace(/\b\w/g, function(c){ return c.toUpperCase(); });
+    }
+    function metricCell(val, unit) {
+        if (val === null || val === undefined || val === '' || isNaN(parseFloat(val))) {
+            return '<span class="pl-muted">--</span>';
+        }
+        var n = parseFloat(val);
+        return '<span class="pl-metric">' + esc(n.toFixed(n % 1 === 0 ? 0 : 1)) + (unit ? ' ' + unit : '') + '</span>';
+    }
+    function outcomeCell(o) {
+        if (o === 'accepted') return '<span class="pl-badge pl-badge-accepted">Accepted</span>';
+        if (o === 'rejected') return '<span class="pl-badge pl-badge-rejected">Rejected</span>';
+        return '<span class="pl-muted">--</span>';
+    }
+    function mockCell(isMock) {
+        return isMock
+            ? '<span class="pl-badge pl-badge-mock"><i class="fa fa-exclamation-triangle"></i> Mock</span>'
+            : '<span class="pl-muted">No</span>';
+    }
+    function locationCell(lat, lng) {
+        if (lat === null || lat === undefined || lng === null || lng === undefined) {
+            return '<span class="pl-muted">--</span>';
+        }
+        var la = parseFloat(lat), ln = parseFloat(lng);
+        if (isNaN(la) || isNaN(ln)) return '<span class="pl-muted">--</span>';
+        var label = la.toFixed(5) + ', ' + ln.toFixed(5);
+        var url = 'https://www.google.com/maps?q=' + encodeURIComponent(la + ',' + ln);
+        return '<a class="pl-loc-link" href="' + esc(url) + '" target="_blank" rel="noopener">'
+            + esc(label) + ' <i class="fa fa-external-link"></i></a>';
+    }
+
     function renderTable(punches) {
         var html = '';
         for (var i = 0; i < punches.length; i++) {
@@ -369,21 +429,21 @@
             var typeLabel = (p.type === 'staff') ? 'Staff' : 'Student';
             var dirClass = (p.direction === 'out') ? 'pl-badge-out' : 'pl-badge-in';
             var dirLabel = (p.direction === 'out') ? 'Out' : 'In';
-            var conf = parseFloat(p.confidence) || 0;
-            var confCls = confClass(conf);
+            var reason = prettyReason(p.rejection_reason);
 
             html += '<tr>'
                 + '<td class="mono">' + (i + 1) + '</td>'
-                + '<td class="mono">' + esc(p.person_id) + '</td>'
+                + '<td class="mono">' + esc(p.person_id || '--') + '</td>'
                 + '<td><span class="pl-badge ' + typeClass + '">' + typeLabel + '</span></td>'
-                + '<td>' + esc(p.device || '--') + '</td>'
-                + '<td>' + esc(p.device_type || '--') + '</td>'
                 + '<td><span class="pl-badge ' + dirClass + '">' + dirLabel + '</span></td>'
                 + '<td class="mono">' + formatTime(p.time) + '</td>'
-                + '<td>'
-                + '<span class="pl-conf-bar"><span class="pl-conf-fill ' + confCls + '" style="width:' + conf + '%"></span></span>'
-                + '<span style="font-family:var(--pl-font-m);font-size:11px;color:var(--pl-t2);">' + conf.toFixed(0) + '%</span>'
-                + '</td>'
+                + '<td>' + outcomeCell(p.outcome) + '</td>'
+                + '<td><span class="pl-reason">' + (reason ? esc(reason) : '<span class="pl-muted">--</span>') + '</span></td>'
+                + '<td>' + metricCell(p.accuracy, 'm') + '</td>'
+                + '<td>' + metricCell(p.distance, 'm') + '</td>'
+                + '<td>' + mockCell(!!p.mock) + '</td>'
+                + '<td>' + locationCell(p.lat, p.lng) + '</td>'
+                + '<td>' + esc(p.device || '--') + '</td>'
                 + '</tr>';
         }
         elBody.innerHTML = html;

@@ -83,6 +83,38 @@ class FeeCollectionService
             ? (string) $data['payment_mode']
             : trim((string) ($controller->input->post('paymentMode') ?: 'Cash in Hand'));
 
+        // CORE-1 — Bank-ledger selection. Accounting (chartOfAccounts) is the
+        // SINGLE SOURCE OF TRUTH; Fees only references the ledger by its
+        // existing primary key (`code`). Cash payments send no bankLedgerCode
+        // and are completely unchanged below.
+        $bankLedgerCode = isset($data['bank_ledger_code'])
+            ? trim((string) $data['bank_ledger_code'])
+            : trim((string) ($controller->input->post('bankLedgerCode') ?? ''));
+        $bankLedgerName = '';
+        if ($bankLedgerCode !== '') {
+            // Server-side validation — never trust the client. The selected
+            // ledger must EXIST, be ACTIVE, be a Bank ledger (is_bank), and be
+            // a postable leaf (not a group). Reuses Accounting's ledger store.
+            $okBank = false;
+            try {
+                $coaRows = $controller->firebase->firestoreQuery('chartOfAccounts', [['schoolId', '==', $schoolFs]]);
+                foreach ((array) $coaRows as $row) {
+                    $cd = $row['data'] ?? $row;
+                    if ((string) ($cd['code'] ?? '') !== $bankLedgerCode) continue;
+                    if (!empty($cd['is_bank']) && empty($cd['is_group']) && ($cd['status'] ?? '') === 'active') {
+                        $okBank = true;
+                        $bankLedgerName = (string) ($cd['name'] ?? '');
+                    }
+                    break;
+                }
+            } catch (\Throwable $e) {
+                log_message('error', 'FCS bank-ledger validation query failed: ' . $e->getMessage());
+            }
+            if (!$okBank) {
+                return $_earlyError('Selected Bank Ledger is invalid or inactive. Please choose an active Bank Ledger configured in Accounting.', 422);
+            }
+        }
+
         $userId         = (string) ($data['safe_user_id'] ?? '');
 
         $schoolFees     = isset($data['amount'])
@@ -742,6 +774,8 @@ class FeeCollectionService
                 'fine'             => $fineAmount,
                 'netAmount'        => $netTotal,
                 'paymentMode'      => $paymentMode,
+                'bankLedgerCode'   => $bankLedgerCode,
+                'bankLedgerName'   => $bankLedgerName,
                 'remarks'          => $reference,
                 'feeMonths'        => $effectiveMonths,
                 'allocatedMonths'  => $allocatedMonthsBatch,
@@ -810,6 +844,8 @@ class FeeCollectionService
                     'netReceived'   => $netTotal,
                     'allocations'   => $allocationsForDoc,
                     'paymentMode'   => $paymentMode,
+                    'bankLedgerCode' => $bankLedgerCode,
+                    'bankLedgerName' => $bankLedgerName,
                     'date'          => $date,
                     'createdBy'     => $data['created_by'] ?? $data['admin_id'] ?? '',
                     'txnId'         => $txnId,
@@ -975,6 +1011,7 @@ class FeeCollectionService
                             'date'         => date('Y-m-d'),
                             'amount'       => $netTotal,
                             'payment_mode' => strtolower($paymentMode),
+                            'bank_code'    => $bankLedgerCode,
                             'receipt_no'   => $receiptKey,
                             'student_name' => $studentName,
                             'student_id'   => $userId,
@@ -1156,6 +1193,8 @@ class FeeCollectionService
             'fine'             => $fineAmount,
             'netAmount'        => $netTotal,
             'paymentMode'      => $paymentMode,
+            'bankLedgerCode'   => $bankLedgerCode,
+            'bankLedgerName'   => $bankLedgerName,
             'remarks'          => $reference,
             'feeMonths'        => $selectedMonths,
             'feeBreakdown'     => $breakdown,
@@ -1262,6 +1301,8 @@ class FeeCollectionService
             'netReceived'   => $netTotal,
             'allocations'   => $allocations,
             'paymentMode'   => $paymentMode,
+            'bankLedgerCode' => $bankLedgerCode,
+            'bankLedgerName' => $bankLedgerName,
             'date'          => $date,
             'createdBy'     => $data['created_by'] ?? $data['admin_id'] ?? '',
             'txnId'         => $txnId,
@@ -1525,6 +1566,7 @@ class FeeCollectionService
             'date'         => date('Y-m-d'),
             'amount'       => $netTotal,
             'payment_mode' => strtolower($paymentMode),
+            'bank_code'    => $bankLedgerCode,
             'receipt_no'   => $receiptKey,
             'student_name' => $studentName,
             'student_id'   => $userId,

@@ -222,6 +222,17 @@ class Fee_lifecycle
             $existingDemands = [];
         }
 
+        // Fees V7: canonical duplicate-detection key (periodKey|canonicalFeeHeadId),
+        // NON-archived only — id-agnostic, archive-aware.
+        $canonMap = $this->fsTxn->canonicalHeadIdMap();
+        $haveKeys = [];
+        foreach ($existingDemands as $_did => $_d) {
+            if (($_d['status'] ?? '') === 'archived') continue;
+            $pk  = (string) ($_d['periodKey'] ?? $_d['period_key'] ?? '');
+            $cid = (string) ($_d['canonicalFeeHeadId'] ?? '');
+            if ($pk !== '' && $cid !== '') $haveKeys[$pk . '|' . $cid] = true;
+        }
+
         // BUG-045 Phase 1 B2+B3 (2026-05-25): merged read (B3) wrapped in
         // request-level cache (B2). Saves 1 RPC/student + (N-1) more when
         // all N students share a target class/section.
@@ -262,15 +273,17 @@ class Fee_lifecycle
                     $periodLbl  = $isYearly
                         ? "Yearly Fees {$this->sessionYear}"
                         : "{$m} {$year}";
-                    $demandId   = $this->_demandId($studentId, $periodKey, $headId, $headName);
+                    $canonicalId = (string) ($canonMap[strtolower(trim($headName))] ?? $headId);
 
-                    // BUG-075 fix (2026-05-26): preserve paid state on
-                    // re-write — see comment block above.
-                    $prior = $existingDemands[$demandId] ?? null;
-                    $preservePayment = $prior !== null && (
-                        in_array((string)($prior['status'] ?? ''), ['paid','partial'], true)
-                        || (float)($prior['paidAmount'] ?? 0) > 0
-                    );
+                    // Fees V7: skip if an active demand for (periodKey|canonicalFeeHeadId)
+                    // already exists — preserves it entirely (incl. payment), id-agnostic.
+                    // Replaces the doc-id BUG-075 preserve-on-rewrite (issued demands immutable).
+                    if (isset($haveKeys[$periodKey . '|' . $canonicalId])) {
+                        if (!in_array($headName, $assigned, true)) $assigned[] = $headName;
+                        continue;
+                    }
+                    $haveKeys[$periodKey . '|' . $canonicalId] = true;
+                    $demandId = $this->fsTxn->newDemandId();
 
                     $entryData = [
                         'studentId'    => $studentId,
@@ -279,6 +292,7 @@ class Fee_lifecycle
                         'section'      => $section,
                         'feeHead'      => $headName,
                         'feeHeadId'    => $headId,
+                        'canonicalFeeHeadId' => $canonicalId,
                         'frequency'    => $isYearly ? 'yearly' : 'monthly',
                         'period'       => $periodLbl,
                         'periodKey'    => $periodKey,
@@ -287,11 +301,10 @@ class Fee_lifecycle
                         'createdAt'    => $now,
                         'createdBy'    => $this->adminId,
                     ];
-                    if (!$preservePayment) {
-                        $entryData['paidAmount'] = 0.0;
-                        $entryData['balance']    = $amt;
-                        $entryData['status']     = 'unpaid';
-                    }
+                    // New demand (existing ones were skipped above): always fresh unpaid.
+                    $entryData['paidAmount'] = 0.0;
+                    $entryData['balance']    = $amt;
+                    $entryData['status']     = 'unpaid';
 
                     $batchEntries[] = [
                         'op'       => 'write',
@@ -477,14 +490,22 @@ class Fee_lifecycle
                 'regen_warning' => $regenCount === 0 ? 'NO_DESTINATION_STRUCTURE' : '',
             ]);
 
-            // Defaulter recompute — old dues may resolve, new dues appear.
+            // DEFAULTER-PROMO-1 fix (2026-06-29): recompute defaulter status with
+            // the SAME business logic Admission uses
+            // (Fee_defaulter_check::updateDefaulterStatus) — it reads feeDemands
+            // canonically and writes the real projection, deleting the
+            // feeDefaulters doc ONLY when dues are genuinely zero. The prior code
+            // hardcoded is_defaulter=false, which unconditionally DELETED the
+            // doc for a still-owing promoted student (they vanished from the
+            // defaulter report until their next payment).
             try {
-                if ($this->fsSync !== null) {
-                    $this->fsSync->syncDefaulterStatus(
-                        $studentId,
-                        ['total_dues' => 0, 'is_defaulter' => false], // placeholder; a full recompute lives in Fee_defaulter_check
-                        '', $newClass, $newSection
-                    );
+                $CI = function_exists('get_instance') ? get_instance() : null;
+                if ($CI !== null) {
+                    if (!isset($CI->feeDefaulter) || !is_object($CI->feeDefaulter)) {
+                        $CI->load->library('Fee_defaulter_check', null, 'feeDefaulter');
+                    }
+                    $CI->feeDefaulter->init($this->firebase, $this->schoolName, $this->sessionYear);
+                    $CI->feeDefaulter->updateDefaulterStatus($studentId);
                 }
             } catch (\Throwable $_) {}
 
