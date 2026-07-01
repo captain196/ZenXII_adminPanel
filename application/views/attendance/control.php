@@ -156,6 +156,11 @@ if (!empty($Classes) && is_array($Classes)) {
         <div>
             <div class="ac-title">Attendance Control Panel</div>
             <div class="ac-sub">Daily dashboard, lock control, correction approvals</div>
+            <ol style="list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0;padding:0;font-size:12px;color:#8a8a8a;">
+                <li><a href="<?= base_url('admin') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Dashboard</a></li>
+                <li>/&nbsp;<a href="<?= base_url('attendance') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Attendance</a></li>
+                <li>/&nbsp;Control Panel</li>
+            </ol>
         </div>
         <div class="ac-sub" id="ac-today"></div>
     </div>

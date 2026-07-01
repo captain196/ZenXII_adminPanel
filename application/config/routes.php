@@ -610,6 +610,8 @@ $route['attendance/test_push']               = 'Attendance/test_push';
 $route['attendance/student']                 = 'Attendance/student_attendance';
 $route['attendance/staff']                   = 'Attendance/staff_attendance';
 $route['attendance/settings']                = 'Attendance/settings';
+$route['attendance/get_attendance_policy']   = 'Attendance/get_attendance_policy';
+$route['attendance/save_attendance_policy']  = 'Attendance/save_attendance_policy';
 $route['attendance/analytics']               = 'Attendance/analytics';
 $route['attendance/punch_log']               = 'Attendance/punch_log';
 $route['attendance/fetch_student']           = 'Attendance/fetch_student_attendance';
@@ -624,8 +626,17 @@ $route['attendance/mark_staff_day']          = 'Attendance/mark_staff_day';
 $route['attendance/bulk_mark_staff']         = 'Attendance/bulk_mark_staff';
 $route['attendance/get_settings']            = 'Attendance/get_settings';
 $route['attendance/save_settings']           = 'Attendance/save_settings';
-$route['attendance/save_holidays']           = 'Attendance/save_holidays';
+// HC-4 (Option D): holiday WRITER retired — authoring is Academic Calendar only.
+// get_holidays is now a READ-ONLY canonical status endpoint (Holiday_service).
 $route['attendance/get_holidays']            = 'Attendance/get_holidays';
+
+// GPS staff self-attendance (Teacher app, Firebase Bearer auth) — Phase 5/6
+$route['staff_attendance/punch']             = 'Staff_attendance/punch';
+$route['staff_attendance/me']                = 'Staff_attendance/me';
+
+// Holiday Legacy Inventory — READ-ONLY informational tool (admin-gated;
+// temporary migration artifact, delete after HC convergence completes)
+$route['holiday_legacy_inventory']           = 'Holiday_legacy_inventory/index';
 $route['attendance/register_device']         = 'Attendance/register_device';
 $route['attendance/update_device']           = 'Attendance/update_device';
 $route['attendance/delete_device']           = 'Attendance/delete_device';
@@ -635,7 +646,6 @@ $route['attendance/api_punch']               = 'Attendance/api_punch';
 $route['attendance/fetch_analytics']         = 'Attendance/fetch_analytics';
 $route['attendance/fetch_monthly_trend']     = 'Attendance/fetch_monthly_trend';
 $route['attendance/fetch_individual_report'] = 'Attendance/fetch_individual_report';
-$route['attendance/compute_summary']         = 'Attendance/compute_summary';
 $route['attendance/fetch_punch_log']         = 'Attendance/fetch_punch_log';
 $route['attendance/api_get_classes']         = 'Attendance/api_get_classes';
 $route['attendance/api_get_students']        = 'Attendance/api_get_students';
@@ -654,9 +664,6 @@ $route['attendance/fix_attendance_keys']     = 'Attendance/fix_attendance_keys';
 $route['attendance/autofill_staff_today']   = 'Attendance/autofill_staff_today';
 $route['attendance/lock_staff_attendance']       = 'Attendance/lock_staff_attendance';
 $route['attendance/unlock_staff_attendance']     = 'Attendance/unlock_staff_attendance';
-$route['attendance/approve_attendance_request']  = 'Attendance/approve_attendance_request';
-$route['attendance/reject_attendance_request']   = 'Attendance/reject_attendance_request';
-$route['attendance/list_pending_attendance']     = 'Attendance/list_pending_attendance';
 $route['attendance/student_leaves']               = 'Attendance/student_leaves';
 $route['attendance/list_student_leaves']         = 'Attendance/list_student_leaves';
 $route['attendance/approve_student_leave']       = 'Attendance/approve_student_leave';

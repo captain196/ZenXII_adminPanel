@@ -170,6 +170,13 @@
 }
 .att-badge.in  { background: rgba(22,163,74,0.12); color: var(--att-green); }
 .att-badge.out { background: rgba(220,38,38,0.12); color: var(--att-red); }
+.att-badge.accepted { background: rgba(22,163,74,0.12); color: var(--att-green); }
+.att-badge.rejected { background: rgba(220,38,38,0.12); color: var(--att-red); }
+.att-badge.muted    { background: var(--att-bg3); color: var(--att-t3); }
+.att-punch-name { font-weight: 600; color: var(--att-t1); }
+.att-punch-id   { font-family: var(--font-m, 'JetBrains Mono', monospace); font-size: 12px; color: var(--att-t3); }
+.att-link { color: var(--att-primary); text-decoration: none; font-size: 11px; font-weight: 600; margin-left: auto; }
+.att-link:hover { text-decoration: underline; }
 
 .att-empty {
     text-align: center; padding: 40px 20px; color: var(--att-t3);
@@ -271,7 +278,8 @@
     <!-- Recent Punch Log -->
     <div class="att-section-title">
         <i class="fa fa-list-ul"></i> Recent Punch Log
-        <small>Last 10 device punches</small>
+        <small>Latest 10 punches today</small>
+        <a class="att-link" href="<?= base_url('attendance/punch_log') ?>">View full log <i class="fa fa-arrow-right"></i></a>
     </div>
     <div class="att-table-wrap">
         <table class="att-table">
@@ -279,14 +287,15 @@
                 <tr>
                     <th>Name</th>
                     <th>ID</th>
-                    <th>Type</th>
+                    <th>Direction</th>
+                    <th>Outcome</th>
                     <th>Time</th>
                     <th>Device</th>
                 </tr>
             </thead>
             <tbody id="attPunchBody">
                 <tr>
-                    <td colspan="5" class="att-empty">
+                    <td colspan="6" class="att-empty">
                         <i class="fa fa-spinner fa-spin"></i>
                         Loading punch log...
                     </td>
@@ -364,8 +373,8 @@
 
                 var rows = data.punches || data.data || [];
                 if (!Array.isArray(rows) || rows.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="5" class="att-empty">' +
-                        '<i class="fa fa-inbox"></i>No recent punches found.</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="6" class="att-empty">' +
+                        '<i class="fa fa-inbox"></i>No punches recorded today.</td></tr>';
                     return;
                 }
 
@@ -373,13 +382,20 @@
                 var html = '';
                 for (var i = 0; i < limit.length; i++) {
                     var p = limit[i];
-                    var typeCls = (p.type || '').toLowerCase() === 'out' ? 'out' : 'in';
+                    var pid = p.user_id || p.person_id || p.id || '';
+                    var nm  = p.name || pid || '—';
+                    var dir = (p.direction || 'in').toLowerCase() === 'out' ? 'out' : 'in';
+                    var oc  = (p.outcome || '').toLowerCase();
+                    var ocHtml = oc === 'accepted' ? '<span class="att-badge accepted">Accepted</span>'
+                               : oc === 'rejected' ? '<span class="att-badge rejected">Rejected</span>'
+                               : '<span class="att-badge muted">—</span>';
                     html += '<tr>' +
-                        '<td>' + esc(p.name) + '</td>' +
-                        '<td>' + esc(p.user_id || p.id) + '</td>' +
-                        '<td><span class="att-badge ' + typeCls + '">' + esc(p.type || 'IN') + '</span></td>' +
-                        '<td>' + esc(p.time || p.punch_time) + '</td>' +
-                        '<td>' + esc(p.device || '-') + '</td>' +
+                        '<td class="att-punch-name">' + esc(nm) + '</td>' +
+                        '<td class="att-punch-id">' + esc(pid) + '</td>' +
+                        '<td><span class="att-badge ' + dir + '">' + (dir === 'out' ? 'OUT' : 'IN') + '</span></td>' +
+                        '<td>' + ocHtml + '</td>' +
+                        '<td>' + esc(p.time || p.punch_time || '—') + '</td>' +
+                        '<td>' + esc(p.device || '—') + '</td>' +
                         '</tr>';
                 }
                 tbody.innerHTML = html;
@@ -387,7 +403,7 @@
             .catch(function() {
                 var tbody = document.getElementById('attPunchBody');
                 if (tbody) {
-                    tbody.innerHTML = '<tr><td colspan="5" class="att-empty">' +
+                    tbody.innerHTML = '<tr><td colspan="6" class="att-empty">' +
                         '<i class="fa fa-exclamation-triangle"></i>Failed to load punch log.</td></tr>';
                 }
             });
@@ -416,10 +432,13 @@
         .catch(function() { setText('attStatCorrections', '--'); });
     }
 
-    /* ── Init (chained to avoid CSRF token race condition) ── */
-    loadStats().then(function() {
-        loadPunchLog();
-        loadCorrectionsCount();
-    });
+    /* ── Init: load all three IN PARALLEL ───────────────────
+       Previously chained behind loadStats(), so a slow dashboard_stats blocked
+       the punch log + corrections from even starting. csrf_regenerate=FALSE
+       (see config.php) means concurrent POSTs share one stable token — no race —
+       so we fire them independently for a much faster perceived load. */
+    loadStats();
+    loadPunchLog();
+    loadCorrectionsCount();
 })();
 </script>

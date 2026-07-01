@@ -9,8 +9,9 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *   - parse_attendance_string() reads exactly what's stored.
  *   - Summaries are computed from the stored string as-is.
  *
- * CONSISTENCY RULE: update_student_att_summary() is the SINGLE function
- *   to call whenever attendance data changes (save, leave apply, leave cancel).
+ * CONSISTENCY RULE: the canonical per-month summary is the Firestore
+ *   `attendanceSummary` collection, converged by _syncDailyToFirestore →
+ *   _applyDayToSummary / _syncStudentSummaryToFirestore on every write path.
  */
 
 // ═══════════════════════════════════════════════════════════════════
@@ -18,57 +19,40 @@ defined('BASEPATH') or exit('No direct script access allowed');
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Get all non-working days for a month (Sundays + configured holidays).
- * @return array  Map of day_number => reason
+ * PURE: non-working days for a month = Sundays + injected holiday day-map.
+ *
+ * HC-3 (holiday convergence): this is the canonical, I/O-free utility. The
+ * CALLER resolves holidays via Holiday_service (the single canonical source)
+ * and injects them as [int dayOfMonth => name]; this function only adds the
+ * Sunday computation and merges. No Firestore, no RTDB, no service lookup —
+ * keeping attendance_helper a pure utility.
+ *
+ * @param array $holidayDayMap [int dayOfMonth => name] from Holiday_service::holidays_in_month()
+ * @return array Map of day_number => reason (Sundays + holidays)
  */
-function get_non_working_days($firebase, string $school, int $monthNum, int $year): array
+function nw_days_from_holidays(array $holidayDayMap, int $monthNum, int $year): array
 {
     $nonWorking = [];
     $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
-
-    // Sundays
     for ($d = 1; $d <= $daysInMonth; $d++) {
-        if ((int)date('w', mktime(0, 0, 0, $monthNum, $d, $year)) === 0) {
+        if ((int) date('w', mktime(0, 0, 0, $monthNum, $d, $year)) === 0) {
             $nonWorking[$d] = 'Sunday';
         }
     }
-
-    // Events/Holidays/{year}
-    try {
-        $evtH = $firebase->get("Schools/{$school}/Events/Holidays/{$year}");
-        if (is_array($evtH)) {
-            foreach ($evtH as $h) {
-                $hDate = $h['date'] ?? '';
-                if (!$hDate) continue;
-                $ts = strtotime($hDate);
-                if ($ts && (int)date('n', $ts) === $monthNum && (int)date('Y', $ts) === $year) {
-                    $nonWorking[(int)date('j', $ts)] = $h['name'] ?? 'Holiday';
-                }
-            }
+    foreach ($holidayDayMap as $day => $name) {
+        $day = (int) $day;
+        if ($day >= 1 && $day <= $daysInMonth) {
+            $nonWorking[$day] = (is_string($name) && $name !== '') ? $name : 'Holiday';
         }
-    } catch (\Exception $e) {}
-
-    // Config/Attendance/holidays
-    try {
-        $cfgH = $firebase->get("Schools/{$school}/Config/Attendance/holidays");
-        if (is_array($cfgH)) {
-            foreach ($cfgH as $date => $name) {
-                if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $date, $m)) {
-                    if ((int)$m[1] === $year && (int)$m[2] === $monthNum) {
-                        $nonWorking[(int)$m[3]] = is_string($name) ? $name : 'Holiday';
-                    }
-                }
-            }
-        }
-    } catch (\Exception $e) {}
-
+    }
     return $nonWorking;
 }
 
-function is_non_working_day($firebase, string $school, int $day, int $monthNum, int $year): bool
-{
-    return isset(get_non_working_days($firebase, $school, $monthNum, $year)[$day]);
-}
+/* HC-5: the legacy RTDB holiday readers get_non_working_days() and
+   is_non_working_day() were REMOVED here. They read the retired RTDB stores
+   (Config/Attendance/holidays, Events/Holidays/{year}) and were superseded by
+   the pure nw_days_from_holidays() — fed by Holiday_service, the canonical
+   reader over calendarEvents. Proven dead (no callers anywhere) before removal. */
 
 // ═══════════════════════════════════════════════════════════════════
 //  WRITE PATH: Holiday enforcement on attendance strings
@@ -137,39 +121,13 @@ function parse_attendance_string(string $attStr, int $daysInMonth, bool $include
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  CENTRALIZED SUMMARY UPDATE (Task 2)
-//  Single function to call from: save, leave apply, leave cancel
+//  CENTRALIZED SUMMARY UPDATE — RETIRED (Component 4)
+//  update_student_att_summary() wrote a stranded RTDB summary node
+//  ({studentBase}/AttendanceSummary) that only the (dead-gated) Fees
+//  helpers read. The canonical per-month summary is now `attendanceSummary`
+//  (Firestore), written by _syncDailyToFirestore → _applyDayToSummary /
+//  _syncStudentSummaryToFirestore on every live write path. Helper removed.
 // ═══════════════════════════════════════════════════════════════════
-
-/**
- * Recompute + write student attendance summary for a month.
- * Call this after ANY change to attendance data (save, leave, cancel).
- *
- * @return array The computed summary
- */
-function update_student_att_summary(
-    $firebase, string $studentBase, string $school,
-    string $attKey, int $monthNum, int $year
-): array {
-    $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $monthNum, $year);
-
-    // Read the stored string (immutable source of truth)
-    $attStr = $firebase->get("{$studentBase}/Attendance/{$attKey}");
-    $attStr = is_string($attStr) ? $attStr : '';
-
-    // Read policy config
-    $includeLeave = _att_policy_include_leave($firebase, $school);
-
-    $summary = parse_attendance_string($attStr, $daysInMonth, $includeLeave);
-    $summary['updated_at'] = date('c');
-
-    try {
-        $firebase->set("{$studentBase}/AttendanceSummary/{$attKey}", $summary);
-    } catch (\Exception $e) {
-        log_message('error', 'update_student_att_summary failed: ' . $e->getMessage());
-    }
-    return $summary;
-}
 
 // R5: update_staff_att_summary() removed — orphaned by R4 (approve_attendance_request
 // staff branches migrated to Firestore). The canonical staff-attendance summary store
@@ -276,6 +234,73 @@ function get_absent_days($firebase, string $studentBase, string $school, string 
     $dim = cal_days_in_month(CAL_GREGORIAN, $num, $year);
     $attStr = $firebase->get("{$studentBase}/Attendance/{$attKey}");
     return parse_attendance_string(is_string($attStr) ? $attStr : '', $dim)['absent'];
+}
+
+/**
+ * P2 — Firestore-native student attendance % across an academic range.
+ * Reads the canonical per-month `attendanceSummary` docs
+ * (docId `{schoolId}_{studentId}_{YYYY-MM}`) — ZERO RTDB. Aggregates the
+ * stored counts and returns the SAME shape as get_student_attendance_percent()
+ * so the report-card call site is a drop-in replacement.
+ *
+ * @param object $fs           Firestore_service, already init()'d for the school
+ * @param string $schoolId
+ * @param string $studentId
+ * @param string $fromMonth    academic start month, e.g. 'April'
+ * @param int    $fromYear
+ * @param string $toMonth      academic end month, e.g. 'March'
+ * @param int    $toYear
+ * @param bool   $includeLeave count approved leave as attended?
+ * @return array ['percent','present','absent','leave','late','holiday','working','detail']
+ */
+function get_student_attendance_percent_fs(
+    $fs, string $schoolId, string $studentId,
+    string $fromMonth, int $fromYear, string $toMonth, int $toYear,
+    bool $includeLeave = false
+): array {
+    $monthMap = [
+        'April'=>4,'May'=>5,'June'=>6,'July'=>7,'August'=>8,'September'=>9,
+        'October'=>10,'November'=>11,'December'=>12,'January'=>1,'February'=>2,'March'=>3,
+    ];
+    $totals = ['present'=>0,'absent'=>0,'leave'=>0,'late'=>0,'holiday'=>0,'working'=>0,'vacant'=>0];
+    $detail = [];
+
+    foreach ($monthMap as $mn => $num) {
+        $yr = in_array($mn, ['January','February','March'], true) ? $toYear : $fromYear;
+        $monthKey = sprintf('%04d-%02d', $yr, $num);
+        $doc = null;
+        try { $doc = $fs->get('attendanceSummary', $fs->docId2($studentId, $monthKey)); }
+        catch (\Throwable $e) { $doc = null; }
+
+        if (!is_array($doc) || empty($doc)) { $detail[$mn] = null; continue; }
+
+        $present = (int) ($doc['present'] ?? 0);
+        $absent  = (int) ($doc['absent']  ?? 0);
+        $leave   = (int) ($doc['leave']   ?? 0);
+        $late    = (int) ($doc['tardy']   ?? 0);
+        $holiday = (int) ($doc['holiday'] ?? 0);
+        $working = $present + $absent + $leave + $late;
+
+        $totals['present'] += $present; $totals['absent']  += $absent;  $totals['leave']  += $leave;
+        $totals['late']    += $late;    $totals['holiday'] += $holiday; $totals['working'] += $working;
+        $detail[$mn] = ['present'=>$present,'absent'=>$absent,'leave'=>$leave,'late'=>$late,'holiday'=>$holiday,'working'=>$working];
+    }
+
+    $attended = $totals['present'] + $totals['late'];
+    if ($includeLeave) $attended += $totals['leave'];
+    $denom = $attended + $totals['absent'];
+    $pct = ($denom > 0) ? round(($attended / $denom) * 100, 1) : 100.0;
+
+    return [
+        'percent' => $pct,
+        'present' => $totals['present'],
+        'absent'  => $totals['absent'],
+        'leave'   => $totals['leave'],
+        'late'    => $totals['late'],
+        'holiday' => $totals['holiday'],
+        'working' => $totals['working'],
+        'detail'  => $detail,
+    ];
 }
 
 // R5: get_staff_attendance_summary() removed — vestigial dead code (zero callers
