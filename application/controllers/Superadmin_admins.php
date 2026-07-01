@@ -295,4 +295,67 @@ class Superadmin_admins extends MY_Superadmin_Controller
         $this->sa_log('Deleted developer admin', '', ['deleted_admin' => $admin_id]);
         $this->json_success(['message' => 'Admin "' . $admin_id . '" has been deleted.']);
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Super-admin recovery contact — the block shown to OTHER super admins when
+    // they use "forgot password" on the SA login (they contact the primary).
+    // Owned solely by the primary super admin SUP0001. Stored at Firestore
+    // platformSettings/superAdminRecovery {name,email,number}.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public function get_super_recovery()
+    {
+        if ($this->sa_id !== 'SUP0001') {
+            $this->json_error('Only the primary super admin can view this.', 403);
+        }
+        $block = (array) ($this->firebase->firestoreGet('platformSettings', 'superAdminRecovery') ?? []);
+        $this->json_success([
+            'recovery' => [
+                'name'   => (string) ($block['name']   ?? ''),
+                'email'  => (string) ($block['email']  ?? ''),
+                'number' => (string) ($block['number'] ?? ''),
+            ],
+        ]);
+    }
+
+    public function update_super_recovery()
+    {
+        if ($this->sa_id !== 'SUP0001') {
+            $this->json_error('Only the primary super admin (SUP0001) can edit this.', 403);
+        }
+
+        $name   = trim((string) ($this->input->post('name',   TRUE) ?? ''));
+        $email  = strtolower(trim((string) ($this->input->post('email',  TRUE) ?? '')));
+        $number = trim((string) ($this->input->post('number', TRUE) ?? ''));
+
+        if ($name === '')                 $this->json_error('Name is required.');
+        if (mb_strlen($name) > 100)       $this->json_error('Name must be 100 characters or less.');
+        if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL))
+                                          $this->json_error('Invalid email format.');
+        if ($number !== '' && !preg_match('/^[\d\s\+\-\(\)]{7,20}$/', $number))
+                                          $this->json_error('Invalid phone number.');
+        if ($email === '' && $number === '')
+                                          $this->json_error('Provide at least an email or a phone number.');
+
+        $name = htmlspecialchars(strip_tags($name), ENT_QUOTES, 'UTF-8');
+
+        $block = [
+            'name'      => $name,
+            'email'     => $email,
+            'number'    => $number,
+            'updatedAt' => date('c'),
+            'updatedBy' => (string) $this->sa_id,
+        ];
+
+        $ok = $this->firebase->firestoreSet('platformSettings', 'superAdminRecovery', $block, true);
+        if (!$ok) {
+            $this->json_error('Could not save the recovery contact. Please try again.');
+        }
+
+        $this->sa_log('Updated super-admin recovery contact', '', ['name' => $name]);
+        $this->json_success([
+            'message'  => 'Super-admin recovery contact saved.',
+            'recovery' => ['name' => $name, 'email' => $email, 'number' => $number],
+        ]);
+    }
 }

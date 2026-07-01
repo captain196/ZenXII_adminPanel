@@ -102,6 +102,16 @@ class School_config extends MY_Controller
             'pincode'          => $fsSchool['pincode'] ?? '',
         ];
 
+        // Password-recovery contact block (forgot-password feature). Name/email/
+        // number are editable via save_forget_password_details(); the SSA id is
+        // not part of the block (the school's primarySsaId is the identity).
+        $fpd = is_array($fsSchool['forget_password_details'] ?? null) ? $fsSchool['forget_password_details'] : [];
+        $forgetPwd = [
+            'name'   => (string) ($fpd['name']   ?? ''),
+            'email'  => (string) ($fpd['email']  ?? ''),
+            'number' => (string) ($fpd['number'] ?? ''),
+        ];
+
         $board    = (is_array($fsSchool['board_config'] ?? null)) ? $fsSchool['board_config'] : [];
         $classes  = (is_array($fsSchool['classes'] ?? null))      ? $fsSchool['classes']      : [];
         $streams  = (is_array($fsSchool['streams'] ?? null))      ? $fsSchool['streams']      : [];
@@ -198,6 +208,7 @@ class School_config extends MY_Controller
 
         $this->json_success([
             'profile'                 => is_array($profile)  ? $profile  : [],
+            'forget_password_details' => $forgetPwd,
             'board'                   => is_array($board)     ? $board    : [],
             'classes'                 => $classes,
             'streams'                 => (object) (is_array($streams) ? $streams : []),
@@ -437,6 +448,55 @@ class School_config extends MY_Controller
         $this->json_success([
             'message'      => 'Profile saved successfully.',
             'display_name' => $data['display_name'] ?? null, // let the page update the header live
+        ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST  /school_config/save_forget_password_details
+    //
+    // Edits the school super admin's password-recovery contact (name/email/
+    // number). Writes ONLY the denormalized recovery block on schools/{id} —
+    // it deliberately does NOT touch the canonical schoolSsa/{ssaId} doc, so
+    // editing the recovery contact never mutates the SSA's user record.
+    // ─────────────────────────────────────────────────────────────────────
+    public function save_forget_password_details()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'school_config_save_forget_password_details');
+
+        $name   = trim((string) $this->input->post('name',   TRUE));
+        $email  = strtolower(trim((string) $this->input->post('email',  TRUE)));
+        $number = trim((string) $this->input->post('number', TRUE));
+
+        if ($name === '' || $email === '' || $number === '') {
+            return $this->json_error('Name, email and number are all required.');
+        }
+        if (strlen($name) > 200 || strlen($email) > 200 || strlen($number) > 50) {
+            return $this->json_error('One or more fields exceed the allowed length.');
+        }
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            return $this->json_error('Invalid email address.');
+        }
+        if (!preg_match('/^[\d\s\+\-\(\)]{7,20}$/', $number)) {
+            return $this->json_error('Invalid phone number.');
+        }
+
+        $block = ['name' => $name, 'email' => $email, 'number' => $number];
+
+        // Recovery block on the school doc only. update() replaces the whole
+        // forget_password_details map, so any legacy `id` subfield is dropped.
+        $okSchool = $this->fs->update('schools', $this->fs->schoolId(), [
+            'forget_password_details' => $block,
+            'updatedAt'               => date('c'),
+        ]);
+        if (!$okSchool) {
+            return $this->json_error('Failed to save recovery contact. Please try again.');
+        }
+
+        log_audit('Configuration', 'save_forget_password_details', $this->school_name, 'Updated password-recovery contact');
+
+        return $this->json_success([
+            'message'                 => 'Password-recovery contact saved.',
+            'forget_password_details' => $block,
         ]);
     }
 

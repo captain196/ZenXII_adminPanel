@@ -709,6 +709,116 @@ class Admin_login extends CI_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    //  POST  /admin_login/recovery_contact
+    //  Contact-card recovery (no OTP). Given a login ID, return who to
+    //  contact to get the password reset:
+    //    • School Super Admin (SSAxxxx / claim role school_super_admin)
+    //        → the platform Super Admin recovery contact (one global block,
+    //          editable at /superadmin/school_admins).
+    //    • Every other role → their own school's forget_password_details
+    //          (the SSA contact), resolved from the Firebase Auth claim.
+    // ─────────────────────────────────────────────────────────────────────
+    public function recovery_contact(): void
+    {
+        if ($this->input->method() !== 'post') { redirect('admin_login'); return; }
+
+        $adminId = strtoupper(trim((string) $this->input->post('admin_id', TRUE)));
+        if ($adminId === '') {
+            $this->_json_response(['status' => 'error', 'message' => 'Please enter your ID.']);
+            return;
+        }
+
+        // This recovery surface is the WEB ADMIN PANEL, whose login is limited to
+        // admin accounts (ADMxxxx) and the school super admin (SSAxxxx). Field
+        // teachers (STAxxxx) and students (STUxxxx) sign in through their mobile
+        // apps and must use the in-app "Forgot password", not this page. Reject
+        // app account types up front by ID prefix.
+        $appAccountMsg = 'This isn\'t a web admin account. Teachers and students should use "Forgot password" inside their ZenXii app.';
+        if (preg_match('/^(STA|STU|PAR)\d+$/', $adminId)) {
+            $this->_json_response(['status' => 'error', 'message' => $appAccountMsg]);
+            return;
+        }
+
+        // SSA by ID prefix is enough; we still resolve the Auth record for
+        // everyone else to read the school claim.
+        $isSsa    = (bool) preg_match('/^SSA\d+$/', $adminId);
+        $schoolId = '';
+
+        if (!$isSsa) {
+            $user = $this->firebase->getFirebaseUser($adminId);
+            if ($user === null) {
+                $this->_json_response(['status' => 'error',
+                    'message' => 'No account found for "' . $adminId . '". Check your ID and try again.']);
+                return;
+            }
+            $claims = [];
+            try { $claims = (array) ($user->customClaims ?? []); } catch (\Throwable $e) { $claims = []; }
+            $role = strtolower((string) ($claims['role'] ?? ''));
+
+            // Backstop the prefix check: app-only roles never recover here even if
+            // they were issued a non-standard ID.
+            if (in_array($role, ['teacher', 'student', 'parent'], true)) {
+                $this->_json_response(['status' => 'error', 'message' => $appAccountMsg]);
+                return;
+            }
+
+            if ($role === 'school_super_admin') {
+                $isSsa = true;
+            } else {
+                $schoolId = (string) ($claims['schoolId'] ?? ($claims['school_id'] ?? ''));
+            }
+        }
+
+        // ── School Super Admin → platform Super Admin contact ──
+        if ($isSsa) {
+            $block  = (array) ($this->firebase->firestoreGet('platformSettings', 'recoveryContact') ?? []);
+            $name   = trim((string) ($block['name']   ?? ''));
+            $email  = trim((string) ($block['email']  ?? ''));
+            $number = trim((string) ($block['number'] ?? ''));
+
+            if ($name === '' && $email === '' && $number === '') {
+                $this->_json_response(['status' => 'success', 'found' => false, 'scope' => 'platform',
+                    'message' => 'The platform recovery contact has not been set up yet. Please contact ZenXii support.']);
+                return;
+            }
+            $this->_json_response([
+                'status'   => 'success', 'found' => true, 'scope' => 'platform',
+                'title'    => 'ZenXii Platform Support',
+                'subtitle' => 'School Super Admin password recovery',
+                'name'     => $name, 'number' => $number, 'email' => $email,
+            ]);
+            return;
+        }
+
+        if ($schoolId === '') {
+            $this->_json_response(['status' => 'error',
+                'message' => 'Could not resolve your school. Please contact your administrator.']);
+            return;
+        }
+
+        // ── Any other role → their school's recovery contact (the SSA) ──
+        $school     = (array) ($this->firebase->firestoreGet('schools', $schoolId) ?? []);
+        $fpd        = is_array($school['forget_password_details'] ?? null) ? $school['forget_password_details'] : [];
+        $name       = trim((string) ($fpd['name']   ?? ''));
+        $email      = trim((string) ($fpd['email']  ?? ''));
+        $number     = trim((string) ($fpd['number'] ?? ''));
+        $schoolName = trim((string) ($school['schoolName'] ?? ($school['name'] ?? 'Your school')));
+
+        if ($name === '' && $email === '' && $number === '') {
+            $this->_json_response(['status' => 'success', 'found' => false, 'scope' => 'school',
+                'title'   => $schoolName,
+                'message' => 'Your school has not set a recovery contact yet. Please reach the school office in person.']);
+            return;
+        }
+        $this->_json_response([
+            'status'   => 'success', 'found' => true, 'scope' => 'school',
+            'title'    => $schoolName,
+            'subtitle' => 'Contact your school admin to reset your password',
+            'name'     => $name, 'number' => $number, 'email' => $email,
+        ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     //  POST  /admin_login/send_otp
     // ─────────────────────────────────────────────────────────────────────
     public function send_otp(): void

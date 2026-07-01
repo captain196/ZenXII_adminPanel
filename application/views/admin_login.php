@@ -908,10 +908,7 @@
                     256-bit encrypted
                 </div>
                 <a href="<?= base_url('admin_login/forgot_password') ?>" class="lx-forgot">
-                    Admin Forgot Password? <i class="fas fa-arrow-right" style="font-size:10px;"></i>
-                </a>
-                <a href="<?= base_url('admin_login/student_forgot_password') ?>" class="lx-forgot" style="margin-top:6px;">
-                    Student Forgot Password? <i class="fas fa-arrow-right" style="font-size:10px;"></i>
+                    Forgot Password? <i class="fas fa-arrow-right" style="font-size:10px;"></i>
                 </a>
             </div>
 

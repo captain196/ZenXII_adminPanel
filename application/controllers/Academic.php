@@ -563,6 +563,288 @@ class Academic extends MY_Controller
     }
 
     /**
+     * Matrix view (Subject × Section) for a whole class in a single call.
+     * POST: class_key
+     *
+     * Groups all of a class's assignment rows by subject:
+     *   - a row with section=""  → the subject is CLASS-WIDE (same teacher for
+     *     every section); we surface it as same_for_all=true.
+     *   - rows with section="Section X" → the subject is PER-SECTION; we surface
+     *     each section's teacher. Any per-section row flips same_for_all to false.
+     * Class teacher is derived from isClassTeacher on the rows (per-section wins
+     * over a class-wide flag).
+     */
+    public function get_class_matrix()
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator', 'Teacher'], 'view_class_matrix');
+
+        $classInput = trim($this->input->post('class_key') ?? '');
+        if ($classInput === '') {
+            return $this->json_error('class_key is required');
+        }
+
+        $canonicalClass = $this->_normalize_class_label($classInput);   // "Class 9th"
+        $fbKey = $this->safe_path_segment($this->_class_to_firebase_key($canonicalClass), 'class_key');
+
+        // Sections that exist for this class (canonical className match).
+        $sections = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('sections', [['className', '==', $canonicalClass]]);
+            if (is_array($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sec = (string)($d['section'] ?? '');
+                    if ($sec !== '') $sections[] = $sec;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Academic::get_class_matrix sections read failed: ' . $e->getMessage());
+        }
+        $sections = array_values(array_unique($sections));
+        sort($sections);
+
+        $this->load->library('subject_assignment_service', null, 'sas');
+        $this->sas->init($this->fs, $this->firebase, $this->school_id, $this->school_name, $this->session_year);
+
+        $rows = $this->sas->getAssignmentsForClass($fbKey, '');   // no section filter → all rows
+
+        $subjects = [];        // code => entry
+        $classTeachers = [];   // "Section X" => teacherId
+
+        foreach ($rows as $r) {
+            $code = (string)($r['subjectCode'] ?? '');
+            if ($code === '') continue;
+            $sec  = (string)($r['section'] ?? '');      // '' = class-wide
+            $tid  = (string)($r['teacherId'] ?? '');
+            $tnm  = (string)($r['teacherName'] ?? '');
+            $isCT = !empty($r['isClassTeacher']);
+
+            if (!isset($subjects[$code])) {
+                $subjects[$code] = [
+                    'code'                    => $code,
+                    'name'                    => $r['subjectName'] ?? '',
+                    'category'                => $r['category'] ?? 'Core',
+                    'periods_week'            => (int)($r['periodsPerWeek'] ?? 0),
+                    'same_for_all'            => true,
+                    'class_wide_teacher_id'   => '',
+                    'class_wide_teacher_name' => '',
+                    'section_teachers'        => [],
+                ];
+            }
+            $pw = (int)($r['periodsPerWeek'] ?? 0);
+            if ($pw > 0) $subjects[$code]['periods_week'] = $pw;
+
+            if ($sec === '') {
+                $subjects[$code]['class_wide_teacher_id']   = $tid;
+                $subjects[$code]['class_wide_teacher_name'] = $tnm;
+                if ($isCT && $tid !== '') {
+                    foreach ($sections as $s) {
+                        if (!isset($classTeachers[$s])) $classTeachers[$s] = $tid;
+                    }
+                }
+            } else {
+                $subjects[$code]['same_for_all'] = false;
+                $subjects[$code]['section_teachers'][$sec] = ['id' => $tid, 'name' => $tnm];
+                if ($isCT && $tid !== '') $classTeachers[$sec] = $tid;   // per-section overrides class-wide
+            }
+        }
+
+        return $this->json_success([
+            'class_key'      => $fbKey,
+            'canonical'      => $canonicalClass,
+            'sections'       => $sections,
+            'subjects'       => array_values($subjects),
+            'class_teachers' => (object)$classTeachers,
+        ]);
+    }
+
+    /**
+     * Save a whole-class matrix in one call.
+     * POST: class_key, matrix (JSON: {sections:[], subjects:[...], class_teachers:{}})
+     *
+     * Reuses the tested saveClassAssignments() per shape:
+     *   - same_for_all subjects → one class-wide save (section_key="")
+     *   - per-section subjects  → one save per section
+     * Because each saveClassAssignments() deletes-then-writes its own (class,
+     * section) rows, a subject that moved class-wide↔per-section is cleaned up:
+     * it simply no longer appears in the shape it left. This makes the old
+     * "class-wide + per-section both apply" conflict impossible.
+     */
+    public function save_class_matrix()
+    {
+        $this->_require_role(['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Academic Coordinator'], 'save_class_matrix');
+
+        $classInput = trim($this->input->post('class_key') ?? '');
+        $rawMatrix  = $this->input->post('matrix');
+        if ($classInput === '') {
+            return $this->json_error('Class is required');
+        }
+
+        $canonicalClass = $this->_normalize_class_label($classInput);
+        $fbKey = $this->safe_path_segment($this->_class_to_firebase_key($canonicalClass), 'class_key');
+
+        $matrix = is_string($rawMatrix) ? json_decode($rawMatrix, true) : $rawMatrix;
+        if (!is_array($matrix)) {
+            return $this->json_error('Invalid matrix payload');
+        }
+        $subjectsIn      = is_array($matrix['subjects'] ?? null) ? $matrix['subjects'] : [];
+        $sectionsIn      = is_array($matrix['sections'] ?? null) ? $matrix['sections'] : [];
+        $classTeachersIn = is_array($matrix['class_teachers'] ?? null) ? $matrix['class_teachers'] : [];
+
+        require_once APPPATH . 'libraries/Entity_firestore_sync.php';
+        $this->load->library('subject_assignment_service', null, 'sas');
+        $this->sas->init($this->fs, $this->firebase, $this->school_id, $this->school_name, $this->session_year);
+
+        // ── Build the DESIRED doc set (deterministic docId → full doc) ──
+        // Reconciliation model: compute every doc the matrix should produce,
+        // validate ALL of it, then diff against what exists and delete-stale +
+        // write. No blanket deletes, no cross-call ordering — a validation or
+        // write failure cannot leave the class half-wiped.
+        $desired = [];            // docId => doc
+        $errors  = [];
+        $ctFlaggedSection = [];   // section => true once a per-section CT is flagged
+
+        $build = function (string $section, array $sub, string $tid, string $tname, bool $isCT)
+            use ($fbKey, $canonicalClass) {
+            $cs     = Entity_firestore_sync::normalizeClassSection($fbKey, $section);
+            $cClass = ($cs['className'] ?? '') !== '' ? $cs['className'] : $canonicalClass;
+            $cSec   = $cs['section'] ?? '';                       // '' = class-wide
+            $skComp = ($cClass !== '' && $cSec !== '') ? "{$cClass}/{$cSec}" : '';
+            $docId  = $this->sas->docId($fbKey, $section, (string)$sub['code']);
+            return [$docId, [
+                'schoolId'       => $this->school_id,
+                'session'        => $this->session_year,
+                'className'      => $cClass,
+                'section'        => $cSec,
+                'classOrder'     => $cs['classOrder'] ?? 0,
+                'sectionCode'    => $cs['sectionCode'] ?? '',
+                'sectionKey'     => $skComp,
+                'subjectCode'    => (string)$sub['code'],
+                'subjectName'    => (string)($sub['name'] ?? $sub['code']),
+                'category'       => (string)($sub['category'] ?? 'Core'),
+                'periodsPerWeek' => (int)($sub['periods_week'] ?? 0),
+                'teacherId'      => $tid,
+                'teacherName'    => $tname,
+                'isClassTeacher' => $isCT,
+                'updatedAt'      => date('c'),
+            ]];
+        };
+
+        foreach ($subjectsIn as $sub) {
+            $code = (string)($sub['code'] ?? '');
+            if ($code === '') continue;
+            $name = (string)($sub['name'] ?? $code);
+
+            if (!empty($sub['same_for_all'])) {
+                $tid = (string)($sub['class_wide_teacher_id'] ?? '');
+                $tnm = (string)($sub['class_wide_teacher_name'] ?? '');
+                if ($tid !== '' && !$this->sas->teacherCanTeach($tid, $code, $name)) {
+                    $errors[] = "{$name}: selected teacher is not authorized to teach this subject.";
+                }
+                [$id, $doc] = $build('', $sub, $tid, $tnm, false);
+                $desired[$id] = $doc;
+            } else {
+                $st = is_array($sub['section_teachers'] ?? null) ? $sub['section_teachers'] : [];
+                foreach ($sectionsIn as $s) {
+                    $t   = is_array($st[$s] ?? null) ? $st[$s] : [];
+                    $tid = (string)($t['id'] ?? '');
+                    $tnm = (string)($t['name'] ?? '');
+                    if ($tid !== '' && !$this->sas->teacherCanTeach($tid, $code, $name)) {
+                        $errors[] = "{$name} ({$s}): selected teacher is not authorized to teach this subject.";
+                    }
+                    $isCT = false;
+                    if ($tid !== '' && isset($classTeachersIn[$s]) && (string)$classTeachersIn[$s] === $tid && empty($ctFlaggedSection[$s])) {
+                        $isCT = true; $ctFlaggedSection[$s] = true;
+                    }
+                    [$id, $doc] = $build($s, $sub, $tid, $tnm, $isCT);
+                    $desired[$id] = $doc;
+                }
+            }
+        }
+
+        // Class-wide class teacher: for a section whose CT teacher has no
+        // per-section row, flag one of that teacher's class-wide rows.
+        foreach ($classTeachersIn as $s => $tid) {
+            $tid = (string)$tid;
+            if ($tid === '' || !empty($ctFlaggedSection[$s])) continue;
+            foreach ($desired as $id => $doc) {
+                if ($doc['section'] === '' && $doc['teacherId'] === $tid && empty($doc['isClassTeacher'])) {
+                    $desired[$id]['isClassTeacher'] = true;
+                    break;
+                }
+            }
+        }
+
+        // Validation failed → abort BEFORE touching any data.
+        if (!empty($errors)) {
+            return $this->json_error(implode("\n", array_unique($errors)));
+        }
+
+        // ── Load CURRENT docs for this class (ids only) ────────────────
+        $current = [];
+        try {
+            $rows = $this->fs->schoolWhere('subjectAssignments', [
+                ['session', '==', $this->session_year],
+                ['className', '==', $canonicalClass],
+            ]);
+            foreach ($rows as $r) {
+                $rid = $r['id'] ?? ($r['data']['id'] ?? '');
+                if ($rid !== '') $current[$rid] = true;
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Academic::save_class_matrix current-load failed: ' . $e->getMessage());
+        }
+
+        // Safety: refuse to wipe a populated class from an empty request.
+        if (empty($desired) && !empty($current)) {
+            return $this->json_error('Nothing to save — the request contained no subjects. Reload the page and try again.');
+        }
+
+        // ── Reconcile: delete stale, then write desired ────────────────
+        foreach (array_keys($current) as $rid) {
+            if (!isset($desired[$rid])) {
+                try { $this->fs->remove('subjectAssignments', $rid); } catch (\Exception $e) {}
+            }
+        }
+        $saved = 0;
+        foreach ($desired as $id => $doc) {
+            try { $this->fs->set('subjectAssignments', $id, $doc, true); $saved++; }
+            catch (\Exception $e) {
+                $errors[] = "Failed to save {$doc['subjectName']}";
+                log_message('error', "save_class_matrix set [{$id}] failed: " . $e->getMessage());
+            }
+        }
+
+        // ── Cross-write sections.classTeacherId per section ────────────
+        foreach ($sectionsIn as $s) {
+            $cs     = Entity_firestore_sync::normalizeClassSection($fbKey, $s);
+            $cClass = ($cs['className'] ?? '') !== '' ? $cs['className'] : $canonicalClass;
+            $cSec   = $cs['section'] ?? '';
+            if ($cSec === '') continue;
+            $ctId   = (string)($classTeachersIn[$s] ?? '');
+            $sid    = "{$this->school_id}_{$this->session_year}_{$cClass}_{$cSec}";
+            try {
+                $this->fs->set('sections', $sid, [
+                    'classTeacherId' => $ctId,
+                    'className'      => $cClass,
+                    'section'        => $cSec,
+                    'classOrder'     => $cs['classOrder'] ?? 0,
+                    'sectionCode'    => $cs['sectionCode'] ?? '',
+                    'sectionKey'     => "{$cClass}/{$cSec}",
+                    'updatedAt'      => date('c'),
+                ], true);
+            } catch (\Exception $e) {
+                log_message('error', "save_class_matrix section CT cross-write [{$sid}] failed: " . $e->getMessage());
+            }
+        }
+
+        if (!empty($errors)) {
+            return $this->json_error(implode("\n", array_unique($errors)));
+        }
+        return $this->json_success(['count' => $saved, 'warnings' => []]);
+    }
+
+    /**
      * Get list of teachers eligible to teach a subject (filtered dropdown).
      * POST: subject_code, subject_name (optional)
      */

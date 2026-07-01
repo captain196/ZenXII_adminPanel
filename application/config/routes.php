@@ -131,6 +131,7 @@ $route['fee_concessions/check_school_active_concessions'] = 'Fee_concessions/che
 // ─── Super Admin SaaS Control Panel ──────────────────────────────────────────
 // Auth
 $route['admin_login/forgot_password']                    = 'Admin_login/forgot_password';
+$route['admin_login/recovery_contact']                   = 'Admin_login/recovery_contact';
 $route['admin_login/send_otp']                          = 'Admin_login/send_otp';
 $route['admin_login/verify_otp']                        = 'Admin_login/verify_otp';
 $route['admin_login/reset_password']                    = 'Admin_login/reset_password';
@@ -143,6 +144,7 @@ $route['superadmin/login']                              = 'Superadmin_login/inde
 $route['superadmin/login/authenticate']                 = 'Superadmin_login/authenticate';
 $route['superadmin/login/logout']                       = 'Superadmin_login/logout';
 $route['superadmin/login/forgot_password']              = 'Superadmin_login/forgot_password';
+$route['superadmin/login/recovery_contact']             = 'Superadmin_login/recovery_contact';
 $route['superadmin/login/send_otp']                     = 'Superadmin_login/send_otp';
 $route['superadmin/login/verify_otp']                   = 'Superadmin_login/verify_otp';
 $route['superadmin/login/reset_password']               = 'Superadmin_login/reset_password';
@@ -310,17 +312,22 @@ $route['superadmin/admins/toggle_status']               = 'Superadmin_admins/tog
 $route['superadmin/admins/reset_password']              = 'Superadmin_admins/reset_password';
 $route['superadmin/admins/update_profile']              = 'Superadmin_admins/update_profile';
 $route['superadmin/admins/delete']                      = 'Superadmin_admins/delete';
+$route['superadmin/admins/get_super_recovery']          = 'Superadmin_admins/get_super_recovery';
+$route['superadmin/admins/update_super_recovery']       = 'Superadmin_admins/update_super_recovery';
 
 // ─── School Super Admin Management (all super admins) — onboarding-created SSAs
 $route['superadmin/school_admins']                      = 'Superadmin_school_admins/index';
 $route['superadmin/school_admins/fetch']                = 'Superadmin_school_admins/fetch';
 $route['superadmin/school_admins/toggle_status']        = 'Superadmin_school_admins/toggle_status';
 $route['superadmin/school_admins/reset_password']       = 'Superadmin_school_admins/reset_password';
+$route['superadmin/school_admins/get_recovery']         = 'Superadmin_school_admins/get_recovery';
+$route['superadmin/school_admins/update_recovery']      = 'Superadmin_school_admins/update_recovery';
 
 // ─── School Configuration
 $route['school_config']                                 = 'School_config/index';
 $route['school_config/get_config']                      = 'School_config/get_config';
 $route['school_config/save_profile']                    = 'School_config/save_profile';
+$route['school_config/save_forget_password_details']    = 'School_config/save_forget_password_details';
 $route['school_config/upload_logo']                     = 'School_config/upload_logo';
 $route['school_config/save_board']                      = 'School_config/save_board';
 $route['school_config/save_classes']                    = 'School_config/save_classes';
@@ -399,6 +406,8 @@ $route['academic/get_teacher_schedule']          = 'Academic/get_teacher_schedul
 $route['academic/get_subject_assignments']            = 'Academic/get_subject_assignments';
 $route['academic/save_subject_assignments']           = 'Academic/save_subject_assignments';
 $route['academic/get_subject_assignments_for_section'] = 'Academic/get_subject_assignments_for_section';
+$route['academic/get_class_matrix']                    = 'Academic/get_class_matrix';
+$route['academic/save_class_matrix']                   = 'Academic/save_class_matrix';
 $route['academic/get_eligible_teachers']              = 'Academic/get_eligible_teachers';
 $route['academic/copy_subject_assignments']      = 'Academic/copy_subject_assignments';
 $route['academic/get_timetable_settings']        = 'Academic/get_timetable_settings';

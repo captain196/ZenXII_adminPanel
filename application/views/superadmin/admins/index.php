@@ -21,6 +21,39 @@
     </button>
 </div>
 
+<?php if (($sa_id ?? '') === 'SUP0001'): ?>
+<!-- ═══ Super-Admin Recovery Contact (SUP0001 only) ═══ -->
+<div class="sa-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:18px;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+        <i class="fa fa-life-ring" style="color:var(--sa3);font-size:15px;"></i>
+        <span style="font-weight:700;color:var(--t1);font-size:14px;">Super-Admin Recovery Contact</span>
+    </div>
+    <div style="color:var(--t3);font-size:12px;margin-bottom:14px;line-height:1.6;">
+        Shown to <strong style="color:var(--t2);">other super admins</strong> when they tap &ldquo;Forgot password&rdquo; on the panel login. Only you (<strong style="color:var(--t2);">SUP0001</strong>) can edit this; you reset your own password via OTP.
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+        <div>
+            <label style="color:var(--t2);font-weight:600;font-size:12px;display:block;margin-bottom:5px;">Name <span style="color:#ef4444;">*</span></label>
+            <input type="text" id="srecName" class="form-control sa-inp" maxlength="100" placeholder="e.g. ZenXii Owner" style="width:100%;">
+        </div>
+        <div>
+            <label style="color:var(--t2);font-weight:600;font-size:12px;display:block;margin-bottom:5px;">Phone</label>
+            <input type="text" id="srecNumber" class="form-control sa-inp" maxlength="20" placeholder="e.g. 9876543210" style="width:100%;">
+        </div>
+        <div>
+            <label style="color:var(--t2);font-weight:600;font-size:12px;display:block;margin-bottom:5px;">Email</label>
+            <input type="email" id="srecEmail" class="form-control sa-inp" maxlength="120" placeholder="e.g. owner@zenxii.com" style="width:100%;">
+        </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;margin-top:14px;">
+        <button type="button" id="btnSaveSrec" class="btn btn-sm" style="background:var(--sa3);color:#fff;border:none;border-radius:6px;padding:7px 22px;font-weight:600;">
+            <i class="fa fa-floppy-o" style="margin-right:5px;"></i>Save contact
+        </button>
+        <span id="srecStatus" style="font-size:12px;color:var(--t3);"></span>
+    </div>
+</div>
+<?php endif; ?>
+
 <!-- Search Bar -->
 <div style="margin-bottom:14px;">
     <div style="position:relative;max-width:360px;">
@@ -346,6 +379,42 @@ document.addEventListener('DOMContentLoaded', function(){
     }
 
     loadAdmins();
+
+    // ── Super-admin recovery contact (SUP0001 only) ──
+    if (document.getElementById('btnSaveSrec')) {
+        (function(){
+            function loadSrec() {
+                post('superadmin/admins/get_super_recovery', {}, function(r){
+                    if (r && r.status === 'success' && r.recovery) {
+                        $('#srecName').val(r.recovery.name || '');
+                        $('#srecNumber').val(r.recovery.number || '');
+                        $('#srecEmail').val(r.recovery.email || '');
+                    }
+                });
+            }
+            loadSrec();
+
+            $('#btnSaveSrec').click(function(){
+                var name   = $.trim($('#srecName').val());
+                var number = $.trim($('#srecNumber').val());
+                var email  = $.trim($('#srecEmail').val());
+                if (!name) return alert('Name is required.');
+                if (!number && !email) return alert('Provide at least a phone number or an email.');
+
+                var $btn = $(this).prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i>');
+                $('#srecStatus').css('color', 'var(--t3)').text('Saving…');
+                post('superadmin/admins/update_super_recovery', { name: name, number: number, email: email }, function(r){
+                    $btn.prop('disabled', false).html('<i class="fa fa-floppy-o" style="margin-right:5px;"></i>Save contact');
+                    if (r.status === 'success') {
+                        $('#srecStatus').css('color', '#10b981').text('Saved ✓');
+                        setTimeout(function(){ $('#srecStatus').text(''); }, 2500);
+                    } else {
+                        $('#srecStatus').css('color', '#ef4444').text(r.message || 'Failed.');
+                    }
+                });
+            });
+        })();
+    }
 
     // ── Password toggle ──
     $(document).on('click', '.pwd-toggle', function(){

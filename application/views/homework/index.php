@@ -704,11 +704,11 @@
                     </div>
                     <div class="hw-fg">
                         <label>Title *</label>
-                        <input type="text" id="createTitle" placeholder="e.g. Chapter 5 - Exercise Questions" required>
+                        <input type="text" id="createTitle" maxlength="200" placeholder="e.g. Chapter 5 - Exercise Questions" required>
                     </div>
                     <div class="hw-fg">
                         <label>Description</label>
-                        <textarea id="createDesc" placeholder="Detailed instructions for students..."></textarea>
+                        <textarea id="createDesc" maxlength="10000" placeholder="Detailed instructions for students..."></textarea>
                     </div>
 
                     <!-- Preview -->
@@ -764,11 +764,11 @@
                 <input type="hidden" id="editHwId">
                 <div class="hw-fg">
                     <label>Title</label>
-                    <input type="text" id="editTitle">
+                    <input type="text" id="editTitle" maxlength="200">
                 </div>
                 <div class="hw-fg">
                     <label>Description</label>
-                    <textarea id="editDesc"></textarea>
+                    <textarea id="editDesc" maxlength="10000"></textarea>
                 </div>
                 <div class="hw-fg-row">
                     <div class="hw-fg">
@@ -1614,7 +1614,7 @@ HW.sub = {
 
         ajaxPost('homework/get_submissions', { class: cls, section: sec, hw_id: hwId }, function(r) {
             if (r.status !== 'success') {
-                setHtml('subBody', '<tr><td colspan="6" class="hw-empty"><i class="fa fa-exclamation-circle"></i> ' + esc(r.message || 'Failed') + '</td></tr>');
+                setHtml('subBody', '<tr><td colspan="9" class="hw-empty"><i class="fa fa-exclamation-circle"></i> ' + esc(r.message || 'Failed') + '</td></tr>');
                 return;
             }
 
@@ -1870,10 +1870,17 @@ HW.create = {
         loadClassSections(function() {
             populateClassDropdown('createClass', false);
         });
-        // Set default due date to tomorrow
+        // Set default due date to tomorrow, and floor selectable dates at
+        // today so the operator can't pick a past date and create homework
+        // that is "Overdue" the moment it's saved (parity with the edit
+        // path's retroactive-shortening guard).
+        var today = new Date();
+        var todayStr = today.toISOString().split('T')[0];
         var tomorrow = new Date();
         tomorrow.setDate(tomorrow.getDate() + 1);
-        document.getElementById('createDueDate').value = tomorrow.toISOString().split('T')[0];
+        var dueEl = document.getElementById('createDueDate');
+        dueEl.min = todayStr;
+        dueEl.value = tomorrow.toISOString().split('T')[0];
     },
 
     onClassChange: function() {
@@ -2000,7 +2007,16 @@ HW.create = {
             ajaxPost('homework/create_homework', data, function(r) {
                 restore();
                 if (r.status !== 'success') { toast(r.message || 'Creation failed', 'error'); return; }
-                toast('Homework created successfully!');
+                // Partial-success: server reports `requested` vs created[].
+                // When fewer sections were saved than requested, surface the
+                // server's warning so the operator knows to retry.
+                var createdCount = (r.created && r.created.length) ? r.created.length : 0;
+                var requested = (typeof r.requested === 'number') ? r.requested : createdCount;
+                if (createdCount < requested) {
+                    toast(r.message || ('Homework saved for ' + createdCount + ' of ' + requested + ' section(s). Please retry the rest.'), 'warning');
+                } else {
+                    toast(r.message || 'Homework created successfully!');
+                }
 
                 // Reset form
                 document.getElementById('createHwForm').reset();
@@ -2008,10 +2024,13 @@ HW.create = {
                 document.getElementById('createSubject').innerHTML = '<option value="">Select class first…</option>';
                 document.getElementById('createPreview').style.display = 'none';
 
-                // Reset default due date
+                // Reset default due date (and re-floor min at today)
+                var todayStr = new Date().toISOString().split('T')[0];
                 var tomorrow = new Date();
                 tomorrow.setDate(tomorrow.getDate() + 1);
-                document.getElementById('createDueDate').value = tomorrow.toISOString().split('T')[0];
+                var dueEl = document.getElementById('createDueDate');
+                dueEl.min = todayStr;
+                dueEl.value = tomorrow.toISOString().split('T')[0];
 
                 // Invalidate caches and force-refresh the visible list + dashboard
                 // tiles. Without this, the just-created homework wouldn't appear

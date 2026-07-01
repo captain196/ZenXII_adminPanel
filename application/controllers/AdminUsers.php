@@ -153,7 +153,7 @@ class AdminUsers extends MY_Controller
     private const AVAILABLE_MODULES = [
         'SIS','Fees','Accounting','Attendance','Examinations','Results',
         'LMS','Certificates','HR','Events','Communication','Operations',
-        'Academic','Reports','Configuration','Admin Users','Stories',
+        'Academic','Reports','Configuration','Admin Users','Stories','Homework',
     ];
 
     /* -- Login audit lives in security_events (Wave C). These are the
@@ -198,6 +198,13 @@ class AdminUsers extends MY_Controller
                         'schoolId'    => $data['schoolId'] ?? $this->school_id,
                         'schoolCode'  => $data['schoolCode'] ?? $this->school_code,
                         'parentDbKey' => $data['parentDbKey'] ?? $this->parent_db_key,
+                        // Dual-emit snake_case: admin-panel login reads camelCase
+                        // (schoolId/schoolCode), but Firestore Security Rules read
+                        // school_id. Without these, admin/SSA accounts get
+                        // PERMISSION_DENIED in the mobile apps (tenantActive gate).
+                        'school_id'    => $data['schoolId'] ?? $this->school_id,
+                        'school_code'  => $data['schoolCode'] ?? $this->school_code,
+                        'parent_db_key'=> $data['parentDbKey'] ?? $this->parent_db_key,
                     ]);
                     $this->fs->remove('systemPendingSyncAdmins', $adminId);
                     $synced++;
@@ -587,6 +594,11 @@ class AdminUsers extends MY_Controller
                 'schoolId'    => $this->school_id,
                 'schoolCode'  => $this->school_code,
                 'parentDbKey' => $this->parent_db_key,
+                // Dual-emit snake_case for Firestore Security Rules (school_id);
+                // camelCase above is what admin-panel login reads.
+                'school_id'    => $this->school_id,
+                'school_code'  => $this->school_code,
+                'parent_db_key'=> $this->parent_db_key,
             ]);
             $now       = date('Y-m-d H:i:s');
 
@@ -761,6 +773,10 @@ class AdminUsers extends MY_Controller
                         'schoolId'    => $this->school_id,
                         'schoolCode'  => $this->school_code,
                         'parentDbKey' => $this->parent_db_key,
+                        // Dual-emit snake_case for Firestore Security Rules (school_id).
+                        'school_id'    => $this->school_id,
+                        'school_code'  => $this->school_code,
+                        'parent_db_key'=> $this->parent_db_key,
                     ]);
                 }
             } catch (Exception $syncEx) {

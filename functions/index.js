@@ -417,3 +417,11 @@ exports.processFeeGenerationJob = feeWorker.processFeeGenerationJob;
 const opsSweep = require("./ops_sweep_worker");
 exports.feeOpsSweep = opsSweep.feeOpsSweep;
 
+// ─── getRecoveryContact (forgot-password) ──────────────────────────
+// Unauthenticated Gen-2 callable. Resolves a user's school from their
+// login id via the Auth custom claim and returns ONLY the school's
+// recovery-contact block. Used by the Teacher/Parent apps' forgot-
+// password screens. See ./recoveryContact.js.
+const recoveryContact = require("./recoveryContact");
+exports.getRecoveryContact = recoveryContact.getRecoveryContact;
+

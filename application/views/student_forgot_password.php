@@ -51,7 +51,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .fp-back a:hover{color:var(--brand);}
 .fp-field{margin-bottom:14px;}
 .fp-pw-wrap{position:relative;}
-.fp-pw-wrap .fp-eye{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;}
+.fp-pw-wrap .fp-input{padding-right:42px;}
+.fp-pw-wrap .fp-eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;}
 .fp-success-icon{text-align:center;padding:20px 0;}
 .fp-success-icon i{font-size:48px;color:var(--green-ok);}
 .fp-success-icon p{margin-top:12px;font-size:14px;color:var(--text);}

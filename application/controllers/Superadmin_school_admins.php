@@ -254,4 +254,62 @@ class Superadmin_school_admins extends MY_Superadmin_Controller
             'name'    => $result['ssa_name'],
         ]);
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Platform recovery contact — the single global block shown to a School
+    // Super Admin when THEY use "forgot password" (they have no higher admin
+    // inside their school, so they contact the platform/ZenXii team).
+    // Stored at Firestore platformSettings/recoveryContact {name,email,number}.
+    // Mirrors School_config's per-school forget_password_details editor.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public function get_recovery()
+    {
+        $block = (array) ($this->firebase->firestoreGet('platformSettings', 'recoveryContact') ?? []);
+        $this->json_success([
+            'recovery' => [
+                'name'   => (string) ($block['name']   ?? ''),
+                'email'  => (string) ($block['email']  ?? ''),
+                'number' => (string) ($block['number'] ?? ''),
+            ],
+        ]);
+    }
+
+    public function update_recovery()
+    {
+        $name   = trim((string) ($this->input->post('name',   TRUE) ?? ''));
+        $email  = strtolower(trim((string) ($this->input->post('email',  TRUE) ?? '')));
+        $number = trim((string) ($this->input->post('number', TRUE) ?? ''));
+
+        if ($name === '')                 $this->json_error('Name is required.');
+        if (mb_strlen($name) > 100)       $this->json_error('Name must be 100 characters or less.');
+        if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL))
+                                          $this->json_error('Invalid email format.');
+        if ($number !== '' && !preg_match('/^[\d\s\+\-\(\)]{7,20}$/', $number))
+                                          $this->json_error('Invalid phone number.');
+        if ($email === '' && $number === '')
+                                          $this->json_error('Provide at least an email or a phone number.');
+
+        $name = htmlspecialchars(strip_tags($name), ENT_QUOTES, 'UTF-8');
+
+        $block = [
+            'name'      => $name,
+            'email'     => $email,
+            'number'    => $number,
+            'updatedAt' => date('c'),
+            'updatedBy' => (string) $this->sa_id,
+        ];
+
+        $ok = $this->firebase->firestoreSet('platformSettings', 'recoveryContact', $block, true);
+        if (!$ok) {
+            $this->json_error('Could not save the recovery contact. Please try again.');
+        }
+
+        $this->sa_log('Updated platform recovery contact', '', ['name' => $name]);
+
+        $this->json_success([
+            'message'  => 'Platform recovery contact saved.',
+            'recovery' => ['name' => $name, 'email' => $email, 'number' => $number],
+        ]);
+    }
 }

@@ -222,6 +222,47 @@ html{font-size:16px !important}
     .ac-cal-grid{font-size:10px}
     .ac-cal-day{min-height:60px}
 }
+
+/* ══ Subject × Section Matrix (Phase 5) — minimal, theme-neutral ══ */
+.sa-ct-panel{margin-bottom:16px;padding:14px 2px}
+.sa-ct-hd{display:flex;align-items:center;gap:7px;font-size:10.5px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px}
+.sa-ct-grid{display:flex;gap:16px;flex-wrap:wrap}
+.sa-ct-card{display:flex;flex-direction:column;gap:6px;min-width:150px}
+.sa-ct-card .sec{font-size:10px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.5px}
+.sa-ct-hint{font-size:9px;color:var(--t3);font-style:italic}
+
+.sa-help{font-size:12px;color:var(--t3);margin:2px 0 14px;line-height:1.5}
+.sa-help b{color:var(--t2);font-weight:600}
+
+.sa-matrix-wrap{overflow-x:auto}
+.sa-matrix{width:100%;border-collapse:collapse;font-size:13px}
+.sa-matrix thead th{color:var(--t3);font-family:var(--font-m);padding:0 14px 9px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);white-space:nowrap}
+.sa-matrix thead th.sec-col{text-align:center}
+.sa-matrix td{padding:11px 14px;border-bottom:1px solid var(--border);vertical-align:middle;color:var(--t1)}
+.sa-matrix tbody tr:last-child td{border-bottom:none}
+.sa-matrix tbody tr:hover td{background:var(--bg3)}
+.sa-col-subj{min-width:180px}
+.sa-subj-name{font-weight:600;color:var(--t1);font-size:13px;line-height:1.2}
+.sa-subj-meta{font-size:9px;color:var(--t3);margin-top:2px;letter-spacing:.3px;text-transform:uppercase}
+.sa-cell{text-align:center}
+.sa-cell-all{text-align:center}
+.sa-all-note{font-size:9px;color:var(--t3);text-transform:uppercase;letter-spacing:.4px;margin-left:8px}
+.sa-teacher-sel,.sa-cw-sel,.sa-sec-sel,.sa-ct-sel{width:100%;min-width:120px;max-width:190px;padding:7px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg2);color:var(--t1);font-size:12px;font-family:var(--font-b);cursor:pointer;transition:border-color .15s}
+.sa-cw-sel,.sa-sec-sel{display:inline-block;margin:0 auto}
+.sa-teacher-sel:focus,.sa-cw-sel:focus,.sa-sec-sel:focus,.sa-ct-sel:focus{outline:none;border-color:var(--t2)}
+.sa-pw-input{width:52px;padding:7px;border:1px solid var(--border);border-radius:7px;background:var(--bg2);color:var(--t1);font-size:12px;text-align:center}
+.sa-pw-input:focus{outline:none;border-color:var(--t2)}
+.sa-gap .sa-sec-sel{border-style:dashed;border-color:var(--t3)}
+.sa-unassigned{font-size:9px;color:var(--t3);margin-top:3px;display:block}
+/* toggle */
+.sa-toggle{position:relative;display:inline-block;width:36px;height:20px;vertical-align:middle}
+.sa-toggle input{opacity:0;width:0;height:0;position:absolute}
+.sa-toggle .track{position:absolute;inset:0;background:var(--bg3);border:1px solid var(--border);border-radius:20px;transition:.2s;cursor:pointer}
+.sa-toggle .track:before{content:'';position:absolute;width:14px;height:14px;left:2px;top:2px;background:var(--t3);border-radius:50%;transition:.2s}
+.sa-toggle input:checked + .track{background:var(--gold);border-color:var(--gold)}
+.sa-toggle input:checked + .track:before{transform:translateX(16px);background:#fff}
+.sa-remove{width:28px;height:28px;border-radius:6px;border:none;background:transparent;color:var(--t3);cursor:pointer;transition:color .15s}
+.sa-remove:hover{color:#dc2626}
 </style>
 
 <div class="content-wrapper">
@@ -256,9 +297,6 @@ html{font-size:16px !important}
                 <div style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                     <select id="saClassSelect" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:12px;min-width:160px">
                         <option value="">Select Class...</option>
-                    </select>
-                    <select id="saSectionSelect" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--t1);font-size:12px;min-width:160px" disabled>
-                        <option value="">All Sections (class-wide)</option>
                     </select>
                     <?php if (in_array($admin_role ?? '', ['Admin', 'Principal', 'Super Admin', 'School Super Admin'])): ?>
                     <button class="ac-btn ac-btn-s ac-btn-sm" onclick="AC.sa.copyFrom()" title="Copy assignments from another class"><i class="fa fa-copy"></i> Copy From</button>
@@ -969,7 +1007,8 @@ AC.sa = {
     _currentLabel:'', // Display label (e.g. "Class 9th")
     _currentClassKey:'', // Original canonical key (e.g. "Class 9th") — sent to backend
     _currentSection:'', // Phase 4: selected section ('' = class-wide)
-    _currentSubs:[], // working copy for selected class+section
+    _currentSubs:[], // working copy for selected class+section (legacy per-section view)
+    _matrix:{sections:[],subjects:[],class_teachers:{}}, // Phase 5: whole-class Subject×Section matrix
     _sectionsCache:{}, // {classKey: [sectionLetter, ...]}
     _periodSettings:{periodsPerDay:0,numWorkingDays:6,maxPeriodsPerWeek:0}, // from TimetableSettings
 
@@ -1008,29 +1047,12 @@ AC.sa = {
                     if(!sel.value){
                         document.getElementById('saContent').innerHTML='<div class="ac-empty"><i class="fa fa-book"></i>Select a class to manage subject assignments</div>';
                         document.getElementById('saAssignArea').style.display='none';
-                        document.getElementById('saSectionSelect').disabled=true;
-                        document.getElementById('saSectionSelect').innerHTML='<option value="">All Sections (class-wide)</option>';
                         return;
                     }
                     AC.sa._currentKey=sel.value;
                     AC.sa._currentLabel=opt.dataset.label||'';
                     AC.sa._currentClassKey=opt.dataset.key||opt.dataset.label||'';
-                    AC.sa._currentSection=''; // reset to class-wide
-                    // Load sections for this class
-                    AC.sa._loadSections(opt.dataset.key||'');
-                    AC.sa._loadClass(sel.value,opt.dataset.key||'');
-                };
-
-                // Section selector handler
-                var secSel=document.getElementById('saSectionSelect');
-                secSel.onchange=function(){
-                    AC.sa._currentSection=secSel.value;
-                    // Reload assignments for this class+section
-                    var cSel=document.getElementById('saClassSelect');
-                    var cOpt=cSel.options[cSel.selectedIndex];
-                    if(cOpt&&cOpt.value){
-                        AC.sa._loadClass(cSel.value,cOpt.dataset.key||'');
-                    }
+                    AC.sa._loadMatrix(opt.dataset.key||opt.dataset.label||'');
                 };
 
                 document.getElementById('saContent').innerHTML='';
@@ -1045,86 +1067,228 @@ AC.sa = {
         return (key||'').replace(/[.$#\[\]\/]/g,'_');
     },
 
-    /** Load sections for the given class into the section dropdown (Phase 4) */
-    _loadSections:function(classKey){
-        var secSel=document.getElementById('saSectionSelect');
-        secSel.innerHTML='<option value="">All Sections (class-wide)</option>';
-        secSel.disabled=true;
+    /** Phase 5: load the whole class as a Subject×Section matrix in one call. */
+    _loadMatrix:function(classKey){
+        document.getElementById('saContent').innerHTML='';
+        document.getElementById('saAssignArea').style.display='block';
+        document.getElementById('saClassName').textContent=AC.sa._currentLabel;
+        AC.sa._matrix={sections:[],subjects:[],class_teachers:{}};
+        document.getElementById('saTable').innerHTML='<div style="padding:20px;text-align:center;color:var(--t3);font-size:12px"><i class="fa fa-spinner fa-spin"></i> Loading matrix…</div>';
 
-        if(!classKey) return;
+        post('academic/get_class_matrix',{class_key:AC.sa._currentClassKey||classKey}).then(function(d){
+            if(d.status==='success'){
+                AC.sa._matrix={
+                    sections:d.sections||[],
+                    subjects:d.subjects||[],
+                    class_teachers:(d.class_teachers&&typeof d.class_teachers==='object')?d.class_teachers:{}
+                };
+            } else {
+                AC.sa._matrix={sections:[],subjects:[],class_teachers:{}};
+                toast(d.message||'Failed to load matrix',false);
+            }
+            AC.sa._renderMatrix();
+            AC.sa._renderCatalog(classKey);
+        }).catch(function(){
+            AC.sa._matrix={sections:[],subjects:[],class_teachers:{}};
+            AC.sa._renderMatrix();
+            AC.sa._renderCatalog(classKey);
+        });
+    },
 
-        // Use cache if available
-        if(AC.sa._sectionsCache[classKey]){
-            AC.sa._populateSectionDropdown(AC.sa._sectionsCache[classKey]);
+    /** Update the summary + period-allocation bar for a given weekly total. */
+    _renderPeriodBar:function(totalP){
+        var ps=AC.sa._periodSettings;
+        var maxPW=ps.maxPeriodsPerWeek||0;
+        var barEl=document.getElementById('saPeriodBar');
+        var limitEl=document.getElementById('saPeriodLimit');
+        if(maxPW>0){
+            barEl.style.display='';
+            var pct=Math.min(100,Math.round(totalP/maxPW*100));
+            var remaining=maxPW-totalP;
+            document.getElementById('saPeriodBarLabel').textContent=totalP+' / '+maxPW+' periods';
+            var fill=document.getElementById('saPeriodBarFill');
+            fill.style.width=pct+'%';
+            fill.style.background=totalP>maxPW?'#dc2626':totalP>maxPW*0.85?'#f59e0b':'var(--gold)';
+            if(totalP>maxPW){
+                limitEl.innerHTML='<span style="color:#dc2626"><i class="fa fa-exclamation-triangle"></i> Exceeded by '+(totalP-maxPW)+' periods</span>';
+            } else {
+                limitEl.innerHTML='<span style="color:var(--t3)">'+remaining+' remaining ('+ps.periodsPerDay+'/day × '+ps.numWorkingDays+' days)</span>';
+            }
+        } else {
+            barEl.style.display='none';
+            limitEl.innerHTML='<span style="color:var(--t3);font-size:10px"><i class="fa fa-info-circle"></i> Set periods in Period Scheduling tab first</span>';
+        }
+    },
+
+    /** Teachers who hold a PER-SECTION assignment in a given section (the pool a
+     *  class teacher can be picked from — the CT flag lives on a per-section row). */
+    _teachersInSection:function(sec){
+        var out={};
+        (AC.sa._matrix.subjects||[]).forEach(function(s){
+            if(s.same_for_all){
+                if(s.class_wide_teacher_id) out[s.class_wide_teacher_id]=s.class_wide_teacher_name||s.class_wide_teacher_id;
+            } else {
+                var t=(s.section_teachers&&s.section_teachers[sec])||{};
+                if(t.id) out[t.id]=t.name||t.id;
+            }
+        });
+        return Object.keys(out).map(function(id){return {id:id,name:out[id]};});
+    },
+
+    /** Build a teacher <select>. data = {idx, sec?} → becomes data-* attributes. */
+    _teacherSelectHtml:function(eligible,selectedId,cls,data){
+        var attrs=''; for(var k in data){ if(data.hasOwnProperty(k)) attrs+=' data-'+k+'="'+esc(String(data[k]))+'"'; }
+        var h='<select class="'+cls+'"'+attrs+'><option value="">—</option>';
+        if(!eligible||eligible.length===0){
+            h+='<option value="" disabled>no eligible teacher</option>';
+        } else {
+            eligible.forEach(function(t){
+                h+='<option value="'+esc(t.id)+'" data-name="'+esc(t.name)+'"'+(t.id===selectedId?' selected':'')+'>'+esc(t.name)+'</option>';
+            });
+        }
+        return h+'</select>';
+    },
+
+    /** Inner HTML for the per-section class-teacher strip. */
+    _ctStripHtml:function(){
+        var M=AC.sa._matrix, edit=_canEdit, h='';
+        h+='<div class="sa-ct-hd"><i class="fa fa-user-circle"></i> Class Teacher &mdash; one per section</div>';
+        h+='<div class="sa-ct-grid">';
+        (M.sections||[]).forEach(function(sec){
+            var pool=AC.sa._teachersInSection(sec);
+            var cur=(M.class_teachers&&M.class_teachers[sec])||'';
+            h+='<div class="sa-ct-card"><span class="sec">'+esc(sec)+'</span>';
+            if(edit){
+                h+='<select class="sa-ct-sel" data-sec="'+esc(sec)+'"><option value="">— none —</option>';
+                pool.forEach(function(t){ h+='<option value="'+esc(t.id)+'"'+(t.id===cur?' selected':'')+'>'+esc(t.name)+'</option>'; });
+                h+='</select>';
+                if(pool.length===0) h+='<span class="sa-ct-hint">assign a teacher below first</span>';
+            } else {
+                var nm='—'; pool.forEach(function(t){if(t.id===cur)nm=t.name;});
+                h+='<span style="font-size:12px;color:var(--t1);font-weight:600">'+esc(nm)+'</span>';
+            }
+            h+='</div>';
+        });
+        h+='</div>';
+        return h;
+    },
+
+    /** Phase 5: render the Subject×Section matrix. */
+    _renderMatrix:function(){
+        var M=AC.sa._matrix, subs=M.subjects||[], sections=M.sections||[], edit=_canEdit;
+
+        document.getElementById('saCount').textContent=subs.length;
+        var totalP=0; subs.forEach(function(s){totalP+=(s.periods_week||0)});
+        document.getElementById('saTotalPeriods').textContent=totalP;
+        AC.sa._renderPeriodBar(totalP);
+
+        var host=document.getElementById('saTable');
+        if(sections.length===0){
+            host.innerHTML='<div class="ac-empty"><i class="fa fa-exclamation-triangle"></i>No sections found for this class. Create sections in Student Info first.</div>';
             return;
         }
 
-        // Strip "Class " prefix for the API call (sis/get_sections_by_class expects raw class name)
-        var rawClass=classKey.replace(/^Class\s+/i,'');
+        // Class-teacher strip (own container so it can refresh independently)
+        var html='<div id="saCtStrip" class="sa-ct-panel">'+AC.sa._ctStripHtml()+'</div>';
 
-        post('sis/get_sections_by_class',{class_name:rawClass}).then(function(d){
-            var sections=Array.isArray(d)?d:(d&&Array.isArray(d.sections)?d.sections:[]);
-            AC.sa._sectionsCache[classKey]=sections;
-            AC.sa._populateSectionDropdown(sections);
-        }).catch(function(){
-            // Network failure — keep dropdown disabled with class-wide as only option
-        });
-    },
-
-    _populateSectionDropdown:function(sections){
-        var secSel=document.getElementById('saSectionSelect');
-        sections.forEach(function(sec){
-            var opt=document.createElement('option');
-            opt.value='Section '+sec;
-            opt.textContent='Section '+sec;
-            secSel.appendChild(opt);
-        });
-        secSel.disabled=false;
-        // Restore current section if any
-        if(AC.sa._currentSection){
-            secSel.value=AC.sa._currentSection;
+        if(subs.length===0){
+            host.innerHTML=html+'<div class="ac-empty"><i class="fa fa-info-circle"></i>No subjects yet. Add one from the catalog below.</div>';
+            AC.sa._bindCtSel();
+            return;
         }
-    },
 
-    _loadClass:function(fbKey,classKey){
-        document.getElementById('saContent').innerHTML='';
-        document.getElementById('saAssignArea').style.display='block';
-        var label=AC.sa._currentLabel;
-        if(AC.sa._currentSection){
-            label += ' / ' + AC.sa._currentSection;
-        }
-        document.getElementById('saClassName').textContent=label;
+        html+='<div class="sa-help">Each subject uses <b>one teacher for every section</b> by default. Turn off <b>Same teacher</b> to assign a different teacher per section. The <b>class teacher</b> is set per section in the panel above.</div>';
+        html+='<div class="sa-matrix-wrap"><table class="sa-matrix"><thead><tr>';
+        html+='<th>Subject</th><th style="text-align:center" title="Periods per week">Per/wk</th><th style="text-align:center" title="Use one teacher for all sections of this subject">Same&nbsp;teacher</th>';
+        sections.forEach(function(sec){ html+='<th class="sec-col">'+esc(sec)+'</th>'; });
+        if(edit) html+='<th></th>';
+        html+='</tr></thead><tbody>';
 
-        // Always clear current subs first to prevent stale data from previous class
-        AC.sa._currentSubs=[];
-        AC.sa._renderTable();
-
-        // Always fetch fresh from server — both for per-section and class-wide.
-        // The cached _assignments may be stale after saves or class switches.
-        var classKeyToSend=AC.sa._currentClassKey||classKey;
-        var sectionToSend=AC.sa._currentSection||'';
-
-        post('academic/get_subject_assignments_for_section',{
-            class_key:classKeyToSend,
-            section_key:sectionToSend
-        }).then(function(d){
-            if(d.status==='success'){
-                AC.sa._currentSubs=d.subjects||[];
+        subs.forEach(function(s,i){
+            var eligible=AC.sa._filterTeachersForSubject(s.code,s.name);
+            html+='<tr>';
+            html+='<td class="sa-col-subj"><div class="sa-subj-name">'+esc(s.name)+'</div><div class="sa-subj-meta">'+esc(s.code)+' &middot; '+esc(s.category)+'</div></td>';
+            if(edit){
+                html+='<td style="text-align:center"><input type="number" min="0" max="20" value="'+(s.periods_week||0)+'" data-idx="'+i+'" class="sa-pw-input"></td>';
+                html+='<td style="text-align:center"><label class="sa-toggle"><input type="checkbox" class="sa-same-check" data-idx="'+i+'"'+(s.same_for_all?' checked':'')+'><span class="track"></span></label></td>';
             } else {
-                AC.sa._currentSubs=[];
+                html+='<td style="text-align:center">'+(s.periods_week||'—')+'</td>';
+                html+='<td style="text-align:center">'+(s.same_for_all?'<i class="fa fa-check" style="color:var(--gold)"></i>':'—')+'</td>';
             }
-            AC.sa._renderTable();
-            AC.sa._renderCatalog(classKey);
-        }).catch(function(){
-            // Fallback to cached data if server call fails
-            var assigned=AC.sa._assignments[fbKey]||[];
-            AC.sa._currentSubs=Array.isArray(assigned)?assigned.slice():[];
-            AC.sa._renderTable();
-            AC.sa._renderCatalog(classKey);
+            if(s.same_for_all){
+                var cwId=s.class_wide_teacher_id||'';
+                if(edit){
+                    html+='<td class="sa-cell-all" colspan="'+sections.length+'">'+AC.sa._teacherSelectHtml(eligible,cwId,'sa-cw-sel',{idx:i})+'<span class="sa-all-note">every section</span></td>';
+                } else {
+                    html+='<td class="sa-cell-all" colspan="'+sections.length+'">'+esc(s.class_wide_teacher_name||'—')+'<span class="sa-all-note">every section</span></td>';
+                }
+            } else {
+                sections.forEach(function(sec){
+                    var t=(s.section_teachers&&s.section_teachers[sec])||{};
+                    var tid=t.id||'';
+                    if(edit){
+                        html+='<td class="sa-cell'+(tid?'':' sa-gap')+'">'+AC.sa._teacherSelectHtml(eligible,tid,'sa-sec-sel',{idx:i,sec:sec})+(tid?'':'<span class="sa-unassigned">unassigned</span>')+'</td>';
+                    } else {
+                        html+='<td class="sa-cell">'+esc(t.name||'—')+'</td>';
+                    }
+                });
+            }
+            if(edit) html+='<td style="text-align:center"><button class="sa-remove" onclick="AC.sa.removeSub('+i+')" title="Remove subject"><i class="fa fa-times"></i></button></td>';
+            html+='</tr>';
+        });
+        html+='</tbody></table></div>';
+        host.innerHTML=html;
+        AC.sa._bindMatrixEvents();
+    },
+
+    _bindCtSel:function(){
+        document.querySelectorAll('.sa-ct-sel').forEach(function(sel){
+            sel.addEventListener('change',function(){
+                var sec=this.dataset.sec;
+                if(!AC.sa._matrix.class_teachers) AC.sa._matrix.class_teachers={};
+                if(this.value) AC.sa._matrix.class_teachers[sec]=this.value;
+                else delete AC.sa._matrix.class_teachers[sec];
+            });
         });
     },
 
-    _renderTable:function(){
+    _refreshClassTeacherStrip:function(){
+        var el=document.getElementById('saCtStrip');
+        if(el){ el.innerHTML=AC.sa._ctStripHtml(); AC.sa._bindCtSel(); }
+    },
+
+    _bindMatrixEvents:function(){
+        var subs=AC.sa._matrix.subjects;
+        document.querySelectorAll('.sa-pw-input').forEach(function(inp){
+            inp.addEventListener('change',function(){
+                var idx=+this.dataset.idx, val=parseInt(this.value)||0, ps=AC.sa._periodSettings;
+                if(ps.numWorkingDays>0 && val>ps.numWorkingDays){ toast(subs[idx].name+' can\'t exceed '+ps.numWorkingDays+' periods/week',false); val=ps.numWorkingDays; this.value=val; }
+                subs[idx].periods_week=val;
+                var totalP=0; subs.forEach(function(s){totalP+=(s.periods_week||0)}); document.getElementById('saTotalPeriods').textContent=totalP; AC.sa._renderPeriodBar(totalP);
+            });
+        });
+        document.querySelectorAll('.sa-same-check').forEach(function(cb){
+            cb.addEventListener('change',function(){ subs[+this.dataset.idx].same_for_all=this.checked; AC.sa._renderMatrix(); });
+        });
+        document.querySelectorAll('.sa-cw-sel').forEach(function(sel){
+            sel.addEventListener('change',function(){
+                var idx=+this.dataset.idx, opt=this.options[this.selectedIndex];
+                subs[idx].class_wide_teacher_id=this.value; subs[idx].class_wide_teacher_name=opt?opt.dataset.name||'':'';
+            });
+        });
+        document.querySelectorAll('.sa-sec-sel').forEach(function(sel){
+            sel.addEventListener('change',function(){
+                var idx=+this.dataset.idx, sec=this.dataset.sec, opt=this.options[this.selectedIndex];
+                if(!subs[idx].section_teachers) subs[idx].section_teachers={};
+                subs[idx].section_teachers[sec]={id:this.value,name:opt?opt.dataset.name||'':''};
+                AC.sa._refreshClassTeacherStrip(); // CT pool depends on section teachers
+            });
+        });
+        AC.sa._bindCtSel();
+    },
+
+    // Legacy per-section renderer — retained but unused (matrix replaces it).
+    _renderTableLegacy:function(){
         var subs=AC.sa._currentSubs;
         document.getElementById('saCount').textContent=subs.length;
         var totalP=0;
@@ -1276,7 +1440,7 @@ AC.sa = {
 
         // Filter out already assigned
         var assignedCodes={};
-        AC.sa._currentSubs.forEach(function(s){assignedCodes[s.code]=true});
+        (AC.sa._matrix.subjects||[]).forEach(function(s){assignedCodes[s.code]=true});
 
         var available=catSubs.filter(function(s){return!assignedCodes[s.code]});
 
@@ -1300,16 +1464,16 @@ AC.sa = {
     },
 
     addSub:function(code,name,category){
-        AC.sa._currentSubs.push({code:code,name:name,category:category||'Core',periods_week:0,teacher_id:'',teacher_name:'',is_class_teacher:false});
-        AC.sa._renderTable();
+        AC.sa._matrix.subjects.push({code:code,name:name,category:category||'Core',periods_week:0,same_for_all:true,class_wide_teacher_id:'',class_wide_teacher_name:'',section_teachers:{}});
+        AC.sa._renderMatrix();
         var sel=document.getElementById('saClassSelect');
         var opt=sel.options[sel.selectedIndex];
         AC.sa._renderCatalog(opt?opt.dataset.key||'':'');
     },
 
     removeSub:function(idx){
-        AC.sa._currentSubs.splice(idx,1);
-        AC.sa._renderTable();
+        AC.sa._matrix.subjects.splice(idx,1);
+        AC.sa._renderMatrix();
         var sel=document.getElementById('saClassSelect');
         var opt=sel.options[sel.selectedIndex];
         AC.sa._renderCatalog(opt?opt.dataset.key||'':'');
@@ -1317,64 +1481,27 @@ AC.sa = {
 
     save:function(btn){
         if(!AC.sa._currentKey){toast('Select a class first',false);return}
+        var M=AC.sa._matrix, subs=M.subjects||[], ps=AC.sa._periodSettings;
 
-        // Pre-validate: period limits
-        var ps=AC.sa._periodSettings;
+        // Period validation (periods are class-level, one value per subject)
         if(ps.maxPeriodsPerWeek>0){
-            var totalP=0;
-            var perSubErr=[];
-            AC.sa._currentSubs.forEach(function(s){
-                var pw=s.periods_week||0;
-                totalP+=pw;
-                if(pw>ps.numWorkingDays){
-                    perSubErr.push(s.name+': '+pw+' periods (max '+ps.numWorkingDays+')');
-                }
-            });
-            if(perSubErr.length){
-                toast('Period limit exceeded per subject:\n'+perSubErr.join('\n'),false);
-                return;
-            }
-            if(totalP>ps.maxPeriodsPerWeek){
-                toast('Total periods ('+totalP+') exceeds maximum ('+ps.maxPeriodsPerWeek+'). Reduce periods before saving.',false);
-                return;
-            }
+            var totalP=0, perErr=[];
+            subs.forEach(function(s){ var pw=s.periods_week||0; totalP+=pw; if(ps.numWorkingDays>0&&pw>ps.numWorkingDays) perErr.push(s.name+': '+pw+' (max '+ps.numWorkingDays+')'); });
+            if(perErr.length){ toast('Period limit exceeded:\n'+perErr.join('\n'),false); return; }
+            if(totalP>ps.maxPeriodsPerWeek){ toast('Total periods ('+totalP+') exceeds max ('+ps.maxPeriodsPerWeek+'). Reduce before saving.',false); return; }
         }
 
-        // Pre-validate: any subject with teacher selected but teacher can't teach it
-        var invalid=[];
-        AC.sa._currentSubs.forEach(function(s){
-            if(s.teacher_id){
-                var eligible=AC.sa._filterTeachersForSubject(s.code,s.name);
-                if(!eligible.find(function(t){return t.id===s.teacher_id;})){
-                    invalid.push(s.name+' → '+s.teacher_name);
-                }
-            }
-        });
-        if(invalid.length){
-            toast('Invalid teacher-subject pairs:\n'+invalid.join('\n'),false);
-            return;
-        }
-
-        if(window.ZXLoader) ZXLoader.show('Saving assignments…');
-        post('academic/save_subject_assignments',{
+        if(window.ZXLoader) ZXLoader.show('Saving matrix…');
+        post('academic/save_class_matrix',{
             class_key:AC.sa._currentClassKey||AC.sa._currentKey,
-            section_key:AC.sa._currentSection||'', // Phase 4: per-section or class-wide
-            subjects:JSON.stringify(AC.sa._currentSubs)
+            matrix:JSON.stringify({sections:M.sections||[],subjects:subs,class_teachers:M.class_teachers||{}})
         }).then(function(d){
             if(window.ZXLoader) ZXLoader.hide(true);
             if(d.status==='success'){
-                toast('Saved '+d.count+' subject assignments',true);
-                AC.sa._assignments[AC.sa._currentKey]=AC.sa._currentSubs.slice();
-                // Update dropdown badge
-                var sel=document.getElementById('saClassSelect');
-                var opt=sel.options[sel.selectedIndex];
-                if(opt&&opt.value){
-                    var lbl=opt.dataset.label||'';
-                    opt.textContent=lbl+' ('+d.count+' subjects)';
-                }
-                if(d.warnings && d.warnings.length){
-                    toast('Warning: '+d.warnings.join('; '),false);
-                }
+                toast('Saved '+d.count+' assignments',true);
+                if(d.warnings && d.warnings.length) toast('Note: '+d.warnings.join('; '),false);
+                // Reload so the UI reflects the canonical stored shape.
+                AC.sa._loadMatrix(AC.sa._currentClassKey||AC.sa._currentKey);
             } else toast(d.message,false);
         }).catch(function(e){
             if(window.ZXLoader) ZXLoader.hide(true);

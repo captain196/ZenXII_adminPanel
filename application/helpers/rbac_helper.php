@@ -23,7 +23,7 @@ defined('BASEPATH') OR exit('No direct script access allowed');
 define('RBAC_MODULES', [
     'SIS','Fees','Accounting','Attendance','Examinations','Results',
     'LMS','Certificates','HR','Events','Communication','Operations',
-    'Academic','Reports','Configuration','Admin Users','Stories',
+    'Academic','Reports','Configuration','Admin Users','Stories','Homework',
 ]);
 
 /**

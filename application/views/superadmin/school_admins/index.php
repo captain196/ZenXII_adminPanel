@@ -18,6 +18,37 @@
     </div>
 </div>
 
+<!-- ═══ Platform Password-Recovery Contact (shown to School Super Admins) ═══ -->
+<div class="sa-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:18px;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+        <i class="fa fa-life-ring" style="color:var(--sa3);font-size:15px;"></i>
+        <span style="font-weight:700;color:var(--t1);font-size:14px;">Password-Recovery Contact</span>
+    </div>
+    <div style="color:var(--t3);font-size:12px;margin-bottom:14px;line-height:1.6;">
+        Shown to a <strong style="color:var(--t2);">School Super Admin</strong> when they tap &ldquo;Forgot password&rdquo; &mdash; they have no admin above them inside their school, so they reach the ZenXii platform team. This is one global contact for the whole platform.
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+        <div>
+            <label style="color:var(--t2);font-weight:600;font-size:12px;display:block;margin-bottom:5px;">Name <span style="color:#ef4444;">*</span></label>
+            <input type="text" id="recName" class="form-control sa-inp" maxlength="100" placeholder="e.g. ZenXii Support" style="width:100%;">
+        </div>
+        <div>
+            <label style="color:var(--t2);font-weight:600;font-size:12px;display:block;margin-bottom:5px;">Phone</label>
+            <input type="text" id="recNumber" class="form-control sa-inp" maxlength="20" placeholder="e.g. 9876543210" style="width:100%;">
+        </div>
+        <div>
+            <label style="color:var(--t2);font-weight:600;font-size:12px;display:block;margin-bottom:5px;">Email</label>
+            <input type="email" id="recEmail" class="form-control sa-inp" maxlength="120" placeholder="e.g. support@zenxii.com" style="width:100%;">
+        </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;margin-top:14px;">
+        <button type="button" id="btnSaveRecovery" class="btn btn-sm" style="background:var(--sa3);color:#fff;border:none;border-radius:6px;padding:7px 22px;font-weight:600;">
+            <i class="fa fa-floppy-o" style="margin-right:5px;"></i>Save contact
+        </button>
+        <span id="recStatus" style="font-size:12px;color:var(--t3);"></span>
+    </div>
+</div>
+
 <!-- Search Bar -->
 <div style="margin-bottom:14px;">
     <div style="position:relative;max-width:420px;">
@@ -231,6 +262,38 @@ document.addEventListener('DOMContentLoaded', function(){
     }
 
     loadAdmins();
+
+    // ── Platform recovery contact (shown to SSAs on forgot-password) ──
+    function loadRecovery() {
+        post('superadmin/school_admins/get_recovery', {}, function(r){
+            if (r && r.status === 'success' && r.recovery) {
+                $('#recName').val(r.recovery.name || '');
+                $('#recNumber').val(r.recovery.number || '');
+                $('#recEmail').val(r.recovery.email || '');
+            }
+        });
+    }
+    loadRecovery();
+
+    $('#btnSaveRecovery').click(function(){
+        var name   = $.trim($('#recName').val());
+        var number = $.trim($('#recNumber').val());
+        var email  = $.trim($('#recEmail').val());
+        if (!name) return alert('Name is required.');
+        if (!number && !email) return alert('Provide at least a phone number or an email.');
+
+        var $btn = $(this).prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i>');
+        $('#recStatus').css('color', 'var(--t3)').text('Saving…');
+        post('superadmin/school_admins/update_recovery', { name: name, number: number, email: email }, function(r){
+            $btn.prop('disabled', false).html('<i class="fa fa-floppy-o" style="margin-right:5px;"></i>Save contact');
+            if (r.status === 'success') {
+                $('#recStatus').css('color', '#10b981').text('Saved ✓');
+                setTimeout(function(){ $('#recStatus').text(''); }, 2500);
+            } else {
+                $('#recStatus').css('color', '#ef4444').text(r.message || 'Failed.');
+            }
+        });
+    });
 
     // ── Password toggle ──
     $(document).on('click', '.pwd-toggle', function(){

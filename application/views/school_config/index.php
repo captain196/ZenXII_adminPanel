@@ -511,6 +511,31 @@
         <button class="sc-btn sc-btn-primary" onclick="saveProfile()">
             <i class="fa fa-save"></i> Save Profile
         </button>
+
+        <div class="sc-card" style="margin-top:18px;">
+            <div class="sc-card-title"><i class="fa fa-key"></i> Password Recovery Contact</div>
+            <div style="font-size:12px;color:var(--t3);margin:-4px 0 12px;line-height:1.6;">
+                Contact details used by the <strong>forgot-password</strong> flow to verify and reach the
+                school super admin. Keep these accurate &mdash; recovery requests are checked against them.
+            </div>
+            <div class="sc-grid sc-grid-2">
+                <div class="sc-field">
+                    <label>Full Name</label>
+                    <input type="text" id="fpd_name" maxlength="120" placeholder="Super admin full name">
+                </div>
+                <div class="sc-field">
+                    <label>Email</label>
+                    <input type="email" id="fpd_email" maxlength="120" placeholder="recovery@school.edu">
+                </div>
+                <div class="sc-field">
+                    <label>Phone Number</label>
+                    <input type="tel" id="fpd_number" maxlength="20" placeholder="e.g. +91 98765 43210">
+                </div>
+            </div>
+            <button class="sc-btn sc-btn-primary" style="margin-top:14px;" onclick="saveForgetPwd()">
+                <i class="fa fa-save"></i> Save Recovery Contact
+            </button>
+        </div>
     </div>
 
     <!-- ════════════════════════════════════════════════════════ -->
@@ -1245,6 +1270,7 @@ function loadConfig() {
         CFG.archived_sessions = d.archived_sessions || [];
         CSRFT = d.csrf_token || CSRFT;
         renderProfile(d.profile || {});
+        renderForgetPwd(d.forget_password_details || {});
         renderSessions(d.sessions || [], d.active_session || '');
         renderBoard(d.board || {});
         renderClasses(d.classes || []);
@@ -1297,6 +1323,26 @@ function saveProfile() {
             });
         }
     }, { loader: 'Saving school details…' });
+}
+
+/* ══════════ PASSWORD RECOVERY CONTACT ══════════ */
+function renderForgetPwd(f) {
+    document.getElementById('fpd_name').value   = f.name   || '';
+    document.getElementById('fpd_email').value  = f.email  || '';
+    document.getElementById('fpd_number').value = f.number || '';
+}
+
+function saveForgetPwd() {
+    var name   = document.getElementById('fpd_name').value.trim();
+    var email  = document.getElementById('fpd_email').value.trim();
+    var number = document.getElementById('fpd_number').value.trim();
+    if (!name || !email || !number) { toast('Name, email and number are all required.', false); return; }
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast('Enter a valid email address.', false); return; }
+    if (!/^[\d\s\+\-\(\)]{7,20}$/.test(number)) { toast('Enter a valid phone number.', false); return; }
+    post('school_config/save_forget_password_details', { name: name, email: email, number: number }, function(d) {
+        toast(d.message || (d.status === 'success' ? 'Saved!' : d.message), d.status === 'success');
+        if (d.status === 'success' && d.forget_password_details) renderForgetPwd(d.forget_password_details);
+    }, { loader: 'Saving recovery contact…' });
 }
 
 /* Logo upload */
@@ -3757,6 +3803,7 @@ function renderRcPreview() {
 
 /* ── Expose to inline onclick handlers ────────────────────────── */
 window.saveProfile = saveProfile;
+window.saveForgetPwd = saveForgetPwd;
 window.syncSessions = syncSessions;
 window.addSession = addSession;
 window.setActive = setActive;

@@ -40,13 +40,31 @@ body{background:var(--navy);color:var(--t1);font-family:var(--font-s);min-height
 .fp-back a i{margin-right:4px;}
 .fp-field{margin-bottom:14px;}
 .fp-pw-wrap{position:relative;}
-.fp-pw-wrap .fp-eye{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--t3);cursor:pointer;font-size:14px;}
+.fp-pw-wrap .fp-input{padding-right:42px;}
+.fp-pw-wrap .fp-eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--t3);cursor:pointer;font-size:14px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;}
 .fp-success-icon{text-align:center;padding:20px 0;}
 .fp-success-icon i{font-size:48px;color:var(--green);}
 .fp-success-icon p{margin-top:12px;font-size:14px;color:var(--t1);}
 .fp-timer{font-size:11px;color:var(--t3);text-align:center;margin-top:8px;}
 .fp-resend{background:none;border:none;color:var(--gold);cursor:pointer;font-size:12px;font-weight:600;text-decoration:underline;margin-top:8px;display:block;text-align:center;}
 .fp-resend:disabled{color:var(--t3);cursor:not-allowed;text-decoration:none;}
+/* ── Contact card ── */
+.cc{border:1px solid var(--gold-ring);border-radius:14px;padding:16px;background:var(--navy3);}
+.cc-head{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+.cc-head i{color:var(--gold);font-size:18px;}
+.cc-head .cc-title{font-size:15px;font-weight:600;color:var(--t1);}
+.cc-sub{font-size:11.5px;color:var(--t3);margin:-6px 0 12px 28px;}
+.cc-div{height:1px;background:var(--navy4);margin:0 0 14px;}
+.cc-row{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px;}
+.cc-row:last-child{margin-bottom:0;}
+.cc-row > i.lead{color:var(--t2);font-size:15px;width:18px;text-align:center;margin-top:2px;}
+.cc-meta{flex:1;min-width:0;}
+.cc-meta .cc-k{font-size:11px;color:var(--t3);letter-spacing:.3px;}
+.cc-meta .cc-v{font-size:13px;color:var(--t1);word-break:break-word;margin-top:2px;}
+.cc-actions{display:flex;gap:10px;margin:10px 0 0 30px;}
+.cc-act{width:34px;height:34px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;border:none;cursor:pointer;background:var(--gold-dim);color:var(--gold2);font-size:14px;text-decoration:none;transition:filter .2s;}
+.cc-act:hover{filter:brightness(1.25);}
+.cc-act.wa{background:rgba(37,211,102,.12);color:#25D366;}
 </style>
 </head>
 <body>
@@ -66,11 +84,11 @@ body{background:var(--navy);color:var(--t1);font-family:var(--font-s);min-height
             <label class="fp-label"><i class="fas fa-id-badge" style="margin-right:4px;"></i>Admin ID</label>
             <input type="text" class="fp-input" id="fpAdminId" placeholder="e.g. SUP0001" maxlength="32" autofocus>
         </div>
-        <button class="fp-btn" id="btnSendOtp" onclick="sendOtp()">
-            <span class="fp-btn-text"><i class="fas fa-paper-plane" style="margin-right:6px;"></i>Send OTP</span>
+        <button class="fp-btn" id="btnContinue" onclick="proceed()">
+            <span class="fp-btn-text"><i class="fas fa-arrow-right" style="margin-right:6px;"></i>Continue</span>
             <span class="fp-btn-spin"></span>
         </button>
-        <div class="fp-info">Enter your Admin ID. An OTP will be sent to your registered email.</div>
+        <div class="fp-info">Enter your Super Admin ID to recover your password.</div>
     </div>
 
     <!-- STEP 2: Enter OTP -->
@@ -87,7 +105,7 @@ body{background:var(--navy);color:var(--t1);font-family:var(--font-s);min-height
             <span class="fp-btn-spin"></span>
         </button>
         <div class="fp-timer" id="fpTimer"></div>
-        <button class="fp-resend" id="btnResend" onclick="sendOtp()" disabled>Resend OTP</button>
+        <button class="fp-resend" id="btnResend" onclick="doSendOtp()" disabled>Resend OTP</button>
     </div>
 
     <!-- STEP 3: New Password -->
@@ -121,6 +139,14 @@ body{background:var(--navy);color:var(--t1);font-family:var(--font-s);min-height
         <a href="<?= base_url('superadmin/login') ?>" class="fp-btn" style="display:block;text-align:center;text-decoration:none;color:var(--navy);">
             <i class="fas fa-arrow-right-to-bracket" style="margin-right:6px;"></i>Back to Login
         </a>
+    </div>
+
+    <!-- STEP 5: Recovery contact (non-primary super admins) -->
+    <div class="fp-step" id="step5">
+        <div id="ccHost"></div>
+        <button class="fp-btn" style="background:var(--navy3);color:var(--t1);border:1px solid var(--navy4);" onclick="resetFlow()">
+            <i class="fas fa-rotate-left" style="margin-right:6px;"></i>Look up a different ID
+        </button>
     </div>
 
     <div class="fp-back" id="fpBackLink">
@@ -167,13 +193,31 @@ function postJson(url,data,cb){
         .catch(function(e){cb({status:'error',message:'Server error. Please try again.'});});
 }
 
-function sendOtp(){
+function proceed(){
     adminId = document.getElementById('fpAdminId').value.trim();
-    if(!adminId){showAlert('Please enter your Admin ID.');return;}
+    if(!adminId){showAlert('Please enter your Super Admin ID.');return;}
 
-    btnLoad('btnSendOtp',true);
+    btnLoad('btnContinue',true);
+    postJson('superadmin/login/recovery_contact',{admin_id:adminId},function(r){
+        btnLoad('btnContinue',false);
+        if(r.status!=='success'){ showAlert(r.message||'Lookup failed.'); return; }
+        if(r.mode==='otp'){ doSendOtp(); return; }   // SUP0001 → OTP self-reset
+        // Other super admins → recovery contact card.
+        if(r.found===false){
+            document.getElementById('ccHost').innerHTML =
+                '<div class="fp-alert" style="display:block;background:rgba(201,168,76,.08);border:1px solid var(--gold-ring);color:var(--gold2);">'+esc(r.message||'No recovery contact on file.')+'</div>';
+        } else {
+            renderCard(r);
+        }
+        showStep(5);
+    });
+}
+
+function doSendOtp(){
+    if(!adminId){ adminId=document.getElementById('fpAdminId').value.trim(); }
+    btnLoad('btnContinue',true);
     postJson('superadmin/login/send_otp',{admin_id:adminId},function(r){
-        btnLoad('btnSendOtp',false);
+        btnLoad('btnContinue',false);
         if(r.status==='success'){
             document.getElementById('fpEmailMasked').textContent=r.email_masked||'your email';
             showStep(2);
@@ -183,6 +227,37 @@ function sendOtp(){
         }
     });
 }
+
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+function digits(s){return String(s||'').replace(/[^0-9]/g,'');}
+function copyText(txt,btn){
+    var done=function(){var i=btn.querySelector('i');var old=i.className;i.className='fas fa-check';setTimeout(function(){i.className=old;},1200);};
+    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done).catch(done);}
+    else{var t=document.createElement('textarea');t.value=txt;document.body.appendChild(t);t.select();try{document.execCommand('copy');}catch(e){}document.body.removeChild(t);done();}
+}
+function renderCard(r){
+    var rows='';
+    if(r.name){
+        rows+='<div class="cc-row"><i class="fas fa-user lead"></i><div class="cc-meta"><div class="cc-k">Contact</div><div class="cc-v">'+esc(r.name)+'</div></div></div>';
+    }
+    if(r.number){
+        var d=digits(r.number);
+        rows+='<div class="cc-row" style="flex-direction:column;align-items:stretch;"><div style="display:flex;gap:12px;"><i class="fas fa-phone lead"></i><div class="cc-meta"><div class="cc-k">Phone</div><div class="cc-v">'+esc(r.number)+'</div></div></div><div class="cc-actions">'+
+            '<a class="cc-act" title="Call" href="tel:'+esc(r.number)+'"><i class="fas fa-phone"></i></a>'+
+            (d?'<a class="cc-act wa" title="WhatsApp" target="_blank" rel="noopener" href="https://wa.me/'+d+'"><i class="fab fa-whatsapp"></i></a>':'')+
+            '<button type="button" class="cc-act" title="Copy" onclick="copyText(\''+esc(r.number).replace(/\x27/g,"\\x27")+'\',this)"><i class="fas fa-copy"></i></button>'+
+        '</div></div>';
+    }
+    if(r.email){
+        rows+='<div class="cc-row" style="flex-direction:column;align-items:stretch;"><div style="display:flex;gap:12px;"><i class="fas fa-envelope lead"></i><div class="cc-meta"><div class="cc-k">Email</div><div class="cc-v">'+esc(r.email)+'</div></div></div><div class="cc-actions">'+
+            '<a class="cc-act" title="Email" href="mailto:'+esc(r.email)+'?subject=Password%20reset%20request"><i class="fas fa-envelope"></i></a>'+
+            '<button type="button" class="cc-act" title="Copy" onclick="copyText(\''+esc(r.email).replace(/\x27/g,"\\x27")+'\',this)"><i class="fas fa-copy"></i></button>'+
+        '</div></div>';
+    }
+    var sub=r.subtitle?'<div class="cc-sub">'+esc(r.subtitle)+'</div>':'';
+    document.getElementById('ccHost').innerHTML='<div class="cc"><div class="cc-head"><i class="fas fa-building-shield"></i><span class="cc-title">'+esc(r.title||'Recovery contact')+'</span></div>'+sub+'<div class="cc-div"></div>'+rows+'</div>';
+}
+function resetFlow(){ document.getElementById('ccHost').innerHTML=''; showStep(1); document.getElementById('fpAdminId').focus(); }
 
 function verifyOtp(){
     var otp=document.getElementById('fpOtp').value.trim();

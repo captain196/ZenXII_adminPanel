@@ -199,14 +199,14 @@ class Homework extends MY_Controller
             ];
         }
 
-        // Sort by createdAt descending (handles both timestamp and ISO string)
+        // Sort by createdAt descending. Use _normalizeTimestamp (same helper
+        // _fetch_all_homework uses) so a Firestore Timestamp-map createdAt
+        // ({_seconds}/{seconds}) is handled too — the prior inline comparator
+        // only coped with numeric/ISO-string forms and sorted maps as 0.
         usort($list, function ($a, $b) {
-            $ta = $a['createdAt'] ?? '';
-            $tb = $b['createdAt'] ?? '';
-            // Convert ISO strings to timestamps for comparison
-            if (is_string($ta) && !is_numeric($ta)) $ta = strtotime($ta) ?: 0;
-            if (is_string($tb) && !is_numeric($tb)) $tb = strtotime($tb) ?: 0;
-            return (int)$tb - (int)$ta;
+            $ta = $this->_normalizeTimestamp($a['createdAt'] ?? 0);
+            $tb = $this->_normalizeTimestamp($b['createdAt'] ?? 0);
+            return $tb <=> $ta;
         });
 
         $this->json_success(['homework' => $list]);
@@ -1186,9 +1186,29 @@ class Homework extends MY_Controller
             $this->json_error('Failed to create homework. Please try again.', 500);
         }
 
-        log_audit('Homework', 'homework_create', $class, "Created homework: {$title} for " . count($sections) . " section(s)");
+        // Partial-success surfacing: firestoreSet can return false without
+        // throwing, in which case that section is silently skipped (not added
+        // to $createdIds). Compare requested vs created so the UI can warn the
+        // operator which section(s) need a retry instead of reporting a clean
+        // success.
+        $requested = count($sections);
+        $created   = count($createdIds);
+        if ($created < $requested) {
+            log_message('error', 'Homework::create_homework — partial create: '
+                . $created . ' of ' . $requested . ' section(s) saved for title="' . $title
+                . '" (class=' . $class . ')');
+        }
+        log_audit('Homework', 'homework_create', $class, "Created homework: {$title} for {$created} of {$requested} section(s)");
 
-        $this->json_success(['created' => $createdIds, 'message' => 'Homework created successfully.']);
+        $message = ($created < $requested)
+            ? "Homework saved for {$created} of {$requested} section(s). The remaining section(s) could not be saved — please retry them."
+            : 'Homework created successfully.';
+
+        $this->json_success([
+            'created'   => $createdIds,
+            'requested' => $requested,
+            'message'   => $message,
+        ]);
     }
 
     /**
@@ -1627,6 +1647,18 @@ class Homework extends MY_Controller
         $school = $this->school_name;
         $result = [];
 
+        // S1 — scope reads to the current admin session so homework from a
+        // prior session doesn't leak into analytics/list after a rollover.
+        // Same source the writer uses for the `session` field in
+        // create_homework ($this->session_year). Blank-guard: when no
+        // current session is known, skip the filter rather than hiding
+        // everything (legacy docs may predate the session field entirely).
+        $session = $this->session_year;
+        $filters = [['schoolId', '=', $school]];
+        if (!empty($session)) {
+            $filters[] = ['session', '=', $session];
+        }
+
         // Finding #10 2026-05-14 — cursor pagination replaces prior hard-cap
         // of 500. Prior behavior silently truncated analytics for any school
         // with 501+ homework items (every mature school after a few months),
@@ -1652,7 +1684,7 @@ class Homework extends MY_Controller
             try {
                 $docs = $this->firebase->firestoreQuery(
                     'homework',
-                    [['schoolId', '=', $school]],
+                    $filters,
                     '__name__',
                     'ASC',
                     $chunkLimit,
@@ -1779,7 +1811,10 @@ class Homework extends MY_Controller
             for ($iter = 0; $iter < $maxIters; $iter++) {
                 $subDocs = $this->firebase->firestoreQuery(
                     'submissions',
-                    [['homeworkId', '=', $hwId]],
+                    [
+                        ['schoolId',   '=', $this->school_name],
+                        ['homeworkId', '=', $hwId],
+                    ],
                     '__name__',
                     'ASC',
                     $chunkLimit,
@@ -1883,8 +1918,32 @@ class Homework extends MY_Controller
         if (!isset($this->_authSubCache))    $this->_authSubCache    = [];
         if (!isset($this->_authRosterCache)) $this->_authRosterCache = [];
 
+        $cls = $hw['className'] ?? '';
+        $sec = $hw['section']   ?? '';
+        $sectionKey = ($cls !== '' && $sec !== '') ? "{$cls}/{$sec}" : '';
+
+        // Bound the expensive count() aggregations per request. The 10-emission
+        // cap at the top of this method only gates *logging* — without the
+        // guard below, every homework with totalStudents<=0 (the 100%-observed
+        // "suspicious" case) fired up to two count() queries apiece, so a
+        // dashboard with hundreds of such items issued hundreds of reads
+        // regardless of the log cap. We cap the number of *distinct*
+        // count()-issuing observations (cache misses) per request so the read
+        // amplification is bounded. Cache hits are free and never gated.
+        if (!isset($this->_divergenceObserveCount)) {
+            $this->_divergenceObserveCount = 0;
+        }
+        $needsSubQuery    = !array_key_exists($hwId, $this->_authSubCache);
+        $needsRosterQuery = ($sectionKey !== '' && !array_key_exists($sectionKey, $this->_authRosterCache));
+        if (($needsSubQuery || $needsRosterQuery) && $this->_divergenceObserveCount >= 10) {
+            return; // observation cap reached — skip the wasted reads
+        }
+        if ($needsSubQuery || $needsRosterQuery) {
+            $this->_divergenceObserveCount++;
+        }
+
         // Authoritative submission count (per hwId).
-        if (!array_key_exists($hwId, $this->_authSubCache)) {
+        if ($needsSubQuery) {
             $this->_authSubCache[$hwId] = $this->firebase->firestoreCount('submissions', [
                 ['homeworkId', '=', $hwId],
             ]);
@@ -1892,12 +1951,9 @@ class Homework extends MY_Controller
         $authSub = $this->_authSubCache[$hwId];
 
         // Authoritative roster count (per sectionKey).
-        $cls = $hw['className'] ?? '';
-        $sec = $hw['section']   ?? '';
-        $sectionKey = ($cls !== '' && $sec !== '') ? "{$cls}/{$sec}" : '';
         $authRoster = -1;
         if ($sectionKey !== '') {
-            if (!array_key_exists($sectionKey, $this->_authRosterCache)) {
+            if ($needsRosterQuery) {
                 $this->_authRosterCache[$sectionKey] = $this->firebase->firestoreCount('students', [
                     ['schoolId',   '=', $this->school_name],
                     ['sectionKey', '=', $sectionKey],

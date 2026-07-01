@@ -418,8 +418,14 @@ service cloud.firestore {
       // returns true (HomeworkScreen.kt:1033), so this rule tightening
       // reinforces the existing client discipline at the server layer
       // and only affects modified-APK / direct-API bypass attempts.
+      // 2026-07-01 (co-fix with Finding #11): also allow re-submission when
+      // the teacher explicitly bounced the work back as 'incomplete' or
+      // 'pending'. The post-condition below still forces the new status to
+      // 'submitted', so the parent can only push it forward (redo), never
+      // sideways. 'reviewed'/'graded'/'complete' remain terminal — not in
+      // this list, so the grading-finality guard (Finding #17) still holds.
       allow update: if isAuth() && isSameSchool() && !isStaff()
-        && resource.data.get('status', '') in ['', 'submitted']
+        && resource.data.get('status', '') in ['', 'submitted', 'incomplete', 'pending']
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['text', 'files', 'submittedAt', 'status'])
         && (
@@ -432,32 +438,30 @@ service cloud.firestore {
            );
 
       // Teacher update path — grading fields only; status (if changed)
-      // must be "reviewed" or "graded".
+      // must be one the Teacher UI can actually pick.
       //
-      // Finding #11 (deferred, 2026-05-14): the Teacher UI dropdown
-      // (HomeworkTeacherScreen.kt:1172) offers 5 status options:
-      // ["pending", "submitted", "reviewed", "incomplete", "complete"].
-      // Only "reviewed" and "graded" pass this rule's whitelist; the
-      // other 4 attempts return PERMISSION_DENIED, which the existing
-      // try/catch in reviewOrMark surfaces as an error toast (NOT silent
-      // — audit's "silent downgrade" claim was verified false). Same
-      // dropdown call for non-submitters writes to /teacherMarks which
-      // has no status whitelist, so identical UI action behaves
-      // differently depending on whether the student submitted.
-      // No rule-only fix delivers end-to-end value: expanding to
-      // include 'incomplete'/'pending' would re-show Parent's submit
-      // button (HomeworkViewModel.kt:485-487 isCompleted) while
-      // Finding #17 simultaneously denies parent re-submission for
-      // those statuses, creating a new UX gap. Resolution requires
-      // coordinated Teacher UI restriction OR Parent UI + rules
-      // co-expansion in a future workflow/UX phase. Tracked as P2
-      // medium (UX consistency; no data corruption; failures visible).
+      // Finding #11 RESOLVED (2026-07-01): the Teacher UI dropdown
+      // (HomeworkTeacherScreen.kt) offers 5 status options
+      // ["pending", "submitted", "reviewed", "incomplete", "complete"];
+      // reviewOrMark()'s safeStatus whitelist already constrains the
+      // written value to exactly this set (+ legacy "graded"). Previously
+      // this rule only accepted 'reviewed'/'graded', so a teacher picking
+      // complete/incomplete/pending on a student who HAD submitted got
+      // PERMISSION_DENIED (while the same pick on a non-submitter wrote to
+      // /teacherMarks, which has no whitelist — inconsistent behaviour).
+      // The whitelist is now the full UI set. The Finding #17 UX-gap
+      // concern (re-showing Parent's submit button while the parent update
+      // rule denies re-submission) is closed in the SAME deploy by adding
+      // 'incomplete'/'pending' to the parent update pre-condition below —
+      // so a teacher marking "incomplete"/"pending" now lets the parent
+      // re-submit (status back to 'submitted'), while 'complete'/'reviewed'
+      // remain terminal (isCompleted() hides the button).
       allow update: if isStaff() && isSameSchool()
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['score', 'reviewedBy', 'reviewedAt', 'remark', 'status'])
         && (
              !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status'])
-             || request.resource.data.status in ['reviewed', 'graded']
+             || request.resource.data.status in ['reviewed', 'graded', 'complete', 'incomplete', 'submitted', 'pending']
            );
 
       allow delete: if isStaff() && isSameSchool();

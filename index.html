@@ -287,6 +287,16 @@
   .hero-content .search-bar { animation: heroPartIn 1.3s cubic-bezier(.2,.7,.2,1) 14.2s both; }
   .hero-content .hero-stats { animation: heroPartIn 1.3s cubic-bezier(.2,.7,.2,1) 14.6s both; }
 
+  /* Repeat visits (see the sessionStorage guard in <head>): skip the intro by
+     fast-forwarding every hero animation past its end (longest sequence is 16s),
+     so the scene shows its settled state at once instead of replaying. */
+  html.no-intro .hero-bg-anim *,
+  html.no-intro .hero-content .trust-pill,
+  html.no-intro .hero-content .hero-title,
+  html.no-intro .hero-content .hero-sub,
+  html.no-intro .hero-content .search-bar,
+  html.no-intro .hero-content .hero-stats { animation-delay: -20s !important; }
+
   /* Floating glass nav pill */
   .hero-nav {
     display: flex; align-items: center; justify-content: space-between;
@@ -474,26 +484,87 @@
   }
   .search-bar button:hover { background: #2a211a; }
 
-  /* ---------- Global search dropdown (features · modules · blog) ---------- */
+  /* ---------- Global search dropdown (command-palette style) ---------- */
   .search-results {
     position: fixed; z-index: 1000;
+    display: flex; flex-direction: column;
     background: #fffdf9;
-    border: 1px solid rgba(20,15,12,.10);
-    border-radius: 14px;
-    box-shadow: 0 18px 50px rgba(20,15,12,.20);
-    max-height: 62vh; overflow-y: auto;
-    padding: 6px; text-align: left;
+    border: 1px solid rgba(20,15,12,.08);
+    border-radius: 16px;
+    box-shadow: 0 24px 60px -12px rgba(20,15,12,.30), 0 1px 0 0 rgba(255,255,255,.6) inset;
+    max-height: 64vh; overflow: hidden;
+    text-align: left;
+    transform-origin: top center;
+    animation: srIn .18s cubic-bezier(.2,.7,.2,1);
   }
+  @keyframes srIn { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: none; } }
   .search-results[hidden] { display: none; }
-  .sr-group-label { font-size: .66rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #a89a8a; padding: 10px 12px 4px; }
-  .sr-item { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 9px; cursor: pointer; text-decoration: none; color: inherit; }
-  .sr-item:hover, .sr-item.active { background: rgba(20,15,12,.06); }
-  .sr-main { display: flex; flex-direction: column; min-width: 0; }
-  .sr-title { font-weight: 600; color: #1c1611; font-size: .95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .sr-title mark { background: rgba(193,84,38,.18); color: inherit; border-radius: 3px; padding: 0 1px; }
-  .sr-desc { color: #8a8278; font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .sr-tag { margin-left: auto; flex-shrink: 0; font-size: .64rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #9a8c7c; background: rgba(20,15,12,.05); border-radius: 6px; padding: 3px 8px; }
-  .sr-empty { padding: 18px 14px; color: #8a8278; font-size: .9rem; text-align: center; }
+
+  .sr-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px; overscroll-behavior: contain; }
+  .sr-list::-webkit-scrollbar { width: 11px; }
+  .sr-list::-webkit-scrollbar-thumb { background: rgba(20,15,12,.16); border: 3px solid #fffdf9; border-radius: 999px; }
+  .sr-list::-webkit-scrollbar-thumb:hover { background: rgba(20,15,12,.26); }
+
+  .sr-group-label {
+    display: flex; align-items: center; gap: 10px;
+    font-size: .63rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+    color: #a89a8a; padding: 12px 10px 6px;
+  }
+  .sr-group-label::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(20,15,12,.09), transparent); }
+  .sr-group-label .sr-count { color: #c3b6a4; font-weight: 600; letter-spacing: .04em; }
+
+  .sr-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 10px; border-radius: 11px; cursor: pointer;
+    text-decoration: none; color: inherit; position: relative;
+    box-shadow: inset 0 0 0 1px transparent;
+    transition: background .12s ease, box-shadow .12s ease;
+  }
+  .sr-item:hover { background: rgba(20,15,12,.045); }
+  .sr-item.active { background: rgba(224,179,106,.16); box-shadow: inset 0 0 0 1px rgba(224,179,106,.38); }
+
+  .sr-ico {
+    flex-shrink: 0; width: 34px; height: 34px; border-radius: 9px;
+    display: grid; place-items: center;
+    background: rgba(20,15,12,.05); color: #6b6258;
+    transition: background .12s ease, color .12s ease;
+  }
+  .sr-ico svg { width: 17px; height: 17px; }
+  .sr-item:hover .sr-ico, .sr-item.active .sr-ico { background: rgba(224,179,106,.30); color: #7a5a1e; }
+
+  .sr-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .sr-title { font-weight: 600; color: #1c1611; font-size: .93rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sr-title mark { background: rgba(193,84,38,.16); color: #a3401e; font-weight: 700; border-radius: 3px; padding: 0 2px; }
+  .sr-desc { color: #8a8278; font-size: .77rem; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .sr-tag { flex-shrink: 0; font-size: .58rem; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: #9a8c7c; background: rgba(20,15,12,.05); border-radius: 999px; padding: 3px 9px; }
+  .sr-go { flex-shrink: 0; width: 18px; text-align: center; color: #b98f3f; font-size: .82rem; opacity: 0; transform: translateX(-4px); transition: opacity .12s ease, transform .12s ease; }
+  .sr-item.active .sr-go { opacity: 1; transform: none; }
+
+  .sr-empty { padding: 34px 20px; color: #8a8278; font-size: .88rem; text-align: center; }
+  .sr-empty svg { width: 26px; height: 26px; color: #cdc2b2; margin-bottom: 10px; }
+  .sr-empty strong { display: block; color: #6b6258; font-weight: 600; font-size: .95rem; margin-bottom: 3px; }
+
+  .sr-foot {
+    flex-shrink: 0;
+    display: flex; align-items: center; gap: 16px;
+    padding: 9px 14px; border-top: 1px solid rgba(20,15,12,.07);
+    background: rgba(20,15,12,.015);
+    font-size: .72rem; color: #9a8c7c;
+    border-radius: 0 0 16px 16px;
+  }
+  .sr-foot .sr-hint { display: inline-flex; align-items: center; gap: 5px; }
+  .sr-foot kbd {
+    font: inherit; font-size: .66rem; line-height: 1;
+    min-width: 15px; padding: 3px 5px; text-align: center;
+    color: #6b6258; background: #fff;
+    border: 1px solid rgba(20,15,12,.14); border-bottom-width: 2px; border-radius: 5px;
+  }
+  .sr-foot .sr-brand { margin-left: auto; color: #c3b6a4; font-weight: 700; letter-spacing: .06em; }
+  @media (max-width: 640px) {
+    .sr-foot .sr-hint-esc, .sr-foot .sr-brand { display: none; }
+    .sr-tag { display: none; }
+  }
 
   /* Hero stats row — sits below the hero search bar */
   .hero-stats {
@@ -1592,6 +1663,16 @@
   if (!window.__zxBackForward && location.hash) {
     history.replaceState(null, '', location.pathname + location.search);
   }
+  /* Play the 16s hero intro ONLY on the first load of a browser session.
+     On every later load (back-navigation, refresh, re-entry from a feature/
+     blog page) skip straight to the settled hero so it never replays.
+     Set on <html> before the hero paints, so there's no flash of the intro. */
+  try {
+    if (sessionStorage.getItem('zx_hero_intro_played')) {
+      document.documentElement.classList.add('no-intro');
+    }
+    sessionStorage.setItem('zx_hero_intro_played', '1');
+  } catch (e) {}
 </script>
 </head>
 <body>
@@ -1846,7 +1927,7 @@
 
       <form class="search-bar" id="siteSearchForm" role="search" autocomplete="off" onsubmit="return false;">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img"><title>Search</title><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        <input type="search" id="siteSearch" name="q" placeholder="Search features, modules, blog…" aria-label="Search ZenXii" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="searchResults" aria-autocomplete="list" />
+        <input type="search" id="siteSearch" name="q" placeholder="Search features, modules, FAQs, blog…" aria-label="Search ZenXii" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="searchResults" aria-autocomplete="list" />
         <button type="submit" aria-label="Search">
           <span class="btn-label">Search</span>
           <svg class="btn-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
@@ -2343,7 +2424,7 @@
           <h2>Tell us about your school.</h2>
           <p>A 30-minute demo with the team. We'll map ZenXii to your school's actual workflows before you decide anything.</p>
           <ul class="contact-list">
-            <li>✉ <a href="mailto:yugant@zenxii.com">yugant@zenxii.com</a></li>
+            <li>✉ <a href="mailto:support@zenxii.com">support@zenxii.com</a></li>
             <li>☎ <a href="tel:+918650020505">+91 8650 020505</a></li>
             <li>⌖ Hop Motors Building, Anand Nagar, Etawah, 206001</li>
           </ul>
@@ -2408,7 +2489,7 @@
     <div class="foot-bottom">
       <div>© <span id="yr"></span> ZenXii. All rights reserved.</div>
       <div class="foot-contact">
-        <a href="mailto:yugant@zenxii.com">yugant@zenxii.com</a>
+        <a href="mailto:support@zenxii.com">support@zenxii.com</a>
         <span class="sep">·</span>
         <a href="tel:+918650020505">+91 8650 020505</a>
         <span class="sep">·</span>
@@ -2528,7 +2609,7 @@
 
   // Contact form — submits via Formsubmit.co (no backend needed).
   // First-time setup: when the FIRST message is submitted, Formsubmit
-  // emails yugant@zenxii.com with an activation link. Click it once,
+  // emails support@zenxii.com with an activation link. Click it once,
   // and every future submission is auto-emailed to that inbox.
   async function submitContact(e) {
     e.preventDefault();
@@ -2551,7 +2632,7 @@
     submitBtn.disabled = true;
 
     try {
-      const resp = await fetch('https://formsubmit.co/ajax/yugant@zenxii.com', {
+      const resp = await fetch('https://formsubmit.co/ajax/support@zenxii.com', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2578,7 +2659,7 @@
       }
     } catch (err) {
       status.className = "contact-status err";
-      status.textContent = "Couldn't send right now. Please email yugant@zenxii.com directly.";
+      status.textContent = "Couldn't send right now. Please email support@zenxii.com directly.";
     } finally {
       submitBtn.disabled = false;
     }
@@ -2620,13 +2701,14 @@
     // (opacity:0 until ~14.6s). Kick off the count-up when that fade-in
     // begins, so the numbers climb exactly as the stats appear.
     var statsBox = document.querySelector('.hero-stats');
-    if (statsBox) {
+    if (statsBox && !document.documentElement.classList.contains('no-intro')) {
       statsBox.addEventListener('animationstart', function (e) {
         if (e.animationName === 'heroPartIn') run();
       });
       // Safety net in case the animation event is missed.
       setTimeout(run, 16000);
     } else {
+      // No intro this load (repeat visit) or no stats box → count up now.
       run();
     }
   })();
@@ -2642,13 +2724,20 @@
   var panel = document.getElementById('searchResults');
   if (!input || !panel) return;
 
-  // Build a unified index: Features (→feature.html), Modules (→#features), Blog (→blog-post.html)
+  // Build a unified index of PUBLIC marketing content only — no school/tenant data.
+  // Pages (→#anchor / page), Features (→feature.html), Modules (→#features), FAQs (→#faq), Blog (→blog-post.html)
   var index = [];
+  (typeof PAGES !== 'undefined' ? PAGES : []).forEach(function (p) {
+    index.push({ type:'Page', title:p.title, desc:p.desc||'', hay:(p.title+' '+(p.desc||'')+' '+(p.keywords||'')).toLowerCase(), href:p.href });
+  });
   (typeof MODULES !== 'undefined' ? MODULES : []).forEach(function (m) {
     index.push({ type:'Module', title:m.name, desc:m.desc||'', hay:(m.name+' '+(m.desc||'')+' '+(m.keywords||'')).toLowerCase(), href:'#features' });
   });
   (typeof FEATURE_INDEX !== 'undefined' ? FEATURE_INDEX : []).forEach(function (f) {
     index.push({ type:'Feature', title:f.title, desc:f.app, hay:(f.title+' '+f.app+' '+f.key).toLowerCase(), href:'feature.html?key='+f.key });
+  });
+  (typeof FAQ_INDEX !== 'undefined' ? FAQ_INDEX : []).forEach(function (f) {
+    index.push({ type:'FAQ', title:f.q, desc:'Common question', hay:(f.q+' '+(f.keywords||'')).toLowerCase(), href:'#faq' });
   });
   if (typeof POSTS !== 'undefined') {
     Object.keys(POSTS).forEach(function (id) {
@@ -2657,7 +2746,7 @@
     });
   }
 
-  var GROUP_ORDER = ['Feature','Module','Blog'];
+  var GROUP_ORDER = ['Feature','Module','FAQ','Blog','Page'];
   var results = [], active = -1;
 
   function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
@@ -2667,22 +2756,47 @@
   function close(){ panel.hidden=true; input.setAttribute('aria-expanded','false'); active=-1; }
   function itemEls(){ return Array.prototype.slice.call(panel.querySelectorAll('.sr-item')); }
 
+  // Per-type icons (stroke, inherit currentColor from .sr-ico).
+  var SVG='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">';
+  var ICONS={
+    Feature: SVG+'<rect x="3" y="3" width="7" height="7" rx="1.6"/><rect x="14" y="3" width="7" height="7" rx="1.6"/><rect x="3" y="14" width="7" height="7" rx="1.6"/><rect x="14" y="14" width="7" height="7" rx="1.6"/></svg>',
+    Module:  SVG+'<path d="M21 8.2 12 3 3 8.2l9 5.2 9-5.2Z"/><path d="M3 8.2v7.6l9 5.2 9-5.2V8.2"/><path d="M12 13.4v7.8"/></svg>',
+    FAQ:     SVG+'<circle cx="12" cy="12" r="9"/><path d="M9.3 9.4a2.8 2.8 0 0 1 5.4 1c0 1.9-2.7 2.2-2.7 3.9"/><path d="M12 17.4h.01"/></svg>',
+    Blog:    SVG+'<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6"/><path d="M8.5 13.5h7"/><path d="M8.5 17h5"/></svg>',
+    Page:    SVG+'<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10.5" y1="3" x2="8.5" y2="21"/><line x1="15.5" y1="3" x2="13.5" y2="21"/></svg>'
+  };
+  function icon(t){ return ICONS[t] || ICONS.Page; }
+
   function render(q){
-    if(!results.length){ panel.innerHTML='<div class="sr-empty">No matches for &ldquo;'+esc(q)+'&rdquo;</div>'; open(); return; }
-    var html='', idx=0;
+    if(!results.length){
+      panel.innerHTML='<div class="sr-empty">'
+        +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>'
+        +'<strong>No results for &ldquo;'+esc(q)+'&rdquo;</strong>'
+        +'Try a feature, module, or FAQ.'
+        +'</div>';
+      open(); return;
+    }
+    var list='', idx=0;
     GROUP_ORDER.forEach(function(g){
       var grp=results.filter(function(r){ return r.type===g; });
       if(!grp.length) return;
-      html+='<div class="sr-group-label">'+g+'s</div>';
+      list+='<div class="sr-group-label">'+g+'s<span class="sr-count">'+grp.length+'</span></div>';
       grp.forEach(function(r){
-        html+='<a class="sr-item'+(idx===0?' active':'')+'" role="option" href="'+r.href+'">'
+        list+='<a class="sr-item'+(idx===0?' active':'')+'" role="option" href="'+r.href+'">'
+            +'<span class="sr-ico" aria-hidden="true">'+icon(r.type)+'</span>'
             +'<span class="sr-main"><span class="sr-title">'+hl(r.title,q)+'</span>'
             +(r.desc?'<span class="sr-desc">'+esc(r.desc)+'</span>':'')+'</span>'
-            +'<span class="sr-tag">'+r.type+'</span></a>';
+            +'<span class="sr-tag">'+esc(r.type)+'</span>'
+            +'<span class="sr-go" aria-hidden="true">&crarr;</span></a>';
         idx++;
       });
     });
-    active=0; panel.innerHTML=html; open();
+    var foot='<div class="sr-foot">'
+      +'<span class="sr-hint"><kbd>&uarr;</kbd><kbd>&darr;</kbd> navigate</span>'
+      +'<span class="sr-hint"><kbd>&crarr;</kbd> open</span>'
+      +'<span class="sr-hint sr-hint-esc"><kbd>esc</kbd> close</span>'
+      +'<span class="sr-brand">ZenXii</span></div>';
+    active=0; panel.innerHTML='<div class="sr-list">'+list+'</div>'+foot; open();
   }
 
   function doSearch(){

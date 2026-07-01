@@ -1469,6 +1469,16 @@ class B2_registry_service
             'logoUrl'          => (string) ($args['logoUrl']          ?? ''),
             'domainIdentifier' => (string) ($args['domainIdentifier'] ?? ''),
             'primarySsaId'     => $primarySsaId,
+            // Denormalised SSA contact block for the password-recovery flow.
+            // Purpose-named so the forgot-password feature can read the school's
+            // recovery contact directly off schools/{id} without a second
+            // schoolSsa lookup. Kept in sync with the schoolSsa/{ssaId} doc
+            // below (same name/email/number source args).
+            'forget_password_details' => [
+                'name'   => (string) ($args['ssaName']  ?? ''),
+                'email'  => (string) ($args['ssaEmail'] ?? ''),
+                'number' => (string) ($args['ssaPhone'] ?? ''),
+            ],
             'adminDisabled'    => ['value' => false, 'reason' => '', 'actor' => $createdBy, 'updatedAt' => $nowIso],
             'statsCache'       => ['totalStudents' => 0, 'totalStaff' => 0, 'lastUpdated' => $nowIso],
             'createdAt'        => $nowIso,

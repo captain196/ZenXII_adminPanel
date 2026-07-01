@@ -214,6 +214,59 @@ class Superadmin_login extends CI_Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // POST  /superadmin/login/recovery_contact
+    //   Decides how a super admin recovers their password:
+    //     • SUP0001 (primary owner) → OTP self-reset (no one above to contact).
+    //     • Every other super admin → the recovery contact maintained by
+    //       SUP0001 (platformSettings/superAdminRecovery); no OTP.
+    // ─────────────────────────────────────────────────────────────────────────
+    public function recovery_contact()
+    {
+        if ($this->input->method() !== 'post') { redirect('superadmin/login'); return; }
+
+        $adminId = strtoupper(trim((string) $this->input->post('admin_id', TRUE)));
+        if ($adminId === '') {
+            $this->_json(['status' => 'error', 'message' => 'Please enter your Super Admin ID.']);
+            return;
+        }
+        if (!preg_match('/^SUP\d+$/', $adminId)) {
+            $this->_json(['status' => 'error', 'message' => 'Enter a valid Super Admin ID (e.g. SUP0001).']);
+            return;
+        }
+
+        // The account must exist.
+        $doc = $this->firebase->firestoreGet('superAdmins', $adminId);
+        if (empty($doc) || !is_array($doc)) {
+            $this->_json(['status' => 'error', 'message' => 'No super admin found for "' . $adminId . '".']);
+            return;
+        }
+
+        // Primary owner → OTP self-reset.
+        if ($adminId === 'SUP0001') {
+            $this->_json(['status' => 'success', 'mode' => 'otp']);
+            return;
+        }
+
+        // Other super admins → contact card maintained by SUP0001.
+        $block  = (array) ($this->firebase->firestoreGet('platformSettings', 'superAdminRecovery') ?? []);
+        $name   = trim((string) ($block['name']   ?? ''));
+        $email  = trim((string) ($block['email']  ?? ''));
+        $number = trim((string) ($block['number'] ?? ''));
+
+        if ($name === '' && $email === '' && $number === '') {
+            $this->_json(['status' => 'success', 'mode' => 'contact', 'found' => false,
+                'message' => 'The recovery contact has not been set up yet. Please reach the primary super admin (SUP0001).']);
+            return;
+        }
+        $this->_json([
+            'status'   => 'success', 'mode' => 'contact', 'found' => true,
+            'title'    => 'ZenXii Super Admin',
+            'subtitle' => 'Contact the primary super admin to reset your password',
+            'name'     => $name, 'number' => $number, 'email' => $email,
+        ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // POST  /superadmin/login/send_otp
     // ─────────────────────────────────────────────────────────────────────────
     public function send_otp()
@@ -282,12 +335,38 @@ class Superadmin_login extends CI_Controller
             return;
         }
 
+        // Only super admins use this OTP reset (the SA login is SUP-only).
+        $adminId = strtoupper($adminId);
+        if (!preg_match('/^SUP\d+$/', $adminId)) {
+            $this->_json(['status' => 'error', 'message' => 'Invalid account.']);
+            return;
+        }
+
+        // Step 1: validate the OTP reset token (Auth API / Mongo holds the token).
         $this->load->library('auth_client');
         $result = $this->auth_client->reset_password_otp($adminId, $resetToken, $newPassword);
+        if (empty($result['success'])) {
+            $this->_json(['status' => 'error', 'message' => $result['message'] ?? 'Password reset failed.']);
+            return;
+        }
+
+        // Step 2: write the new password to the ACTUAL SA credential authority —
+        // Firebase Auth. The Auth API/Mongo/RTDB write above is legacy bookkeeping
+        // that the SA login does NOT read, so without this the old password keeps
+        // working and the new one never takes effect. (uid == admin id.)
+        $updated = $this->firebase->updateFirebaseUser($adminId, ['password' => $newPassword]);
+        if ($updated === null) {
+            $this->_json(['status' => 'error',
+                'message' => 'Could not update your login credential. Please try again or contact support.']);
+            return;
+        }
+
+        // End every existing session created with the old password.
+        try { $this->firebase->revokeRefreshTokens($adminId); } catch (\Throwable $e) {}
 
         $this->_json([
-            'status'  => !empty($result['success']) ? 'success' : 'error',
-            'message' => $result['message'] ?? 'Password reset failed.',
+            'status'  => 'success',
+            'message' => 'Password reset successfully. You can now log in with your new password.',
         ]);
     }
 

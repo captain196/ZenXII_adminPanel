@@ -64,11 +64,20 @@ class Ssa_reset
         }
 
         // 2. must_change_password claim — forces force-change screen on next login.
+        // setFirebaseClaims REPLACES the whole claim set, so we must re-emit
+        // BOTH key styles: snake_case (school_id) for Firestore Security Rules
+        // AND camelCase (schoolId) for admin-panel login (Admin_login reads
+        // camelCase). Omitting camelCase here would lock the SSA out of the
+        // panel after a password reset; omitting snake_case breaks app reads.
         $this->firebase->setFirebaseClaims($ssa_id, [
             'role'                 => 'School Super Admin',
+            'roleLabel'            => 'School Super Admin',
             'school_id'            => $school_id,
             'school_code'          => $school_code,
             'parent_db_key'        => $school_code,
+            'schoolId'             => $school_id,
+            'schoolCode'           => $school_code,
+            'parentDbKey'          => $school_code,
             'must_change_password' => true,
             'password_reset_at'    => time(),
             'password_reset_by'    => $actor_id,

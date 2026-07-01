@@ -162,6 +162,16 @@
                 <div class="row">
                     <div class="col-md-6">
                         <div class="form-group">
+                            <label>Admin Phone <span style="color:var(--rose);">*</span></label>
+                            <input type="tel" class="form-control" name="admin_phone"
+                                   placeholder="e.g. 9876543210" required>
+                            <small style="color:var(--t3);font-size:11px;">Recovery contact for the password-reset (forgot password) flow.</small>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="form-group">
                             <label>Admin Password <span style="color:var(--rose);">*</span></label>
                             <div style="position:relative;">
                                 <input type="password" class="form-control" id="adminPass"
@@ -554,9 +564,12 @@ $(function(){
     $('#toStep3Btn').on('click', function(){
         var aname   = $('input[name="admin_name"]').val().trim();
         var aemail  = $('input[name="admin_email"]').val().trim();
+        var aphone  = $('input[name="admin_phone"]').val().trim();
         var pass    = $('#adminPass').val();
         if (!aname)              { saToast('Admin name is required.','warning'); return; }
         if (!aemail)             { saToast('Admin email is required.','warning'); return; }
+        if (!aphone)             { saToast('Admin phone is required.','warning'); return; }
+        if (!/^[0-9+\-()\s]{7,20}$/.test(aphone)) { saToast('Enter a valid admin phone number.','warning'); return; }
         if (pass.length < 8)     { saToast('Password must be at least 8 characters.','warning'); return; }
         goToStep(3);
     });
@@ -605,6 +618,7 @@ $(function(){
             + reviewRow('SSA ID', 'Auto-generated', true)
             + reviewRow('Admin Name',  f.find('[name=admin_name]').val())
             + reviewRow('Admin Email', f.find('[name=admin_email]').val())
+            + reviewRow('Admin Phone', f.find('[name=admin_phone]').val())
             + reviewRow('Password',    '••••••••')
         );
 

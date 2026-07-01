@@ -1,8 +1,11 @@
 // search-data.js — static index for the landing-page global search.
 //   • MODULES       : the 21 core platform modules (School ERP spec).
 //   • FEATURE_INDEX : mirror of the FEATURES object in feature.html — keep in sync.
+//   • FAQ_INDEX     : the FAQ questions in index.html (#faq) — keep in sync with that section.
+//   • PAGES         : the top-level sections/pages of the site (nav anchors + standalone pages).
 //   • Blog results come from POSTS in blog-data.js (loaded separately on the landing page).
 // Module results link to the #features section; features → feature.html?key=…; blog → blog-post.html?id=…
+// PRIVACY: this index is 100% public marketing content — no school, student, staff or tenant data. Never add any.
 
 const MODULES = [
   { name: "Admissions & Enquiry CRM", desc: "Lead capture to enrollment.", keywords: "leads enquiry walk-in website social referral funnel online application document verification interview merit list offer letter batch enrollment migration crm" },
@@ -44,4 +47,25 @@ const FEATURE_INDEX = [
   { key: "p-day",               app: "ZenXii Parent",      title: "My child's school day" },
   { key: "p-family",            app: "ZenXii Parent",      title: "Family & engagement" },
   { key: "p-money",             app: "ZenXii Parent",      title: "Money & operations" }
+];
+
+// FAQ questions shown in index.html's #faq section. Search jumps the user to #faq.
+// Keep the questions/keywords in sync with that section.
+const FAQ_INDEX = [
+  { q: "How do parents reset their password?", keywords: "parent password reset forgot recover login office principal super admin no otp self-service recovery" },
+  { q: "What happens if a parent has multiple children in the school?", keywords: "parent multiple children siblings one login single account discover automatic family" },
+  { q: "Can teachers see or edit each other's classes?", keywords: "teacher see edit other classes data scope subject assignment permission access privacy isolation" }
+];
+
+// Top-level sections / pages of the site. Search takes the user straight to the anchor or page.
+const PAGES = [
+  { title: "Products",       desc: "Admin panel, Teacher app, Parent app",      href: "#products", keywords: "products apps admin panel teacher app parent app three platform download" },
+  { title: "Features",       desc: "Everything ZenXii does",                    href: "#features", keywords: "features modules capabilities what does functionality overview" },
+  { title: "About",          desc: "About ZenXii",                              href: "#about",    keywords: "about company story mission who we are team founder" },
+  { title: "Benefits",       desc: "Why schools choose ZenXii",                 href: "#benefits", keywords: "benefits why value outcomes results advantages roi save time" },
+  { title: "How it works",   desc: "Onboarding & setup",                        href: "#how",      keywords: "how it works onboarding setup process steps getting started implementation rollout migrate" },
+  { title: "Who it's for",   desc: "Schools, principals, teachers, parents",    href: "#who",      keywords: "who for schools principals teachers parents administrators audience use cases" },
+  { title: "FAQ",            desc: "Common questions",                          href: "#faq",      keywords: "faq questions answers help support common doubts" },
+  { title: "Contact / Book a demo", desc: "Talk to the team",                   href: "#contact",  keywords: "contact demo sales email phone address get in touch book schedule call talk pricing quote" },
+  { title: "Blog",           desc: "Articles & updates",                        href: "blog.html", keywords: "blog articles news updates writing posts stories insights" }
 ];

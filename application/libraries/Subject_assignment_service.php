@@ -234,7 +234,10 @@ class Subject_assignment_service
                 ]);
                 foreach ($allDocs as $aDoc) {
                     $d = $aDoc['data'] ?? $aDoc;
-                    $aId = $d['id'] ?? '';
+                    // query() returns [{id, data:{...}}] — the doc id is at the TOP
+                    // level, not inside ['data']. Reading ['data']['id'] silently
+                    // no-op'd, leaving stale class-wide rows behind.
+                    $aId = $aDoc['id'] ?? ($d['id'] ?? '');
                     if ($aId !== '') {
                         try { $this->fs->remove(self::COLLECTION, $aId); }
                         catch (\Exception $e) {}
@@ -329,7 +332,10 @@ class Subject_assignment_service
 
             foreach ($existing as $assignment) {
                 $d = $assignment['data'] ?? $assignment;
-                $docId = $d['id'] ?? '';
+                // query() returns the doc id at the TOP level ($assignment['id']),
+                // not nested inside ['data'] — reading ['data']['id'] silently
+                // no-op'd, so "delete before re-save" never actually deleted.
+                $docId = $assignment['id'] ?? ($d['id'] ?? '');
                 if ($docId !== '') {
                     $this->fs->remove(self::COLLECTION, $docId);
                 }

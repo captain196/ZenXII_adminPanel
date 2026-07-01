@@ -145,6 +145,7 @@ class Superadmin_schools extends MY_Superadmin_Controller
         // Step 2 — Admin Account (School Code + SSA ID are auto-generated)
         $admin_name  = trim($this->input->post('admin_name',     TRUE) ?? '');
         $admin_email = strtolower(trim($this->input->post('admin_email',    TRUE) ?? ''));
+        $admin_phone = trim($this->input->post('admin_phone',    TRUE) ?? ''); // SSA recovery-contact number (forget_password_details)
         $admin_pass  = (string)($this->input->post('admin_password', FALSE) ?? ''); // raw — no XSS filter on passwords
 
         // Step 3 — Subscription & Session
@@ -154,9 +155,12 @@ class Superadmin_schools extends MY_Superadmin_Controller
 
         // ── Validation ────────────────────────────────────────────────────────
         if (empty($name) || empty($email) ||
-            empty($admin_name) || empty($admin_email) || empty($admin_pass) ||
+            empty($admin_name) || empty($admin_email) || empty($admin_phone) || empty($admin_pass) ||
             empty($plan_id) || empty($expiry) || empty($session_yr)) {
             $this->json_error('All required fields must be filled.'); return;
+        }
+        if (!preg_match('/^[0-9+\-()\s]{7,20}$/', $admin_phone)) {
+            $this->json_error('Invalid admin phone number.'); return;
         }
         if (!preg_match("/^[A-Za-z0-9 '.,()&_\-]+$/u", $name)) {
             $this->json_error('School name contains invalid characters.'); return;
@@ -292,6 +296,12 @@ class Superadmin_schools extends MY_Superadmin_Controller
                     'role' => 'school_super_admin', 'roleLabel' => 'School Super Admin',
                     'schoolId' => $school_id, 'schoolCode' => $school_code,
                     'parentDbKey' => $school_code,
+                    // Dual-emit snake_case: admin-panel login reads camelCase
+                    // (schoolId/schoolCode — see comment above), but Firestore
+                    // Security Rules read school_id. Both are required so the SSA
+                    // can sign into the panel AND read in the mobile apps.
+                    'school_id' => $school_id, 'school_code' => $school_code,
+                    'parent_db_key' => $school_code,
                 ]);
                 if (!$claimOk && $attempt < 2) usleep(200000);
             }
@@ -328,6 +338,7 @@ class Superadmin_schools extends MY_Superadmin_Controller
                 'primarySsaId'      => $admin_id,
                 'ssaName'           => $admin_name,
                 'ssaEmail'          => $admin_email,
+                'ssaPhone'          => $admin_phone,
                 'createdBy'         => (string) $this->sa_id,
                 'sessionYear'       => $session_yr,
             ]);
