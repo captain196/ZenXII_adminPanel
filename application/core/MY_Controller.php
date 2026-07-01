@@ -147,13 +147,27 @@ class MY_Controller extends CI_Controller
         $route_key  = $controller . '/' . $method;
         $is_public  = in_array($route_key, $this->public_routes, true);
 
+        // Teacher app (Bearer) dual-auth: the Teacher app consumes these attendance
+        // endpoints with a Firebase Bearer token (no CI session). For ONLY these
+        // routes, resolve the SAME runtime context from the token HERE — before the
+        // session auth guard + RBAC load below (both need school_id) — reusing the
+        // shared Api_auth verification. Session requests are unaffected: the bridge
+        // no-ops when a session role is already present.
+        $is_bearer_route = in_array($route_key, [
+            'attendance/save', 'attendance/lock_get',
+            'attendance/correction_submit', 'attendance/correction_list',
+        ], true);
+        if ($is_bearer_route) {
+            $this->_bearer_auth_bridge();
+        }
+
         // Read-only dashboard AJAX fan-out: the dashboard fires 4-5 of these in
         // parallel on load. They must NOT each re-run the throttled push/sub
         // Firestore checks below — those already ran on the full-page load, and
         // running them N times across concurrent requests is pure double-work
         // that serializes/duplicates on the session lock. Cheap session-based
         // expiry enforcement still runs for these routes.
-        $skip_periodic_checks = in_array($route_key, [
+        $skip_periodic_checks = $is_bearer_route || in_array($route_key, [
             'admin/get_dashboard_data',
             'admin/get_dashboard_charts',
             'admin/get_dashboard_activity',
@@ -162,6 +176,8 @@ class MY_Controller extends CI_Controller
         ], true);
 
         // ── [FIX-1] Authentication guard ─────────────────────────────────
+        // (Bearer routes have already populated admin_id/school_id above via the
+        //  token bridge, so a valid token satisfies this guard just like a session.)
         if (! $is_public) {
             if (! $this->admin_id || ! $this->school_id) {
                 if ($this->input->is_ajax_request()) {
@@ -736,6 +752,88 @@ class MY_Controller extends CI_Controller
      * @param array $allowed  e.g. ['Super Admin', 'Admin']
      * @param string $action  Human-readable action name for log/message
      */
+    /**
+     * Dual-auth bridge. The Admin Panel authenticates via the CI session
+     * (populated in the constructor). Bearer-token clients (Teacher app) carry
+     * NO session — so when an `Authorization: Bearer` header is present and no
+     * session role is set, this resolves the SAME runtime context from the
+     * Firebase ID token using the shared Api_auth library — the identical
+     * verification already proven in Staff_attendance (no second auth impl, no
+     * duplicated token logic). The session path is left completely untouched;
+     * _require_role() / _teacher_can_access() run unchanged afterward.
+     */
+    protected function _bearer_auth_bridge(): void
+    {
+        // Admin Panel (session) already authenticated → do nothing.
+        if (!empty($this->admin_role)) return;
+
+        // Detect a Bearer token (mirrors Api_auth's own header extraction —
+        // same $_SERVER chain + getallheaders fallback, so it sees the token
+        // wherever Api_auth would).
+        $hdr = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
+        if ($hdr === '' && function_exists('getallheaders')) {
+            $h = getallheaders();
+            $hdr = $h['Authorization'] ?? $h['authorization'] ?? '';
+        }
+        if (stripos((string) $hdr, 'Bearer ') !== 0) return;  // no token → leave for session/deny
+
+        // Reuse the SAME token verification proven in Staff_attendance.
+        $this->load->library('api_auth');
+        $claims = $this->api_auth->require_auth();   // valid → claims; invalid/expired → 401 (aborts)
+
+        // Populate identical runtime context. admin_id = RAW uid (the teacherId),
+        // because _teacher_can_access()/_get_teacher_assignments() key on it.
+        $this->admin_id      = (string) ($claims['uid'] ?? '');
+        $this->admin_role    = (string) ($claims['role'] ?? '');
+        $this->admin_name    = (string) ($claims['name'] ?? $this->admin_id);
+        $this->school_id     = (string) ($claims['school_id'] ?? '');
+        $this->school_code   = (string) ($claims['school_code'] ?? '');
+        $this->school_name   = $this->school_id;                     // canonical: name == id
+        $this->parent_db_key = $this->school_code ?: $this->school_id;
+
+        // Active session — schools/{id}.currentSession is the sole authority
+        // (same source Staff_attendance uses). Read the doc directly.
+        $this->session_year = '';
+        if ($this->school_id !== '') {
+            try {
+                $doc = $this->firebase->firestoreGet('schools', $this->school_id);
+                $this->session_year = (is_array($doc) && !empty($doc['currentSession']))
+                    ? (string) $doc['currentSession'] : '';
+            } catch (\Throwable $e) {
+                log_message('error', 'Bearer bridge: session resolve failed: ' . $e->getMessage());
+            }
+        }
+
+        if ($this->school_id === '' || $this->session_year === '') {
+            $this->json_error('Unable to resolve school/session from token.', 409);
+        }
+
+        // Re-initialise school-scoped services with the token-derived context —
+        // exactly as the constructor does on the session path.
+        $this->fs->init($this->school_id, $this->session_year, $this->school_code);
+        if (isset($this->roster))    $this->roster->init($this->fs);
+        if (isset($this->dw))        $this->dw->init($this->firebase, $this->school_id, $this->session_year, $this->school_code, $this->parent_db_key);
+        if (isset($this->data))      $this->data->init($this->firebase, $this->fs, $this->school_id, $this->session_year, $this->school_code, $this->parent_db_key);
+        if (isset($this->numbering)) $this->numbering->init($this->fs, $this->school_id, $this->session_year);
+
+        // Active-staff gate (parity with Staff_attendance ISSUE-1): a disabled or
+        // removed staff member cannot use these endpoints even with a still-valid
+        // token. Firestore-only; fail-closed. Mirrors the session path, where a
+        // disabled admin's account status is re-checked and forces logout.
+        try {
+            $staffDoc = $this->fs->get('staff', "{$this->school_id}_{$this->admin_id}");
+        } catch (\Throwable $e) {
+            $this->json_error('Could not verify staff status. Please retry.', 503);
+            return;
+        }
+        $sStatus = is_array($staffDoc)
+            ? strtolower((string) ($staffDoc['status'] ?? $staffDoc['Status'] ?? '')) : '';
+        if (!is_array($staffDoc) || empty($staffDoc) || $sStatus !== 'active') {
+            $this->json_error('Your staff account is not active. Please contact the administrator.', 403);
+            return;
+        }
+    }
+
     protected function _require_role(array $allowed, string $action = ''): void
     {
         $role = $this->admin_role ?? '';
@@ -1071,16 +1169,18 @@ class MY_Controller extends CI_Controller
             $section   = (string) ($a['section']   ?? '');
             if ($className === '' || $section === '') continue;
 
-            $csKey = "{$className}|{$section}";
+            // Normalized key (see _cs_norm) so a stored "Class 8th|Section A"
+            // matches queries regardless of class/section format drift.
+            $csKey = $this->_cs_norm($className, $section);
             $map[$csKey] = true;
 
             $subjectName = (string) ($a['subjectName'] ?? '');
             $subjectCode = (string) ($a['subjectCode'] ?? '');
             if ($subjectName !== '') {
-                $map["{$csKey}|{$subjectName}"] = true;
+                $map[$csKey . '|' . strtolower(trim($subjectName))] = true;
             }
             if ($subjectCode !== '' && $subjectCode !== $subjectName) {
-                $map["{$csKey}|{$subjectCode}"] = true;
+                $map[$csKey . '|' . strtolower(trim($subjectCode))] = true;
             }
         }
 
@@ -1097,15 +1197,33 @@ class MY_Controller extends CI_Controller
         if (($this->admin_role ?? '') !== 'Teacher') return true;
 
         $assignments = $this->_get_teacher_assignments();
-        $csKey = "{$classKey}|{$sectionKey}";
+        // Normalize so class/section format drift never causes a false rejection:
+        // "Class 8th" vs "8th", "A" vs "Section A" vs an accidental double
+        // "Section Section A" (Teacher app sends the stored "Section A", and the
+        // caller convention adds another "Section ") all collapse to one key.
+        $csKey = $this->_cs_norm($classKey, $sectionKey);
 
         // Must at least be assigned to this class+section
         if (!isset($assignments[$csKey])) return false;
 
         // If a subject check is requested, verify that too
-        if ($subject !== '' && !isset($assignments["{$csKey}|{$subject}"])) return false;
+        if ($subject !== '' && !isset($assignments[$csKey . '|' . strtolower(trim($subject))])) return false;
 
         return true;
+    }
+
+    /**
+     * Canonical class+section key for teacher-assignment matching. Strips any
+     * leading "Class "/"Section " prefixes (including accidental doubles like
+     * "Section Section A"), then trims + lowercases, so all equivalent labels
+     * collapse to a single key. Distinct classes stay distinct (the remainder
+     * uniquely identifies class/section), so this never widens access.
+     */
+    protected function _cs_norm(string $class, string $section): string
+    {
+        $c = preg_replace('/^(?:class\s+)+/i', '', trim($class));
+        $s = preg_replace('/^(?:section\s+)+/i', '', trim($section));
+        return strtolower(trim((string) $c)) . '|' . strtolower(trim((string) $s));
     }
 
     /**
