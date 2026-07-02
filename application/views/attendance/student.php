@@ -1,6 +1,16 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
 
+<!-- Attendance Design System (shared, cacheable) — see assets/css/attendance_design_system.css -->
+<link rel="stylesheet" href="<?= base_url('assets/css/attendance_design_system.css') ?>?v=2.1.0">
+
 <style>
+/* ============================================================================
+ * student.php — page-local: ONLY the register-specific attendance matrix.
+ * All chrome (header, filter, buttons, metrics, legend, toast, modal, stage,
+ * loading, empty) is consumed from the shared ADS above. The --sa-* tokens are
+ * the register's status palette + theme aliases used by the matrix cells /
+ * %-bars / avatars and by inline var(--sa-*) references in the markup + JS.
+ * ========================================================================== */
 :root {
     --sa-primary: var(--gold, #0f766e);
     --sa-primary-dim: var(--gold-dim, rgba(15,118,110,.10));
@@ -43,132 +53,10 @@
     --sa-hol-bg: rgba(139,92,246,.08);
 }
 
-/* ── Page Header ── */
-.sa-page-head {
-    display:flex; align-items:center; justify-content:space-between;
-    margin-bottom:20px; flex-wrap:wrap; gap:10px;
-}
-.sa-page-title {
-    font-family:var(--sa-font); font-weight:800; font-size:20px;
-    color:var(--sa-t1); margin:0; display:flex; align-items:center; gap:10px;
-}
-.sa-page-title i { color:var(--sa-primary); font-size:22px; }
-.sa-page-sub {
-    font-family:var(--sa-font); font-size:13px; color:var(--sa-t3); margin:2px 0 0;
-}
-.sa-badge-month {
-    display:inline-flex; align-items:center; gap:5px;
-    font-family:var(--sa-font); font-size:12px; font-weight:600;
-    background:var(--sa-primary-dim); color:var(--sa-primary);
-    padding:4px 12px; border-radius:20px; display:none;
-}
+/* Chrome (header, filter, buttons, metrics, toolbar, legend) now lives in the
+   shared Attendance Design System — see the <link> above. */
 
-/* ── Filter Card ── */
-.sa-filter-card {
-    display:flex; flex-wrap:wrap; gap:14px; align-items:flex-end;
-    padding:20px 22px; border-radius:var(--sa-r);
-    background:var(--sa-card); border:1px solid var(--sa-border);
-    box-shadow:var(--sa-shadow); margin-bottom:18px;
-}
-.sa-fg { display:flex; flex-direction:column; gap:5px; }
-.sa-fg label {
-    font-family:var(--sa-font); font-size:10.5px; font-weight:700;
-    text-transform:uppercase; letter-spacing:.8px; color:var(--sa-t3);
-}
-.sa-fg select {
-    font-family:var(--sa-font); font-size:13px; height:40px;
-    border-radius:8px; padding:0 14px; border:1px solid var(--sa-border);
-    background:var(--sa-bg); color:var(--sa-t1); cursor:pointer;
-    transition:var(--sa-ease); min-width:160px; appearance:none;
-    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-    background-repeat:no-repeat; background-position:right 12px center;
-    padding-right:32px;
-}
-.sa-fg select:focus {
-    outline:none; border-color:var(--sa-primary);
-    box-shadow:0 0 0 3px var(--sa-primary-ring);
-}
-.sa-btn {
-    font-family:var(--sa-font); font-size:13px; font-weight:700;
-    border:none; border-radius:8px; padding:0 22px; height:40px;
-    cursor:pointer; transition:var(--sa-ease); display:inline-flex;
-    align-items:center; gap:7px; letter-spacing:.2px;
-}
-.sa-btn-primary {
-    background:var(--sa-primary); color:#fff;
-    box-shadow:0 2px 8px rgba(15,118,110,.25);
-}
-.sa-btn-primary:hover { opacity:.9; transform:translateY(-1px); box-shadow:0 4px 12px rgba(15,118,110,.3); }
-.sa-btn-primary:active { transform:translateY(0); }
-.sa-btn-primary:disabled { opacity:.4; cursor:not-allowed; transform:none; box-shadow:none; }
-.sa-btn-sm { height:34px; padding:0 14px; font-size:12px; border-radius:7px; }
-.sa-btn-outline {
-    background:transparent; border:1.5px solid var(--sa-border); color:var(--sa-t2);
-}
-.sa-btn-outline:hover { background:var(--sa-bg3); border-color:var(--sa-primary); color:var(--sa-primary); }
-.sa-btn-ghost {
-    background:transparent; border:none; color:var(--sa-t3);
-    padding:0 10px;
-}
-.sa-btn-ghost:hover { color:var(--sa-primary); }
-
-/* ── Stats Strip ── */
-.sa-stats-strip {
-    display:none; gap:10px; margin-bottom:16px;
-    grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));
-}
-.sa-stats-strip.visible { display:grid; }
-.sa-stat-card {
-    padding:14px 16px; border-radius:var(--sa-r);
-    background:var(--sa-card); border:1px solid var(--sa-border);
-    box-shadow:var(--sa-shadow); text-align:center;
-    transition:var(--sa-ease);
-}
-.sa-stat-card:hover { transform:translateY(-2px); box-shadow:0 4px 12px rgba(0,0,0,.08); }
-.sa-stat-num {
-    font-family:var(--sa-mono); font-size:24px; font-weight:800;
-    line-height:1.1;
-}
-.sa-stat-label {
-    font-family:var(--sa-font); font-size:10.5px; font-weight:600;
-    text-transform:uppercase; letter-spacing:.6px; color:var(--sa-t3);
-    margin-top:4px;
-}
-
-/* ── Toolbar ── */
-.sa-toolbar {
-    display:none; flex-wrap:wrap; gap:10px; align-items:center;
-    padding:12px 18px; border-radius:var(--sa-r);
-    background:var(--sa-card); border:1px solid var(--sa-border);
-    box-shadow:var(--sa-shadow); margin-bottom:16px;
-}
-.sa-toolbar.visible { display:flex; }
-.sa-toolbar-group { display:flex; gap:8px; align-items:center; }
-.sa-toolbar-sep { width:1px; height:26px; background:var(--sa-border); margin:0 4px; }
-.sa-day-input {
-    width:52px; height:34px; text-align:center; font-family:var(--sa-mono);
-    font-size:13px; font-weight:600; border:1.5px solid var(--sa-border); border-radius:7px;
-    background:var(--sa-bg); color:var(--sa-t1); transition:var(--sa-ease);
-}
-.sa-day-input:focus { outline:none; border-color:var(--sa-primary); box-shadow:0 0 0 3px var(--sa-primary-ring); }
-
-/* ── Legend ── */
-.sa-legend {
-    display:flex; flex-wrap:wrap; gap:14px; align-items:center;
-    margin-left:auto; font-family:var(--sa-font); font-size:11.5px; color:var(--sa-t2);
-}
-.sa-legend-chip {
-    display:inline-flex; align-items:center; gap:5px;
-    padding:3px 10px 3px 4px; border-radius:6px;
-    background:var(--sa-bg); border:1px solid var(--sa-border);
-}
-.sa-legend-pip {
-    width:22px; height:22px; border-radius:5px; display:inline-flex;
-    align-items:center; justify-content:center;
-    font-size:10px; font-weight:800; color:#fff;
-}
-
-/* ── Attendance Grid ── */
+/* ── Attendance Grid (register-specific matrix) ── */
 .sa-grid-wrap {
     border-radius:var(--sa-r); background:var(--sa-card);
     border:1px solid var(--sa-border); box-shadow:var(--sa-shadow);
@@ -319,97 +207,10 @@
     border:2px solid var(--sa-card);
 }
 
-/* ── Toast ── */
-.sa-toast {
-    position:fixed; bottom:24px; right:24px; z-index:9999;
-    padding:14px 24px; border-radius:10px; font-family:var(--sa-font);
-    font-size:13px; font-weight:600; color:#fff;
-    box-shadow:0 10px 30px rgba(0,0,0,.2);
-    transform:translateY(120px); opacity:0; transition:all .35s cubic-bezier(.4,0,.2,1);
-    pointer-events:none; display:flex; align-items:center; gap:8px;
-}
-.sa-toast.show { transform:translateY(0); opacity:1; }
-.sa-toast.success { background:var(--sa-p); }
-.sa-toast.error { background:var(--sa-a); }
+/* Toast, modal, loading, and empty-state styles now live in the shared ADS. */
 
-/* ── Modal ── */
-.sa-modal-overlay {
-    position:fixed; inset:0; z-index:9998; background:rgba(0,0,0,.45);
-    display:none; align-items:center; justify-content:center;
-    backdrop-filter:blur(6px);
-}
-.sa-modal-overlay.open { display:flex; }
-.sa-modal {
-    background:var(--sa-card); border:1px solid var(--sa-border);
-    border-radius:14px; box-shadow:0 20px 60px rgba(0,0,0,.25);
-    width:440px; max-width:92vw; max-height:80vh; overflow-y:auto;
-    padding:28px; animation:sa-modal-in .25s ease;
-}
-@keyframes sa-modal-in {
-    from { opacity:0; transform:scale(.95) translateY(10px); }
-    to { opacity:1; transform:scale(1) translateY(0); }
-}
-.sa-modal-head {
-    display:flex; align-items:center; justify-content:space-between;
-    margin-bottom:20px;
-}
-.sa-modal h3 {
-    font-family:var(--sa-font); font-size:16px; font-weight:700;
-    color:var(--sa-t1); margin:0;
-}
-.sa-modal-close {
-    width:32px; height:32px; display:flex; align-items:center; justify-content:center;
-    background:var(--sa-bg3); border:none; border-radius:8px; font-size:16px;
-    color:var(--sa-t3); cursor:pointer; transition:var(--sa-ease);
-}
-.sa-modal-close:hover { background:var(--sa-a-bg); color:var(--sa-a); }
-.sa-modal-stat {
-    display:flex; justify-content:space-between; align-items:center;
-    padding:10px 0; border-bottom:1px solid var(--sa-border);
-    font-family:var(--sa-font); font-size:13px; color:var(--sa-t2);
-}
-.sa-modal-stat:last-of-type { border-bottom:none; }
-.sa-modal-stat span:last-child { font-weight:700; color:var(--sa-t1); }
-.sa-modal-stat .sa-stat-dot {
-    width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px;
-}
-.sa-modal-bar-wrap {
-    margin-top:18px; height:10px; border-radius:5px;
-    background:var(--sa-bg3); overflow:hidden; display:flex;
-}
-.sa-modal-bar-seg { height:100%; transition:width .4s ease; }
-
-/* ── Loading ── */
-.sa-loading {
-    display:none; text-align:center; padding:60px 20px;
-    font-family:var(--sa-font); font-size:14px; color:var(--sa-t3);
-}
-.sa-loading.visible { display:block; }
-.sa-spinner {
-    width:36px; height:36px; border:3px solid var(--sa-border);
-    border-top-color:var(--sa-primary); border-radius:50%;
-    animation:sa-spin .7s linear infinite; margin:0 auto 14px;
-}
-@keyframes sa-spin { to { transform:rotate(360deg); } }
-
-/* ── Empty State ── */
-.sa-empty {
-    text-align:center; padding:70px 20px; font-family:var(--sa-font); color:var(--sa-t3);
-}
-.sa-empty i { font-size:52px; margin-bottom:14px; display:block; opacity:.3; }
-.sa-empty p { font-size:14px; margin:4px 0 0; }
-.sa-empty strong { color:var(--sa-t2); }
-
-/* ── Responsive ── */
+/* ── Responsive (matrix only) ── */
 @media (max-width:767px) {
-    .sa-filter-card { flex-direction:column; align-items:stretch; }
-    .sa-fg select { min-width:100%; }
-    .sa-toolbar { flex-direction:column; align-items:stretch; }
-    .sa-legend { margin-left:0; margin-top:8px; }
-    .sa-toolbar-sep { display:none; }
-    .sa-stats-strip.visible { grid-template-columns:repeat(2, 1fr); }
-    .sa-modal { padding:18px; }
-    .sa-page-head { flex-direction:column; align-items:flex-start; }
     .sa-grid th.sa-th-student { min-width:140px; }
     .sa-grid th:nth-child(2),
     .sa-grid td:nth-child(2) { left:36px; }
@@ -422,78 +223,41 @@
 <div class="container-fluid">
 
     <!-- Page Header -->
-    <div class="sa-page-head">
-        <div>
-            <h4 class="sa-page-title">
-                <i class="fa fa-calendar-check-o"></i> Student Attendance
-            </h4>
-            <p class="sa-page-sub">Mark and manage daily student attendance by class &amp; section</p>
-            <ol style="list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0;padding:0;font-size:12px;color:#8a8a8a;">
-                <li><a href="<?= base_url('admin') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Dashboard</a></li>
-                <li>/&nbsp;<a href="<?= base_url('attendance') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Attendance</a></li>
-                <li>/&nbsp;Student Attendance</li>
-            </ol>
+    <div class="att-header">
+        <div class="att-header-left">
+            <div class="att-header-icon"><i class="fa fa-calendar-check-o"></i></div>
+            <div>
+                <div class="att-page-title">Student Attendance</div>
+                <div class="att-subtitle">Mark and manage daily student attendance by class &amp; section</div>
+                <ul class="att-breadcrumb">
+                    <li><a href="<?= base_url('admin') ?>">Dashboard</a></li>
+                    <li><a href="<?= base_url('attendance') ?>">Attendance</a></li>
+                    <li>Student Attendance</li>
+                </ul>
+            </div>
         </div>
-        <span class="sa-badge-month" id="saMonthBadge">
+        <span class="att-chip" id="saMonthBadge" style="display:none;">
             <i class="fa fa-calendar"></i> <span id="saMonthLabel"></span>
         </span>
     </div>
 
-    <!-- Phase 2/3 — Stage + Lock + Corrections strip (auto-shown for current-month view) -->
-    <style>
-    .sa-stage-strip {
-        display: none;
-        align-items: center; gap: 12px;
-        padding: 10px 14px; margin: 0 0 14px;
-        background: var(--bg2); border: 1px solid var(--border);
-        border-left-width: 4px; border-radius: 8px;
-        font-size: 13px; color: var(--t1); flex-wrap: wrap;
-    }
-    .sa-stage-strip.visible    { display: flex; }
-    .sa-stage-strip.s1         { border-left-color: #16a34a; }
-    .sa-stage-strip.s2         { border-left-color: #d97706; }
-    .sa-stage-strip.s3         { border-left-color: #dc2626; }
-    .sa-stage-strip.unknown    { border-left-color: #6b7280; }
-    .sa-stage-pill {
-        display: inline-block; padding: 2px 9px; border-radius: 12px;
-        font-size: 11px; font-weight: 700; letter-spacing: 0.3px;
-    }
-    .sa-stage-strip.s1 .sa-stage-pill { background: rgba(22,163,74,0.15);  color: #16a34a; }
-    .sa-stage-strip.s2 .sa-stage-pill { background: rgba(217,119,6,0.15);  color: #d97706; }
-    .sa-stage-strip.s3 .sa-stage-pill { background: rgba(220,38,38,0.15);  color: #dc2626; }
-    .sa-stage-strip.unknown .sa-stage-pill { background: var(--bg3); color: var(--t3); }
-    .sa-stage-msg     { color: var(--t2); }
-    .sa-stage-spacer  { flex: 1; }
-    .sa-stage-link {
-        color: var(--gold); text-decoration: none; font-weight: 600;
-        font-size: 12.5px; padding: 4px 10px; border-radius: 6px;
-        border: 1px solid var(--border); background: var(--bg2);
-    }
-    .sa-stage-link:hover { background: var(--bg3); }
-    .sa-stage-link.warn  { color: #d97706; border-color: rgba(217,119,6,0.3); }
-    .sa-stage-link.danger{ color: #dc2626; border-color: rgba(220,38,38,0.3); }
-    .sa-corr-badge {
-        display: inline-flex; align-items: center; gap: 4px;
-        padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;
-        background: rgba(217,119,6,0.15); color: #d97706;
-    }
-    </style>
-    <div class="sa-stage-strip unknown" id="saStageStrip" data-current-month="0">
-        <span class="sa-stage-pill" id="saStagePill">—</span>
-        <span class="sa-stage-msg"  id="saStageMsg">Pick a class and section to see today's status.</span>
-        <span class="sa-corr-badge" id="saCorrBadge" style="display:none">
+    <!-- Phase 2/3 — Stage + Lock + Corrections strip (att-stage-* from the shared ADS) -->
+    <div class="att-stage-strip unknown" id="saStageStrip" data-current-month="0">
+        <span class="att-stage-pill" id="saStagePill">—</span>
+        <span class="att-stage-msg"  id="saStageMsg">Pick a class and section to see today's status.</span>
+        <span class="att-corr-badge" id="saCorrBadge" style="display:none">
             <i class="fa fa-flag-checkered"></i> <span id="saCorrCount">0</span> pending
         </span>
-        <span class="sa-stage-spacer"></span>
-        <a class="sa-stage-link" id="saStageOpenPanel"
+        <span class="att-stage-spacer"></span>
+        <a class="att-stage-link" id="saStageOpenPanel"
            href="<?= base_url('attendance/control') ?>" target="_blank">
             Open Control Panel <i class="fa fa-external-link"></i>
         </a>
     </div>
 
     <!-- Filter Card -->
-    <div class="sa-filter-card">
-        <div class="sa-fg">
+    <div class="att-toolbar">
+        <div class="att-fg">
             <label for="attClass">Class</label>
             <select id="attClass">
                 <option value="">Select Class</option>
@@ -511,13 +275,13 @@
                 ?>
             </select>
         </div>
-        <div class="sa-fg">
+        <div class="att-fg">
             <label for="attSection">Section</label>
             <select id="attSection" disabled>
                 <option value="">Select Section</option>
             </select>
         </div>
-        <div class="sa-fg">
+        <div class="att-fg">
             <label for="attMonth">Month</label>
             <select id="attMonth">
                 <?php
@@ -555,80 +319,82 @@
                 ?>
             </select>
         </div>
-        <div class="sa-fg" style="align-self:flex-end;">
-            <button type="button" class="sa-btn sa-btn-primary" id="attLoadBtn">
+        <div class="att-fg" style="align-self:flex-end;">
+            <button type="button" class="att-btn att-btn-primary" id="attLoadBtn">
                 <i class="fa fa-search"></i> Load Attendance
             </button>
         </div>
     </div>
 
     <!-- Stats Strip -->
-    <div class="sa-stats-strip" id="saStatsStrip">
-        <div class="sa-stat-card">
-            <div class="sa-stat-num" style="color:var(--sa-t1)" id="ssTotalStudents">0</div>
-            <div class="sa-stat-label">Students</div>
+    <div class="att-metric-grid" id="saStatsStrip" style="display:none;">
+        <div class="att-metric">
+            <div class="att-metric-num" style="color:var(--sa-t1)" id="ssTotalStudents">0</div>
+            <div class="att-metric-label">Students</div>
         </div>
-        <div class="sa-stat-card">
-            <div class="sa-stat-num" style="color:var(--sa-p)" id="ssTotalPresent">0</div>
-            <div class="sa-stat-label">Total Present</div>
+        <div class="att-metric">
+            <div class="att-metric-num" style="color:var(--sa-p)" id="ssTotalPresent">0</div>
+            <div class="att-metric-label">Total Present</div>
         </div>
-        <div class="sa-stat-card">
-            <div class="sa-stat-num" style="color:var(--sa-a)" id="ssTotalAbsent">0</div>
-            <div class="sa-stat-label">Total Absent</div>
+        <div class="att-metric">
+            <div class="att-metric-num" style="color:var(--sa-a)" id="ssTotalAbsent">0</div>
+            <div class="att-metric-label">Total Absent</div>
         </div>
-        <div class="sa-stat-card">
-            <div class="sa-stat-num" style="color:var(--sa-l)" id="ssTotalLeave">0</div>
-            <div class="sa-stat-label">On Leave</div>
+        <div class="att-metric">
+            <div class="att-metric-num" style="color:var(--sa-l)" id="ssTotalLeave">0</div>
+            <div class="att-metric-label">On Leave</div>
         </div>
-        <div class="sa-stat-card">
-            <div class="sa-stat-num" style="color:var(--sa-primary)" id="ssAvgPct">0%</div>
-            <div class="sa-stat-label">Avg Attendance</div>
+        <div class="att-metric">
+            <div class="att-metric-num" style="color:var(--sa-primary)" id="ssAvgPct">0%</div>
+            <div class="att-metric-label">Avg Attendance</div>
         </div>
     </div>
 
     <!-- Toolbar -->
-    <div class="sa-toolbar" id="attToolbar">
-        <div class="sa-toolbar-group">
-            <button type="button" class="sa-btn sa-btn-primary sa-btn-sm" id="attSaveBtn" disabled>
+    <div class="att-toolbar" id="attToolbar" style="display:none;">
+        <div class="att-toolbar-section">
+            <button type="button" class="att-btn att-btn-primary att-btn-sm" id="attSaveBtn" disabled>
                 <i class="fa fa-save"></i> Save Changes
             </button>
             <span id="saDirtyCount" style="font-family:var(--sa-font);font-size:11px;color:var(--sa-t3);display:none;">
                 <i class="fa fa-pencil"></i> <em id="saDirtyNum">0</em> modified
             </span>
         </div>
-        <div class="sa-toolbar-sep"></div>
-        <div class="sa-toolbar-group">
+        <div class="att-toolbar-divider"></div>
+        <div class="att-toolbar-section">
             <label style="font-family:var(--sa-font);font-size:11px;font-weight:700;color:var(--sa-t3);letter-spacing:.5px;">DAY:</label>
-            <input type="number" id="attDayPicker" class="sa-day-input" min="1" max="31" value="1">
-            <button type="button" class="sa-btn sa-btn-outline sa-btn-sm" data-bulk="P">
+            <input type="number" id="attDayPicker" class="att-day-input" min="1" max="31" value="1">
+            <button type="button" class="att-btn att-btn-outline att-btn-sm" data-bulk="P">
                 <i class="fa fa-check"></i> All Present
             </button>
-            <button type="button" class="sa-btn sa-btn-outline sa-btn-sm" data-bulk="A">
+            <button type="button" class="att-btn att-btn-outline att-btn-sm" data-bulk="A">
                 <i class="fa fa-times"></i> All Absent
             </button>
-            <button type="button" class="sa-btn sa-btn-outline sa-btn-sm" data-bulk="H">
+            <button type="button" class="att-btn att-btn-outline att-btn-sm" data-bulk="H">
                 <i class="fa fa-star"></i> Holiday
             </button>
         </div>
-        <div class="sa-toolbar-sep"></div>
-        <div class="sa-legend">
-            <span class="sa-legend-chip"><span class="sa-legend-pip" style="background:var(--sa-p);">P</span> Present</span>
-            <span class="sa-legend-chip"><span class="sa-legend-pip" style="background:var(--sa-a);">A</span> Absent</span>
-            <span class="sa-legend-chip"><span class="sa-legend-pip" style="background:var(--sa-l);">L</span> Leave</span>
-            <span class="sa-legend-chip"><span class="sa-legend-pip" style="background:var(--sa-t);">T</span> Late</span>
-            <span class="sa-legend-chip"><span class="sa-legend-pip" style="background:var(--sa-h);">H</span> Holiday</span>
-            <span class="sa-legend-chip"><span class="sa-legend-pip" style="background:var(--sa-v);">V</span> Vacant</span>
+        <div class="att-toolbar-divider"></div>
+        <div class="att-legend">
+            <span class="att-legend-chip"><span class="att-legend-pip" style="background:var(--sa-p);">P</span> Present</span>
+            <span class="att-legend-chip"><span class="att-legend-pip" style="background:var(--sa-a);">A</span> Absent</span>
+            <span class="att-legend-chip"><span class="att-legend-pip" style="background:var(--sa-l);">L</span> Leave</span>
+            <span class="att-legend-chip"><span class="att-legend-pip" style="background:var(--sa-t);">T</span> Late</span>
+            <span class="att-legend-chip"><span class="att-legend-pip" style="background:var(--sa-h);">H</span> Holiday</span>
+            <span class="att-legend-chip"><span class="att-legend-pip" style="background:var(--sa-v);">V</span> Vacant</span>
         </div>
     </div>
 
     <!-- Loading -->
-    <div class="sa-loading" id="attLoading">
-        <div class="sa-spinner"></div>
-        Loading attendance data&hellip;
+    <div class="att-loading" id="attLoading">
+        <div class="att-loader">
+            <span class="att-loader-ring"></span>
+            <span class="att-loader-text">Loading attendance data&hellip;</span>
+        </div>
     </div>
 
     <!-- Empty State -->
-    <div class="sa-empty" id="attEmpty" style="display:none;">
+    <div class="att-empty" id="attEmpty" style="display:none;">
         <i class="fa fa-calendar-o"></i>
         <p><strong>No data loaded</strong></p>
         <p>Select a class, section, and month, then click <strong>Load Attendance</strong></p>
@@ -643,33 +409,33 @@
     </div>
 
     <!-- Student Summary Modal -->
-    <div class="sa-modal-overlay" id="attModal">
-        <div class="sa-modal">
-            <div class="sa-modal-head">
+    <div class="att-modal-overlay" id="attModal">
+        <div class="att-modal">
+            <div class="att-modal-head">
                 <h3 id="attModalTitle">Student Summary</h3>
-                <button class="sa-modal-close" id="attModalClose"><i class="fa fa-times"></i></button>
+                <button class="att-modal-close" id="attModalClose"><i class="fa fa-times"></i></button>
             </div>
             <div id="attModalBody"></div>
         </div>
     </div>
 
     <!-- Past-edit confirmation modal (two-step) -->
-    <div class="sa-modal-overlay" id="attPastConfirm">
-        <div class="sa-modal">
-            <div class="sa-modal-head">
+    <div class="att-modal-overlay" id="attPastConfirm">
+        <div class="att-modal">
+            <div class="att-modal-head">
                 <h3 id="attPastConfirmTitle">Confirm edits to past dates</h3>
-                <button class="sa-modal-close" id="attPastConfirmClose"><i class="fa fa-times"></i></button>
+                <button class="att-modal-close" id="attPastConfirmClose"><i class="fa fa-times"></i></button>
             </div>
             <div id="attPastConfirmBody"></div>
             <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px;">
-                <button type="button" class="sa-btn sa-btn-outline sa-btn-sm" id="attPastConfirmCancel">Cancel</button>
-                <button type="button" class="sa-btn sa-btn-primary sa-btn-sm" id="attPastConfirmNext">Continue</button>
+                <button type="button" class="att-btn att-btn-outline att-btn-sm" id="attPastConfirmCancel">Cancel</button>
+                <button type="button" class="att-btn att-btn-primary att-btn-sm" id="attPastConfirmNext">Continue</button>
             </div>
         </div>
     </div>
 
     <!-- Toast -->
-    <div class="sa-toast" id="attToast"></div>
+    <div class="att-toast" id="attToast"></div>
 
 </div>
 </section>
@@ -793,7 +559,7 @@
 
     function showToast(msg, type) {
         elToast.innerHTML = '<i class="fa fa-' + (type === 'error' ? 'exclamation-circle' : 'check-circle') + '"></i> ' + esc(msg);
-        elToast.className = 'sa-toast ' + (type || 'success');
+        elToast.className = 'att-toast ' + (type || 'success');
         setTimeout(function(){ elToast.classList.add('show'); }, 10);
         setTimeout(function(){ elToast.classList.remove('show'); }, 3000);
     }
@@ -847,14 +613,14 @@
         }
         elGridWrap.style.display = 'none';
         elEmpty.style.display = 'none';
-        elToolbar.classList.remove('visible');
-        elStatsStrip.classList.remove('visible');
+        elToolbar.style.display = 'none';
+        elStatsStrip.style.display = 'none';
         elMonthBadge.style.display = 'none';
-        elLoading.classList.add('visible');
+        elLoading.style.display = 'block';
 
         postData('attendance/fetch_student', { 'class': cls, section: sec, month: mon })
             .then(function(res) {
-                elLoading.classList.remove('visible');
+                elLoading.style.display = 'none';
                 if (!res || res.status === 'error') {
                     showToast(res ? res.message : 'Failed to load data.', 'error');
                     elEmpty.style.display = 'block';
@@ -897,12 +663,12 @@
                 renderGrid();
                 updateStats();
                 elGridWrap.style.display = 'block';
-                elToolbar.classList.add('visible');
-                elStatsStrip.classList.add('visible');
+                elToolbar.style.display = 'flex';
+                elStatsStrip.style.display = 'grid';
                 updateSaveBtn();
             })
             .catch(function() {
-                elLoading.classList.remove('visible');
+                elLoading.style.display = 'none';
                 showToast('Network error loading attendance.', 'error');
                 elEmpty.style.display = 'block';
             });
@@ -1115,17 +881,17 @@
         elModalTitle.textContent = student.name;
 
         var html = '';
-        html += '<div class="sa-modal-stat"><span><span class="sa-stat-dot" style="background:var(--sa-t2)"></span>Total Days</span><span>' + state.daysInMonth + '</span></div>';
-        html += '<div class="sa-modal-stat"><span><span class="sa-stat-dot" style="background:var(--sa-p)"></span>Present</span><span style="color:var(--sa-p)">' + c.P + '</span></div>';
-        html += '<div class="sa-modal-stat"><span><span class="sa-stat-dot" style="background:var(--sa-a)"></span>Absent</span><span style="color:var(--sa-a)">' + c.A + '</span></div>';
-        html += '<div class="sa-modal-stat"><span><span class="sa-stat-dot" style="background:var(--sa-l)"></span>Leave</span><span style="color:var(--sa-l)">' + c.L + '</span></div>';
-        html += '<div class="sa-modal-stat"><span><span class="sa-stat-dot" style="background:var(--sa-t)"></span>Late</span><span style="color:var(--sa-t)">' + c.T + '</span></div>';
-        html += '<div class="sa-modal-stat"><span><span class="sa-stat-dot" style="background:var(--sa-h)"></span>Holiday</span><span style="color:var(--sa-h)">' + c.H + '</span></div>';
-        html += '<div class="sa-modal-stat"><span><span class="sa-stat-dot" style="background:var(--sa-v)"></span>Vacant</span><span style="color:var(--sa-v)">' + c.V + '</span></div>';
-        html += '<div class="sa-modal-stat" style="font-weight:700;border-bottom:none;padding-top:14px;"><span>Attendance %</span><span style="font-size:18px;color:' + (pct >= 75 ? 'var(--sa-p)' : pct >= 50 ? 'var(--sa-l)' : 'var(--sa-a)') + '">' + pct + '%</span></div>';
+        html += '<div class="att-modal-stat"><span><span class="att-modal-stat-dot" style="background:var(--sa-t2)"></span>Total Days</span><span>' + state.daysInMonth + '</span></div>';
+        html += '<div class="att-modal-stat"><span><span class="att-modal-stat-dot" style="background:var(--sa-p)"></span>Present</span><span style="color:var(--sa-p)">' + c.P + '</span></div>';
+        html += '<div class="att-modal-stat"><span><span class="att-modal-stat-dot" style="background:var(--sa-a)"></span>Absent</span><span style="color:var(--sa-a)">' + c.A + '</span></div>';
+        html += '<div class="att-modal-stat"><span><span class="att-modal-stat-dot" style="background:var(--sa-l)"></span>Leave</span><span style="color:var(--sa-l)">' + c.L + '</span></div>';
+        html += '<div class="att-modal-stat"><span><span class="att-modal-stat-dot" style="background:var(--sa-t)"></span>Late</span><span style="color:var(--sa-t)">' + c.T + '</span></div>';
+        html += '<div class="att-modal-stat"><span><span class="att-modal-stat-dot" style="background:var(--sa-h)"></span>Holiday</span><span style="color:var(--sa-h)">' + c.H + '</span></div>';
+        html += '<div class="att-modal-stat"><span><span class="att-modal-stat-dot" style="background:var(--sa-v)"></span>Vacant</span><span style="color:var(--sa-v)">' + c.V + '</span></div>';
+        html += '<div class="att-modal-stat" style="font-weight:700;border-bottom:none;padding-top:14px;"><span>Attendance %</span><span style="font-size:18px;color:' + (pct >= 75 ? 'var(--sa-p)' : pct >= 50 ? 'var(--sa-l)' : 'var(--sa-a)') + '">' + pct + '%</span></div>';
 
         var total = c.P + c.A + c.L + c.T + c.H + c.V;
-        html += '<div class="sa-modal-bar-wrap">';
+        html += '<div class="att-modal-bar-wrap">';
         if (total > 0) {
             var segments = [
                 {v:c.P, color:'var(--sa-p)'}, {v:c.T, color:'var(--sa-t)'},
@@ -1134,7 +900,7 @@
             ];
             segments.forEach(function(seg){
                 if (seg.v > 0) {
-                    html += '<div class="sa-modal-bar-seg" style="width:' + (seg.v/total*100) + '%;background:' + seg.color + ';"></div>';
+                    html += '<div class="att-modal-bar-seg" style="width:' + (seg.v/total*100) + '%;background:' + seg.color + ';"></div>';
                 }
             });
         }
@@ -1297,7 +1063,7 @@
         var rows = '';
         Object.keys(byDay).sort().forEach(function(k){
             var names = byDay[k];
-            rows += '<div class="sa-modal-stat"><span>' + esc(k) + '</span>'
+            rows += '<div class="att-modal-stat"><span>' + esc(k) + '</span>'
                   + '<span style="color:var(--sa-a);font-weight:700">' + names.length + ' student' + (names.length === 1 ? '' : 's') + '</span></div>';
         });
         elPCTitle.textContent = 'Confirm edits to past dates';
@@ -1366,7 +1132,7 @@
 
         var rows = '';
         skipped.forEach(function(s) {
-            rows += '<div class="sa-modal-stat" style="align-items:flex-start;">'
+            rows += '<div class="att-modal-stat" style="align-items:flex-start;">'
                   +   '<span><strong>' + esc(s.name || s.studentId) + '</strong>'
                   +     '<div style="font-size:11px;color:var(--sa-t3);margin-top:2px;">' + esc(s.studentId) + '</div></span>'
                   +   '<span style="color:var(--sa-a);font-size:11px;max-width:55%;text-align:right;line-height:1.3;">'
@@ -1418,13 +1184,13 @@
     if (!$strip || !$cls || !$sec || !$month) return;
 
     function setStage(stage, lock) {
-        $strip.className = 'sa-stage-strip visible';
+        $strip.className = 'att-stage-strip visible';
         var cls = 'unknown', text = 'Status unavailable.';
         switch (stage) {
             case 'S1_FREE':
                 cls = 's1';
                 text = 'Open — free edit. Reason not required until 10:30 AM.';
-                $link.className = 'sa-stage-link';
+                $link.className = 'att-stage-link';
                 $link.textContent = 'Open Control Panel ↗';
                 break;
             case 'S2_RESTRICTED':
@@ -1434,7 +1200,7 @@
                 } else {
                     text = 'Restricted edit window (10:30 AM – 6 PM). Reason required.';
                 }
-                $link.className = 'sa-stage-link warn';
+                $link.className = 'att-stage-link warn';
                 $link.textContent = 'Open Control Panel ↗';
                 break;
             case 'S3_LOCKED':
@@ -1444,7 +1210,7 @@
                 } else {
                     text = 'Locked. Direct edits rejected; use the correction flow.';
                 }
-                $link.className = 'sa-stage-link danger';
+                $link.className = 'att-stage-link danger';
                 $link.textContent = 'Request Correction ↗';
                 $link.href = BASE + 'attendance/control#corrections';
                 break;
@@ -1452,7 +1218,7 @@
                 cls = 'unknown';
                 text = 'Stage unknown.';
         }
-        $strip.className = 'sa-stage-strip visible ' + cls;
+        $strip.className = 'att-stage-strip visible ' + cls;
         $pill.textContent = (stage || '—').replace('_', ' ');
         $msg.textContent  = text;
     }
@@ -1478,7 +1244,7 @@
     function refresh() {
         var c = $cls.value, s = $sec.value;
         if (!c || !s) {
-            $strip.className = 'sa-stage-strip unknown visible';
+            $strip.className = 'att-stage-strip unknown visible';
             $pill.textContent = '—';
             $msg.textContent  = 'Pick a class and section to see today\'s status.';
             setCorrCount(0);
@@ -1486,7 +1252,7 @@
         }
         if (!isCurrentMonth()) {
             // Past/future month — strip stays minimal; today's lock isn't relevant
-            $strip.className = 'sa-stage-strip unknown visible';
+            $strip.className = 'att-stage-strip unknown visible';
             $pill.textContent = 'Past view';
             $msg.textContent  = 'Stage gate applies only to today. Past corrections go through Control Panel.';
             setCorrCount(0);

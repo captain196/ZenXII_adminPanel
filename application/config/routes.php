@@ -611,8 +611,6 @@ $route['admission/receipt/(:any)/(:any)/(:any)'] = 'Admission_public/receipt/$1/
 // ─── Attendance Management ───
 $route['attendance']                         = 'Attendance/index';
 $route['attendance/dashboard_stats']         = 'Attendance/dashboard_stats';
-$route['attendance/debug_push']              = 'Attendance/debug_push';
-$route['attendance/register_test_token']     = 'Attendance/register_test_token';
 $route['attendance/test_push']               = 'Attendance/test_push';
 $route['attendance/student']                 = 'Attendance/student_attendance';
 $route['attendance/staff']                   = 'Attendance/staff_attendance';
@@ -667,7 +665,6 @@ $route['attendance/process_push_requests']   = 'Attendance/process_push_requests
 $route['attendance/health_check']            = 'Attendance/health_check';
 $route['attendance/fetch_audit_logs']        = 'Attendance/fetch_audit_logs';
 $route['attendance/cleanup']                 = 'Attendance/cleanup';
-$route['attendance/fix_attendance_keys']     = 'Attendance/fix_attendance_keys';
 $route['attendance/autofill_staff_today']   = 'Attendance/autofill_staff_today';
 $route['attendance/lock_staff_attendance']       = 'Attendance/lock_staff_attendance';
 $route['attendance/unlock_staff_attendance']     = 'Attendance/unlock_staff_attendance';

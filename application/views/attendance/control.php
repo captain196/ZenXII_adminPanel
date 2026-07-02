@@ -21,284 +21,166 @@ if (!empty($Classes) && is_array($Classes)) {
     unset($v);
 }
 ?>
+<!-- Attendance Design System (shared, cacheable) — see assets/css/attendance_design_system.css -->
+<link rel="stylesheet" href="<?= base_url('assets/css/attendance_design_system.css') ?>?v=2.1.0">
+
 <style>
-:root {
-    --ac-primary: var(--gold);
-    --ac-bg:  var(--bg);
-    --ac-bg2: var(--bg2);
-    --ac-bg3: var(--bg3);
-    --ac-border: var(--border);
-    --ac-t1: var(--t1);
-    --ac-t2: var(--t2);
-    --ac-t3: var(--t3);
-    --ac-shadow: var(--sh);
-    --ac-radius: 10px;
-    --ac-green: #16a34a;
-    --ac-red:   #dc2626;
-    --ac-amber: #d97706;
-    --ac-blue:  #2563eb;
-    --ac-purple: #7c3aed;
-}
-.ac-wrap { padding: 20px 22px 40px; }
-.ac-header {
-    display: flex; justify-content: space-between; align-items: center;
-    gap: 14px; padding: 16px 22px; margin-bottom: 18px;
-    background: var(--ac-bg2); border: 1px solid var(--ac-border);
-    border-radius: var(--ac-radius); box-shadow: var(--ac-shadow);
-}
-.ac-title { font-size: 18px; font-weight: 600; color: var(--ac-t1); }
-.ac-sub   { color: var(--ac-t3); font-size: 13px; }
-.ac-tabs {
-    display: flex; gap: 4px; padding: 4px; margin-bottom: 16px;
-    background: var(--ac-bg2); border: 1px solid var(--ac-border);
-    border-radius: var(--ac-radius); width: fit-content;
-}
-.ac-tab {
-    padding: 8px 16px; border-radius: 6px; cursor: pointer;
-    color: var(--ac-t2); font-size: 13px; font-weight: 500;
-    background: transparent; border: 0;
-}
-.ac-tab.active { background: var(--ac-primary); color: #000; }
-.ac-tab .badge {
-    margin-left: 6px; padding: 1px 6px; border-radius: 8px;
-    background: var(--ac-red); color: #fff; font-size: 11px;
-}
-
-.ac-section { display: none; }
-.ac-section.active { display: block; }
-
-.ac-card {
-    background: var(--ac-bg2); border: 1px solid var(--ac-border);
-    border-radius: var(--ac-radius); padding: 16px 18px; margin-bottom: 14px;
-    box-shadow: var(--ac-shadow);
-}
-
-.ac-filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
-.ac-filters label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ac-t3); }
-.ac-filters select, .ac-filters input[type=date] {
-    padding: 7px 10px; border-radius: 6px; border: 1px solid var(--ac-border);
-    background: var(--ac-bg3); color: var(--ac-t1); font-size: 13px; min-width: 130px;
-}
-.ac-btn {
-    padding: 7px 14px; border-radius: 6px; border: 0; cursor: pointer;
-    font-size: 13px; font-weight: 500; background: var(--ac-primary); color: #000;
-}
-.ac-btn.secondary { background: var(--ac-bg3); color: var(--ac-t1); border: 1px solid var(--ac-border); }
-.ac-btn.danger  { background: var(--ac-red); color: #fff; }
-.ac-btn.success { background: var(--ac-green); color: #fff; }
-
-.ac-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.ac-table th, .ac-table td {
-    padding: 9px 10px; border-bottom: 1px solid var(--ac-border); text-align: left;
-}
-.ac-table th { color: var(--ac-t3); font-weight: 500; font-size: 12px; text-transform: uppercase; }
-.ac-table tr:hover { background: var(--ac-bg3); }
-
-.ac-pill {
-    display: inline-block; padding: 2px 9px; border-radius: 12px;
-    font-size: 11px; font-weight: 600;
-}
-.ac-pill.s1 { background: rgba(22,163,74,0.15);  color: var(--ac-green); }
-.ac-pill.s2 { background: rgba(217,119,6,0.15);  color: var(--ac-amber); }
-.ac-pill.s3 { background: rgba(220,38,38,0.15);  color: var(--ac-red); }
-.ac-pill.unlocked { background: rgba(124,58,237,0.15); color: var(--ac-purple); }
-.ac-pill.none { background: var(--ac-bg3); color: var(--ac-t3); }
-
-.ac-diff { font-family: monospace; font-size: 12px; }
-.ac-diff .from { color: var(--ac-red);   text-decoration: line-through; }
-.ac-diff .to   { color: var(--ac-green); }
-
-/* Modal */
-.ac-modal {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
-    display: none; align-items: center; justify-content: center; z-index: 999;
-}
-.ac-modal.show { display: flex; }
-.ac-modal-card {
-    background: var(--ac-bg2); border: 1px solid var(--ac-border);
-    border-radius: var(--ac-radius); padding: 20px; min-width: 420px; max-width: 600px;
-    box-shadow: 0 20px 50px rgba(0,0,0,0.4);
-}
-.ac-modal h3 { margin: 0 0 12px; font-size: 16px; color: var(--ac-t1); }
-.ac-modal label { display: block; font-size: 12px; color: var(--ac-t3); margin: 12px 0 4px; }
-.ac-modal textarea, .ac-modal input[type=text] {
-    width: 100%; padding: 8px 10px; border: 1px solid var(--ac-border);
-    border-radius: 6px; background: var(--ac-bg3); color: var(--ac-t1); font-size: 13px;
-    box-sizing: border-box;
-}
-.ac-modal textarea { min-height: 80px; resize: vertical; }
-.ac-modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
-
-.ac-warn {
-    padding: 9px 12px; border-radius: 6px; font-size: 12px; margin: 12px 0;
-    background: rgba(217,119,6,0.12); color: var(--ac-amber); border: 1px solid rgba(217,119,6,0.3);
-}
-
-.ac-toast {
-    position: fixed; bottom: 24px; right: 24px; padding: 12px 16px;
-    background: var(--ac-bg2); border: 1px solid var(--ac-border); border-radius: 6px;
-    color: var(--ac-t1); font-size: 13px; box-shadow: var(--ac-shadow);
-    transform: translateY(100px); opacity: 0; transition: all 0.2s;
-}
-.ac-toast.show   { transform: translateY(0); opacity: 1; }
-.ac-toast.error  { border-left: 3px solid var(--ac-red); }
-.ac-toast.ok     { border-left: 3px solid var(--ac-green); }
-
-.ac-mute  { color: var(--ac-t3); font-size: 12px; }
-.ac-empty { padding: 30px; text-align: center; color: var(--ac-t3); }
+/* Page-local: ONLY the correction diff renderer (register-specific). All chrome
+   (header, tabs, cards, tables, buttons, modals, toast, alerts) is consumed from
+   the shared Attendance Design System above. */
+.ac-diff { font-family: var(--att-font-m, monospace); font-size: 12px; }
+.ac-diff .from { color: var(--att-red);   text-decoration: line-through; }
+.ac-diff .to   { color: var(--att-green); }
 </style>
 
 <div class="content-wrapper">
 <section class="content">
 <div class="container-fluid">
-<div class="ac-wrap">
-    <div class="ac-header">
-        <div>
-            <div class="ac-title">Attendance Control Panel</div>
-            <div class="ac-sub">Daily dashboard, lock control, correction approvals</div>
-            <ol style="list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0;padding:0;font-size:12px;color:#8a8a8a;">
-                <li><a href="<?= base_url('admin') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Dashboard</a></li>
-                <li>/&nbsp;<a href="<?= base_url('attendance') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Attendance</a></li>
-                <li>/&nbsp;Control Panel</li>
-            </ol>
+<div class="att-wrap">
+    <div class="att-header">
+        <div class="att-header-left">
+            <div class="att-header-icon"><i class="fa fa-shield"></i></div>
+            <div>
+                <div class="att-page-title">Attendance Control Panel</div>
+                <div class="att-subtitle">Daily dashboard, lock control, correction approvals</div>
+                <ul class="att-breadcrumb">
+                    <li><a href="<?= base_url('admin') ?>">Dashboard</a></li>
+                    <li><a href="<?= base_url('attendance') ?>">Attendance</a></li>
+                    <li>Control Panel</li>
+                </ul>
+            </div>
         </div>
-        <div class="ac-sub" id="ac-today"></div>
+        <div class="att-subtitle" id="ac-today"></div>
     </div>
 
-    <div class="ac-tabs" role="tablist">
-        <button class="ac-tab active" data-tab="dashboard">Dashboard</button>
-        <button class="ac-tab" data-tab="locks">Locks</button>
-        <button class="ac-tab" data-tab="corrections">
-            Corrections <span class="badge" id="ac-pending-badge" style="display:none">0</span>
+    <div class="att-tabs" role="tablist">
+        <button class="att-tab active" data-tab="dashboard">Dashboard</button>
+        <button class="att-tab" data-tab="locks">Locks</button>
+        <button class="att-tab" data-tab="corrections">
+            Corrections <span class="att-tag att-tag-red" id="ac-pending-badge" style="display:none">0</span>
         </button>
     </div>
 
     <!-- ── Dashboard ──────────────────────────────────────────── -->
-    <section class="ac-section active" id="sec-dashboard">
-        <div class="ac-card">
-            <div class="ac-filters">
-                <label>Date <input type="date" id="f-date"></label>
-                <label>Class
-                    <select id="f-class">
-                        <option value="">— all —</option>
-                        <?php foreach ($_uniqueClasses as $cn): ?>
-                            <option value="<?= htmlspecialchars($cn, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($cn, ENT_QUOTES, 'UTF-8') ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </label>
-                <label>Section
-                    <select id="f-section">
-                        <option value="">— all —</option>
-                    </select>
-                </label>
-                <button class="ac-btn" id="btn-apply">Apply</button>
-                <button class="ac-btn secondary" id="btn-refresh">Refresh</button>
+    <section class="att-pane active" id="sec-dashboard">
+        <div class="att-toolbar">
+            <div class="att-fg"><label for="f-date">Date</label><input type="date" id="f-date"></div>
+            <div class="att-fg"><label for="f-class">Class</label>
+                <select id="f-class">
+                    <option value="">— all —</option>
+                    <?php foreach ($_uniqueClasses as $cn): ?>
+                        <option value="<?= htmlspecialchars($cn, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($cn, ENT_QUOTES, 'UTF-8') ?></option>
+                    <?php endforeach; ?>
+                </select>
             </div>
+            <div class="att-fg"><label for="f-section">Section</label>
+                <select id="f-section"><option value="">— all —</option></select>
+            </div>
+            <div class="att-fg" style="align-self:flex-end"><button class="att-btn att-btn-primary" id="btn-apply">Apply</button></div>
+            <div class="att-fg" style="align-self:flex-end"><button class="att-btn att-btn-ghost" id="btn-refresh">Refresh</button></div>
         </div>
-        <div class="ac-card">
-            <table class="ac-table" id="tbl-dashboard">
-                <thead>
-                    <tr>
-                        <th>Class / Section</th>
-                        <th>Marked</th>
-                        <th>P</th><th>A</th><th>L</th><th>Late</th>
-                        <th>Drill-down</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody><tr><td colspan="8" class="ac-empty">Loading…</td></tr></tbody>
-            </table>
+        <div class="att-card att-card--panel">
+            <div class="att-table-wrap">
+                <table class="att-table" id="tbl-dashboard">
+                    <thead>
+                        <tr>
+                            <th>Class / Section</th>
+                            <th>Marked</th>
+                            <th>P</th><th>A</th><th>L</th><th>Late</th>
+                            <th>Drill-down</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody><tr><td colspan="8" class="att-empty">Loading…</td></tr></tbody>
+                </table>
+            </div>
         </div>
     </section>
 
     <!-- ── Locks ──────────────────────────────────────────────── -->
-    <section class="ac-section" id="sec-locks">
-        <div class="ac-card">
-            <div class="ac-filters">
-                <label>Class
-                    <select id="lk-class">
-                        <option value="">Select class…</option>
-                        <?php foreach ($_uniqueClasses as $cn): ?>
-                            <option value="<?= htmlspecialchars($cn, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($cn, ENT_QUOTES, 'UTF-8') ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </label>
-                <label>Section
-                    <select id="lk-section">
-                        <option value="">Select section…</option>
-                    </select>
-                </label>
-                <label>Date <input type="date" id="lk-date"></label>
-                <button class="ac-btn" id="lk-load">Load lock state</button>
+    <section class="att-pane" id="sec-locks">
+        <div class="att-toolbar">
+            <div class="att-fg"><label for="lk-class">Class</label>
+                <select id="lk-class">
+                    <option value="">Select class…</option>
+                    <?php foreach ($_uniqueClasses as $cn): ?>
+                        <option value="<?= htmlspecialchars($cn, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($cn, ENT_QUOTES, 'UTF-8') ?></option>
+                    <?php endforeach; ?>
+                </select>
             </div>
+            <div class="att-fg"><label for="lk-section">Section</label>
+                <select id="lk-section"><option value="">Select section…</option></select>
+            </div>
+            <div class="att-fg"><label for="lk-date">Date</label><input type="date" id="lk-date"></div>
+            <div class="att-fg" style="align-self:flex-end"><button class="att-btn att-btn-primary" id="lk-load">Load lock state</button></div>
         </div>
-        <div class="ac-card" id="lk-detail" style="display:none"></div>
+        <div class="att-card" id="lk-detail" style="display:none"></div>
     </section>
 
     <!-- ── Corrections ────────────────────────────────────────── -->
-    <section class="ac-section" id="sec-corrections">
-        <div class="ac-card">
-            <div class="ac-filters">
-                <label>Status
-                    <select id="cr-status">
-                        <option value="pending" selected>Pending</option>
-                        <option value="approved">Approved</option>
-                        <option value="rejected">Rejected</option>
-                        <option value="all">All</option>
-                    </select>
-                </label>
-                <label>Date <input type="date" id="cr-date"></label>
-                <button class="ac-btn" id="cr-load">Load</button>
+    <section class="att-pane" id="sec-corrections">
+        <div class="att-toolbar">
+            <div class="att-fg"><label for="cr-status">Status</label>
+                <select id="cr-status">
+                    <option value="pending" selected>Pending</option>
+                    <option value="approved">Approved</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="all">All</option>
+                </select>
             </div>
+            <div class="att-fg"><label for="cr-date">Date</label><input type="date" id="cr-date"></div>
+            <div class="att-fg" style="align-self:flex-end"><button class="att-btn att-btn-primary" id="cr-load">Load</button></div>
         </div>
-        <div class="ac-card">
-            <table class="ac-table" id="tbl-corrections">
-                <thead>
-                    <tr><th>Filed</th><th>Date</th><th>Student</th><th>Diff</th><th>Reason</th><th></th></tr>
-                </thead>
-                <tbody><tr><td colspan="6" class="ac-empty">Click Load.</td></tr></tbody>
-            </table>
-            <div style="margin-top:10px"><button class="ac-btn secondary" id="cr-more" style="display:none">Load more</button></div>
+        <div class="att-card att-card--panel">
+            <div class="att-table-wrap">
+                <table class="att-table" id="tbl-corrections">
+                    <thead>
+                        <tr><th>Filed</th><th>Date</th><th>Student</th><th>Diff</th><th>Reason</th><th></th></tr>
+                    </thead>
+                    <tbody><tr><td colspan="6" class="att-empty">Click Load.</td></tr></tbody>
+                </table>
+            </div>
+            <div style="padding:10px"><button class="att-btn att-btn-ghost" id="cr-more" style="display:none">Load more</button></div>
         </div>
     </section>
 </div>
 
 <!-- Lock dialog -->
-<div class="ac-modal" id="modal-lock"><div class="ac-modal-card">
+<div class="att-modal-overlay" id="modal-lock"><div class="att-modal">
     <h3 id="lock-modal-title">Lock / Unlock</h3>
     <div id="lock-modal-body"></div>
     <label>Action</label>
     <div>
-        <label style="display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--ac-t1);margin-right:14px">
+        <label style="display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--att-t1);margin-right:14px">
             <input type="radio" name="lk-action" value="true"> Lock
         </label>
-        <label style="display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--ac-t1)">
+        <label style="display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--att-t1)">
             <input type="radio" name="lk-action" value="false" checked> Unlock
         </label>
     </div>
-    <label>Reason <span class="ac-mute">(min 10 chars; required for unlock)</span></label>
+    <label>Reason <span class="att-mute">(min 10 chars; required for unlock)</span></label>
     <textarea id="lk-reason" placeholder="Reason…"></textarea>
-    <div id="lk-warn" class="ac-warn" style="display:none"></div>
-    <div class="actions">
-        <button class="ac-btn secondary" data-close="modal-lock">Cancel</button>
-        <button class="ac-btn" id="lk-apply">Apply</button>
+    <div id="lk-warn" class="att-alert att-alert-warn" style="display:none"></div>
+    <div class="att-modal-actions">
+        <button class="att-btn att-btn-ghost" data-close="modal-lock">Cancel</button>
+        <button class="att-btn att-btn-primary" id="lk-apply">Apply</button>
     </div>
 </div></div>
 
 <!-- Approve dialog -->
-<div class="ac-modal" id="modal-approve"><div class="ac-modal-card">
+<div class="att-modal-overlay" id="modal-approve"><div class="att-modal">
     <h3>Approve correction</h3>
     <div id="approve-body"></div>
-    <label>Note <span class="ac-mute">(optional)</span></label>
+    <label>Note <span class="att-mute">(optional)</span></label>
     <input type="text" id="ap-note" placeholder="Why approving…">
-    <div id="ap-drift" class="ac-warn" style="display:none"></div>
+    <div id="ap-drift" class="att-alert att-alert-warn" style="display:none"></div>
     <label id="ap-force-label" style="display:none">
         <input type="checkbox" id="ap-force"> Force apply despite drift
     </label>
-    <div class="actions">
-        <button class="ac-btn secondary" data-close="modal-approve">Cancel</button>
-        <button class="ac-btn danger" id="ap-reject">Reject</button>
-        <button class="ac-btn success" id="ap-approve">Approve</button>
+    <div class="att-modal-actions">
+        <button class="att-btn att-btn-ghost" data-close="modal-approve">Cancel</button>
+        <button class="att-btn att-btn-danger" id="ap-reject">Reject</button>
+        <button class="att-btn att-btn-success" id="ap-approve">Approve</button>
     </div>
 </div></div>
 
@@ -306,7 +188,7 @@ if (!empty($Classes) && is_array($Classes)) {
 </section><!-- /.content -->
 </div><!-- /.content-wrapper -->
 
-<div class="ac-toast" id="toast"></div>
+<div class="att-toast" id="toast"></div>
 
 <script>
 (function(){
@@ -322,9 +204,9 @@ if (!empty($Classes) && is_array($Classes)) {
     function todayIso(){ return new Date().toISOString().slice(0,10); }
     function toast(msg, kind){
         var t = $('#toast'); t.textContent = msg;
-        t.className = 'ac-toast show ' + (kind || 'ok');
+        t.className = 'att-toast show ' + (kind === 'error' ? 'error' : 'success');
         clearTimeout(toast._t);
-        toast._t = setTimeout(function(){ t.className = 'ac-toast'; }, 3500);
+        toast._t = setTimeout(function(){ t.className = 'att-toast'; }, 3500);
     }
     function api(method, path, body){
         var opts = { method: method, credentials: 'same-origin', headers: {} };
@@ -347,11 +229,11 @@ if (!empty($Classes) && is_array($Classes)) {
     }
 
     // ── Tabs ─────────────────────────────────────────────────────
-    $$('.ac-tab').forEach(function(btn){
+    $$('.att-tab').forEach(function(btn){
         btn.addEventListener('click', function(){
-            $$('.ac-tab').forEach(function(b){ b.classList.toggle('active', b === btn); });
+            $$('.att-tab').forEach(function(b){ b.classList.toggle('active', b === btn); });
             var tab = btn.getAttribute('data-tab');
-            $$('.ac-section').forEach(function(s){
+            $$('.att-pane').forEach(function(s){
                 s.classList.toggle('active', s.id === 'sec-' + tab);
             });
             if (tab === 'corrections') loadCorrections();
@@ -362,7 +244,7 @@ if (!empty($Classes) && is_array($Classes)) {
     // ── Modal close ─────────────────────────────────────────────
     document.addEventListener('click', function(e){
         var c = e.target.getAttribute('data-close');
-        if (c) $('#' + c).classList.remove('show');
+        if (c) $('#' + c).classList.remove('open');
     });
 
     // ── Today header ────────────────────────────────────────────
@@ -413,12 +295,12 @@ if (!empty($Classes) && is_array($Classes)) {
         var tbody = $('#tbl-dashboard tbody');
 
         if (targets.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" class="ac-empty">No classes configured.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="att-empty">No classes configured.</td></tr>';
             refreshPendingBadge();
             return;
         }
 
-        tbody.innerHTML = '<tr><td colspan="8" class="ac-empty">Loading ' + targets.length + ' section(s)…</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="att-empty">Loading ' + targets.length + ' section(s)…</td></tr>';
 
         Promise.all(targets.map(function(t){ return fetchSummary(date, t.cls, t.sec); }))
             .then(function(rows){
@@ -430,7 +312,7 @@ if (!empty($Classes) && is_array($Classes)) {
                 });
 
                 if (rows.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="8" class="ac-empty">No attendance data for ' + date + '.</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" class="att-empty">No attendance data for ' + date + '.</td></tr>';
                     return;
                 }
 
@@ -442,7 +324,7 @@ if (!empty($Classes) && is_array($Classes)) {
                     totals.l     += r.l;
                     totals.late  += r.late;
                     totals.total += r.total;
-                    var marked = r.total > 0 ? r.total + ' marked' : '<span class="ac-mute">not marked</span>';
+                    var marked = r.total > 0 ? r.total + ' marked' : '<span class="att-mute">not marked</span>';
                     html += '<tr>'
                         + '<td><b>' + r.cls + '</b> / ' + r.sec + '</td>'
                         + '<td>' + marked + '</td>'
@@ -450,12 +332,12 @@ if (!empty($Classes) && is_array($Classes)) {
                         + '<td>' + r.a + '</td>'
                         + '<td>' + r.l + '</td>'
                         + '<td>' + r.late + '</td>'
-                        + '<td><a href="#" class="ac-mute sa-jump-lock" data-cls="' + r.cls + '" data-sec="' + r.sec + '">Open in Locks ›</a></td>'
+                        + '<td><a href="#" class="att-mute sa-jump-lock" data-cls="' + r.cls + '" data-sec="' + r.sec + '">Open in Locks ›</a></td>'
                         + '<td></td>'
                         + '</tr>';
                 });
                 // Footer total
-                html += '<tr style="background:var(--ac-bg3);font-weight:600">'
+                html += '<tr style="background:var(--att-bg3);font-weight:600">'
                      +  '<td>Total (' + rows.length + ' sections)</td>'
                      +  '<td>' + totals.total + '</td>'
                      +  '<td>' + totals.p + '</td>'
@@ -482,7 +364,7 @@ if (!empty($Classes) && is_array($Classes)) {
         $('#lk-section').value = sec;
         $('#lk-date').value = $('#f-date').value || todayIso();
         // Switch to Locks tab
-        var locksTab = document.querySelector('.ac-tab[data-tab="locks"]');
+        var locksTab = document.querySelector('.att-tab[data-tab="locks"]');
         if (locksTab) locksTab.click();
         $('#lk-load').click();
     });
@@ -552,9 +434,9 @@ if (!empty($Classes) && is_array($Classes)) {
         detail.style.display = 'block';
 
         var stage = body.stage || 'UNKNOWN';
-        var pillCls = stage === 'S1_FREE' ? 's1'
-                    : stage === 'S2_RESTRICTED' ? 's2'
-                    : stage === 'S3_LOCKED' ? 's3' : 'none';
+        var pillCls = stage === 'S1_FREE' ? 'att-tag-green'
+                    : stage === 'S2_RESTRICTED' ? 'att-tag-amber'
+                    : stage === 'S3_LOCKED' ? 'att-tag-red' : 'att-tag-gray';
 
         var lk = body.lock || {};
         var lockedHtml = lk.locked
@@ -568,19 +450,19 @@ if (!empty($Classes) && is_array($Classes)) {
         detail.innerHTML = ''
             + '<div style="display:flex;justify-content:space-between;align-items:center;gap:14px">'
             + '  <div>'
-            + '    <div style="font-weight:600;color:var(--ac-t1)">' + cls + ' / ' + sec + '</div>'
-            + '    <div class="ac-mute" style="margin-top:4px">' + date + '</div>'
+            + '    <div style="font-weight:600;color:var(--att-t1)">' + cls + ' / ' + sec + '</div>'
+            + '    <div class="att-mute" style="margin-top:4px">' + date + '</div>'
             + '    <div style="margin-top:8px">' + lockedHtml + '</div>'
             + '  </div>'
             + '  <div>'
-            + '    <span class="ac-pill ' + pillCls + '">' + stage + '</span>'
-            + '    <button class="ac-btn" id="open-lock-modal" style="margin-left:10px">Lock / Unlock</button>'
+            + '    <span class="att-tag ' + pillCls + '">' + stage + '</span>'
+            + '    <button class="att-btn att-btn-primary" id="open-lock-modal" style="margin-left:10px">Lock / Unlock</button>'
             + '  </div>'
             + '</div>';
 
         $('#open-lock-modal').addEventListener('click', function(){
             $('#lock-modal-title').textContent = 'Lock / Unlock — ' + cls + ' / ' + sec + ' • ' + date;
-            $('#lock-modal-body').innerHTML = '<div class="ac-mute">Current: ' + lockedHtml + '</div>';
+            $('#lock-modal-body').innerHTML = '<div class="att-mute">Current: ' + lockedHtml + '</div>';
             $('#lk-reason').value = '';
             $('#lk-warn').style.display = 'none';
             // Default action is opposite of current
@@ -601,12 +483,12 @@ if (!empty($Classes) && is_array($Classes)) {
                     'reason':  reason
                 }).then(function(res){
                     if (!res.ok) return toast(res.body.message || 'Failed.', 'error');
-                    $('#modal-lock').classList.remove('show');
+                    $('#modal-lock').classList.remove('open');
                     toast(lockedNew ? 'Locked.' : 'Unlocked.');
                     renderLockDetail(cls, sec, date, res.body);
                 });
             };
-            $('#modal-lock').classList.add('show');
+            $('#modal-lock').classList.add('open');
         });
     }
 
@@ -643,17 +525,17 @@ if (!empty($Classes) && is_array($Classes)) {
         if (!append) tbody.innerHTML = '';
         var rows = body.requests || [];
         if (!append && rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="ac-empty">No requests.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="att-empty">No requests.</td></tr>';
             $('#cr-more').style.display = 'none';
             return;
         }
         rows.forEach(function(r){
             var tr = document.createElement('tr');
             var actions = (r.status === 'pending')
-                ? '<button class="ac-btn secondary" data-decide="' + (r.requestId || '') + '">Review</button>'
-                : '<span class="ac-mute">' + r.status + '</span>';
+                ? '<button class="att-btn att-btn-ghost" data-decide="' + (r.requestId || '') + '">Review</button>'
+                : '<span class="att-mute">' + r.status + '</span>';
             tr.innerHTML = ''
-                + '<td><span class="ac-mute">' + (r.requestedAt || '').slice(0,16).replace('T',' ') + '</span></td>'
+                + '<td><span class="att-mute">' + (r.requestedAt || '').slice(0,16).replace('T',' ') + '</span></td>'
                 + '<td>' + (r.date || '') + '</td>'
                 + '<td>' + (r.studentName || r.studentId || '') + '</td>'
                 + '<td>' + diffHtml(r.currentMark, r.requestedMark) + '</td>'
@@ -678,7 +560,7 @@ if (!empty($Classes) && is_array($Classes)) {
         $('#approve-body').innerHTML = ''
             + '<div><b>' + (req.studentName || req.studentId) + '</b> on ' + req.date + '</div>'
             + '<div style="margin-top:6px">' + diffHtml(req.currentMark, req.requestedMark) + '</div>'
-            + '<div class="ac-mute" style="margin-top:6px">Reason: ' + (req.reason || '') + '</div>';
+            + '<div class="att-mute" style="margin-top:6px">Reason: ' + (req.reason || '') + '</div>';
         $('#ap-note').value = '';
         $('#ap-force').checked = false;
         $('#ap-drift').style.display = 'none';
@@ -707,7 +589,7 @@ if (!empty($Classes) && is_array($Classes)) {
                     return;
                 }
                 if (!res.ok) return toast(res.body.message || 'Failed.', 'error');
-                $('#modal-approve').classList.remove('show');
+                $('#modal-approve').classList.remove('open');
                 toast('Decision: ' + (res.body.decision || decision));
                 cursorState = null;
                 loadCorrections(false);
@@ -716,7 +598,7 @@ if (!empty($Classes) && is_array($Classes)) {
         }
         $('#ap-approve').onclick = function(){ decide('approve', $('#ap-force').checked); };
         $('#ap-reject').onclick  = function(){ decide('reject',  false); };
-        $('#modal-approve').classList.add('show');
+        $('#modal-approve').classList.add('open');
     }
 
     // ── boot ─────────────────────────────────────────────────────

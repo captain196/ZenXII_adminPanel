@@ -837,6 +837,67 @@ class FirestoreRestClient
     }
 
     /**
+     * NON-ATOMIC batch write via Firestore's `:batchWrite` REST endpoint.
+     *
+     * Unlike commitBatch() (`:commit`, all-or-nothing), each write here
+     * succeeds or fails INDEPENDENTLY — Firestore returns one `status` entry
+     * per write — which preserves per-item partial-success semantics.
+     *
+     * $ops: same shape as commitBatch (set only):
+     *   ['collection'=>'x', 'docId'=>'y', 'data'=>[...], 'merge'=>bool]
+     *
+     * Returns a list<bool> aligned 1:1 with $ops (true = that write succeeded).
+     * On transport/HTTP failure the whole list is false. Values are encoded
+     * with the SAME encode() used by setDocument()/commitBatch(), so document
+     * bytes — including stdClass → mapValue for maps like `lateTimes` — are
+     * byte-identical to a single set(). Does NOT touch set()/commitBatch().
+     *
+     * Firestore hard limit: 500 writes per request (chunk above this layer).
+     */
+    public function batchWrite(array $ops): array
+    {
+        $n = count($ops);
+        if ($n === 0) return [];
+        if ($this->_blockWrite('BATCHWRITE', 'batchWrite:' . $n)) return array_fill(0, $n, false);
+
+        $dbPrefix = "projects/{$this->projectId}/databases/{$this->databaseId}/documents";
+        $writes = [];
+        foreach ($ops as $op) {
+            $coll = (string) ($op['collection'] ?? '');
+            $id   = (string) ($op['docId'] ?? '');
+            $data = is_array($op['data'] ?? null) ? $op['data'] : [];
+            $path = "$dbPrefix/$coll/$id";
+            $fields = [];
+            foreach ($data as $k => $v) $fields[$k] = $this->encode($v);  // same encoder → identical bytes
+            $entry = ['update' => ['name' => $path, 'fields' => $fields]];
+            if (!empty($op['merge'])) {
+                $entry['updateMask'] = ['fieldPaths' => array_keys($data)];
+            }
+            $writes[] = $entry;
+        }
+
+        $url = "https://firestore.googleapis.com/v1/{$dbPrefix}:batchWrite";
+        $r = $this->request('POST', $url, ['writes' => $writes]);
+
+        if ($r['code'] < 200 || $r['code'] >= 300) {
+            if (function_exists('log_message')) {
+                log_message('error', "FirestoreREST::batchWrite HTTP {$r['code']} ops={$n} body=" . json_encode($r['body']));
+            }
+            return array_fill(0, $n, false);   // transport failure → all failed (caller surfaces skipped[])
+        }
+
+        // Per-write `status[]`: an empty {} (or code 0 / absent) means OK.
+        $statuses = is_array($r['body']['status'] ?? null) ? $r['body']['status'] : [];
+        $results = [];
+        for ($i = 0; $i < $n; $i++) {
+            $st   = $statuses[$i] ?? [];
+            $code = (is_array($st) && isset($st['code'])) ? (int) $st['code'] : 0;
+            $results[] = ($code === 0);
+        }
+        return $results;
+    }
+
+    /**
      * Atomically increment numeric fields on a single document, creating the
      * doc if it does not exist. Uses Firestore server-side `increment` field
      * transforms (no read-modify-write → concurrency-safe). $increments maps

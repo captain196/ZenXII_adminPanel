@@ -1,287 +1,32 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
 
-<style>
-:root {
-    --ana-primary: var(--gold);
-    --ana-primary-dim: var(--gold-dim);
-    --ana-primary-glow: var(--gold-glow);
-    --ana-bg: var(--bg);
-    --ana-bg2: var(--bg2);
-    --ana-bg3: var(--bg3);
-    --ana-border: var(--border);
-    --ana-t1: var(--t1);
-    --ana-t2: var(--t2);
-    --ana-t3: var(--t3);
-    --ana-shadow: var(--sh);
-    --ana-ease: var(--ease);
-    --ana-r: 10px;
-    --ana-font: var(--font-b, 'Plus Jakarta Sans', sans-serif);
-    --ana-font-m: var(--font-m, 'JetBrains Mono', monospace);
-    --ana-green: #16a34a;
-    --ana-teal: #0f766e;
-    --ana-orange: #d97706;
-    --ana-red: #dc2626;
-    --ana-blue: #2563eb;
-    --ana-green-bg: rgba(22,163,74,.12);
-    --ana-teal-bg: rgba(15,118,110,.12);
-    --ana-orange-bg: rgba(217,119,6,.12);
-    --ana-red-bg: rgba(220,38,38,.12);
-    --ana-blue-bg: rgba(37,99,235,.12);
-}
-
-/* -- Page Header -- */
-.ana-page-hdr {
-    margin-bottom: 18px;
-}
-.ana-page-hdr h4 {
-    font-family: var(--ana-font); font-weight: 700; color: var(--ana-t1);
-    margin: 0 0 4px; font-size: 18px;
-}
-.ana-page-hdr h4 i { color: var(--ana-primary); margin-right: 6px; }
-.ana-page-hdr p {
-    font-family: var(--ana-font); font-size: 13px; color: var(--ana-t3); margin: 0;
-}
-
-/* -- Filter Bar -- */
-.ana-filter-bar {
-    display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;
-    padding: 18px 20px; border-radius: var(--ana-r);
-    background: var(--ana-bg2); border: 1px solid var(--ana-border);
-    box-shadow: var(--ana-shadow); margin-bottom: 20px;
-}
-.ana-fg { display: flex; flex-direction: column; gap: 4px; }
-.ana-fg label {
-    font-family: var(--ana-font); font-size: 11px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: .5px; color: var(--ana-t3);
-}
-.ana-fg select, .ana-fg input[type="text"] {
-    font-family: var(--ana-font); font-size: 13px; height: 38px;
-    border-radius: 6px; padding: 0 12px; border: 1px solid var(--ana-border);
-    background: var(--ana-bg); color: var(--ana-t1); transition: var(--ana-ease);
-    min-width: 150px;
-}
-.ana-fg select:focus, .ana-fg input:focus {
-    outline: none; border-color: var(--ana-primary);
-    box-shadow: 0 0 0 3px var(--ana-primary-dim);
-}
-.ana-btn {
-    font-family: var(--ana-font); font-size: 13px; font-weight: 600;
-    border: none; border-radius: 6px; padding: 0 20px; height: 38px;
-    cursor: pointer; transition: var(--ana-ease); display: inline-flex;
-    align-items: center; gap: 6px;
-}
-.ana-btn-primary { background: var(--ana-primary); color: #fff; }
-.ana-btn-primary:hover { opacity: .88; }
-.ana-btn-primary:disabled { opacity: .45; cursor: not-allowed; }
-
-/* -- Summary Cards -- */
-.ana-cards {
-    display: grid; grid-template-columns: repeat(4, 1fr);
-    gap: 16px; margin-bottom: 24px;
-}
-.ana-card {
-    background: var(--ana-bg2); border: 1px solid var(--ana-border);
-    border-radius: var(--ana-r); padding: 20px;
-    box-shadow: var(--ana-shadow); position: relative; overflow: hidden;
-    transition: transform .2s ease, box-shadow .2s ease;
-}
-.ana-card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(0,0,0,.08);
-}
-.ana-card::before {
-    content: ''; position: absolute; top: 0; left: 0; right: 0;
-    height: 3px; border-radius: var(--ana-r) var(--ana-r) 0 0;
-}
-.ana-card.avg::before { background: var(--ana-green); }
-.ana-card.regular::before { background: var(--ana-blue); }
-.ana-card.absent::before { background: var(--ana-red); }
-.ana-card.late::before { background: var(--ana-orange); }
-
-.ana-card-icon {
-    width: 40px; height: 40px; border-radius: 10px;
-    display: flex; align-items: center; justify-content: center;
-    margin-bottom: 12px; font-size: 18px;
-}
-.ana-card.avg .ana-card-icon { background: var(--ana-green-bg); color: var(--ana-green); }
-.ana-card.regular .ana-card-icon { background: var(--ana-blue-bg); color: var(--ana-blue); }
-.ana-card.absent .ana-card-icon { background: var(--ana-red-bg); color: var(--ana-red); }
-.ana-card.late .ana-card-icon { background: var(--ana-orange-bg); color: var(--ana-orange); }
-
-.ana-card-value {
-    font-family: var(--ana-font-m); font-size: 26px; font-weight: 700;
-    color: var(--ana-t1); margin-bottom: 4px;
-}
-.ana-card-label {
-    font-family: var(--ana-font); font-size: 12px; color: var(--ana-t3);
-    text-transform: uppercase; letter-spacing: .4px; font-weight: 600;
-}
-
-/* -- Section Panels -- */
-.ana-panel {
-    background: var(--ana-bg2); border: 1px solid var(--ana-border);
-    border-radius: var(--ana-r); box-shadow: var(--ana-shadow);
-    margin-bottom: 24px; overflow: hidden;
-}
-.ana-panel-hdr {
-    padding: 16px 20px; border-bottom: 1px solid var(--ana-border);
-    font-family: var(--ana-font); font-size: 14px; font-weight: 700;
-    color: var(--ana-t1); display: flex; align-items: center; gap: 8px;
-}
-.ana-panel-hdr i { color: var(--ana-primary); }
-.ana-panel-body { padding: 20px; }
-
-/* -- Bar Chart -- */
-.ana-bar-row {
-    display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
-}
-.ana-bar-label {
-    font-family: var(--ana-font); font-size: 12px; font-weight: 600;
-    color: var(--ana-t2); min-width: 140px; text-align: right;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.ana-bar-track {
-    flex: 1; height: 28px; background: var(--ana-bg3);
-    border-radius: 6px; overflow: hidden; position: relative;
-}
-.ana-bar {
-    height: 100%; border-radius: 6px; display: flex; align-items: center;
-    padding: 0 10px; font-family: var(--ana-font-m); font-size: 11px;
-    font-weight: 700; color: #fff; transition: width .5s ease;
-    min-width: 0;
-}
-.ana-bar.green { background: var(--ana-green); }
-.ana-bar.teal { background: var(--ana-teal); }
-.ana-bar.orange { background: var(--ana-orange); }
-.ana-bar.red { background: var(--ana-red); }
-
-.ana-bar-meta {
-    font-family: var(--ana-font-m); font-size: 11px; color: var(--ana-t3);
-    min-width: 40px;
-}
-
-/* -- Trend Table -- */
-.ana-trend-table {
-    width: 100%; border-collapse: collapse; font-family: var(--ana-font);
-}
-.ana-trend-table th {
-    font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: .3px; color: var(--ana-t3); padding: 10px 12px;
-    text-align: center; border-bottom: 2px solid var(--ana-border);
-    background: var(--ana-bg3);
-}
-.ana-trend-table td {
-    padding: 10px 12px; text-align: center; border-bottom: 1px solid var(--ana-border);
-    font-size: 13px; font-weight: 600;
-}
-.ana-trend-cell {
-    display: inline-block; padding: 4px 10px; border-radius: 6px;
-    font-family: var(--ana-font-m); font-size: 12px; font-weight: 700;
-}
-.ana-trend-cell.green { background: var(--ana-green-bg); color: var(--ana-green); }
-.ana-trend-cell.teal { background: var(--ana-teal-bg); color: var(--ana-teal); }
-.ana-trend-cell.orange { background: var(--ana-orange-bg); color: var(--ana-orange); }
-.ana-trend-cell.red { background: var(--ana-red-bg); color: var(--ana-red); }
-
-/* -- Individual Report -- */
-.ana-individual {
-    display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;
-    margin-bottom: 16px;
-}
-.ana-individual .ana-fg select,
-.ana-individual .ana-fg input[type="text"] {
-    min-width: 120px;
-}
-.ana-report-table {
-    width: 100%; border-collapse: collapse; font-family: var(--ana-font);
-}
-.ana-report-table th {
-    font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: .3px; color: var(--ana-t3); padding: 10px 12px;
-    text-align: left; border-bottom: 2px solid var(--ana-border);
-    background: var(--ana-bg3);
-}
-.ana-report-table td {
-    padding: 10px 12px; border-bottom: 1px solid var(--ana-border);
-    font-size: 13px; color: var(--ana-t1);
-}
-.ana-report-table td.mono {
-    font-family: var(--ana-font-m); font-size: 12px;
-}
-.ana-report-table tfoot td {
-    font-weight: 700; border-top: 2px solid var(--ana-border);
-}
-
-/* -- Empty / Loading -- */
-.ana-empty {
-    text-align: center; padding: 48px 20px; color: var(--ana-t3);
-    font-family: var(--ana-font); font-size: 14px;
-}
-.ana-empty i { font-size: 36px; display: block; margin-bottom: 12px; opacity: .5; }
-.ana-loading {
-    text-align: center; padding: 32px 20px; color: var(--ana-t3);
-    font-family: var(--ana-font); font-size: 13px; display: none;
-}
-.ana-loading i { margin-right: 6px; }
-
-/* -- Toast -- */
-.ana-toast {
-    position: fixed; bottom: 24px; right: 24px; z-index: 9999;
-    padding: 12px 22px; border-radius: 8px; font-family: var(--ana-font);
-    font-size: 13px; font-weight: 600; color: #fff;
-    box-shadow: 0 8px 24px rgba(0,0,0,.25);
-    transform: translateY(100px); opacity: 0; transition: all .3s ease;
-    pointer-events: none;
-}
-.ana-toast.show { transform: translateY(0); opacity: 1; }
-.ana-toast.success { background: var(--ana-green); }
-.ana-toast.error { background: var(--ana-red); }
-
-/* -- Responsive -- */
-@media (max-width: 1024px) {
-    .ana-cards { grid-template-columns: repeat(2, 1fr); }
-}
-@media (max-width: 767px) {
-    .ana-cards { grid-template-columns: 1fr; }
-    .ana-filter-bar { flex-direction: column; align-items: stretch; }
-    .ana-fg select, .ana-fg input[type="text"] { min-width: 0; width: 100%; }
-    .ana-bar-label { min-width: 80px; font-size: 11px; }
-    .ana-individual { flex-direction: column; align-items: stretch; }
-}
-/* Person info banner */
-.ana-person-info{display:flex;align-items:center;gap:14px;padding:14px 18px;margin-bottom:16px;
-    background:var(--ana-gold-dim);border:1px solid var(--ana-gold-ring);border-radius:8px}
-.ana-person-info i.fa-user-circle{font-size:32px;color:var(--ana-gold);flex-shrink:0}
-.ana-person-name{font-family:var(--ana-font-b);font-size:15px;font-weight:700;color:var(--ana-t1);line-height:1.3}
-.ana-person-meta{font-family:var(--ana-font-m);font-size:11.5px;color:var(--ana-t3);margin-top:2px;display:flex;gap:10px;flex-wrap:wrap}
-.ana-person-meta span{display:inline-flex;align-items:center;gap:4px}
-@media (max-width: 479px) {
-    .ana-panel-body { padding: 12px; }
-    .ana-bar-label { min-width: 60px; font-size: 10px; }
-}
-</style>
+<!-- Attendance Design System (shared, cacheable) — see assets/css/attendance_design_system.css -->
+<link rel="stylesheet" href="<?= base_url('assets/css/attendance_design_system.css') ?>?v=2.0.0">
 
 <div class="content-wrapper">
 <section class="content">
 <div class="container-fluid">
+<div class="att-wrap">
 
     <!-- Page Header -->
-    <div class="ana-page-hdr">
-        <h4>
-            <i class="fa fa-bar-chart"></i>
-            Attendance Analytics
-        </h4>
-        <p>View attendance trends, class-wise breakdowns, and individual reports</p>
-        <ol style="list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0;padding:0;font-size:12px;color:#8a8a8a;">
-            <li><a href="<?= base_url('admin') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Dashboard</a></li>
-            <li>/&nbsp;<a href="<?= base_url('attendance') ?>" style="color:var(--gold,#c9a24b);text-decoration:none;">Attendance</a></li>
-            <li>/&nbsp;Analytics</li>
-        </ol>
+    <div class="att-header">
+        <div class="att-header-left">
+            <div class="att-header-icon"><i class="fa fa-bar-chart"></i></div>
+            <div>
+                <div class="att-page-title">Attendance Analytics</div>
+                <div class="att-subtitle">Attendance trends, class-wise comparison, and composition — updated as you filter</div>
+                <ul class="att-breadcrumb">
+                    <li><a href="<?= base_url('admin') ?>">Dashboard</a></li>
+                    <li><a href="<?= base_url('attendance') ?>">Attendance</a></li>
+                    <li>Analytics</li>
+                </ul>
+            </div>
+        </div>
     </div>
 
-    <!-- Filter Bar -->
-    <div class="ana-filter-bar">
-        <div class="ana-fg">
+    <!-- Filter Bar (auto-refresh on change; manual refresh + export on the right) -->
+    <div class="att-toolbar">
+        <div class="att-fg">
             <label for="anaMonth">Month</label>
             <select id="anaMonth">
                 <?php
@@ -296,7 +41,7 @@
                 ?>
             </select>
         </div>
-        <div class="ana-fg">
+        <div class="att-fg">
             <label for="anaClass">Class (Optional)</label>
             <select id="anaClass">
                 <option value="">All Classes</option>
@@ -314,99 +59,113 @@
                 ?>
             </select>
         </div>
-        <div class="ana-fg">
+        <div class="att-fg">
             <label for="anaSection">Section (Optional)</label>
             <select id="anaSection" disabled>
                 <option value="">All Sections</option>
             </select>
         </div>
-        <div class="ana-fg" style="align-self:flex-end;">
-            <button type="button" class="ana-btn ana-btn-primary" id="anaLoadBtn">
-                <i class="fa fa-search"></i> Load
+
+        <div class="att-toolbar-spacer"></div>
+
+        <div class="att-btn-group">
+            <button type="button" class="att-btn att-btn-primary" id="anaLoadBtn" title="Refresh analytics">
+                <i class="fa fa-refresh"></i> Refresh
+            </button>
+            <button type="button" class="att-btn att-btn-ghost" id="anaExportCsv" title="Export the class-wise table as CSV">
+                <i class="fa fa-file-text-o"></i> CSV
+            </button>
+            <button type="button" class="att-btn att-btn-ghost" id="anaExportPdf" disabled title="PDF export — coming soon">
+                <i class="fa fa-file-pdf-o"></i> PDF
             </button>
         </div>
     </div>
 
-    <!-- Summary Cards -->
-    <div class="ana-cards" id="anaCards" style="display:none;">
-        <div class="ana-card avg">
-            <div class="ana-card-icon"><i class="fa fa-pie-chart"></i></div>
-            <div class="ana-card-value" id="anaAvgPct">--</div>
-            <div class="ana-card-label">Avg Attendance %</div>
+    <!-- Summary KPI Cards -->
+    <div class="att-kpi-grid" id="anaCards" style="display:none;">
+        <div class="att-kpi att-kpi-success">
+            <div class="att-kpi-icon"><i class="fa fa-pie-chart"></i></div>
+            <div class="att-kpi-value" id="anaAvgPct">--</div>
+            <div class="att-kpi-label">Avg Attendance %</div>
+            <div class="att-kpi-delta att-delta-flat" id="anaAvgDelta" style="display:none;"></div>
         </div>
-        <div class="ana-card regular">
-            <div class="ana-card-icon"><i class="fa fa-trophy"></i></div>
-            <div class="ana-card-value" id="anaRegularClass">--</div>
-            <div class="ana-card-label">Most Regular Class</div>
+        <div class="att-kpi att-kpi-info">
+            <div class="att-kpi-icon"><i class="fa fa-trophy"></i></div>
+            <div class="att-kpi-value" id="anaRegularClass">--</div>
+            <div class="att-kpi-label">Most Regular Class</div>
         </div>
-        <div class="ana-card absent">
-            <div class="ana-card-icon"><i class="fa fa-exclamation-triangle"></i></div>
-            <div class="ana-card-value" id="anaAbsentClass">--</div>
-            <div class="ana-card-label">Highest Absenteeism</div>
+        <div class="att-kpi att-kpi-danger">
+            <div class="att-kpi-icon"><i class="fa fa-exclamation-triangle"></i></div>
+            <div class="att-kpi-value" id="anaAbsentClass">--</div>
+            <div class="att-kpi-label">Highest Absenteeism</div>
         </div>
-        <div class="ana-card late">
-            <div class="ana-card-icon"><i class="fa fa-clock-o"></i></div>
-            <div class="ana-card-value" id="anaTotalLate">--</div>
-            <div class="ana-card-label">Total Late Arrivals</div>
+        <div class="att-kpi att-kpi-warning">
+            <div class="att-kpi-icon"><i class="fa fa-clock-o"></i></div>
+            <div class="att-kpi-value" id="anaTotalLate">--</div>
+            <div class="att-kpi-label">Total Late Arrivals</div>
         </div>
     </div>
 
-    <!-- Loading -->
-    <div class="ana-loading" id="anaLoading">
-        <i class="fa fa-spinner fa-spin"></i> Loading analytics...
+    <!-- Loading spinner (professional branded ring — shared DS .att-loader) -->
+    <div class="att-loading" id="anaLoading">
+        <div class="att-loader">
+            <span class="att-loader-ring"></span>
+            <span class="att-loader-text">Loading analytics&hellip;</span>
+        </div>
     </div>
 
     <!-- Empty State -->
-    <div class="ana-empty" id="anaEmpty">
+    <div class="att-empty" id="anaEmpty">
         <i class="fa fa-bar-chart"></i>
-        <p>Select a month and click Load to view attendance analytics.</p>
+        <p>No attendance data for this selection yet. Try another month, class, or section.</p>
     </div>
 
-    <!-- Class-wise Bar Chart -->
-    <div class="ana-panel" id="anaBarPanel" style="display:none;">
-        <div class="ana-panel-hdr">
-            <i class="fa fa-align-left"></i> Class-wise Attendance
+    <!-- Class-wise + Composition (two-up) -->
+    <div class="att-analytics-grid" id="anaAnalyticsGrid" style="display:none;">
+        <div class="att-card att-card--panel att-u-mb0" id="anaBarPanel">
+            <div class="att-card-hdr"><i class="fa fa-bar-chart"></i> Class-wise Attendance</div>
+            <div class="att-card-body">
+                <div class="att-chart att-chart-md att-chart--clickable"><canvas id="anaBarChart"></canvas></div>
+            </div>
         </div>
-        <div class="ana-panel-body" id="anaBarBody"></div>
+        <div class="att-card att-card--panel att-u-mb0" id="anaDonutPanel">
+            <div class="att-card-hdr"><i class="fa fa-pie-chart"></i> Attendance Composition</div>
+            <div class="att-card-body">
+                <div class="att-chart att-chart-sm att-chart--clickable"><canvas id="anaDonutChart"></canvas></div>
+            </div>
+        </div>
     </div>
 
     <!-- Monthly Trend -->
-    <div class="ana-panel" id="anaTrendPanel" style="display:none;">
-        <div class="ana-panel-hdr">
-            <i class="fa fa-line-chart"></i> Monthly Trend
-        </div>
-        <div class="ana-panel-body">
-            <div style="overflow-x:auto;">
-                <table class="ana-trend-table" id="anaTrendTable">
-                    <thead id="anaTrendHead"></thead>
-                    <tbody id="anaTrendBody"></tbody>
-                </table>
-            </div>
-            <div class="ana-empty" id="anaTrendEmpty" style="display:none;">
-                <p>Select a specific class to view monthly trend.</p>
+    <div class="att-card att-card--panel" id="anaTrendPanel" style="display:none;">
+        <div class="att-card-hdr"><i class="fa fa-line-chart"></i> Monthly Trend</div>
+        <div class="att-card-body">
+            <div class="att-chart att-chart-md att-chart--clickable"><canvas id="anaTrendChart"></canvas></div>
+            <div class="att-empty" id="anaTrendEmpty" style="display:none;">
+                <p>No monthly trend data available for this selection.</p>
             </div>
         </div>
     </div>
 
     <!-- Individual Search -->
-    <div class="ana-panel" id="anaIndPanel">
-        <div class="ana-panel-hdr">
+    <div class="att-card att-card--panel" id="anaIndPanel">
+        <div class="att-card-hdr">
             <i class="fa fa-user"></i> Individual Attendance Report
         </div>
-        <div class="ana-panel-body">
-            <div class="ana-individual">
-                <div class="ana-fg">
+        <div class="att-card-body">
+            <div class="att-toolbar-section" style="margin-bottom:16px;">
+                <div class="att-fg">
                     <label for="anaPersonId">Person ID</label>
                     <input type="text" id="anaPersonId" placeholder="Enter ID">
                 </div>
-                <div class="ana-fg">
+                <div class="att-fg">
                     <label for="anaPersonType">Type</label>
                     <select id="anaPersonType">
                         <option value="student">Student</option>
                         <option value="staff">Staff</option>
                     </select>
                 </div>
-                <div class="ana-fg" id="anaIndClassFg">
+                <div class="att-fg" id="anaIndClassFg">
                     <label for="anaIndClass">Class</label>
                     <select id="anaIndClass">
                         <option value="">Select Class</option>
@@ -424,34 +183,37 @@
                         ?>
                     </select>
                 </div>
-                <div class="ana-fg" id="anaIndSectionFg">
+                <div class="att-fg" id="anaIndSectionFg">
                     <label for="anaIndSection">Section</label>
                     <select id="anaIndSection" disabled>
                         <option value="">Select Section</option>
                     </select>
                 </div>
-                <div class="ana-fg" style="align-self:flex-end;">
-                    <button type="button" class="ana-btn ana-btn-primary" id="anaIndBtn">
+                <div class="att-fg" style="align-self:flex-end;">
+                    <button type="button" class="att-btn att-btn-primary" id="anaIndBtn">
                         <i class="fa fa-search"></i> Search
                     </button>
                 </div>
             </div>
-            <div class="ana-loading" id="anaIndLoading">
-                <i class="fa fa-spinner fa-spin"></i> Loading report...
+            <div class="att-loading" id="anaIndLoading">
+                <div class="att-loader">
+                    <span class="att-loader-ring"></span>
+                    <span class="att-loader-text">Loading report&hellip;</span>
+                </div>
             </div>
-            <div id="anaIndPersonInfo" class="ana-person-info" style="display:none;">
-                <i class="fa fa-user-circle"></i>
+            <div id="anaIndPersonInfo" class="att-person" style="display:none;">
+                <i class="fa fa-user-circle att-person-avatar"></i>
                 <div>
-                    <div class="ana-person-name" id="anaIndPersonName"></div>
-                    <div class="ana-person-meta">
+                    <div class="att-person-name" id="anaIndPersonName"></div>
+                    <div class="att-person-meta">
                         <span><i class="fa fa-id-badge"></i> <em id="anaIndPersonId2"></em></span>
                         <span id="anaIndPersonClassWrap"><i class="fa fa-graduation-cap"></i> <em id="anaIndPersonClass"></em></span>
                     </div>
                 </div>
             </div>
             <div id="anaIndResult" style="display:none;">
-                <div style="overflow-x:auto;">
-                    <table class="ana-report-table" id="anaIndTable">
+                <div class="att-table-wrap">
+                    <table class="att-table" id="anaIndTable">
                         <thead>
                             <tr>
                                 <th>Month</th>
@@ -467,18 +229,28 @@
                     </table>
                 </div>
             </div>
-            <div class="ana-empty" id="anaIndEmpty" style="display:none;">
+            <div class="att-empty" id="anaIndEmpty" style="display:none;">
                 <p>Enter a person ID, select class/section, and click Search.</p>
             </div>
         </div>
     </div>
 
     <!-- Toast -->
-    <div class="ana-toast" id="anaToast"></div>
+    <div class="att-toast" id="anaToast"></div>
 
+</div><!-- .att-wrap -->
 </div>
 </section>
 </div>
+
+<!-- Chart.js 4.x — self-hosted (served by XAMPP, no CDN dependency so it always
+     loads on localhost/offline). Falls back to the CDN only if the local copy is missing. -->
+<script src="<?= base_url('assets/js/chart.umd.min.js') ?>?v=4.4.4"></script>
+<script>
+  if (typeof window.Chart === 'undefined') {
+    document.write('<scr' + 'ipt src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"><\/scr' + 'ipt>');
+  }
+</script>
 
 <script>
 (function(){
@@ -490,23 +262,22 @@
 
     var classesData = <?= json_encode($Classes ?: []) ?>;
 
-    /* -- Refs -- */
+    /* ── Element refs ──────────────────────────────────────── */
     var elMonth     = document.getElementById('anaMonth');
     var elClass     = document.getElementById('anaClass');
     var elSection   = document.getElementById('anaSection');
     var elLoadBtn   = document.getElementById('anaLoadBtn');
+    var elExportCsv = document.getElementById('anaExportCsv');
     var elCards     = document.getElementById('anaCards');
     var elAvgPct    = document.getElementById('anaAvgPct');
+    var elAvgDelta  = document.getElementById('anaAvgDelta');
     var elRegular   = document.getElementById('anaRegularClass');
     var elAbsent    = document.getElementById('anaAbsentClass');
     var elTotalLate = document.getElementById('anaTotalLate');
     var elLoading   = document.getElementById('anaLoading');
     var elEmpty     = document.getElementById('anaEmpty');
-    var elBarPanel  = document.getElementById('anaBarPanel');
-    var elBarBody   = document.getElementById('anaBarBody');
+    var elGrid      = document.getElementById('anaAnalyticsGrid');
     var elTrendPanel = document.getElementById('anaTrendPanel');
-    var elTrendHead = document.getElementById('anaTrendHead');
-    var elTrendBody = document.getElementById('anaTrendBody');
     var elTrendEmpty = document.getElementById('anaTrendEmpty');
     var elPersonId  = document.getElementById('anaPersonId');
     var elPersonType = document.getElementById('anaPersonType');
@@ -520,28 +291,56 @@
     var elIndEmpty  = document.getElementById('anaIndEmpty');
     var elToast     = document.getElementById('anaToast');
 
-    /* -- Helpers -- */
+    /* ── Last-loaded data (for export + drill-down payloads) ── */
+    var lastAnalytics = [];
+    var lastTrend     = [];
+    var lastMonth     = '';
+
+    /* ── R1 concurrency control ────────────────────────────────
+       reqSeq  : monotonically-increasing token; only the response
+                 whose token still equals reqSeq may touch the UI.
+       curAbort: AbortController for the in-flight load; a new load
+                 aborts the previous one (analytics + its trend share
+                 one signal), so superseded requests are cancelled at
+                 the network layer AND ignored at the UI layer. */
+    var reqSeq       = 0;
+    var curAbort     = null;
+    var loadWatchdog = null;   // force-clears a stuck spinner if a request never settles
+
+    /* ── Small helpers ─────────────────────────────────────── */
     function esc(s) {
         if (s == null) return '';
         var d = document.createElement('div');
         d.appendChild(document.createTextNode(String(s)));
         return d.innerHTML;
     }
-
+    function cssVar(name, fallback) {
+        try {
+            var v = getComputedStyle(document.documentElement).getPropertyValue(name);
+            return (v && v.trim()) || fallback;
+        } catch (e) { return fallback; }
+    }
+    function debounce(fn, ms) {
+        var t;
+        return function () {
+            var ctx = this, args = arguments;
+            clearTimeout(t);
+            t = setTimeout(function () { fn.apply(ctx, args); }, ms);
+        };
+    }
     function showToast(msg, type) {
         elToast.textContent = msg;
-        elToast.className = 'ana-toast ' + (type || 'success');
+        elToast.className = 'att-toast ' + (type || 'success');
         setTimeout(function(){ elToast.classList.add('show'); }, 10);
         setTimeout(function(){ elToast.classList.remove('show'); }, 3000);
     }
-
-    function postData(url, data) {
+    function postData(url, data, signal) {
         var fd = new FormData();
         fd.append(CSRF_NAME, CSRF_HASH);
-        if (data) {
-            Object.keys(data).forEach(function(k){ fd.append(k, data[k]); });
-        }
-        return fetch(BASE + url, { method: 'POST', body: fd })
+        if (data) { Object.keys(data).forEach(function(k){ fd.append(k, data[k]); }); }
+        var opts = { method: 'POST', body: fd };
+        if (signal) opts.signal = signal;
+        return fetch(BASE + url, opts)
             .then(function(r) {
                 var ct = r.headers.get('content-type') || '';
                 if (ct.indexOf('application/json') !== -1) return r.json();
@@ -549,19 +348,409 @@
                     try { return JSON.parse(t); } catch(e) { throw new Error('Invalid response'); }
                 });
             })
-            .then(function(j) {
-                if (j && j.csrf_hash) CSRF_HASH = j.csrf_hash;
-                return j;
+            .then(function(j) { if (j && j.csrf_hash) CSRF_HASH = j.csrf_hash; return j; });
+    }
+    function chartsReady() { return typeof window.Chart !== 'undefined'; }
+
+    /* Resolve DS tokens once for the charts. */
+    var PALETTE = {
+        green:   cssVar('--att-green', '#16a34a'),
+        teal:    cssVar('--att-teal', '#0f766e'),
+        amber:   cssVar('--att-amber', '#d97706'),
+        red:     cssVar('--att-red', '#dc2626'),
+        blue:    cssVar('--att-blue', '#2563eb'),
+        grid:    cssVar('--att-border', '#e5e7eb'),
+        t2:      cssVar('--att-t2', '#555555'),
+        t3:      cssVar('--att-t3', '#888888'),
+        primary: cssVar('--att-primary', '#c9a24b'),
+        font:    cssVar('--att-font', 'Plus Jakarta Sans, sans-serif')
+    };
+    if (chartsReady()) {
+        Chart.defaults.font.family = PALETTE.font;
+        Chart.defaults.color = PALETTE.t2;
+        Chart.defaults.plugins.legend.labels.usePointStyle = true;
+    }
+    function colorForPct(pct) {
+        if (pct >= 90) return PALETTE.green;
+        if (pct >= 75) return PALETTE.teal;
+        if (pct >= 60) return PALETTE.amber;
+        return PALETTE.red;
+    }
+    function badgeClass(pct) {
+        if (pct >= 90) return 'att-badge-green';
+        if (pct >= 75) return 'att-badge-teal';
+        if (pct >= 60) return 'att-badge-amber';
+        return 'att-badge-red';
+    }
+
+    /* ═══════════════════════════════════════════════════════ */
+    /* CHART MANAGER — one registry; always destroy before draw */
+    /* ═══════════════════════════════════════════════════════ */
+    var ChartManager = (function(){
+        var instances = {};
+        return {
+            destroy: function(key){
+                if (instances[key]) { try { instances[key].destroy(); } catch(e){} delete instances[key]; }
+            },
+            destroyAll: function(){ var self = this; Object.keys(instances).forEach(function(k){ self.destroy(k); }); },
+            render: function(key, canvasId, config){
+                if (!chartsReady()) return null;
+                this.destroy(key);
+                var cv = document.getElementById(canvasId);
+                if (!cv) return null;
+                // Canonical fix for "Canvas is already in use": kill any chart
+                // Chart.js still associates with this canvas before recreating.
+                try { var ex = Chart.getChart ? Chart.getChart(cv) : null; if (ex) ex.destroy(); } catch(e){}
+                // Never let a render failure throw out of the load flow (which
+                // would wipe the whole page to the empty state).
+                try {
+                    instances[key] = new Chart(cv.getContext('2d'), config);
+                } catch(e){
+                    try { console.error('[attendance-analytics] chart render failed [' + key + ']:', e); } catch(_){}
+                    return null;
+                }
+                return instances[key];
+            },
+            resizeAll: function(){
+                Object.keys(instances).forEach(function(k){ try { instances[k].resize(); } catch(e){} });
+            }
+        };
+    })();
+
+    /* Force a remeasure on the next frame — belt-and-suspenders so charts get
+       correct dimensions even inside AdminLTE panels/transitions. */
+    function kickResize(){
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(function(){ ChartManager.resizeAll(); });
+        } else {
+            setTimeout(function(){ ChartManager.resizeAll(); }, 30);
+        }
+    }
+
+    /* ═══════════════════════════════════════════════════════ */
+    /* DRILL-DOWN HOOK — single choke point; backend detail views */
+    /* are a future phase, so today this only signals intent.     */
+    /* ═══════════════════════════════════════════════════════ */
+    function handleDrill(type, payload){
+        try { console.debug('[attendance-analytics] drill-down', type, payload); } catch(e){}
+        // FUTURE: route to a detailed report, e.g.
+        //   window.location = BASE + 'attendance/report/' + type + '?...';
+        showToast('Detailed ' + type + ' report — coming soon.', 'info');
+    }
+    function clickIndex(elements){
+        return (elements && elements.length) ? elements[0].index : -1;
+    }
+
+    /* ═══════════════════════════════════════════════════════ */
+    /* RENDER HELPERS                                            */
+    /* ═══════════════════════════════════════════════════════ */
+    function renderAttendanceBarChart(analytics){
+        var sorted = analytics.slice().sort(function(a,b){
+            return (parseFloat(b.present_pct)||0) - (parseFloat(a.present_pct)||0);
+        });
+        var labels = sorted.map(function(a){ return a.label || ((a['class']||'') + ' ' + (a.section||'')); });
+        var data   = sorted.map(function(a){ return parseFloat(a.present_pct) || 0; });
+        var colors = data.map(colorForPct);
+
+        ChartManager.render('bar', 'anaBarChart', {
+            type: 'bar',
+            data: { labels: labels, datasets: [{
+                label: 'Attendance %', data: data,
+                backgroundColor: colors, borderRadius: 6, maxBarThickness: 46
+            }]},
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { callbacks: { label: function(c){ return ' ' + c.parsed.y.toFixed(1) + '%'; } } }
+                },
+                scales: {
+                    y: { beginAtZero: true, max: 100, grid: { color: PALETTE.grid },
+                         ticks: { callback: function(v){ return v + '%'; } } },
+                    x: { grid: { display: false }, ticks: { autoSkip: false, maxRotation: 60, minRotation: 0 } }
+                },
+                onClick: function(evt, els, chart){
+                    var i = clickIndex(els); if (i < 0) return;
+                    handleDrill('class', { index: i, label: chart.data.labels[i], row: sorted[i] || null });
+                }
+            }
+        });
+    }
+
+    function renderCompositionChart(analytics){
+        var agg = { P:0, T:0, A:0, L:0 };
+        analytics.forEach(function(a){
+            var t = a.totals || {};
+            agg.P += parseInt(t.P,10) || 0;
+            agg.T += parseInt(t.T,10) || 0;
+            agg.A += parseInt(t.A,10) || 0;
+            agg.L += parseInt(t.L,10) || 0;
+        });
+        var labels = ['Present','Late','Absent','Leave'];
+        var data   = [agg.P, agg.T, agg.A, agg.L];
+        var colors = [PALETTE.green, PALETTE.amber, PALETTE.red, PALETTE.blue];
+
+        ChartManager.render('donut', 'anaDonutChart', {
+            type: 'doughnut',
+            data: { labels: labels, datasets: [{ data: data, backgroundColor: colors, borderWidth: 0, hoverOffset: 6 }] },
+            options: {
+                responsive: true, maintainAspectRatio: false, cutout: '62%',
+                plugins: {
+                    legend: { position: 'bottom' },
+                    tooltip: { callbacks: { label: function(c){
+                        var tot = c.dataset.data.reduce(function(s,v){ return s + v; }, 0);
+                        var pc = tot > 0 ? ((c.parsed / tot) * 100).toFixed(1) : '0.0';
+                        return ' ' + c.label + ': ' + c.parsed + ' (' + pc + '%)';
+                    } } }
+                },
+                onClick: function(evt, els){
+                    var i = clickIndex(els); if (i < 0) return;
+                    handleDrill('composition', { index: i, segment: labels[i], value: data[i] });
+                }
+            }
+        });
+    }
+
+    function renderTrendChart(trend){
+        // cached===false → no data for that month → null so the line shows a gap
+        var labels = trend.map(function(t){ return t.month ? t.month.substring(0,3) : ''; });
+        var data   = trend.map(function(t){ return (t.cached === false) ? null : (parseFloat(t.present_pct) || 0); });
+        var hasData = data.some(function(v){ return v !== null; });
+
+        if (!hasData) {
+            ChartManager.destroy('trend');
+            elTrendEmpty.style.display = 'block';
+            return;
+        }
+        elTrendEmpty.style.display = 'none';
+
+        ChartManager.render('trend', 'anaTrendChart', {
+            type: 'line',
+            data: { labels: labels, datasets: [{
+                label: 'Attendance %', data: data,
+                borderColor: PALETTE.primary, backgroundColor: 'rgba(201,162,75,.14)',
+                fill: true, tension: 0.35, spanGaps: false,
+                pointRadius: 4, pointHoverRadius: 6,
+                pointBackgroundColor: PALETTE.primary, borderWidth: 2
+            }]},
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { callbacks: { label: function(c){
+                        return c.parsed.y == null ? ' No data' : ' ' + c.parsed.y.toFixed(1) + '%';
+                    } } }
+                },
+                scales: {
+                    y: { beginAtZero: true, max: 100, grid: { color: PALETTE.grid },
+                         ticks: { callback: function(v){ return v + '%'; } } },
+                    x: { grid: { display: false } }
+                },
+                onClick: function(evt, els){
+                    var i = clickIndex(els); if (i < 0) return;
+                    handleDrill('trend', { index: i, month: trend[i] ? trend[i].month : '', year: trend[i] ? trend[i].year : '' });
+                }
+            }
+        });
+    }
+
+    /* ── KPI summary + previous-period delta ───────────────── */
+    function renderSummary(analytics){
+        var totalPct = 0, totalLate = 0;
+        var bestPct = -1, bestLabel = '--';
+        var worstPct = 101, worstLabel = '--';
+
+        analytics.forEach(function(a){
+            var pct = parseFloat(a.present_pct) || 0;
+            totalPct += pct;
+            totalLate += parseInt(a.late_count, 10) || 0;
+            if (pct > bestPct)  { bestPct = pct;  bestLabel = a.label || (a['class'] + ' ' + a.section); }
+            if (pct < worstPct) { worstPct = pct; worstLabel = a.label || (a['class'] + ' ' + a.section); }
+        });
+
+        var avg = analytics.length > 0 ? (totalPct / analytics.length).toFixed(1) : '0';
+        elAvgPct.textContent = avg + '%';
+        elRegular.textContent = bestLabel;  elRegular.title = bestPct.toFixed(1) + '%';
+        elAbsent.textContent = worstLabel;  elAbsent.title = worstPct.toFixed(1) + '%';
+        elTotalLate.textContent = totalLate;
+    }
+
+    function updateAvgDelta(trend){
+        // Previous-period comparison from the trend series (same, consistent basis).
+        elAvgDelta.style.display = 'none';
+        if (!trend || !trend.length || !lastMonth) return;
+
+        var curIdx = -1;
+        for (var i = 0; i < trend.length; i++) {
+            if (trend[i].month === lastMonth) { curIdx = i; break; }
+        }
+        if (curIdx < 0 || trend[curIdx].cached === false) return;
+
+        var prevIdx = -1;
+        for (var j = curIdx - 1; j >= 0; j--) {
+            if (trend[j].cached !== false) { prevIdx = j; break; }
+        }
+        if (prevIdx < 0) return;
+
+        var cur  = parseFloat(trend[curIdx].present_pct)  || 0;
+        var prev = parseFloat(trend[prevIdx].present_pct) || 0;
+        var diff = +(cur - prev).toFixed(1);
+
+        var cls = 'att-delta-flat', arrow = '▬';
+        if (diff > 0) { cls = 'att-delta-up';   arrow = '▲'; }
+        else if (diff < 0) { cls = 'att-delta-down'; arrow = '▼'; }
+
+        elAvgDelta.className = 'att-kpi-delta ' + cls;
+        elAvgDelta.textContent = arrow + ' ' + Math.abs(diff) + '% vs ' + trend[prevIdx].month.substring(0,3);
+        elAvgDelta.style.display = 'inline-flex';
+    }
+
+    /* ═══════════════════════════════════════════════════════ */
+    /* LOAD ANALYTICS (auto-refresh + manual)                   */
+    /* ═══════════════════════════════════════════════════════ */
+    function setLoading(on){
+        if (on) {
+            elLoading.style.display = 'block';
+            elEmpty.style.display = 'none';
+            elCards.style.display = 'none';
+            elGrid.style.display = 'none';
+            elTrendPanel.style.display = 'none';
+            elLoadBtn.disabled = true;
+        } else {
+            elLoading.style.display = 'none';
+            elLoadBtn.disabled = false;
+        }
+    }
+
+    function loadAnalytics(){
+        var month = elMonth.value;
+        if (!month) { showToast('Please select a month.', 'error'); return; }
+
+        /* R1: supersede any in-flight load — cancel it and claim a new token. */
+        var myReq = ++reqSeq;
+        if (curAbort) { try { curAbort.abort(); } catch(e){} }
+        curAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        var signal = curAbort ? curAbort.signal : undefined;
+
+        setLoading(true);
+
+        /* Watchdog: if this request never settles (server hang / dropped
+           connection), don't spin forever — clear the spinner and surface it. */
+        if (loadWatchdog) clearTimeout(loadWatchdog);
+        loadWatchdog = setTimeout(function(){
+            if (myReq === reqSeq) {                 // still the active request → it stalled
+                if (curAbort) { try { curAbort.abort(); } catch(e){} }
+                setLoading(false);
+                ChartManager.destroyAll();
+                elEmpty.style.display = 'block';
+                showToast('Loading timed out — the server did not respond. Click Refresh to retry.', 'error');
+            }
+        }, 15000);
+
+        var payload = { month: month };
+        if (elClass.value) payload['class'] = elClass.value;
+        if (elSection.value) payload.section = elSection.value;
+
+        postData('attendance/fetch_analytics', payload, signal)
+            .then(function(res){
+                if (myReq !== reqSeq) return;   // R1: a newer load superseded us — ignore stale response
+                clearTimeout(loadWatchdog);
+                setLoading(false);
+
+                if (!res || res.status === 'error') {
+                    showToast(res && res.message ? res.message : 'Failed to load analytics.', 'error');
+                    ChartManager.destroyAll();
+                    elEmpty.style.display = 'block';
+                    return;
+                }
+
+                var analytics = res.analytics || [];
+                lastAnalytics = analytics;
+                lastMonth = month;
+
+                if (analytics.length === 0) {
+                    ChartManager.destroyAll();
+                    elEmpty.style.display = 'block';
+                    return;
+                }
+
+                renderSummary(analytics);
+
+                // Containers MUST be visible before charts are created, otherwise
+                // Chart.js measures a 0x0 canvas (hidden parent) and nothing draws.
+                elCards.style.display = 'grid';
+                elGrid.style.display = 'grid';
+
+                renderAttendanceBarChart(analytics);
+                renderCompositionChart(analytics);
+                kickResize();
+
+                loadTrend(myReq, signal);
+            })
+            .catch(function(err){
+                if (myReq !== reqSeq) return;   // R1: stale (incl. aborted) — do not touch UI
+                if (err && err.name === 'AbortError') return;
+                clearTimeout(loadWatchdog);
+                setLoading(false);
+                try { console.error('[attendance-analytics] load failed:', err); } catch(e){}
+                showToast('Could not load analytics: ' + ((err && err.message) || 'network error') + '.', 'error');
+                ChartManager.destroyAll();
+                elEmpty.style.display = 'block';
             });
     }
 
-    function barColor(pct) {
-        if (pct >= 90) return 'green';
-        if (pct >= 75) return 'teal';
-        if (pct >= 60) return 'orange';
-        return 'red';
+    function loadTrend(token, signal){
+        elTrendPanel.style.display = 'block';
+        elTrendEmpty.style.display = 'none';
+
+        var payload = {};
+        if (elClass.value) payload['class'] = elClass.value;
+        if (elSection.value) payload.section = elSection.value;
+
+        return postData('attendance/fetch_monthly_trend', payload, signal)
+            .then(function(res){
+                if (token !== reqSeq) return;   // R1: superseded — ignore stale trend
+                var trend = (res && res.trend) ? res.trend : [];
+                lastTrend = trend;
+                renderTrendChart(trend);
+                updateAvgDelta(trend);
+                kickResize();
+            })
+            .catch(function(err){
+                if (token !== reqSeq) return;   // R1: stale (incl. aborted)
+                if (err && err.name === 'AbortError') return;
+                ChartManager.destroy('trend');
+                elTrendEmpty.style.display = 'block';
+            });
     }
 
+    /* ── CSV export (client-side; no backend) ──────────────── */
+    function csvCell(v){
+        v = String(v == null ? '' : v);
+        if (/[",\r\n]/.test(v)) v = '"' + v.replace(/"/g, '""') + '"';
+        return v;
+    }
+    function exportCsv(){
+        if (!lastAnalytics || !lastAnalytics.length) { showToast('Nothing to export yet.', 'error'); return; }
+        var rows = [['Class','Section','Students','Present %','Absent %','Late Count']];
+        lastAnalytics.forEach(function(a){
+            rows.push([a['class'] || '', a.section || '', a.students || 0,
+                       a.present_pct || 0, a.absent_pct || 0, a.late_count || 0]);
+        });
+        var csv = rows.map(function(r){ return r.map(csvCell).join(','); }).join('\r\n');
+        var blob = new Blob(["﻿" + csv], { type: 'text/csv;charset=utf-8;' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'attendance-analytics-' + (lastMonth || 'export') + '.csv';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast('CSV exported.', 'success');
+    }
+
+    /* ═══════════════════════════════════════════════════════ */
+    /* FILTERS — auto-refresh (debounced) + manual + sections   */
+    /* ═══════════════════════════════════════════════════════ */
     function populateSections(selectEl, className) {
         selectEl.innerHTML = '<option value="">All Sections</option>';
         if (!className) { selectEl.disabled = true; return; }
@@ -570,18 +759,37 @@
             if (c.class_name === className && !seen[c.section]) {
                 seen[c.section] = true;
                 var o = document.createElement('option');
-                o.value = c.section;
-                o.textContent = c.section;
+                o.value = c.section; o.textContent = c.section;
                 selectEl.appendChild(o);
             }
         });
         selectEl.disabled = false;
     }
 
-    /* -- Section dropdowns -- */
-    elClass.addEventListener('change', function() {
-        populateSections(elSection, elClass.value);
+    var debouncedLoad = debounce(loadAnalytics, 250);
+
+    /* Instant feedback: show the spinner the moment a filter changes, THEN
+       debounce the actual fetch. Removes the "dead time" latency where the
+       page looked frozen between the change and the request firing. */
+    function onFilterChange(){
+        setLoading(true);
+        debouncedLoad();
+    }
+
+    elMonth.addEventListener('change', onFilterChange);
+    elClass.addEventListener('change', function(){
+        populateSections(elSection, elClass.value);   // reset sections to match class
+        onFilterChange();
     });
+    elSection.addEventListener('change', onFilterChange);
+    elLoadBtn.addEventListener('click', loadAnalytics);       // manual refresh (immediate)
+    elExportCsv.addEventListener('click', exportCsv);
+
+    /* ═══════════════════════════════════════════════════════ */
+    /* INDIVIDUAL REPORT                                        */
+    /* ═══════════════════════════════════════════════════════ */
+    elIndBtn.addEventListener('click', loadIndividual);
+
     elIndClass.addEventListener('change', function() {
         var cls = elIndClass.value;
         elIndSection.innerHTML = '<option value="">Select Section</option>';
@@ -591,164 +799,14 @@
             if (c.class_name === cls && !seen[c.section]) {
                 seen[c.section] = true;
                 var o = document.createElement('option');
-                o.value = c.section;
-                o.textContent = c.section;
+                o.value = c.section; o.textContent = c.section;
                 elIndSection.appendChild(o);
             }
         });
         elIndSection.disabled = false;
     });
 
-    /* -- Load Analytics -- */
-    elLoadBtn.addEventListener('click', loadAnalytics);
-
-    function loadAnalytics() {
-        var month = elMonth.value;
-        if (!month) { showToast('Please select a month.', 'error'); return; }
-
-        elEmpty.style.display = 'none';
-        elCards.style.display = 'none';
-        elBarPanel.style.display = 'none';
-        elTrendPanel.style.display = 'none';
-        elLoading.style.display = 'block';
-        elLoadBtn.disabled = true;
-
-        var payload = { month: month };
-        if (elClass.value) payload['class'] = elClass.value;
-        if (elSection.value) payload.section = elSection.value;
-
-        postData('attendance/fetch_analytics', payload)
-            .then(function(res) {
-                elLoading.style.display = 'none';
-                elLoadBtn.disabled = false;
-
-                if (!res || res.status === 'error') {
-                    showToast(res && res.message ? res.message : 'Failed to load analytics.', 'error');
-                    elEmpty.style.display = 'block';
-                    return;
-                }
-
-                var analytics = res.analytics || [];
-                if (analytics.length === 0) {
-                    elEmpty.style.display = 'block';
-                    return;
-                }
-
-                renderSummary(analytics);
-                renderBarChart(analytics);
-                elCards.style.display = 'grid';
-                elBarPanel.style.display = 'block';
-
-                /* Load trend if a class is selected */
-                if (elClass.value) {
-                    loadTrend();
-                } else {
-                    elTrendPanel.style.display = 'block';
-                    elTrendEmpty.style.display = 'block';
-                    elTrendHead.innerHTML = '';
-                    elTrendBody.innerHTML = '';
-                }
-            })
-            .catch(function() {
-                elLoading.style.display = 'none';
-                elLoadBtn.disabled = false;
-                showToast('Network error. Please try again.', 'error');
-                elEmpty.style.display = 'block';
-            });
-    }
-
-    function renderSummary(analytics) {
-        var totalPct = 0;
-        var totalLate = 0;
-        var bestPct = -1, bestLabel = '--';
-        var worstPct = 101, worstLabel = '--';
-
-        analytics.forEach(function(a) {
-            var pct = parseFloat(a.present_pct) || 0;
-            totalPct += pct;
-            totalLate += parseInt(a.late_count, 10) || 0;
-            if (pct > bestPct) { bestPct = pct; bestLabel = a.label || (a['class'] + ' ' + a.section); }
-            if (pct < worstPct) { worstPct = pct; worstLabel = a.label || (a['class'] + ' ' + a.section); }
-        });
-
-        var avg = analytics.length > 0 ? (totalPct / analytics.length).toFixed(1) : '0';
-        elAvgPct.textContent = avg + '%';
-        elRegular.textContent = bestLabel;
-        elRegular.title = bestPct.toFixed(1) + '%';
-        elAbsent.textContent = worstLabel;
-        elAbsent.title = worstPct.toFixed(1) + '%';
-        elTotalLate.textContent = totalLate;
-    }
-
-    function renderBarChart(analytics) {
-        var sorted = analytics.slice().sort(function(a, b) {
-            return (parseFloat(b.present_pct) || 0) - (parseFloat(a.present_pct) || 0);
-        });
-
-        var html = '';
-        sorted.forEach(function(a) {
-            var pct = parseFloat(a.present_pct) || 0;
-            var label = esc(a.label || (a['class'] + ' ' + a.section));
-            var color = barColor(pct);
-            var widthPct = Math.max(pct, 2);
-            html += '<div class="ana-bar-row">'
-                + '<div class="ana-bar-label" title="' + label + '">' + label + '</div>'
-                + '<div class="ana-bar-track">'
-                + '<div class="ana-bar ' + color + '" style="width:' + widthPct + '%">'
-                + (pct >= 15 ? pct.toFixed(1) + '%' : '')
-                + '</div>'
-                + '</div>'
-                + '<div class="ana-bar-meta">' + pct.toFixed(1) + '%</div>'
-                + '</div>';
-        });
-
-        elBarBody.innerHTML = html;
-    }
-
-    /* -- Monthly Trend -- */
-    function loadTrend() {
-        elTrendPanel.style.display = 'block';
-        elTrendEmpty.style.display = 'none';
-        elTrendHead.innerHTML = '';
-        elTrendBody.innerHTML = '';
-
-        var payload = {};
-        if (elClass.value) payload['class'] = elClass.value;
-        if (elSection.value) payload.section = elSection.value;
-
-        postData('attendance/fetch_monthly_trend', payload)
-            .then(function(res) {
-                if (!res || res.status === 'error' || !res.trend || res.trend.length === 0) {
-                    elTrendEmpty.style.display = 'block';
-                    return;
-                }
-
-                var trend = res.trend;
-                var headHtml = '<tr><th>Month</th><th>Year</th><th>Attendance %</th></tr>';
-                elTrendHead.innerHTML = headHtml;
-
-                var bodyHtml = '';
-                trend.forEach(function(t) {
-                    var pct = parseFloat(t.present_pct) || 0;
-                    var color = barColor(pct);
-                    bodyHtml += '<tr>'
-                        + '<td>' + esc(t.month) + '</td>'
-                        + '<td class="mono" style="font-family:var(--ana-font-m);font-size:12px;">' + esc(t.year) + '</td>'
-                        + '<td><span class="ana-trend-cell ' + color + '">' + pct.toFixed(1) + '%</span></td>'
-                        + '</tr>';
-                });
-                elTrendBody.innerHTML = bodyHtml;
-            })
-            .catch(function() {
-                elTrendEmpty.style.display = 'block';
-            });
-    }
-
-    /* -- Individual Report -- */
-    elIndBtn.addEventListener('click', loadIndividual);
-
-    /* Class/Section apply to STUDENTS only — staff aren't tied to a class/section.
-       Hide those fields (and skip their validation) when Type = Staff. */
+    /* Class/Section apply to STUDENTS only — hide them for Staff. */
     function syncIndividualType() {
         var isStudent = elPersonType.value === 'student';
         var cfg = document.getElementById('anaIndClassFg');
@@ -776,10 +834,7 @@
         elIndBtn.disabled = true;
 
         postData('attendance/fetch_individual_report', {
-            person_id: pid,
-            person_type: ptype,
-            'class': cls,
-            section: sec
+            person_id: pid, person_type: ptype, 'class': cls, section: sec
         })
             .then(function(res) {
                 elIndLoading.style.display = 'none';
@@ -794,7 +849,6 @@
                 var months = res.months || [];
                 var totals = res.totals || {};
 
-                // Show person info banner
                 var elInfo = document.getElementById('anaIndPersonInfo');
                 var pName = res.person_name || '';
                 if (pName) {
@@ -822,23 +876,20 @@
                 var bodyHtml = '';
                 months.forEach(function(m) {
                     var st = m.stats || {};
-                    // Controller returns stats keyed P/A/L/H/T/V (+ present_pct).
                     var present = parseInt(st.P, 10) || 0;
                     var absent  = parseInt(st.A, 10) || 0;
                     var late    = parseInt(st.T, 10) || 0;
                     var leave   = parseInt(st.L, 10) || 0;
-                    var total   = present + absent + late + leave;   // working days
+                    var total   = present + absent + late + leave;
                     var pct = (st.present_pct != null) ? Number(st.present_pct).toFixed(1)
                               : (total > 0 ? (((present + late) / total) * 100).toFixed(1) : '0.0');
-                    var color = barColor(parseFloat(pct));
-
                     bodyHtml += '<tr>'
                         + '<td>' + esc(m.month) + (m.year ? ' ' + esc(m.year) : '') + '</td>'
-                        + '<td class="mono">' + present + '</td>'
-                        + '<td class="mono">' + absent + '</td>'
-                        + '<td class="mono">' + late + '</td>'
-                        + '<td class="mono">' + total + '</td>'
-                        + '<td><span class="ana-trend-cell ' + color + '">' + pct + '%</span></td>'
+                        + '<td class="att-mono">' + present + '</td>'
+                        + '<td class="att-mono">' + absent + '</td>'
+                        + '<td class="att-mono">' + late + '</td>'
+                        + '<td class="att-mono">' + total + '</td>'
+                        + '<td><span class="att-badge ' + badgeClass(parseFloat(pct)) + '">' + pct + '%</span></td>'
                         + '</tr>';
                 });
                 elIndBody.innerHTML = bodyHtml;
@@ -850,15 +901,14 @@
                 var tTotal   = tPresent + tAbsent + tLate + tLeave;
                 var tPct = (totals.present_pct != null) ? Number(totals.present_pct).toFixed(1)
                            : (tTotal > 0 ? (((tPresent + tLate) / tTotal) * 100).toFixed(1) : '0.0');
-                var tColor = barColor(parseFloat(tPct));
 
                 elIndFoot.innerHTML = '<tr>'
                     + '<td>Total</td>'
-                    + '<td class="mono">' + tPresent + '</td>'
-                    + '<td class="mono">' + tAbsent + '</td>'
-                    + '<td class="mono">' + tLate + '</td>'
-                    + '<td class="mono">' + tTotal + '</td>'
-                    + '<td><span class="ana-trend-cell ' + tColor + '">' + tPct + '%</span></td>'
+                    + '<td class="att-mono">' + tPresent + '</td>'
+                    + '<td class="att-mono">' + tAbsent + '</td>'
+                    + '<td class="att-mono">' + tLate + '</td>'
+                    + '<td class="att-mono">' + tTotal + '</td>'
+                    + '<td><span class="att-badge ' + badgeClass(parseFloat(tPct)) + '">' + tPct + '%</span></td>'
                     + '</tr>';
 
                 elIndResult.style.display = 'block';
@@ -870,6 +920,12 @@
                 elIndEmpty.style.display = 'block';
             });
     }
+
+    /* ── Init: graceful degrade if the chart CDN is unreachable, then auto-load ── */
+    if (!chartsReady()) {
+        showToast('Chart library unavailable — showing data without charts.', 'error');
+    }
+    loadAnalytics();
 
 })();
 </script>

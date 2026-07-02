@@ -1,0 +1,689 @@
+/* ============================================================================
+ * ZenX ERP — Attendance Design System (ADS)
+ * ----------------------------------------------------------------------------
+ * ONE shared, reusable, cacheable stylesheet for the ENTIRE Attendance module.
+ *
+ * Phase 1 (current) APPLIES this system to:
+ *     • attendance/settings.php   (att-* — already used this vocabulary)
+ *     • attendance/analytics.php  (migrated from its private ana-* vocabulary)
+ *
+ * DESIGNED (not yet applied) to also serve, without future architectural change:
+ *     Dashboard (index) · Attendance Register (student) · Staff Attendance ·
+ *     Corrections (control) · Punch Log · Student Leave · Scan QR · Reports ·
+ *     any future Attendance page.
+ *   Those pages currently ship private vocabularies (ana-/ac-/sa-/pl-/sl-/scan-)
+ *   and are intentionally UNTOUCHED in Phase 1 — this file only provides the
+ *   generic primitives so they can adopt `att-*` incrementally later.
+ *
+ * PRESENTATION LAYER ONLY. No controller/model/helper/route/API/Firestore
+ * dependency. Consumes the global admin theme tokens (--gold/--bg/--t1/...)
+ * defined by the admin layout; it never redefines them.
+ *
+ * Namespacing: every class is `att-*` (or `att-u-*` for utilities) so nothing
+ * collides with Bootstrap 3.3.7 or AdminLTE.
+ *
+ * Version: 1.0.0  (bump the ?v= query in the <link> tags on any edit)
+ * ========================================================================== */
+
+/* ── Design tokens (aliases over the global admin theme) ─────────────────── */
+:root {
+    --att-primary:      var(--gold);
+    --att-primary-dim:  var(--gold-dim);
+    --att-primary-ring: var(--gold-ring);
+    --att-primary-glow: var(--gold-glow);
+
+    --att-bg:     var(--bg);
+    --att-bg2:    var(--bg2);
+    --att-bg3:    var(--bg3);
+    --att-border: var(--border);
+    --att-t1:     var(--t1);
+    --att-t2:     var(--t2);
+    --att-t3:     var(--t3);
+    --att-shadow: var(--sh);
+    --att-ease:   var(--ease, all .25s ease);
+
+    --att-font:   var(--font-b, 'Plus Jakarta Sans', sans-serif);
+    --att-font-d: var(--font-d, var(--font-b, sans-serif));
+    --att-font-m: var(--font-m, 'JetBrains Mono', monospace);
+
+    --att-radius: 10px;
+    --att-radius-sm: 8px;
+
+    /* Semantic accents */
+    --att-green:  #16a34a;
+    --att-teal:   #0f766e;
+    --att-blue:   #2563eb;
+    --att-amber:  #d97706;
+    --att-red:    #dc2626;
+    --att-danger: #c0392b;
+    --att-danger-hover: #a93226;
+
+    /* Soft (12%) accent fills */
+    --att-green-bg:  rgba(22,163,74,.12);
+    --att-teal-bg:   rgba(15,118,110,.12);
+    --att-blue-bg:   rgba(37,99,235,.12);
+    --att-amber-bg:  rgba(217,119,6,.12);
+    --att-red-bg:    rgba(220,38,38,.12);
+}
+
+/* ── Page shell ─────────────────────────────────────────────────────────── */
+.att-wrap { padding: 20px 22px 40px; }
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+.att-header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 14px; padding: 18px 22px; margin-bottom: 24px;
+    background: var(--att-bg2); border: 1px solid var(--att-border);
+    border-radius: var(--att-radius); box-shadow: var(--att-shadow);
+    flex-wrap: wrap;
+}
+.att-header-left { display: flex; align-items: center; gap: 14px; }
+.att-header-icon {
+    width: 44px; height: 44px; border-radius: 10px;
+    background: var(--att-primary); display: flex; align-items: center;
+    justify-content: center; flex-shrink: 0;
+    box-shadow: 0 0 18px var(--att-primary-glow);
+}
+.att-header-icon i { color: #fff; font-size: 20px; }
+.att-page-title {
+    font-size: 18px; font-weight: 700; color: var(--att-t1);
+    font-family: var(--att-font-d); margin: 0;
+}
+.att-subtitle {
+    font-size: 13px; color: var(--att-t3); margin: 3px 0 0;
+    font-family: var(--att-font);
+}
+.att-header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* Breadcrumb */
+.att-breadcrumb {
+    list-style: none; display: flex; gap: 6px; margin: 4px 0 0; padding: 0;
+    font-size: 12px; color: var(--att-t3); flex-wrap: wrap;
+}
+.att-breadcrumb li + li::before { content: '/'; margin-right: 6px; color: var(--att-t3); }
+.att-breadcrumb a { color: var(--att-primary); text-decoration: none; }
+.att-breadcrumb a:hover { text-decoration: underline; }
+
+/* ── Tabs ───────────────────────────────────────────────────────────────── */
+.att-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 22px; }
+.att-tab {
+    display: flex; align-items: center; gap: 7px;
+    padding: 9px 18px; border-radius: 8px; border: 1px solid var(--att-border);
+    background: var(--att-bg2); color: var(--att-t2); font-size: 12.5px; font-weight: 600;
+    cursor: pointer; transition: var(--att-ease); white-space: nowrap; user-select: none;
+}
+.att-tab:hover { border-color: var(--att-primary); color: var(--att-primary); }
+.att-tab.active {
+    background: var(--att-primary); color: #fff; border-color: var(--att-primary);
+    box-shadow: 0 0 14px var(--att-primary-glow);
+}
+.att-tab i { font-size: 13px; }
+.att-pane { display: none; }
+.att-pane.active { display: block; }
+
+/* ── Card ───────────────────────────────────────────────────────────────── */
+.att-card {
+    background: var(--att-bg2); border: 1px solid var(--att-border);
+    border-radius: var(--att-radius); padding: 22px; margin-bottom: 18px;
+    box-shadow: var(--att-shadow);
+}
+.att-card-title {
+    font-size: 14px; font-weight: 700; color: var(--att-t1);
+    margin-bottom: 16px; display: flex; align-items: center; gap: 8px;
+}
+.att-card-title i { color: var(--att-primary); font-size: 15px; }
+
+/* Panel variant: a card with a divided header + padded body (no outer padding).
+   Use `att-card att-card--panel` + att-card-hdr + att-card-body. */
+.att-card--panel { padding: 0; overflow: hidden; }
+.att-card-hdr {
+    padding: 16px 20px; border-bottom: 1px solid var(--att-border);
+    font-family: var(--att-font); font-size: 14px; font-weight: 700;
+    color: var(--att-t1); display: flex; align-items: center; gap: 8px;
+}
+.att-card-hdr i { color: var(--att-primary); }
+.att-card-body { padding: 20px; }
+
+/* ── Toolbar / filter bar ───────────────────────────────────────────────── */
+.att-toolbar {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;
+    padding: 18px 20px; border-radius: var(--att-radius);
+    background: var(--att-bg2); border: 1px solid var(--att-border);
+    box-shadow: var(--att-shadow); margin-bottom: 20px;
+}
+.att-toolbar-section { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.att-toolbar-divider { width: 1px; align-self: stretch; background: var(--att-border); }
+
+/* Compact filter field group (label above a single control) */
+.att-fg { display: flex; flex-direction: column; gap: 4px; }
+.att-fg label {
+    font-family: var(--att-font); font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .5px; color: var(--att-t3);
+}
+.att-fg select, .att-fg input[type="text"], .att-fg input[type="date"],
+.att-fg input[type="number"], .att-fg input[type="time"] {
+    font-family: var(--att-font); font-size: 13px; height: 38px;
+    border-radius: 6px; padding: 0 12px; border: 1px solid var(--att-border);
+    background: var(--att-bg); color: var(--att-t1); transition: var(--att-ease);
+    min-width: 150px; box-sizing: border-box;
+}
+.att-fg select:focus, .att-fg input:focus {
+    outline: none; border-color: var(--att-primary);
+    box-shadow: 0 0 0 3px var(--att-primary-ring);
+}
+
+/* ── Stacked form field + grid ──────────────────────────────────────────── */
+.att-grid { display: grid; gap: 14px; }
+.att-grid-2 { grid-template-columns: 1fr 1fr; }
+.att-grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+@media (max-width:640px) { .att-grid-2, .att-grid-3 { grid-template-columns: 1fr; } }
+
+.att-field label {
+    display: block; font-size: 11.5px; font-weight: 600;
+    color: var(--att-t2); margin-bottom: 5px; text-transform: uppercase; letter-spacing: .4px;
+}
+.att-field input, .att-field select, .att-field textarea {
+    width: 100%; padding: 9px 12px; border-radius: 8px;
+    border: 1px solid var(--att-border); background: var(--att-bg3);
+    color: var(--att-t1); font-size: 13px; font-family: var(--att-font);
+    transition: border-color .25s ease, box-shadow .25s ease;
+    outline: none; box-sizing: border-box;
+}
+.att-field input:focus, .att-field select:focus, .att-field textarea:focus {
+    border-color: var(--att-primary); box-shadow: 0 0 0 3px var(--att-primary-ring);
+}
+.att-field select option { background: var(--att-bg3); }
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+.att-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    padding: 9px 18px; border-radius: 8px; border: none;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    transition: var(--att-ease); font-family: var(--att-font); white-space: nowrap;
+}
+.att-btn-primary {
+    background: var(--att-primary); color: #fff;
+    box-shadow: 0 2px 10px var(--att-primary-ring);
+}
+.att-btn-primary:hover { filter: brightness(0.9); }
+.att-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+.att-btn-danger { background: var(--att-danger); color: #fff; }
+.att-btn-danger:hover { background: var(--att-danger-hover); }
+.att-btn-ghost { background: transparent; color: var(--att-t2); border: 1px solid var(--att-border); }
+.att-btn-ghost:hover { border-color: var(--att-primary); color: var(--att-primary); }
+.att-btn-outline { background: transparent; color: var(--att-primary); border: 1px solid var(--att-primary); }
+.att-btn-outline:hover { background: var(--att-primary-dim); }
+.att-btn-sm { padding: 5px 12px; font-size: 11.5px; }
+/* Buttons that sit inside a toolbar align to the 38px control height */
+.att-toolbar .att-btn, .att-fg .att-btn { height: 38px; padding-top: 0; padding-bottom: 0; }
+
+/* ── Toggle switch ──────────────────────────────────────────────────────── */
+.att-toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 0; border-bottom: 1px solid var(--att-border);
+}
+.att-toggle-row:last-child { border-bottom: none; }
+.att-toggle-label {
+    font-size: 13px; font-weight: 600; color: var(--att-t1);
+    display: flex; align-items: center; gap: 8px;
+}
+.att-toggle-label i { color: var(--att-primary); font-size: 14px; }
+.att-toggle-desc { font-size: 11.5px; color: var(--att-t3); margin-top: 2px; }
+.att-switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+.att-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.att-switch-slider {
+    position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+    background: var(--att-bg3); border: 1px solid var(--att-border);
+    border-radius: 24px; transition: var(--att-ease);
+}
+.att-switch-slider::before {
+    content: ''; position: absolute; width: 18px; height: 18px; left: 2px; bottom: 2px;
+    background: var(--att-t3); border-radius: 50%; transition: var(--att-ease);
+}
+.att-switch input:checked + .att-switch-slider { background: var(--att-primary); border-color: var(--att-primary); }
+.att-switch input:checked + .att-switch-slider::before { transform: translateX(20px); background: #fff; }
+
+/* ── Selectable check chips ─────────────────────────────────────────────── */
+.att-check-group { display: flex; gap: 8px; flex-wrap: wrap; }
+.att-check-item {
+    display: flex; align-items: center; gap: 7px;
+    padding: 8px 14px; border-radius: 8px; border: 1px solid var(--att-border);
+    background: var(--att-bg3); cursor: pointer; transition: var(--att-ease);
+    font-size: 13px; color: var(--att-t2); font-weight: 600; user-select: none;
+}
+.att-check-item:hover { border-color: var(--att-primary); color: var(--att-primary); }
+.att-check-item.checked { border-color: var(--att-primary); background: var(--att-primary-dim); color: var(--att-primary); }
+.att-check-item input { display: none; }
+
+/* ── Table ──────────────────────────────────────────────────────────────── */
+.att-table-wrap { overflow-x: auto; }
+.att-table { width: 100%; border-collapse: collapse; font-family: var(--att-font); }
+.att-table th {
+    text-align: left; padding: 8px 12px; font-size: 11px;
+    font-weight: 700; color: var(--att-t3); text-transform: uppercase;
+    letter-spacing: .5px; border-bottom: 1px solid var(--att-border);
+}
+.att-table td {
+    padding: 9px 12px; font-size: 13px; color: var(--att-t1);
+    border-bottom: 1px solid var(--att-border);
+}
+.att-table tr:last-child td { border-bottom: none; }
+.att-table tbody tr:hover td { background: var(--att-primary-dim); }
+.att-table td.att-num, .att-table th.att-num { text-align: right; }
+.att-table td.att-mono { font-family: var(--att-font-m); font-size: 12px; }
+.att-table tfoot td { font-weight: 700; border-top: 2px solid var(--att-border); }
+
+/* ── KPI / stat cards ───────────────────────────────────────────────────── */
+.att-kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+.att-kpi {
+    background: var(--att-bg2); border: 1px solid var(--att-border);
+    border-radius: var(--att-radius); padding: 20px; box-shadow: var(--att-shadow);
+    position: relative; overflow: hidden; transition: transform .2s ease, box-shadow .2s ease;
+}
+.att-kpi:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,.08); }
+.att-kpi::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0;
+    height: 3px; border-radius: var(--att-radius) var(--att-radius) 0 0;
+    background: var(--att-primary);
+}
+.att-kpi-icon {
+    width: 40px; height: 40px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 12px; font-size: 18px;
+    background: var(--att-primary-dim); color: var(--att-primary);
+}
+.att-kpi-value { font-family: var(--att-font-m); font-size: 26px; font-weight: 700; color: var(--att-t1); margin-bottom: 4px; }
+.att-kpi-label { font-family: var(--att-font); font-size: 12px; color: var(--att-t3); text-transform: uppercase; letter-spacing: .4px; font-weight: 600; }
+/* KPI accent variants */
+.att-kpi-success::before { background: var(--att-green); }
+.att-kpi-success .att-kpi-icon { background: var(--att-green-bg); color: var(--att-green); }
+.att-kpi-info::before { background: var(--att-blue); }
+.att-kpi-info .att-kpi-icon { background: var(--att-blue-bg); color: var(--att-blue); }
+.att-kpi-danger::before { background: var(--att-red); }
+.att-kpi-danger .att-kpi-icon { background: var(--att-red-bg); color: var(--att-red); }
+.att-kpi-warning::before { background: var(--att-amber); }
+.att-kpi-warning .att-kpi-icon { background: var(--att-amber-bg); color: var(--att-amber); }
+
+/* ── Tags / badges / pills ──────────────────────────────────────────────── */
+.att-tag {
+    display: inline-block; padding: 2px 9px; border-radius: 20px;
+    font-size: 10.5px; font-weight: 700; font-family: var(--att-font-m);
+}
+.att-tag-green { background: rgba(21,128,61,.12); color: #15803d; border: 1px solid rgba(21,128,61,.25); }
+.att-tag-red   { background: rgba(192,57,43,.12); color: #c0392b; border: 1px solid rgba(192,57,43,.25); }
+.att-tag-amber { background: rgba(217,119,6,.12); color: #d97706; border: 1px solid rgba(217,119,6,.25); }
+.att-tag-blue  { background: rgba(37,99,235,.12); color: #2563eb; border: 1px solid rgba(37,99,235,.25); }
+.att-tag-teal  { background: var(--att-teal-bg); color: var(--att-teal); border: 1px solid rgba(15,118,110,.25); }
+.att-tag-gray  { background: var(--att-bg3); color: var(--att-t3); border: 1px solid var(--att-border); }
+/* Soft square-ish badge (for metrics/counts) */
+.att-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 10px; border-radius: 6px;
+    font-family: var(--att-font-m); font-size: 12px; font-weight: 700;
+    background: var(--att-bg3); color: var(--att-t2); border: 1px solid var(--att-border);
+}
+.att-badge-green  { background: var(--att-green-bg);  color: var(--att-green);  border-color: rgba(22,163,74,.25); }
+.att-badge-teal   { background: var(--att-teal-bg);   color: var(--att-teal);   border-color: rgba(15,118,110,.25); }
+.att-badge-amber  { background: var(--att-amber-bg);  color: var(--att-amber);  border-color: rgba(217,119,6,.25); }
+.att-badge-red    { background: var(--att-red-bg);    color: var(--att-red);    border-color: rgba(220,38,38,.25); }
+.att-badge-blue   { background: var(--att-blue-bg);   color: var(--att-blue);   border-color: rgba(37,99,235,.25); }
+
+/* ── Inline alert (banner) ──────────────────────────────────────────────── */
+.att-alert {
+    padding: 12px 16px; border-radius: 8px; font-size: 13px;
+    font-weight: 600; margin-bottom: 16px; display: none;
+    align-items: center; gap: 8px;
+}
+.att-alert.show { display: flex; }
+.att-alert-success { background: rgba(21,128,61,.1); color: #15803d; border: 1px solid rgba(21,128,61,.2); }
+.att-alert-error   { background: rgba(192,57,43,.1); color: #c0392b; border: 1px solid rgba(192,57,43,.2); }
+.att-alert-info    { background: rgba(37,99,235,.1); color: #2563eb; border: 1px solid rgba(37,99,235,.2); }
+
+/* ── Toast (transient, fixed) ───────────────────────────────────────────── */
+.att-toast {
+    position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+    padding: 12px 22px; border-radius: 8px; font-family: var(--att-font);
+    font-size: 13px; font-weight: 600; color: #fff;
+    box-shadow: 0 8px 24px rgba(0,0,0,.25);
+    transform: translateY(100px); opacity: 0; transition: all .3s ease;
+    pointer-events: none;
+}
+.att-toast.show { transform: translateY(0); opacity: 1; }
+.att-toast.success { background: var(--att-green); }
+.att-toast.error   { background: var(--att-red); }
+.att-toast.info    { background: var(--att-blue); }
+
+/* ── Copyable key box ───────────────────────────────────────────────────── */
+.att-key-box {
+    display: none; padding: 14px 16px; border-radius: 8px;
+    background: rgba(37,99,235,.08); border: 1px solid rgba(37,99,235,.2); margin-bottom: 16px;
+}
+.att-key-box.show { display: block; }
+.att-key-box-title {
+    font-size: 12px; font-weight: 700; color: var(--att-blue);
+    text-transform: uppercase; letter-spacing: .4px; margin-bottom: 8px;
+}
+.att-key-box-row { display: flex; align-items: center; gap: 8px; }
+.att-key-box-val {
+    flex: 1; padding: 8px 12px; border-radius: 6px;
+    background: var(--att-bg3); border: 1px solid var(--att-border);
+    font-size: 13px; font-family: var(--att-font-m); color: var(--att-t1); word-break: break-all;
+}
+.att-key-copy-btn {
+    padding: 8px 14px; border-radius: 6px; border: none;
+    background: var(--att-blue); color: #fff; font-size: 12px;
+    font-weight: 600; cursor: pointer; white-space: nowrap; transition: filter .2s ease;
+}
+.att-key-copy-btn:hover { filter: brightness(0.9); }
+
+/* ── Empty / loading states ─────────────────────────────────────────────── */
+.att-empty {
+    text-align: center; padding: 40px 20px; color: var(--att-t3);
+    font-size: 13px; font-weight: 600; font-family: var(--att-font);
+}
+.att-empty i { font-size: 32px; margin-bottom: 10px; display: block; opacity: 0.4; }
+.att-empty p { margin: 0; }
+.att-loading {
+    text-align: center; padding: 32px 20px; color: var(--att-t3);
+    font-family: var(--att-font); font-size: 13px; display: none;
+}
+.att-loading i { margin-right: 6px; }
+
+/* ── Spinner ────────────────────────────────────────────────────────────── */
+.att-spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,.3); border-top-color: #fff;
+    border-radius: 50%; animation: att-spin 0.6s linear infinite;
+}
+@keyframes att-spin { to { transform: rotate(360deg); } }
+
+/* ── Legend (status keys — register/analytics) ──────────────────────────── */
+.att-legend { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.att-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--att-t2); font-weight: 600; }
+.att-legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; background: var(--att-t3); }
+
+/* ── Utilities ──────────────────────────────────────────────────────────── */
+.att-u-mono   { font-family: var(--att-font-m); }
+.att-u-right  { text-align: right; }
+.att-u-center { text-align: center; }
+.att-u-muted  { color: var(--att-t3); }
+.att-u-flex   { display: flex; align-items: center; gap: 8px; }
+.att-u-between { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.att-u-wrap   { flex-wrap: wrap; }
+.att-u-mt     { margin-top: 12px; }
+.att-u-mt-lg  { margin-top: 16px; }
+.att-u-mb0    { margin-bottom: 0; }
+.att-u-scroll-x { overflow-x: auto; }
+
+/* ── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width:1024px) {
+    .att-kpi-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width:767px) {
+    .att-wrap { padding: 14px 10px 30px; }
+    .att-header { padding: 14px 16px; }
+    .att-card { padding: 16px; }
+    .att-card-body { padding: 14px; }
+    .att-tabs { gap: 3px; }
+    .att-tab { padding: 7px 12px; font-size: 11.5px; }
+    .att-kpi-grid { grid-template-columns: 1fr; }
+    .att-toolbar { flex-direction: column; align-items: stretch; }
+    .att-fg select, .att-fg input { min-width: 0; width: 100%; }
+    .att-toolbar .att-btn, .att-fg .att-btn { width: 100%; }
+}
+@media (max-width:479px) {
+    .att-tab { padding: 6px 10px; font-size: 11px; }
+    .att-toggle-row { flex-direction: column; align-items: flex-start; gap: 8px; }
+    .att-card-body { padding: 12px; }
+}
+
+/* ============================================================================
+ * Phase 2 additions — analytics/data-viz primitives (reusable, module-wide)
+ * ========================================================================== */
+
+/* ── Generic disabled button state ──────────────────────────────────────── */
+.att-btn:disabled, .att-btn[disabled] { opacity: .5; cursor: not-allowed; }
+
+/* ── Toolbar helpers (right-aligned action group) ───────────────────────── */
+.att-toolbar-spacer { flex: 1 1 auto; }
+.att-btn-group { display: inline-flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+
+/* ── Chart containers (Chart.js needs a sized, relative box) ────────────── */
+.att-chart { position: relative; width: 100%; }
+.att-chart > canvas { max-width: 100%; }
+.att-chart-sm { height: 260px; }
+.att-chart-md { height: 320px; }
+.att-chart-lg { height: 360px; }
+.att-chart--clickable > canvas { cursor: pointer; }
+
+/* Two-up analytics layout: primary chart + companion (donut) */
+.att-analytics-grid { display: grid; grid-template-columns: 1.6fr 1fr; gap: 18px; margin-bottom: 18px; }
+@media (max-width: 900px) { .att-analytics-grid { grid-template-columns: 1fr; } }
+
+/* ── KPI delta / period-over-period trend indicator ─────────────────────── */
+.att-kpi-delta {
+    display: inline-flex; align-items: center; gap: 4px; margin-top: 8px;
+    padding: 2px 8px; border-radius: 20px;
+    font-family: var(--att-font-m); font-size: 11px; font-weight: 700;
+}
+.att-delta-up   { color: var(--att-green); background: var(--att-green-bg); }
+.att-delta-down { color: var(--att-red);   background: var(--att-red-bg); }
+.att-delta-flat { color: var(--att-t3);    background: var(--att-bg3); }
+
+/* ── Skeleton loading (shimmer) ─────────────────────────────────────────── */
+.att-skeleton {
+    position: relative; overflow: hidden;
+    background: var(--att-bg3); border: 1px solid var(--att-border);
+    border-radius: var(--att-radius);
+}
+.att-skeleton::after {
+    content: ''; position: absolute; inset: 0; transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.08), transparent);
+    animation: att-shimmer 1.3s infinite;
+}
+@keyframes att-shimmer { 100% { transform: translateX(100%); } }
+.att-skel-kpi   { height: 108px; }
+.att-skel-chart { height: 340px; }
+.att-skel-line  { height: 12px; border-radius: 6px; margin-bottom: 10px; }
+@media (prefers-reduced-motion: reduce) { .att-skeleton::after { animation: none; } }
+
+/* ── Person / entity banner (reusable — analytics, register, reports) ───── */
+.att-person {
+    display: flex; align-items: center; gap: 14px; padding: 14px 18px; margin-bottom: 16px;
+    background: var(--att-primary-dim); border: 1px solid var(--att-primary-ring); border-radius: 8px;
+}
+.att-person-avatar { font-size: 32px; color: var(--att-primary); flex-shrink: 0; }
+.att-person-name { font-family: var(--att-font); font-size: 15px; font-weight: 700; color: var(--att-t1); line-height: 1.3; }
+.att-person-meta { font-family: var(--att-font-m); font-size: 11.5px; color: var(--att-t3); margin-top: 2px; display: flex; gap: 10px; flex-wrap: wrap; }
+.att-person-meta span { display: inline-flex; align-items: center; gap: 4px; }
+
+/* ── Professional loader (branded ring spinner) ─────────────────────────────
+ * Reusable across the module. Usage:
+ *   <div class="att-loading" id="...">
+ *     <div class="att-loader"><span class="att-loader-ring"></span>
+ *       <span class="att-loader-text">Loading…</span></div>
+ *   </div>
+ * ========================================================================== */
+.att-loader { display: inline-flex; flex-direction: column; align-items: center; gap: 12px; }
+.att-loader-ring {
+    width: 40px; height: 40px; border-radius: 50%;
+    border: 3px solid var(--att-primary-dim);
+    border-top-color: var(--att-primary);
+    animation: att-spin .7s linear infinite;
+}
+.att-loader-text { font-size: 13px; font-weight: 600; color: var(--att-t3); font-family: var(--att-font); }
+@media (prefers-reduced-motion: reduce) { .att-loader-ring { animation-duration: 1.6s; } }
+
+/* ============================================================================
+ * Phase 3 additions — dashboard primitives (reusable, module-wide)
+ * ========================================================================== */
+
+/* Link-buttons never underline when att-btn is applied to an <a>. */
+.att-btn { text-decoration: none; }
+
+/* ── 5-up KPI grid (dashboard "today" stats) ────────────────────────────── */
+.att-kpi-grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin-bottom: 28px; }
+@media (max-width: 1280px) { .att-kpi-grid-5 { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 1024px) { .att-kpi-grid-5 { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 479px)  { .att-kpi-grid-5 { grid-template-columns: 1fr; } }
+
+/* ── KPI extras: purple accent, clickable, pending state, loading ───────── */
+.att-kpi-purple::before { background: #7c3aed; }
+.att-kpi-purple .att-kpi-icon { background: rgba(124,58,237,.12); color: #7c3aed; }
+.att-kpi--clickable { cursor: pointer; }
+/* has-pending overrides any base accent (higher specificity: two classes) */
+.att-kpi.has-pending::before { background: var(--att-amber); }
+.att-kpi.has-pending .att-kpi-icon { background: var(--att-amber-bg); color: var(--att-amber); }
+.att-kpi-loading {
+    width: 48px; height: 24px; border-radius: 6px;
+    background: var(--att-bg3); animation: att-pulse 1.2s ease-in-out infinite;
+}
+@keyframes att-pulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .att-kpi-loading { animation: none; } }
+
+/* ── Section title (standalone header above a table/list) ───────────────── */
+.att-section-title {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 15px; font-weight: 700; color: var(--att-t1);
+    margin-bottom: 14px; font-family: var(--att-font-d);
+}
+.att-section-title i { color: var(--att-primary); font-size: 16px; }
+.att-section-title small { font-size: 11px; font-weight: 500; color: var(--att-t3); margin-left: auto; }
+
+/* ── Inline link (reusable) ─────────────────────────────────────────────── */
+.att-link { color: var(--att-primary); text-decoration: none; font-size: 11px; font-weight: 600; }
+.att-link:hover { text-decoration: underline; }
+.att-section-title .att-link { margin-left: auto; }
+
+/* ── Actions bar (horizontal, wrapping row of action buttons) ───────────── */
+.att-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 28px; }
+@media (max-width: 767px) { .att-actions { gap: 8px; } }
+
+/* ── Utility ────────────────────────────────────────────────────────────── */
+.att-u-strong { font-weight: 600; color: var(--att-t1); }
+
+/* ============================================================================
+ * Phase 4 additions — modal · stage strip · compact metrics · legend · inputs
+ * (reusable, module-wide; used first by the Student Attendance Register)
+ * ========================================================================== */
+
+/* ── Modal (overlay + card) ─────────────────────────────────────────────── */
+.att-modal-overlay {
+    position: fixed; inset: 0; z-index: 9998; background: rgba(0,0,0,.45);
+    display: none; align-items: center; justify-content: center; backdrop-filter: blur(6px);
+}
+.att-modal-overlay.open { display: flex; }
+.att-modal {
+    background: var(--att-bg2); border: 1px solid var(--att-border);
+    border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.25);
+    width: 440px; max-width: 92vw; max-height: 80vh; overflow-y: auto;
+    padding: 28px; animation: att-modal-in .25s ease;
+}
+@keyframes att-modal-in { from { opacity: 0; transform: scale(.95) translateY(10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+.att-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.att-modal-head h3, .att-modal-title { font-family: var(--att-font); font-size: 16px; font-weight: 700; color: var(--att-t1); margin: 0; }
+.att-modal-close {
+    width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+    background: var(--att-bg3); border: none; border-radius: 8px; font-size: 16px;
+    color: var(--att-t3); cursor: pointer; transition: var(--att-ease);
+}
+.att-modal-close:hover { background: var(--att-red-bg); color: var(--att-red); }
+.att-modal-stat {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 0; border-bottom: 1px solid var(--att-border);
+    font-family: var(--att-font); font-size: 13px; color: var(--att-t2);
+}
+.att-modal-stat:last-of-type { border-bottom: none; }
+.att-modal-stat span:last-child { font-weight: 700; color: var(--att-t1); }
+.att-modal-stat-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+.att-modal-bar-wrap { margin-top: 18px; height: 10px; border-radius: 5px; background: var(--att-bg3); overflow: hidden; display: flex; }
+.att-modal-bar-seg { height: 100%; transition: width .4s ease; }
+
+/* ── Stage strip (governance banner) ────────────────────────────────────── */
+.att-stage-strip {
+    display: none; align-items: center; gap: 12px; padding: 10px 14px; margin: 0 0 14px;
+    background: var(--att-bg2); border: 1px solid var(--att-border);
+    border-left-width: 4px; border-radius: 8px; font-size: 13px; color: var(--att-t1); flex-wrap: wrap;
+}
+.att-stage-strip.visible { display: flex; }
+.att-stage-strip.s1 { border-left-color: var(--att-green); }
+.att-stage-strip.s2 { border-left-color: var(--att-amber); }
+.att-stage-strip.s3 { border-left-color: var(--att-red); }
+.att-stage-strip.unknown { border-left-color: #6b7280; }
+.att-stage-pill { display: inline-block; padding: 2px 9px; border-radius: 12px; font-size: 11px; font-weight: 700; letter-spacing: .3px; }
+.att-stage-strip.s1 .att-stage-pill { background: var(--att-green-bg); color: var(--att-green); }
+.att-stage-strip.s2 .att-stage-pill { background: var(--att-amber-bg); color: var(--att-amber); }
+.att-stage-strip.s3 .att-stage-pill { background: var(--att-red-bg); color: var(--att-red); }
+.att-stage-strip.unknown .att-stage-pill { background: var(--att-bg3); color: var(--att-t3); }
+.att-stage-msg { color: var(--att-t2); }
+.att-stage-spacer { flex: 1; }
+.att-stage-link {
+    color: var(--att-primary); text-decoration: none; font-weight: 600; font-size: 12.5px;
+    padding: 4px 10px; border-radius: 6px; border: 1px solid var(--att-border); background: var(--att-bg2);
+}
+.att-stage-link:hover { background: var(--att-bg3); }
+.att-stage-link.warn { color: var(--att-amber); border-color: rgba(217,119,6,.3); }
+.att-stage-link.danger { color: var(--att-red); border-color: rgba(220,38,38,.3); }
+.att-corr-badge {
+    display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 600; background: var(--att-amber-bg); color: var(--att-amber);
+}
+
+/* ── Compact metric strip (auto-fit stat cards) ─────────────────────────── */
+.att-metric-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); margin-bottom: 16px; }
+.att-metric {
+    padding: 14px 16px; border-radius: var(--att-radius); background: var(--att-bg2);
+    border: 1px solid var(--att-border); box-shadow: var(--att-shadow); text-align: center;
+    transition: transform .2s ease, box-shadow .2s ease;
+}
+.att-metric:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,.08); }
+.att-metric-num { font-family: var(--att-font-m); font-size: 24px; font-weight: 800; line-height: 1.1; }
+.att-metric-label { font-family: var(--att-font); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; color: var(--att-t3); margin-top: 4px; }
+@media (max-width:767px) { .att-metric-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* ── Legend chips (letter-pip legend) ───────────────────────────────────── */
+.att-legend-chip {
+    display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px 3px 4px;
+    border-radius: 6px; background: var(--att-bg); border: 1px solid var(--att-border);
+    font-size: 11.5px; color: var(--att-t2); font-family: var(--att-font);
+}
+.att-legend-pip {
+    width: 22px; height: 22px; border-radius: 5px; display: inline-flex; align-items: center;
+    justify-content: center; font-size: 10px; font-weight: 800; color: #fff;
+}
+
+/* ── Compact day/number input (toolbar) ─────────────────────────────────── */
+.att-day-input {
+    width: 52px; height: 34px; text-align: center; font-family: var(--att-font-m);
+    font-size: 13px; font-weight: 600; border: 1.5px solid var(--att-border); border-radius: 7px;
+    background: var(--att-bg); color: var(--att-t1); transition: var(--att-ease);
+}
+.att-day-input:focus { outline: none; border-color: var(--att-primary); box-shadow: 0 0 0 3px var(--att-primary-ring); }
+
+/* ── Soft chip (primary-tinted pill) ────────────────────────────────────── */
+.att-chip {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600;
+    background: var(--att-primary-dim); color: var(--att-primary); padding: 4px 12px; border-radius: 20px;
+}
+
+/* ============================================================================
+ * Phase 5 additions — modal form controls · amber alert · muted text · success btn
+ * (reusable; first used by the Corrections control panel)
+ * ========================================================================== */
+
+/* ── Modal form controls (labels / inputs / action row) ─────────────────── */
+.att-modal label { display: block; font-size: 12px; color: var(--att-t3); margin: 12px 0 4px; }
+.att-modal textarea,
+.att-modal input[type=text],
+.att-modal input[type=date] {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--att-border); border-radius: 6px;
+    background: var(--att-bg3); color: var(--att-t1); font-size: 13px; box-sizing: border-box;
+}
+.att-modal textarea { min-height: 80px; resize: vertical; }
+.att-modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+/* ── Amber (warning) alert variant + muted text + success button ────────── */
+.att-alert-warn { background: var(--att-amber-bg); color: var(--att-amber); border: 1px solid rgba(217,119,6,.3); }
+.att-mute { color: var(--att-t3); font-size: 12px; }
+.att-btn-success { background: var(--att-green); color: #fff; }
+.att-btn-success:hover { filter: brightness(.92); }

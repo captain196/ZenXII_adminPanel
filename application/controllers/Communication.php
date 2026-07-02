@@ -34,6 +34,17 @@ class Communication extends MY_Controller
     const VIEW_ROLES    = ['Super Admin', 'School Super Admin', 'Principal', 'Vice Principal', 'Admin', 'Teacher', 'Accountant', 'HR Manager', 'Operations Manager'];
 
     const ALLOWED_CHANNELS       = ['push', 'sms', 'email', 'in_app'];
+
+    /**
+     * Module-owned-push policy (Phase 6G): event types whose FCM push is
+     * delivered natively by their originating module (e.g. Attendance →
+     * Push_service). For these events the Communication pipeline delivers
+     * only the non-push channels (sms/email/in_app) and never sends FCM —
+     * guaranteeing exactly one push per event regardless of trigger config.
+     * Extend this set when another module takes ownership of an event's push.
+     */
+    const NATIVE_PUSH_EVENTS = ['student_absent', 'student_late'];
+
     const ALLOWED_PRIORITIES     = ['High', 'Normal', 'Low'];
     const ALLOWED_NOTICE_CATS    = ['General', 'Academic', 'Event', 'Administrative', 'Emergency'];
     const ALLOWED_RECIPIENT_TYPES = ['parent', 'student', 'teacher', 'staff', 'broadcast'];
@@ -1362,6 +1373,14 @@ class Communication extends MY_Controller
         // Validate recipient ID format for path safety
         if (!preg_match('/^[A-Za-z0-9_\-]+$/', $recipientId)) return false;
         if (!in_array($recipientType, self::ALLOWED_RECIPIENT_TYPES, true)) return false;
+
+        // ── Module-owned-push guard (Phase 6G) ─────────────────────────
+        // If this event's push is owned by its originating module, the
+        // pipeline must NOT also send FCM (prevents duplicate push). Other
+        // channels for the event are handled by their own switch cases.
+        if (in_array($q['event_type'] ?? '', self::NATIVE_PUSH_EVENTS, true)) {
+            return true;
+        }
 
         // ── PATH A: Real FCM push via Push_service ─────────────────────
         // Only parents/teachers/staff have devices registered. Broadcast

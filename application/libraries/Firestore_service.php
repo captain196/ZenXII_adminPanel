@@ -609,6 +609,64 @@ class Firestore_service
     }
 
     /**
+     * TRUE non-atomic batched write (Firestore `:batchWrite`). Each document
+     * succeeds or fails INDEPENDENTLY; returns a per-docId success map so
+     * callers preserve partial-success (saved / skipped[]) semantics. Unlike
+     * the legacy batchSet() (a loop of set() calls) this is ONE HTTP round-trip
+     * for up to `maxChunk` docs. Documents encode byte-identically to set()
+     * (same client encoder), so map fields like `attendanceSummary.lateTimes`
+     * stay Firestore mapValue. Does NOT alter set() or batchSet().
+     *
+     * @param  array $documents ['docId' => data, ...]
+     * @param  bool  $merge     merge (updateMask) vs overwrite — mirror set()'s 4th arg
+     * @return array ['docId' => bool, ...]  (true = written)
+     */
+    public function batchWrite(string $collection, array $documents, bool $merge = false): array
+    {
+        if ($this->client === null || empty($documents)) return [];
+        if (!method_exists($this->client, 'batchWrite')) {
+            // Defensive fallback: client without :batchWrite → per-doc set()
+            // (same bytes, just N round-trips). Keeps the contract identical.
+            $out = [];
+            foreach ($documents as $docId => $data) {
+                $out[(string) $docId] = $this->set($collection, (string) $docId, is_array($data) ? $data : [], $merge);
+            }
+            return $out;
+        }
+
+        $maxChunk = 450;                 // stay under Firestore's 500/req hard limit
+        $ok = [];
+        $anyOk = false;
+        $t = microtime(true);
+        foreach (array_chunk($documents, $maxChunk, true) as $chunk) {
+            $ids = array_keys($chunk);
+            $ops = [];
+            foreach ($chunk as $docId => $data) {
+                $ops[] = [
+                    'collection' => $collection,
+                    'docId'      => (string) $docId,
+                    'data'       => is_array($data) ? $data : [],
+                    'merge'      => $merge,
+                ];
+            }
+            try {
+                $results = $this->client->batchWrite($ops);   // list<bool> aligned to $ids
+            } catch (\Exception $e) {
+                log_message('error', "Firestore_service::batchWrite({$collection}) failed: " . $e->getMessage());
+                $results = array_fill(0, count($ids), false);
+            }
+            foreach ($ids as $i => $docId) {
+                $s = (bool) ($results[$i] ?? false);
+                $ok[(string) $docId] = $s;
+                if ($s) $anyOk = true;
+            }
+        }
+        $this->_track(microtime(true) - $t, !$anyOk);
+        if ($anyOk) $this->_bustDashboard($collection);
+        return $ok;
+    }
+
+    /**
      * Delete multiple documents in the same collection.
      *
      * @return int  Number of successful deletes

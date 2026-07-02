@@ -961,14 +961,18 @@ class Health_check extends MY_Controller
             [
                 'name' => 'Registered Devices',
                 'fn'   => function() use ($fb, $school) {
-                    $devices = $fb->get("Schools/{$school}/Config/Devices");
+                    // Phase 6C: device inventory sourced from Firestore
+                    // attendanceDevices (canonical) instead of RTDB Config/Devices.
+                    try { $devices = $this->fs->schoolList('attendanceDevices'); }
+                    catch (\Exception $e) { $devices = []; }
                     if (!is_array($devices) || empty($devices)) return $this->_p('No devices registered (optional for manual attendance)');
                     $active = 0; $stale = 0;
                     foreach ($devices as $dev) {
+                        $dev = $dev['data'] ?? $dev;
                         if (!is_array($dev)) continue;
                         $status = $dev['status'] ?? 'unknown';
                         if ($status === 'active') {
-                            $lastPing = $dev['last_ping'] ?? '';
+                            $lastPing = $dev['lastPing'] ?? $dev['last_ping'] ?? '';
                             if ($lastPing && (time() - strtotime($lastPing)) > 3600) $stale++;
                             else $active++;
                         }
@@ -1056,11 +1060,15 @@ class Health_check extends MY_Controller
             [
                 'name' => "Today's Punch Activity",
                 'fn'   => function() use ($fb, $school, $session, $todayDate) {
-                    $punchLog = $fb->get("Schools/{$school}/{$session}/Attendance/Punch_Log/{$todayDate}");
+                    // Phase 6D: today's punches from Firestore attendancePunches
+                    // (canonical) instead of RTDB Punch_Log.
+                    try { $punchLog = $this->fs->schoolList('attendancePunches', [['date', '==', $todayDate]]); }
+                    catch (\Exception $e) { $punchLog = []; }
                     $count = is_array($punchLog) ? count($punchLog) : 0;
                     if ($count === 0) return $this->_p('No punches today (OK if using manual attendance)');
                     $devices = [];
                     foreach ($punchLog as $p) {
+                        $p = $p['data'] ?? $p;
                         if (is_array($p)) {
                             $did = $p['device_id'] ?? 'unknown';
                             $devices[$did] = ($devices[$did] ?? 0) + 1;
