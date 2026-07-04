@@ -434,11 +434,15 @@ class Events extends MY_Controller
             'organizer'        => $organizer,
             'max_participants' => $maxParticipants,
             'status'           => $status,
-            'mediaUrls'        => [],
             'updated_at'       => date('c'),
         ];
 
         if ($isNew) {
+            // Seed mediaUrls ONLY on create. On edit this is a merge write, so
+            // re-sending [] would wipe any media the doc has accumulated —
+            // classic contract drift. Gallery media lives in galleryMedia, but
+            // keep create-time init for any consumer that reads EventDoc.mediaUrls.
+            $data['mediaUrls']       = [];
             $data['created_at']      = date('c');
             $data['createdAt']       = date('c');
             $data['created_by']      = $this->admin_id;
@@ -864,11 +868,40 @@ class Events extends MY_Controller
                 'school'     => $this->school_name,
             ];
 
+            // Template-driven channels (SMS / email / configured push triggers).
             $this->communication_helper->fire_event('event_created', $payload);
             $this->communication_helper->write_event_notice($eventId, $data, $this->admin_id);
 
         } catch (\Exception $e) {
             log_message('error', 'Events: notification failed - ' . $e->getMessage());
+        }
+
+        // Real-time FCM push, independent of trigger config / queue processing.
+        // The Cloud Function's EVENT_CREATED handler fans this out by audience;
+        // events are school-wide, so target_group = All School. Best-effort —
+        // never blocks the event save. (fire_event above only pushes if an
+        // admin configured a push trigger, which is normally absent — so this
+        // is the sole reliable push path and does not double-send in practice.)
+        try {
+            $startDate = (string) ($data['start_date'] ?? $data['startDate'] ?? '');
+            $location  = (string) ($data['location'] ?? '');
+            $bodyParts = array_filter([$startDate, $location]);
+            $reqId = 'event_created_' . preg_replace('/[^A-Za-z0-9_\-]/', '_', $eventId);
+            $this->fs->set('pushRequests', $reqId, [
+                'schoolId'     => $this->school_id,
+                'mark'         => 'EVENT_CREATED',
+                'source'       => 'event_created',
+                'status'       => 'pending',
+                'markedBy'     => $this->admin_name,
+                'eventId'      => $eventId,
+                'title'        => 'New Event: ' . (string) ($data['title'] ?? 'Event'),
+                'body'         => $bodyParts ? implode(' · ', $bodyParts) : 'Tap to view details',
+                'category'     => (string) ($data['category'] ?? 'event'),
+                'target_group' => 'All School',
+                'createdAt'    => date('c'),
+            ], false);
+        } catch (\Exception $e) {
+            log_message('error', 'Events: EVENT_CREATED push enqueue failed - ' . $e->getMessage());
         }
     }
 }

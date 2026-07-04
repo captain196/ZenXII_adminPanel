@@ -1335,11 +1335,12 @@ class MY_Controller extends CI_Controller
                         $section = $d['section'] ?? '';
                         if ($class !== '' && $section !== '') {
                             $students = $this->_build_student_list_for_push($class, $section);
+                            $hwId = (string) ($d['homeworkId'] ?? '');
                             foreach ($students as $sid) {
                                 $this->push_service->sendToUser($sid, [
                                     'title' => "New Homework: {$subject}",
                                     'body'  => "{$title} — due {$dueDate}. By {$markedBy}.",
-                                    'data'  => ['type' => 'homework_created'],
+                                    'data'  => ['type' => 'homework_created', 'homeworkId' => $hwId],
                                 ]);
                             }
                         }
@@ -1352,7 +1353,7 @@ class MY_Controller extends CI_Controller
                         $this->push_service->sendToUser($studentId, [
                             'title' => 'Homework Graded',
                             'body'  => "{$scoreText}Reviewed by {$markedBy}." . ($remark ? " \"{$remark}\"" : ''),
-                            'data'  => ['type' => 'homework_reviewed'],
+                            'data'  => ['type' => 'homework_reviewed', 'homeworkId' => (string) ($d['homeworkId'] ?? '')],
                         ]);
                         break;
                 }
