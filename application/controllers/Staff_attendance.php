@@ -282,9 +282,10 @@ class Staff_attendance extends MY_Controller
         $curSum  = is_array($curSum) ? $curSum : [];
         $prevSum = is_array($prevSum) ? $prevSum : [];
 
-        // Phase 2 — "no vacant": overlay past unmarked working days → Absent (A),
-        // weekly-offs → O, holidays → H (read-only; the nightly finaliser persists
-        // the same marks for payroll). Guarantees no vacant days in the app view.
+        // Phase 2 — "no vacant": overlay past days → weekly-offs O, holidays H, and
+        // unmarked working days → Absent (A) ONLY when policy.autoAbsent is on
+        // (default). With autoAbsent off, working days stay Vacant (V). Read-only;
+        // the nightly finaliser persists the same marks for payroll.
         $this->load->library('holiday_service');
         $this->holiday_service->init($this->fs, $this->school_id, $this->session_year);
         $curDayWise  = $this->_overlay_daywise((string) ($curSum['dayWise'] ?? ''),  $monthKey, $pol, $dateISO);
@@ -516,6 +517,9 @@ class Staff_attendance extends MY_Controller
     {
         if ($dayWise === '') return $dayWise;
         $weeklyOffs = (array) ($policy['weeklyOffs'] ?? []);
+        // autoAbsent (default ON): close past unmarked working days as Absent (A).
+        // When OFF, leave them Vacant (V); weekly-offs/holidays are still labelled O/H.
+        $autoAbsent = array_key_exists('autoAbsent', $policy) ? !empty($policy['autoAbsent']) : true;
         $len = strlen($dayWise);
         for ($d = 1; $d <= $len; $d++) {
             if (strtoupper($dayWise[$d - 1]) !== 'V') continue;      // only fill vacant
@@ -527,7 +531,12 @@ class Staff_attendance extends MY_Controller
                 $dayWise[$d - 1] = 'H';
             } else {
                 $dow = date('D', strtotime($dateISO));
-                $dayWise[$d - 1] = in_array($dow, $weeklyOffs, true) ? 'O' : 'A';
+                if (in_array($dow, $weeklyOffs, true)) {
+                    $dayWise[$d - 1] = 'O';
+                } elseif ($autoAbsent) {
+                    $dayWise[$d - 1] = 'A';
+                }
+                // else: autoAbsent OFF → leave the day Vacant (V)
             }
         }
         return $dayWise;
