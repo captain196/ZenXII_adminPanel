@@ -309,34 +309,56 @@
             </div>
         </div>
 
-        <!-- Attendance windows (default shift) -->
+        <!-- Work schedule — the SINGLE source of shift timings + hours -->
         <div class="att-card">
-            <div class="att-card-title"><i class="fa fa-clock-o"></i> Attendance Windows (Default Shift)</div>
+            <div class="att-card-title"><i class="fa fa-hourglass-half"></i> Work Schedule (Default Shift)</div>
             <div class="att-grid att-grid-3">
-                <div class="att-field">
-                    <label>Earliest Check-in</label>
-                    <input type="time" id="gpsEarliest" value="07:30">
+                <div class="att-field"><label>Shift Start</label><input type="time" id="schStart" value="09:00"></div>
+                <div class="att-field"><label>Shift End</label><input type="time" id="schEnd" value="18:00"></div>
+                <div class="att-field"><label>Grace Period (min)</label><input type="number" min="0" max="120" id="schGrace" value="10"></div>
+                <div class="att-field"><label>Full-day Hours (&ge;)</label><input type="number" min="0" max="24" step="0.5" id="schFull" value="8"></div>
+                <div class="att-field"><label>Half-day Hours (&ge;)</label><input type="number" min="0" max="24" step="0.5" id="schHalf" value="4"></div>
+                <div class="att-field"><label>Break (min)</label><input type="number" min="0" max="480" id="schBreak" value="60"></div>
+                <div class="att-field"><label>Early-out Before</label><input type="time" id="schEarlyOut" value="17:30"></div>
+                <div class="att-field"><label>Latest Check-in <span style="color:var(--att-t3)">(optional)</span></label><input type="time" id="schLatest" value=""></div>
+            </div>
+            <div style="font-size:12px;color:var(--att-t3);margin-top:10px">
+                <b>On-time vs Late</b> uses Shift Start + Grace. <b>Half vs full day</b> is decided by hours worked at check-out (worked = check-out &minus; check-in &minus; break) — you can clock out anytime.
+                Set <b>Full-day Hours to 0</b> to keep the classic on-time / late-only model; leave <b>Latest Check-in</b> blank for no hard cutoff.
+            </div>
+        </div>
+
+        <!-- Rest days + work-on-off -->
+        <div class="att-card">
+            <div class="att-card-title"><i class="fa fa-calendar-o"></i> Rest Days &amp; Extra Work</div>
+            <div class="att-field" style="margin-bottom:14px">
+                <label>Weekly-offs</label>
+                <div class="att-check-group" id="weeklyOffsGroup">
+                    <label class="att-check-item"><input type="checkbox" value="Mon"> Mon</label>
+                    <label class="att-check-item"><input type="checkbox" value="Tue"> Tue</label>
+                    <label class="att-check-item"><input type="checkbox" value="Wed"> Wed</label>
+                    <label class="att-check-item"><input type="checkbox" value="Thu"> Thu</label>
+                    <label class="att-check-item"><input type="checkbox" value="Fri"> Fri</label>
+                    <label class="att-check-item"><input type="checkbox" value="Sat"> Sat</label>
+                    <label class="att-check-item checked"><input type="checkbox" value="Sun" checked> Sun</label>
                 </div>
-                <div class="att-field">
-                    <label>Late Threshold</label>
-                    <input type="time" id="gpsLateThreshold" value="09:00">
+                <div style="font-size:12px;color:var(--att-t3);margin-top:8px">
+                    Highlighted days are <b>weekly-offs</b> (non-working rest days). No attendance is expected &mdash; they show as <b>Weekly-off&nbsp;(O)</b> and are never marked Absent. If <b>Allow work on offs</b> is on, punching on one is recorded as <b>Extra&nbsp;(W)</b> for extra pay.
                 </div>
-                <div class="att-field">
-                    <label>Grace Period (min)</label>
-                    <input type="number" min="0" max="120" id="gpsGrace" value="10">
+            </div>
+            <div class="att-toggle-row">
+                <div>
+                    <div class="att-toggle-label"><i class="fa fa-ban"></i> No vacant days (auto-absent)</div>
+                    <div class="att-toggle-desc">Unmarked working days close as Absent; offs show as weekly-off / holiday</div>
                 </div>
-                <div class="att-field">
-                    <label>Latest Check-in</label>
-                    <input type="time" id="gpsLatest" value="11:00">
+                <label class="att-switch"><input type="checkbox" id="autoAbsent" checked><span class="att-switch-slider"></span></label>
+            </div>
+            <div class="att-toggle-row">
+                <div>
+                    <div class="att-toggle-label"><i class="fa fa-plus-circle"></i> Allow work on weekly-offs &amp; holidays</div>
+                    <div class="att-toggle-desc">Accept punches on rest days &mdash; recorded as extra work (W) for extra pay</div>
                 </div>
-                <div class="att-field">
-                    <label>Check-out Opens</label>
-                    <input type="time" id="gpsCheckoutStart" value="13:00">
-                </div>
-                <div class="att-field">
-                    <label>Check-out Closes</label>
-                    <input type="time" id="gpsCheckoutLatest" value="21:00">
-                </div>
+                <label class="att-switch"><input type="checkbox" id="allowWorkOnOff"><span class="att-switch-slider"></span></label>
             </div>
         </div>
 
@@ -871,13 +893,26 @@
             $('gpsTolerance').value = gps.boundaryToleranceMeters || 0;
             $('gpsAllowMock').checked = (gps.allowMockLocation === true);
 
-            if (win.earliestCheckIn) $('gpsEarliest').value = win.earliestCheckIn;
-            if (win.lateThreshold)   $('gpsLateThreshold').value = win.lateThreshold;
-            else if (r.default_staff_threshold) $('gpsLateThreshold').value = r.default_staff_threshold;
-            if (typeof win.gracePeriodMin !== 'undefined') $('gpsGrace').value = win.gracePeriodMin;
-            if (win.latestCheckIn)   $('gpsLatest').value = win.latestCheckIn;
-            if (win.checkoutStart)   $('gpsCheckoutStart').value = win.checkoutStart;
-            if (win.checkoutLatest)  $('gpsCheckoutLatest').value = win.checkoutLatest;
+            var sch = (p.shifts && p.shifts.default && p.shifts.default.schedule) ? p.shifts.default.schedule : {};
+            if (sch.shiftStart)     $('schStart').value = sch.shiftStart;
+            else if (win.lateThreshold) $('schStart').value = win.lateThreshold;        // legacy fallback
+            if (sch.shiftEnd)       $('schEnd').value = sch.shiftEnd;
+            if (typeof sch.graceMinutes !== 'undefined') $('schGrace').value = sch.graceMinutes;
+            else if (typeof win.gracePeriodMin !== 'undefined') $('schGrace').value = win.gracePeriodMin;
+            if (typeof sch.breakMinutes !== 'undefined') $('schBreak').value = sch.breakMinutes;
+            if (typeof sch.fullDayHours !== 'undefined') $('schFull').value = sch.fullDayHours;
+            if (typeof sch.halfDayHours !== 'undefined') $('schHalf').value = sch.halfDayHours;
+            if (sch.earlyOutBefore) $('schEarlyOut').value = sch.earlyOutBefore;
+            $('schLatest').value = (sch.latestCheckIn && sch.latestCheckIn !== '23:59') ? sch.latestCheckIn : '';
+
+            var offs = p.weeklyOffs || [];
+            document.querySelectorAll('#weeklyOffsGroup .att-check-item').forEach(function(item){
+                var cb = item.querySelector('input');
+                cb.checked = offs.indexOf(cb.value) !== -1;
+                item.classList.toggle('checked', cb.checked);
+            });
+            $('allowWorkOnOff').checked = (p.allowWorkOnOff === true);
+            $('autoAbsent').checked = (p.autoAbsent !== false);
         }).catch(function(){ /* first-time / no policy — keep defaults */ });
     }
 
@@ -896,14 +931,19 @@
                 allowMockLocation: $('gpsAllowMock').checked,
                 boundaryToleranceMeters: parseInt($('gpsTolerance').value,10) || 0
             },
-            windows: {
-                earliestCheckIn: $('gpsEarliest').value,
-                lateThreshold:   $('gpsLateThreshold').value,
-                gracePeriodMin:  parseInt($('gpsGrace').value,10) || 0,
-                latestCheckIn:   $('gpsLatest').value,
-                checkoutStart:   $('gpsCheckoutStart').value,
-                checkoutLatest:  $('gpsCheckoutLatest').value
-            }
+            schedule: {
+                shiftStart:     $('schStart').value,
+                shiftEnd:       $('schEnd').value,
+                graceMinutes:   parseInt($('schGrace').value,10) || 0,
+                fullDayHours:   parseFloat($('schFull').value) || 0,
+                halfDayHours:   parseFloat($('schHalf').value) || 0,
+                breakMinutes:   parseInt($('schBreak').value,10) || 0,
+                earlyOutBefore: $('schEarlyOut').value,
+                latestCheckIn:  $('schLatest').value
+            },
+            weeklyOffs: (function(){ var a=[]; document.querySelectorAll('#weeklyOffsGroup input:checked').forEach(function(cb){ a.push(cb.value); }); return a; })(),
+            allowWorkOnOff: $('allowWorkOnOff').checked,
+            autoAbsent: $('autoAbsent').checked
         };
         var btn = this; btn.disabled = true; btn.innerHTML = '<span class="att-spinner"></span> Saving...';
         postData('attendance/save_attendance_policy', { policy: JSON.stringify(policy) }).then(function(r){
@@ -914,6 +954,25 @@
             btn.disabled = false; btn.innerHTML = '<i class="fa fa-check"></i> Save GPS Policy';
             gpsAlert('Network error while saving GPS policy', 'error');
         });
+    });
+
+    // Day chips (weekly-offs + working days) — toggle on click. The <input> is
+    // display:none, so we drive the toggle ourselves off the click and manually
+    // flip both the checkbox and the .checked class. preventDefault stops the
+    // wrapping <label> from ALSO toggling the checkbox (which would net to nothing).
+    ['weeklyOffsGroup','workingDaysGroup'].forEach(function(id){
+        var wg = document.getElementById(id);
+        if (!wg) return;
+        function sync(item){ item.classList.toggle('checked', item.querySelector('input').checked); }
+        wg.addEventListener('click', function(ev){
+            var item = ev.target.closest ? ev.target.closest('.att-check-item') : null;
+            if (!item || !wg.contains(item)) return;
+            ev.preventDefault();
+            var cb = item.querySelector('input');
+            cb.checked = !cb.checked;
+            sync(item);
+        });
+        wg.querySelectorAll('.att-check-item').forEach(sync);
     });
 
     loadGpsPolicy();
