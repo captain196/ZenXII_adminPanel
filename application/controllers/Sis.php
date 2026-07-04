@@ -2046,14 +2046,19 @@ class Sis extends MY_Controller
         }
 
         // 2. Set must-change-password claim — Parent app gates on this.
-        $this->firebase->setFirebaseClaims($user_id, [
-            'role'                 => 'Parent',
-            'school_id'            => $this->school_id,
-            'school_code'          => $this->school_code,
-            'parent_db_key'        => $this->parent_db_key,
-            'must_change_password' => true,
-            'password_reset_at'    => time(),
-            'password_reset_by'    => (string) ($this->admin_id ?? ''),
+        $this->firebase->setCanonicalClaims($user_id, [
+            'role'          => 'Parent',
+            'school_id'     => $this->school_id,
+            'school_code'   => $this->school_code,
+            'parent_db_key' => $this->parent_db_key,
+            // Parent logs in AS the student — auth.uid == studentId. Emit the
+            // student identity claims the Parent app's red-flag listener needs.
+            'student_id'    => $user_id,
+            'extra'         => [
+                'must_change_password' => true,
+                'password_reset_at'    => time(),
+                'password_reset_by'    => (string) ($this->admin_id ?? ''),
+            ],
         ]);
 
         // 3. Revoke refresh tokens — kicks active app sessions.
@@ -2752,11 +2757,13 @@ class Sis extends MY_Controller
                 'uid'         => $studentId,
                 'displayName' => $displayName,
             ]);
-            $this->firebase->setFirebaseClaims($studentId, [
+            $this->firebase->setCanonicalClaims($studentId, [
                 'role'          => 'student',
                 'school_id'     => $this->school_id,
                 'school_code'   => $this->school_code,
                 'parent_db_key' => $this->parent_db_key,
+                // auth.uid == studentId; emit student identity for studentFlags.
+                'student_id'    => $studentId,
             ]);
             log_message('info', "{$context}: Firebase Auth user created for {$studentId} (email={$authEmail}).");
             return ['success' => true, 'error' => ''];

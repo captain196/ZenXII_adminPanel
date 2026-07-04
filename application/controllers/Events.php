@@ -114,6 +114,39 @@ class Events extends MY_Controller
         return $this->fs->docId2($eventId, $participantId);
     }
 
+    /**
+     * Flatten a firestoreQuery() result row. firestoreQuery returns rows shaped
+     * ['id' => docId, 'data' => [...fields...]] — NOT flat. Every list/dashboard/
+     * calendar/participant loop in this controller historically read fields at
+     * the top level, so titles/dates/status/names all came back blank (and the
+     * dashboard/calendar rendered empty). This unwraps `data` and folds the doc
+     * id in as `id`. Falls back to the row itself if it's already flat.
+     */
+    private function _row($doc): array
+    {
+        if (is_array($doc) && isset($doc['data']) && is_array($doc['data'])) {
+            $d = $doc['data'];
+            if (!isset($d['id']) && isset($doc['id'])) $d['id'] = $doc['id'];
+            return $d;
+        }
+        return is_array($doc) ? $doc : [];
+    }
+
+    /**
+     * Strip the "{schoolId}_" prefix from a full document id to recover the raw
+     * entity id (e.g. "SCH_X_EVT0001" -> "EVT0001"). getEntity()/save/delete all
+     * rebuild {schoolId}_{entityId}, so the client MUST receive the raw id, not
+     * the full doc id — otherwise edit/delete/circular double-prefix and 404.
+     */
+    private function _entityId(string $docId): string
+    {
+        $prefix = $this->school_name . '_';
+        if ($docId !== '' && strpos($docId, $prefix) === 0) {
+            return substr($docId, strlen($prefix));
+        }
+        return $docId;
+    }
+
     // ====================================================================
     //  PAGE ROUTES
     // ====================================================================
@@ -223,8 +256,8 @@ class Events extends MY_Controller
         $activeEventIds = [];
 
         foreach ((array) $rows as $doc) {
-            $e = is_array($doc) ? $doc : [];
-            $id = (string) ($e['eventId'] ?? $e['id'] ?? '');
+            $e = $this->_row($doc);
+            $id = (string) ($e['eventId'] ?? $this->_entityId((string) ($e['id'] ?? '')));
             if ($id === '') continue;
             $total++;
             $s = $e['status'] ?? '';
@@ -253,7 +286,7 @@ class Events extends MY_Controller
                 ['eventId',  '==', $evtId],
             ]);
             foreach ((array) $prows as $pdoc) {
-                $p = is_array($pdoc) ? $pdoc : [];
+                $p = $this->_row($pdoc);
                 $pid = (string) ($p['participantId'] ?? $p['id'] ?? '');
                 if ($pid === '') continue;
                 $p['event_id'] = $evtId;
@@ -293,17 +326,19 @@ class Events extends MY_Controller
             $this->json_error('Invalid status filter.');
         }
 
-        $where = [['schoolId', '==', $this->school_name]];
-        if ($category !== '') $where[] = ['category', '==', $category];
-        if ($status   !== '') $where[] = ['status',   '==', $status];
-
-        $rows = $this->firebase->firestoreQuery(self::COL_EVENTS, $where, 'startDate', 'DESC');
+        // Query by schoolId only (single-field, no extra composite index needed);
+        // category/status are filtered in PHP below so the tabs work without a
+        // per-combination composite index (event volumes per school are small).
+        $rows = $this->firebase->firestoreQuery(self::COL_EVENTS,
+            [['schoolId', '==', $this->school_name]], 'startDate', 'DESC');
         $list = [];
         foreach ((array) $rows as $doc) {
-            $e = is_array($doc) ? $doc : [];
-            $id = (string) ($e['eventId'] ?? $e['id'] ?? '');
+            $e  = $this->_row($doc);                                   // unwrap ['id'=>,'data'=>]
+            $id = (string) ($e['eventId'] ?? $this->_entityId((string) ($e['id'] ?? '')));
             if ($id === '') continue;
-            // Normalize field names for legacy JS which expects start_date/end_date.
+            if ($category !== '' && (string) ($e['category'] ?? '') !== $category) continue;
+            if ($status   !== '' && (string) ($e['status']   ?? '') !== $status)   continue;
+            // Normalize field names for JS which expects id/start_date/end_date.
             $e['id']         = $id;
             $e['start_date'] = $e['start_date'] ?? $e['startDate'] ?? '';
             $e['end_date']   = $e['end_date']   ?? $e['endDate']   ?? '';
@@ -432,20 +467,103 @@ class Events extends MY_Controller
         $event = $this->fs->getEntity(self::COL_EVENTS, $id);
         if (!is_array($event)) $this->json_error('Event not found.');
 
-        // Delete participants for this event.
-        $participants = $this->firebase->firestoreQuery(self::COL_PARTICIPANTS, [
+        // Delete participants for this event. Resilient: a mid-loop failure
+        // must not silently orphan the rest — collect failures and report.
+        $participants     = $this->firebase->firestoreQuery(self::COL_PARTICIPANTS, [
             ['schoolId', '==', $this->school_name],
             ['eventId',  '==', $id],
         ]);
+        $participantsTotal   = 0;
+        $participantsRemoved = 0;
+        $participantFailures = [];
         foreach ((array) $participants as $pdoc) {
-            $p = is_array($pdoc) ? $pdoc : [];
+            $p = $this->_row($pdoc);
             $pid = (string) ($p['participantId'] ?? $p['id'] ?? '');
             if ($pid === '') continue;
-            $this->fs->remove(self::COL_PARTICIPANTS, $this->_participant_docId($id, $pid));
+            $participantsTotal++;
+            try {
+                if ($this->fs->remove(self::COL_PARTICIPANTS, $this->_participant_docId($id, $pid))) {
+                    $participantsRemoved++;
+                } else {
+                    $participantFailures[] = $pid;
+                }
+            } catch (\Throwable $e) {
+                $participantFailures[] = $pid;
+                log_message('error', "Events::delete_event participant cleanup failed [{$id}/{$pid}]: " . $e->getMessage());
+            }
+        }
+
+        // ── Best-effort cascade (FIX-4): gallery RTDB node, Storage folder,
+        //    and the linked notices doc. Each step is isolated so one failure
+        //    never aborts the event delete; outcomes are reported back.
+        $cascade = [
+            'gallery_rtdb'    => null,
+            'storage_folder'  => null,
+            'notices_removed' => 0,
+        ];
+
+        // 1. RTDB gallery media node: Schools/{school}/Events/Media/{id}
+        try {
+            $cascade['gallery_rtdb'] = (bool) $this->firebase->delete(
+                "Schools/{$this->school_name}/Events/Media/{$id}"
+            );
+        } catch (\Throwable $e) {
+            $cascade['gallery_rtdb'] = false;
+            log_message('error', "Events::delete_event gallery RTDB cleanup failed [{$id}]: " . $e->getMessage());
+        }
+
+        // 2. Storage folder: schools/{school_id}/events/{safeEvent}/
+        //    (mirrors the sanitisation Schools::uploadMedia used when writing)
+        try {
+            $safeEvent   = preg_replace('/[^A-Za-z0-9_\-]/', '_', $id);
+            $storagePath = "schools/{$this->school_id}/events/{$safeEvent}/";
+            $cascade['storage_folder'] = (bool) $this->CM->delete_folder_from_firebase_storage($storagePath);
+        } catch (\Throwable $e) {
+            $cascade['storage_folder'] = false;
+            log_message('error', "Events::delete_event Storage cleanup failed [{$id}]: " . $e->getMessage());
+        }
+
+        // 3. Linked notices doc(s): notices where source=event & eventRef==id
+        try {
+            $notices = $this->firebase->firestoreQuery('notices', [
+                ['schoolId', '==', $this->school_name],
+                ['eventRef', '==', $id],
+            ]);
+            foreach ((array) $notices as $ndoc) {
+                $n   = $this->_row($ndoc);
+                $nid = (string) ($n['noticeId'] ?? $n['id'] ?? '');
+                if ($nid === '') continue;
+                try {
+                    if ($this->fs->remove('notices', $this->fs->docId($nid))) {
+                        $cascade['notices_removed']++;
+                    }
+                } catch (\Throwable $e) {
+                    log_message('error', "Events::delete_event notice cleanup failed [{$id}/{$nid}]: " . $e->getMessage());
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error', "Events::delete_event notices query failed [{$id}]: " . $e->getMessage());
         }
 
         $this->fs->remove(self::COL_EVENTS, $this->fs->docId($id));
-        $this->json_success(['message' => 'Event deleted.']);
+
+        $msg = 'Event deleted.';
+        if (!empty($participantFailures)) {
+            $msg .= ' Warning: ' . count($participantFailures) . ' of ' . $participantsTotal
+                  . ' participant record(s) could not be removed.';
+        }
+
+        $this->json_success([
+            'message' => $msg,
+            'cleanup' => [
+                'participants_removed' => $participantsRemoved,
+                'participants_total'   => $participantsTotal,
+                'participant_failures' => $participantFailures,
+                'gallery_rtdb_cleared' => $cascade['gallery_rtdb'],
+                'storage_cleared'      => $cascade['storage_folder'],
+                'notices_removed'      => $cascade['notices_removed'],
+            ],
+        ]);
     }
 
     public function update_status()
@@ -487,8 +605,8 @@ class Events extends MY_Controller
             [['schoolId', '==', $this->school_name]], 'startDate', 'ASC');
         $items = [];
         foreach ((array) $rows as $doc) {
-            $e = is_array($doc) ? $doc : [];
-            $id = (string) ($e['eventId'] ?? $e['id'] ?? '');
+            $e = $this->_row($doc);
+            $id = (string) ($e['eventId'] ?? $this->_entityId((string) ($e['id'] ?? '')));
             if ($id === '') continue;
             $eStart = (string) ($e['start_date'] ?? $e['startDate'] ?? '');
             $eEnd   = (string) ($e['end_date']   ?? $e['endDate']   ?? $eStart);
@@ -535,7 +653,7 @@ class Events extends MY_Controller
 
         $list = [];
         foreach ((array) $rows as $doc) {
-            $p = is_array($doc) ? $doc : [];
+            $p = $this->_row($doc);
             $pid = (string) ($p['participantId'] ?? $p['id'] ?? '');
             if ($pid === '') continue;
             $p['id'] = $pid;
@@ -700,7 +818,7 @@ class Events extends MY_Controller
             ]);
             foreach ((array) $teachers as $r) {
                 if (count($results) >= $maxResults) break;
-                $d = is_array($r) ? $r : [];
+                $d = $this->_row($r);
                 $tid  = (string) ($d['staffId'] ?? $d['teacherId'] ?? $d['id'] ?? '');
                 $name = (string) ($d['name'] ?? $d['Name'] ?? '');
                 if ($tid === '' || $name === '') continue;

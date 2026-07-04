@@ -86,13 +86,35 @@ service firebase.storage {
 
     // ─── L1: HOMEWORK attachments ───────────────────────────────────────
     // Path:  homework/{schoolId}/{homeworkId}/{path=**}
-    // Currently DORMANT (Homework Attachment Workstream Phase 1 paused).
-    // Pre-emptively scoped so the workstream resumes without rule churn.
+    // Homework Attachment Workstream RESUMED (Teacher app writes here).
+    //
+    // Phase C hardening (2026-07-02, audit C1): tenant isolation (school_id
+    // == path segment) is no longer the ONLY gate. Create/update now enforce
+    // a MIME allowlist and a per-file size cap SERVER-SIDE, mirroring the
+    // Teacher client's HomeworkAttachmentUploader caps EXACTLY:
+    //     ALLOWED_MIME_TYPES = image/jpeg, image/png, image/webp, application/pdf
+    //     MAX_FILE_BYTES     = 10 MiB (10 * 1024 * 1024 = 10485760, inclusive)
+    // This closes the gap where a modified APK / direct Storage REST call
+    // could push arbitrary file types or unbounded sizes into a school's
+    // homework prefix. The per-homework file COUNT cap (5) is not expressible
+    // in Storage rules and remains a client + Firestore-doc concern.
+    //
+    // delete is split out: on delete, request.resource is null (no size /
+    // contentType), so it must NOT carry the MIME/size predicates — otherwise
+    // the Teacher app's rollback + delete-on-homework-delete cleanup would be
+    // denied. Delete stays gated on tenant isolation only.
     match /homework/{schoolId}/{homeworkId}/{path=**} {
-      allow read:  if request.auth != null
-                   && request.auth.token.school_id == schoolId;
-      allow write: if request.auth != null
-                   && request.auth.token.school_id == schoolId;
+      allow read:   if request.auth != null
+                    && request.auth.token.school_id == schoolId;
+      allow create, update:
+                    if request.auth != null
+                    && request.auth.token.school_id == schoolId
+                    && request.resource.size <= 10 * 1024 * 1024
+                    && request.resource.contentType in [
+                         'image/jpeg', 'image/png', 'image/webp', 'application/pdf'
+                       ];
+      allow delete: if request.auth != null
+                    && request.auth.token.school_id == schoolId;
     }
 
     // ─── L2: GALLERY media (Teacher GalleryMediaUploader) ───────────────

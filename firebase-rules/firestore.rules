@@ -147,10 +147,21 @@ service cloud.firestore {
         && request.auth.token.role in ['Admin', 'admin', 'School Super Admin', 'school_super_admin', 'Super Admin', 'super_admin', 'Principal'];
     }
 
+    // Staff = any authenticated, same-school user who is NOT a student or
+    // parent. This is EXCLUSION-based on purpose: staff role titles are
+    // free-form (schools type "Senior Teacher", "PGT English", "TGT Hindi",
+    // "Librarian", "Clerk", "Lab Assistant", "PET", or leave it blank), so a
+    // hardcoded allow-list silently locked ~half of real staff out of every
+    // isStaff()-gated write (stories, homework, events, marks…). Only the
+    // student/parent roles are non-staff, and those are the closed set the
+    // apps mint, so excluding them is both correct and future-proof. Custom
+    // claims are server-signed, so a parent cannot strip their role to
+    // impersonate staff. Mirrors the "no RBAC gating on the mobile apps"
+    // design — scoping stays at the assignment/linkage-doc layer.
     function isStaff() {
       return isAuth()
         && tenantActive(request.auth.token.school_id)
-        && request.auth.token.role in ['Admin', 'admin', 'Teacher', 'teacher', 'School Super Admin', 'school_super_admin', 'Super Admin', 'super_admin', 'Accountant', 'Principal', 'Vice Principal'];
+        && !(request.auth.token.role in ['Student', 'student', 'Parent', 'parent', 'Guardian', 'guardian']);
     }
 
     function isSuperAdmin() {
@@ -318,8 +329,14 @@ service cloud.firestore {
       allow read:   if isSameSchoolStrict();
       allow create: if isStaff() && isSameSchoolWrite();
 
-      // Staff path — full edit access on their school's homework.
-      allow update: if isStaff() && isSameSchool();
+      // Staff path — edit/close homework. Finding #26 hardening (2026-07-01):
+      // restrict to the OWNING teacher (teacherId == auth.uid) OR an admin /
+      // principal (isAdmin). Previously ANY same-school staff could edit ANY
+      // homework. Admin-panel edits run via the Admin SDK (rules bypassed), so
+      // this only constrains client (app) writes; the Teacher app writes
+      // teacherId == the teacher's uid.
+      allow update: if isStaff() && isSameSchool()
+        && (resource.data.teacherId == request.auth.uid || isAdmin());
 
       // Parent path — may ONLY increment submissionCount by exactly +1
       // (atomic counter bump on first submission). All other field changes
@@ -354,7 +371,10 @@ service cloud.firestore {
              .hasOnly(['submissionCount'])
         && request.resource.data.submissionCount == resource.data.submissionCount + 1;
 
-      allow delete: if isStaff() && isSameSchool();
+      // Finding #26 hardening (2026-07-01): only the owning teacher or an
+      // admin/principal can delete homework (was: any same-school staff).
+      allow delete: if isStaff() && isSameSchool()
+        && (resource.data.teacherId == request.auth.uid || isAdmin());
     }
 
     // ── Homework Submissions ─────────────────────────────────────
@@ -383,10 +403,24 @@ service cloud.firestore {
       // equality check is a no-op for legitimate clients and a hard reject
       // for backdating attempts. Hard deadline (dueDate) rejection remains
       // deferred — see Fix 1C deferral note below.
+      // Sibling-submit fix (2026-07-01): a parent authenticates as ONE child
+      // but can switch the active child in-app (user.userId changes; auth.uid
+      // does not). Allow a submission for the authenticated child OR for any
+      // child LINKED to the same parent — the student doc's parentDbKey must
+      // equal the parent's `parent_db_key` claim. The key must be non-empty so
+      // two unlinked students with a blank key can't cross-submit; get()
+      // securely verifies linkage server-side (client can't forge it).
       allow create: if isAuth()
         && isSameSchoolWrite()
-        && request.auth.uid == request.resource.data.studentId
-        && request.resource.data.submittedAt == request.time;
+        && request.resource.data.submittedAt == request.time
+        && (
+             request.auth.uid == request.resource.data.studentId
+             || (
+                  request.auth.token.parent_db_key is string
+                  && request.auth.token.parent_db_key.size() > 0
+                  && get(/databases/$(database)/documents/students/$(request.resource.data.schoolId + '_' + request.resource.data.studentId)).data.parentDbKey == request.auth.token.parent_db_key
+                )
+           );
 
       // Parent (non-staff) update path — limited to work-in-progress
       // fields, and status (if changed) must be "submitted".
@@ -798,7 +832,10 @@ service cloud.firestore {
     match /circulars/{docId} {
       allow read: if isSameSchool();
       allow create: if isStaff() && isSameSchoolWrite();
-      allow update: if isStaff() && isSameSchool();
+      // 2026-07-03: add isSameSchoolWrite() so an update can't rewrite the
+      // doc's schoolId to another tenant (isSameSchool only validates the
+      // EXISTING doc). Mirrors the events "Audit C5" hardening.
+      allow update: if isStaff() && isSameSchool() && isSameSchoolWrite();
       allow delete: if isAdmin();
     }
 
@@ -807,20 +844,37 @@ service cloud.firestore {
     match /notices/{docId} {
       allow read: if isSameSchool();
       allow create: if isStaff() && isSameSchoolWrite();
-      allow update: if isStaff() && isSameSchool();
+      allow update: if isStaff() && isSameSchool() && isSameSchoolWrite();
       allow delete: if isAdmin();
     }
 
     // ── Circular Reads / Acks ────────────────────────────────────
+    // 2026-07-03 lockdown: previously `write: if isAuth()` let ANY authed user
+    // (any school) forge/delete ANY read receipt or ack and poison the
+    // denormalized readCount. Now a user may only write their OWN receipt
+    // (userId == uid), scoped to their active tenant (isSameSchoolWrite ⇒
+    // tenantActive + schoolId == claim). Docs carry {circularId, userId,
+    // schoolId, readAt}. Staff may read all (admin read-receipt dashboards).
     match /circularReads/{docId} {
-      allow read: if isAuth();
-      allow write: if isAuth();
+      allow read: if isAuth() && (
+        resource == null
+        || resource.data.get('userId', '') == request.auth.uid
+        || isStaff()
+      );
+      allow create, update: if isAuth()
+        && isSameSchoolWrite()
+        && request.resource.data.userId == request.auth.uid;
+      allow delete: if false;
     }
 
-    // Circular acknowledgements (Phase 3 rename of circularReads for admin side)
+    // Circular acknowledgements (compliance signal for requireAcknowledgement
+    // circulars). Same owner-only + tenant-scoped write model as reads.
     match /circularAcks/{docId} {
       allow read: if isSameSchool();
-      allow write: if isAuth();
+      allow create, update: if isAuth()
+        && isSameSchoolWrite()
+        && request.resource.data.userId == request.auth.uid;
+      allow delete: if false;
     }
 
     // ── Notifications ────────────────────────────────────────────
@@ -982,14 +1036,25 @@ service cloud.firestore {
     }
 
     // ── Gallery ──────────────────────────────────────────────────
+    // Audit C5 hardening (2026-07-02): the previous `allow write: if isStaff()`
+    // had NO tenant binding on the payload — a staff token from school A could
+    // create/patch a gallery doc stamped `schoolId: "SCH_B"`, writing into
+    // another school's gallery (readers query by schoolId). Bind writes to the
+    // caller's school on both the existing doc and the incoming payload, matching
+    // the events/submissions pattern. isSameSchoolWrite() checks
+    // request.resource.data.schoolId; isSameSchool() checks resource.data.schoolId.
     match /galleryAlbums/{docId} {
-      allow read: if isSameSchool();
-      allow write: if isStaff();
+      allow read:   if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool() && isSameSchoolWrite();
+      allow delete: if isStaff() && isSameSchool();
     }
 
     match /galleryMedia/{docId} {
-      allow read: if isSameSchool();
-      allow write: if isStaff();
+      allow read:   if isSameSchool();
+      allow create: if isStaff() && isSameSchoolWrite();
+      allow update: if isStaff() && isSameSchool() && isSameSchoolWrite();
+      allow delete: if isStaff() && isSameSchool();
     }
 
     // ── Stories ──────────────────────────────────────────────────
@@ -1303,8 +1368,13 @@ service cloud.firestore {
       //      auth.uid and no extra claim is needed)
       // The role gate is kept loose ('Parent'/'parent'/'Student'/'student'
       // or empty) because not every backend mints a role claim.
+      // H-LIFECYCLE parity (2026-07-02): parents, like staff, are locked out
+      // of a suspended/expired tenant. Previously this arm used raw isAuth()
+      // with no tenantActive() gate, so suspended-tenant parents could still
+      // read flags while every other collection blocked them.
       allow read: if isAuth()
         && resource != null
+        && tenantActive(request.auth.token.school_id)
         && (resource.data.schoolId   == request.auth.token.school_id
             || resource.data.schoolCode == request.auth.token.school_id
             || resource.data.schoolId   == request.auth.token.get('school_code', '')
@@ -1318,33 +1388,45 @@ service cloud.firestore {
       // Staff create flags as themselves with canonical lowercase enums.
       // createdByRole stamps the origin so soft-delete can enforce
       // "teachers can only delete what teachers created".
+      // 2026-07-02: also require the identity/ordering fields the UPDATE rule
+      // depends on (studentId/flagId/createdAtMs) to be present & valid, so a
+      // flag can never be written in a state that makes it un-resolvable or
+      // invisible to the createdAtMs-ordered feeds.
       allow create: if isStaff()
         && isSameSchoolWrite()
         && request.resource.data.teacherId == request.auth.uid
+        && request.resource.data.studentId != ''
+        && request.resource.data.flagId != ''
+        && request.resource.data.createdAtMs > 0
         && request.resource.data.status   == 'active'
         && request.resource.data.type     in ['homework', 'behavior', 'performance']
         && request.resource.data.severity in ['low', 'medium', 'high']
         && request.resource.data.createdByRole in ['admin', 'teacher'];
 
       // Updates cover BOTH resolve (status→'resolved') and soft-delete
-      // (status→'deleted'). Permission model:
-      //   - Admin: any update on any flag in their school.
-      //   - Teacher: only on flags where teacherId == their uid AND
-      //     for soft-delete, only when createdByRole == 'teacher'.
-      //     (Admin-created flags assigned to a teacher's uid still
-      //     can't be soft-deleted by that teacher.)
-      // Immutable fields locked across all updates — protects identity
-      // (studentId/flagId/teacherId/createdAtMs) AND audit-trail integrity
-      // by freezing the semantic fields (severity/type/message/subject)
-      // at creation time. Even admin cannot retroactively downgrade a
-      // 'high' severity flag to 'low'. Hard-delete + recreate is the only
-      // way to "edit" these — and that leaves an audit signal.
+      // (status→'deleted'). Permission model (ENFORCED, 2026-07-02 — the
+      // prior rule documented this but only checked school membership, so
+      // ANY same-school staff could resolve/delete ANY flag, incl. admin-
+      // created ones — a moderation-integrity hole the clients assumed was
+      // closed):
+      //   - Admin: any status transition on any flag in their school.
+      //   - Other staff (teacher): ONLY on flags they own (teacherId == uid).
+      //       · resolve  → allowed on own flags.
+      //       · soft-delete → additionally requires createdByRole == 'teacher'
+      //         (a teacher cannot retract an admin-issued flag routed to them).
+      // status is enum-constrained on every path so a bad value can't break
+      // the status-ordered indexes. Immutable identity + semantic fields use
+      // .get(default) so legacy docs missing a field stay resolvable rather
+      // than erroring the whole rule. schoolCode fallback mirrors the read
+      // rule so legacy schoolCode-only docs are moderatable, not frozen.
       allow update: if
-        resource.data.schoolId == request.auth.token.school_id
-        && request.resource.data.studentId   == resource.data.studentId
-        && request.resource.data.flagId      == resource.data.flagId
-        && request.resource.data.teacherId   == resource.data.teacherId
-        && request.resource.data.createdAtMs == resource.data.createdAtMs
+        (resource.data.schoolId == request.auth.token.school_id
+         || resource.data.get('schoolCode', '') == request.auth.token.school_id)
+        && request.resource.data.status in ['active', 'resolved', 'deleted']
+        && request.resource.data.get('studentId',  '') == resource.data.get('studentId',  '')
+        && request.resource.data.get('flagId',     '') == resource.data.get('flagId',     '')
+        && request.resource.data.get('teacherId',  '') == resource.data.get('teacherId',  '')
+        && request.resource.data.get('createdAtMs', 0) == resource.data.get('createdAtMs', 0)
         && request.resource.data.get('severity', '') == resource.data.get('severity', '')
         && request.resource.data.get('type',     '') == resource.data.get('type',     '')
         && request.resource.data.get('message',  '') == resource.data.get('message',  '')
@@ -1353,17 +1435,13 @@ service cloud.firestore {
           isAdmin()
           || (
             isStaff()
+            && resource.data.get('teacherId', '') == request.auth.uid
             && (
-              // Resolve: any school staff may close a flag for a student
-              // in their school. Audit trail preserved via resolvedBy /
-              // resolvedAtMs.
               request.resource.data.status == 'resolved'
-              // Soft-delete: any school staff may retract a flag —
-              // accidental flags, post-resolve cleanup, and class-teacher
-              // moderation all need this. Audit trail preserved via
-              // deletedBy / deletedAtMs (status='deleted' is a soft
-              // marker; original record stays for hard-delete by admin).
-              || request.resource.data.status == 'deleted'
+              || (
+                request.resource.data.status == 'deleted'
+                && resource.data.get('createdByRole', '') == 'teacher'
+              )
             )
           )
         );
@@ -1371,7 +1449,8 @@ service cloud.firestore {
       // Hard-delete still admin-only — soft-delete is the canonical path
       // (preserves audit trail). Kept for genuine purges by an admin tool.
       allow delete: if isAdmin()
-        && resource.data.schoolId == request.auth.token.school_id;
+        && (resource.data.schoolId == request.auth.token.school_id
+            || resource.data.get('schoolCode', '') == request.auth.token.school_id);
     }
 
 

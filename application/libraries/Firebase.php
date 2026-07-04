@@ -781,6 +781,120 @@ class Firebase
     }
 
     /**
+     * Build the canonical custom-claims array from a tenant-scoped context.
+     *
+     * setCustomUserClaims() REPLACES the entire claim set on every call, so a
+     * mint site that emits a partial set silently strips whatever it omits.
+     * Historically each of ~15 call sites hand-wrote its own array, which
+     * drifted: some emitted only snake_case school_id (breaking admin-panel
+     * login, which reads camelCase schoolId), some only camelCase (breaking
+     * the mobile apps, whose Firestore rules read snake_case school_id), and
+     * some emitted an empty `role`. The result was "login works but every
+     * screen is empty" (PERMISSION_DENIED) for the affected accounts.
+     *
+     * This builder is the single source of truth for the claim contract. It
+     * ALWAYS dual-emits the tenant keys in both casings and guarantees a
+     * non-empty `role`, so no caller can produce a partial/lockout claim set.
+     *
+     * @param array $ctx {
+     *   string      role          REQUIRED role/position label. Coerced to a
+     *                             non-empty value (see role_fallback).
+     *   string      role_fallback Used when `role` is blank. Default 'Staff'.
+     *   string|null role_label    Camel `roleLabel` (admin panel). Defaults to role.
+     *   string      school_id     Canonical tenant id. Emitted as school_id + schoolId.
+     *   string      school_code   Emitted as school_code + schoolCode.
+     *   string      parent_db_key Emitted as parent_db_key + parentDbKey.
+     *   string|null student_id    Student/parent accounts only. Emitted as
+     *                             student_id and seeds student_ids when the
+     *                             latter is not given.
+     *   array|null  student_ids   Multi-child override. Defaults to [student_id].
+     *   array|null  extra         Extra claims merged last (must_change_password,
+     *                             password_reset_at/by, …). Overrides on key clash.
+     * }
+     * @return array The claim set ready for setFirebaseClaims().
+     */
+    public function buildCanonicalClaims(array $ctx): array
+    {
+        $role = trim((string) ($ctx['role'] ?? ''));
+        if ($role === '') {
+            $role = trim((string) ($ctx['role_fallback'] ?? 'Staff'));
+            if ($role === '') $role = 'Staff';
+        }
+        $roleLabel = trim((string) ($ctx['role_label'] ?? '')) ?: $role;
+
+        $schoolId    = (string) ($ctx['school_id'] ?? '');
+        $schoolCode  = (string) ($ctx['school_code'] ?? '');
+        $parentDbKey = (string) ($ctx['parent_db_key'] ?? '');
+
+        // Dual-cased tenant contract — snake for Firestore rules, camel for
+        // admin-panel login. Always both, so neither surface can be locked out.
+        $claims = [
+            'role'          => $role,
+            'roleLabel'     => $roleLabel,
+            'school_id'     => $schoolId,
+            'schoolId'      => $schoolId,
+            'school_code'   => $schoolCode,
+            'schoolCode'    => $schoolCode,
+            'parent_db_key' => $parentDbKey,
+            'parentDbKey'   => $parentDbKey,
+        ];
+
+        // Student/parent identity claims (used by studentFlags rules + the
+        // Parent app's red-flag listener). Only emitted when a student id is
+        // in scope so staff/admin tokens stay lean.
+        $studentId = trim((string) ($ctx['student_id'] ?? ''));
+        if ($studentId !== '') {
+            $claims['student_id'] = $studentId;
+            $ids = $ctx['student_ids'] ?? null;
+            if (!is_array($ids) || empty($ids)) {
+                $ids = [$studentId];
+            }
+            $claims['student_ids'] = array_values(array_unique(array_map('strval', $ids)));
+        } elseif (!empty($ctx['student_ids']) && is_array($ctx['student_ids'])) {
+            $claims['student_ids'] = array_values(array_unique(array_map('strval', $ctx['student_ids'])));
+        }
+
+        // Per-site extras (must_change_password, password_reset_at/by, …).
+        if (!empty($ctx['extra']) && is_array($ctx['extra'])) {
+            $claims = array_merge($claims, $ctx['extra']);
+        }
+
+        return $claims;
+    }
+
+    /**
+     * Mint the canonical claim set for a tenant-scoped account in one call.
+     * Thin wrapper: buildCanonicalClaims($ctx) → setFirebaseClaims($uid, …).
+     * Prefer this over setFirebaseClaims() at every account create/reset/edit
+     * site so the full dual-cased contract is always emitted.
+     *
+     * NOTE: intentionally NOT for super-admin (SUP) accounts, which are
+     * cross-tenant and carry only ['role' => 'super_admin'] with no school.
+     */
+    public function setCanonicalClaims(string $uid, array $ctx): bool
+    {
+        return $this->setFirebaseClaims($uid, $this->buildCanonicalClaims($ctx));
+    }
+
+    /**
+     * Iterate EVERY Firebase Auth user via the Admin SDK listUsers() pager,
+     * invoking $fn($userRecord) for each. $userRecord exposes ->uid and
+     * ->customClaims (array). Used by the one-off claims backfill CLI to
+     * re-mint canonical claims on accounts created before the canonical
+     * builder existed. Returns the number of users visited.
+     */
+    public function eachAuthUser(callable $fn, int $batchSize = 1000): int
+    {
+        $n = 0;
+        // maxResults is a hard cap; PHP_INT_MAX means "walk the whole set".
+        foreach ($this->auth->listUsers(PHP_INT_MAX, $batchSize) as $user) {
+            $fn($user);
+            $n++;
+        }
+        return $n;
+    }
+
+    /**
      * Update a Firebase Auth user (password, email, displayName, disabled, etc.).
      *
      * @param string $uid   Firebase Auth UID
@@ -1133,6 +1247,16 @@ class Firebase
     {
         if ($this->firestoreDb === null) { log_message('error', 'Firebase::firestoreDelete() — Firestore not initialized'); return false; }
         return $this->firestoreDb->deleteDocument($collection, $docId);
+    }
+
+    /**
+     * List documents in a subcollection under a parent doc
+     * (e.g. `stories/{id}/viewers`). Returns [['id','data'], ...].
+     */
+    public function firestoreListSubcollection(string $collection, string $docId, string $subcollection): array
+    {
+        if ($this->firestoreDb === null) { log_message('error', 'Firebase::firestoreListSubcollection() — Firestore not initialized'); return []; }
+        return $this->firestoreDb->listSubcollection($collection, $docId, $subcollection);
     }
 
     public function firestoreQuery(

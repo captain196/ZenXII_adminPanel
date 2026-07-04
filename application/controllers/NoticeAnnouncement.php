@@ -304,6 +304,16 @@ class NoticeAnnouncement extends MY_Controller
             // ── 4. Circulars collection (already watched by Parent/
             //        Teacher apps) ─────────────────────────────────────
             try {
+                // Canonical audience scoping (2026-07-03): a small, explicit
+                // recipient list becomes precise user:<id> keys (each parent /
+                // staff member matches their own); a bulk send (>50) is treated
+                // as school-wide ['all']. The apps filter on these so a targeted
+                // notice no longer leaks to everyone.
+                $recipientIds = array_values(array_map('strval', array_keys($sanitized_to_ids)));
+                $audienceKeys = (count($recipientIds) === 0 || count($recipientIds) > 50)
+                    ? ['all']
+                    : array_values(array_map(function ($id) { return 'user:' . $id; }, $recipientIds));
+
                 $this->firebase->firestoreSet(self::COL_CIRCULARS, $notice_id, [
                     'schoolId'       => $school_name,
                     'session'        => $session_year,
@@ -312,7 +322,9 @@ class NoticeAnnouncement extends MY_Controller
                     'author'         => $this->admin_name ?? $admin_id,
                     'category'       => $category,
                     'priority'       => $priority,
-                    'targetAudience' => array_values(array_map('strval', array_keys($sanitized_to_ids))),
+                    'targetAudience' => $recipientIds,
+                    'audienceKeys'   => $audienceKeys,
+                    'type'           => 'notice',
                     'attachmentUrl'  => '',
                     'sentAt'         => $now_iso,
                     'status'         => 'sent',

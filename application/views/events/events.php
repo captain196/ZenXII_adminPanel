@@ -104,7 +104,7 @@ $at = $active_tab ?? 'events';
         <div class="ev-form-group"><label>Organizer</label><input type="text" id="evtOrganizer" placeholder="e.g. Sports Department"></div>
     </div>
     <div class="ev-form-group"><label>Max Participants (0 = unlimited)</label><input type="number" id="evtMaxP" min="0" value="0"></div>
-    <button class="ev-btn ev-btn-primary" onclick="EVT.save()" style="width:100%;margin-top:8px">Save Event</button>
+    <button id="evtSaveBtn" class="ev-btn ev-btn-primary" onclick="EVT.save()" style="width:100%;margin-top:8px">Save Event</button>
 </div></div>
 
 <div class="ev-toast" id="evToast"></div>
@@ -158,7 +158,8 @@ EVT.load = function() {
                         '<td style="font-size:12px">' + EV.esc(e.location||'') + '</td>' +
                         '<td style="font-size:12px">' + EV.esc(e.organizer||'') + '</td>' +
                         '<td><span class="ev-badge ' + EVT.statusBadge(e.status) + '">' + EV.esc(e.status) + '</span></td>' +
-                        '<td><button class="ev-btn ev-btn-sm ev-btn-outline" onclick="EVT.circular(\'' + EV.escJs(e.id) + '\')" title="View Circular"><i class="fa fa-file-text-o"></i></button> ' +
+                        '<td><button class="ev-btn ev-btn-sm ev-btn-outline" onclick="EVT.addPhotos(\'' + EV.escJs(e.id) + '\')" title="Add Photos"><i class="fa fa-camera"></i></button> ' +
+                        '<button class="ev-btn ev-btn-sm ev-btn-outline" onclick="EVT.circular(\'' + EV.escJs(e.id) + '\')" title="View Circular"><i class="fa fa-file-text-o"></i></button> ' +
                         '<button class="ev-btn ev-btn-sm ev-btn-primary" onclick="EVT.edit(\'' + EV.escJs(e.id) + '\')"><i class="fa fa-pencil"></i></button> ' +
                         '<button class="ev-btn ev-btn-sm ev-btn-danger" onclick="EVT.del(\'' + EV.escJs(e.id) + '\')"><i class="fa fa-trash"></i></button></td>' +
                         '</tr>';
@@ -209,7 +210,11 @@ EVT.edit = function(id) {
     document.getElementById('evtModal').classList.add('show');
 };
 
+EVT._saving = false;
 EVT.save = function() {
+    // Double-submit guard: a slow save_event round-trip used to let an
+    // impatient user click "Save" 2-3 times, creating duplicate events.
+    if (EVT._saving) return;
     var data = {
         id: document.getElementById('evtId').value,
         title: document.getElementById('evtTitle').value.trim(),
@@ -224,16 +229,34 @@ EVT.save = function() {
     };
     if (!data.title) { EV.toast('Title is required','error'); return; }
     if (!data.start_date) { EV.toast('Start date is required','error'); return; }
-    EV.ajax('events/save_event', data, function(r) {
-        EV.toast(r.message||'Saved');
-        EVT.closeModal();
-        EVT.load();
-    }, 'POST');
+
+    var btn = document.getElementById('evtSaveBtn');
+    var orig = btn ? btn.innerHTML : '';
+    EVT._saving = true;
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.7'; btn.style.cursor = 'not-allowed'; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Saving…'; }
+
+    $.ajax({
+        url: EV.BASE + 'events/save_event', type: 'POST', data: data, dataType: 'json',
+        success: function(r) {
+            if (r && r.status === 'success') { EV.toast(r.message||'Saved'); EVT.closeModal(); EVT.load(); }
+            else { EV.toast((r && r.message) || 'Error','error'); }
+        },
+        error: function(xhr) { var m='Error'; try{ m=JSON.parse(xhr.responseText).message||m; }catch(e){} EV.toast(m,'error'); },
+        complete: function() {
+            EVT._saving = false;
+            if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; btn.innerHTML = orig; }
+        }
+    });
 };
 
 EVT.del = function(id) {
     if (!confirm('Delete this event? This will also remove all participants.')) return;
     EV.ajax('events/delete_event', {id:id}, function(r) { EV.toast(r.message||'Deleted'); EVT.load(); }, 'POST');
+};
+
+EVT.addPhotos = function(id) {
+    // Jump to the School Gallery with this event preselected for upload.
+    window.location.href = EV.BASE + 'schools/schoolgallery?upload_event=' + encodeURIComponent(id);
 };
 
 EVT.circular = function(id) {

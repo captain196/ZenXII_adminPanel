@@ -1195,8 +1195,9 @@ class Admin extends MY_Controller
                     'uid'         => $newAdminId,
                     'displayName' => $name,
                 ]);
-                $this->firebase->setFirebaseClaims($newAdminId, [
+                $this->firebase->setCanonicalClaims($newAdminId, [
                     'role'          => $role,
+                    'role_fallback' => 'Admin',
                     'school_id'     => $this->school_id,
                     'school_code'   => $this->school_code,
                     'parent_db_key' => $this->parent_db_key,

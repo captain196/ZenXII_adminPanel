@@ -396,7 +396,8 @@
                     <i class="fa fa-th"></i>
                     <h3>Event Albums</h3>
                 </div>
-                <div class="sg-card-head-right">
+                <div class="sg-card-head-right" style="display:flex;gap:10px;align-items:center;">
+                    <button class="sg-btn sg-btn-primary" onclick="openEventUploadPicker()"><i class="fa fa-cloud-upload"></i> Upload Event Photos</button>
                     <div class="sg-search-wrap sg-search-sm">
                         <i class="fa fa-search sg-search-icon"></i>
                         <input type="text" class="sg-search" id="sgAlbumSearch" placeholder="Search albums..." autocomplete="off">
@@ -442,7 +443,7 @@
                     <p style="font-size:14px;font-weight:600;color:var(--sg-navy);margin:0 0 4px;">
                         Drop images &amp; videos here or click to browse
                     </p>
-                    <p class="sg-upload-hint">Images: JPG, PNG, WEBP (max 5MB) &nbsp;·&nbsp; Videos: MP4, MOV, AVI (max 50MB)</p>
+                    <p class="sg-upload-hint">Images: JPG, PNG, WEBP (max 3MB) &nbsp;·&nbsp; Videos: MP4, MOV, AVI (max 25MB)</p>
                 </div>
                 <div class="sg-upload-progress" id="sgUploadProgress">
                     <div class="sg-upload-bar" id="sgUploadBar"></div>
@@ -525,6 +526,24 @@
     </div>
 </div>
 
+<!-- ── Upload Event Photos picker ── -->
+<div id="sgUploadPicker" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9998;align-items:center;justify-content:center;">
+    <div style="background:#fff;width:min(480px,92vw);max-height:82vh;border-radius:14px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 16px 50px rgba(0,0,0,.35);">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid #e5e7eb;">
+            <strong style="font-size:16px;color:var(--sg-navy,#0f172a);"><i class="fa fa-cloud-upload" style="color:var(--sg-teal,#0f766e);margin-right:7px;"></i>Upload Event Photos</strong>
+            <button onclick="closeEventUploadPicker()" style="background:none;border:none;font-size:24px;line-height:1;cursor:pointer;color:#64748b;">&times;</button>
+        </div>
+        <div style="padding:14px 18px 8px;">
+            <div style="font-size:12.5px;color:#64748b;margin-bottom:9px;">Pick an event (any status) to add photos to its album.</div>
+            <div class="sg-search-wrap">
+                <i class="fa fa-search sg-search-icon"></i>
+                <input type="text" class="sg-search" id="sgPickerSearch" placeholder="Search events..." autocomplete="off" style="width:100%;">
+            </div>
+        </div>
+        <div id="sgPickerList" style="overflow-y:auto;padding:4px 12px 16px;"></div>
+    </div>
+</div>
+
 <!-- ── Loading overlay ── -->
 <div class="sg-loading" id="sgLoading">
     <div class="sg-loading-box">
@@ -544,6 +563,7 @@
 
 var SG = {
     albums: [],
+    eventOptions: [],    // ALL events (for the upload picker), incl. empty ones
     images: [],
     videos: [],
     activeTab: 'all',
@@ -553,6 +573,16 @@ var SG = {
 var BASE = '<?= rtrim(base_url(), '/') ?>';
 var CSRF_NAME = document.querySelector('meta[name="csrf-name"]').content;
 var CSRF_HASH = document.querySelector('meta[name="csrf-token"]').content;
+
+/* ── HTML-escape helper — use for any server/user value injected via innerHTML ── */
+function sgEsc(v) {
+    return String(v == null ? '' : v)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 
 /* ── Utilities ── */
 function showToast(msg, type) {
@@ -618,10 +648,15 @@ function fetchAlbums() {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             SG.albums = data.albums || [];
+            SG.eventOptions = data.event_options || [];
             SG_LIMITS = data.limits || {};
             renderAlbums();
             updateStats();
             updateQuotaBar(data.total_images || 0, data.total_videos || 0);
+            // Deep-link from the Events page: ?upload_event=EVTxxxx opens that
+            // event's album straight to the upload zone.
+            var _ue = new URLSearchParams(window.location.search).get('upload_event');
+            if (_ue) { openAlbum(_ue); var z = document.getElementById('sgUploadCard'); if (z) setTimeout(function(){ z.scrollIntoView({behavior:'smooth',block:'center'}); }, 350); }
         })
         .catch(function(e) {
             console.error('fetchAlbums:', e);
@@ -673,7 +708,7 @@ function renderAlbums() {
             var defColor = isPhotos ? 'linear-gradient(135deg,#0f766e,#14b8a6)' : 'linear-gradient(135deg,#d97706,#f59e0b)';
             cover = '<div class="sg-album-placeholder" style="background:' + defColor + ';"><i class="fa ' + defIcon + '" style="font-size:36px;color:#fff;"></i></div>';
         } else if (album.cover) {
-            cover = '<img src="' + album.cover + '" alt="' + album.title + '">';
+            cover = '<img src="' + sgEsc(album.cover) + '" alt="' + sgEsc(album.title) + '">';
         } else {
             cover = '<div class="sg-album-placeholder"><i class="fa fa-picture-o"></i></div>';
         }
@@ -693,10 +728,10 @@ function renderAlbums() {
 
         var cardStyle = isDef ? 'border:2px solid ' + (isPhotos ? 'rgba(15,118,110,.3)' : 'rgba(217,119,6,.3)') + ';' : '';
 
-        return '<div class="sg-album-card" style="' + cardStyle + '" data-id="' + album.event_id + '" data-title="' + album.title.toLowerCase() + '" onclick="openAlbum(\'' + album.event_id + '\')">'
+        return '<div class="sg-album-card" style="' + cardStyle + '" data-id="' + sgEsc(album.event_id) + '" data-title="' + sgEsc(String(album.title).toLowerCase()) + '" onclick="openAlbum(\'' + sgEsc(album.event_id) + '\')">'
             + '<div class="sg-album-cover">' + cover + '</div>'
             + '<div class="sg-album-info">'
-            +   '<div class="sg-album-name">' + (isDef ? '<i class="fa ' + (album.icon||'fa-folder') + '" style="margin-right:5px;color:' + (isPhotos?'#0f766e':'#d97706') + ';"></i>' : '') + album.title + '</div>'
+            +   '<div class="sg-album-name">' + (isDef ? '<i class="fa ' + sgEsc(album.icon||'fa-folder') + '" style="margin-right:5px;color:' + (isPhotos?'#0f766e':'#d97706') + ';"></i>' : '') + sgEsc(album.title) + '</div>'
             +   '<div class="sg-album-counts">'
             +       '<span><i class="fa fa-picture-o"></i> ' + album.image_count + '</span>'
             +       '<span><i class="fa fa-film"></i> ' + album.video_count + '</span>'
@@ -737,7 +772,15 @@ document.getElementById('sgAlbumSearch').addEventListener('input', function() {
 
 function openAlbum(eventId) {
     var album = SG.albums.find(function(a) { return a.event_id === eventId; });
-    if (!album) return;
+    if (!album) {
+        // Empty event album (not in the grid) — synthesize from the event list so
+        // the admin can open it and upload the first photos.
+        var evt = (SG.eventOptions || []).find(function(e) { return e.event_id === eventId; });
+        if (!evt) { showToast('Event not found.', 'error'); return; }
+        album = { event_id: eventId, title: evt.title, category: evt.category || 'event',
+                  start_date: evt.start_date || '', status: evt.status || '',
+                  cover: '', image_count: 0, video_count: 0, total: 0 };
+    }
 
     SG.currentAlbum = album;
     SG.activeTab = 'all';
@@ -978,11 +1021,13 @@ function deleteFile(fileUrl, mediaId, btnEl) {
 
 function deleteFilePromise(fileUrl, mediaId) {
     var eventId = SG.currentAlbum ? SG.currentAlbum.event_id : '';
-    var qs = 'url=' + encodeURIComponent(fileUrl)
-           + '&event_id=' + encodeURIComponent(eventId)
-           + '&media_id=' + encodeURIComponent(mediaId || '');
+    var fd = new FormData();
+    fd.append('url', fileUrl);
+    fd.append('event_id', eventId);
+    fd.append('media_id', mediaId || '');
+    fd.append(CSRF_NAME, CSRF_HASH);
 
-    return fetch(BASE + '/schools/deleteMedia?' + qs, { method: 'DELETE' })
+    return fetch(BASE + '/schools/deleteMedia', { method: 'POST', body: fd })
         .then(function(r) { return r.json(); })
         .then(function(d) {
             if (d.status !== 'success') { showToast('Delete failed: ' + d.message, 'error'); return false; }
@@ -1146,9 +1191,53 @@ function handleFiles(files) {
 }
 
 
+/* ── Upload Event Photos picker ── */
+function openEventUploadPicker() {
+    var s = document.getElementById('sgPickerSearch');
+    s.value = '';
+    renderPickerList('');
+    document.getElementById('sgUploadPicker').style.display = 'flex';
+    setTimeout(function() { s.focus(); }, 60);
+}
+function closeEventUploadPicker() {
+    document.getElementById('sgUploadPicker').style.display = 'none';
+}
+function renderPickerList(q) {
+    q = (q || '').toLowerCase().trim();
+    var list = (SG.eventOptions || []).filter(function(e) {
+        return !q || String(e.title).toLowerCase().indexOf(q) !== -1
+                  || String(e.event_id).toLowerCase().indexOf(q) !== -1;
+    });
+    var el = document.getElementById('sgPickerList');
+    if (!list.length) {
+        el.innerHTML = '<div style="padding:18px;text-align:center;color:#64748b;">No events found.</div>';
+        return;
+    }
+    el.innerHTML = list.map(function(e) {
+        var date = e.start_date ? '<span style="color:#64748b;font-size:12px;">' + sgEsc(e.start_date) + '</span>' : '';
+        var badge = e.status ? '<span style="font-size:11px;padding:2px 8px;border-radius:10px;background:#eef2ff;color:#4338ca;text-transform:capitalize;">' + sgEsc(e.status) + '</span>' : '';
+        return '<div onclick="pickEventForUpload(\'' + sgEsc(e.event_id) + '\')" '
+            + 'style="padding:11px 12px;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;" '
+            + 'onmouseover="this.style.background=\'#f1f5f9\'" onmouseout="this.style.background=\'\'">'
+            + '<span style="font-weight:600;color:var(--sg-navy,#0f172a);">' + sgEsc(e.title) + '</span>'
+            + '<span style="display:flex;gap:8px;align-items:center;white-space:nowrap;">' + date + badge + '</span>'
+            + '</div>';
+    }).join('');
+}
+function pickEventForUpload(eventId) {
+    closeEventUploadPicker();
+    openAlbum(eventId);   // opens the (possibly empty) event album; Upload button + drop zone are shown
+    var z = document.getElementById('sgUploadCard');
+    if (z) setTimeout(function() { z.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 300);
+}
+
 /* ── Init ── */
 document.addEventListener('DOMContentLoaded', function() {
     fetchAlbums();
+    var ps = document.getElementById('sgPickerSearch');
+    if (ps) ps.addEventListener('input', function() { renderPickerList(this.value); });
+    var up = document.getElementById('sgUploadPicker');
+    if (up) up.addEventListener('click', function(e) { if (e.target === up) closeEventUploadPicker(); });
 });
 </script>
 

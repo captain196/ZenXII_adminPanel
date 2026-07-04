@@ -1057,6 +1057,127 @@ class Timetable_service
         return str_replace(['.', '$', '#', '[', ']', '/'], '_', trim($key));
     }
 
+    /** Normalized (case/space-insensitive) match key. */
+    private function _nk(string $s): string
+    {
+        return strtolower(trim(preg_replace('/\s+/', ' ', $s)));
+    }
+
+    /**
+     * Propagate subject-matrix teacher changes into already-generated
+     * timetable periods for a class. Called right after a subjectAssignments
+     * save so a reassigned teacher shows up on the timetable (and in the app,
+     * which matches period.teacherId == myId) IMMEDIATELY, instead of drifting
+     * until someone runs the reconcile CLI.
+     *
+     * Idempotent + surgical: only class-type periods whose subject matches an
+     * assignment carrying a teacher, and only when teacherId/name actually
+     * differ, are rewritten. Layout, breaks, times and blank/unassigned slots
+     * are untouched. Never flips manuallyEdited (this is a system sync, not a
+     * human edit). Best-effort: failures are logged, never thrown, so a matrix
+     * save never fails because of timetable propagation.
+     *
+     * @param string $classKey   e.g. "Class 9th" (any casing/format accepted)
+     * @param string $sectionKey optional "Section A" to scope to one section;
+     *                           empty = every section of the class.
+     * @return array ['docsUpdated'=>int,'periodsChanged'=>int,'skippedManual'=>int]
+     */
+    public function reconcileClassFromMatrix(string $classKey, string $sectionKey = ''): array
+    {
+        $out = ['docsUpdated' => 0, 'periodsChanged' => 0, 'skippedManual' => 0];
+        if (!$this->ready) return $out;
+
+        try {
+            $wantCls = $this->_nk($classKey);
+
+            // ── Authoritative maps from the matrix (this class) ──────────
+            // Query subjectAssignments DIRECTLY (explicit schoolId) rather than
+            // via SAS.schoolWhere so this doesn't depend on ambient
+            // firestore_service school context (keeps it callable/testable
+            // from any entry point).
+            //   sectioned[ class|section|subjName ] = [tid, tname]
+            //   classwide[ class|subjName ]         = [tid, tname]
+            $saRows = $this->firebase->firestoreQuery('subjectAssignments', [
+                ['schoolId', '==', $this->schoolId],
+            ], null, 'ASC', 2000);
+            $sectioned = [];  $classwide = [];
+            foreach ($saRows as $r) {
+                $a = is_array($r['data'] ?? null) ? $r['data'] : [];
+                if (!empty($a['archived'])) continue;
+                if ((string)($a['session'] ?? '') !== $this->session) continue;
+                $cls = $this->_nk((string)($a['className'] ?? ''));
+                if ($cls !== $wantCls) continue;                  // scope to this class
+                $tid = trim((string)($a['teacherId'] ?? ''));
+                if ($tid === '') continue;                        // no authority to assert
+                $tname = trim((string)($a['teacherName'] ?? ''));
+                $sec   = (string)($a['section'] ?? '');
+                $subN  = $this->_nk((string)($a['subjectName'] ?? ($a['subjectCode'] ?? '')));
+                if ($subN === '') continue;
+                if ($sec === '' || $sec === '_ALL_') $classwide["{$cls}|{$subN}"] = [$tid, $tname];
+                else $sectioned["{$cls}|{$this->_nk($sec)}|{$subN}"] = [$tid, $tname];
+            }
+            if (empty($sectioned) && empty($classwide)) return $out;   // nothing to assert
+
+            // ── Load this class's timetable docs ─────────────────────────
+            $rows = $this->firebase->firestoreQuery(self::COLLECTION_TT, [
+                ['schoolId', '==', $this->schoolId],
+            ], null, 'ASC', 2000);
+
+            $wantSec = $sectionKey !== '' ? $this->_nk($sectionKey) : '';
+            $wantCls = $this->_nk($classKey);
+
+            foreach ($rows as $r) {
+                $d = is_array($r['data'] ?? null) ? $r['data'] : [];
+                $docId = (string)($r['id'] ?? '');
+                if ((string)($d['session'] ?? '') !== $this->session) continue;
+                $dCls = $this->_nk((string)($d['className'] ?? ''));
+                $dSec = $this->_nk((string)($d['section'] ?? ''));
+                if ($dCls !== $wantCls) continue;
+                if ($wantSec !== '' && $dSec !== $wantSec) continue;
+
+                $periods = $d['periods'] ?? null;
+                if (!is_array($periods)) continue;
+
+                $newPeriods = $periods;
+                $changed = 0;
+                foreach ($periods as $idx => $p) {
+                    if (!is_array($p)) continue;
+                    if ((string)($p['type'] ?? 'class') !== 'class') continue;
+                    $subj = trim((string)($p['subject'] ?? ''));
+                    if ($subj === '') continue;
+                    $subN = $this->_nk($subj);
+                    $auth = $sectioned["{$dCls}|{$dSec}|{$subN}"]
+                        ?? $classwide["{$dCls}|{$subN}"]
+                        ?? null;
+                    if ($auth === null) continue;                 // subject not in matrix → leave as-is
+                    [$aTid, $aName] = $auth;
+                    $curTid  = trim((string)($p['teacherId'] ?? ''));
+                    $curName = trim((string)($p['teacher'] ?? ''));
+                    if ($curTid === $aTid && $this->_nk($curName) === $this->_nk($aName)) continue;
+                    $newPeriods[$idx]['teacherId'] = $aTid;
+                    $newPeriods[$idx]['teacher']   = $aName !== '' ? $aName : $curName;
+                    $changed++;
+                }
+
+                if ($changed > 0) {
+                    $stamp = date('c');
+                    $this->firebase->firestoreUpdate(self::COLLECTION_TT, $docId, [
+                        'periods'      => $newPeriods,
+                        'version'      => (int)($d['version'] ?? 0) + 1,
+                        'updatedAt'    => $stamp,
+                        'reconciledAt' => $stamp,
+                        'reconciledBy' => 'matrix-save-autosync',
+                    ]);
+                    $out['docsUpdated']++;
+                    $out['periodsChanged'] += $changed;
+                }
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'reconcileClassFromMatrix failed: ' . $e->getMessage());
+        }
+        return $out;
+    }
+
     /** Lazy-load Subject_assignment_service via CI singleton. */
     private function _sas()
     {

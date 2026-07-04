@@ -847,26 +847,121 @@ class Entity_firestore_sync
     //  GALLERY & STORIES
     // ══════════════════════════════════════════════════════════════════
 
+    // ──────────────────────────────────────────────────────────────────
+    //  GALLERY — canonical app contract (2026-07 consolidation)
+    // ──────────────────────────────────────────────────────────────────
+    //
+    // Mobile read-contract (Teacher + Parent, identical):
+    //   galleryAlbums/{schoolId}_{albumId}
+    //     {schoolId, albumId, title, description, category, session,
+    //      coverImage, source("general"|"event"), eventId, mediaCount(int),
+    //      isArchived(bool), createdBy, createdAt(ISO), updatedAt(ISO)}
+    //   galleryMedia/{albumId}_{mediaId}
+    //     {schoolId, albumId, url, type("image"|"video"), thumbnail,
+    //      duration, caption, isArchived(bool), uploadedBy, uploadedAt(ISO)}
+    //
+    // These two methods previously wrote `schoolCode` + wrong doc-ids and had
+    // ZERO callers. They are now wired from Schools::uploadMedia / deleteMedia /
+    // setEventCover as a best-effort dual-write alongside the RTDB Events tree.
+    // For this school ERP, schoolId (SCH_XXXXXX) === school_name, so the value
+    // passed to init() as $schoolId is the canonical SCH_ id the apps query on.
+
+    /**
+     * Upsert a gallery album (merge). Only the contract fields actually present
+     * in $data are written, so a partial call (e.g. cover-only) never clears
+     * other fields. mediaCount is intentionally NOT written here — use
+     * bumpGalleryAlbumCount() for atomic, concurrency-safe count maintenance.
+     */
     public function syncGalleryAlbum(string $albumId, array $data): bool
     {
-        if (!$this->ready) return false;
-        $doc = array_merge($data, [
-            'schoolCode' => $this->schoolId,
-            'albumId'    => $albumId,
-            'updatedAt'  => date('c'),
-        ]);
-        return $this->_write('galleryAlbums', "{$this->schoolCode}_{$albumId}", $doc);
+        if (!$this->ready || $albumId === '') return false;
+        $docId = "{$this->schoolId}_{$albumId}";
+
+        $doc = [
+            'schoolId'  => $this->schoolId,
+            'albumId'   => $albumId,
+            'session'   => $data['session'] ?? $this->session,
+            'updatedAt' => date('c'),
+        ];
+        // Copy contract fields only when the caller supplied a non-empty value
+        // (merge-safe: omitted fields keep whatever is already on the doc).
+        foreach (['title', 'description', 'category', 'coverImage', 'source', 'eventId', 'createdBy'] as $k) {
+            if (isset($data[$k]) && $data[$k] !== '') $doc[$k] = $data[$k];
+        }
+        if (array_key_exists('isArchived', $data)) $doc['isArchived'] = (bool) $data['isArchived'];
+        if (array_key_exists('mediaCount', $data)) $doc['mediaCount'] = (int) $data['mediaCount'];
+        // createdAt is only meaningful on first create; merge preserves the
+        // original value once set, so re-sends never bump it.
+        if (!empty($data['createdAt'])) $doc['createdAt'] = $data['createdAt'];
+
+        return $this->_write('galleryAlbums', $docId, $doc);
     }
 
-    public function syncGalleryMedia(string $mediaId, array $data): bool
+    /**
+     * Atomically add $delta to an album's mediaCount (server-side increment —
+     * concurrency-safe, upserts mediaCount from 0 when absent). +1 on upload,
+     * -1 on delete.
+     */
+    public function bumpGalleryAlbumCount(string $albumId, int $delta): bool
     {
-        if (!$this->ready) return false;
-        $doc = array_merge($data, [
-            'schoolCode' => $this->schoolId,
-            'mediaId'    => $mediaId,
+        if (!$this->ready || $albumId === '' || $delta === 0) return false;
+        $docId = "{$this->schoolId}_{$albumId}";
+        try {
+            return $this->firebase->firestoreIncrement('galleryAlbums', $docId, ['mediaCount' => $delta]);
+        } catch (\Exception $e) {
+            log_message('error', "Entity_firestore_sync::bumpGalleryAlbumCount({$docId}) failed: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Patch an album's coverImage only (merge). Used by Schools::setEventCover.
+     */
+    public function updateGalleryAlbumCover(string $albumId, string $coverImage): bool
+    {
+        if (!$this->ready || $albumId === '') return false;
+        $docId = "{$this->schoolId}_{$albumId}";
+        return $this->_write('galleryAlbums', $docId, [
+            'schoolId'   => $this->schoolId,
+            'albumId'    => $albumId,
+            'coverImage' => $coverImage,
             'updatedAt'  => date('c'),
         ]);
-        return $this->_write('galleryMedia', "{$this->schoolCode}_{$mediaId}", $doc);
+    }
+
+    /**
+     * Insert / overwrite a gallery-media doc. doc-id = {albumId}_{mediaId}.
+     * Signature is (albumId, mediaId, data) — the media doc-id is compound on
+     * albumId + mediaId per the app contract.
+     */
+    public function syncGalleryMedia(string $albumId, string $mediaId, array $data): bool
+    {
+        if (!$this->ready || $albumId === '' || $mediaId === '') return false;
+        $docId = "{$albumId}_{$mediaId}";
+
+        $doc = [
+            'schoolId'   => $this->schoolId,
+            'albumId'    => $albumId,
+            'mediaId'    => $mediaId,
+            'url'        => (string) ($data['url'] ?? ''),
+            'type'       => (string) ($data['type'] ?? 'image'),
+            'thumbnail'  => (string) ($data['thumbnail'] ?? ''),
+            'duration'   => (string) ($data['duration'] ?? ''),
+            'caption'    => (string) ($data['caption'] ?? ''),
+            'isArchived' => isset($data['isArchived']) ? (bool) $data['isArchived'] : false,
+            'uploadedBy' => (string) ($data['uploadedBy'] ?? ''),
+            'uploadedAt' => (string) ($data['uploadedAt'] ?? date('c')),
+        ];
+        return $this->_write('galleryMedia', $docId, $doc);
+    }
+
+    /**
+     * Delete a gallery-media doc. doc-id = {albumId}_{mediaId}.
+     */
+    public function syncDeleteGalleryMedia(string $albumId, string $mediaId): bool
+    {
+        if (!$this->ready || $albumId === '' || $mediaId === '') return false;
+        return $this->_delete('galleryMedia', "{$albumId}_{$mediaId}");
     }
 
     public function syncStory(string $storyId, array $data): bool

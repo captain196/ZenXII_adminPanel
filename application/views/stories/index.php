@@ -94,6 +94,11 @@
 .st-story-avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;border:1.5px solid var(--border);flex-shrink:0}
 .st-story-tname{font-size:12px;font-weight:600;color:var(--t1);font-family:var(--font-b);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .st-story-caption{font-size:12px;color:var(--t2);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:8px;min-height:34px}
+.st-story-audience{display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--t2);background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:2px 7px;margin-bottom:8px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Admin-upload indeterminate "Publishing…" bar (server-side Storage+Firestore phase after bytes reach 100%). */
+#asProgressBar.as-indeterminate{width:100%!important;background:repeating-linear-gradient(90deg,#0f766e 0,#14b8a6 12px,#0f766e 24px);background-size:48px 100%;animation:asStripe 1s linear infinite}
+#asProgressBar.as-indeterminate ~ *,.as-indeterminate-hide{display:none}
+@keyframes asStripe{from{background-position:0 0}to{background-position:48px 0}}
 .st-story-meta{display:flex;align-items:center;justify-content:space-between;font-size:10px;color:var(--t3);font-family:var(--font-m)}
 .st-story-meta i{margin-right:3px}
 .st-story-views{display:flex;align-items:center;gap:3px}
@@ -254,10 +259,31 @@
                           style="width:100%;padding:10px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:14px;font-family:inherit;resize:vertical;"></textarea>
             </div>
 
+            <!-- Audience -->
+            <div style="margin-bottom:14px;">
+                <label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#475569;display:block;margin-bottom:6px;">
+                    Audience <span style="color:#dc2626;">*</span>
+                </label>
+                <div style="display:flex;gap:16px;margin-bottom:8px;">
+                    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;cursor:pointer;">
+                        <input type="radio" name="asAudienceMode" value="whole" checked onchange="ST.onAudienceMode()"> Whole school
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;cursor:pointer;">
+                        <input type="radio" name="asAudienceMode" value="specific" onchange="ST.onAudienceMode()"> Specific classes
+                    </label>
+                </div>
+                <div id="asAudienceList" style="display:none;border:1.5px solid #e2e8f0;border-radius:8px;padding:8px 10px;max-height:150px;overflow-y:auto;background:#f8fafc;">
+                    <div style="font-size:12px;color:#94a3b8;">Loading classes…</div>
+                </div>
+                <div style="font-size:11px;color:#64748b;margin-top:4px;">
+                    Whole-school reaches every parent &amp; teacher. Specific classes reach only the selected sections (and their teachers).
+                </div>
+            </div>
+
             <!-- Progress -->
             <div id="asProgressWrap" style="display:none;margin-bottom:14px;">
                 <div style="font-size:12px;color:#475569;margin-bottom:5px;">
-                    Uploading <span id="asProgressPct">0</span>%
+                    <span id="asProgressLabel">Uploading</span> <span id="asProgressPct">0</span><span class="as-pct-sign">%</span>
                 </div>
                 <div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;">
                     <div id="asProgressBar" style="height:100%;background:linear-gradient(90deg,#0f766e,#14b8a6);width:0%;transition:width .2s;"></div>
@@ -351,7 +377,6 @@
         <div class="st-bulk-count"><span id="bulkCount">0</span> story(ies) selected</div>
         <div class="st-bulk-actions">
             <button class="st-btn st-btn-amber st-btn-sm" onclick="ST.bulkAction('flagged')"><i class="fa fa-flag"></i> Flag Selected</button>
-            <button class="st-btn st-btn-success st-btn-sm" onclick="ST.bulkAction('active')"><i class="fa fa-check"></i> Approve Selected</button>
             <button class="st-btn st-btn-danger st-btn-sm" onclick="ST.bulkAction('removed')"><i class="fa fa-ban"></i> Remove Selected</button>
         </div>
     </div>
@@ -451,7 +476,37 @@ ST.openUpload = function() {
     document.getElementById('asProgressBar').style.width = '0%';
     document.getElementById('asProgressPct').textContent = '0';
     document.getElementById('asSubmitBtn').disabled = false;
+    // Reset audience → whole school, hide the class list.
+    document.getElementById('asAudienceList').style.display = 'none';
+    ST.loadAudienceOptions();
     document.getElementById('adminStoryModal').style.display = 'flex';
+};
+
+// Lazy-load the class-section checkboxes for the audience picker (once).
+ST.audienceOptions = null;
+ST.loadAudienceOptions = function() {
+    var box = document.getElementById('asAudienceList');
+    if (ST.audienceOptions) return;   // already loaded this session
+    ST.ajaxGet('stories/get_audience_options', {}, function(r) {
+        if (r.status !== 'success') { box.innerHTML = '<div style="font-size:12px;color:#dc2626">Could not load classes.</div>'; return; }
+        ST.audienceOptions = r.options || [];
+        if (!ST.audienceOptions.length) {
+            box.innerHTML = '<div style="font-size:12px;color:#94a3b8">No classes found for this school.</div>';
+            return;
+        }
+        var html = '';
+        ST.audienceOptions.forEach(function(o) {
+            html += '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#334155;padding:3px 0;cursor:pointer;">'
+                + '<input type="checkbox" class="as-aud-cb" value="' + ST.esc(o.key) + '"> ' + ST.esc(o.label) + '</label>';
+        });
+        box.innerHTML = html;
+    });
+};
+
+// Toggle the class list when switching between Whole school / Specific.
+ST.onAudienceMode = function() {
+    var mode = (document.querySelector('input[name=asAudienceMode]:checked') || {}).value;
+    document.getElementById('asAudienceList').style.display = (mode === 'specific') ? 'block' : 'none';
 };
 
 ST.closeUpload = function() {
@@ -474,19 +529,32 @@ ST.submitUpload = function() {
         alert(type + ' must be ≤ ' + maxMb + ' MB.'); return;
     }
 
+    // Resolve audience: whole-school = [], else the checked class keys.
+    var mode = (document.querySelector('input[name=asAudienceMode]:checked') || {}).value;
+    var audience = [];
+    if (mode === 'specific') {
+        var cbs = document.querySelectorAll('#asAudienceList .as-aud-cb:checked');
+        for (var i = 0; i < cbs.length; i++) audience.push(cbs[i].value);
+        if (!audience.length) { alert('Pick at least one class, or choose “Whole school”.'); return; }
+    }
+
     var fd = new FormData();
     fd.append(ST.CSRF.name, ST.CSRF.token);
     fd.append('media',    file);
     fd.append('type',     type);
     fd.append('priority', priEl.value);
     fd.append('caption',  capEl.value.trim());
+    fd.append('audience', JSON.stringify(audience));
 
-    var btn  = document.getElementById('asSubmitBtn');
-    var wrap = document.getElementById('asProgressWrap');
-    var bar  = document.getElementById('asProgressBar');
-    var pct  = document.getElementById('asProgressPct');
+    var btn   = document.getElementById('asSubmitBtn');
+    var wrap  = document.getElementById('asProgressWrap');
+    var bar   = document.getElementById('asProgressBar');
+    var pct   = document.getElementById('asProgressPct');
+    var label = document.getElementById('asProgressLabel');
     btn.disabled = true;
     wrap.style.display = 'block';
+    bar.classList.remove('as-indeterminate');
+    if (label) label.textContent = 'Uploading';
 
     // Use XMLHttpRequest for upload progress (fetch doesn't expose it)
     var xhr = new XMLHttpRequest();
@@ -496,10 +564,18 @@ ST.submitUpload = function() {
             var p = Math.round((e.loaded / e.total) * 100);
             bar.style.width = p + '%';
             pct.textContent = p;
+            // Bytes are in the server's hands — it now uploads to Storage +
+            // writes Firestore (several seconds). Switch to an indeterminate
+            // "Publishing…" state so the user isn't staring at a frozen 100%.
+            if (p >= 100 && label) {
+                label.textContent = 'Publishing…';
+                bar.classList.add('as-indeterminate');
+            }
         }
     };
     xhr.onload = function() {
         btn.disabled = false;
+        bar.classList.remove('as-indeterminate');
         var resp;
         try { resp = JSON.parse(xhr.responseText); } catch (_) {
             alert('Unexpected server response');
@@ -591,6 +667,19 @@ ST.timeAgo = function(ts) {
 ST.statusBadge = function(s) {
     var m = {active: 'st-badge-green', expired: 'st-badge-gray', flagged: 'st-badge-rose', removed: 'st-badge-amber'};
     return '<span class="st-badge ' + (m[s] || 'st-badge-gray') + '">' + ST.esc(s || 'unknown') + '</span>';
+};
+
+// Audience chip — whole-school (empty audienceClassKeys) vs class-scoped.
+// Lets moderators see at a glance which stories reach the entire school.
+ST.isWholeSchool = function(s) {
+    return !s.audienceClassKeys || s.audienceClassKeys.length === 0;
+};
+ST.audienceChip = function(s) {
+    var whole = ST.isWholeSchool(s);
+    var label = s.audienceLabel || (whole ? 'Whole school' : 'Class');
+    return '<div class="st-story-audience" title="Audience">'
+        + '<i class="fa fa-' + (whole ? 'globe' : 'users') + '"></i> '
+        + ST.esc(label) + '</div>';
 };
 
 ST.defaultAvatar = ST.BASE + 'tools/dist/img/avatar.png';
@@ -750,6 +839,7 @@ ST.loadStories = function() {
                 + '<span class="st-story-tname">' + ST.esc(s.teacherName || 'Unknown') + '</span>'
                 + '</div>'
                 + '<div class="st-story-caption">' + ST.esc(s.caption || 'No caption') + '</div>'
+                + ST.audienceChip(s)
                 + '<div class="st-story-meta">'
                 + '<span><i class="fa fa-clock-o"></i> ' + ST.timeAgo(s.createdAt) + '</span>'
                 + '<span class="st-story-views"><i class="fa fa-eye"></i> ' + (s.viewCount || 0) + '</span>'
@@ -806,6 +896,7 @@ ST.openDetail = function(teacherId, storyId) {
             + '<div class="st-detail-col">'
             + '<div class="st-detail-field"><div class="st-detail-label">Teacher</div><div class="st-detail-value" style="display:flex;align-items:center;gap:8px"><img src="' + ST.esc(avatar) + '" onerror="this.src=\'' + ST.defaultAvatar + '\'" style="width:24px;height:24px;border-radius:50%"> ' + ST.esc(s.teacherName || 'Unknown') + '</div></div>'
             + '<div class="st-detail-field"><div class="st-detail-label">Caption</div><div class="st-detail-value">' + ST.esc(s.caption || 'No caption') + '</div></div>'
+            + '<div class="st-detail-field"><div class="st-detail-label">Audience</div><div class="st-detail-value"><i class="fa fa-' + (ST.isWholeSchool(s) ? 'globe' : 'users') + '"></i> ' + ST.esc(s.audienceLabel || 'Whole school') + '</div></div>'
             + '<div class="st-detail-field"><div class="st-detail-label">Media Type</div><div class="st-detail-value">' + ST.esc(s.mediaType || 'image') + '</div></div>'
             + '</div>'
             + '<div class="st-detail-col">'
@@ -814,6 +905,23 @@ ST.openDetail = function(teacherId, storyId) {
             + '<div class="st-detail-field"><div class="st-detail-label">Expires</div><div class="st-detail-value">' + ST.fmtDate(expiresAt) + (isExpired ? ' <span class="st-badge st-badge-gray" style="margin-left:6px">expired</span>' : '') + '</div></div>'
             + '<div class="st-detail-field"><div class="st-detail-label">Views</div><div class="st-detail-value" style="font-size:18px;font-weight:700;color:var(--gold)">' + (s.viewCount || 0) + '</div></div>'
             + '</div></div>';
+
+        // "Viewed by" list — who opened this story (admin oversight).
+        var viewers = s.viewers || [];
+        html += '<div class="st-detail-field" style="margin-top:12px"><div class="st-detail-label">Viewed by (' + viewers.length + ')</div>';
+        if (!viewers.length) {
+            html += '<div class="st-detail-value" style="color:var(--t4)">No views yet.</div>';
+        } else {
+            html += '<div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:6px 10px;margin-top:4px">';
+            viewers.forEach(function(v) {
+                html += '<div style="display:flex;justify-content:space-between;gap:10px;padding:4px 0;font-size:13px;border-bottom:1px solid var(--border)">'
+                    + '<span style="color:var(--t2)">' + ST.esc(v.userName || v.userId || 'Unknown') + '</span>'
+                    + '<span style="color:var(--t4);font-size:11px">' + (v.viewedAt ? ST.timeAgo(v.viewedAt) : '') + '</span>'
+                    + '</div>';
+            });
+            html += '</div>';
+        }
+        html += '</div>';
 
         // Moderation info if exists
         if (s.moderatedBy) {
@@ -829,7 +937,6 @@ ST.openDetail = function(teacherId, storyId) {
             + '<h5>Moderation Actions</h5>'
             + '<textarea class="st-mod-reason" id="modReason" placeholder="Reason for moderation (optional)..."></textarea>'
             + '<div class="st-mod-actions">'
-            + '<button class="st-btn st-btn-success st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'active\')"><i class="fa fa-check"></i> Approve</button>'
             + '<button class="st-btn st-btn-amber st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'flagged\')"><i class="fa fa-flag"></i> Flag</button>'
             + '<button class="st-btn st-btn-danger st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'removed\')"><i class="fa fa-ban"></i> Remove</button>'
             + '<button class="st-btn st-btn-danger" onclick="ST.deleteStory(\'' + tid + '\',\'' + sid + '\')" style="margin-left:auto"><i class="fa fa-trash"></i> Delete Permanently</button>'
@@ -928,7 +1035,6 @@ ST.loadFlagged = function() {
                 + '<td>' + (s.viewCount || 0) + '</td>'
                 + '<td style="white-space:nowrap">' + ST.fmtDate(s.createdAt) + '</td>'
                 + '<td style="white-space:nowrap">'
-                + '<button class="st-btn st-btn-success st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'active\')" title="Approve"><i class="fa fa-check"></i></button> '
                 + '<button class="st-btn st-btn-danger st-btn-sm" onclick="ST.moderate(\'' + tid + '\',\'' + sid + '\',\'removed\')" title="Remove"><i class="fa fa-ban"></i></button> '
                 + '<button class="st-btn st-btn-outline st-btn-sm" onclick="ST.openDetail(\'' + tid + '\',\'' + sid + '\')" title="View Details"><i class="fa fa-eye"></i></button>'
                 + '</td></tr>';

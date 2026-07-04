@@ -4,884 +4,1794 @@
       "collectionGroup": "stories",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING" },
-        { "fieldPath": "expiresAtTs", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expiresAtTs",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "stories",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "teacherId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expiresAtTs",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "examTemplates",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "examId",    "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "section",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "examId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "marks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "examId",    "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "section",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "examId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "marks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "examId",    "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "section",   "order": "ASCENDING" },
-        { "fieldPath": "subject",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "examId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "subject",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "marks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "results",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "examId",    "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "section",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "examId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "results",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "examId",    "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "section",   "order": "ASCENDING" },
-        { "fieldPath": "rank",      "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "examId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "rank",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "results",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "examId",    "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "examId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "results",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "resultsStaging",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "examId",    "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "section",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "examId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "marksAudit",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "examId",    "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "timestamp", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "examId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "resultsAudit",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "examId",    "order": "ASCENDING" },
-        { "fieldPath": "timestamp", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "examId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "exams",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" },
-        { "fieldPath": "status",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "ptmEvents",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "date",     "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "ptmRsvps",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "ptmEventId", "order": "ASCENDING" },
-        { "fieldPath": "respondedAt","order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ptmEventId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "respondedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "feeCounters",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "kind",  "order": "ASCENDING" },
-        { "fieldPath": "value", "order": "DESCENDING" }
+        {
+          "fieldPath": "kind",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "value",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "studentFeeSummary",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",     "order": "ASCENDING" },
-        { "fieldPath": "session",      "order": "ASCENDING" },
-        { "fieldPath": "totalBalance", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totalBalance",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "studentFeeSummary",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",     "order": "ASCENDING" },
-        { "fieldPath": "session",      "order": "ASCENDING" },
-        { "fieldPath": "className",    "order": "ASCENDING" },
-        { "fieldPath": "section",      "order": "ASCENDING" },
-        { "fieldPath": "totalBalance", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "totalBalance",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "classFeeSummary",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "session",  "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "feeReceipts",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
-      "_comment": "Pre-existing prod index reconciled into JSON 2026-05-06 — was prompting the deploy on every run.",
+      "_comment": "Pre-existing prod index reconciled into JSON 2026-05-06 \u2014 was prompting the deploy on every run.",
       "collectionGroup": "feeReceipts",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",         "order": "ASCENDING" },
-        { "fieldPath": "session",          "order": "ASCENDING" },
-        { "fieldPath": "allocated_amount", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "allocated_amount",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Phase 2A — Parent observePaymentHistory session-filter index.",
+      "_comment": "Phase 2A \u2014 Parent observePaymentHistory session-filter index.",
       "collectionGroup": "feeReceipts",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Phase 2A — Parent observeRefundVouchers session-filter index.",
+      "_comment": "Phase 2A \u2014 Parent observeRefundVouchers session-filter index.",
       "collectionGroup": "feeRefundVouchers",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Phase 3A — feeOpsSweep auto-resolve query (category + status).",
+      "_comment": "Phase 3A \u2014 feeOpsSweep auto-resolve query (category + status).",
       "collectionGroup": "feeOpsAlerts",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "category", "order": "ASCENDING" },
-        { "fieldPath": "status",   "order": "ASCENDING" }
+        {
+          "fieldPath": "category",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "fee_generation_jobs",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING" },
-        { "fieldPath": "status",      "order": "ASCENDING" },
-        { "fieldPath": "requestedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "requestedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "feeDefaulters",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "section",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "feeOnlinePayments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "paymentId", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "paymentId",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "feeReminderLog",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "sent_date", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sent_date",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "feeReminderLog",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "session",  "order": "ASCENDING" },
-        { "fieldPath": "sent_date","order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sent_date",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "feeOnlineOrders",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "salarySlips",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "staffId", "order": "ASCENDING" },
-        { "fieldPath": "type", "order": "ASCENDING" },
-        { "fieldPath": "monthKey", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "staffId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "type",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "monthKey",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "appraisals",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "staffId", "order": "ASCENDING" },
-        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "staffId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "hrJobs",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "statusLower", "order": "ASCENDING" },
-        { "fieldPath": "postedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "statusLower",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "postedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "notices",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "sentAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sentAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "notices",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "sentAt",   "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sentAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "homework",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolCode", "order": "ASCENDING" },
-        { "fieldPath": "classKey", "order": "ASCENDING" },
-        { "fieldPath": "dueDate", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolCode",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "classKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dueDate",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "homework",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolCode", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolCode",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "homework",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "homework",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "session", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "homework",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "session", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "homework",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "session", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "submissions",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolCode", "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "submittedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolCode",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "submittedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "submissions",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "homeworkId", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "homeworkId",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "circulars",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolCode", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolCode",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "circulars",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolCode", "order": "ASCENDING" },
-        { "fieldPath": "classKey", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolCode",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "classKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "timetables",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolCode", "order": "ASCENDING" },
-        { "fieldPath": "classKey", "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolCode",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "classKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "substitutes",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "session", "order": "ASCENDING" },
-        { "fieldPath": "date", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "substitutes",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "date", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "calendarEvents",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "session", "order": "ASCENDING" },
-        { "fieldPath": "start_date", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "start_date",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "timetables",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "subjectAssignments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "teacherId", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "teacherId",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "sections",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "sections",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "session",  "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "sections",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "students",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "status",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "students",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "section",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "attendance",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "date",     "order": "ASCENDING" },
-        { "fieldPath": "type",     "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "type",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "attendance",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "date",       "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "attendanceSummary",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "month",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "month",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "attendanceSummary",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "month",      "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "month",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "notices",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "timestamp", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "staff",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "sessions", "arrayConfig": "CONTAINS" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sessions",
+          "arrayConfig": "CONTAINS"
+        }
       ]
     },
     {
       "collectionGroup": "staff",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "department", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "department",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "staff",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "role",     "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "role",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "systemPayments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "school_uid", "order": "ASCENDING" },
-        { "fieldPath": "created_at", "order": "DESCENDING" }
+        {
+          "fieldPath": "school_uid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "created_at",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "events",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "status",    "order": "ASCENDING" },
-        { "fieldPath": "startDate", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "startDate",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "events",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "status",     "order": "ASCENDING" },
-        { "fieldPath": "start_date", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "start_date",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "events",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "startDate", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "startDate",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "_comment": "Events audit H7 (2026-07-02) \u2014 Events.get_participants: schoolId== AND eventId== ORDER BY name",
+      "collectionGroup": "eventParticipants",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "eventId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "name",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "exams",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" },
-        { "fieldPath": "startDate", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "startDate",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "exams",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "exams",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" },
-        { "fieldPath": "status",    "order": "ASCENDING" },
-        { "fieldPath": "startDate", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "startDate",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "notifications",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "notifications",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "userId",    "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "feeDemands",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "month",     "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "month",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "feeDemands",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "section",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "leaveApplications",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "applicantType", "order": "ASCENDING" },
-        { "fieldPath": "schoolId",      "order": "ASCENDING" },
-        { "fieldPath": "status",        "order": "ASCENDING" },
-        { "fieldPath": "appliedAt",     "order": "DESCENDING" }
+        {
+          "fieldPath": "applicantType",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "appliedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "leaveApplications",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "circulars",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "status",   "order": "ASCENDING" },
-        { "fieldPath": "sentAt",   "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sentAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "marks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "examId",    "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "examId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "marks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "examId",     "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "subject",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "examId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "subject",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "results",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "examId",     "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "studentId",  "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "examId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "results",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "examId",     "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "percentage", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "examId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "percentage",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "salarySlips",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "staffId",  "order": "ASCENDING" },
-        { "fieldPath": "type",     "order": "ASCENDING" },
-        { "fieldPath": "monthKey", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "staffId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "type",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "monthKey",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "feeReceipts",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "paidAt",    "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "paidAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "feeReceipts",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "section",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "attendance",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "personId", "order": "ASCENDING" },
-        { "fieldPath": "date",     "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "personId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "homework",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "status",     "order": "ASCENDING" },
-        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "scholarshipAwards",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "status",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "feeCarryForward",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "messageInboxes",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "role",     "order": "ASCENDING" },
-        { "fieldPath": "userId",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "role",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "messages",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",       "order": "ASCENDING" },
-        { "fieldPath": "conversationId", "order": "ASCENDING" },
-        { "fieldPath": "timestamp",      "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "conversationId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "auditLogs",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "timestamp", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "libraryIssues",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "borrowerId", "order": "ASCENDING" },
-        { "fieldPath": "status",     "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "borrowerId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "libraryFines",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "paid",      "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "paid",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "incidents",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "lostFound",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "resolved",   "order": "ASCENDING" },
-        { "fieldPath": "reportedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "resolved",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "reportedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "studentFlags",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING" },
-        { "fieldPath": "studentId",   "order": "ASCENDING" },
-        { "fieldPath": "createdAtMs", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAtMs",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
-      "_comment": "Teacher app's observeFlagsForClass — class-wide live listener filtered by schoolId, ordered by createdAtMs.",
+      "_comment": "Teacher app's observeFlagsForClass \u2014 class-wide live listener filtered by schoolId, ordered by createdAtMs.",
       "collectionGroup": "studentFlags",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING" },
-        { "fieldPath": "createdAtMs", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAtMs",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -889,56 +1799,116 @@
       "collectionGroup": "studentFlags",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolCode",  "order": "ASCENDING" },
-        { "fieldPath": "createdAtMs", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolCode",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAtMs",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "studentFlags",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING" },
-        { "fieldPath": "status",      "order": "ASCENDING" },
-        { "fieldPath": "createdAtMs", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAtMs",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "studentFlags",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING" },
-        { "fieldPath": "session",     "order": "ASCENDING" },
-        { "fieldPath": "className",   "order": "ASCENDING" },
-        { "fieldPath": "section",     "order": "ASCENDING" },
-        { "fieldPath": "createdAtMs", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAtMs",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "studentFlags",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING" },
-        { "fieldPath": "teacherId",   "order": "ASCENDING" },
-        { "fieldPath": "createdAtMs", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "teacherId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAtMs",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "studentFlags",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING" },
-        { "fieldPath": "severity",    "order": "ASCENDING" },
-        { "fieldPath": "status",      "order": "ASCENDING" },
-        { "fieldPath": "createdAtMs", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "severity",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAtMs",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "studentFlags",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolCode",  "order": "ASCENDING" },
-        { "fieldPath": "session",     "order": "ASCENDING" },
-        { "fieldPath": "createdAtMs", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolCode",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAtMs",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -964,28 +1934,58 @@
       "collectionGroup": "galleryAlbums",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "isArchived", "order": "ASCENDING" },
-        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isArchived",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "galleryAlbums",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "albumId",    "order": "ASCENDING" },
-        { "fieldPath": "isArchived", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "albumId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isArchived",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "galleryMedia",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "albumId",    "order": "ASCENDING" },
-        { "fieldPath": "isArchived", "order": "ASCENDING" },
-        { "fieldPath": "uploadedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "albumId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "isArchived",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "uploadedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -993,8 +1993,14 @@
       "collectionGroup": "auditLogs",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING" },
-        { "fieldPath": "timestampMs", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestampMs",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -1002,566 +2008,1110 @@
       "collectionGroup": "auditLogs",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING" },
-        { "fieldPath": "timestampMs", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestampMs",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "academicAuditLog",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "ts",       "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ts",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "academicAuditLog",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "entityId",  "order": "ASCENDING" },
-        { "fieldPath": "ts",        "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "entityId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ts",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "academicAuditLog",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "entityType", "order": "ASCENDING" },
-        { "fieldPath": "ts",         "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "entityType",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ts",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "academicAuditLog",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "actor.uid", "order": "ASCENDING" },
-        { "fieldPath": "ts",        "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "actor.uid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ts",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "academicAuditLog",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "action",   "order": "ASCENDING" },
-        { "fieldPath": "ts",       "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "action",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ts",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "teacherMarks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "submissions",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "studentId",   "order": "ASCENDING" },
-        { "fieldPath": "submittedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "submittedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
-
     {
-      "_comment": "Phase 3 — Correction request: duplicate-pending check (correction_submit)",
+      "_comment": "Phase 3 \u2014 Correction request: duplicate-pending check (correction_submit)",
       "collectionGroup": "attendanceCorrectionRequests",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "date",      "order": "ASCENDING" },
-        { "fieldPath": "status",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Phase 3 — Correction list: paginated by status",
+      "_comment": "Phase 3 \u2014 Correction list: paginated by status",
       "collectionGroup": "attendanceCorrectionRequests",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",      "order": "ASCENDING" },
-        { "fieldPath": "status",        "order": "ASCENDING" },
-        { "fieldPath": "requestedAtTs", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "requestedAtTs",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
-      "_comment": "Phase 3 — Correction list: filtered by date",
+      "_comment": "Phase 3 \u2014 Correction list: filtered by date",
       "collectionGroup": "attendanceCorrectionRequests",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",      "order": "ASCENDING" },
-        { "fieldPath": "status",        "order": "ASCENDING" },
-        { "fieldPath": "date",          "order": "ASCENDING" },
-        { "fieldPath": "requestedAtTs", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "requestedAtTs",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
-      "_comment": "Phase 3 — Correction list: teacher's own requests",
+      "_comment": "Phase 3 \u2014 Correction list: teacher's own requests",
       "collectionGroup": "attendanceCorrectionRequests",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",      "order": "ASCENDING" },
-        { "fieldPath": "requestedBy",   "order": "ASCENDING" },
-        { "fieldPath": "status",        "order": "ASCENDING" },
-        { "fieldPath": "requestedAtTs", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "requestedBy",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "requestedAtTs",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
-      "_comment": "Phase 3 — Audit log: unlock frequency check (lock_set)",
+      "_comment": "Phase 3 \u2014 Audit log: unlock frequency check (lock_set)",
       "collectionGroup": "attendanceAuditLog",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "action",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "action",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Homework audit Phase 2 — teacherMarks lookup by homework (admin get_submissions/get_homework_detail merge, Teacher getTeacherMarksForHomework)",
+      "_comment": "Homework audit Phase 2 \u2014 teacherMarks lookup by homework (admin get_submissions/get_homework_detail merge, Teacher getTeacherMarksForHomework)",
       "collectionGroup": "teacherMarks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "homeworkId", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "homeworkId",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Homework audit Phase 2 — Parent observeSubmissionsForStudent / getSubmissionsForStudent (canonical schoolId, replaces legacy schoolCode index)",
+      "_comment": "Homework audit Phase 2 \u2014 Parent observeSubmissionsForStudent / getSubmissionsForStudent (canonical schoolId, replaces legacy schoolCode index)",
       "collectionGroup": "submissions",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Homework audit Phase 2 — Teacher getHomeworkDueTodayCount (schoolId + sectionKey + status + dueDate equality)",
+      "_comment": "Homework audit Phase 2 \u2014 Teacher getHomeworkDueTodayCount (schoolId + sectionKey + status + dueDate equality)",
       "collectionGroup": "homework",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "status",     "order": "ASCENDING" },
-        { "fieldPath": "dueDate",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dueDate",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Homework audit Phase 2 — students roster lookup by sectionKey (admin Homework get_submissions/create_homework/get_students_for_class)",
+      "_comment": "Homework audit Phase 2 \u2014 students roster lookup by sectionKey (admin Homework get_submissions/create_homework/get_students_for_class)",
       "collectionGroup": "students",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "_comment": "Phase G1 — accounting forensics aggregate-count queries (countRecentEvents). Used by AccountingReconciler::status governance section + anomaly aggregation. Restored 2026-05-10 during stabilization hardening.",
+      "_comment": "Phase G1 \u2014 accounting forensics aggregate-count queries (countRecentEvents). Used by AccountingReconciler::status governance section + anomaly aggregation. Restored 2026-05-10 during stabilization hardening.",
       "collectionGroup": "accountingForensics",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "session",    "order": "ASCENDING" },
-        { "fieldPath": "eventType",  "order": "ASCENDING" },
-        { "fieldPath": "occurredAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "eventType",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "occurredAt",
+          "order": "DESCENDING"
+        }
       ]
     },
-
-    { "_comment": "school_config Phase 2 (2026-05-15) — dependency-check composite indexes. Required by School_config.php::_dep_count_safe() for destructive-endpoint orphan-prevention sweeps. Without these indexes, the catch-block in _dep_count_safe defaults count to 0 (FAIL-OPEN) and orphan-prevention is silently defeated. Endpoints: delete_subject / delete_section / soft_delete_class / delete_stream / delete_session.",
+    {
+      "_comment": "school_config Phase 2 (2026-05-15) \u2014 dependency-check composite indexes. Required by School_config.php::_dep_count_safe() for destructive-endpoint orphan-prevention sweeps. Without these indexes, the catch-block in _dep_count_safe defaults count to 0 (FAIL-OPEN) and orphan-prevention is silently defeated. Endpoints: delete_subject / delete_section / soft_delete_class / delete_stream / delete_session.",
       "collectionGroup": "students",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "status",     "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "delete_session: students by session",
+    {
+      "_comment": "delete_session: students by session",
       "collectionGroup": "students",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "session",  "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "delete_stream: students by streamKey + status",
+    {
+      "_comment": "delete_stream: students by streamKey + status",
       "collectionGroup": "students",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "streamKey", "order": "ASCENDING" },
-        { "fieldPath": "status",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "streamKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    { "_comment": "delete_stream: sections by streamKey + session",
+    {
+      "_comment": "delete_stream: sections by streamKey + session",
       "collectionGroup": "sections",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "streamKey", "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "streamKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    { "_comment": "delete_session: staff by session",
+    {
+      "_comment": "delete_session: staff by session",
       "collectionGroup": "staff",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "session",  "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    { "_comment": "delete_section: attendance by sectionKey + session",
+    {
+      "_comment": "delete_section: attendance by sectionKey + session",
       "collectionGroup": "attendance",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "session",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "soft_delete_class: attendance by className + session",
+    {
+      "_comment": "soft_delete_class: attendance by className + session",
       "collectionGroup": "attendance",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "delete_session: attendance by session",
+    {
+      "_comment": "delete_session: attendance by session",
       "collectionGroup": "attendance",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "session",  "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    { "_comment": "delete_section: marks by sectionKey + session",
+    {
+      "_comment": "delete_section: marks by sectionKey + session",
       "collectionGroup": "marks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "session",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "soft_delete_class: marks by className + session",
+    {
+      "_comment": "soft_delete_class: marks by className + session",
       "collectionGroup": "marks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "delete_session: marks by session",
+    {
+      "_comment": "delete_session: marks by session",
       "collectionGroup": "marks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "session",  "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    { "_comment": "delete_section: feeDemands by sectionKey + session",
+    {
+      "_comment": "delete_section: feeDemands by sectionKey + session",
       "collectionGroup": "feeDemands",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "session",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "soft_delete_class: feeDemands by className + session",
+    {
+      "_comment": "soft_delete_class: feeDemands by className + session",
       "collectionGroup": "feeDemands",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    { "_comment": "SW4-companion-B (2026-05-26) — Parent app fee-demand listing excludes archived demands. Required by FeeFirestoreRepository.kt getFeeDemands / getPendingDemands / observeFeeDemands which add .whereNotEqualTo('status', 'archived') alongside the 3 equality filters (schoolId, session, studentId). Without this composite index Firestore returns FAILED_PRECONDITION on first query.",
+    {
+      "_comment": "SW4-companion-B (2026-05-26) \u2014 Parent app fee-demand listing excludes archived demands. Required by FeeFirestoreRepository.kt getFeeDemands / getPendingDemands / observeFeeDemands which add .whereNotEqualTo('status', 'archived') alongside the 3 equality filters (schoolId, session, studentId). Without this composite index Firestore returns FAILED_PRECONDITION on first query.",
       "collectionGroup": "feeDemands",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" },
-        { "fieldPath": "studentId", "order": "ASCENDING" },
-        { "fieldPath": "status",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    { "_comment": "SW4-companion-C (2026-05-27) — Teacher app class fee-demand observer excludes archived demands. Required by FeeFirestoreRepository.kt observeClassFeeDemands which adds .whereNotEqualTo('status', 'archived') alongside the 4 equality filters (schoolId, session, className, section). Without this composite index Firestore returns FAILED_PRECONDITION on first query, the .catch fallback emits empty, and the class summary card's per-month rollup goes blank.",
+    {
+      "_comment": "SW4-companion-C (2026-05-27) \u2014 Teacher app class fee-demand observer excludes archived demands. Required by FeeFirestoreRepository.kt observeClassFeeDemands which adds .whereNotEqualTo('status', 'archived') alongside the 4 equality filters (schoolId, session, className, section). Without this composite index Firestore returns FAILED_PRECONDITION on first query, the .catch fallback emits empty, and the class summary card's per-month rollup goes blank.",
       "collectionGroup": "feeDemands",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "section",   "order": "ASCENDING" },
-        { "fieldPath": "status",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    { "_comment": "delete_section: timetables by sectionKey + session",
+    {
+      "_comment": "delete_section: timetables by sectionKey + session",
       "collectionGroup": "timetables",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "session",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "soft_delete_class: timetables by className + session",
+    {
+      "_comment": "soft_delete_class: timetables by className + session",
       "collectionGroup": "timetables",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",  "order": "ASCENDING" },
-        { "fieldPath": "className", "order": "ASCENDING" },
-        { "fieldPath": "session",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "className",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "delete_session: timetables by session",
+    {
+      "_comment": "delete_session: timetables by session",
       "collectionGroup": "timetables",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "session",  "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    { "_comment": "delete_section: subjectAssignments by sectionKey + session",
+    {
+      "_comment": "delete_section: subjectAssignments by sectionKey + session",
       "collectionGroup": "subjectAssignments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING" },
-        { "fieldPath": "sectionKey", "order": "ASCENDING" },
-        { "fieldPath": "session",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sectionKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "soft_delete_class: subjectAssignments by classKey + session",
+    {
+      "_comment": "soft_delete_class: subjectAssignments by classKey + session",
       "collectionGroup": "subjectAssignments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "classKey", "order": "ASCENDING" },
-        { "fieldPath": "session",  "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "classKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "delete_subject: subjectAssignments by classKey + subjectCode",
+    {
+      "_comment": "delete_subject: subjectAssignments by classKey + subjectCode",
       "collectionGroup": "subjectAssignments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING" },
-        { "fieldPath": "classKey",    "order": "ASCENDING" },
-        { "fieldPath": "subjectCode", "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "classKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "subjectCode",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "delete_stream: subjectAssignments by stream + session",
+    {
+      "_comment": "delete_stream: subjectAssignments by stream + session",
       "collectionGroup": "subjectAssignments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "stream",   "order": "ASCENDING" },
-        { "fieldPath": "session",  "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "stream",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "delete_session: subjectAssignments by session",
+    {
+      "_comment": "delete_session: subjectAssignments by session",
       "collectionGroup": "subjectAssignments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "session",  "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "B2.2-F (2026-05-30): tenantAudit per-tenant timeline",
+    {
+      "_comment": "B2.2-F (2026-05-30): tenantAudit per-tenant timeline",
       "collectionGroup": "tenantAudit",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "ts",       "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ts",
+          "order": "DESCENDING"
+        }
       ]
     },
-    { "_comment": "B2.2-F (2026-05-30): payments per-tenant history",
+    {
+      "_comment": "B2.2-F (2026-05-30): payments per-tenant history",
       "collectionGroup": "payments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "date",     "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
       ]
     },
-    { "_comment": "B2.2-F (2026-05-30): payments per-invoice breakdown",
+    {
+      "_comment": "B2.2-F (2026-05-30): payments per-invoice breakdown",
       "collectionGroup": "payments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "invoiceId", "order": "ASCENDING" },
-        { "fieldPath": "date",      "order": "ASCENDING" }
+        {
+          "fieldPath": "invoiceId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "B2.2-F (2026-05-30): subscriptions per-tenant history",
+    {
+      "_comment": "B2.2-F (2026-05-30): subscriptions per-tenant history",
       "collectionGroup": "subscriptions",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING" },
-        { "fieldPath": "periodStart", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "periodStart",
+          "order": "DESCENDING"
+        }
       ]
     },
-    { "_comment": "B2.2-F (2026-05-30): invoices per-tenant history",
+    {
+      "_comment": "B2.2-F (2026-05-30): invoices per-tenant history",
       "collectionGroup": "invoices",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING" },
-        { "fieldPath": "invoiceDate", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "invoiceDate",
+          "order": "DESCENDING"
+        }
       ]
     },
-    { "_comment": "B2.2-F (2026-05-30): schoolControl fleet by lifecycle.state + nextDueDate",
+    {
+      "_comment": "B2.2-F (2026-05-30): schoolControl fleet by lifecycle.state + nextDueDate",
       "collectionGroup": "schoolControl",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "lifecycle.state",            "order": "ASCENDING"  },
-        { "fieldPath": "billingSummary.nextDueDate", "order": "ASCENDING"  }
+        {
+          "fieldPath": "lifecycle.state",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "billingSummary.nextDueDate",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "B2.2-F (2026-05-30): schoolControl fleet by adminDisabled.value",
+    {
+      "_comment": "B2.2-F (2026-05-30): schoolControl fleet by adminDisabled.value",
       "collectionGroup": "schoolControl",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "adminDisabled.value", "order": "ASCENDING"  },
-        { "fieldPath": "lifecycle.computedAt","order": "DESCENDING" }
+        {
+          "fieldPath": "adminDisabled.value",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lifecycle.computedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
-    { "_comment": "Fees Exemption v2 (Phase 0): studentConcessions per student, active first",
+    {
+      "_comment": "Fees Exemption v2 (Phase 0): studentConcessions per student, active first",
       "collectionGroup": "studentConcessions",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",    "order": "ASCENDING"  },
-        { "fieldPath": "studentId",   "order": "ASCENDING"  },
-        { "fieldPath": "status",      "order": "ASCENDING"  },
-        { "fieldPath": "effectiveFrom","order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "effectiveFrom",
+          "order": "DESCENDING"
+        }
       ]
     },
-    { "_comment": "Fees Exemption v2 (Phase 0): studentConcessions by session for generation reads",
+    {
+      "_comment": "Fees Exemption v2 (Phase 0): studentConcessions by session for generation reads",
       "collectionGroup": "studentConcessions",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",     "order": "ASCENDING"  },
-        { "fieldPath": "session",      "order": "ASCENDING"  },
-        { "fieldPath": "status",       "order": "ASCENDING"  }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "session",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "Fees Exemption v2 (Phase 0): studentServiceEnrollments per student, active first",
+    {
+      "_comment": "Fees Exemption v2 (Phase 0): studentServiceEnrollments per student, active first",
       "collectionGroup": "studentServiceEnrollments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",     "order": "ASCENDING"  },
-        { "fieldPath": "studentId",    "order": "ASCENDING"  },
-        { "fieldPath": "status",       "order": "ASCENDING"  },
-        { "fieldPath": "effectiveFrom","order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "studentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "effectiveFrom",
+          "order": "DESCENDING"
+        }
       ]
     },
-    { "_comment": "Staff/SSA Convergence Unit C.1 (2026-06-10): Superadmin_school_admins last-login lookup. security_events ADMIN_LOGIN_SUCCESS by adminId, newest first. Replaces the RTDB Users/Admin AccessHistory.SA_LastLogin read.",
+    {
+      "_comment": "Staff/SSA Convergence Unit C.1 (2026-06-10): Superadmin_school_admins last-login lookup. security_events ADMIN_LOGIN_SUCCESS by adminId, newest first. Replaces the RTDB Users/Admin AccessHistory.SA_LastLogin read.",
       "collectionGroup": "security_events",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "event_type",     "order": "ASCENDING"  },
-        { "fieldPath": "detail.adminId", "order": "ASCENDING"  },
-        { "fieldPath": "ts",             "order": "DESCENDING" }
+        {
+          "fieldPath": "event_type",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "detail.adminId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ts",
+          "order": "DESCENDING"
+        }
       ]
     },
-
-    { "_comment": "security_events lookup scoped by school, newest first.",
+    {
+      "_comment": "security_events lookup scoped by school, newest first.",
       "collectionGroup": "security_events",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "detail.schoolId", "order": "ASCENDING"  },
-        { "fieldPath": "ts",              "order": "DESCENDING" }
+        {
+          "fieldPath": "detail.schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ts",
+          "order": "DESCENDING"
+        }
       ]
     },
-
-    { "_comment": "Stream B Phase I — F-SB-1 (HARD): per-staff attendance history reads. Used by Phase IV admin Last-30-days drawer + payroll-prep + audit. Without this composite Firestore returns FAILED_PRECONDITION on first cutover read.",
+    {
+      "_comment": "Stream B Phase I \u2014 F-SB-1 (HARD): per-staff attendance history reads. Used by Phase IV admin Last-30-days drawer + payroll-prep + audit. Without this composite Firestore returns FAILED_PRECONDITION on first cutover read.",
       "collectionGroup": "staffAttendance",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING"  },
-        { "fieldPath": "staffId",  "order": "ASCENDING"  },
-        { "fieldPath": "date",     "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "staffId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
       ]
     },
-    { "_comment": "Stream B Phase I — F-SB-2 (HARD): per-staff monthly summary timeline. Used by Phase IV salary-slip preview + Hr profile drawer. Without this composite Firestore returns FAILED_PRECONDITION.",
+    {
+      "_comment": "Stream B Phase I \u2014 F-SB-2 (HARD): per-staff monthly summary timeline. Used by Phase IV salary-slip preview + Hr profile drawer. Without this composite Firestore returns FAILED_PRECONDITION.",
       "collectionGroup": "staffAttendanceSummary",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING"  },
-        { "fieldPath": "staffId",  "order": "ASCENDING"  },
-        { "fieldPath": "month",    "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "staffId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "month",
+          "order": "DESCENDING"
+        }
       ]
     },
-    { "_comment": "Stream B Phase I — F-SB-3 (explicit): per-day all-staff fetch. Replaces RTDB whole-month read. Auto-resolves today but pinned for prod-stability + future filter expansion.",
+    {
+      "_comment": "Stream B Phase I \u2014 F-SB-3 (explicit): per-day all-staff fetch. Replaces RTDB whole-month read. Auto-resolves today but pinned for prod-stability + future filter expansion.",
       "collectionGroup": "staffAttendance",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "date",     "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "Stream B Phase I — F-SB-4 (explicit): payroll per-month read across all staff. Already used by Hr.php:4451 + Hr.php:4784 schoolWhere. Pinned for prod stability.",
+    {
+      "_comment": "Stream B Phase I \u2014 F-SB-4 (explicit): payroll per-month read across all staff. Already used by Hr.php:4451 + Hr.php:4784 schoolWhere. Pinned for prod stability.",
       "collectionGroup": "staffAttendanceSummary",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "month",    "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "month",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "Stream B Phase I — F-SB-5 (explicit): absence/late filter analytics. Phase VIII reporting uses this. Auto-resolves today; explicit for analytics-readiness.",
+    {
+      "_comment": "Stream B Phase I \u2014 F-SB-5 (explicit): absence/late filter analytics. Phase VIII reporting uses this. Auto-resolves today; explicit for analytics-readiness.",
       "collectionGroup": "staffAttendance",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "date",     "order": "ASCENDING" },
-        { "fieldPath": "status",   "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "Stream B Phase I — F-SB-6 (Phase VIII analytics): date-range queries with status equality. Field order (schoolId, status, date) — status equality first, date as range. Resolves 'absences in May' / 'late this week' analytics queries that F-SB-5 cannot serve (range field must be last).",
+    {
+      "_comment": "Stream B Phase I \u2014 F-SB-6 (Phase VIII analytics): date-range queries with status equality. Field order (schoolId, status, date) \u2014 status equality first, date as range. Resolves 'absences in May' / 'late this week' analytics queries that F-SB-5 cannot serve (range field must be last).",
       "collectionGroup": "staffAttendance",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "status",   "order": "ASCENDING" },
-        { "fieldPath": "date",     "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "Stream B Phase I — F-SB-7 (Phase VI admin lock UI): list all month-locks for tenant ordered by month. Lock doc id = {schoolId}_{session}_{month} but admin UI lists across all sessions.",
+    {
+      "_comment": "Stream B Phase I \u2014 F-SB-7 (Phase VI admin lock UI): list all month-locks for tenant ordered by month. Lock doc id = {schoolId}_{session}_{month} but admin UI lists across all sessions.",
       "collectionGroup": "staffAttendanceLocks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING"  },
-        { "fieldPath": "month",    "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "month",
+          "order": "DESCENDING"
+        }
       ]
     },
-    { "_comment": "GPS Staff Attendance Phase 10 — attendancePunches audit reads: Staff_attendance::me today-punches (schoolId==, staffId==, date==) + per-staff punch history. Composite makes the multi-equality query a single index scan (no collection scan).",
+    {
+      "_comment": "GPS Staff Attendance Phase 10 \u2014 attendancePunches audit reads: Staff_attendance::me today-punches (schoolId==, staffId==, date==) + per-staff punch history. Composite makes the multi-equality query a single index scan (no collection scan).",
       "collectionGroup": "attendancePunches",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId", "order": "ASCENDING" },
-        { "fieldPath": "staffId",  "order": "ASCENDING" },
-        { "fieldPath": "date",     "order": "ASCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "staffId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        }
       ]
     },
-    { "_comment": "COMM-DEVICE Package 3A — P0.6 (2026-06-15): Device_management admin device-list view query: where schoolId AND where status ORDER BY lastActive DESC.",
+    {
+      "_comment": "COMM-DEVICE Package 3A \u2014 P0.6 (2026-06-15): Device_management admin device-list view query: where schoolId AND where status ORDER BY lastActive DESC.",
       "collectionGroup": "userDevices",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "schoolId",   "order": "ASCENDING"  },
-        { "fieldPath": "status",     "order": "ASCENDING"  },
-        { "fieldPath": "lastActive", "order": "DESCENDING" }
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lastActive",
+          "order": "DESCENDING"
+        }
       ]
     }
   ],

@@ -1132,7 +1132,7 @@ class Staff extends MY_Controller
                 'uid'         => $staffId,
                 'displayName' => $name,
             ]);
-            $this->firebase->setFirebaseClaims($staffId, [
+            $this->firebase->setCanonicalClaims($staffId, [
                 'role'           => $positionLabel,
                 'school_id'      => $this->school_id,
                 'school_code'    => $this->school_code,
@@ -1840,7 +1840,7 @@ class Staff extends MY_Controller
                         'uid'         => $staffId,
                         'displayName' => $staffName,
                     ]);
-                    $this->firebase->setFirebaseClaims($staffId, [
+                    $this->firebase->setCanonicalClaims($staffId, [
                         'role'           => $positionLabel,
                         'school_id'      => $this->school_id,
                         'school_code'    => $this->school_code,
@@ -2219,14 +2219,17 @@ class Staff extends MY_Controller
         }
 
         // 2. Set must-change-password claim — the app gates first login on this.
-        $this->firebase->setFirebaseClaims($staff_id, [
-            'role'                 => (string) ($staffDoc['role'] ?? 'Teacher'),
-            'school_id'            => $this->school_id,
-            'school_code'          => $this->school_code,
-            'parent_db_key'        => $this->parent_db_key,
-            'must_change_password' => true,
-            'password_reset_at'    => time(),
-            'password_reset_by'    => (string) ($this->admin_id ?? ''),
+        $this->firebase->setCanonicalClaims($staff_id, [
+            'role'          => (string) ($staffDoc['role'] ?? 'Teacher'),
+            'role_fallback' => 'Teacher',
+            'school_id'     => $this->school_id,
+            'school_code'   => $this->school_code,
+            'parent_db_key' => $this->parent_db_key,
+            'extra'         => [
+                'must_change_password' => true,
+                'password_reset_at'    => time(),
+                'password_reset_by'    => (string) ($this->admin_id ?? ''),
+            ],
         ]);
 
         // 3. Revoke refresh tokens — kicks active sessions on other devices.
@@ -2707,7 +2710,7 @@ class Staff extends MY_Controller
                     $authRole = !empty($formattedData['primary_role'])
                         ? $this->_role_id_to_label($formattedData['primary_role'])
                         : ($formattedData['Position'] ?? $existingData['Position'] ?? '');
-                    $this->firebase->setFirebaseClaims($user_id, [
+                    $this->firebase->setCanonicalClaims($user_id, [
                         'role'           => $authRole,
                         'school_id'      => $this->school_id,
                         'school_code'    => $this->school_code,
@@ -2906,7 +2909,7 @@ class Staff extends MY_Controller
         // who also teaches a class.
         $dutyRoleClaim = $staffDoc['Position'] ?? $staffDoc['role'] ?? 'Teacher';
         try {
-            $this->firebase->setFirebaseClaims($teacherID, [
+            $this->firebase->setCanonicalClaims($teacherID, [
                 'role'           => $dutyRoleClaim,
                 'school_id'      => $this->school_id,
                 'school_code'    => $this->school_code,
@@ -3195,7 +3198,7 @@ class Staff extends MY_Controller
                 // Refresh the Auth role claim too, so a migrated non-teacher
                 // (Accountant, Clerk, …) stops carrying a stale 'Teacher' claim.
                 try {
-                    $this->firebase->setFirebaseClaims($sid, [
+                    $this->firebase->setCanonicalClaims($sid, [
                         'role'          => $this->_role_id_to_label($primary),
                         'school_id'     => $this->school_id,
                         'school_code'   => $this->school_code,

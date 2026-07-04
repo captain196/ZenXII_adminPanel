@@ -157,6 +157,32 @@ class Communication extends MY_Controller
      *
      * @return bool true if Firestore write succeeded
      */
+    /**
+     * Derive canonical audience keys from a target-group string, matching the
+     * apps' filter vocab (all / role:* / class:Class X) and the 2026-07-03
+     * backfill migration. Fail-open to ['all'] so nothing is wrongly hidden.
+     */
+    private function _audience_keys_from_group(string $group): array
+    {
+        $g = strtolower(trim($group));
+        if ($g === '' || $g === 'all' || $g === 'all school') return ['all'];
+        $keys = [];
+        if (strpos($g, 'staff') !== false || strpos($g, 'faculty') !== false) { $keys[] = 'role:teacher'; $keys[] = 'role:staff'; }
+        if (strpos($g, 'teacher') !== false) $keys[] = 'role:teacher';
+        if (strpos($g, 'admin') !== false || strpos($g, 'principal') !== false) $keys[] = 'role:admin';
+        if (strpos($g, 'student') !== false) $keys[] = 'role:student';
+        if (strpos($g, 'parent') !== false || strpos($g, 'guardian') !== false) $keys[] = 'role:parent';
+        if (empty($keys)) {
+            if (preg_match('/^class|^\d|nursery|lkg|ukg|playgroup/i', $g)) {
+                $ck = (stripos($group, 'Class ') === 0) ? trim($group) : 'Class ' . trim($group);
+                $keys[] = 'class:' . $ck;
+            } else {
+                $keys[] = 'all';
+            }
+        }
+        return array_values(array_unique($keys));
+    }
+
     private function _syncToFirestoreCirculars(string $id, array $data, string $type = 'notice'): bool
     {
         try {
@@ -182,6 +208,9 @@ class Communication extends MY_Controller
                 'targetType'    => ($targetGroup === 'All School') ? 'All' : $targetGroup,
                 'targetClasses' => [],
                 'targetRoles'   => [],
+                // Canonical audience scoping (2026-07-03) — the apps filter on
+                // this so class/role-targeted posts don't leak to everyone.
+                'audienceKeys'  => $this->_audience_keys_from_group($targetGroup),
                 'attachmentUrl' => $data['attachment_url'] ?? '',
                 'status'        => 'sent',  // Android filters by status == "sent"
                 'type'          => $type,

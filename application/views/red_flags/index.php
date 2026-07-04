@@ -1107,12 +1107,12 @@ function __rfInitRedFlags() {
     // Case-insensitive comparison so this matches MY_Controller::_require_role —
     // session role values can arrive as 'school_super_admin' (legacy snake_case)
     // alongside the canonical 'School Super Admin'.
-    // CAN_MANAGE retained as a no-op true for any references that haven't
-    // been migrated yet — server enforcement (Red_flags::_require_role)
-    // is the actual permission gate. Client-side hiding caused false
-    // negatives when the session role string had snake_case / casing
-    // drift, so we no longer try to predict the server's verdict here.
-    var CAN_MANAGE = true;
+    // CAN_MANAGE is now computed SERVER-SIDE (Red_flags::index) with the same
+    // case-insensitive role logic the mutation endpoints enforce, so it no
+    // longer suffers the client-side casing drift that forced the old
+    // hardcoded `true`. Server enforcement (_require_role) remains the actual
+    // gate; this just avoids showing view-only roles buttons that always 403.
+    var CAN_MANAGE = <?php echo !empty($can_manage) ? 'true' : 'false'; ?>;
 
     /** XSS-safe text escaper */
     function esc(str) {
@@ -1406,8 +1406,16 @@ function __rfInitRedFlags() {
 
         /* ── Load classes ── */
         loadClasses: function() {
+            // Placeholder while the (can be multi-second) class fetch runs, so
+            // the create-flag + filter dropdowns don't look empty/broken.
+            $('#f-class').html('<option value="">Loading classes…</option>');
+            $('#cf-class').html('<option value="">Loading classes…</option>');
             return ajax('get_classes', null, 'GET').done(function(r) {
-                if (r.status !== 'success') return;
+                if (r.status !== 'success') {
+                    $('#f-class').html('<option value="">All Classes</option>');
+                    $('#cf-class').html('<option value="">Couldn\'t load classes</option>');
+                    return;
+                }
                 state.classes = r.classes || [];
                 var sel = '<option value="">All Classes</option>';
                 var cfSel = '<option value="">Select class</option>';
@@ -1716,14 +1724,30 @@ function __rfInitRedFlags() {
                 if (r.status !== 'success') { toast('Failed to load flags', 'error'); return; }
                 state.flags = r.flags || [];
                 state.selectedFlags = {};
+                state.flagsReadError = !!r.read_error;
+                state.flagsTruncated = !!r.truncated;
                 RF.buildStudentIndex(state.overview || {});
-                RF.renderFlagsTable(state.flags);
+                RF.renderFlagsTable(state.flags, { readError: !!r.read_error, truncated: !!r.truncated });
             }).fail(function() {
                 $('#flags-table-area').html('<div class="rf-empty"><i class="fa fa-warning"></i><p>Failed to load flags. Please try again.</p></div>');
             });
         },
 
-        renderFlagsTable: function(flags) {
+        renderFlagsTable: function(flags, meta) {
+            meta = meta || {};
+            // A read failure must NOT render as a calm "no flags" — for a
+            // monitoring dashboard that is a dangerous false "all clear".
+            if (meta.readError && (!flags || flags.length === 0)) {
+                $('#flags-table-area').html('<div class="rf-empty"><i class="fa fa-warning" style="color:#d32f2f"></i><p>Couldn\'t load flags — the data store was unreachable. This is NOT a confirmation that there are no flags. <a href="#" onclick="RF.loadFlags();return false;">Retry</a></p></div>');
+                $('#rf-bulk-bar').removeClass('show');
+                return;
+            }
+            // Warn when the 500-row cap truncated the set so totals/filters
+            // aren't trusted as complete.
+            var truncBanner = meta.truncated
+                ? '<div class="rf-warn-strip" style="background:#fff3cd;border:1px solid #ffe08a;color:#7a5b00;padding:8px 12px;border-radius:8px;margin-bottom:10px;font-size:13px;"><i class="fa fa-exclamation-triangle"></i> Showing the most recent 500 flags — totals and filters may be incomplete. Narrow the date range for exact results.</div>'
+                : '';
+            RF._truncBanner = truncBanner;
             // Destroy any previous DataTable instance bound to the same id
             // before we wipe its DOM — otherwise jQuery DataTables throws
             // "Cannot reinitialise DataTable" on subsequent searches.
@@ -1732,7 +1756,7 @@ function __rfInitRedFlags() {
             }
 
             if (!flags || flags.length === 0) {
-                $('#flags-table-area').html('<div class="rf-empty"><i class="fa fa-flag-o"></i><p>No flags match your filters.</p></div>');
+                $('#flags-table-area').html(truncBanner + '<div class="rf-empty"><i class="fa fa-flag-o"></i><p>No flags match your filters.</p></div>');
                 $('#rf-bulk-bar').removeClass('show');
                 return;
             }
@@ -1741,7 +1765,7 @@ function __rfInitRedFlags() {
             $('#rf-select-all').prop('checked', false);
             $('#rf-bulk-count').text('0');
 
-            var html = '<table class="rf-table" id="rf-flags-dt"><thead><tr>'
+            var html = truncBanner + '<table class="rf-table" id="rf-flags-dt"><thead><tr>'
                 + '<th style="width:30px"><input type="checkbox" class="rf-check" id="rf-select-all-head" onchange="RF.toggleSelectAll()"></th>'
                 + '<th>Student</th><th>Class / Section</th><th>Type</th><th>Severity</th>'
                 + '<th>Teacher</th><th>Date</th><th>Status</th><th>Actions</th>'
@@ -1798,16 +1822,20 @@ function __rfInitRedFlags() {
                     +   '<div class="rf-action-group">'
                     +     '<button class="rf-btn outline sm" title="Details" onclick="RF.toggleExpand(' + i + ')"><i class="fa fa-eye"></i></button>';
 
-                if (f.status === 'Active') {
-                    html += '<button class="rf-btn success sm" title="Resolve" onclick="RF.resolveFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-check"></i></button>';
-                }
-                // Deleted flags get a Restore button instead of Delete.
-                // Active/Resolved flags can still be soft-deleted. Server
-                // enforces the permission — no client-side role gate.
-                if (f.status === 'Deleted') {
-                    html += '<button class="rf-btn outline sm" title="Restore" onclick="RF.restoreFlag(\'' + esc(f.flagId) + '\')"><i class="fa fa-undo"></i></button>';
-                } else {
-                    html += '<button class="rf-btn danger sm" title="Delete" onclick="RF.deleteFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-trash"></i></button>';
+                // Management actions are shown only to roles that can actually
+                // perform them (server-authoritative CAN_MANAGE) — view-only
+                // roles no longer see buttons that just 403. Server still
+                // enforces every mutation regardless.
+                if (CAN_MANAGE) {
+                    if (f.status === 'Active') {
+                        html += '<button class="rf-btn success sm" title="Resolve" onclick="RF.resolveFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-check"></i></button>';
+                    }
+                    // Deleted flags get a Restore button instead of Delete.
+                    if (f.status === 'Deleted') {
+                        html += '<button class="rf-btn outline sm" title="Restore" onclick="RF.restoreFlag(\'' + esc(f.flagId) + '\')"><i class="fa fa-undo"></i></button>';
+                    } else {
+                        html += '<button class="rf-btn danger sm" title="Delete" onclick="RF.deleteFlag(\'' + esc(f.classKey) + '\',\'' + esc(f.sectionKey) + '\',\'' + esc(f.studentId) + '\',\'' + esc(f.flagId) + '\')"><i class="fa fa-trash"></i></button>';
+                    }
                 }
                 html += '</div></td></tr>';
 
@@ -1889,7 +1917,7 @@ function __rfInitRedFlags() {
             showConfirm('Resolve Flag', 'Mark this flag as resolved?',
                 '<i class="fa fa-check-circle" style="color:var(--rf-green)"></i>', 'success',
                 function() {
-                    ajax('resolve_flag', {
+                    return ajax('resolve_flag', {
                         class_key: classKey, section_key: sectionKey,
                         student_id: studentId, flag_id: flagId
                     }).done(function(r) {
@@ -1909,7 +1937,7 @@ function __rfInitRedFlags() {
             showConfirm('Delete Flag', 'This action cannot be undone. Are you sure?',
                 '<i class="fa fa-trash" style="color:var(--rf-red)"></i>', 'danger',
                 function() {
-                    ajax('delete_flag', {
+                    return ajax('delete_flag', {
                         class_key: classKey, section_key: sectionKey,
                         student_id: studentId, flag_id: flagId
                     }).done(function(r) {
@@ -1953,7 +1981,7 @@ function __rfInitRedFlags() {
             showConfirm('Restore Flag', 'Bring this deleted flag back to Active?',
                 '<i class="fa fa-undo" style="color:var(--rf-primary)"></i>', 'primary',
                 function() {
-                    ajax('restore_flag', { flag_id: flagId }).done(function(r) {
+                    return ajax('restore_flag', { flag_id: flagId }).done(function(r) {
                         if (r.status === 'success') {
                             toast('Flag restored');
                             RF.refresh();
@@ -1980,7 +2008,7 @@ function __rfInitRedFlags() {
             showConfirm('Bulk Resolve', 'Resolve ' + checked.length + ' flag(s)?',
                 '<i class="fa fa-check-circle" style="color:var(--rf-green)"></i>', 'success',
                 function() {
-                    ajax('bulk_resolve', { flags: checked }).done(function(r) {
+                    return ajax('bulk_resolve', { flags: checked }).done(function(r) {
                         if (r.status === 'success') {
                             toast(r.message || 'Flags resolved');
                             RF.refresh();
@@ -2049,6 +2077,12 @@ function __rfInitRedFlags() {
             $('#student-empty').hide();
             $('#student-profile-area').show();
             state.currentStudentId = studentId;
+
+            // Show a loader while the (2-5s) student-flags fetch runs, so the
+            // profile area doesn't sit blank / showing the previous student.
+            $('#student-card').html('<div class="rf-loading-overlay"><i class="fa fa-spinner"></i> Loading student…</div>');
+            $('#student-flag-count').text('');
+            $('#student-flags-list').html('<div class="rf-loading-overlay"><i class="fa fa-spinner"></i> Loading flags…</div>');
 
             // Load student flags
             ajax('get_student_flags/' + encodeURIComponent(studentId), null, 'GET').done(function(r) {
@@ -2535,8 +2569,23 @@ function __rfInitRedFlags() {
     // and the underlying resolve/delete ajax never fired.)
     $(document).on('click', '#rf-confirm-btn', function() {
         var cb = confirmCallback;
-        RF.closeConfirm();
-        if (typeof cb === 'function') cb();
+        if (typeof cb !== 'function') { RF.closeConfirm(); return; }
+        var $btn = $(this);
+        var result = cb();
+        // If the confirmed action returned a promise (resolve/delete/restore/
+        // bulk all `return ajax(...)`), keep the dialog OPEN with the button in
+        // a loading state until it settles — Firestore writes take 2-5s and the
+        // old code closed instantly, leaving no feedback during the wait.
+        if (result && typeof result.always === 'function') {
+            var prevHtml = $btn.html();
+            $btn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Working…');
+            result.always(function() {
+                $btn.prop('disabled', false).html(prevHtml);
+                RF.closeConfirm();
+            });
+        } else {
+            RF.closeConfirm();
+        }
     });
 
     // Escape key closes modals

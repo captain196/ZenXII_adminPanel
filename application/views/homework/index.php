@@ -853,7 +853,7 @@ function ajaxPost(url, data, cb) {
 }
 
 function esc(s) { var d = document.createElement('div'); d.appendChild(document.createTextNode(s || '')); return d.innerHTML; }
-function escJs(s) { return (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"'); }
+function escJs(s) { return (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029"); }
 function $$(sel) { if (typeof sel === 'string') return document.querySelectorAll(sel); return sel; }
 function $1(sel) { return document.querySelector(sel); }
 function setText(id, v) { var el = document.getElementById(id); if (el) el.textContent = v; }
@@ -1105,11 +1105,13 @@ HW.dash = {
             drawGauge('gaugeRate', rate);
             setText('gaugeRateVal', rate + '%');
 
-            // Status donut data
+            // Status donut data. Keep the raw counts; the chart builds
+            // mutually-exclusive slices from them so it sums to total.
             HW.dash._statusData = {
                 active: r.active || 0,
                 overdue: r.overdue || 0,
                 closed: r.closed || 0,
+                archived: r.archived || 0,
             };
             HW.dash.renderStatusChart();
         });
@@ -1122,13 +1124,18 @@ HW.dash = {
         destroyChart('chartStatus');
         var ctx = document.getElementById('chartStatus');
         if (!ctx) return;
+        // Mutually-exclusive slices so the donut sums to `total`:
+        // Overdue is a subset of Active (see get_overview), so the plain
+        // "Active" slice is Active minus Overdue. Active(excl) + Overdue +
+        // Closed + Archived == total (every homework is active/closed/archived).
+        var activeExcl = Math.max((d.active || 0) - (d.overdue || 0), 0);
         _charts['chartStatus'] = new Chart(ctx, {
             type: 'doughnut',
             data: {
-                labels: ['Active', 'Overdue', 'Closed'],
+                labels: ['Active', 'Overdue', 'Closed', 'Archived'],
                 datasets: [{
-                    data: [d.active, d.overdue, d.closed],
-                    backgroundColor: [C.green, C.red, C.gray],
+                    data: [activeExcl, d.overdue, d.closed, d.archived],
+                    backgroundColor: [C.green, C.red, C.gray, C.blue],
                     borderWidth: 0,
                 }]
             },
@@ -1664,13 +1671,27 @@ HW.sub = {
     exportCSV: function() {
         var data = this._lastData;
         if (!data || !data.length) return;
-        var csv = 'Student ID,Student Name,Roll No,Status,Response,Score,Remark,Reviewed By,Submitted At\n';
+        // Escape one CSV cell: neutralise spreadsheet formula injection, then
+        // quote and double any embedded quotes. Applied to EVERY field so a
+        // value containing ", newline or a leading =,+,-,@,tab,CR can't
+        // corrupt the row or execute as a formula. (Previously only text and
+        // remarks were quote-escaped and there was no injection guard.)
+        function csvCell(v) {
+            var s = (v === undefined || v === null) ? '' : String(v);
+            if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;   // formula-injection guard
+            return '"' + s.replace(/"/g, '""') + '"';
+        }
+        var rows = ['Student ID,Student Name,Roll No,Status,Response,Score,Remark,Reviewed By,Submitted At'];
         data.forEach(function(s) {
             var scoreStr = (s.score !== undefined && s.score >= 0) ? s.score : '';
-            csv += '"' + s.studentId + '","' + s.studentName + '","' + s.rollNo + '","' + s.status + '","' +
-                (s.text || '').replace(/"/g, '""') + '","' + scoreStr + '","' +
-                (s.remarks || '').replace(/"/g, '""') + '","' + (s.reviewedBy || '') + '","' + formatTs(s.submittedAt) + '"\n';
+            rows.push([
+                csvCell(s.studentId), csvCell(s.studentName), csvCell(s.rollNo),
+                csvCell(s.status), csvCell(s.text || ''), csvCell(scoreStr),
+                csvCell(s.remarks || ''), csvCell(s.reviewedBy || ''),
+                csvCell(formatTs(s.submittedAt))
+            ].join(','));
         });
+        var csv = rows.join('\r\n') + '\r\n';
         var blob = new Blob([csv], { type: 'text/csv' });
         var a = document.createElement('a');
         a.href = URL.createObjectURL(blob);

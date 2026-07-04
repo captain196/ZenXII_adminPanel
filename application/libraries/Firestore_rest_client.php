@@ -536,6 +536,37 @@ class FirestoreRestClient
     }
 
     /**
+     * List every document in a SUBcollection under a specific parent doc,
+     * e.g. `stories/{docId}/viewers`. Read-only, paginated. Returns
+     * [['id' => <docId>, 'data' => <decoded>], ...] (same shape as query()).
+     * The top-level query() can't reach subcollections (it runs against the
+     * DB root), so this uses the REST list-documents GET on the parent path.
+     */
+    public function listSubcollection(string $collection, string $docId, string $subcollection, int $pageSize = 300): array
+    {
+        $base = $this->baseUrl() . "/$collection/" . rawurlencode($docId) . "/$subcollection";
+        $out = [];
+        $pageToken = null;
+        do {
+            $url = $base . '?pageSize=' . (int) $pageSize;
+            if ($pageToken) $url .= '&pageToken=' . rawurlencode($pageToken);
+            $r = $this->request('GET', $url);
+            if ($r['code'] !== 200) {
+                if ($r['code'] !== 404 && function_exists('log_message')) {
+                    log_message('error', "FirestoreREST::listSubcollection $collection/$docId/$subcollection HTTP {$r['code']}: " . json_encode($r['body']));
+                }
+                break;
+            }
+            foreach (($r['body']['documents'] ?? []) as $doc) {
+                if (!isset($doc['name'])) continue;
+                $out[] = ['id' => $this->docIdFromName($doc['name']), 'data' => $this->decodeDocument($doc)];
+            }
+            $pageToken = $r['body']['nextPageToken'] ?? null;
+        } while ($pageToken);
+        return $out;
+    }
+
+    /**
      * Diagnostic-only — fetch a document and return the *raw* REST body
      * with the per-field protobuf type tags intact (`mapValue`,
      * `arrayValue`, `stringValue`, …). Lets debug callers tell apart an
