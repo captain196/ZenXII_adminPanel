@@ -305,20 +305,33 @@ class Staff_attendance extends MY_Controller
             $monthKey => $curDayWise,
         ], $dateISO, 30);
 
-        // Today's accepted punches → check-in/out times.
-        $todayPunches = [];
+        // Accepted punches across the 30-day window → per-day check-in/out times.
+        // One query feeds BOTH today's times and the history calendar so each day
+        // can show when the employee clocked in/out, not just a status colour.
+        $windowStartISO = (clone $now)->modify('-29 days')->format('Y-m-d');
+        $punchesByDate = [];
         try {
             $rows = $this->fs->schoolWhere('attendancePunches', [
                 ['staffId', '==', $staffId],
-                ['date',    '==', $dateISO],
+                ['date',    '>=', $windowStartISO],
             ]);
             foreach ((array) $rows as $r) {
-                $todayPunches[] = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+                $p = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+                $d = (string) ($p['date'] ?? '');
+                if ($d !== '') $punchesByDate[$d][] = $p;
             }
         } catch (\Throwable $e) {
             log_message('error', 'Staff_attendance::me punches query failed: ' . $e->getMessage());
         }
-        $times = av_today_times($todayPunches);
+        $times = av_today_times($punchesByDate[$dateISO] ?? []);
+
+        // Enrich each history day with its check-in/out times (null when none).
+        foreach ($history as &$_h) {
+            $ht = av_today_times($punchesByDate[$_h['date']] ?? []);
+            $_h['checkInAt']  = $ht['checkInAt'];
+            $_h['checkOutAt'] = $ht['checkOutAt'];
+        }
+        unset($_h);
 
         return $this->json_success([
             'apiVersion' => 1,
@@ -349,7 +362,7 @@ class Staff_attendance extends MY_Controller
                 'workingDays' => $counts['P'] + $counts['T'] + $counts['L'] + $counts['M'],
                 'totalDays'   => strlen($curDayWise),
             ],
-            'history'    => $history,   // [{date,status}] oldest→newest, last 30 days
+            'history'    => $history,   // [{date,status,checkInAt,checkOutAt}] oldest→newest, 30d
         ]);
     }
 
