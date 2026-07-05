@@ -519,10 +519,7 @@ class School_config extends MY_Controller
             return $this->json_error('No file uploaded.');
         }
 
-        $tempDir = APPPATH . 'temp/';
-        if (!is_dir($tempDir)) {
-            mkdir($tempDir, 0755, true);
-        }
+        $tempDir = $this->_upload_staging_dir();
 
         $config = [
             'upload_path'   => $tempDir,
@@ -616,10 +613,7 @@ class School_config extends MY_Controller
             return $this->json_error('No file uploaded.');
         }
 
-        $tempDir = APPPATH . 'temp/';
-        if (!is_dir($tempDir)) {
-            mkdir($tempDir, 0755, true);
-        }
+        $tempDir = $this->_upload_staging_dir();
 
         $config = [
             'upload_path'   => $tempDir,
@@ -4515,8 +4509,7 @@ class School_config extends MY_Controller
             return $this->json_error('No file uploaded.');
         }
 
-        $tempDir = APPPATH . 'temp/';
-        if (!is_dir($tempDir)) mkdir($tempDir, 0755, true);
+        $tempDir = $this->_upload_staging_dir();
 
         $this->load->library('upload', [
             'upload_path'   => $tempDir,

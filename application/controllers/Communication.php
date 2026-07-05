@@ -836,9 +836,8 @@ class Communication extends MY_Controller
                 $this->json_error('Invalid file type. Allowed: PDF, DOC, DOCX, JPG, PNG.');
             }
 
-            // Upload to temp dir first
-            $tempDir = APPPATH . 'temp/';
-            if (!is_dir($tempDir)) mkdir($tempDir, 0755, true);
+            // Upload to temp dir first (production-safe writable staging dir)
+            $tempDir = $this->_upload_staging_dir();
 
             $config['upload_path']      = $tempDir;
             $config['allowed_types']    = 'pdf|doc|docx|jpg|jpeg|png';
