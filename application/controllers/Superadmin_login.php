@@ -472,86 +472,18 @@ class Superadmin_login extends CI_Controller
      */
     private function _resolve_sa_authz(string $adminId, string $signedUid, bool $useFs, string $ip): ?array
     {
-        $saFlags = $this->config->item('sa_migration_flags');
-        $strict  = is_array($saFlags) && !empty($saFlags['sa.authz_firestore_strict']);
-
-        // ── A2.3 strict: Firestore ONLY — no RTDB read, no fallback ──
-        if ($useFs && $strict) {
-            $fsDoc = null;
-            try { $fsDoc = $this->firebase->firestoreGet('superAdmins', $adminId); }
-            catch (\Throwable $e) { log_message('error', "SA authz firestore read failed for {$adminId}: " . $e->getMessage()); }
-            $this->sec_telem->emit('SA_AUTHZ_PATH', 'info', [
-                'admin_id' => $adminId, 'ip' => $ip, 'path' => 'firestore',
-                'reason' => is_array($fsDoc) ? 'doc' : 'no_doc', 'mode' => 'strict',
-            ], ['type' => 'superadmin', 'id' => $adminId]);
-            if (!is_array($fsDoc)) return null;
-            $fs = $this->_decide_from_fs($fsDoc, $signedUid);
-            if (!$fs['present'] || $fs['reason'] === 'role_mismatch' || $fs['reason'] === 'uid_mismatch') return null;
-            return ['allow' => $fs['allow'], 'reason' => $fs['reason'], 'name' => $fs['name'], 'email' => $fs['email'], 'source' => 'firestore'];
-        }
-
-        // RTDB decision (also the dual-read parity baseline).
-        $rtdb = $this->_decide_from_rtdb($this->firebase->get("Users/Admin/Our Panel/{$adminId}"));
-
-        if (!$useFs) {
-            if (!$rtdb['present'] || $rtdb['reason'] === 'role_mismatch') return null;
-            return ['allow' => $rtdb['allow'], 'reason' => $rtdb['reason'], 'name' => $rtdb['name'], 'email' => $rtdb['email'], 'source' => 'rtdb'];
-        }
-
-        // Firestore-first.
-        $fsDoc = null; $fsErr = false;
-        try {
-            $fsDoc = $this->firebase->firestoreGet('superAdmins', $adminId);
-        } catch (\Throwable $e) {
-            $fsErr = true;
-            log_message('error', "SA authz firestore read failed for {$adminId}: " . $e->getMessage());
-        }
-
-        if (is_array($fsDoc)) {
-            $fs = $this->_decide_from_fs($fsDoc, $signedUid);
-            if ($rtdb['present'] && $fs['present'] && $rtdb['allow'] !== $fs['allow']) {
-                $this->sec_telem->emit('SA_AUTHZ_DIVERGENCE', 'warning', [
-                    'admin_id' => $adminId, 'ip' => $ip,
-                    'rtdb_allow' => $rtdb['allow'], 'fs_allow' => $fs['allow'],
-                    'rtdb_reason' => $rtdb['reason'], 'fs_reason' => $fs['reason'],
-                ], ['type' => 'superadmin', 'id' => $adminId]);
-            }
-            $this->sec_telem->emit('SA_AUTHZ_PATH', 'info', [
-                'admin_id' => $adminId, 'ip' => $ip, 'path' => 'firestore', 'reason' => $fs['reason'],
-            ], ['type' => 'superadmin', 'id' => $adminId]);
-
-            if (!$fs['present'] || $fs['reason'] === 'role_mismatch' || $fs['reason'] === 'uid_mismatch') return null;
-            return ['allow' => $fs['allow'], 'reason' => $fs['reason'], 'name' => $fs['name'], 'email' => $fs['email'], 'source' => 'firestore'];
-        }
-
-        // Firestore doc missing OR read error → RTDB fallback.
-        if (!$fsErr) {
-            $this->sec_telem->emit('SA_AUTHZ_DOC_MISSING', 'warning', [
-                'admin_id' => $adminId, 'ip' => $ip,
-            ], ['type' => 'superadmin', 'id' => $adminId]);
-        }
-        $this->sec_telem->emit('SA_AUTHZ_PATH', 'warning', [
-            'admin_id' => $adminId, 'ip' => $ip, 'path' => 'rtdb_fallback',
-            'reason' => $fsErr ? 'firestore_unavailable' : 'doc_missing',
+        // Firestore canonical (post-Wave-A2.3 strict mode, 2026-05-29). No RTDB read, no fallback.
+        $fsDoc = null;
+        try { $fsDoc = $this->firebase->firestoreGet('superAdmins', $adminId); }
+        catch (\Throwable $e) { log_message('error', "SA authz firestore read failed for {$adminId}: " . $e->getMessage()); }
+        $this->sec_telem->emit('SA_AUTHZ_PATH', 'info', [
+            'admin_id' => $adminId, 'ip' => $ip, 'path' => 'firestore',
+            'reason' => is_array($fsDoc) ? 'doc' : 'no_doc', 'mode' => 'strict',
         ], ['type' => 'superadmin', 'id' => $adminId]);
-
-        if (!$rtdb['present'] || $rtdb['reason'] === 'role_mismatch') return null;
-        return ['allow' => $rtdb['allow'], 'reason' => $rtdb['reason'], 'name' => $rtdb['name'], 'email' => $rtdb['email'], 'source' => 'rtdb_fallback'];
-    }
-
-    /** Normalise the RTDB Our Panel record into an authorization decision. */
-    private function _decide_from_rtdb($rec): array
-    {
-        if (!is_array($rec)) return ['present' => false, 'allow' => false, 'reason' => 'not_found', 'name' => '', 'email' => ''];
-        $name  = (string) ($rec['Name'] ?? ($rec['Profile']['name'] ?? ''));
-        $email = (string) ($rec['Email'] ?? ($rec['Profile']['email'] ?? ''));
-        if (strcasecmp(trim((string) ($rec['Role'] ?? '')), 'Super Admin') !== 0) {
-            return ['present' => true, 'allow' => false, 'reason' => 'role_mismatch', 'name' => $name, 'email' => $email];
-        }
-        if (strcasecmp(trim((string) ($rec['Status'] ?? 'Active')), 'Inactive') === 0) {
-            return ['present' => true, 'allow' => false, 'reason' => 'inactive', 'name' => $name, 'email' => $email];
-        }
-        return ['present' => true, 'allow' => true, 'reason' => 'ok', 'name' => $name, 'email' => $email];
+        if (!is_array($fsDoc)) return null;
+        $fs = $this->_decide_from_fs($fsDoc, $signedUid);
+        if (!$fs['present'] || $fs['reason'] === 'role_mismatch' || $fs['reason'] === 'uid_mismatch') return null;
+        return ['allow' => $fs['allow'], 'reason' => $fs['reason'], 'name' => $fs['name'], 'email' => $fs['email'], 'source' => 'firestore'];
     }
 
     /** Normalise the Firestore superAdmins doc into an authorization decision. */
@@ -573,55 +505,34 @@ class Superadmin_login extends CI_Controller
         return ['present' => true, 'allow' => true, 'reason' => 'ok', 'name' => $name, 'email' => $email];
     }
 
-    /** Access-history write. Dual-write (Firestore + RTDB) during A2.1; RTDB-only when flag OFF. */
+    /** Access-history write. Firestore canonical (Wave A2.3 strict mode, 2026-05-29). */
     private function _write_sa_access_history(string $adminId, string $ip, bool $useFs): void
     {
-        $saFlags = $this->config->item('sa_migration_flags');
-        $strict  = is_array($saFlags) && !empty($saFlags['sa.authz_firestore_strict']);
-        if ($useFs) {
-            try {
-                $this->firebase->firestoreSet('superAdmins', $adminId, [
-                    'accessHistory' => ['lastLogin' => date('c'), 'lastLoginIp' => $ip],
-                ], true);
-            } catch (\Throwable $e) { log_message('error', "SA access-history FS write failed for {$adminId}: " . $e->getMessage()); }
-        }
-        if (!$strict) {
-            try {
-                $this->firebase->update("Users/Admin/Our Panel/{$adminId}", [
-                    'SA_LastLogin'   => date('Y-m-d H:i:s'),
-                    'SA_LastLoginIP' => $ip,
-                ]);
-            } catch (Exception $e) { /* non-critical */ }
+        if (!$useFs) return;
+        try {
+            $this->firebase->firestoreSet('superAdmins', $adminId, [
+                'accessHistory' => ['lastLogin' => date('c'), 'lastLoginIp' => $ip],
+            ], true);
+        } catch (\Throwable $e) {
+            log_message('error', "SA access-history FS write failed for {$adminId}: " . $e->getMessage());
         }
     }
 
-    /** Sanitised IP key (Firestore doc-id or RTDB child). */
+    /** Sanitised IP key (Firestore doc-id). */
     private function _ip_key(string $ip): string
     {
         return str_replace(['.', ':'], '-', $ip);
     }
 
-    /** SA IP rate-limit state in Firestore (saIpRateLimit) vs legacy RTDB (RateLimit/SA). */
-    private function _ratelimit_firestore(): bool
-    {
-        $f = $this->config->item('sa_migration_flags');
-        return is_array($f) && !empty($f['sa.ratelimit_firestore']);
-    }
-
+    /** SA IP rate-limit state (Firestore canonical, Wave A4 strict mode, 2026-05-29). */
     private function _rl_get(string $key)
     {
-        return $this->_ratelimit_firestore()
-            ? $this->firebase->firestoreGet('saIpRateLimit', $key)
-            : $this->firebase->get('RateLimit/SA/' . $key);
+        return $this->firebase->firestoreGet('saIpRateLimit', $key);
     }
 
     private function _rl_put(string $key, array $payload): void
     {
-        if ($this->_ratelimit_firestore()) {
-            $this->firebase->firestoreSet('saIpRateLimit', $key, $payload, true);
-        } else {
-            $this->firebase->update('RateLimit/SA/' . $key, $payload);
-        }
+        $this->firebase->firestoreSet('saIpRateLimit', $key, $payload, true);
     }
 
     private function _is_ip_blocked(string $ip, int $now): bool

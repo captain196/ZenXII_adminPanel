@@ -38,53 +38,13 @@ class Hr extends MY_Controller
         require_permission('HR');
     }
 
-    // ====================================================================
-    //  PATH HELPERS
-    // ====================================================================
-
-    private function _hr()
-    {
-        return "Schools/{$this->school_name}/HR";
-    }
-
-    private function _dept($id = '')
-    {
-        return $this->_hr() . '/Departments' . ($id ? "/{$id}" : '');
-    }
-
-    private function _jobs($id = '')
-    {
-        return $this->_hr() . '/Recruitment/Jobs' . ($id ? "/{$id}" : '');
-    }
-
-    private function _applicants($id = '')
-    {
-        return $this->_hr() . '/Recruitment/Applicants' . ($id ? "/{$id}" : '');
-    }
-
-    private function _leave_types($id = '')
-    {
-        return $this->_hr() . '/Leaves/Types' . ($id ? "/{$id}" : '');
-    }
-
-    private function _leave_bal($year = '', $staff = '', $type = '')
-    {
-        $p = $this->_hr() . '/Leaves/Balances';
-        if ($year)  $p .= "/{$year}";
-        if ($staff) $p .= "/{$staff}";
-        if ($type)  $p .= "/{$type}";
-        return $p;
-    }
-
-    private function _leave_req($id = '')
-    {
-        return $this->_hr() . '/Leaves/Requests' . ($id ? "/{$id}" : '');
-    }
-
-    private function _leave_audit()
-    {
-        return $this->_hr() . '/Leaves/Audit_log';
-    }
+    // PATH HELPERS (RTDB) removed in Phase 1 — HR is Firestore-only.
+    // The legacy Schools/{school}/HR/* path-builders (_hr/_dept/_jobs/
+    // _applicants/_leave_types/_leave_bal/_leave_req/_leave_audit/_salary/
+    // _appraisals/_payroll_runs/_payroll_slips/_counters) were dead code.
+    // All HR data flows through Firestore collections (staff,
+    // leaveApplications, salarySlips, hrJobs, hrApplicants, appraisals) and
+    // the hrCounters field on the school doc.
 
     // ====================================================================
     //  FIRESTORE-ONLY READ HELPERS — Payroll data
@@ -398,11 +358,6 @@ class Hr extends MY_Controller
 
     }
 
-    private function _salary($staff = '')
-    {
-        return $this->_hr() . '/Salary_Structures' . ($staff ? "/{$staff}" : '');
-    }
-
     // ====================================================================
     //  FIRESTORE SYNC HELPERS — mirrors HR data for app/query access
     // ====================================================================
@@ -682,29 +637,6 @@ class Hr extends MY_Controller
         return $struct;
     }
 
-    private function _appraisals($id = '')
-    {
-        return $this->_hr() . '/Appraisals' . ($id ? "/{$id}" : '');
-    }
-
-    private function _payroll_runs($id = '')
-    {
-        return "Schools/{$this->school_name}/{$this->session_year}/HR/Payroll/Runs" . ($id ? "/{$id}" : '');
-    }
-
-    private function _payroll_slips($runId = '', $staff = '')
-    {
-        $p = "Schools/{$this->school_name}/{$this->session_year}/HR/Payroll/Slips";
-        if ($runId) $p .= "/{$runId}";
-        if ($staff) $p .= "/{$staff}";
-        return $p;
-    }
-
-    private function _counters($type = '')
-    {
-        return $this->_hr() . '/Counters' . ($type ? "/{$type}" : '');
-    }
-
     // ====================================================================
     //  ID GENERATOR
     // ====================================================================
@@ -719,8 +651,6 @@ class Hr extends MY_Controller
      */
     private function _next_id(string $prefix, string $type, int $pad = 4): string
     {
-        $counterPath = $this->_counters($type);
-
         // ── Firestore-first: counters in schools doc hrCounters field ──
         $fsNext = null;
         try {
@@ -1245,36 +1175,10 @@ class Hr extends MY_Controller
             }
         }
 
-        // ── RTDB mirror so the Accounting dashboard sees HR journals ──────
-        // Accounting.php currently reads Accounts/Ledger + Ledger_index + Closing_balances
-        // from RTDB. Without this mirror, salary payments never appear on
-        // Trial Balance / Day Book / Cash Book reports. Writes match the shape
-        // that Operations_accounting::create_journal produces so readers don't
-        // care which source wrote the entry.
-        $bp = "Schools/{$this->school_name}/{$this->session_year}";
-        try {
-            $this->firebase->set("{$bp}/Accounts/Ledger/{$entryId}", $entry);
-            $today = date('Y-m-d');
-            $this->firebase->set("{$bp}/Accounts/Ledger_index/by_date/{$today}/{$entryId}", true);
-            foreach (array_keys($affected) as $acCode) {
-                $this->firebase->set("{$bp}/Accounts/Ledger_index/by_account/{$acCode}/{$entryId}", true);
-            }
-            // Closing balance accumulator — read/increment/write, matching the
-            // retry pattern ops_acct uses. Here we run a single attempt;
-            // concurrent payroll writes are rare enough to not warrant retries.
-            foreach ($affected as $code => $amounts) {
-                $balPath = "{$bp}/Accounts/Closing_balances/{$code}";
-                $cur = $this->firebase->get($balPath);
-                if (!is_array($cur)) $cur = ['period_dr' => 0, 'period_cr' => 0];
-                $this->firebase->set($balPath, [
-                    'period_dr'     => round((float) ($cur['period_dr'] ?? 0) + $amounts['dr'], 2),
-                    'period_cr'     => round((float) ($cur['period_cr'] ?? 0) + $amounts['cr'], 2),
-                    'last_computed' => date('c'),
-                ]);
-            }
-        } catch (\Exception $e) {
-            log_message('error', "HR _create_acct_journal RTDB mirror failed: " . $e->getMessage());
-        }
+        // Phase 1 (RTDB elimination): the RTDB Accounts/Ledger mirror was
+        // removed. Accounting.php reads the canonical Firestore `accounting`
+        // collection (written above), so no RTDB write is required. Closing
+        // balances are maintained in Firestore `accounting` (BAL_ docs) above.
 
         return $entryId;
     }
@@ -1352,37 +1256,10 @@ class Hr extends MY_Controller
             log_message('error', "HR _delete_acct_journal soft-delete failed: " . $e->getMessage());
         }
 
-        // ── RTDB mirror for delete — reverse balances, clear indices, soft-delete ──
-        $bp = "Schools/{$this->school_name}/{$this->session_year}";
-        try {
-            foreach ($affected as $code => $amounts) {
-                $balPath = "{$bp}/Accounts/Closing_balances/{$code}";
-                $cur = $this->firebase->get($balPath);
-                if (!is_array($cur)) $cur = ['period_dr' => 0, 'period_cr' => 0];
-                $this->firebase->set($balPath, [
-                    'period_dr'     => round((float) ($cur['period_dr'] ?? 0) - $amounts['dr'], 2),
-                    'period_cr'     => round((float) ($cur['period_cr'] ?? 0) - $amounts['cr'], 2),
-                    'last_computed' => date('c'),
-                ]);
-            }
-            if ($date !== '') {
-                $this->firebase->delete("{$bp}/Accounts/Ledger_index/by_date/{$date}", $entryId);
-            }
-            foreach (array_keys($affected) as $acCode) {
-                $this->firebase->delete("{$bp}/Accounts/Ledger_index/by_account/{$acCode}", $entryId);
-            }
-            // Mark the RTDB ledger entry as deleted so Accounting.php filters it out.
-            $existing = $this->firebase->get("{$bp}/Accounts/Ledger/{$entryId}");
-            if (is_array($existing)) {
-                $this->firebase->set("{$bp}/Accounts/Ledger/{$entryId}", array_merge($existing, [
-                    'status'     => 'deleted',
-                    'deleted_by' => $this->admin_id ?? '',
-                    'deleted_at' => date('c'),
-                ]));
-            }
-        } catch (\Exception $e) {
-            log_message('error', "HR _delete_acct_journal RTDB mirror failed: " . $e->getMessage());
-        }
+        // Phase 1 (RTDB elimination): the RTDB Accounts/Ledger delete-mirror
+        // was removed. The Firestore `accounting` soft-delete + Firestore index
+        // deletes + Firestore closing-balance reversal above are canonical;
+        // Accounting.php reads Firestore only.
     }
 
     /**
@@ -5062,35 +4939,18 @@ HTML;
         $monthNum    = array_search($month, $validMonths) + 1;
         $daysInMonth = (int) date('t', mktime(0, 0, 0, $monthNum, 1, (int) $year));
 
-        // Load school holidays for this month (HR-11 FIX: merge both Events and Attendance holiday sources)
+        // HC-2 (holiday convergence): holidays come ONLY from the canonical
+        // Holiday_service (calendarEvents). The orphan Firestore stores
+        // schools.holidays + schools.attendanceConfig.holidays are no longer
+        // read. Shape is preserved — [int dayOfMonth => name] — and consumed
+        // exactly as before via isset($holidays[$d]). Firestore-only; no RTDB.
         $holidays = [];
         try {
-            // Source 1: Events/holidays from Firestore school doc
-            $schoolDoc = $this->fs->get('schools', $this->fs->schoolId());
-            if (is_array($schoolDoc)) {
-                $holidayData = $schoolDoc['holidays'] ?? [];
-                if (is_array($holidayData)) {
-                    foreach ($holidayData as $h) {
-                        $hDate = is_string($h) ? $h : ($h['date'] ?? '');
-                        if ($hDate && (int) date('n', strtotime($hDate)) === $monthNum) {
-                            $holidays[(int) date('j', strtotime($hDate))] = true;
-                        }
-                    }
-                }
-                // Source 2: Attendance holiday config from school doc
-                $attHolidays = $schoolDoc['attendanceConfig']['holidays'] ?? [];
-                if (is_array($attHolidays)) {
-                    foreach ($attHolidays as $date => $name) {
-                        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $date, $m)) {
-                            if ((int) $m[1] === (int) $year && (int) $m[2] === $monthNum) {
-                                $holidays[(int) $m[3]] = true;
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (\Exception $e) {
-            // Non-fatal: proceed without holidays
+            $this->load->library('holiday_service');
+            $this->holiday_service->init($this->fs, (string) $this->fs->schoolId(), (string) $this->session_year);
+            $holidays = $this->holiday_service->holidays_in_month((int) $year, (int) $monthNum);
+        } catch (\Throwable $e) {
+            log_message('error', 'Hr::generate_payroll HC-2 holiday load failed: ' . $e->getMessage());
         }
 
         $nonWorkingDays = 0;
@@ -7851,32 +7711,17 @@ HTML;
         $sal = $this->_validate_structure($structure);
         if ($sal === null) $this->json_error('Salary structure is corrupt.');
 
-        // ── Holidays for the month (same source as generate_payroll) ─
+        // ── Holidays for the month — canonical Holiday_service (HC-2) ─
+        // Same source as generate_payroll: calendarEvents via Holiday_service.
+        // Orphan stores schools.holidays / attendanceConfig.holidays no longer read.
         $holidays = [];
         try {
-            $schoolDoc = $this->fs->get('schools', $this->fs->schoolId());
-            if (is_array($schoolDoc)) {
-                $hd = $schoolDoc['holidays'] ?? [];
-                if (is_array($hd)) {
-                    foreach ($hd as $h) {
-                        $hDate = is_string($h) ? $h : ($h['date'] ?? '');
-                        if ($hDate && (int) date('n', strtotime($hDate)) === $monthNum) {
-                            $holidays[(int) date('j', strtotime($hDate))] = true;
-                        }
-                    }
-                }
-                $attH = $schoolDoc['attendanceConfig']['holidays'] ?? [];
-                if (is_array($attH)) {
-                    foreach ($attH as $date => $name) {
-                        if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $date, $m)) {
-                            if ((int) $m[1] === (int) $year && (int) $m[2] === $monthNum) {
-                                $holidays[(int) $m[3]] = true;
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (\Exception $e) {}
+            $this->load->library('holiday_service');
+            $this->holiday_service->init($this->fs, (string) $this->fs->schoolId(), (string) $this->session_year);
+            $holidays = $this->holiday_service->holidays_in_month((int) $year, (int) $monthNum);
+        } catch (\Throwable $e) {
+            log_message('error', 'Hr::regenerate_staff_payroll HC-2 holiday load failed: ' . $e->getMessage());
+        }
 
         // ── Per-staff working days (includes join/exit pro-ration) ─
         $jd = $profile['joinDate']  ?? $profile['Date Of Joining'] ?? $profile['Joining Date'] ?? null;

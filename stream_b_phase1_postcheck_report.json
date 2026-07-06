@@ -1,0 +1,22 @@
+{
+  "time": "2026-06-11T18:51:44.630Z",
+  "gates": {
+    "G1": {
+      "pass": true,
+      "detail": "ALL 7 INDEXES READY ✓"
+    },
+    "G2": {
+      "pass": true,
+      "detail": "ALL ASSERTIONS PASS"
+    },
+    "G3": {
+      "pass": true,
+      "detail": "7 required present, 0 new forbidden, 1 pre-existing held drift (out-of-scope)"
+    },
+    "G4": {
+      "pass": null,
+      "detail": "deferred to Phase II (ratio methodology)"
+    }
+  },
+  "overall": "READY"
+}

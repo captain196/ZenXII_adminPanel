@@ -412,25 +412,19 @@ class Exam extends MY_Controller
      */
     private function _holiday_dates(): array
     {
-        $out = [];
+        // HC-1 (holiday convergence): consume the canonical Holiday_service —
+        // the single read abstraction over calendarEvents — instead of an
+        // inline query. Identical date set + one normalization path (type/
+        // category, startDate/start_date, range expansion, cancelled-skip).
+        // Firestore-only; no RTDB.
         try {
-            $rows = $this->fs->schoolWhere('calendarEvents', []);
-            foreach ((array) $rows as $r) {
-                $d   = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
-                $cat = strtolower((string) ($d['category'] ?? $d['type'] ?? ''));
-                if ($cat !== 'holiday') continue;
-                if (strtolower((string) ($d['status'] ?? '')) === 'cancelled') continue;
-                $s = (string) ($d['start_date'] ?? $d['startDate'] ?? '');
-                $e = (string) ($d['end_date']   ?? $d['endDate']   ?? $s);
-                if ($s === '') continue;
-                try {
-                    $cur = new DateTime($s); $end = new DateTime($e !== '' ? $e : $s);
-                    $guard = 0;
-                    while ($cur <= $end && $guard++ < 370) { $out[$cur->format('Y-m-d')] = true; $cur->modify('+1 day'); }
-                } catch (\Throwable $e2) { $out[$s] = true; }
-            }
-        } catch (\Throwable $e) { /* best-effort: no holidays */ }
-        return array_keys($out);
+            $this->load->library('holiday_service');
+            $this->holiday_service->init($this->fs, (string) $this->school_id, (string) $this->session_year);
+            return array_keys($this->holiday_service->all_holiday_dates());
+        } catch (\Throwable $e) {
+            log_message('error', 'Exam::_holiday_dates Holiday_service failed: ' . $e->getMessage());
+            return [];
+        }
     }
 
     /**

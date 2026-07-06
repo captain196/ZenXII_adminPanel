@@ -16,7 +16,7 @@ class Ssa_reset
     {
         $CI =& get_instance();
         if (!isset($CI->firebase)) { $CI->load->library('firebase'); }
-        if (!isset($CI->fs))       { $CI->load->library('Firestore', null, 'fs'); }
+        if (!isset($CI->fs))       { $CI->load->library('firestore_service', null, 'fs'); }
         $this->firebase = $CI->firebase;
         $this->fs       = $CI->fs;
     }
@@ -43,19 +43,19 @@ class Ssa_reset
             return ['success' => false, 'message' => $validation, 'ssa_name' => ''];
         }
 
-        $ssaPath = "Users/Admin/{$school_code}/{$ssa_id}";
-        $existing = $this->firebase->get($ssaPath);
+        // Firestore canonical existence + role check.
+        $existing = $this->fs->getEntity('staff', "{$school_id}_{$ssa_id}");
         if (empty($existing) || !is_array($existing)) {
             return ['success' => false, 'message' => 'School Super Admin not found.', 'ssa_name' => ''];
         }
 
-        $role = (string) ($existing['Role'] ?? $existing['Profile']['role'] ?? '');
+        $role = (string) ($existing['Role'] ?? $existing['role'] ?? '');
         if (strcasecmp($role, 'School Super Admin') !== 0
             && strcasecmp($role, 'school_super_admin') !== 0) {
             return ['success' => false, 'message' => 'Target account is not a School Super Admin.', 'ssa_name' => ''];
         }
 
-        $name = (string) ($existing['Name'] ?? $existing['Profile']['name'] ?? $ssa_id);
+        $name = (string) ($existing['Name'] ?? $existing['name'] ?? $ssa_id);
 
         // 1. Firebase Auth — primary auth source.
         $updated = $this->firebase->updateFirebaseUser($ssa_id, ['password' => $new_password]);
@@ -86,15 +86,7 @@ class Ssa_reset
         // 3. Revoke refresh tokens — kicks active sessions on every device.
         $this->firebase->revokeRefreshTokens($ssa_id);
 
-        // 4. RTDB bcrypt mirror — write-only, record-keeping per project policy.
-        try {
-            $hashed = password_hash($new_password, PASSWORD_BCRYPT, ['cost' => 12]);
-            $this->firebase->update($ssaPath . '/Credentials', ['Password' => $hashed]);
-        } catch (\Exception $e) {
-            log_message('error', 'Ssa_reset: RTDB mirror failed for ' . $ssa_id . ': ' . $e->getMessage());
-        }
-
-        // 5. Firestore admins/{ssa_id} — mirror mustChangePassword if the doc exists.
+        // 4. Firestore admins/{ssa_id} — mirror mustChangePassword if the doc exists.
         //    SSAs aren't always written to Firestore admins during onboarding, so
         //    update only if present; skip silently otherwise.
         try {
@@ -118,16 +110,29 @@ class Ssa_reset
 
     /**
      * Find every SSA in a school. Returns [['id'=>..., 'name'=>..., 'email'=>..., 'status'=>...], ...].
+     * Firestore canonical: queries staff/* by schoolId, filters by SSA id pattern + role.
      */
-    public function listSsasInSchool(string $school_code): array
+    public function listSsasInSchool(string $school_id): array
     {
-        $all = $this->firebase->get("Users/Admin/{$school_code}");
-        if (!is_array($all)) return [];
+        try {
+            $docs = $this->firebase->firestoreQuery('staff', [['schoolId', '==', $school_id]]);
+        } catch (\Throwable $e) {
+            log_message('error', 'Ssa_reset::listSsasInSchool query failed: ' . $e->getMessage());
+            return [];
+        }
+        if (!is_array($docs)) return [];
 
         $out = [];
-        foreach ($all as $id => $row) {
-            if (!is_array($row)) continue;
-            $role = (string) ($row['Role'] ?? $row['Profile']['role'] ?? '');
+        foreach ($docs as $entry) {
+            $d = is_array($entry['data'] ?? null) ? $entry['data'] : (is_array($entry) ? $entry : []);
+            $id = (string) ($d['staffId'] ?? '');
+            if ($id === '' && isset($entry['id'])) {
+                $eid = (string) $entry['id'];
+                $pos = strrpos($eid, '_');
+                if ($pos !== false) $id = substr($eid, $pos + 1);
+            }
+            if ($id === '') continue;
+            $role = (string) ($d['Role'] ?? $d['role'] ?? '');
             $isSsa = strcasecmp($role, 'School Super Admin') === 0
                   || strcasecmp($role, 'school_super_admin') === 0
                   || preg_match('/^SSA\d+$/', $id);
@@ -135,9 +140,9 @@ class Ssa_reset
 
             $out[] = [
                 'id'     => $id,
-                'name'   => (string) ($row['Name']  ?? $row['Profile']['name']  ?? $id),
-                'email'  => (string) ($row['Email'] ?? $row['Profile']['email'] ?? ''),
-                'status' => (string) ($row['Status'] ?? 'Active'),
+                'name'   => (string) ($d['Name']   ?? $d['name']  ?? $id),
+                'email'  => (string) ($d['Email']  ?? $d['email'] ?? ''),
+                'status' => (string) ($d['Status'] ?? $d['status'] ?? 'Active'),
             ];
         }
 

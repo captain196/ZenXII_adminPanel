@@ -96,21 +96,18 @@ class Superadmin_admins extends MY_Superadmin_Controller
             $this->json_error('Name must be 100 characters or less.');
         }
 
-        // Next SUP id: scan the canonical Firestore superAdmins, and also the legacy
-        // RTDB Our Panel (transition-safety, so we never reuse a legacy id). The RTDB
-        // read here is id-safety only and is dropped once Our Panel is retired.
+        // Next SUP id: scan Firestore superAdmins (canonical). SUP0002 backfilled
+        // 2026-06-10; legacy RTDB Our Panel scan retired.
         $max_num = 0;
         try {
             foreach ((array) $this->firebase->firestoreQuery('superAdmins') as $row) {
                 $rid = (string) ($row['id'] ?? ($row['data']['superAdminId'] ?? ''));
                 if (preg_match('/^SUP(\d+)$/', $rid, $m)) { $max_num = max($max_num, (int) $m[1]); }
             }
-        } catch (\Throwable $e) { /* fall through to legacy scan */ }
-        $legacy = $this->firebase->get('Users/Admin/Our Panel');
-        if (is_array($legacy)) {
-            foreach (array_keys($legacy) as $key) {
-                if (preg_match('/^SUP(\d+)$/', $key, $m)) { $max_num = max($max_num, (int) $m[1]); }
-            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Superadmin_admins next-id scan failed: ' . $e->getMessage());
+            $this->json_error('Failed to allocate admin id. Please try again.');
+            return;
         }
         $admin_id  = 'SUP' . str_pad($max_num + 1, 4, '0', STR_PAD_LEFT);
         $authEmail = Firebase::authEmail($admin_id);

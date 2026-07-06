@@ -668,28 +668,52 @@ class MY_Controller extends CI_Controller
     }
 
     /**
-     * Log a security event to Firebase and error log.
+     * Log a security event via the canonical Firestore Security_telemetry
+     * library (collection `security_events`).
+     *
+     * Phase 1 (RTDB elimination, 2026-07-03): the legacy best-effort write to
+     * RTDB `System/Logs/Security/{month}` was removed. Security_telemetry::emit()
+     * is itself best-effort — it ALWAYS writes a structured '[STAFF_SECURITY]'
+     * error-log line before attempting the Firestore write, and never throws —
+     * so the always-on log record and fail-safe behaviour are preserved.
+     *
+     * `schoolId` is echoed into the detail payload so the event is queryable
+     * per-tenant via the existing security_events(detail.schoolId, ts) index.
      */
     private function _log_security_event(string $event, array $context = []): void
     {
-        $entry = array_merge([
-            'event'     => $event,
-            'admin_id'  => $this->admin_id ?? 'unknown',
-            'role'      => $this->admin_role ?? 'unknown',
-            'school_id' => $this->school_name ?? 'unknown',
-            'ip'        => $this->input->ip_address(),
-            'uri'       => $this->uri->uri_string(),
-            'timestamp' => date('c'),
-        ], $context);
-
-        // Log to error log (always)
-        log_message('error', "SECURITY [{$event}] " . json_encode($entry));
-
-        // Log to Firebase (best-effort)
         try {
-            $monthKey = date('Y-m');
-            $this->firebase->push("System/Logs/Security/{$monthKey}", $entry);
-        } catch (\Exception $e) { /* non-critical */ }
+            $schoolId = ($this->school_name !== null && $this->school_name !== '')
+                ? $this->school_name : 'UNKNOWN';
+
+            $this->load->library('security_telemetry', null, 'sec_telem');
+            $this->sec_telem->init($this->firebase, $schoolId, [
+                'uid'          => (string) ($this->admin_id ?? 'unknown'),
+                'role'         => (string) ($this->admin_role ?? 'unknown'),
+                'school_claim' => $schoolId,
+            ]);
+
+            $detail = array_merge([
+                'schoolId' => $schoolId,
+                'surface'  => 'admin_web',
+                'uri'      => $this->uri->uri_string(),
+            ], $context);
+
+            // Cross-tenant + path-traversal attempts are genuine isolation
+            // breaches → 'critical'. 'error'/'critical' both map to CI log
+            // level 'error' (always logged, even at the production threshold=1)
+            // — preserving the legacy log_message('error') guarantee.
+            $severityMap = [
+                'CROSS_SCHOOL_ATTEMPT' => 'critical',
+                'PATH_VIOLATION'       => 'critical',
+            ];
+            $severity = $severityMap[$event] ?? 'error';
+
+            $this->sec_telem->emit($event, $severity, $detail);
+        } catch (\Throwable $e) {
+            // Telemetry must never break the security guard it protects.
+            log_message('error', "SECURITY [{$event}] telemetry_failed " . $e->getMessage());
+        }
     }
 
     // =========================================================================

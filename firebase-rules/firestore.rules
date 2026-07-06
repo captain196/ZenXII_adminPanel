@@ -1434,6 +1434,20 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // ── Security telemetry audit trail (Phase 1, 2026-07-03) ──────
+    // security_events: canonical Firestore sink for the Security_telemetry
+    // library — login audit (ADMIN_/SA_LOGIN_*), RBAC/cross-tenant denials,
+    // control-plane (B2_*/ONBOARD_*), and the migrated legacy guards
+    // (CROSS_SCHOOL_ATTEMPT, PATH_VIOLATION, ROLE_DENIED, CROSS_SCHOOL).
+    // Written exclusively by the PHP backend via the service account, which
+    // bypasses these rules; read only server-side (AdminUsers Login Activity,
+    // Superadmin last-login). No client read/write is ever legitimate — a
+    // direct client access is a bug. Explicit deny-all matches the existing
+    // default-deny (additive intent-lock, no behavioral change).
+    match /security_events/{docId} {
+      allow read, write: if false;
+    }
+
     // ── Wave B2.2-F (2026-05-30): Firestore-only control-plane (F3) ──
     // Server-only collections. All writes (and reads except tenantPublic)
     // bypass these rules via the Admin SDK service account (rules:4-6);

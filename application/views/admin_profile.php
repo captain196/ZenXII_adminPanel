@@ -126,6 +126,7 @@ select.ap-input{padding-right:30px;-webkit-appearance:none;appearance:none;
 }
 </style>
 
+<div class="content-wrapper">
 <section class="content" style="padding:20px 24px;">
 
     <!-- ═══ HERO ═══ -->
@@ -255,6 +256,7 @@ select.ap-input{padding-right:30px;-webkit-appearance:none;appearance:none;
     </div>
 
 </section>
+</div><!-- /.content-wrapper -->
 
 <script>
 $(function(){

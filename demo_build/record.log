@@ -1,0 +1,13 @@
+  login SUP0001 -> http://localhost/ZenX/school/superadmin/dashboard
+recorded 01_dashboard
+recorded 03_schools
+recorded 04_plans
+recorded 05_analytics
+  login SSA0001 -> http://localhost/ZenX/school/admin/index
+recorded 06_erp
+recorded 07_students
+recorded 08_attendance
+recorded 09_exams
+recorded 12_communication
+recorded 13_architecture
+DONE_WEB

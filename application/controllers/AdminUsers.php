@@ -302,17 +302,6 @@ class AdminUsers extends MY_Controller
                 'must_change_password', 'password_reset_at', 'password_reset_by',
             ]);
 
-            // Mirror bcrypt to RTDB (write-only, record-keeping).
-            try {
-                $hashed = password_hash($new_password, PASSWORD_BCRYPT, ['cost' => 12]);
-                $this->firebase->update(
-                    "Users/Admin/{$this->school_code}/{$this->admin_id}/Credentials",
-                    ['Password' => $hashed]
-                );
-            } catch (\Exception $mirrorEx) {
-                log_message('error', 'AdminUsers::change_my_password — RTDB mirror failed: ' . $mirrorEx->getMessage());
-            }
-
             // Clear mustChangePassword on the admins Firestore doc too.
             try {
                 $this->fs->set('admins', $this->fs->docId($this->admin_id), [
@@ -975,16 +964,7 @@ class AdminUsers extends MY_Controller
             // 3. Revoke refresh tokens — invalidates active sessions.
             $this->firebase->revokeRefreshTokens($admin_id);
 
-            // 4. RTDB bcrypt mirror — write-only, kept for record-keeping per project policy.
-            try {
-                $rtdbBase = "Users/Admin/{$this->school_code}/{$admin_id}";
-                $this->firebase->update($rtdbBase . '/Credentials', ['Password' => $hashed]);
-            } catch (\Exception $mirrorEx) {
-                log_message('error', 'AdminUsers::reset_password — RTDB mirror failed: ' . $mirrorEx->getMessage());
-                // Non-fatal: Firebase Auth is the truth.
-            }
-
-            // 5. Firestore admins doc — sets mustChangePassword=true for clients
+            // 4. Firestore admins doc — sets mustChangePassword=true for clients
             //    that read this field instead of (or in addition to) the claim.
             try {
                 $this->fs->set('admins', $this->fs->docId($admin_id), [
@@ -1025,7 +1005,7 @@ class AdminUsers extends MY_Controller
         }
 
         $this->load->library('Ssa_reset', null, 'ssa_reset');
-        $all = $this->ssa_reset->listSsasInSchool($this->school_code);
+        $all = $this->ssa_reset->listSsasInSchool($this->school_id);
 
         // Exclude self — peer-reset only.
         $peers = array_values(array_filter($all, fn($r) => $r['id'] !== $this->admin_id));
@@ -1072,12 +1052,11 @@ class AdminUsers extends MY_Controller
             return;
         }
 
-        // Tenant check — target must exist under the caller's school_code.
-        $targetPath = "Users/Admin/{$this->school_code}/{$target_id}";
-        $target = $this->firebase->get($targetPath);
+        // Tenant check — target must exist in the caller's school. Firestore canonical.
+        $target = $this->fs->getEntity('staff', "{$this->school_id}_{$target_id}");
         if (empty($target) || !is_array($target)) {
             log_message('error',
-                "RBAC tenant breach attempt: ssa={$this->admin_id} school={$this->school_code} "
+                "RBAC tenant breach attempt: ssa={$this->admin_id} school={$this->school_id} "
                 . "tried to reset ssa={$target_id} (not found in their school)"
             );
             $this->json_error('SSA not found in your school.', 404);

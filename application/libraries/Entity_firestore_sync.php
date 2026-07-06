@@ -542,54 +542,6 @@ class Entity_firestore_sync
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //  STAFF / TEACHERS
-    // ══════════════════════════════════════════════════════════════════
-
-    /**
-     * Sync staff profile to Firestore 'staff' collection.
-     * Call after: Staff::add_staff_ajax(), Staff::edit_staff()
-     */
-    public function syncStaff(string $staffId, array $data): bool
-    {
-        if (!$this->ready) return false;
-        $docId = "{$this->schoolCode}_{$staffId}";
-        $doc = [
-            'schoolCode'  => $this->schoolId,
-            'staffId'     => $staffId,
-            'name'        => $data['Name'] ?? $data['name'] ?? '',
-            'email'       => $data['Email'] ?? $data['email'] ?? '',
-            'phone'       => $data['Phone'] ?? $data['phone'] ?? '',
-            'role'        => $data['Role'] ?? $data['role'] ?? '',
-            'designation' => $data['designation'] ?? $data['Designation'] ?? $data['Position'] ?? '',
-            'department'  => $data['Department'] ?? $data['department'] ?? '',
-            'profilePic'  => $data['Doc']['ProfilePic'] ?? $data['profile_pic'] ?? '',
-            'status'      => $data['Status'] ?? 'Active',
-            // BUG-052 fix 2026-05-25: caller-provided session precedence
-            'session'     => $data['session'] ?? $data['Session'] ?? $this->session,
-            'updatedAt'   => date('c'),
-
-            // Phase A (2026-04-08): statutory + profile fields
-            'altPhone'      => $data['altPhone']      ?? '',
-            'maritalStatus' => $data['maritalStatus']  ?? '',
-            'panNumber'     => $data['panNumber']      ?? '',
-            'aadharNumber'  => $data['aadharNumber']   ?? '',
-            'pfNumber'      => $data['pfNumber']       ?? '',
-            'esiNumber'     => $data['esiNumber']      ?? '',
-        ];
-        return $this->_write('staff', $docId, $doc);
-    }
-
-    /**
-     * Delete staff from Firestore.
-     */
-    public function deleteStaff(string $staffId): bool
-    {
-        if (!$this->ready) return false;
-        $docId = "{$this->schoolCode}_{$staffId}";
-        return $this->_delete('staff', $docId);
-    }
-
-    // ══════════════════════════════════════════════════════════════════
     //  SECTIONS
     // ══════════════════════════════════════════════════════════════════
 
@@ -916,25 +868,6 @@ class Entity_firestore_sync
             if (!is_array($data)) continue;
             if ($this->syncStudent((string) $id, $data)) $count++;
             if ($this->syncParent((string) $id, $data)) {} // best-effort
-        }
-        return $count;
-    }
-
-    /**
-     * Sync all staff for the current school from RTDB to Firestore.
-     *
-     * @return int Number of staff synced
-     */
-    public function bulkSyncStaff(string $schoolCode): int
-    {
-        if (!$this->ready) return 0;
-        $admins = $this->firebase->get("Users/Admin/{$schoolCode}");
-        if (!is_array($admins)) return 0;
-
-        $count = 0;
-        foreach ($admins as $id => $data) {
-            if (!is_array($data) || $id === '_Counter') continue;
-            if ($this->syncStaff((string) $id, $data)) $count++;
         }
         return $count;
     }

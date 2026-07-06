@@ -636,8 +636,8 @@ class B2_cutover_verify extends CI_Controller
             // still execute them so the tenant is fully operational at
             // onboard time even when the cutover flag is true.
             $count_users_admin = substr_count($src, '$this->firebase->set("Users/Admin/{$school_code}/{$admin_id}"');
-            $this->_assert($count_users_admin === 2,
-                'E.5/held-bridge: expected exactly 2 Users/Admin/{$school_code}/{$admin_id} writes (Firestore branch + legacy branch); got ' . $count_users_admin);
+            $this->_assert($count_users_admin === 0,
+                'E.5/retired: expected 0 Users/Admin/{$school_code}/{$admin_id} writes (Step 2 of Staff Convergence Package 1 retired both onboarding zombie writes); got ' . $count_users_admin);
             // Sessions: 2 from onboard (Firestore + legacy) + 1 from migrate_existing_schools
             // (one-shot legacy tool, out of B2 scope) = 3 total.
             $count_sessions = substr_count($src, '$this->firebase->set("Schools/{$school_id}/Sessions"');

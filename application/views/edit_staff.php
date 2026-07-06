@@ -141,6 +141,31 @@
                                         <i class="fa fa-exclamation-circle"></i> No role yet — add at least one.
                                     </span>
                                 </div>
+
+                                <!-- Inline custom-role creation → staff/save_staff_role (S1b-validated) -->
+                                <div class="nsa-customrole-wrap">
+                                    <button type="button" id="showCustomRoleBtn" class="nsa-customrole-toggle">
+                                        <i class="fa fa-plus"></i> Create a custom role
+                                    </button>
+                                    <div id="customRolePanel" class="nsa-customrole-panel" style="display:none;">
+                                        <div class="nsa-customrole-row">
+                                            <input type="text" id="customRoleName" class="nsa-input"
+                                                   placeholder="Role name — e.g. Sports Coach" maxlength="40" autocomplete="off">
+                                            <select id="customRoleCategory" class="nsa-select nsa-customrole-cat">
+                                                <option value="Teaching">Teaching</option>
+                                                <option value="Non-Teaching" selected>Non-Teaching</option>
+                                                <option value="Administrative">Administrative</option>
+                                                <option value="Support">Support</option>
+                                            </select>
+                                            <button type="button" id="createCustomRoleBtn" class="nsa-customrole-create">
+                                                <i class="fa fa-check"></i> Add
+                                            </button>
+                                            <button type="button" id="cancelCustomRoleBtn" class="nsa-customrole-cancel">Cancel</button>
+                                        </div>
+                                        <div id="customRoleMsg" class="nsa-customrole-msg" style="display:none;"></div>
+                                    </div>
+                                </div>
+
                                 <small style="color:var(--nsa-muted);font-size:11px;">
                                     <i class="fa fa-info-circle"></i>
                                     Pick one or more roles. The first (&#9733;) is the primary designation. Adding a <strong>Teacher</strong> role reveals the subjects field below.
@@ -956,6 +981,74 @@ document.addEventListener('DOMContentLoaded', function() {
         if (typeof recheckTeachingVisibility === 'function') recheckTeachingVisibility();
     }
 
+    /* ── Inline custom-role creation (POST staff/save_staff_role; S1b-validated) ── */
+    (function() {
+        var toggleBtn = document.getElementById('showCustomRoleBtn');
+        if (!toggleBtn) return;
+        var CSRF_NAME = '<?= $this->security->get_csrf_token_name() ?>';
+        var CSRF_HASH = '<?= $this->security->get_csrf_hash() ?>';
+        var panel     = document.getElementById('customRolePanel');
+        var nameInput = document.getElementById('customRoleName');
+        var catSelect = document.getElementById('customRoleCategory');
+        var createBtn = document.getElementById('createCustomRoleBtn');
+        var cancelBtn = document.getElementById('cancelCustomRoleBtn');
+        var msgBox    = document.getElementById('customRoleMsg');
+
+        function showMsg(t, ok) { msgBox.textContent = t; msgBox.className = 'nsa-customrole-msg ' + (ok ? 'ok' : 'err'); msgBox.style.display = 'block'; }
+        function hideMsg() { msgBox.style.display = 'none'; }
+        function toRoleId(name) {
+            var s = name.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+            return s ? 'ROLE_' + s : '';
+        }
+        function resetBtn() { createBtn.disabled = false; createBtn.innerHTML = '<i class="fa fa-check"></i> Add'; }
+
+        toggleBtn.addEventListener('click', function() {
+            var open = panel.style.display !== 'none';
+            panel.style.display = open ? 'none' : 'block';
+            if (!open) { hideMsg(); nameInput.focus(); }
+        });
+        cancelBtn.addEventListener('click', function() { panel.style.display = 'none'; nameInput.value = ''; hideMsg(); });
+        nameInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); createBtn.click(); } });
+
+        createBtn.addEventListener('click', function() {
+            hideMsg();
+            var name = (nameInput.value || '').trim();
+            if (name.length < 2) { showMsg('Please enter a role name (at least 2 characters).', false); return; }
+            var roleId = toRoleId(name);
+            if (!roleId) { showMsg('Role name must contain letters or numbers.', false); return; }
+            if (_roleData[roleId] || _selectedRoles.indexOf(roleId) !== -1) { showMsg('That role already exists — pick it from the list above.', false); return; }
+
+            createBtn.disabled = true; createBtn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Adding…';
+            var payload = { role_id: roleId, label: name, category: catSelect.value };
+            payload[CSRF_NAME] = CSRF_HASH;
+
+            $.post('<?= base_url("staff/save_staff_role") ?>', payload, function(res) {
+                resetBtn();
+                if (res && res.status === 'success') {
+                    var rid = res.role_id || roleId;
+                    _roleData[rid] = { label: name, category: catSelect.value };
+                    var sel = document.getElementById('staffRoleSelect');
+                    var opt = document.createElement('option');
+                    opt.value = rid; opt.textContent = name + ' (' + catSelect.value + ')';
+                    sel.appendChild(opt);
+                    if (_selectedRoles.indexOf(rid) === -1) {
+                        _selectedRoles.push(rid);
+                        if (_selectedRoles.length === 1) _primaryRole = rid;
+                    }
+                    renderRoleChips();
+                    panel.style.display = 'none'; nameInput.value = '';
+                } else {
+                    showMsg((res && res.message) || 'Could not create the role.', false);
+                }
+            }, 'json').fail(function(xhr) {
+                resetBtn();
+                var m = 'Could not create the role.';
+                try { m = JSON.parse(xhr.responseText).message || m; } catch (e) {}
+                showMsg(m, false);
+            });
+        });
+    })();
+
     /* ── Teaching subjects (capability list — visible only for Teacher role) ── */
     var _subjHidden = document.getElementById('teachingSubjectsHidden');
     var _selectedSubjects = ((_subjHidden && _subjHidden.value) || '')
@@ -1452,6 +1545,38 @@ function submitEditForm() {
     background: var(--nsa-white, #fff); min-height: 44px;
 }
 .nsa-roles-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+/* ── Inline custom-role creation ── */
+.nsa-customrole-wrap { margin-top: 8px; }
+.nsa-customrole-toggle {
+    background: transparent; border: 1px dashed var(--nsa-border, #e2e8f0);
+    color: var(--nsa-teal, #0f766e); font-size: 12px; font-weight: 600;
+    padding: 6px 12px; border-radius: 8px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; transition: all .15s ease;
+}
+.nsa-customrole-toggle:hover { background: rgba(15,118,110,.06); border-color: var(--nsa-teal, #0f766e); }
+.nsa-customrole-panel {
+    margin-top: 10px; padding: 12px 14px; border: 1px solid var(--nsa-border, #e2e8f0);
+    border-radius: 10px; background: var(--nsa-sky, #e6f4f1);
+}
+.nsa-customrole-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.nsa-customrole-row .nsa-input { flex: 1 1 200px; min-width: 160px; }
+.nsa-customrole-cat { max-width: 172px; }
+.nsa-customrole-create {
+    background: var(--nsa-teal, #0f766e); color: #fff; border: none;
+    padding: 9px 18px; border-radius: 8px; font-weight: 600; font-size: 12.5px;
+    cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: filter .15s;
+}
+.nsa-customrole-create:hover { filter: brightness(1.08); }
+.nsa-customrole-create:disabled { opacity: .6; cursor: not-allowed; }
+.nsa-customrole-cancel {
+    background: transparent; color: var(--nsa-muted, #64748b);
+    border: none; padding: 9px 8px; font-size: 12.5px; cursor: pointer; font-weight: 500;
+}
+.nsa-customrole-cancel:hover { color: var(--nsa-text, #1a2535); }
+.nsa-customrole-msg { margin-top: 9px; font-size: 12px; padding: 8px 11px; border-radius: 7px; line-height: 1.4; }
+.nsa-customrole-msg.err { background: #fef2f2; color: var(--nsa-red, #dc2626); border: 1px solid #fecaca; }
+.nsa-customrole-msg.ok  { background: #f0fdf4; color: var(--nsa-dark, #15803d); border: 1px solid #bbf7d0; }
+
 .nsa-role-chip {
     display: inline-flex; align-items: center; gap: 4px;
     padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;

@@ -116,6 +116,15 @@ class Security_telemetry
         'B2_RECONCILE', 'B2_RULES_DEPLOY', 'B2_READ_PARITY',
         'B2_BRIDGE_COMPENSATE', 'B2_BACKFILL',
         'B2_REGISTRY_WRITE', 'B2_REGISTRY_READ', 'B2_ROLLBACK',
+        // ── Phase 1 (2026-07-03): legacy RTDB security-log writers migrated
+        //    off System/Logs/Security onto this canonical Firestore sink.
+        //    Names preserved verbatim from the legacy writers so no audit
+        //    semantics are lost in the cutover.
+        //    CROSS_SCHOOL_ATTEMPT — MY_Controller::assert_school_ownership (browser admin surface)
+        //    PATH_VIOLATION       — MY_Controller::assert_school_path (browser admin surface)
+        //    ROLE_DENIED          — Api_auth::require_role (Teacher/Parent app Bearer API surface)
+        //    CROSS_SCHOOL         — Api_auth::require_school (Teacher/Parent app Bearer API surface)
+        'CROSS_SCHOOL_ATTEMPT', 'PATH_VIOLATION', 'ROLE_DENIED', 'CROSS_SCHOOL',
     ];
 
     const SEVERITIES = ['info', 'warning', 'error', 'critical'];

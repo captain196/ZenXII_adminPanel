@@ -1,0 +1,62 @@
+{
+  "time": "2026-06-13T05:40:50.651Z",
+  "cycles": 15,
+  "m_staff": 10,
+  "legacy": {
+    "p50": 16893,
+    "p95": 21101,
+    "avg": 17077,
+    "n": 15,
+    "ops": {
+      "fsReads": 0,
+      "fsWrites": 150,
+      "rtdbReads": 150,
+      "rtdbWrites": 300
+    }
+  },
+  "fs": {
+    "p50": 6548,
+    "p95": 11246,
+    "avg": 7644,
+    "n": 15,
+    "ops": {
+      "fsReads": 17,
+      "fsWrites": 150,
+      "rtdbReads": 0,
+      "rtdbWrites": 0
+    }
+  },
+  "ratio": {
+    "p50": 0.388,
+    "p95": 0.533
+  },
+  "cache_hit_rate": 0.867,
+  "gates": [
+    {
+      "name": "FS path strictly faster (ratio_p95 < 1.0)",
+      "pass": true,
+      "detail": "ratio_p95=0.533"
+    },
+    {
+      "name": "FS path zero RTDB ops observed",
+      "pass": true,
+      "detail": "rtdb_reads=0, rtdb_writes=0"
+    },
+    {
+      "name": "Legacy path retained N+1 RTDB shape (3 ops/staff)",
+      "pass": true,
+      "detail": "total_rtdb_ops=450"
+    },
+    {
+      "name": "FS op count ≤ M+1 per call (vs legacy 4M)",
+      "pass": true,
+      "detail": "fs_writes=150 ≤ 165"
+    },
+    {
+      "name": "Cache hit rate ≥ 1-(2/N)",
+      "pass": true,
+      "detail": "cache_hit_rate=86.7% (threshold=86.7%)"
+    }
+  ],
+  "overall": true
+}

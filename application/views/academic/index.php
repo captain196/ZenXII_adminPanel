@@ -981,6 +981,17 @@ document.getElementById('acTabs').addEventListener('click',function(e){
     if(k==='planner' && !AC.lp._loaded) AC.lp.init();
 });
 
+/* Deep-link: open a tab via URL hash, e.g. /academic#calendar — used by the
+   Attendance "Holiday Management" page's "Open Academic Calendar" action.
+   Runs on window load so all AC.* lazy-loaders are defined first; reuses the
+   tab click handler above (pane switch + lazy-load). */
+window.addEventListener('load', function(){
+    var h = (location.hash || '').replace(/^#/, '');
+    if (!h) return;
+    var t = document.querySelector('.ac-tab[data-tab="' + h + '"]');
+    if (t) t.click();
+});
+
 /* ── Shared Data Cache ── */
 var _classes=[], _subjects={}, _teachers=[];
 function loadSharedData(cb){

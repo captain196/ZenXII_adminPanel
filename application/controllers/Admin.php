@@ -1019,6 +1019,19 @@ class Admin extends MY_Controller
                     $this->json_error('Password must not exceed 72 characters.'); return;
                 }
 
+                // ── Verify the CURRENT password before changing it ──────────
+                // Re-authenticate against Firebase Auth (the single auth source)
+                // so a logged-in/hijacked session cannot silently reset the
+                // password without knowing the current one.
+                $userRecord = $this->firebase->getFirebaseUser($admin_id);
+                $authEmail  = is_object($userRecord) ? (string) ($userRecord->email ?? '') : '';
+                if ($authEmail === '') {
+                    $this->json_error('Unable to verify your account. Please re-login and try again.'); return;
+                }
+                if ($this->firebase->signInWithEmail($authEmail, $current) === null) {
+                    $this->json_error('Current password is incorrect.'); return;
+                }
+
                 // Password change via Firebase Auth (primary auth source)
                 try {
                     $this->firebase->updateFirebaseUser($admin_id, ['password' => $newPass]);

@@ -602,10 +602,9 @@ class Ats extends MY_Controller
             $this->json_error('Applicant must be at Selected stage to finalize hire.');
         }
 
-        // Verify staff record actually exists (data integrity)
-        $staffPath = "Users/Teachers/{$this->school_id}/{$staffId}";
-        $staff = $this->firebase->get($staffPath);
-        if (!is_array($staff)) {
+        // Verify staff record actually exists (data integrity) — Firestore canonical.
+        $staff = $this->fs->getEntity('staff', "{$this->school_id}_{$staffId}");
+        if (!is_array($staff) || empty($staff)) {
             $this->json_error('Staff record not found. Please ensure staff creation completed successfully.');
         }
 
