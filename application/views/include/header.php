@@ -2,6 +2,9 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <!-- Set the theme on <html> BEFORE any CSS paints, so pages never flash the
+         default (night) palette on navigation. Mirrors applyTheme() below. -->
+    <script>(function(){try{var t=localStorage.getItem('graderiq_theme');if(!t){var h=new Date().getHours();t=(h>=6&&h<18)?'day':'night';}document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <title>ZenXii Admin</title>
