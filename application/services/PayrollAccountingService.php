@@ -165,6 +165,28 @@ final class PayrollAccountingService
         return (bool) $this->CI->config->item(self::FLAG);
     }
 
+    /**
+     * R1 — THE canonical payroll payment journal-id algorithm. There is
+     * exactly one, and it is here. It MUST equal what the canonical engine
+     * derives for (source='HR_Payroll', sourceRef="<runId>_<seq>"):
+     *
+     *     Operations_accounting::_create_journal_v2 computes
+     *       idempKey = "JE_" . regexClean(strtoupper('HR_Payroll')) . "_" . sourceRef
+     *                = "JE_HR_PAYROLL_" . "<runId>_<seq>"
+     *     and stores it verbatim as the ledger entryId. The sourceRef — and
+     *     therefore the runId — is used RAW (never upper-cased or normalized).
+     *
+     * Any code path that needs the journal id BEFORE the engine returns it
+     * (e.g. Hr's CAS-first run write, which records journal_id in the payment
+     * record prior to posting) MUST call this method, so no path transforms
+     * the runId differently. This closes R1: the run's recorded journal_id is
+     * always identical to the actual ledger entryId.
+     */
+    public static function journalIdFor(string $runId, int $seq): string
+    {
+        return 'JE_HR_PAYROLL_' . $runId . '_' . $seq;
+    }
+
     // ═════════════════════════════════════════════════════════════════
     //  ACCRUAL
     // ═════════════════════════════════════════════════════════════════
@@ -464,6 +486,143 @@ final class PayrollAccountingService
             );
         }
         return $reversalEntry;
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    //  CONSOLIDATED PER-RUN POSTING  (LC-P1, 2026-07-06)
+    // ═════════════════════════════════════════════════════════════════
+    //
+    //  These two methods reproduce the EXACT accounting output of the
+    //  legacy Hr::_create_acct_journal payroll path — same accounts, same
+    //  line structure, same source ('HR_Payroll'), same voucher type
+    //  ('Journal' → 'JV-…'), same narration and amounts — but route the
+    //  post through the canonical engine (idempotent deterministic
+    //  entryId, Dr=Cr validation, account + period-lock guard, atomic CAS
+    //  balance batch). ONE consolidated journal per run (source_ref =
+    //  runId) preserves today's voucher count and report shape (the
+    //  operator-approved consolidated model).
+    //
+    //  Legacy parity anchors in Hr.php:
+    //    Accrual : lines per generate_payroll()   (Hr.php ~5095-5118)
+    //    Payment : lines per mark_payroll_paid()   (Hr.php ~5738-5750)
+    //
+    //  ADDITIVE ONLY (LC-P1): no caller yet; inert while the
+    //  `payroll_engine_integration` flag is off (guarded by _assertReady).
+    // ═════════════════════════════════════════════════════════════════
+
+    /**
+     * Consolidated payroll ACCRUAL journal for one run.
+     * Mirrors Hr::generate_payroll's journal (Dr salary expense, Cr net
+     * payable + statutory liabilities). Idempotent on run_id.
+     *
+     * @param array $run {
+     *   run_id, month, year,
+     *   total_teaching_exp, total_non_teaching_exp, total_net,
+     *   total_pf, total_esi, total_tds, total_prof_tax, total_other_ded,
+     *   journal_date (optional; defaults to today — matches legacy)
+     * }
+     * @return string|null  entryId, or null (flag off / validation / engine).
+     */
+    public function postRunAccrual(array $run): ?string
+    {
+        if (!$this->_assertReady('postRunAccrual')) return null;
+
+        $runId = (string) ($run['run_id'] ?? '');
+        $month = (string) ($run['month'] ?? '');
+        $year  = (string) ($run['year']  ?? '');
+        if ($runId === '' || $month === '' || $year === '') {
+            $this->_log("PAYROLL_RUN_ACCRUAL_REJECTED reason='missing run_id/month/year'");
+            return null;
+        }
+
+        $teaching    = round((float) ($run['total_teaching_exp']     ?? 0), 2);
+        $nonTeaching = round((float) ($run['total_non_teaching_exp'] ?? 0), 2);
+        $net         = round((float) ($run['total_net']              ?? 0), 2);
+        $pf          = round((float) ($run['total_pf']               ?? 0), 2);
+        $esi         = round((float) ($run['total_esi']              ?? 0), 2);
+        $tds         = round((float) ($run['total_tds']              ?? 0), 2);
+        $profTax     = round((float) ($run['total_prof_tax']         ?? 0), 2);
+        $otherDed    = round((float) ($run['total_other_ded']        ?? 0), 2);
+
+        // Lines — byte-for-byte the legacy structure (Hr.php 5095-5118).
+        $lines = [];
+        if ($teaching    > 0) $lines[] = ['account_code' => '5010', 'dr' => $teaching,    'cr' => 0];
+        if ($nonTeaching > 0) $lines[] = ['account_code' => '5020', 'dr' => $nonTeaching, 'cr' => 0];
+        $lines[] = ['account_code' => '2020', 'dr' => 0, 'cr' => $net];   // always, as legacy
+        if ($pf       > 0) $lines[] = ['account_code' => '2030', 'dr' => 0, 'cr' => $pf];
+        if ($esi      > 0) $lines[] = ['account_code' => '2031', 'dr' => 0, 'cr' => $esi];
+        if ($tds      > 0) $lines[] = ['account_code' => '2032', 'dr' => 0, 'cr' => $tds];
+        if ($profTax  > 0) $lines[] = ['account_code' => '2033', 'dr' => 0, 'cr' => $profTax];
+        if ($otherDed > 0) $lines[] = ['account_code' => '2034', 'dr' => 0, 'cr' => $otherDed];
+
+        $narration   = "Salary accrual - {$month} {$year}";
+        $journalDate = (string) ($run['journal_date'] ?? date('Y-m-d'));
+
+        return $this->_commit('HR_Payroll', $runId, $narration, $lines, $journalDate, [
+            'run_id' => $runId,
+            'kind'   => 'accrual',
+        ]);
+    }
+
+    /**
+     * Consolidated payroll PAYMENT journal for one run (full or partial).
+     * Mirrors Hr::mark_payroll_paid (Dr Salary Payable, Cr Cash/Bank).
+     * Idempotent on (run_id, payment_seq) so a double-submit of the same
+     * installment cannot double-post.
+     *
+     * @param array $pay {
+     *   run_id, month, year, amount, payment_mode ('Cash'|other),
+     *   payment_reference (optional), payment_seq, is_full_payment (bool),
+     *   journal_date (optional; defaults to today — matches legacy)
+     * }
+     * @return string|null  entryId, or null.
+     */
+    public function postRunPayment(array $pay): ?string
+    {
+        if (!$this->_assertReady('postRunPayment')) return null;
+
+        $runId       = (string) ($pay['run_id'] ?? '');
+        $month       = (string) ($pay['month'] ?? '');
+        $year        = (string) ($pay['year']  ?? '');
+        $amount      = round((float) ($pay['amount'] ?? 0), 2);
+        $paymentMode = (string) ($pay['payment_mode'] ?? '');
+        $paymentRef  = (string) ($pay['payment_reference'] ?? '');
+        $paymentSeq  = (int) ($pay['payment_seq'] ?? 0);
+        $isFull      = (bool) ($pay['is_full_payment'] ?? false);
+
+        if ($runId === '' || $amount <= 0 || $paymentMode === '') {
+            $this->_log("PAYROLL_RUN_PAYMENT_REJECTED reason='missing run_id/amount/payment_mode' run={$runId}");
+            return null;
+        }
+
+        // Cash → 1010, everything else → 1020 (legacy Hr.php:5739).
+        $payAccount = ($paymentMode === 'Cash') ? '1010' : '1020';
+
+        $lines = [
+            ['account_code' => '2020',      'dr' => $amount, 'cr' => 0],
+            ['account_code' => $payAccount, 'dr' => 0,       'cr' => $amount],
+        ];
+
+        // Narration — identical to Hr::mark_payroll_paid (5743-5745).
+        $narration = "Salary payment" . ($isFull ? '' : " (Part {$paymentSeq})")
+            . " - {$month} {$year} via {$paymentMode}";
+        if ($paymentRef !== '') $narration .= " (Ref: {$paymentRef})";
+
+        $journalDate = (string) ($pay['journal_date'] ?? date('Y-m-d'));
+
+        // Legacy used source_ref = runId for every payment (entryIds were
+        // random, so partials never collided). The engine derives a
+        // deterministic entryId from source_ref, so partial payments must
+        // carry the installment seq to stay distinct AND idempotent.
+        // source_ref is not read by any report/filter (reports key on
+        // voucher_type + source), so reporting visibility is unchanged.
+        $sourceRef = $paymentSeq > 0 ? "{$runId}_{$paymentSeq}" : $runId;
+
+        return $this->_commit('HR_Payroll', $sourceRef, $narration, $lines, $journalDate, [
+            'run_id' => $runId,
+            'kind'   => 'payment',
+            'seq'    => $paymentSeq,
+        ]);
     }
 
     // ═════════════════════════════════════════════════════════════════

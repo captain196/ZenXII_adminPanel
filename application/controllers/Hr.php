@@ -438,7 +438,7 @@ class Hr extends MY_Controller
      * the run doc was overlooked at that time and the gap was confirmed by
      * today's audit (see memory `hr_payroll_canonical_schema.md`).
      */
-    private function _fsSyncPayrollRun(string $runId, array $runData): void
+    private function _fsSyncPayrollRun(string $runId, array $runData, ?string $casUpdateTime = null): bool
     {
         try {
             // ── Canonical camelCase mirror (Teacher app) ──
@@ -463,10 +463,40 @@ class Hr extends MY_Controller
                 'runId'     => $runId,
                 'updatedAt' => date('c'),
             ]);
+            // Never persist the read-only metadata token, even if a caller
+            // threads the raw run doc through.
+            unset($fsData['__updateTime']);
+
+            // LC-P3b — optimistic-concurrency (CAS) merge write. When a caller
+            // supplies the run doc's updateTime (captured from the read it
+            // already performed — no extra read), the write is conditioned on
+            // that token via Firestore currentDocument.updateTime. Same MERGE
+            // semantics as fs->set(merge=true), but the whole write fails
+            // (returns false) if a concurrent request modified the run since
+            // it was read. The caller then aborts, so two simultaneous
+            // payments cannot both apply. One write, one round trip — no
+            // additional reads/writes/RTTs vs the legacy fs->set path.
+            if ($casUpdateTime !== null && $casUpdateTime !== '') {
+                $ok = (bool) $this->firebase->firestoreCommitBatch([[
+                    'op'           => 'set',
+                    'merge'        => true,
+                    'collection'   => 'salarySlips',
+                    'docId'        => $this->fs->docId("RUN_{$runId}"),
+                    'data'         => $fsData,
+                    'precondition' => ['updateTime' => $casUpdateTime],
+                ]]);
+                if (!$ok) {
+                    log_message('error', "HR: Payroll run CAS conflict for {$runId} (updateTime={$casUpdateTime})");
+                }
+                return $ok;
+            }
+
             $this->fs->set('salarySlips', $this->fs->docId("RUN_{$runId}"), $fsData, true);
             log_message('debug', "HR: Payroll run → Firestore OK for {$runId} (monthKey={$monthKey})");
+            return true;
         } catch (\Exception $e) {
             log_message('error', "HR: Payroll run → Firestore FAILED for {$runId}: " . $e->getMessage());
+            return false;
         }
     }
 
@@ -827,6 +857,240 @@ class Hr extends MY_Controller
                 . '. Please set them up in Accounting first.'
             );
         }
+    }
+
+    /**
+     * LC-P2b — engine-path pre-flight validation. Verifies every accrual
+     * posting account exists + is active AND the accounting period is open,
+     * BEFORE any payroll run/slips are written. Hard-blocks (json_error) on
+     * failure so no orphan operational record is created. Invoked ONLY on
+     * the engine path (feature flag ON); the legacy path never calls this,
+     * so flag-OFF behaviour is unchanged.
+     *
+     * The account set mirrors postRunAccrual()'s conditional lines exactly,
+     * so validation matches precisely what will be posted (no over-blocking
+     * on statutory accounts that carry no amount this run).
+     */
+    private function _preflight_engine_accrual(
+        float $teaching, float $nonTeaching,
+        float $pf, float $esi, float $tds, float $profTax, float $otherDed
+    ): void {
+        // 1. Mandatory posting accounts — same conditional set as the journal.
+        $accounts = ['2020'];                       // net salary payable — always
+        if ($teaching    > 0) $accounts[] = '5010';
+        if ($nonTeaching > 0) $accounts[] = '5020';
+        if ($pf       > 0) $accounts[] = '2030';
+        if ($esi      > 0) $accounts[] = '2031';
+        if ($tds      > 0) $accounts[] = '2032';
+        if ($profTax  > 0) $accounts[] = '2033';
+        if ($otherDed > 0) $accounts[] = '2034';
+        $this->_validate_accounts($accounts);       // json_error if any missing/inactive
+
+        // 2. Accounting period must be OPEN for the accrual journal date.
+        $this->_assert_period_open('generate payroll');
+    }
+
+    /**
+     * Engine-path guard: assert the accounting period is OPEN for today (the
+     * journal date used by postRunAccrual/postRunPayment). Uses the canonical
+     * Accounting_period_lock — the identical check the engine applies at post
+     * time — so a closed period is caught BEFORE any operational write.
+     * Hard-blocks (json_error) if closed.
+     */
+    private function _assert_period_open(string $context = 'post payroll'): void
+    {
+        $this->load->library('Accounting_cache', null, 'acctCache');
+        $this->load->library('Accounting_period_lock', null, 'acctLock');
+        $this->acctCache->init($this->school_id, $this->session_year);
+        $this->acctLock->init($this->firebase, $this->acctCache, $this->school_id, $this->session_year);
+        $lock = $this->acctLock->forceValidate(date('Y-m-d'));
+        if (!empty($lock['locked'])) {
+            $this->json_error(
+                "Cannot {$context}: the accounting period is closed up to "
+                . ($lock['lockedUntil'] ?? '')
+                . '. Reopen the period in Accounting or post to an open period.'
+            );
+        }
+    }
+
+    /**
+     * LC-P3b — engine-path payment application with a CAS-FIRST, contention-
+     * only retry. The run write is the serialization point: winning the
+     * compare-and-swap atomically CLAIMS the payment seq, and ONLY the winner
+     * posts the (idempotent, deterministic JE_HR_PAYROLL_<runId>_<seq>)
+     * journal. Two simultaneous payments therefore obtain DISTINCT seqs and
+     * DISTINCT journals — duplicate payment state and ledger/run mismatches
+     * are impossible, and partial-payment sequencing stays correct.
+     *
+     * Cost profile:
+     *   • Normal (uncontended): reuses the run doc already loaded by the
+     *     caller ($run) — NO extra read; one CAS write; then one journal post.
+     *   • Contention only: each ACTUAL CAS conflict triggers one bounded
+     *     re-read + recompute. Capped at MAX_ATTEMPTS.
+     *
+     * A pre-flight (accounts + period) runs ONCE before the loop so the
+     * journal post AFTER the CAS win cannot fail for those reasons — no
+     * run-marked-paid-without-journal.
+     *
+     * @return array {journal_id, payment_seq, pay_amount, new_total_paid,
+     *                is_full, status, paid_at, attempts}
+     */
+    private function _engine_apply_payment(
+        string $runId, array $run, float $totalNet,
+        string $month, string $year, string $paymentMode,
+        string $paymentDate, string $paymentReference, string $payAccount,
+        $explicitPayAmount, $payAcct
+    ): array {
+        // Pre-flight ONCE — accounts + period. Guarantees the post AFTER the
+        // CAS write cannot fail for account/period reasons.
+        $this->_validate_accounts(['2020', $payAccount]);
+        $this->_assert_period_open('record payroll payment');
+
+        $MAX_ATTEMPTS = 5;
+        $currentRun   = $run;   // reuse the caller's read; retries re-read
+
+        for ($attempt = 1; $attempt <= $MAX_ATTEMPTS; $attempt++) {
+            // Re-derive the payment from the freshest run snapshot so seq,
+            // remaining, and amount are always correct for THIS attempt.
+            $st = (string) ($currentRun['status'] ?? '');
+            if ($st === 'Paid') {
+                $this->json_error('This payroll run is already fully paid.');
+            }
+            if (!in_array($st, ['Finalized', 'Approved', 'Partially Paid'], true)) {
+                $this->json_error('Only Finalized, Approved, or Partially Paid payroll runs can receive payments.');
+            }
+
+            $curPaid   = round((float) ($currentRun['total_paid'] ?? 0), 2);
+            $remaining = round($totalNet - $curPaid, 2);
+            if ($remaining <= 0.009) {
+                $this->json_error('This payroll run has no remaining balance to pay.');
+            }
+            if ($explicitPayAmount !== null && $explicitPayAmount !== '') {
+                $amt = round((float) $explicitPayAmount, 2);
+                if ($amt <= 0) {
+                    $this->json_error('Payment amount must be greater than zero.');
+                }
+                if ($amt > $remaining + 0.01) {
+                    $this->json_error("Payment amount ({$amt}) exceeds remaining balance ({$remaining}).");
+                }
+                if ($amt > $remaining) $amt = $remaining;   // clamp rounding
+            } else {
+                $amt = $remaining;                          // full payment
+            }
+
+            $isFull  = (abs($amt - $remaining) < 0.01);
+            $seq     = count($currentRun['payments'] ?? []) + 1;
+            $newPaid = round($curPaid + $amt, 2);
+            // R1 — use THE canonical journal-id algorithm (raw runId), which is
+            // identical to the engine's entryId. No code path here normalizes
+            // the runId differently, so the recorded journal_id always matches
+            // the actual ledger entry.
+            $journalId = PayrollAccountingService::journalIdFor($runId, $seq);
+
+            $paidAt = date('c');
+            $paymentRecord = [
+                'seq'               => $seq,
+                'amount'            => $amt,
+                'payment_mode'      => $paymentMode,
+                'payment_date'      => $paymentDate,
+                'payment_reference' => $paymentReference,
+                'journal_id'        => $journalId,
+                'paid_by'           => $this->admin_name,
+                'paid_at'           => $paidAt,
+                'recon_status'      => 'pending',
+                // LC-P3c transactional outbox — this record is the DURABLE
+                // intent. It is committed (Phase 1) BEFORE the journal is
+                // posted, and flipped to 'posted' (Phase 2) only after the
+                // journal confirms. A record left at 'pending' is what the
+                // PayrollReconciler sweep re-posts (idempotently). is_full is
+                // stored so recovery reproduces the exact narration.
+                'journal_status'    => 'pending',
+                'is_full'           => $isFull,
+            ];
+            $newStatus = $isFull ? 'Paid' : 'Partially Paid';
+            $runUpdate = [
+                'status'      => $newStatus,
+                'total_paid'  => $newPaid,
+                'balance_due' => round($totalNet - $newPaid, 2),
+                'journal_id'  => $journalId,
+            ];
+            if ($isFull) {
+                $runUpdate['paid_at']           = $paidAt;
+                $runUpdate['paid_by']           = $this->admin_name;
+                $runUpdate['payment_mode']      = $paymentMode;
+                $runUpdate['payment_date']      = $paymentDate;
+                $runUpdate['payment_reference'] = $paymentReference;
+            }
+
+            $merged = array_merge($currentRun, $runUpdate);
+            $pmts   = $currentRun['payments'] ?? [];
+            $pmts[$seq] = $paymentRecord;
+            $merged['payments'] = $pmts;
+
+            // CAS write — conditioned on the snapshot's version token. No
+            // extra read on the first attempt (token came from $run).
+            $casToken = (string) ($currentRun['__updateTime'] ?? '');
+            $ok = $this->_fsSyncPayrollRun($runId, $merged, $casToken);
+            if ($ok) {
+                // Won the CAS → seq is atomically ours, and the payment intent
+                // is now DURABLE at journal_status='pending' (Phase 1). Post
+                // the journal (Phase 2). Pre-flight guarantees no account/
+                // period failure. Idempotent → yields exactly $journalId.
+                $posted = (string) $payAcct->postRunPayment([
+                    'run_id'            => $runId,
+                    'month'             => $month,
+                    'year'              => $year,
+                    'amount'            => $amt,
+                    'payment_mode'      => $paymentMode,
+                    'payment_reference' => $paymentReference,
+                    'payment_seq'       => $seq,
+                    'is_full_payment'   => $isFull,
+                ]);
+                if ($posted !== '') {
+                    // Journal confirmed → flip the intent to 'posted'. A single
+                    // targeted nested-field update (updateMask
+                    // payments.<seq>.journal_status) — no read, no clobber of
+                    // sibling payments. If THIS write fails transiently, the
+                    // record stays 'pending' and the reconciler re-posts (the
+                    // engine dedups on the deterministic key) then re-flips —
+                    // so a lost flip is self-healing, never a duplicate.
+                    try {
+                        $this->firebase->firestoreUpdate(
+                            'salarySlips',
+                            $this->fs->docId("RUN_{$runId}"),
+                            [
+                                "payments.{$seq}.journal_status" => 'posted',
+                                'updatedAt'                       => date('c'),
+                            ]
+                        );
+                    } catch (\Throwable $e) {
+                        log_message('error',
+                            "HR outbox flip failed run={$runId} seq={$seq} — reconciler will heal: "
+                            . $e->getMessage());
+                    }
+                }
+                return [
+                    'journal_id'     => $posted !== '' ? $posted : $journalId,
+                    'payment_seq'    => $seq,
+                    'pay_amount'     => $amt,
+                    'new_total_paid' => $newPaid,
+                    'is_full'        => $isFull,
+                    'status'         => $newStatus,
+                    'paid_at'        => $paidAt,
+                    'attempts'       => $attempt,
+                ];
+            }
+
+            // CAS conflict → a concurrent payment landed. Re-read (bounded,
+            // contention-only) and retry with a fresh seq/remaining.
+            if ($attempt < $MAX_ATTEMPTS) {
+                $fresh = $this->_fsGetRun($runId);
+                if (is_array($fresh)) $currentRun = $fresh;
+            }
+        }
+
+        $this->json_error('This payment could not be applied due to concurrent updates on the payroll run. Please refresh and retry.');
+        return []; // unreachable (json_error exits) — keeps the type-checker happy
     }
 
     /**
@@ -5220,6 +5484,23 @@ HTML;
             'dept_breakdown'   => $deptGross,
         ];
 
+        // LC-P2b — engine-path PRE-FLIGHT before any operational record is
+        // written. The feature flag is evaluated ONCE here and reused by the
+        // posting branch below (CI config is immutable per request, so the
+        // value is deterministic). When the engine path is selected we verify
+        // every accrual posting account exists + is active AND the accounting
+        // period is open; any failure hard-blocks (json_error) BEFORE the run
+        // or slips are written, so no orphan operational record can be left
+        // behind (approved fail-fast). Flag OFF: this block is skipped
+        // entirely → legacy behaviour is byte-identical.
+        $useEngine = (bool) $this->config->item('payroll_engine_integration');
+        if ($useEngine) {
+            $this->_preflight_engine_accrual(
+                $totalTeachingExp, $totalNonTeachingExp,
+                $totalPF, $totalESI, $totalTDS, $totalProfTax, $totalOtherDed
+            );
+        }
+
         // 1. Firestore FIRST — sync payroll run + slips
         $this->_fsSyncPayrollRun($runId, $runData);
         foreach ($slips as $sid => $slip) {
@@ -5257,7 +5538,42 @@ HTML;
             $journalLines[] = ['account_code' => '2034', 'dr' => 0, 'cr' => $totalOtherDed];
         }
 
-        $journalId = $this->_create_acct_journal($narration, $journalLines, $runId);
+        // ── Post the accrual journal (LC-P2 feature-flag branch) ────────
+        // Uses the SAME $useEngine evaluated once in the pre-flight above —
+        // one flag evaluation for the whole request (deterministic). A strict
+        // if/else guarantees MUTUAL EXCLUSION — the legacy poster and the
+        // canonical-engine method can never both run in the same request, so
+        // no duplicate journal/voucher/posting is possible.
+        // Rollback: set payroll_engine_integration OFF → legacy path resumes
+        // with byte-identical behaviour (default).
+        if ($useEngine) {
+            // Canonical engine path. postRunAccrual builds byte-identical
+            // lines/narration/source ('HR_Payroll')/voucher ('Journal')
+            // internally (verified LC-P1) and posts idempotently
+            // (JE_HR_PAYROLL_<runId>) with Dr=Cr + account + period-lock
+            // guards and an atomic CAS balance batch. The service also
+            // re-checks the flag via _assertReady (defense-in-depth; reads
+            // the same immutable config, so the value cannot diverge).
+            require_once APPPATH . 'services/PayrollAccountingService.php';
+            $payAcct = new PayrollAccountingService();
+            $payAcct->init($this->firebase, $this->school_id, $this->session_year, $this->admin_id, $this);
+            $journalId = (string) $payAcct->postRunAccrual([
+                'run_id'                 => $runId,
+                'month'                  => $month,
+                'year'                   => $year,
+                'total_teaching_exp'     => $totalTeachingExp,
+                'total_non_teaching_exp' => $totalNonTeachingExp,
+                'total_net'              => $totalNet,
+                'total_pf'               => $totalPF,
+                'total_esi'              => $totalESI,
+                'total_tds'              => $totalTDS,
+                'total_prof_tax'         => $totalProfTax,
+                'total_other_ded'        => $totalOtherDed,
+            ]);
+        } else {
+            // Legacy path — unchanged default (flag OFF).
+            $journalId = $this->_create_acct_journal($narration, $journalLines, $runId);
+        }
 
         // Store expense journal ID in run (Firestore)
         try {
@@ -5875,56 +6191,87 @@ HTML;
         $isFullPayment = (abs($payAmount - $remaining) < 0.01);
         $newTotalPaid  = round($totalPaid + $payAmount, 2);
 
-        // ── Create payment journal entry ──
+        // ── Post payment + update run (LC-P3 / LC-P3b feature-flag branch) ──
+        // The flag is evaluated EXACTLY ONCE for this request. A strict
+        // if/else guarantees MUTUAL EXCLUSION — the legacy poster and the
+        // engine method can never both run. Rollback: set
+        // payroll_engine_integration OFF → legacy path resumes unchanged.
+        $useEngine  = (bool) $this->config->item('payroll_engine_integration');
         $payAccount = ($paymentMode === 'Cash') ? '1010' : '1020';
-        $this->_validate_accounts(['2020', $payAccount]);
 
-        $paymentSeq = count($run['payments'] ?? []) + 1;
-        $narration  = "Salary payment" . ($isFullPayment ? '' : " (Part {$paymentSeq})")
-            . " - {$month} {$year} via {$paymentMode}";
-        if ($paymentReference !== '') $narration .= " (Ref: {$paymentReference})";
+        if ($useEngine) {
+            // Engine path — CAS-FIRST, contention-only retry (LC-P3b). The run
+            // write is the serialization point (atomic seq claim); only the
+            // CAS winner posts the idempotent journal. Concurrent payments get
+            // distinct seqs + distinct journals → no duplicate state, no
+            // ledger/run mismatch, correct partial sequencing. Uncontended:
+            // reuses the run already loaded above ($run) — NO extra read.
+            require_once APPPATH . 'services/PayrollAccountingService.php';
+            $payAcct = new PayrollAccountingService();
+            $payAcct->init($this->firebase, $this->school_id, $this->session_year, $this->admin_id, $this);
 
-        $journalId = $this->_create_acct_journal($narration, [
-            ['account_code' => '2020',      'dr' => $payAmount, 'cr' => 0],
-            ['account_code' => $payAccount, 'dr' => 0,          'cr' => $payAmount],
-        ], $runId);
+            $res = $this->_engine_apply_payment(
+                $runId, $run, $totalNet, $month, $year,
+                $paymentMode, $paymentDate, $paymentReference, $payAccount,
+                $this->input->post('amount'), $payAcct
+            );
+            // Adopt the ACTUAL applied values — a retry may have re-derived the
+            // seq and amount from a concurrently-updated run.
+            $journalId     = (string) $res['journal_id'];
+            $paymentSeq    = (int)    $res['payment_seq'];
+            $payAmount     = (float)  $res['pay_amount'];
+            $newTotalPaid  = (float)  $res['new_total_paid'];
+            $isFullPayment = (bool)   $res['is_full'];
+            $newStatus     = (string) $res['status'];
+            $paidAt        = (string) $res['paid_at'];
+        } else {
+            // Legacy path — unchanged default (flag OFF). Byte-identical to the
+            // pre-LC-P3b implementation.
+            $this->_validate_accounts(['2020', $payAccount]);
 
-        // Build payment record
-        $paidAt = date('c');
-        $paymentRecord = [
-            'seq'               => $paymentSeq,
-            'amount'            => $payAmount,
-            'payment_mode'      => $paymentMode,
-            'payment_date'      => $paymentDate,
-            'payment_reference' => $paymentReference,
-            'journal_id'        => $journalId,
-            'paid_by'           => $this->admin_name,
-            'paid_at'           => $paidAt,
-            'recon_status'      => 'pending',  // bank reconciliation flag
-        ];
+            $paymentSeq = count($run['payments'] ?? []) + 1;
+            $narration  = "Salary payment" . ($isFullPayment ? '' : " (Part {$paymentSeq})")
+                . " - {$month} {$year} via {$paymentMode}";
+            if ($paymentReference !== '') $narration .= " (Ref: {$paymentReference})";
 
-        // Update run
-        $newStatus = $isFullPayment ? 'Paid' : 'Partially Paid';
-        $runUpdate = [
-            'status'      => $newStatus,
-            'total_paid'  => $newTotalPaid,
-            'balance_due' => round($totalNet - $newTotalPaid, 2),
-            'journal_id'  => $journalId,  // latest payment journal
-        ];
-        if ($isFullPayment) {
-            $runUpdate['paid_at']           = $paidAt;
-            $runUpdate['paid_by']           = $this->admin_name;
-            $runUpdate['payment_mode']      = $paymentMode;
-            $runUpdate['payment_date']      = $paymentDate;
-            $runUpdate['payment_reference'] = $paymentReference;
+            $journalId = $this->_create_acct_journal($narration, [
+                ['account_code' => '2020',      'dr' => $payAmount, 'cr' => 0],
+                ['account_code' => $payAccount, 'dr' => 0,          'cr' => $payAmount],
+            ], $runId);
+
+            $paidAt = date('c');
+            $paymentRecord = [
+                'seq'               => $paymentSeq,
+                'amount'            => $payAmount,
+                'payment_mode'      => $paymentMode,
+                'payment_date'      => $paymentDate,
+                'payment_reference' => $paymentReference,
+                'journal_id'        => $journalId,
+                'paid_by'           => $this->admin_name,
+                'paid_at'           => $paidAt,
+                'recon_status'      => 'pending',
+            ];
+            $newStatus = $isFullPayment ? 'Paid' : 'Partially Paid';
+            $runUpdate = [
+                'status'      => $newStatus,
+                'total_paid'  => $newTotalPaid,
+                'balance_due' => round($totalNet - $newTotalPaid, 2),
+                'journal_id'  => $journalId,
+            ];
+            if ($isFullPayment) {
+                $runUpdate['paid_at']           = $paidAt;
+                $runUpdate['paid_by']           = $this->admin_name;
+                $runUpdate['payment_mode']      = $paymentMode;
+                $runUpdate['payment_date']      = $paymentDate;
+                $runUpdate['payment_reference'] = $paymentReference;
+            }
+            $runLatest = $this->_fsGetRun($runId);
+            $runMerged = array_merge(is_array($runLatest) ? $runLatest : [], $runUpdate);
+            $existingPayments = $runMerged['payments'] ?? [];
+            $existingPayments[$paymentSeq] = $paymentRecord;
+            $runMerged['payments'] = $existingPayments;
+            $this->_fsSyncPayrollRun($runId, $runMerged);
         }
-        // Firestore — sync run update + payment record
-        $runLatest = $this->_fsGetRun($runId);
-        $runMerged = array_merge(is_array($runLatest) ? $runLatest : [], $runUpdate);
-        $existingPayments = $runMerged['payments'] ?? [];
-        $existingPayments[$paymentSeq] = $paymentRecord;
-        $runMerged['payments'] = $existingPayments;
-        $this->_fsSyncPayrollRun($runId, $runMerged);
 
         // Update slip statuses only on full payment
         if ($isFullPayment) {
@@ -5956,6 +6303,102 @@ HTML;
             'total_paid'  => $newTotalPaid,
             'balance_due' => round($totalNet - $newTotalPaid, 2),
             'status'      => $newStatus,
+        ]);
+    }
+
+    /**
+     * GET — Payroll Health page (read-only admin view). Renders the dashboard
+     * shell only; ALL data is fetched client-side from hr/payroll_health. No
+     * business logic, no writes, no payroll/accounting impact.
+     */
+    public function payroll_health_page()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'payroll_health_page');
+        $this->load->view('include/header');
+        $this->load->view('hr/payroll_health');
+        $this->load->view('include/footer');
+    }
+
+    /**
+     * GET — Payroll Health / operational observability (R2). Read-only,
+     * admin-visible; surfaces the outbox + reconciler state WITHOUT reading
+     * logs. Reads the per-tenant reconciler status doc and scans this
+     * school+session's payroll runs, aggregating pending / recovered / failed
+     * postings with full diagnostics. Additive; NOT on the payroll write path,
+     * so it imposes no cost on generation or payment.
+     */
+    public function payroll_health()
+    {
+        $this->_require_role(self::ADMIN_ROLES, 'payroll_health');
+
+        $recon = null;
+        try {
+            $recon = $this->fs->get('payrollReconcilerStatus',
+                "{$this->school_id}_{$this->session_year}");
+        } catch (\Exception $e) {}
+
+        $pending = 0; $recovered = 0; $failedCnt = 0; $retriesTotal = 0;
+        $failedList = [];
+
+        try {
+            $runs = $this->fs->schoolWhere('salarySlips', [
+                ['session', '==', $this->session_year],
+                ['type',    '==', 'run'],
+            ]);
+            foreach ((array) $runs as $row) {
+                $run   = is_array($row['data'] ?? null) ? $row['data'] : $row;
+                $runId = (string) ($run['runId'] ?? '');
+                $pmts  = is_array($run['payments'] ?? null) ? $run['payments'] : [];
+                foreach ($pmts as $seqK => $p) {
+                    if (!is_array($p)) continue;
+                    $js   = (string) ($p['journal_status'] ?? 'posted');
+                    $diag = is_array($p['posting_diag'] ?? null) ? $p['posting_diag'] : [];
+                    $retriesTotal += (int) ($diag['retry_count'] ?? 0);
+                    $lastRes = (string) ($diag['last_retry_result'] ?? '');
+                    if ($js === 'pending') {
+                        $pending++;
+                        if ($lastRes === 'failed') {
+                            $failedCnt++;
+                            $failedList[] = [
+                                'run_id'            => $runId,
+                                'seq'               => (int) ($p['seq'] ?? $seqK),
+                                'journal_id'        => (string) ($diag['journal_id'] ?? ($p['journal_id'] ?? '')),
+                                'amount'            => (float) ($p['amount'] ?? 0),
+                                'failure_reason'    => (string) ($diag['failure_reason'] ?? ''),
+                                'required_action'   => (string) ($diag['required_action'] ?? ''),
+                                'retry_count'       => (int) ($diag['retry_count'] ?? 0),
+                                'first_failure_at'  => (string) ($diag['first_failure_at'] ?? ''),
+                                'last_retry_at'     => (string) ($diag['last_retry_at'] ?? ''),
+                                'last_retry_result' => $lastRes,
+                            ];
+                        }
+                    } elseif ($lastRes === 'recovered') {
+                        $recovered++;
+                    }
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', "payroll_health scan failed: " . $e->getMessage());
+        }
+
+        $this->json_success([
+            'generated_at' => date('c'),
+            'reconciler'   => [
+                'status'          => is_array($recon) ? 'reporting' : 'never_run',
+                'last_run_at'     => is_array($recon) ? ($recon['last_run_at'] ?? null)     : null,
+                'last_run_result' => is_array($recon) ? ($recon['last_run_result'] ?? null) : null,
+                'last_success_at' => is_array($recon) ? ($recon['last_success_at'] ?? null) : null,
+                'found'           => is_array($recon) ? (int) ($recon['found'] ?? 0)    : 0,
+                'reposted'        => is_array($recon) ? (int) ($recon['reposted'] ?? 0) : 0,
+                'failed'          => is_array($recon) ? (int) ($recon['failed'] ?? 0)   : 0,
+            ],
+            'summary' => [
+                'pending_postings'   => $pending,
+                'recovered_postings' => $recovered,
+                'failed_postings'    => $failedCnt,
+                'retry_total'        => $retriesTotal,
+            ],
+            'failed_postings' => $failedList,
         ]);
     }
 

@@ -2367,8 +2367,14 @@ class Accounting extends MY_Controller
             }
         }
 
-        // Book balance from closing_balances
-        $bal = $this->_fs_bal_get($safeCode);
+        // Book balance from the canonical closing-balance cache.
+        // Option 1 (2026-07-06) — repointed from the legacy
+        // `accounting/BAL_*` store to canonical `accountingClosingBalances`
+        // (the single source of truth every other report already reads),
+        // so bank reconciliation reflects all engine-posted transactions
+        // (fees, manual, and — post-cutover — payroll) without depending
+        // on the legacy incremental store. Read shape is identical.
+        $bal = $this->acctFsSync->readClosingBalance($safeCode);
         $bookDr = (float) ($bal['period_dr'] ?? 0);
         $bookCr = (float) ($bal['period_cr'] ?? 0);
 
@@ -3691,7 +3697,17 @@ class Accounting extends MY_Controller
     private function _update_balances(array $affectedAccounts, string $op): void
     {
         foreach ($affectedAccounts as $code => $amounts) {
-            $current = $this->_fs_bal_get((string) $code);
+            // Option 1 (2026-07-06) — read the incremental base from the
+            // canonical `accountingClosingBalances` cache instead of the
+            // legacy `accounting/BAL_*` store. This removes the legacy store
+            // as an INPUT to the canonical projection (it was the last
+            // feedback path that could mirror a stale, payroll-excluding
+            // value back into canonical). Read shape is identical
+            // ({period_dr, period_cr}); delta apply, ordering, and the
+            // canonical + legacy writes below are all unchanged (B-1: the
+            // legacy _fs_bal_set write is deliberately retained — dead but
+            // harmless — pending a separate cleanup change).
+            $current = $this->acctFsSync->readClosingBalance((string) $code);
 
             $pDr = (float) (is_array($current) ? ($current['period_dr'] ?? 0) : 0);
             $pCr = (float) (is_array($current) ? ($current['period_cr'] ?? 0) : 0);
