@@ -1058,34 +1058,83 @@ service cloud.firestore {
     }
 
     // ── Stories ──────────────────────────────────────────────────
+    // C1 hardening (2026-07-05): the previous rule bound create/update/delete
+    // to bare isStaff(), which only checks the CALLER'S own tenant — never the
+    // target/payload school. A staff token from School A could create a story
+    // stamped schoolId:"SCH_B" and update/delete/moderate ANY School-B story.
+    // Same class of bug already fixed for galleryAlbums/galleryMedia above.
+    // We bind explicitly on token.school_id (NOT isSameSchoolWrite(), whose
+    // `|| schoolCode` arm is payload-spoofable — F-2) so neither the payload
+    // nor the existing doc can name another tenant.
     match /stories/{docId} {
       allow read: if isSameSchool();
-      // Staff author/moderate stories. Parents (non-staff) may bump only
-      // the engagement counters (view + reaction aggregates) on a
-      // same-school story — never content or moderation fields. The
-      // field-level guard restricts a non-staff update to exactly those
-      // two keys; the story doc carries schoolId so isSameSchool() works.
-      allow create, delete: if isStaff();
-      allow update: if isStaff()
+
+      // Staff author a story into THEIR OWN school only.
+      allow create: if isStaff()
+        && request.resource.data.schoolId == request.auth.token.school_id;
+
+      // Staff delete only their own school's stories.
+      allow delete: if isStaff()
+        && resource.data.schoolId == request.auth.token.school_id;
+
+      allow update: if
+        // Staff moderate/edit within their own school; schoolId is immutable.
+        (isStaff()
+          && resource.data.schoolId == request.auth.token.school_id
+          && request.resource.data.schoolId == resource.data.schoolId)
+        // Parents (non-staff) may bump ONLY the engagement counters on a
+        // same-school story — never content/moderation. viewCount is pinned
+        // to a +1 delta (M2) so it can't be set to an arbitrary value; the
+        // view and reaction write paths are separate transactions that each
+        // touch only one of the two keys.
         || (isSameSchool()
+            && request.resource.data.schoolId == resource.data.schoolId
             && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['viewCount', 'reactionCounts']));
+                 .hasOnly(['viewCount', 'reactionCounts'])
+            && (!('viewCount' in request.resource.data.diff(resource.data).affectedKeys())
+                || request.resource.data.viewCount == resource.data.get('viewCount', 0) + 1));
     }
 
     // Per-user story engagement markers (viewers + reactions). Declared
-    // with the {path=**} collection-group form because the parent app
-    // hydrates "already viewed" / "my reaction" via collectionGroup()
-    // queries — a rule nested under /stories/{id}/... would NOT authorize
-    // those. The doc id is the app userId (e.g. "P0001"), NOT
-    // request.auth.uid (synthetic-email auth), and these docs carry no
-    // schoolId, so we gate on isAuth() (consistent with the open
-    // mobile-app model; scope is enforced app-side + by the same-school
-    // read on the parent story).
+    // with the {path=**} collection-group form because the apps hydrate
+    // "already viewed" / "my reaction" via collectionGroup() queries — a
+    // rule nested under /stories/{id}/... would NOT authorize those. The
+    // doc id is the app userId (e.g. "P0001"); under synthetic-email auth
+    // it is NOT necessarily request.auth.uid, so identity is asserted via
+    // the payload userId == doc-id + the tenant claim (below) rather than
+    // request.auth.uid.
+    // C2 write-side hardening (2026-07-05): previously `write: if isAuth()`
+    // let ANY authenticated user (any school) forge a view/reaction under ANY
+    // user's id in ANY school and poison the "who saw this" list + denormalised
+    // counters. Writes are now tenant-bound: the payload must carry
+    // schoolId == the caller's own claim, and the doc id must equal the
+    // payload userId. The apps now stamp `schoolId` on every engagement write
+    // (StoryFirestoreRepository.markAsViewed / reactToStory). Delete tolerates
+    // legacy docs that predate the schoolId field.
+    //
+    // NOTE — READ is still `isAuth()`: closing the cross-tenant PII read
+    // (viewer/reaction docs are readable across tenants) requires adding a
+    // schoolId filter to the collection-group seen-state / reaction-hydrate /
+    // insights queries in BOTH apps + a collection-group index, and must be
+    // emulator-tested before deploy (query↔rule alignment). Tracked as the
+    // C2 read-side follow-up.
     match /{path=**}/viewers/{uid} {
-      allow read, write: if isAuth();
+      allow read: if isAuth();
+      allow create, update: if isAuth()
+        && request.resource.data.userId == uid
+        && request.resource.data.schoolId == request.auth.token.school_id;
+      allow delete: if isAuth()
+        && (!('schoolId' in resource.data)
+            || resource.data.schoolId == request.auth.token.school_id);
     }
     match /{path=**}/reactions/{uid} {
-      allow read, write: if isAuth();
+      allow read: if isAuth();
+      allow create, update: if isAuth()
+        && request.resource.data.userId == uid
+        && request.resource.data.schoolId == request.auth.token.school_id;
+      allow delete: if isAuth()
+        && (!('schoolId' in resource.data)
+            || resource.data.schoolId == request.auth.token.school_id);
     }
 
     // ── Timetables ───────────────────────────────────────────────

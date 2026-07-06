@@ -12,13 +12,32 @@
 <link rel="stylesheet" href="<?= base_url() ?>tools/bower_components/bootstrap/dist/css/bootstrap.min.css">
 <link rel="stylesheet" href="<?= base_url() ?>tools/bower_components/font-awesome/css/font-awesome.min.css">
 <link rel="stylesheet" href="<?= base_url() ?>tools/dist/css/AdminLTE.min.css">
-<link rel="stylesheet" href="<?= base_url() ?>tools/dist/css/skins/_all-skins.min.css">
+<!-- PERF: superadmin uses only skin-purple (see body class); load just that skin
+     instead of the full _all-skins bundle to cut ~37KB render-blocking CSS. -->
+<link rel="stylesheet" href="<?= base_url() ?>tools/dist/css/skins/skin-purple.min.css">
 <link rel="stylesheet" href="https://cdn.datatables.net/2.0.8/css/dataTables.dataTables.css">
 <link rel="stylesheet" href="https://cdn.datatables.net/buttons/3.0.2/css/buttons.dataTables.css">
 <!-- [FIX-9] Removed duplicate Font Awesome 6.x CDN — FA 4.x above covers all fa-* icons used -->
+<!-- PERF: preconnect to start the Google Fonts handshake off the critical path. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <!-- jQuery loaded early so inline page scripts can use $ -->
 <script src="<?= base_url() ?>tools/bower_components/jquery/dist/jquery.min.js"></script>
+<script>
+    // PERF: shared debounce (same as school-admin header) so list-filter inputs in
+    // superadmin views don't run an O(rows) DOM scan per keystroke. Idempotent guard.
+    window.ZXutil = window.ZXutil || {
+        debounce: function (fn, wait) {
+            var t; wait = (wait == null ? 180 : wait);
+            return function () {
+                var ctx = this, args = arguments;
+                clearTimeout(t);
+                t = setTimeout(function () { fn.apply(ctx, args); }, wait);
+            };
+        }
+    };
+</script>
 
 <style>
 /* ═══════════════════════════════════════════════════════════════════════

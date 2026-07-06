@@ -281,7 +281,7 @@ function postForm(url, params) {
 
 /* Inline table filter */
 document.addEventListener('DOMContentLoaded', function() {
-    document.getElementById('sfTableSearch').addEventListener('input', function() {
+    document.getElementById('sfTableSearch').addEventListener('input', ZXutil.debounce(function() {
         var q = this.value.toLowerCase();
         var rows = document.querySelectorAll('#sfReceiptsTbody tr[data-s]');
         var n = 0;
@@ -291,7 +291,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (show) n++;
         });
         document.getElementById('sfFilterCount').textContent = n + ' record(s)';
-    });
+    }, 180));
 });
 
 /* ════════════════

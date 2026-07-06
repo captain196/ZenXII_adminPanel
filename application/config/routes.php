@@ -499,6 +499,7 @@ $route['sis/import_validate']                    = 'Sis/import_validate';
 $route['sis/import_commit']                      = 'Sis/import_commit';
 $route['sis/import_dedupe_check']                = 'Sis/import_dedupe_check';
 $route['sis/import_template']                    = 'Sis/import_template';
+$route['sis/import_credentials_pdf']             = 'Sis/import_credentials_pdf';
 $route['sis/studentAdmission']                  = 'Sis/admission';
 $route['sis/get_sections_by_class']             = 'Sis/get_sections_by_class';
 $route['sis/fetch_subjects']                    = 'Sis/fetch_subjects';
@@ -777,6 +778,7 @@ $route['staff/import_staff']                              = 'Staff/import_staff'
 $route['staff/preview_import']                            = 'Staff/preview_import';
 $route['staff/import_validate']                           = 'Staff/import_validate';
 $route['staff/import_commit']                             = 'Staff/import_commit';
+$route['staff/import_credentials_pdf']                    = 'Staff/import_credentials_pdf';
 $route['staff/download_staff_template']                   = 'Staff/download_staff_template';
 $route['staff/fix_staff_count']                           = 'Staff/fix_staff_count';
 $route['staff/reset_password']                            = 'Staff/reset_password';
@@ -803,6 +805,11 @@ $route['hr/get_dashboard']                                 = 'Hr/get_dashboard';
 $route['hr/get_departments']                               = 'Hr/get_departments';
 $route['hr/save_department']                               = 'Hr/save_department';
 $route['hr/delete_department']                             = 'Hr/delete_department';
+// Departments & Roles (org structure setup)
+$route['org']                                              = 'Org/index';
+$route['org/get_data']                                     = 'Org/get_data';
+$route['org/save_role']                                    = 'Org/save_role';
+$route['org/delete_role']                                  = 'Org/delete_role';
 // Recruitment — Jobs
 $route['hr/get_jobs']                                      = 'Hr/get_jobs';
 $route['hr/save_job']                                      = 'Hr/save_job';

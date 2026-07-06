@@ -64,6 +64,15 @@ class NoticeAnnouncement extends MY_Controller
      */
     private function getRecentNotices(int $limit = 10): array
     {
+        // PERF: the header bell fires this on EVERY page; the query is a ~1.7s
+        // cross-region read (DB is in nam5/US). Cache the assembled list per school
+        // for 45s — notices are not second-critical, and a new notice still shows
+        // within 45s. Read-only view path; nothing here writes state.
+        $this->load->driver('cache', ['adapter' => 'file']);
+        $bellKey = 'notice_bell_' . md5((string) $this->school_name . '|' . $limit);
+        $bellHit = $this->cache->get($bellKey);
+        if (is_array($bellHit)) return $bellHit;
+
         $rows = $this->firebase->firestoreQuery(self::COL_NOTICES, [
             ['schoolId', '==', $this->school_name],
         ], 'timestamp', 'DESC', $limit);
@@ -80,6 +89,7 @@ class NoticeAnnouncement extends MY_Controller
                 'source'      => 'firestore',
             ];
         }
+        $this->cache->save($bellKey, $out, 45);
         return $out;
     }
 

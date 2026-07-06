@@ -213,7 +213,7 @@
 .sg-item.selected { border-color: var(--sg-teal); box-shadow: 0 0 0 3px rgba(13,148,136,.2); }
 .sg-item-media { width: 100%; height: 150px; object-fit: cover; display: block; cursor: pointer; }
 .sg-item-video-wrap { position: relative; width: 100%; height: 150px; overflow: hidden; cursor: pointer; }
-.sg-item-video-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sg-item-video-wrap img, .sg-item-video-wrap video { width: 100%; height: 100%; object-fit: cover; display: block; background:#000; }
 .sg-play-btn { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.3); }
 .sg-play-btn i { font-size: 36px; color: #fff; text-shadow: 0 2px 8px rgba(0,0,0,.4); }
 .sg-duration { position: absolute; bottom: 6px; right: 8px; background: rgba(0,0,0,.7); color: #fff; font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 4px; }
@@ -708,7 +708,7 @@ function renderAlbums() {
             var defColor = isPhotos ? 'linear-gradient(135deg,#0f766e,#14b8a6)' : 'linear-gradient(135deg,#d97706,#f59e0b)';
             cover = '<div class="sg-album-placeholder" style="background:' + defColor + ';"><i class="fa ' + defIcon + '" style="font-size:36px;color:#fff;"></i></div>';
         } else if (album.cover) {
-            cover = '<img src="' + sgEsc(album.cover) + '" alt="' + sgEsc(album.title) + '">';
+            cover = '<img loading="lazy" src="' + sgEsc(album.cover) + '" alt="' + sgEsc(album.title) + '">';
         } else {
             cover = '<div class="sg-album-placeholder"><i class="fa fa-picture-o"></i></div>';
         }
@@ -758,12 +758,12 @@ function updateStats() {
 }
 
 /* Album search */
-document.getElementById('sgAlbumSearch').addEventListener('input', function() {
+document.getElementById('sgAlbumSearch').addEventListener('input', ZXutil.debounce(function() {
     var q = this.value.toLowerCase().trim();
     document.querySelectorAll('.sg-album-card').forEach(function(card) {
         card.style.display = !q || card.dataset.title.includes(q) ? '' : 'none';
     });
-});
+}, 180));
 
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -878,12 +878,17 @@ function renderGrid(items, gridId, type) {
 
         var mediaHtml = '';
         if (type === 'image') {
-            mediaHtml = '<img src="' + media.url + '" class="sg-item-media" alt="' + name + '" onclick="openLightbox(\'' + safeUrl + '\',\'image\')">';
+            mediaHtml = '<img loading="lazy" src="' + media.url + '" class="sg-item-media" alt="' + name + '" onclick="openLightbox(\'' + safeUrl + '\',\'image\')">';
         } else {
-            var thumb = media.thumbnail || media.url;
             var duration = media.duration || '';
+            // Poster: use a real thumbnail when present; otherwise show the
+            // video's first frame via a <video> seeked to #t=0.1. An <img> can't
+            // render an .mp4 (that left a blank tile behind the play button).
+            var poster = media.thumbnail
+                ? '<img loading="lazy" src="' + media.thumbnail + '" alt="' + name + '">'
+                : '<video src="' + media.url + '#t=0.1" muted preload="metadata" playsinline></video>';
             mediaHtml = '<div class="sg-item-video-wrap" onclick="openLightbox(\'' + safeUrl + '\',\'video\')">'
-                + '<img src="' + thumb + '" alt="' + name + '">'
+                + poster
                 + '<div class="sg-play-btn"><i class="fa fa-play-circle"></i></div>'
                 + (duration ? '<span class="sg-duration">' + duration + '</span>' : '')
                 + '</div>';
@@ -921,7 +926,7 @@ function renderGrid(items, gridId, type) {
 
 
 /* ── Search ── */
-document.getElementById('sgSearch').addEventListener('input', function() {
+document.getElementById('sgSearch').addEventListener('input', ZXutil.debounce(function() {
     var q = this.value.toLowerCase().trim();
     var items = document.querySelectorAll('#sgAlbumDetailView .sg-item');
     var shown = 0;
@@ -932,7 +937,7 @@ document.getElementById('sgSearch').addEventListener('input', function() {
         if (match && tabOk) shown++;
     });
     document.getElementById('sgMediaCount').textContent = shown + ' item(s)';
-});
+}, 180));
 
 /* ── Tab filter ── */
 document.querySelectorAll('.sg-tab').forEach(function(tab) {

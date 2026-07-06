@@ -25,8 +25,36 @@ class FirestoreRestClient
     /** @var \CurlHandle|null Reused across all Firestore REST calls in a single request. */
     private $sharedCh = null;
 
+    /** @var array<string,?array> request-scoped single-doc read memo; flushed on any write. */
+    private $_readCache = [];
+
     /** @var bool When true, all WRITE operations return false without hitting Firestore */
     private bool $simulateFailure = false;
+
+    // ── LOCAL-ONLY PERF PROBE (temporary diagnostic). Logs one line per request to
+    //    application/logs/perf_probe.log, but ONLY on localhost — never CLI, never
+    //    production. Remove this block + _registerProbe() + the 2 probe hooks when done.
+    public static int   $probeHttpCalls  = 0;   // Firebase HTTP round-trips this request
+    public static float $probeHttpMs     = 0.0; // wall-time spent in those round-trips
+    public static int   $probeCacheHits  = 0;   // reads served from the memo (round-trips avoided)
+    public static array $probeTargets    = [];   // what each round-trip read (collection/doc or query:col)
+    private static bool $probeRegistered = false;
+
+    // ── Cross-request cache: STABLE CONFIG docs ONLY ─────────────────────────
+    // These collections change rarely and are read on nearly every page. The DB
+    // lives in nam5 (US), so each read is a ~1.7s cross-region round-trip; caching
+    // them locally for a few seconds removes that from most navigations. Business/
+    // dynamic collections (students, fees, attendance, notices-as-data, …) are NEVER
+    // listed here and are always read live. Writes bust the entry (see updateDocument
+    // etc.), short TTL bounds any staleness, reads fail OPEN (cache error → live read),
+    // and env DISABLE_DOC_CACHE=1 turns the whole thing off instantly.
+    private const CONFIG_DOC_TTL = [
+        'schools'           => 300,   // 5 min — changes rarely; writes bust it immediately
+        'schoolControl'     => 300,
+        'timetableSettings' => 300,
+        'systemPlans'       => 900,   // 15 min — platform plans almost never change
+        'tenantPublic'      => 900,
+    ];
 
     public function __construct(string $serviceAccountPath, string $projectId, string $databaseId)
     {
@@ -47,6 +75,32 @@ class FirestoreRestClient
                 }
             } catch (\Exception $e) { /* not in CI context */ }
         }
+
+        $this->_registerProbe();
+    }
+
+    /** LOCAL-ONLY perf probe: register a one-line shutdown logger (localhost only). */
+    private function _registerProbe(): void
+    {
+        if (self::$probeRegistered) return;
+        $host = $_SERVER['HTTP_HOST'] ?? '';
+        if (PHP_SAPI === 'cli'
+            || (strpos($host, 'localhost') === false && strpos($host, '127.0.0.1') === false)) {
+            return; // never in CLI or production
+        }
+        self::$probeRegistered = true;
+        register_shutdown_function(function () {
+            $start   = $_SERVER['REQUEST_TIME_FLOAT'] ?? microtime(true);
+            $totalMs = (microtime(true) - $start) * 1000;
+            $uri     = $_SERVER['REQUEST_URI'] ?? '?';
+            $line = sprintf(
+                "[%s] %-40s wall=%6.0fms  calls=%-2d  fb_ms=%6.0f  memo=%-2d  reads=[%s]\n",
+                date('H:i:s'), substr($uri, 0, 40), $totalMs,
+                self::$probeHttpCalls, self::$probeHttpMs, self::$probeCacheHits,
+                implode(', ', self::$probeTargets)
+            );
+            @file_put_contents(APPPATH . 'logs/perf_probe.log', $line, FILE_APPEND | LOCK_EX);
+        });
     }
 
     /**
@@ -363,6 +417,25 @@ class FirestoreRestClient
 
     private function request(string $method, string $url, ?array $body = null): array
     {
+        self::$probeHttpCalls++;
+        // probe: record WHAT this round-trip reads (GET path, or query collection)
+        if (preg_match('#/documents/([^:?]+)#', $url, $__m)) {
+            self::$probeTargets[] = $__m[1];
+        } elseif (strpos($url, ':runQuery') !== false && is_array($body)) {
+            self::$probeTargets[] = 'query:' . ($body['structuredQuery']['from'][0]['collectionId'] ?? '?');
+        } elseif (strpos($url, ':runAggregation') !== false) {
+            self::$probeTargets[] = 'aggregate';
+        } else {
+            self::$probeTargets[] = strtolower($method);
+        }
+        $__t0 = microtime(true);
+        $__r  = $this->_requestImpl($method, $url, $body);
+        self::$probeHttpMs += (microtime(true) - $__t0) * 1000;
+        return $__r;
+    }
+
+    private function _requestImpl(string $method, string $url, ?array $body = null): array
+    {
         $token = $this->getAccessToken();
 
         if (self::USE_PERSISTENT_CURL) {
@@ -524,6 +597,43 @@ class FirestoreRestClient
 
     public function getDocument(string $collection, string $docId): ?array
     {
+        // PERF: request-scoped read memo. The same document (especially
+        // schools/{id}, staff/{id}, feeSettings) is read many times across
+        // MY_Controller + the page controller within a single request, and each
+        // read is a cross-region REST round-trip. Serve repeat reads of the same
+        // doc from memory. The memo is FLUSHED on every write (see the write
+        // methods below), so a read after your OWN write is always fresh — no
+        // staleness is possible within a request. Null results are cached too.
+        $ck = $collection . "\0" . $docId;
+        if (array_key_exists($ck, $this->_readCache)) {
+            self::$probeCacheHits++;
+            return $this->_readCache[$ck];
+        }
+        // Cross-request cache — whitelisted STABLE config docs only (see const above).
+        $cfgFile = $this->_configCacheFile($collection, $docId);
+        if ($cfgFile !== null) {
+            $rc = $this->_configCacheRead($cfgFile);
+            if ($rc['hit']) {
+                self::$probeCacheHits++;
+                return $this->_readCache[$ck] = $rc['val'];
+            }
+        }
+        // Bound memory for long-running CLI/batch processes that sequentially read
+        // many UNIQUE docs in one PHP process (a normal web request never gets near
+        // this cap — it re-reads a handful of context docs).
+        if (count($this->_readCache) >= 1000) {
+            $this->_readCache = [];
+        }
+        $val = $this->_getDocumentUncached($collection, $docId);
+        $this->_readCache[$ck] = $val;
+        if ($cfgFile !== null) {
+            $this->_configCacheWrite($cfgFile, $val, self::CONFIG_DOC_TTL[$collection]);
+        }
+        return $val;
+    }
+
+    private function _getDocumentUncached(string $collection, string $docId): ?array
+    {
         $safeDocId = rawurlencode($docId);
         $url = $this->baseUrl() . "/$collection/$safeDocId";
         $r = $this->request('GET', $url);
@@ -533,6 +643,42 @@ class FirestoreRestClient
             return null;
         }
         return $this->decodeDocument($r['body']);
+    }
+
+    // ── Cross-request config-doc cache helpers (file-based, fail-open) ────────
+    private function _configCacheFile(string $collection, string $docId): ?string
+    {
+        if (getenv('DISABLE_DOC_CACHE') || !isset(self::CONFIG_DOC_TTL[$collection])) {
+            return null;
+        }
+        $dir = APPPATH . 'cache/fsdoc/';
+        if (!is_dir($dir)) { @mkdir($dir, 0755, true); }
+        if (!is_dir($dir) || !is_writable($dir)) return null; // fail open — no cache
+        return $dir . md5($this->projectId . ':' . $collection . ':' . $docId) . '.cache';
+    }
+
+    /** @return array{hit:bool,val:?array} */
+    private function _configCacheRead(string $file): array
+    {
+        if (!is_file($file)) return ['hit' => false, 'val' => null];
+        $raw = @file_get_contents($file);
+        if ($raw === false) return ['hit' => false, 'val' => null];
+        $rec = @unserialize($raw);
+        if (!is_array($rec) || !isset($rec['exp']) || $rec['exp'] < time()) {
+            return ['hit' => false, 'val' => null];
+        }
+        return ['hit' => true, 'val' => is_array($rec['val']) ? $rec['val'] : null];
+    }
+
+    private function _configCacheWrite(string $file, ?array $val, int $ttl): void
+    {
+        @file_put_contents($file, serialize(['exp' => time() + $ttl, 'val' => $val]), LOCK_EX);
+    }
+
+    private function _bustConfigCache(string $collection, string $docId): void
+    {
+        $f = $this->_configCacheFile($collection, $docId);
+        if ($f !== null && is_file($f)) { @unlink($f); }
     }
 
     /**
@@ -777,6 +923,7 @@ class FirestoreRestClient
      */
     public function createDocument(string $collection, string $docId, array $data): bool
     {
+        $this->_readCache = []; $this->_bustConfigCache($collection, $docId); // PERF: invalidate memo + config cache
         if ($this->_blockWrite('CREATE', "$collection/$docId")) return false;
         $fields = [];
         foreach ($data as $k => $v) $fields[$k] = $this->encode($v);
@@ -805,6 +952,7 @@ class FirestoreRestClient
      */
     public function commitBatch(array $ops): bool
     {
+        $this->_readCache = []; // PERF: write invalidates the request read memo
         if (empty($ops)) return true;
         if ($this->_blockWrite('BATCH', 'commit:' . count($ops))) return false;
 
@@ -887,6 +1035,7 @@ class FirestoreRestClient
      */
     public function batchWrite(array $ops): array
     {
+        $this->_readCache = []; // PERF: write invalidates the request read memo
         $n = count($ops);
         if ($n === 0) return [];
         if ($this->_blockWrite('BATCHWRITE', 'batchWrite:' . $n)) return array_fill(0, $n, false);
@@ -938,6 +1087,7 @@ class FirestoreRestClient
      */
     public function incrementDoc(string $collection, string $docId, array $increments): bool
     {
+        $this->_readCache = []; $this->_bustConfigCache($collection, $docId); // PERF: invalidate memo + config cache
         if (empty($increments)) return true;
         if ($this->_blockWrite('INCREMENT', "$collection/$docId")) return false;
 
@@ -972,6 +1122,7 @@ class FirestoreRestClient
 
     public function setDocument(string $collection, string $docId, array $data, bool $merge = false): bool
     {
+        $this->_readCache = []; $this->_bustConfigCache($collection, $docId); // PERF: invalidate memo + config cache
         if ($this->_blockWrite('SET', "$collection/$docId")) return false;
         $safeDocId = rawurlencode($docId);
         $fields = [];
@@ -1015,6 +1166,7 @@ class FirestoreRestClient
         array  $deleteFields
     ): bool {
         if (empty($setData) && empty($deleteFields)) return true;
+        $this->_readCache = []; $this->_bustConfigCache($collection, $docId); // PERF: invalidate memo + config cache
         if ($this->_blockWrite('SET+DEL', "$collection/$docId")) return false;
 
         $safeDocId = rawurlencode($docId);
@@ -1040,6 +1192,7 @@ class FirestoreRestClient
 
     public function updateDocument(string $collection, string $docId, array $data): bool
     {
+        $this->_readCache = []; $this->_bustConfigCache($collection, $docId); // PERF: invalidate memo + config cache
         if ($this->_blockWrite('UPDATE', "$collection/$docId")) return false;
         $safeDocId = rawurlencode($docId);
 
@@ -1090,6 +1243,7 @@ class FirestoreRestClient
 
     public function deleteDocument(string $collection, string $docId): bool
     {
+        $this->_readCache = []; $this->_bustConfigCache($collection, $docId); // PERF: invalidate memo + config cache
         if ($this->_blockWrite('DELETE', "$collection/$docId")) return false;
         $safeDocId = rawurlencode($docId);
         $url = $this->baseUrl() . "/$collection/$safeDocId";

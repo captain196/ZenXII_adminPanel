@@ -80,6 +80,7 @@
 .st-story-thumb video{width:100%;height:100%;object-fit:cover}
 .st-story-thumb .st-media-icon{font-size:36px;color:var(--t4);opacity:.5}
 .st-story-thumb .st-media-badge{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.6);color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:600;font-family:var(--font-m)}
+.st-story-thumb .st-play-badge{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:46px;height:46px;border-radius:50%;background:rgba(0,0,0,.45);color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;padding-left:3px;pointer-events:none}
 .st-story-thumb .st-status-dot{position:absolute;top:8px;left:8px;width:10px;height:10px;border-radius:50%;border:2px solid var(--card,var(--bg2))}
 .st-status-dot.active{background:#22c55e}
 .st-status-dot.expired{background:#9ca3af}
@@ -813,9 +814,13 @@ ST.loadStories = function() {
             var thumb = '';
             if (s.mediaUrl) {
                 if (s.mediaType === 'video') {
-                    thumb = '<video src="' + ST.esc(s.mediaUrl) + '" muted preload="metadata"></video>';
+                    // `#t=0.1` seeks to the first frame so the browser paints it
+                    // as the poster — `preload="metadata"` alone shows a BLANK box.
+                    // Plus a centered play overlay so it reads as a video.
+                    thumb = '<video src="' + ST.esc(s.mediaUrl) + '#t=0.1" muted preload="metadata" playsinline></video>'
+                          + '<span class="st-play-badge"><i class="fa fa-play"></i></span>';
                 } else {
-                    thumb = '<img src="' + ST.esc(s.mediaUrl) + '" alt="Story" onerror="this.parentNode.innerHTML=\'<i class=\\\'fa fa-image st-media-icon\\\'></i>\'">';
+                    thumb = '<img loading="lazy" src="' + ST.esc(s.mediaUrl) + '" alt="Story" onerror="this.parentNode.innerHTML=\'<i class=\\\'fa fa-image st-media-icon\\\'></i>\'">';
                 }
             } else {
                 thumb = '<i class="fa fa-image st-media-icon"></i>';
@@ -877,7 +882,9 @@ ST.openDetail = function(teacherId, storyId) {
         var mediaHtml = '';
         if (s.mediaUrl) {
             if (s.mediaType === 'video') {
-                mediaHtml = '<video src="' + ST.esc(s.mediaUrl) + '" controls style="max-width:100%;max-height:360px"></video>';
+                // `#t=0.1` paints the first frame so the player isn't a black box
+                // before play; `controls` gives the play/seek affordance.
+                mediaHtml = '<video src="' + ST.esc(s.mediaUrl) + '#t=0.1" controls preload="metadata" playsinline style="max-width:100%;max-height:360px"></video>';
             } else {
                 mediaHtml = '<img src="' + ST.esc(s.mediaUrl) + '" alt="Story" style="max-width:100%;max-height:360px">';
             }
@@ -1028,7 +1035,7 @@ ST.loadFlagged = function() {
             var tid = ST.esc(s.teacherId).replace(/'/g, "\\'");
             var sid = ST.esc(s.storyId).replace(/'/g, "\\'");
             html += '<tr>'
-                + '<td><img src="' + ST.esc(avatar) + '" onerror="this.src=\'' + ST.defaultAvatar + '\'" style="width:32px;height:32px;border-radius:6px;object-fit:cover;border:1px solid var(--border)"></td>'
+                + '<td><img loading="lazy" src="' + ST.esc(avatar) + '" onerror="this.src=\'' + ST.defaultAvatar + '\'" style="width:32px;height:32px;border-radius:6px;object-fit:cover;border:1px solid var(--border)"></td>'
                 + '<td><strong>' + ST.esc(s.teacherName || 'Unknown') + '</strong></td>'
                 + '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + ST.esc(s.caption || '--') + '</td>'
                 + '<td><span class="st-badge st-badge-blue">' + ST.esc(s.mediaType) + '</span></td>'

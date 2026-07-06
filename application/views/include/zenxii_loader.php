@@ -68,7 +68,11 @@
 .zx-ld-inline{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:24px;}
 </style>
 
-<script src="<?= base_url() ?>tools/js/lottie.min.js"></script>
+<!-- PERF: `defer` the 298KB Lottie player so it no longer blocks HTML parsing on every
+     page. Safe because window.lottie is only touched inside build() (on show/cover/mount,
+     i.e. user/AJAX actions that fire after load) and is guarded by hasLottie() with a
+     graceful null fallback — the ZXLoader API below defines fine before lottie arrives. -->
+<script src="<?= base_url() ?>tools/js/lottie.min.js" defer></script>
 <script>
 window.ZXLoader = (function () {
     var ANIM_PATH = '<?= base_url() ?>Designs/loading_anim.json';

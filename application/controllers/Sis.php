@@ -3665,6 +3665,7 @@ class Sis extends MY_Controller
         $feesPending = []; // imported students whose class/section has no fee chart yet
         $duplicates  = []; // rows skipped as duplicates (skip policy)
         $updated     = 0;  // existing students updated (update policy)
+        $credentials = []; // {name,phone,userId,password} per newly-created student (for the handout PDF)
 
         $seenPhones  = []; // phone(10) => studentId created earlier in THIS file
         $seenNameDob = []; // "name|dob" => studentId created earlier in THIS file
@@ -3966,6 +3967,15 @@ class Sis extends MY_Controller
                 if ($phone10 !== '' && strlen($phone10) === 10) $seenPhones[$phone10] = $studentId;
                 if ($dobKey !== '') $seenNameDob[$nameKey] = $studentId;
 
+                // Capture the login handout row (plaintext password is only known
+                // here at creation time). Missing phone stays '' → blank in the PDF.
+                $credentials[] = [
+                    'name'     => $studentName,
+                    'phone'    => $phone,
+                    'userId'   => $studentId,
+                    'password' => $password,
+                ];
+
                 $success++;
         }
 
@@ -3976,6 +3986,7 @@ class Sis extends MY_Controller
             'feesPending' => $feesPending,
             'duplicates'  => $duplicates,
             'updated'     => $updated,
+            'credentials' => $credentials,
         ];
     }
 
@@ -4289,6 +4300,15 @@ class Sis extends MY_Controller
         // the UI already excludes error rows from the commit set).
         $res['error'] = (int) ($res['error'] ?? 0) + $preErrors;
 
+        // Stash this batch's created logins so import_credentials_pdf() can build
+        // the handout after the whole (chunked) import finishes. Reset on the
+        // first batch so a fresh import doesn't append to a previous one.
+        $this->_stashImportCredentials(
+            'import_creds_student',
+            is_array($res['credentials'] ?? null) ? $res['credentials'] : [],
+            !empty($payload['firstBatch'])
+        );
+
         echo json_encode([
             'status'  => 'success',
             'summary' => $this->_formatImportSummary($res),
@@ -4426,6 +4446,53 @@ class Sis extends MY_Controller
             ->set_header('Content-Disposition: attachment; filename="ZenXii_student_import_template.csv"')
             ->set_header('Cache-Control: no-store, no-cache')
             ->set_output($csv);
+    }
+
+    /**
+     * Download a PDF handout of the logins created by the most recent import
+     * (Name · Mobile Number · User ID · Default Password). Reads the credentials
+     * stashed in the session by import_commit(); a blank mobile is left blank.
+     * GET (no CSRF) — the session bucket is the source of truth, so the browser
+     * never has to send plaintext passwords back.
+     */
+    public function import_credentials_pdf()
+    {
+        $this->_require_role(self::MANAGE_ROLES);
+
+        $creds = $this->session->userdata('import_creds_student');
+        if (!is_array($creds) || empty($creds)) {
+            show_error('No student credentials are available to export. Run an import first, then download from the result screen.', 404, 'Nothing to export');
+            return;
+        }
+
+        $this->load->library('pdf_generator');
+        $html = $this->load->view('import_credentials_pdf', [
+            'rows'        => $creds,
+            'entityLabel' => 'Student',
+            'title'       => 'Student Login Credentials',
+            'schoolName'  => $this->school_display_name ?: $this->school_name,
+            'sessionYear' => $this->session_year,
+            'generatedAt' => date('d-m-Y H:i'),
+        ], true);
+
+        $this->pdf_generator->download($html, 'Student_Credentials_' . date('Ymd_His') . '.pdf');
+    }
+
+    /**
+     * Append a chunked import's created logins to a session bucket so the whole
+     * roster can be exported as one PDF after all batches finish. $reset clears
+     * the bucket first (used on the first batch of a fresh import). Capped to
+     * keep the session small on very large rosters.
+     */
+    private function _stashImportCredentials(string $bucket, array $creds, bool $reset): void
+    {
+        $existing = $reset ? [] : $this->session->userdata($bucket);
+        if (!is_array($existing)) $existing = [];
+        foreach ($creds as $c) {
+            if (count($existing) >= 5000) break; // safety cap
+            $existing[] = $c;
+        }
+        $this->session->set_userdata($bucket, $existing);
     }
 
     /* ══════════════════════════════════════════════════════════════════════

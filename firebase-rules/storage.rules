@@ -128,11 +128,26 @@ service firebase.storage {
 
     // ─── L3: STORIES (Teacher-posted via StoryMediaUploader) ────────────
     // Path:  stories/{schoolId}/{teacherId}/{path=**}
+    // M4 hardening (2026-07-05): block NON-STAFF writers (parents only read
+    // stories, never upload) and bound object size (was unbounded). The
+    // per-type cap + contentType gate is intentionally NOT added yet:
+    // StoryMediaUploader uses putFile() which relies on Uri MIME inference
+    // (no explicit metadata), so a contentType predicate could reject a
+    // legitimate upload — tighten only after the uploader sets explicit
+    // StorageMetadata. 300 MB matches the uploader's own MAX_VIDEO_BYTES so
+    // no current upload is rejected. Delete stays tenant-only (request.resource
+    // is null on delete) so the rollback + delete-on-story-delete path works.
     match /stories/{schoolId}/{teacherId}/{path=**} {
-      allow read:  if request.auth != null
-                   && request.auth.token.school_id == schoolId;
-      allow write: if request.auth != null
-                   && request.auth.token.school_id == schoolId;
+      allow read:   if request.auth != null
+                    && request.auth.token.school_id == schoolId;
+      allow create, update:
+                    if request.auth != null
+                    && request.auth.token.school_id == schoolId
+                    && !(request.auth.token.role in
+                         ['Student','student','Parent','parent','Guardian','guardian'])
+                    && request.resource.size <= 300 * 1024 * 1024;
+      allow delete: if request.auth != null
+                    && request.auth.token.school_id == schoolId;
     }
 
     // ─── L4: STORIES (Admin-posted via Stories.php) ─────────────────────

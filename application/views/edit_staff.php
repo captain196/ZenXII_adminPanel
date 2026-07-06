@@ -830,6 +830,7 @@ document.addEventListener('DOMContentLoaded', function() {
     })();
 
     /* ── Load departments from HR module ── */
+    var _deptRoles = {};   // department name → allowed staff-role IDs (Departments & Roles)
     (function(){
         var sel = document.getElementById('teacher_department');
         if (!sel) return;
@@ -841,6 +842,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 var depts = r.departments || [];
                 var found = false;
                 depts.forEach(function(d){
+                    _deptRoles[d.name] = Array.isArray(d.role_ids) ? d.role_ids : [];
                     if ((d.status||'Active') !== 'Active') return;
                     var opt = document.createElement('option');
                     opt.value = d.name;
@@ -856,6 +858,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     opt.selected = true;
                     sel.appendChild(opt);
                 }
+                if (typeof refreshRoleOptions === 'function') refreshRoleOptions();
             })
             .catch(function(){
                 // Fallback: add current value as only option
@@ -867,6 +870,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     sel.appendChild(opt);
                 }
             });
+        // Re-scope the role picker whenever the department changes (prunes on user change).
+        sel.addEventListener('change', function(){
+            if (typeof onDepartmentChanged === 'function') onDepartmentChanged();
+        });
     })();
 
     /* Net salary calculator */
@@ -893,21 +900,57 @@ document.addEventListener('DOMContentLoaded', function() {
         $.getJSON('<?= base_url("staff/get_staff_roles") ?>', function(d) {
             if (d.status !== 'success' || !d.roles) return;
             _roleData = d.roles;
-            var sel = document.getElementById('staffRoleSelect');
-            sel.innerHTML = '<option value="">+ Add role...</option>';
-            Object.keys(_roleData).forEach(function(rid) {
-                var r = _roleData[rid];
-                var opt = document.createElement('option');
-                opt.value = rid;
-                opt.textContent = r.label + ' (' + r.category + ')';
-                sel.appendChild(opt);
-            });
-            // Render existing selections
+            refreshRoleOptions();
+            // Render existing selections (legacy roles are kept even if they are
+            // not part of the current department's mapping — we don't strip what
+            // the staff already has; only a manual department change prunes).
             if (_selectedRoles.length && !_primaryRole) _primaryRole = _selectedRoles[0];
             renderRoleChips();
         });
     }
     loadStaffRoles();
+
+    /* Roles selectable for the chosen department (see new_staff for the rule).
+     * null → no department chosen; [] mapping → those roles; unmapped → all. */
+    function allowedRoleIds() {
+        var deptSel = document.getElementById('teacher_department');
+        var dept = deptSel ? deptSel.value : '';
+        if (!dept) return null;
+        var ids = _deptRoles[dept];
+        if (ids && ids.length) return ids.filter(function(id){ return _roleData[id]; });
+        return Object.keys(_roleData);
+    }
+
+    function refreshRoleOptions() {
+        var sel = document.getElementById('staffRoleSelect');
+        if (!sel) return;
+        var allowed = allowedRoleIds();
+        if (allowed === null) {
+            sel.innerHTML = '<option value="">Select a department first…</option>';
+            sel.disabled = true;
+            return;
+        }
+        sel.disabled = false;
+        sel.innerHTML = '<option value="">+ Add role...</option>';
+        allowed.forEach(function(rid) {
+            var r = _roleData[rid]; if (!r) return;
+            var opt = document.createElement('option');
+            opt.value = rid;
+            opt.textContent = r.label + ' (' + r.category + ')';
+            sel.appendChild(opt);
+        });
+    }
+
+    function onDepartmentChanged() {
+        var allowed = allowedRoleIds();
+        if (allowed) {
+            var before = _selectedRoles.length;
+            _selectedRoles = _selectedRoles.filter(function(r){ return allowed.indexOf(r) !== -1; });
+            if (_primaryRole && allowed.indexOf(_primaryRole) === -1) _primaryRole = _selectedRoles[0] || '';
+            if (_selectedRoles.length !== before) renderRoleChips();
+        }
+        refreshRoleOptions();
+    }
 
     document.getElementById('staffRoleSelect').addEventListener('change', function() {
         var rid = this.value;

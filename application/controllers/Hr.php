@@ -1688,6 +1688,28 @@ class Hr extends MY_Controller
             $data['created_at'] = $now;
         }
 
+        // Department → allowed staff roles (Departments & Roles section).
+        // The whole dept doc is overwritten below, so we must PRESERVE fields
+        // this form doesn't submit: created_at and role_ids. Only overwrite
+        // role_ids when the caller actually sent them (the Org editor does; the
+        // legacy HR modal does not — so editing there won't wipe the mapping).
+        $prev = is_array($existing[$id] ?? null) ? $existing[$id] : [];
+        if (!$isNew && isset($prev['created_at'])) {
+            $data['created_at'] = $prev['created_at'];
+        }
+        if ($this->input->post('role_ids') !== null) {
+            $roleIdsRaw = $this->input->post('role_ids');
+            $roleIds = is_array($roleIdsRaw)
+                ? $roleIdsRaw
+                : array_map('trim', explode(',', (string) $roleIdsRaw));
+            $roleIds = array_values(array_filter(array_unique($roleIds), function ($r) {
+                return is_string($r) && preg_match('/^ROLE_[A-Z0-9_]+$/', $r);
+            }));
+            $data['role_ids'] = $roleIds;
+        } elseif (isset($prev['role_ids']) && is_array($prev['role_ids'])) {
+            $data['role_ids'] = $prev['role_ids'];
+        }
+
         // 1. Firestore FIRST — store departments in schools doc
         try {
             $fsSchool = $this->fs->get('schools', $this->fs->schoolId());

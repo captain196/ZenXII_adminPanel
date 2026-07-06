@@ -24,8 +24,9 @@ class Firebase
 {
     protected $database;
     protected $auth;
-    protected $storageBucket;
+    protected $storageBucket;      // lazily built on first getStorageBucket() call
     protected $firestoreDb;
+    private   $serviceAccountPath; // kept so the storage client can be built lazily
 
     /** @var array Token cache: remotePath → downloadToken (for uploadFile → getDownloadUrl flow) */
     private $_downloadTokens = [];
@@ -43,6 +44,7 @@ class Firebase
     public function __construct()
     {
         $serviceAccountPath = __DIR__ . '/../config/graderadmin-firebase-adminsdk-a1sml-2b5f1862a7.json';
+        $this->serviceAccountPath = $serviceAccountPath;
         $databaseUri        = 'https://graderadmin-default-rtdb.firebaseio.com/';
 
         $httpOptions = \Kreait\Firebase\Http\HttpClientOptions::default()
@@ -87,9 +89,10 @@ class Firebase
             $this->firestoreDb = null;
         }
 
-        // Firebase Storage — same pattern as Common_model
-        $storageClient       = new StorageClient(['keyFilePath' => $serviceAccountPath]);
-        $this->storageBucket = $storageClient->bucket('graderadmin.appspot.com');
+        // PERF: Firebase Storage is now built LAZILY (see getStorageBucket()). Only a
+        // minority of requests upload/download/list files; constructing the Google
+        // StorageClient here added its SDK init cost to EVERY request. Same object,
+        // same bucket — just created on first use.
     }
 
     /**
@@ -105,6 +108,13 @@ class Firebase
      */
     public function getStorageBucket()
     {
+        // Lazy singleton: build the Google StorageClient/bucket on first use and
+        // cache it for the rest of the request. Behaviour is identical to the old
+        // eager constructor build — just deferred until storage is actually touched.
+        if ($this->storageBucket === null) {
+            $storageClient       = new StorageClient(['keyFilePath' => $this->serviceAccountPath]);
+            $this->storageBucket = $storageClient->bucket('graderadmin.appspot.com');
+        }
         return $this->storageBucket;
     }
 
@@ -457,7 +467,7 @@ class Firebase
                 }
             }
 
-            $this->storageBucket->upload($fh, [
+            $this->getStorageBucket()->upload($fh, [
                 'name'     => $remotePath,
                 'metadata' => [
                     'contentType' => $contentType,
@@ -487,7 +497,7 @@ class Firebase
         if ($token === '') {
             // Token not cached — fetch from object metadata
             try {
-                $info  = $this->storageBucket->object($remotePath)->info();
+                $info  = $this->getStorageBucket()->object($remotePath)->info();
                 $token = $info['metadata']['firebaseStorageDownloadTokens'] ?? '';
             } catch (\Exception $e) {
                 log_message('error', 'Firebase::getDownloadUrl() failed for [' . $remotePath . ']: ' . $e->getMessage());
@@ -497,7 +507,7 @@ class Firebase
 
         return sprintf(
             'https://firebasestorage.googleapis.com/v0/b/%s/o/%s?alt=media&token=%s',
-            $this->storageBucket->name(),
+            $this->getStorageBucket()->name(),
             urlencode($remotePath),
             $token
         );
@@ -513,7 +523,7 @@ class Firebase
     {
         if (trim($remotePath) === '') return false;
         try {
-            $obj = $this->storageBucket->object($remotePath);
+            $obj = $this->getStorageBucket()->object($remotePath);
             if (!$obj->exists()) return false;
             $obj->delete();
             unset($this->_downloadTokens[$remotePath]);
@@ -538,12 +548,12 @@ class Firebase
     {
         if (trim($fromPath) === '' || trim($toPath) === '') return false;
         try {
-            $src = $this->storageBucket->object($fromPath);
+            $src = $this->getStorageBucket()->object($fromPath);
             if (!$src->exists()) {
                 log_message('error', 'Firebase::copyStorageFile() source missing: ' . $fromPath);
                 return false;
             }
-            $src->copy($this->storageBucket, ['name' => $toPath]);
+            $src->copy($this->getStorageBucket(), ['name' => $toPath]);
 
             // Preserve the download token so getDownloadUrl($toPath) resolves
             // without a metadata round-trip. Non-fatal if it can't be read.
@@ -581,7 +591,7 @@ class Firebase
     public function objectInfo(string $remotePath): ?array
     {
         try {
-            $obj = $this->storageBucket->object($remotePath);
+            $obj = $this->getStorageBucket()->object($remotePath);
             if (!$obj->exists()) return null;
             return $obj->info();
         } catch (\Exception $e) {
@@ -599,7 +609,7 @@ class Firebase
     {
         $out = [];
         try {
-            foreach ($this->storageBucket->objects(['prefix' => $prefix]) as $obj) {
+            foreach ($this->getStorageBucket()->objects(['prefix' => $prefix]) as $obj) {
                 $out[] = $obj->name();
                 if (count($out) >= $max) break;
             }

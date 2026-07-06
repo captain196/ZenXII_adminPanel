@@ -60,6 +60,19 @@ class Message_monitor extends MY_Controller
     public function __construct()
     {
         parent::__construct();
+
+        // MODULE DISABLED (perf, 2026-07): the message-monitor dashboard read the
+        // ENTIRE RTDB message tree (all conversations + messages) on every load/search/
+        // stat — the audit's #1 latency issue, and it grows unbounded with volume.
+        // The school does not use this admin monitoring view, so it is disabled to
+        // remove that cost entirely. This does NOT affect chat in the Teacher/Parent
+        // apps — this controller is ONLY the admin-side monitoring/moderation window;
+        // the apps read/write chat directly. Fully reversible: set env
+        // ENABLE_MESSAGE_MONITOR=1 to turn it back on (no code change / redeploy).
+        if (!getenv('ENABLE_MESSAGE_MONITOR')) {
+            show_404();
+        }
+
         require_permission('Message Monitor');
     }
 
