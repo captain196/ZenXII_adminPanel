@@ -2,17 +2,29 @@
 defined('BASEPATH') or exit('No direct script access allowed');
 
 /**
- * Stories Controller -- Teacher Stories Management & Moderation
+ * Stories Controller -- Teacher/Admin Stories Management & Moderation
  *
- * Provides admin oversight of teacher-posted stories from the mobile app.
- * Supports viewing, moderation (flag/remove/approve), analytics, and bulk actions.
+ * Provides admin oversight of stories posted from the mobile apps and the
+ * admin panel. Supports viewing, moderation (flag/remove/approve),
+ * analytics, bulk actions, and admin uploads.
  *
- * Firebase paths:
- *   Schools/{school_id}/Stories/{teacherId}/{storyId}
+ * SOURCE OF TRUTH: Firestore collection `stories` (canonical, shared with
+ * the Teacher app, Parent app, and this panel). There is NO RTDB store —
+ * the legacy `Schools/{school}/Stories/...` RTDB path was retired when the
+ * apps moved to Firestore, so every read/moderate/delete here targets the
+ * Firestore `stories` collection filtered by `schoolId`.
  *
- * Story node structure (written by teacher mobile app):
- *   teacherName, teacherProfilePic, mediaUrl, mediaType (image|video),
- *   caption, createdAt, expiresAt, viewCount, status (active|flagged|removed)
+ * Canonical doc id: `{schoolId}_{authorId}_{epochMillis}`
+ *   teacher app  → SCH_..._STA00xx_...
+ *   admin upload → SCH_..._admin_{adminId}_...
+ *
+ * Canonical doc schema (mirror of StoryDoc.kt on both apps):
+ *   schoolId, authorId/authorName/authorPic, authorType (teacher|admin),
+ *   teacher{Id,Name,Pic} (legacy aliases), mediaUrl, type (image|video),
+ *   caption, priority (high|normal), createdAt (Timestamp), expiresAtTs
+ *   (Timestamp, canonical) + expiresAt (legacy Long ms), viewCount,
+ *   audienceClassKeys (array; EMPTY = whole-school), reactionCounts,
+ *   status (active|flagged|removed), moderated{By,ByName,At}, moderationReason.
  */
 class Stories extends MY_Controller
 {
@@ -28,10 +40,11 @@ class Stories extends MY_Controller
     // ════════════════════════════════════════════════════════════════
     //  SHARED CONFIG — mirror of Kotlin StorySharedConfig on both apps.
     //  Keep these values in lockstep with:
-    //    - D:/Projects/SchoolSyncTeacher/.../StorySharedConfig.kt
-    //    - D:/Projects/SchoolSyncParent/.../StorySharedConfig.kt
+    //    - ZenXII_Teacher/.../StorySharedConfig.kt
+    //    - ZenXII_Parent/.../StorySharedConfig.kt
     //  Any drift will produce silent cross-system validation failures.
     // ════════════════════════════════════════════════════════════════
+    private const COLLECTION          = 'stories';
     private const ALLOWED_STATUSES    = ['active', 'flagged', 'removed'];
     private const ALLOWED_TYPES       = ['image', 'video'];
     private const ALLOWED_PRIORITIES  = ['high', 'normal'];
@@ -81,18 +94,6 @@ class Stories extends MY_Controller
         redirect(base_url('admin'));
     }
 
-    // ── Path helpers ────────────────────────────────────────────────────
-
-    /**
-     * Build Firebase path for Stories node.
-     * Stories sit outside the session year -- they are at school root level.
-     */
-    private function _path(string $sub = ''): string
-    {
-        $base = "Schools/{$this->school_name}/Stories";
-        return $sub !== '' ? "{$base}/{$sub}" : $base;
-    }
-
     // ── Text helpers ────────────────────────────────────────────────────
 
     /**
@@ -101,6 +102,184 @@ class Stories extends MY_Controller
     private function _clean_text(string $text): string
     {
         return preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $text);
+    }
+
+    // ── Audience helpers (PHP mirror of StorySharedConfig.audienceKey) ──
+    //   Reduces ANY class/section representation to a single canonical
+    //   token so the value stored here matches what the Parent app filters
+    //   against (myKey = audienceKey(childClass, childSection)). MUST stay
+    //   byte-identical to the Kotlin StorySharedConfig on both apps:
+    //     "Class 9th"/"9th"/"9" → "9" ; "Section A"/"A" → "a" ; join "-".
+
+    private function _canon_class_token(string $raw): string
+    {
+        $s = strtolower(trim($raw));
+        if (strpos($s, 'class ') === 0) $s = trim(substr($s, 6));
+        if (preg_match('/^(\d+)(st|nd|rd|th)$/', $s, $m)) $s = $m[1];
+        return $s;
+    }
+
+    private function _canon_section_token(string $raw): string
+    {
+        $s = strtolower(trim($raw));
+        if (strpos($s, 'section ') === 0) $s = trim(substr($s, 8));
+        return $s;
+    }
+
+    private function _audience_key(string $className, string $section): string
+    {
+        return $this->_canon_class_token($className) . '-' . $this->_canon_section_token($section);
+    }
+
+    /**
+     * The set of valid canonical audience keys for this school, derived from
+     * the Firestore `sections` collection (the same source the Homework
+     * audience picker uses). Used to (a) populate the upload picker and
+     * (b) validate a submitted audience so a story can't target a bogus key.
+     * Returns [ canonicalKey => ['key','label','className','section'] ].
+     */
+    private function _school_audience_map(): array
+    {
+        $schoolId = $this->fs->schoolId();
+        if ($schoolId === '') return [];
+
+        $map = [];
+        try {
+            $docs = $this->firebase->firestoreQuery('sections', [
+                ['schoolId', '==', $schoolId],
+            ]);
+            foreach ((array) $docs as $doc) {
+                $d = $doc['data'] ?? null;
+                if (!is_array($d)) continue;
+                $cls = (string) ($d['className'] ?? '');
+                $sec = (string) ($d['section'] ?? '');
+                if ($cls === '' || $sec === '') continue;
+                $key = $this->_audience_key($cls, $sec);
+                if ($key === '-' || isset($map[$key])) continue;
+                $map[$key] = ['key' => $key, 'label' => $cls . ' / ' . $sec, 'className' => $cls, 'section' => $sec];
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Stories::_school_audience_map failed: ' . $e->getMessage());
+        }
+        return $map;
+    }
+
+    // ── Firestore mapping helpers ───────────────────────────────────────
+
+    /**
+     * Coerce a Firestore date field to epoch-millis. The REST client
+     * decodes Timestamp values to ISO strings; admin uploads write
+     * createdAt as an ISO string too; legacy docs may carry an int (ms).
+     */
+    private function _to_millis($v): int
+    {
+        if (is_int($v) || is_float($v)) return (int) $v;
+        if (is_string($v) && $v !== '') {
+            $t = strtotime($v);
+            return $t > 0 ? $t * 1000 : 0;
+        }
+        return 0;
+    }
+
+    /**
+     * Canonical expiry in epoch-millis: prefer expiresAtTs (Timestamp),
+     * fall back to the legacy expiresAt Long. Mirrors StoryDoc.expiresAtMillis.
+     */
+    private function _expiry_millis(array $d): int
+    {
+        if (!empty($d['expiresAtTs'])) return $this->_to_millis($d['expiresAtTs']);
+        if (!empty($d['expiresAt']))   return $this->_to_millis($d['expiresAt']);
+        return 0;
+    }
+
+    /**
+     * Map a canonical Firestore story doc → the flat shape the SPA renders.
+     * Resolves author* (canonical) with teacher* (legacy) fallbacks so both
+     * app-written and admin-written docs render identically.
+     */
+    private function _map_story(string $docId, array $d): array
+    {
+        $authorId   = (string) (($d['authorId']   ?? '') !== '' ? $d['authorId']   : ($d['teacherId']   ?? ''));
+        $authorName = (string) (($d['authorName'] ?? '') !== '' ? $d['authorName'] : ($d['teacherName'] ?? ''));
+        $authorPic  = (string) (($d['authorPic']  ?? '') !== '' ? $d['authorPic']  : ($d['teacherPic']  ?? ''));
+        $type       = (string) (($d['type']       ?? '') !== '' ? $d['type']       : ($d['mediaType']   ?? 'image'));
+        $audience   = isset($d['audienceClassKeys']) && is_array($d['audienceClassKeys']) ? array_values($d['audienceClassKeys']) : [];
+
+        $createdMs = $this->_to_millis($d['createdAt'] ?? 0);
+        $expiryMs  = $this->_expiry_millis($d);
+        $status    = (string) ($d['status'] ?? 'active');
+        $isExpired = ($expiryMs > 0 && $expiryMs < (time() * 1000));
+
+        return [
+            'storyId'           => $docId,                 // Firestore doc id (addressing key)
+            'teacherId'         => $authorId,              // display + back-compat
+            'authorId'          => $authorId,
+            'authorType'        => (string) ($d['authorType'] ?? 'teacher'),
+            'priority'          => (string) ($d['priority'] ?? 'normal'),
+            'teacherName'       => $authorName,
+            'teacherProfilePic' => $authorPic,
+            'mediaUrl'          => (string) ($d['mediaUrl'] ?? ''),
+            'mediaType'         => $type,
+            'caption'           => (string) ($d['caption'] ?? ''),
+            'createdAt'         => $createdMs,
+            'expiresAt'         => $expiryMs,
+            'viewCount'         => (int) ($d['viewCount'] ?? 0),
+            'status'            => $status,
+            'effectiveStatus'   => $isExpired ? 'expired' : $status,
+            'audienceClassKeys' => $audience,
+            'audienceLabel'     => empty($audience) ? 'Whole school' : implode(', ', array_map('strval', $audience)),
+            'moderatedBy'       => (string) ($d['moderatedBy'] ?? ''),
+            'moderatedByName'   => (string) ($d['moderatedByName'] ?? ''),
+            'moderatedAt'       => $this->_to_millis($d['moderatedAt'] ?? 0),
+            'moderationReason'  => (string) ($d['moderationReason'] ?? ''),
+        ];
+    }
+
+    /**
+     * Fetch ALL stories for the current school from Firestore, mapped to the
+     * SPA shape. Single-field equality query (schoolId) — auto-indexed, no
+     * composite index required. Filtering/sorting done in PHP (per-school
+     * story volume is small).
+     */
+    private function _fetch_school_stories(): array
+    {
+        $schoolId = $this->fs->schoolId();
+        if ($schoolId === '') return [];
+
+        $rows = $this->firebase->firestoreQuery(self::COLLECTION, [
+            ['schoolId', '==', $schoolId],
+        ]);
+
+        $out = [];
+        foreach ((array) $rows as $row) {
+            $id = (string) ($row['id'] ?? '');
+            $d  = $row['data'] ?? null;
+            if ($id === '' || !is_array($d)) continue;
+            $out[] = $this->_map_story($id, $d);
+        }
+        return $out;
+    }
+
+    /**
+     * Read a single story by Firestore doc id and enforce tenant isolation
+     * (doc ids are GLOBAL in Firestore, so we must verify schoolId matches
+     * the caller's school before returning — prevents cross-tenant IDOR).
+     * Returns [docId, rawDocArray] or null if missing / other school.
+     */
+    private function _get_owned_story(string $docId): ?array
+    {
+        $d = $this->firebase->firestoreGet(self::COLLECTION, $docId);
+        if (!is_array($d)) return null;
+        if ((string) ($d['schoolId'] ?? '') !== $this->fs->schoolId()) return null;
+        return [$docId, $d];
+    }
+
+    /** Validate a Firestore story doc id from request input. */
+    private function _story_id_param(string $raw): string
+    {
+        $raw = trim($raw);
+        if ($raw === '') $this->json_error('Story ID is required.');
+        return $this->safe_path_segment($raw, 'story_id');
     }
 
     // ====================================================================
@@ -126,14 +305,14 @@ class Stories extends MY_Controller
     // ====================================================================
 
     /**
-     * GET: Fetch all stories with teacher info.
+     * GET: Fetch all stories with author info.
      *
      * Query params:
-     *   teacher   - filter by teacher ID
-     *   status    - filter by status (active|flagged|removed)
+     *   teacher   - filter by author ID
+     *   status    - filter by status (active|flagged|removed|expired)
      *   date_from - filter stories created on or after (YYYY-MM-DD)
      *   date_to   - filter stories created on or before (YYYY-MM-DD)
-     *   search    - search in teacher name / caption
+     *   search    - search in author name / caption
      */
     public function get_stories()
     {
@@ -147,11 +326,8 @@ class Stories extends MY_Controller
         $filterSearch   = strtolower(trim($this->input->get('search') ?? ''));
 
         // Validate filter values
-        if ($filterStatus !== '' && !in_array($filterStatus, self::ALLOWED_STATUSES, true)) {
-            // Also allow 'expired' as a virtual status for filtering
-            if ($filterStatus !== 'expired') {
-                $this->json_error('Invalid status filter.');
-            }
+        if ($filterStatus !== '' && !in_array($filterStatus, self::ALLOWED_STATUSES, true) && $filterStatus !== 'expired') {
+            $this->json_error('Invalid status filter.');
         }
         if ($filterDateFrom !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $filterDateFrom)) {
             $this->json_error('Invalid date_from format. Use YYYY-MM-DD.');
@@ -160,76 +336,37 @@ class Stories extends MY_Controller
             $this->json_error('Invalid date_to format. Use YYYY-MM-DD.');
         }
 
-        $now = time();
-        $allTeachers = $this->firebase->get($this->_path());
         $stories = [];
+        foreach ($this->_fetch_school_stories() as $s) {
+            // Author filter
+            if ($filterTeacher !== '' && $s['teacherId'] !== $filterTeacher) continue;
 
-        if (!is_array($allTeachers)) {
-            $this->json_success(['stories' => [], 'total' => 0]);
-        }
-
-        foreach ($allTeachers as $teacherId => $teacherStories) {
-            if (!is_array($teacherStories)) continue;
-
-            // Teacher filter
-            if ($filterTeacher !== '' && $teacherId !== $filterTeacher) continue;
-
-            foreach ($teacherStories as $storyId => $story) {
-                if (!is_array($story)) continue;
-
-                $createdAt = $story['createdAt'] ?? 0;
-                $expiresAt = $story['expiresAt'] ?? 0;
-                $status    = $story['status'] ?? 'active';
-                $caption   = $story['caption'] ?? '';
-                $tName     = $story['teacherName'] ?? '';
-
-                // Determine effective status (expired is virtual)
-                $isExpired      = ($expiresAt > 0 && ($expiresAt / 1000) < $now);
-                $effectiveStatus = $isExpired ? 'expired' : $status;
-
-                // Status filter
-                if ($filterStatus !== '') {
-                    if ($filterStatus === 'expired' && !$isExpired) continue;
-                    if ($filterStatus !== 'expired' && $status !== $filterStatus) continue;
-                    if ($filterStatus !== 'expired' && $isExpired) continue;
-                }
-
-                // Date range filter (createdAt is timestamp in ms)
-                if ($filterDateFrom !== '' && $createdAt > 0) {
-                    $createdDate = date('Y-m-d', (int)($createdAt / 1000));
-                    if ($createdDate < $filterDateFrom) continue;
-                }
-                if ($filterDateTo !== '' && $createdAt > 0) {
-                    $createdDate = date('Y-m-d', (int)($createdAt / 1000));
-                    if ($createdDate > $filterDateTo) continue;
-                }
-
-                // Search filter (teacher name or caption)
-                if ($filterSearch !== '') {
-                    $haystack = strtolower($tName . ' ' . $caption);
-                    if (strpos($haystack, $filterSearch) === false) continue;
-                }
-
-                $stories[] = [
-                    'storyId'           => $storyId,
-                    'teacherId'         => $teacherId,
-                    'teacherName'       => $tName,
-                    'teacherProfilePic' => $story['teacherProfilePic'] ?? '',
-                    'mediaUrl'          => $story['mediaUrl'] ?? '',
-                    'mediaType'         => $story['mediaType'] ?? 'image',
-                    'caption'           => $caption,
-                    'createdAt'         => $createdAt,
-                    'expiresAt'         => $expiresAt,
-                    'viewCount'         => (int)($story['viewCount'] ?? 0),
-                    'status'            => $status,
-                    'effectiveStatus'   => $effectiveStatus,
-                ];
+            // Status filter (expired is a virtual status derived from expiry)
+            $isExpired = ($s['effectiveStatus'] === 'expired');
+            if ($filterStatus !== '') {
+                if ($filterStatus === 'expired' && !$isExpired) continue;
+                if ($filterStatus !== 'expired' && ($s['status'] !== $filterStatus || $isExpired)) continue;
             }
+
+            // Date range filter (createdAt is ms)
+            if ($s['createdAt'] > 0) {
+                $createdDate = date('Y-m-d', (int) ($s['createdAt'] / 1000));
+                if ($filterDateFrom !== '' && $createdDate < $filterDateFrom) continue;
+                if ($filterDateTo   !== '' && $createdDate > $filterDateTo)   continue;
+            }
+
+            // Search filter (author name or caption)
+            if ($filterSearch !== '') {
+                $haystack = strtolower($s['teacherName'] . ' ' . $s['caption']);
+                if (strpos($haystack, $filterSearch) === false) continue;
+            }
+
+            $stories[] = $s;
         }
 
         // Sort by createdAt descending (newest first)
         usort($stories, function ($a, $b) {
-            return ($b['createdAt'] ?? 0) - ($a['createdAt'] ?? 0);
+            return ($b['createdAt'] ?? 0) <=> ($a['createdAt'] ?? 0);
         });
 
         $this->json_success([
@@ -246,31 +383,43 @@ class Stories extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'stories_view');
         $this->_require_view();
 
-        $teacherId = trim($this->input->get('teacher_id') ?? '');
         if ($storyId === '') {
             $storyId = trim($this->input->get('story_id') ?? '');
         }
+        $storyId = $this->_story_id_param($storyId);
 
-        if ($teacherId === '') $this->json_error('Teacher ID is required.');
-        if ($storyId === '')   $this->json_error('Story ID is required.');
-
-        $teacherId = $this->safe_path_segment($teacherId, 'teacher_id');
-        $storyId   = $this->safe_path_segment($storyId, 'story_id');
-
-        $story = $this->firebase->get($this->_path("{$teacherId}/{$storyId}"));
-        if (!is_array($story)) {
+        $owned = $this->_get_owned_story($storyId);
+        if ($owned === null) {
             $this->json_error('Story not found.', 404);
         }
+        [$docId, $d] = $owned;
 
-        $now       = time();
-        $expiresAt = $story['expiresAt'] ?? 0;
-        $isExpired = ($expiresAt > 0 && ($expiresAt / 1000) < $now);
-
-        $story['storyId']         = $storyId;
-        $story['teacherId']       = $teacherId;
-        $story['effectiveStatus'] = $isExpired ? 'expired' : ($story['status'] ?? 'active');
+        $story = $this->_map_story($docId, $d);
+        // "Who viewed" — names of everyone (students/parents + staff) who
+        // opened this story. Admin-panel oversight always sees this list.
+        $story['viewers'] = $this->_story_viewers($docId);
 
         $this->json_success(['story' => $story]);
+    }
+
+    /**
+     * Read the `viewers` subcollection for a story → newest-first list of
+     * [userId, userName, viewedAt(ms)]. Best-effort; empty on any failure.
+     */
+    private function _story_viewers(string $docId): array
+    {
+        $viewers = [];
+        foreach ($this->firebase->firestoreListSubcollection(self::COLLECTION, $docId, 'viewers') as $row) {
+            $vd = $row['data'] ?? null;
+            if (!is_array($vd)) continue;
+            $viewers[] = [
+                'userId'   => (string) ($vd['userId'] ?? $row['id']),
+                'userName' => (string) ($vd['userName'] ?? ''),
+                'viewedAt' => $this->_to_millis($vd['viewedAt'] ?? 0),
+            ];
+        }
+        usort($viewers, function ($a, $b) { return $b['viewedAt'] <=> $a['viewedAt']; });
+        return $viewers;
     }
 
     /**
@@ -281,77 +430,49 @@ class Stories extends MY_Controller
         $this->_require_role(self::VIEW_ROLES, 'stories_view');
         $this->_require_view();
 
-        $now         = time();
-        $allTeachers = $this->firebase->get($this->_path());
+        $now = time();
 
-        $total      = 0;
-        $active     = 0;
-        $expired    = 0;
-        $flagged    = 0;
-        $removed    = 0;
-        $totalViews = 0;
-        $byTeacher  = [];  // teacherId => [name, count, views]
-        $byDay      = [];  // YYYY-MM-DD => count
-        $viewDist   = [];  // ranges
+        $total = 0; $active = 0; $expired = 0; $flagged = 0; $removed = 0; $totalViews = 0;
+        $byTeacher = [];  // authorId => [name, count, views, pic]
+        $byDay     = [];  // YYYY-MM-DD => count
+        $viewDist  = [];  // ranges
 
-        if (is_array($allTeachers)) {
-            foreach ($allTeachers as $teacherId => $teacherStories) {
-                if (!is_array($teacherStories)) continue;
+        foreach ($this->_fetch_school_stories() as $s) {
+            $total++;
+            $views = (int) $s['viewCount'];
+            $totalViews += $views;
 
-                foreach ($teacherStories as $storyId => $story) {
-                    if (!is_array($story)) continue;
+            // Status counting (effectiveStatus already accounts for expiry)
+            switch ($s['effectiveStatus']) {
+                case 'flagged': $flagged++; break;
+                case 'removed': $removed++; break;
+                case 'expired': $expired++; break;
+                default:        $active++;  break;
+            }
 
-                    $total++;
-                    $createdAt = $story['createdAt'] ?? 0;
-                    $expiresAt = $story['expiresAt'] ?? 0;
-                    $status    = $story['status'] ?? 'active';
-                    $views     = (int)($story['viewCount'] ?? 0);
-                    $tName     = $story['teacherName'] ?? $teacherId;
+            $tid = $s['teacherId'];
+            if (!isset($byTeacher[$tid])) {
+                $byTeacher[$tid] = ['name' => $s['teacherName'] ?: $tid, 'count' => 0, 'views' => 0, 'pic' => $s['teacherProfilePic']];
+            }
+            $byTeacher[$tid]['count']++;
+            $byTeacher[$tid]['views'] += $views;
 
-                    $totalViews += $views;
-
-                    // Status counting
-                    $isExpired = ($expiresAt > 0 && ($expiresAt / 1000) < $now);
-                    if ($status === 'flagged') {
-                        $flagged++;
-                    } elseif ($status === 'removed') {
-                        $removed++;
-                    } elseif ($isExpired) {
-                        $expired++;
-                    } else {
-                        $active++;
-                    }
-
-                    // By teacher
-                    if (!isset($byTeacher[$teacherId])) {
-                        $byTeacher[$teacherId] = [
-                            'name'   => $tName,
-                            'count'  => 0,
-                            'views'  => 0,
-                            'pic'    => $story['teacherProfilePic'] ?? '',
-                        ];
-                    }
-                    $byTeacher[$teacherId]['count']++;
-                    $byTeacher[$teacherId]['views'] += $views;
-
-                    // By day (last 30 days)
-                    if ($createdAt > 0) {
-                        $day = date('Y-m-d', (int)($createdAt / 1000));
-                        $thirtyDaysAgo = date('Y-m-d', $now - 30 * 86400);
-                        if ($day >= $thirtyDaysAgo) {
-                            $byDay[$day] = ($byDay[$day] ?? 0) + 1;
-                        }
-                    }
-
-                    // View distribution
-                    if ($views === 0)      $bucket = '0';
-                    elseif ($views <= 10)  $bucket = '1-10';
-                    elseif ($views <= 50)  $bucket = '11-50';
-                    elseif ($views <= 100) $bucket = '51-100';
-                    else                   $bucket = '100+';
-                    $viewDist[$bucket] = ($viewDist[$bucket] ?? 0) + 1;
+            // By day (last 30 days)
+            if ($s['createdAt'] > 0) {
+                $day = date('Y-m-d', (int) ($s['createdAt'] / 1000));
+                $thirtyDaysAgo = date('Y-m-d', $now - 30 * 86400);
+                if ($day >= $thirtyDaysAgo) {
+                    $byDay[$day] = ($byDay[$day] ?? 0) + 1;
                 }
             }
+
+            // View distribution
+            if ($views === 0)      $bucket = '0';
+            elseif ($views <= 10)  $bucket = '1-10';
+            elseif ($views <= 50)  $bucket = '11-50';
+            elseif ($views <= 100) $bucket = '51-100';
+            else                   $bucket = '100+';
+            $viewDist[$bucket] = ($viewDist[$bucket] ?? 0) + 1;
         }
 
         // Sort by-teacher by count descending
@@ -363,10 +484,7 @@ class Stories extends MY_Controller
         $dailyData = [];
         for ($i = 29; $i >= 0; $i--) {
             $day = date('Y-m-d', $now - $i * 86400);
-            $dailyData[] = [
-                'date'  => $day,
-                'count' => $byDay[$day] ?? 0,
-            ];
+            $dailyData[] = ['date' => $day, 'count' => $byDay[$day] ?? 0];
         }
 
         // Teacher leaderboard (top 20)
@@ -409,108 +527,88 @@ class Stories extends MY_Controller
         $this->_require_role(self::MODERATE_ROLES, 'moderate_story');
         $this->_require_moderate();
 
-        $teacherId = $this->safe_path_segment(trim($this->input->post('teacher_id') ?? ''), 'teacher_id');
-        $storyId   = $this->safe_path_segment(trim($this->input->post('story_id') ?? ''), 'story_id');
+        $storyId   = $this->_story_id_param($this->input->post('story_id') ?? '');
         $newStatus = trim($this->input->post('status') ?? '');
         $reason    = $this->_clean_text(trim($this->input->post('reason') ?? ''));
 
-        if ($teacherId === '') $this->json_error('Teacher ID is required.');
-        if ($storyId === '')   $this->json_error('Story ID is required.');
         if (!in_array($newStatus, self::ALLOWED_STATUSES, true)) {
             $this->json_error('Invalid status. Allowed: active, flagged, removed.');
         }
 
-        // Verify story exists
-        $story = $this->firebase->get($this->_path("{$teacherId}/{$storyId}"));
-        if (!is_array($story)) {
+        // Verify story exists AND belongs to this school (tenant isolation).
+        if ($this->_get_owned_story($storyId) === null) {
             $this->json_error('Story not found.', 404);
         }
 
         $updateData = [
-            'status'         => $newStatus,
-            'moderatedBy'    => $this->admin_id,
-            'moderatedByName'=> $this->admin_name,
-            'moderatedAt'    => round(microtime(true) * 1000),
+            'status'          => $newStatus,
+            'moderatedBy'     => $this->admin_id,
+            'moderatedByName' => $this->admin_name,
+            'moderatedAt'     => (int) round(microtime(true) * 1000),
         ];
-
         if ($reason !== '') {
             $updateData['moderationReason'] = $reason;
         }
 
-        $this->firebase->update($this->_path("{$teacherId}/{$storyId}"), $updateData);
+        if (!$this->firebase->firestoreUpdate(self::COLLECTION, $storyId, $updateData)) {
+            $this->json_error('Failed to update story status.');
+        }
 
-        $statusLabel = ucfirst($newStatus);
         $this->json_success([
-            'message' => "Story status changed to {$statusLabel}.",
+            'message' => 'Story status changed to ' . ucfirst($newStatus) . '.',
         ]);
     }
 
     /**
-     * POST: Permanently delete a story.
+     * POST: Permanently delete a story (+ best-effort Storage media cleanup).
      */
     public function delete_story()
     {
         $this->_require_role(self::DELETE_ROLES, 'delete_story');
         $this->_require_delete();
 
-        $teacherId = $this->safe_path_segment(trim($this->input->post('teacher_id') ?? ''), 'teacher_id');
-        $storyId   = $this->safe_path_segment(trim($this->input->post('story_id') ?? ''), 'story_id');
+        $storyId = $this->_story_id_param($this->input->post('story_id') ?? '');
 
-        if ($teacherId === '') $this->json_error('Teacher ID is required.');
-        if ($storyId === '')   $this->json_error('Story ID is required.');
-
-        // Verify story exists
-        $story = $this->firebase->get($this->_path("{$teacherId}/{$storyId}"));
-        if (!is_array($story)) {
+        $owned = $this->_get_owned_story($storyId);
+        if ($owned === null) {
             $this->json_error('Story not found.', 404);
         }
+        [$docId, $d] = $owned;
 
-        $this->firebase->delete($this->_path("{$teacherId}"), $storyId);
+        if (!$this->firebase->firestoreDelete(self::COLLECTION, $docId)) {
+            $this->json_error('Failed to delete story.');
+        }
+
+        // Best-effort: purge the backing Storage object so the bucket
+        // doesn't accumulate orphans. Non-fatal — the doc is already gone.
+        $this->_best_effort_delete_media((string) ($d['mediaUrl'] ?? ''));
 
         $this->json_success(['message' => 'Story permanently deleted.']);
     }
 
     /**
-     * GET: Get list of teachers who have stories.
+     * GET: Get list of authors who have stories.
      */
     public function get_teachers()
     {
         $this->_require_role(self::VIEW_ROLES, 'stories_view');
         $this->_require_view();
 
-        $allTeachers = $this->firebase->get($this->_path());
-        $teachers = [];
-
-        if (is_array($allTeachers)) {
-            foreach ($allTeachers as $teacherId => $teacherStories) {
-                if (!is_array($teacherStories)) continue;
-
-                $name = '';
-                $pic  = '';
-                $count = 0;
-
-                foreach ($teacherStories as $storyId => $story) {
-                    if (!is_array($story)) continue;
-                    $count++;
-                    // Use the most recent story's teacher info
-                    if ($name === '') {
-                        $name = $story['teacherName'] ?? '';
-                        $pic  = $story['teacherProfilePic'] ?? '';
-                    }
-                }
-
-                if ($count > 0) {
-                    $teachers[] = [
-                        'teacherId'  => $teacherId,
-                        'name'       => $name,
-                        'profilePic' => $pic,
-                        'storyCount' => $count,
-                    ];
-                }
+        $byAuthor = [];
+        foreach ($this->_fetch_school_stories() as $s) {
+            $tid = $s['teacherId'];
+            if ($tid === '') continue;
+            if (!isset($byAuthor[$tid])) {
+                $byAuthor[$tid] = ['teacherId' => $tid, 'name' => $s['teacherName'], 'profilePic' => $s['teacherProfilePic'], 'storyCount' => 0];
+            }
+            $byAuthor[$tid]['storyCount']++;
+            if ($byAuthor[$tid]['name'] === '' && $s['teacherName'] !== '') {
+                $byAuthor[$tid]['name'] = $s['teacherName'];
+                $byAuthor[$tid]['profilePic'] = $s['teacherProfilePic'];
             }
         }
 
-        // Sort alphabetically by name
+        $teachers = array_values($byAuthor);
         usort($teachers, function ($a, $b) {
             return strcasecmp($a['name'], $b['name']);
         });
@@ -519,9 +617,29 @@ class Stories extends MY_Controller
     }
 
     /**
+     * GET: Class-section options for the admin upload audience picker.
+     * Empty selection = whole-school. Each option's `key` is the canonical
+     * audience token the Parent app matches against.
+     */
+    public function get_audience_options()
+    {
+        $this->_require_role(self::MODERATE_ROLES, 'stories_audience');
+        $this->_require_moderate();
+
+        $options = array_values($this->_school_audience_map());
+        usort($options, function ($a, $b) {
+            return strcasecmp($a['label'], $b['label']);
+        });
+
+        $this->json_success(['options' => $options]);
+    }
+
+    /**
      * POST: Bulk moderation -- change status for multiple stories.
      *
-     * Expects JSON body: { items: [ {teacher_id, story_id}, ... ], status: "flagged" }
+     * Expects: items = JSON array of { story_id } (or {teacher_id, story_id}
+     * for back-compat — teacher_id is ignored, story_id is the Firestore
+     * doc id), status = "active|flagged|removed".
      */
     public function bulk_moderate()
     {
@@ -535,42 +653,31 @@ class Stories extends MY_Controller
             $this->json_error('Invalid status. Allowed: active, flagged, removed.');
         }
 
-        // Items can come as JSON string or as POST array
         $itemsRaw = $this->input->post('items');
         if (is_string($itemsRaw)) {
             $itemsRaw = json_decode($itemsRaw, true);
         }
-
         if (!is_array($itemsRaw) || empty($itemsRaw)) {
             $this->json_error('No stories selected.');
         }
-
         if (count($itemsRaw) > 100) {
             $this->json_error('Maximum 100 stories per bulk operation.');
         }
 
         $success = 0;
         $failed  = 0;
-        $now     = round(microtime(true) * 1000);
+        $now     = (int) round(microtime(true) * 1000);
 
         foreach ($itemsRaw as $item) {
             if (!is_array($item)) { $failed++; continue; }
 
-            $tid = trim($item['teacher_id'] ?? '');
             $sid = trim($item['story_id'] ?? '');
+            // Same safe-segment charset as safe_path_segment(); validate inline
+            // so one bad id skips just that item instead of aborting the batch.
+            if ($sid === '' || !preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $sid)) { $failed++; continue; }
 
-            if ($tid === '' || $sid === '') { $failed++; continue; }
-
-            // Validate path segments
-            if (!preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $tid) ||
-                !preg_match("/^[A-Za-z0-9 ',_\-]+$/u", $sid)) {
-                $failed++;
-                continue;
-            }
-
-            // Verify story exists
-            $story = $this->firebase->get($this->_path("{$tid}/{$sid}"));
-            if (!is_array($story)) { $failed++; continue; }
+            // Tenant isolation: only touch docs owned by this school.
+            if ($this->_get_owned_story($sid) === null) { $failed++; continue; }
 
             $updateData = [
                 'status'          => $newStatus,
@@ -582,8 +689,11 @@ class Stories extends MY_Controller
                 $updateData['moderationReason'] = $reason;
             }
 
-            $this->firebase->update($this->_path("{$tid}/{$sid}"), $updateData);
-            $success++;
+            if ($this->firebase->firestoreUpdate(self::COLLECTION, $sid, $updateData)) {
+                $success++;
+            } else {
+                $failed++;
+            }
         }
 
         $statusLabel = ucfirst($newStatus);
@@ -594,25 +704,34 @@ class Stories extends MY_Controller
         ]);
     }
 
+    /**
+     * Best-effort deletion of a Firebase Storage object given its public
+     * download URL. Silent on any failure — callers treat it as advisory.
+     */
+    private function _best_effort_delete_media(string $mediaUrl): void
+    {
+        if ($mediaUrl === '') return;
+        // Public URL form: https://firebasestorage.googleapis.com/v0/b/{bucket}/o/{ENCODED_PATH}?alt=media&token=...
+        if (!preg_match('#/o/([^?]+)#', $mediaUrl, $m)) return;
+        $objectPath = urldecode($m[1]);
+        if ($objectPath === '') return;
+        try {
+            $this->firebase->getStorageBucket()->object($objectPath)->delete();
+        } catch (\Throwable $_) {
+            // orphaned media is non-fatal
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //  ADMIN UPLOAD (Phase C)
     //
     //  Accepts a multipart POST (file + caption + priority + type) from
     //  the Stories Management SPA, uploads the media to Firebase Storage,
-    //  then writes a canonical feeReceiptAllocations-style Firestore doc
-    //  with authorType='admin'.
+    //  then writes a canonical Firestore doc with authorType='admin'.
+    //  Admin stories are WHOLE-SCHOOL (audienceClassKeys = []).
     //
-    //  Path layout (admin uploads):
-    //    gs://…/stories/admin/{schoolId}/{adminId}/{epochMillis}.{ext}
-    //
-    //  Firestore doc written to:
-    //    stories/{schoolId}_admin_{adminId}_{epochMillis}
-    //
-    //  POST fields:
-    //    media      — file upload (image/* or video/*, max 50MB)
-    //    caption    — optional, ≤ 500 chars
-    //    type       — "image" | "video"
-    //    priority   — "high" | "normal"
+    //  Storage path:  schools/{schoolId}/stories/{adminId}/{epochMillis}.{ext}
+    //  Firestore doc: stories/{schoolId}_admin_{adminId}_{epochMillis}
     // ══════════════════════════════════════════════════════════════════
     public function upload_story()
     {
@@ -631,6 +750,26 @@ class Stories extends MY_Controller
         }
         if (strlen($caption) > self::MAX_CAPTION_LENGTH) {
             $this->json_error('Caption exceeds ' . self::MAX_CAPTION_LENGTH . ' chars.');
+        }
+
+        // ── 1b. Audience — EMPTY = whole-school. A submitted `audience`
+        // (JSON array of canonical keys) is intersected with the school's
+        // REAL section keys so a story can't target a bogus/other-school
+        // section. Unknown keys are dropped; if nothing valid remains the
+        // post falls back to whole-school.
+        $audienceRaw = $this->input->post('audience');
+        if (is_string($audienceRaw)) {
+            $audienceRaw = json_decode($audienceRaw, true);
+        }
+        $audienceClassKeys = [];
+        if (is_array($audienceRaw) && !empty($audienceRaw)) {
+            $validKeys = $this->_school_audience_map();   // key => option
+            foreach ($audienceRaw as $k) {
+                $k = strtolower(trim((string) $k));
+                if ($k !== '' && isset($validKeys[$k]) && !in_array($k, $audienceClassKeys, true)) {
+                    $audienceClassKeys[] = $k;
+                }
+            }
         }
 
         // ── 2. Validate file ──────────────────────────────────────────
@@ -659,7 +798,7 @@ class Stories extends MY_Controller
         $schoolId = $this->fs->schoolId();
         $adminId  = (string) ($this->admin_id ?? 'admin');
         try {
-            $existing = $this->firebase->firestoreQuery('stories', [
+            $existing = $this->firebase->firestoreQuery(self::COLLECTION, [
                 ['schoolId', '==', $schoolId],
                 ['authorId', '==', $adminId],
             ]);
@@ -669,7 +808,7 @@ class Stories extends MY_Controller
                 $d = $row['data'] ?? $row;
                 if (!is_array($d)) continue;
                 $status = (string) ($d['status'] ?? 'active');
-                $exp    = (int) ($d['expiresAt'] ?? 0);
+                $exp    = $this->_expiry_millis($d);
                 if ($status === 'active' && $exp > $nowMs) $liveCount++;
             }
             if ($liveCount >= self::ADMIN_DAILY_LIMIT) {
@@ -692,7 +831,7 @@ class Stories extends MY_Controller
 
         $ts         = (int) (microtime(true) * 1000);
         // Canonical Storage scheme: schools/{schoolId}/stories/... so a school's
-        // entire footprint lives under one ID-keyed prefix (was stories/admin/...).
+        // entire footprint lives under one ID-keyed prefix.
         $remotePath = "schools/{$schoolId}/stories/{$adminId}/{$ts}.{$ext}";
 
         // ── 4. Upload to Firebase Storage ─────────────────────────────
@@ -728,19 +867,24 @@ class Stories extends MY_Controller
             'type'            => $type,
             'caption'         => $caption,
             'priority'        => $priority,
-            // Lifecycle — use server-side timestamp iso; Firestore accepts
-            // Firestore Timestamp via the client SDK, PHP wrapper sends
-            // ISO string which works equally for display.
-            // Canonical expiry = expiresAtTs (Firestore Timestamp).
-            // Wrapped via the REST client's timestamp() helper so the
-            // encoder emits { "timestampValue": ... } not { "stringValue": ... }.
-            // Firestore TTL policy targets this field; client listeners
-            // also filter on it with a Timestamp.now() comparison.
+            // Lifecycle — canonical expiry = expiresAtTs (Firestore Timestamp).
             // Legacy expiresAt (Long) written for one release only.
             'createdAt'       => date('c'),
-            'expiresAtTs'     => Firestore_rest_client::timestamp($expiresAt),
+            // NOTE: the class file is Firestore_rest_client.php but it DECLARES
+            // `class FirestoreRestClient` — the static call MUST use that name
+            // (the old `Firestore_rest_client::timestamp()` threw "Class not
+            // found" → the admin upload's "unexpected error").
+            'expiresAtTs'     => \FirestoreRestClient::timestamp($expiresAt),
             'expiresAt'       => $expiresAt,   // LEGACY — remove in v2.0
             'viewCount'       => 0,
+            // Audience — EMPTY = whole-school; else the validated canonical
+            // class-section keys chosen in the upload picker.
+            'audienceClassKeys' => $audienceClassKeys,
+            // reactionCounts is intentionally omitted — the apps default it
+            // to an empty map and the reaction transaction lazily creates the
+            // field on first reaction. Writing an empty PHP array here would
+            // serialise as a Firestore arrayValue (not a map) and corrupt the
+            // contract.
             // Moderation defaults
             'status'          => 'active',
             'moderatedBy'     => '',
@@ -749,11 +893,11 @@ class Stories extends MY_Controller
             'moderationReason' => '',
         ];
 
-        $okFs = $this->firebase->firestoreSet('stories', $storyId, $doc);
+        $okFs = $this->firebase->firestoreSet(self::COLLECTION, $storyId, $doc);
         if (!$okFs) {
-            // Storage upload happened but Firestore failed — try to clean
-            // up the orphaned media so the bucket doesn't bloat over time.
-            try { $this->firebase->getStorageBucket()->object($remotePath)->delete(); } catch (\Exception $_) {}
+            // Storage upload happened but Firestore failed — clean up the
+            // orphaned media so the bucket doesn't bloat over time.
+            $this->_best_effort_delete_media($downloadUrl);
             $this->json_error('Firestore write failed. Storage media cleaned up.');
         }
 

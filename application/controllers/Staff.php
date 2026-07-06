@@ -855,6 +855,7 @@ class Staff extends MY_Controller
         $rows    = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
 
         $this->load->library('staff_import_mapper');
+        $deptCtx = $this->_load_dept_role_map();
 
         $out = []; $ok = 0; $warn = 0; $err = 0;
         foreach ($rows as $r) {
@@ -864,10 +865,32 @@ class Staff extends MY_Controller
             // assign later), so a missing/odd Position never blocks the row.
             $roleSource = trim($v['data']['role'] ?? '');
             if ($roleSource === '') $roleSource = trim($v['data']['designation'] ?? '');
-            if (empty($this->_match_roles_no_default($roleSource))) {
+            $roleIds = $this->_match_roles_no_default($roleSource);
+            if (empty($roleIds)) {
                 $v['warnings'][] = 'Role not recognized — will import with no role (set it later in Edit Staff)';
                 if ($v['status'] === 'ok') $v['status'] = 'warning';
             }
+
+            // Department ↔ role consistency (Departments & Roles). Warn-but-import:
+            // never blocks a row. Auto-fills a blank department only when the role
+            // maps to exactly one department (and isn't the teacher special case,
+            // whose Department column may legitimately carry the subject).
+            $deptName = trim($v['data']['department'] ?? '');
+            if ($deptName !== '' && !empty($roleIds)) {
+                $allowed = $deptCtx['byDeptLower'][strtolower($deptName)] ?? null;
+                if (is_array($allowed) && !empty($allowed) && array_diff($roleIds, $allowed)) {
+                    $v['warnings'][] = 'Role isn\'t listed under department "' . $deptName . '" — will still import; fix in Departments & Roles or Edit Staff.';
+                    if ($v['status'] === 'ok') $v['status'] = 'warning';
+                }
+            } elseif ($deptName === '' && count($roleIds) === 1 && $roleIds[0] !== 'ROLE_TEACHER') {
+                $onlyDepts = $deptCtx['byRole'][$roleIds[0]] ?? [];
+                if (count($onlyDepts) === 1) {
+                    $v['data']['department'] = $onlyDepts[0];
+                    $v['warnings'][] = 'Department set to "' . $onlyDepts[0] . '" from the role.';
+                    if ($v['status'] === 'ok') $v['status'] = 'warning';
+                }
+            }
+
             if ($v['status'] === 'error') $err++;
             elseif ($v['status'] === 'warning') $warn++;
             else $ok++;
@@ -907,6 +930,7 @@ class Staff extends MY_Controller
         $this->_importSeenPhones = [];
 
         $created = 0; $failed = 0; $dups = 0; $skipped = [];
+        $credentials = []; // {name,phone,userId,password} per newly-created staff (for the handout PDF)
         foreach ($rows as $r) {
             $rowData = $this->_canon_to_label(is_array($r) ? $r : []);
             try {
@@ -917,6 +941,12 @@ class Staff extends MY_Controller
             }
             if ($res['status'] === 'created') {
                 $created++;
+                $credentials[] = [
+                    'name'     => $res['name'] ?? '',
+                    'phone'    => $res['phone'] ?? '',
+                    'userId'   => $res['staffId'] ?? '',
+                    'password' => $res['password'] ?? '',
+                ];
             } elseif ($res['status'] === 'duplicate') {
                 $dups++;
             } else {
@@ -925,11 +955,65 @@ class Staff extends MY_Controller
             }
         }
 
+        // Stash created logins so import_credentials_pdf() can build the handout
+        // after all chunked batches finish. Reset on the first batch of a fresh import.
+        $this->_stashImportCredentials(
+            'import_creds_staff',
+            $credentials,
+            !empty($payload['firstBatch'])
+        );
+
         echo json_encode([
             'status'  => 'success',
             'counts'  => ['success' => $created, 'duplicates' => $dups, 'error' => $failed],
             'skipped' => $skipped,
         ]);
+    }
+
+    /**
+     * Download a PDF handout of the logins created by the most recent staff
+     * import (Name · Mobile Number · User ID · Default Password). Reads the
+     * credentials stashed in the session by import_commit(); a blank mobile is
+     * left blank. GET (no CSRF) — the session bucket is the source of truth, so
+     * the plaintext passwords never travel back from the browser.
+     */
+    public function import_credentials_pdf()
+    {
+        $this->_require_role(self::MANAGE_ROLES);
+
+        $creds = $this->session->userdata('import_creds_staff');
+        if (!is_array($creds) || empty($creds)) {
+            show_error('No staff credentials are available to export. Run an import first, then download from the result screen.', 404, 'Nothing to export');
+            return;
+        }
+
+        $this->load->library('pdf_generator');
+        $html = $this->load->view('import_credentials_pdf', [
+            'rows'        => $creds,
+            'entityLabel' => 'Staff',
+            'title'       => 'Staff Login Credentials',
+            'schoolName'  => $this->school_display_name ?: $this->school_name,
+            'sessionYear' => $this->session_year,
+            'generatedAt' => date('d-m-Y H:i'),
+        ], true);
+
+        $this->pdf_generator->download($html, 'Staff_Credentials_' . date('Ymd_His') . '.pdf');
+    }
+
+    /**
+     * Append a chunked import's created logins to a session bucket so the whole
+     * roster exports as one PDF after all batches finish. $reset clears the
+     * bucket first (first batch of a fresh import). Capped to keep session small.
+     */
+    private function _stashImportCredentials(string $bucket, array $creds, bool $reset): void
+    {
+        $existing = $reset ? [] : $this->session->userdata($bucket);
+        if (!is_array($existing)) $existing = [];
+        foreach ($creds as $c) {
+            if (count($existing) >= 5000) break; // safety cap
+            $existing[] = $c;
+        }
+        $this->session->set_userdata($bucket, $existing);
     }
 
     /**
@@ -983,19 +1067,122 @@ class Staff extends MY_Controller
      * the importer can flag the row for review instead of mislabeling it.
      * Also accepts an explicit canonical id (e.g. "ROLE_ACCOUNTANT").
      */
+    /**
+     * Build the Department↔Role maps from schools.departments for import checks:
+     *   byDeptLower[lower(name)] = [ROLE_* allowed in it]
+     *   byRole[ROLE_*]          = [department names offering it]
+     * Departments with no role_ids simply don't appear in the constraint.
+     */
+    private function _load_dept_role_map(): array
+    {
+        $byDeptLower = []; $byRole = [];
+        try {
+            $school = $this->fs->get('schools', $this->school_id);
+            $depts  = is_array($school['departments'] ?? null) ? $school['departments'] : [];
+            foreach ($depts as $d) {
+                $d    = (array) $d;
+                $name = trim((string) ($d['name'] ?? ''));
+                if ($name === '') continue;
+                $rids = is_array($d['role_ids'] ?? null) ? array_values($d['role_ids']) : [];
+                $byDeptLower[strtolower($name)] = $rids;
+                foreach ($rids as $rid) { $byRole[$rid][] = $name; }
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'load dept-role map failed: ' . $e->getMessage());
+        }
+        return ['byDeptLower' => $byDeptLower, 'byRole' => $byRole];
+    }
+
     private function _match_roles_no_default(string $text): array
     {
         $t = strtolower(trim($text));
         if ($t === '') return [];
 
-        // Explicit canonical id in a Role column.
         $upper = strtoupper(trim($text));
+        $map   = $this->_staffRoleLabelMap();
+
+        // Explicit canonical id (system OR custom, e.g. "ROLE_COUNSELLOR").
+        if (isset($map['ids'][$upper]))              return [$upper];
         if (isset(self::DEFAULT_STAFF_ROLES[$upper])) return [$upper];
 
+        // Exact label match — covers custom roles and the Excel role dropdown
+        // (which emits labels like "Counsellor"/"Teacher"), not just keywords.
+        if (isset($map['labels'][$t]))               return [$map['labels'][$t]];
+
+        // Keyword substring map (legacy free-text Position values).
         foreach (self::POSITION_ROLE_MAP as $keyword => $roleId) {
             if (strpos($t, $keyword) !== false) return [$roleId];
         }
         return [];
+    }
+
+    /** @var array|null cached [labels=>lower(label)=>ROLE_ID, ids=>ROLE_ID=>true] */
+    private $_roleLabelCache = null;
+
+    /**
+     * Label/id lookup for this school's staff roles (system + custom), cached
+     * per request. Powers label-based role resolution in imports.
+     */
+    private function _staffRoleLabelMap(): array
+    {
+        if ($this->_roleLabelCache !== null) return $this->_roleLabelCache;
+        $roles = self::DEFAULT_STAFF_ROLES;
+        try {
+            $school = $this->fs->get('schools', $this->school_id);
+            if (is_array($school['staffRoles'] ?? null) && !empty($school['staffRoles'])) {
+                $roles = $school['staffRoles'];
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'staff role label map failed: ' . $e->getMessage());
+        }
+        $labels = []; $ids = [];
+        foreach ($roles as $rid => $r) {
+            $ids[strtoupper((string) $rid)] = true;
+            $lbl = strtolower(trim((string) (((array) $r)['label'] ?? '')));
+            if ($lbl !== '') $labels[$lbl] = $rid;
+        }
+        return $this->_roleLabelCache = ['labels' => $labels, 'ids' => $ids];
+    }
+
+    /**
+     * Active departments + their role LABELS for the import Excel template's
+     * cascading dropdown. A department with no role_ids falls back to ALL role
+     * labels (mirrors the staff form's graceful fallback). Empty → no departments
+     * configured (caller then leaves Department/Role as free text).
+     */
+    private function _template_department_roles(): array
+    {
+        $out = [];
+        try {
+            $school = $this->fs->get('schools', $this->school_id);
+            $depts  = is_array($school['departments'] ?? null) ? $school['departments'] : [];
+            $roles  = is_array($school['staffRoles'] ?? null) && !empty($school['staffRoles'])
+                ? $school['staffRoles'] : self::DEFAULT_STAFF_ROLES;
+
+            $labelById = [];
+            foreach ($roles as $rid => $r) {
+                $lbl = trim((string) (((array) $r)['label'] ?? $rid));
+                if ($lbl !== '') $labelById[$rid] = $lbl;
+            }
+            $allLabels = array_values(array_unique(array_values($labelById)));
+
+            foreach ($depts as $d) {
+                $d = (array) $d;
+                if (($d['status'] ?? 'Active') !== 'Active') continue;
+                $name = trim((string) ($d['name'] ?? ''));
+                if ($name === '') continue;
+                $rids   = is_array($d['role_ids'] ?? null) ? $d['role_ids'] : [];
+                $labels = [];
+                foreach ($rids as $rid) {
+                    if (!empty($labelById[$rid])) $labels[] = $labelById[$rid];
+                }
+                if (empty($labels)) $labels = $allLabels; // unmapped dept → all roles
+                $out[] = ['name' => $name, 'role_labels' => array_values(array_unique($labels))];
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'template dept roles failed: ' . $e->getMessage());
+        }
+        return $out;
     }
 
     /**
@@ -1225,15 +1412,24 @@ class Staff extends MY_Controller
                 'uid'         => $staffId,
                 'displayName' => $name,
             ]);
-            // S1: canonical role claim from the resolved role IDs — never the
-            // free-text Position/Designation. Unresolved import → empty role
-            // ("assign later" per _match_roles_no_default), never escalated.
-            $this->firebase->setFirebaseClaims($staffId, $this->_staff_auth_claims($roleIds[0] ?? ''));
+            // Reconciled (S1 anti-escalation + canonical dual-cased claim shape):
+            // friend's setCanonicalClaims builder (dual-cased tenant keys → no
+            // admin-panel lockout) fed the CANONICAL role from the resolved role
+            // IDs — never the free-text Position — so no escalation is possible.
+            $this->firebase->setCanonicalClaims($staffId, [
+                'role'          => $this->_canonical_role_label($roleIds[0] ?? ''),
+                'role_fallback' => 'Staff',
+                'school_id'     => $this->school_id,
+                'school_code'   => $this->school_code,
+                'parent_db_key' => $this->parent_db_key,
+            ]);
         } catch (Exception $e) {
             log_message('error', "Staff import Firebase Auth failed for {$staffId}: " . $e->getMessage());
         }
 
-        return ['status' => 'created', 'staffId' => $staffId, 'name' => $name];
+        // Return the plaintext password too — it's hashed on the doc, so this is
+        // the only point it's available for the login-handout PDF.
+        return ['status' => 'created', 'staffId' => $staffId, 'name' => $name, 'phone' => $phone, 'password' => $plainPassword];
     }
 
     /** Convert a mapping-UI canonical row (keyed by field key) → label-keyed,
@@ -1390,6 +1586,71 @@ class Staff extends MY_Controller
         $bloodValidation->setShowDropDown(true);
         for ($r = 3; $r <= 102; $r++) {
             $sheet->getCell("G{$r}")->setDataValidation(clone $bloodValidation);
+        }
+
+        // ── Department (col H) → Role/Position (col I) CASCADING dropdowns ─────
+        // Sourced from Departments & Roles: each department offers only its roles.
+        // Technique: a hidden "Lists" sheet holds the department list + a
+        // name→index table + one column of role labels per department, each
+        // exposed as a named range DRoles_{i}. The Role cell resolves its list
+        // with INDIRECT("DRoles_"&VLOOKUP(<dept cell>, name→index, 2)). The index
+        // indirection keeps it robust to spaces/symbols in department names.
+        $activeDepts = $this->_template_department_roles();
+        if (!empty($activeDepts)) {
+            $lists = $spreadsheet->createSheet();
+            $lists->setTitle('Lists');
+
+            $lists->setCellValue('A1', 'Department');
+            $lists->setCellValue('B1', 'Idx');
+            $i = 0;
+            foreach ($activeDepts as $dept) {
+                $i++;
+                $row = $i + 1;                       // data starts row 2
+                $lists->setCellValue("A{$row}", $dept['name']);
+                $lists->setCellValueExplicit("B{$row}", $i, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_NUMERIC);
+
+                // Role labels for this department in its own column (C, D, E …).
+                $col = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex(2 + $i);
+                $labels = !empty($dept['role_labels']) ? $dept['role_labels'] : ['(no roles configured)'];
+                $lists->setCellValue("{$col}1", 'Roles: ' . $dept['name']);
+                $rr = 1;
+                foreach ($labels as $lbl) {
+                    $rr++;
+                    $lists->setCellValue("{$col}{$rr}", $lbl);
+                }
+                $spreadsheet->addNamedRange(new \PhpOffice\PhpSpreadsheet\NamedRange(
+                    'DRoles_' . $i, $lists, "\${$col}\$2:\${$col}\$" . $rr
+                ));
+            }
+            $lastDeptRow = count($activeDepts) + 1;   // last row of dept list
+
+            // Per-row validations (formulas can't be blindly cloned — the H-cell
+            // reference must track the row), rows 3..102.
+            for ($r = 3; $r <= 102; $r++) {
+                $dv = new \PhpOffice\PhpSpreadsheet\Cell\DataValidation();
+                $dv->setType(\PhpOffice\PhpSpreadsheet\Cell\DataValidation::TYPE_LIST);
+                $dv->setAllowBlank(true);
+                $dv->setShowDropDown(true);
+                $dv->setShowErrorMessage(false);
+                $dv->setFormula1("Lists!\$A\$2:\$A\$" . $lastDeptRow);
+                $sheet->getCell("H{$r}")->setDataValidation($dv);
+
+                $rv = new \PhpOffice\PhpSpreadsheet\Cell\DataValidation();
+                $rv->setType(\PhpOffice\PhpSpreadsheet\Cell\DataValidation::TYPE_LIST);
+                $rv->setAllowBlank(true);
+                $rv->setShowDropDown(true);
+                $rv->setShowErrorMessage(false);
+                $rv->setFormula1('INDIRECT("DRoles_"&VLOOKUP(H' . $r . ',Lists!$A$2:$B$' . $lastDeptRow . ',2,FALSE))');
+                $sheet->getCell("I{$r}")->setDataValidation($rv);
+            }
+
+            // Make the sample row consistent with the real dropdowns.
+            $firstDept = $activeDepts[0];
+            $sheet->getCell('H2')->setValue($firstDept['name']);
+            $sheet->getCell('I2')->setValue($firstDept['role_labels'][0] ?? 'Teacher');
+
+            // Hide the helper sheet (kept in the file so the formulas resolve).
+            $lists->setSheetState(\PhpOffice\PhpSpreadsheet\Worksheet\Worksheet::SHEETSTATE_HIDDEN);
         }
 
         // Auto-width columns
@@ -1931,9 +2192,16 @@ class Staff extends MY_Controller
                         'uid'         => $staffId,
                         'displayName' => $staffName,
                     ]);
-                    // S1: canonical role claim from the validated primary role
-                    // ID — never the free-text Position/Designation.
-                    $this->firebase->setFirebaseClaims($staffId, $this->_staff_auth_claims($primaryRole));
+                    // Reconciled: canonical dual-cased claims (no lockout) with
+                    // the CANONICAL role from the validated primary role ID —
+                    // never free-text Position — anti-escalation preserved.
+                    $this->firebase->setCanonicalClaims($staffId, [
+                        'role'          => $this->_canonical_role_label($primaryRole),
+                        'role_fallback' => 'Staff',
+                        'school_id'     => $this->school_id,
+                        'school_code'   => $this->school_code,
+                        'parent_db_key' => $this->parent_db_key,
+                    ]);
                 } catch (Exception $e) {
                     log_message('error', 'Staff: Firebase Auth create failed for ' . $staffId . ': ' . $e->getMessage());
                     $authWarning = 'Staff record saved, but Firebase Auth account could not be created: '
@@ -2307,17 +2575,22 @@ class Staff extends MY_Controller
         }
 
         // 2. Set must-change-password claim — the app gates first login on this.
-        // S1: re-assert the CANONICAL role (from the staff doc's primary role),
-        // never the doc's free-text display `role` field — otherwise a reset
-        // would re-mint an escalated designation-derived claim.
-        $this->firebase->setFirebaseClaims($staff_id, array_merge(
-            $this->_staff_auth_claims($this->_primary_role_id_from_doc($staffDoc)),
-            [
+        // Reconciled: canonical dual-cased claims (no lockout) but re-assert the
+        // CANONICAL role from the staff doc's primary role — never the doc's
+        // free-text display `role` field — so a reset can't re-mint an escalated
+        // designation-derived claim. Keeps the must-change-password extras.
+        $this->firebase->setCanonicalClaims($staff_id, [
+            'role'          => $this->_canonical_role_label($this->_primary_role_id_from_doc($staffDoc)),
+            'role_fallback' => 'Staff',
+            'school_id'     => $this->school_id,
+            'school_code'   => $this->school_code,
+            'parent_db_key' => $this->parent_db_key,
+            'extra'         => [
                 'must_change_password' => true,
                 'password_reset_at'    => time(),
                 'password_reset_by'    => (string) ($this->admin_id ?? ''),
-            ]
-        ));
+            ],
+        ]);
 
         // 3. Revoke refresh tokens — kicks active sessions on other devices.
         $this->firebase->revokeRefreshTokens($staff_id);
@@ -2794,13 +3067,19 @@ class Staff extends MY_Controller
                     // designation ("People Lead") would become the role claim and
                     // could cost the staff admin-panel access. Fall back to the
                     // existing Position only when no role is set.
-                    // S1: canonical role claim. Prefer the submitted primary_role;
-                    // otherwise re-resolve the staff member's canonical role from
-                    // their existing doc — never fall back to the free-text Position.
+                    // Reconciled: canonical dual-cased claims (no lockout) with a
+                    // CANONICAL role — prefer the submitted primary_role, else
+                    // re-resolve from the existing doc; never free-text Position.
                     $editPrimary = !empty($formattedData['primary_role'])
                         ? (string) $formattedData['primary_role']
                         : $this->_primary_role_id_from_doc($existingData);
-                    $this->firebase->setFirebaseClaims($user_id, $this->_staff_auth_claims($editPrimary));
+                    $this->firebase->setCanonicalClaims($user_id, [
+                        'role'          => $this->_canonical_role_label($editPrimary),
+                        'role_fallback' => 'Staff',
+                        'school_id'     => $this->school_id,
+                        'school_code'   => $this->school_code,
+                        'parent_db_key' => $this->parent_db_key,
+                    ]);
                 } catch (Exception $e) {
                     log_message('error', 'Staff: Firebase Auth sync failed on edit_staff for ' . $user_id . ': ' . $e->getMessage());
                 }
@@ -2996,7 +3275,15 @@ class Staff extends MY_Controller
         // member's canonical role (from their doc's primary role), never the
         // free-text Position/role display fields.
         try {
-            $this->firebase->setFirebaseClaims($teacherID, $this->_staff_auth_claims($this->_primary_role_id_from_doc($staffDoc)));
+            // Reconciled: canonical dual-cased claims with the CANONICAL role
+            // from the staff doc's primary role (never free-text).
+            $this->firebase->setCanonicalClaims($teacherID, [
+                'role'          => $this->_canonical_role_label($this->_primary_role_id_from_doc($staffDoc)),
+                'role_fallback' => 'Staff',
+                'school_id'     => $this->school_id,
+                'school_code'   => $this->school_code,
+                'parent_db_key' => $this->parent_db_key,
+            ]);
         } catch (Exception $e) {
             log_message('error', 'Staff: Firebase Auth sync failed on assign_duty for ' . $teacherID . ': ' . $e->getMessage());
         }
@@ -3332,7 +3619,15 @@ class Staff extends MY_Controller
                 // Refresh the Auth role claim too, so a migrated non-teacher
                 // (Accountant, Clerk, …) stops carrying a stale 'Teacher' claim.
                 try {
-                    $this->firebase->setFirebaseClaims($sid, $this->_staff_auth_claims($primary));
+                    // Reconciled: canonical dual-cased claims with the STRICT
+                    // canonical role (never humanized free-text).
+                    $this->firebase->setCanonicalClaims($sid, [
+                        'role'          => $this->_canonical_role_label($primary),
+                        'role_fallback' => 'Staff',
+                        'school_id'     => $this->school_id,
+                        'school_code'   => $this->school_code,
+                        'parent_db_key' => $this->parent_db_key,
+                    ]);
                 } catch (\Exception $e) {
                     log_message('error', "migrate_staff_roles claim refresh failed for {$sid}: " . $e->getMessage());
                 }

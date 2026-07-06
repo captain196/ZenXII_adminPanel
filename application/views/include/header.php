@@ -14,15 +14,24 @@
     <!-- Stylesheets -->
     <link rel="stylesheet" href="<?php echo base_url(); ?>tools/bower_components/bootstrap/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="<?php echo base_url(); ?>tools/bower_components/font-awesome/css/font-awesome.min.css">
-    <link rel="stylesheet" href="<?php echo base_url(); ?>tools/bower_components/Ionicons/css/ionicons.min.css">
+    <!-- PERF: Ionicons removed — 0 real `ion ion-*` usages in any view; the app uses
+         Font Awesome for icons. Saves ~50KB render-blocking CSS + the Ionicons webfont.
+         (Re-add this line if a missing glyph ever appears.) -->
     <link rel="stylesheet" href="<?php echo base_url(); ?>tools/dist/css/AdminLTE.min.css">
-    <link rel="stylesheet" href="<?php echo base_url(); ?>tools/dist/css/skins/_all-skins.min.css">
+    <!-- PERF: only skin-blue is ever used (see body class below); load just that one
+         skin instead of _all-skins (which bundles every unused red/green/purple/black
+         variant) to cut ~39KB of render-blocking CSS off every page. -->
+    <link rel="stylesheet" href="<?php echo base_url(); ?>tools/dist/css/skins/skin-blue.min.css">
     <link rel="stylesheet" href="https://cdn.datatables.net/2.0.8/css/dataTables.dataTables.css">
     <link rel="stylesheet" href="https://cdn.datatables.net/buttons/3.0.2/css/buttons.dataTables.css">
     <link rel="stylesheet" href="<?php echo base_url(); ?>tools/bower_components/morris.js/morris.css">
     <link rel="stylesheet" href="<?php echo base_url(); ?>tools/bower_components/bootstrap-datepicker/dist/css/bootstrap-datepicker.min.css">
     <link rel="stylesheet" href="<?php echo base_url(); ?>tools/bower_components/bootstrap-daterangepicker/daterangepicker.css">
     <link rel="stylesheet" href="<?php echo base_url(); ?>tools/css/style.css">
+    <!-- PERF: preconnect so the DNS+TLS handshake to Google Fonts starts before the
+         stylesheet is parsed, shaving the font round-trip off the critical path. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Syne:wght@600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="<?php echo base_url(); ?>tools/css/header-inline.css"><!-- inline header CSS externalized (QW5) -->
 
@@ -31,6 +40,20 @@
         var BASE_URL  = '<?= base_url() ?>';
         var csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
         var csrfName  = document.querySelector('meta[name="csrf-name"]').getAttribute('content');
+
+        // PERF: shared debounce/throttle so list-filter inputs stop running an
+        // O(rows) DOM scan on every keystroke (UX audit). Preserves `this` + args,
+        // so it wraps both vanilla and delegated jQuery handlers unchanged.
+        window.ZXutil = window.ZXutil || {
+            debounce: function (fn, wait) {
+                var t; wait = (wait == null ? 180 : wait);
+                return function () {
+                    var ctx = this, args = arguments;
+                    clearTimeout(t);
+                    t = setTimeout(function () { fn.apply(ctx, args); }, wait);
+                };
+            }
+        };
 
         // Auto-attach CSRF to ALL jQuery $.ajax() and $.post() calls project-wide
         document.addEventListener('DOMContentLoaded', function () {
@@ -358,6 +381,11 @@
                  ═══════════════════════════════════════════════════════════ -->
             <?php if (isset($school_features) && in_array('Staff Management', $school_features) && ($can('HR') || $can('SIS'))): ?>
             <li class="g-sec">Staff</li>
+            <?php if ($can('HR')): ?>
+            <li class="sidebar-single">
+                <a href="<?= base_url('org') ?>"><i class="fa fa-sitemap"></i><span>Departments &amp; Roles</span></a>
+            </li>
+            <?php endif; ?>
             <li class="treeview">
                 <a href="#"><i class="fa fa-user-o"></i><span>Staff Records</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
                 <ul class="treeview-menu">
@@ -589,7 +617,9 @@
             </li>
             <?php endif; ?>
 
-            <?php if ($can('Message Monitor')): ?>
+            <?php /* PERF: Message Monitor disabled (unused; read the whole RTDB message tree per load).
+                     Link shows only when re-enabled via env ENABLE_MESSAGE_MONITOR=1. */ ?>
+            <?php if (getenv('ENABLE_MESSAGE_MONITOR') && $can('Message Monitor')): ?>
             <li class="sidebar-single"><a href="<?= base_url('message_monitor') ?>"><i class="fa fa-eye"></i><span>Message Monitor</span></a></li>
             <?php endif; ?>
 

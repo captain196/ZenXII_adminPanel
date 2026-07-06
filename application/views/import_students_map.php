@@ -418,6 +418,7 @@
             return post('import_commit', {
                 rows: batch,
                 dupPolicy: policy,
+                firstBatch: start === 0,                         // reset the credentials stash on the first batch
                 mapping: start === 0 ? mappingPairs : undefined  // learn once
             }).then(function (resp) {
                 if (resp.status !== 'success') throw new Error(resp.message || 'Import failed.');
@@ -445,6 +446,16 @@
             if (agg.feesPending) {
                 html += '<p style="margin-top:8px;color:#92400e;font-size:.85rem;">'
                     + agg.feesPending + ' student(s) imported without a fee chart — set up <b>Fees → Chart</b> for their class/section and demands will be assigned.</p>';
+            }
+            if (agg.success > 0) {
+                html += '<div style="margin-top:16px;padding-top:14px;border-top:1px solid #e2e8f0;">'
+                    + '<a href="' + SITE_URL + '/sis/import_credentials_pdf" target="_blank" rel="noopener" '
+                    + 'style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;font-weight:600;'
+                    + 'padding:9px 16px;border-radius:8px;font-size:.88rem;">'
+                    + '<i class="fa fa-file-pdf-o"></i> Download Credentials PDF</a>'
+                    + '<div style="margin-top:6px;color:#64748b;font-size:.8rem;">'
+                    + 'Name, mobile number, User ID &amp; default password for the ' + agg.success
+                    + ' newly imported student' + (agg.success === 1 ? '' : 's') + '. Keep it confidential.</div></div>';
             }
             el('resultMsg').innerHTML = html;
             el('resultCard').scrollIntoView({ behavior: 'smooth', block: 'start' });

@@ -59,8 +59,14 @@ class Staff_attendance_writer
     /** Base exponential backoff in milliseconds (×2^attempt + jitter). */
     const CAS_BACKOFF_BASE_MS = 50;
 
-    /** Allowed dayWise status chars. Pinned by verifier A2. */
-    const ALLOWED_STATUS = ['P', 'A', 'L', 'H', 'T', 'V'];
+    /**
+     * Allowed dayWise status chars. Pinned by verifier A2.
+     *   P present · T late · M half-day · A absent · L leave ·
+     *   H holiday · O weekly-off · W worked-on-off (extra) · V vacant (future).
+     * (M/W/O added in the company-schedule build — hours-based half-day,
+     *  auto-absent finaliser, and work-on-off extra pay.)
+     */
+    const ALLOWED_STATUS = ['P', 'A', 'L', 'H', 'T', 'V', 'M', 'W', 'O'];
 
     /** Map from status char to count field on the summary doc. */
     private const STATUS_TO_FIELD = [
@@ -70,6 +76,9 @@ class Staff_attendance_writer
         'H' => 'holiday',
         'T' => 'tardy',
         'V' => 'void',
+        'M' => 'halfDay',
+        'W' => 'extraWorked',
+        'O' => 'weeklyOff',
     ];
 
     /** @var \CI_Controller */
@@ -190,8 +199,9 @@ class Staff_attendance_writer
             // Carry forward existing counts; apply delta
             $counts = $this->_counts_with_delta($sum, $daysIn, $deltaCounts);
             $summaryPayload = array_merge($summaryPayload, $counts);
-            // workingDays = present + leave + tardy
-            $summaryPayload['workingDays'] = (int) ($counts['present'] + $counts['leave'] + $counts['tardy']);
+            // workingDays = present + leave + tardy + halfDay (attended/paid days;
+            // payroll weights halfDay as 0.5 later — this is a whole-day count).
+            $summaryPayload['workingDays'] = (int) ($counts['present'] + $counts['leave'] + $counts['tardy'] + $counts['halfDay']);
 
             // 2d. Build staffAttendance payload
             $attPayload = [
@@ -376,7 +386,7 @@ class Staff_attendance_writer
                     '_updatedAt'  => date('c'),
                 ], $counts);
                 $summaryPayload['workingDays'] =
-                    (int) ($counts['present'] + $counts['leave'] + $counts['tardy']);
+                    (int) ($counts['present'] + $counts['leave'] + $counts['tardy'] + $counts['halfDay']);
 
                 $attPayload = [
                     'schoolId'       => $this->schoolId,
@@ -487,7 +497,7 @@ class Staff_attendance_writer
      */
     private function _counts_with_delta($existingSum, int $daysIn, array $delta): array
     {
-        $fields = ['present', 'absent', 'leave', 'holiday', 'tardy', 'void'];
+        $fields = ['present', 'absent', 'leave', 'holiday', 'tardy', 'void', 'halfDay', 'extraWorked', 'weeklyOff'];
         $out = [];
         foreach ($fields as $f) {
             $cur = is_array($existingSum) ? (int) ($existingSum[$f] ?? 0) : 0;

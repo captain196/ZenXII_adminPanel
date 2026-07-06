@@ -2128,18 +2128,62 @@ class Attendance extends MY_Controller
         }
         $tol = (int) ($gpsIn['boundaryToleranceMeters'] ?? 0);
         if ($tol < 0 || $tol > 200) $tol = 0;
-        $grace = (int) ($winIn['gracePeriodMin'] ?? 0);
-        if ($grace < 0 || $grace > 120) $grace = 0;
+        // ── Work Schedule — the SINGLE source of shift timings + hours ──
+        // Consolidated (2026-07): the old separate "attendance windows" are gone
+        // from the UI. Late/on-time is derived from shiftStart + grace; full/half
+        // from hours worked; there is no check-out time gating. A derived
+        // `windows` block is still written for backward-compatible readers.
+        $schedIn = is_array($in['schedule'] ?? null) ? $in['schedule'] : [];
+        $sched = [];
 
-        // ── Window time validation (HH:MM, 24h) ──
-        $times = [];
-        foreach (['earliestCheckIn', 'lateThreshold', 'latestCheckIn', 'checkoutStart', 'checkoutLatest'] as $k) {
-            $v = (string) ($winIn[$k] ?? '');
+        // Shift times (HH:MM). latestCheckIn is an OPTIONAL hard cutoff ('' = none).
+        foreach (['shiftStart', 'shiftEnd', 'earlyOutBefore', 'latestCheckIn'] as $k) {
+            $v = (string) ($schedIn[$k] ?? '');
             if ($v !== '' && !preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $v)) {
                 return $this->json_error("Invalid time for {$k} (expected HH:MM).");
             }
-            $times[$k] = $v;
+            if ($v !== '') $sched[$k] = $v;
         }
+
+        $grace = (int) ($schedIn['graceMinutes'] ?? 0);
+        if ($grace < 0 || $grace > 120) $grace = 0;
+        $sched['graceMinutes'] = $grace;
+
+        // fullDayHours = 0 → keep the classic on-time/late-only model (no
+        // hours-based half-day classification). Otherwise half ≤ full.
+        $fullH = (float) ($schedIn['fullDayHours'] ?? 8);
+        $halfH = (float) ($schedIn['halfDayHours'] ?? 4);
+        if ($fullH < 0) $fullH = 0;
+        if ($halfH < 0) $halfH = 0;
+        if ($fullH > 24 || $halfH > 24 || ($fullH > 0 && $halfH > $fullH)) {
+            return $this->json_error('Half-day hours must not exceed the full-day hours.');
+        }
+        $brk = (int) ($schedIn['breakMinutes'] ?? 0);
+        if ($brk < 0 || $brk > 480) $brk = 0;
+        $sched['fullDayHours'] = $fullH;
+        $sched['halfDayHours'] = $halfH;
+        $sched['breakMinutes'] = $brk;
+        $mc = (string) ($schedIn['missedCheckout'] ?? 'regularize');
+        $sched['missedCheckout'] = in_array($mc, ['regularize', 'half', 'absent', 'auto_close'], true) ? $mc : 'regularize';
+
+        // Derived windows (back-compat + engine fallback): start = shiftStart,
+        // grace carried, optional hard latest-check-in, NO check-out gating.
+        $shiftStart = $sched['shiftStart'] ?? '09:00';
+        $derivedWindows = [
+            'earliestCheckIn' => '00:00',
+            'lateThreshold'   => $shiftStart,
+            'gracePeriodMin'  => $grace,
+            'latestCheckIn'   => $sched['latestCheckIn'] ?? '23:59',
+            'checkoutStart'   => null,
+            'checkoutLatest'  => null,
+        ];
+
+        // ── Weekly-offs + rest-day working + auto-absent ──
+        $validDays  = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        $weeklyOffs = array_values(array_intersect($validDays,
+            is_array($in['weeklyOffs'] ?? null) ? $in['weeklyOffs'] : []));
+        $allowWorkOnOff = !empty($in['allowWorkOnOff']);
+        $autoAbsent     = array_key_exists('autoAbsent', $in) ? !empty($in['autoAbsent']) : true;
 
         // ── Build the canonical policy map (consumed by Attendance_policy) ──
         $policy = [
@@ -2158,17 +2202,14 @@ class Attendance extends MY_Controller
             ],
             'shifts' => [
                 'default' => [
-                    'name'    => 'General',
-                    'windows' => [
-                        'earliestCheckIn' => $times['earliestCheckIn'] ?: '07:30',
-                        'lateThreshold'   => $times['lateThreshold']   ?: '09:00',
-                        'gracePeriodMin'  => $grace,
-                        'latestCheckIn'   => $times['latestCheckIn']   ?: '11:00',
-                        'checkoutStart'   => $times['checkoutStart']   ?: '13:00',
-                        'checkoutLatest'  => $times['checkoutLatest']  ?: '21:00',
-                    ],
+                    'name'     => 'General',
+                    'windows'  => $derivedWindows,
+                    'schedule' => $sched,
                 ],
             ],
+            'weeklyOffs'     => $weeklyOffs,
+            'allowWorkOnOff' => $allowWorkOnOff,
+            'autoAbsent'     => $autoAbsent,
             'updatedAt' => date('c'),
             'updatedBy' => (string) ($this->admin_id ?? ''),
         ];

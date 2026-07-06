@@ -22,5 +22,12 @@ if (empty($_internalKey) && ENVIRONMENT === 'production') {
     show_error('AUTH_INTERNAL_SECRET environment variable is required in production.', 500);
 }
 $config['auth_api_internal_key']    = $_internalKey ?: '8b9bb3bd40f1757454022b5bed876753b1183e30317674d1c4380a8c9284e9cf';
-$config['auth_api_timeout']         = 120;  // total request timeout (seconds) — Render cold start can take 90s+
-$config['auth_api_connect_timeout'] = 120;  // connection timeout (seconds)
+// PERF: A 120s ceiling on the login path let a slow/unreachable backend hang the
+// request (and pin an Apache worker) for up to two minutes. Fast, tunable timeouts:
+//   - connect_timeout fails fast (5s) when the backend is down/unreachable.
+//   - total timeout (20s) leaves headroom for a WARM request while never hanging users.
+// If the Node backend runs on a cold-starting host (e.g. Render, ~90s first hit),
+// keep it warm (a lightweight cron ping) rather than raising these back to 120s.
+// Both are env-overridable so ops can tune without a code change / redeploy.
+$config['auth_api_timeout']         = (int) (getenv('AUTH_API_TIMEOUT') ?: 20);          // total request timeout (seconds)
+$config['auth_api_connect_timeout'] = (int) (getenv('AUTH_API_CONNECT_TIMEOUT') ?: 5);   // connection timeout (seconds)

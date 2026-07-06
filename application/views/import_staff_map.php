@@ -339,7 +339,7 @@
 
         function commitBatch(start) {
             var batch = allRows.slice(start, start + BATCH_SIZE);
-            return post('import_commit', { rows: batch }).then(function (resp) {
+            return post('import_commit', { rows: batch, firstBatch: start === 0 }).then(function (resp) {
                 if (resp.status !== 'success') throw new Error(resp.message || 'Import failed.');
                 var c = resp.counts || {};
                 agg.success += c.success || 0; agg.duplicates += c.duplicates || 0; agg.error += c.error || 0;
@@ -353,11 +353,22 @@
             el('mapCard').classList.add('imp-hidden');
             el('prevCard').classList.add('imp-hidden');
             el('resultCard').classList.remove('imp-hidden');
-            el('resultMsg').innerHTML = '<div class="sum-chips">'
+            var html = '<div class="sum-chips">'
                 + '<span class="sum-chip ok">Imported: ' + agg.success + '</span>'
                 + (agg.duplicates ? '<span class="sum-chip warn">Duplicates skipped: ' + agg.duplicates + '</span>' : '')
                 + '<span class="sum-chip err">Failed: ' + agg.error + '</span>'
                 + '</div>';
+            if (agg.success > 0) {
+                html += '<div style="margin-top:16px;padding-top:14px;border-top:1px solid #e2e8f0;">'
+                    + '<a href="' + SITE_URL + '/staff/import_credentials_pdf" target="_blank" rel="noopener" '
+                    + 'style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;font-weight:600;'
+                    + 'padding:9px 16px;border-radius:8px;font-size:.88rem;">'
+                    + '<i class="fa fa-file-pdf-o"></i> Download Credentials PDF</a>'
+                    + '<div style="margin-top:6px;color:#64748b;font-size:.8rem;">'
+                    + 'Name, mobile number, User ID &amp; default password for the ' + agg.success
+                    + ' newly imported staff member' + (agg.success === 1 ? '' : 's') + '. Keep it confidential.</div></div>';
+            }
+            el('resultMsg').innerHTML = html;
             el('resultCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
         }).catch(function (e) {
             alert((e.message || 'Import failed.') + '\n\nImported so far: ' + agg.success

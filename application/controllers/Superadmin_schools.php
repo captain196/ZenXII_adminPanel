@@ -292,15 +292,11 @@ class Superadmin_schools extends MY_Superadmin_Controller
                 // role). The prior snake_case keys (school_id/school_code) left
                 // $schoolId empty at login → ADMIN_LOGIN_AUTHZ_MISSING → SSA could
                 // never sign in. See SSA0001 (working) for the canonical shape.
-                $claimOk = $this->firebase->setFirebaseClaims($admin_id, [
-                    'role' => 'school_super_admin', 'roleLabel' => 'School Super Admin',
-                    'schoolId' => $school_id, 'schoolCode' => $school_code,
-                    'parentDbKey' => $school_code,
-                    // Dual-emit snake_case: admin-panel login reads camelCase
-                    // (schoolId/schoolCode — see comment above), but Firestore
-                    // Security Rules read school_id. Both are required so the SSA
-                    // can sign into the panel AND read in the mobile apps.
-                    'school_id' => $school_id, 'school_code' => $school_code,
+                $claimOk = $this->firebase->setCanonicalClaims($admin_id, [
+                    'role'          => 'school_super_admin',
+                    'role_label'    => 'School Super Admin',
+                    'school_id'     => $school_id,
+                    'school_code'   => $school_code,
                     'parent_db_key' => $school_code,
                 ]);
                 if (!$claimOk && $attempt < 2) usleep(200000);

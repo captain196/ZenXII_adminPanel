@@ -39,9 +39,11 @@ class Schools extends MY_Controller
     //  5. manage_school() GET: foreach on $schoolIds could fatal if
     //     select_data() returns null/false. Added null-check guard.
     //
-    //  6. deleteMedia(): method='DELETE' from JS but CI's $this->input
-    //     doesn't parse DELETE bodies. The URL param ?url= is used via
-    //     $_GET which is correct — left as-is but documented.
+    //  6. deleteMedia(): now POST (was DELETE+query params). CI3 csrf_verify
+    //     only guards POST, so the delete is CSRF-protected, and inputs are
+    //     read via $this->input->post(). A tenant-ownership check on the
+    //     extracted Storage path blocks cross-tenant deletes (Admin SDK
+    //     bypasses Storage rules).
     //
     //  7. fetchGalleryMedia(): path had leading slash "/Schools/..." which
     //     is inconsistent with how the rest of the app uses Firebase paths
@@ -490,6 +492,70 @@ class Schools extends MY_Controller
     }
 
     // ── School Gallery ────────────────────────────────────────────────────
+    //
+    // GALLERY ↔ APPS CONSOLIDATION (2026-07):
+    //   The admin gallery historically stored media only in RTDB
+    //   (Schools/{schoolId}/Events/Media) and built its album list from RTDB
+    //   Events/List — but events now live in Firestore `events`, and the apps
+    //   read gallery ONLY from Firestore galleryAlbums + galleryMedia. So the
+    //   admin uploads never reached the apps.
+    //
+    //   Fix: keep the existing RTDB writes (dual-write, nothing regresses) and
+    //   ALSO write the canonical Firestore contract via Entity_firestore_sync,
+    //   best-effort/logged so a Firestore hiccup never breaks the live admin UI.
+    //   The event-album picker now sources events from Firestore `events`.
+    //
+    //   Album id convention: albumId === eventId. For a real event that is the
+    //   EVT id (source="event"), for the built-in buckets it is the special id
+    //   (__photos__ / __videos__ / __legacy__ → source="general").
+
+    /** Lazy-load + init the RTDB→Firestore sync helper (gallery dual-write). */
+    private function _entity_sync()
+    {
+        if (!isset($this->entity_sync)) {
+            $this->load->library('entity_firestore_sync', null, 'entity_sync');
+            $this->entity_sync->init(
+                $this->firebase, $this->school_name, $this->session_year, (string) ($this->school_code ?? '')
+            );
+        }
+        return $this->entity_sync;
+    }
+
+    /**
+     * Resolve album metadata (source / eventId / title / category) for a given
+     * upload target id. Built-in buckets are "general"; anything else is an
+     * event album whose title/category are pulled from the Firestore event doc.
+     */
+    private function _gallery_album_meta(string $eventId): array
+    {
+        $defaults = [
+            '__photos__' => ['title' => 'School Photos', 'category' => 'general'],
+            '__videos__' => ['title' => 'School Videos', 'category' => 'general'],
+            '__legacy__' => ['title' => 'General Gallery', 'category' => 'general'],
+        ];
+        if (isset($defaults[$eventId])) {
+            return [
+                'source'   => 'general',
+                'eventId'  => '',
+                'title'    => $defaults[$eventId]['title'],
+                'category' => $defaults[$eventId]['category'],
+            ];
+        }
+
+        $title = $eventId;
+        $category = 'event';
+        try {
+            $evt = $this->fs->getEntity('events', $eventId);
+            if (is_array($evt)) {
+                $title    = (string) ($evt['title'] ?? $eventId);
+                $category = (string) ($evt['category'] ?? 'event');
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Schools::_gallery_album_meta event lookup failed: ' . $e->getMessage());
+        }
+        return ['source' => 'event', 'eventId' => $eventId, 'title' => $title, 'category' => $category];
+    }
+
     public function schoolgallery()
     {
         $this->_require_role(self::VIEW_ROLES, 'view_gallery');
@@ -510,19 +576,88 @@ class Schools extends MY_Controller
     ];
 
     // ── Gallery: fetch event albums ─────────────────────────────────────
+    /**
+     * Aggregate canonical Firestore `galleryMedia` (the docs the apps read),
+     * grouped by albumId → ['img'=>n, 'vid'=>n, 'cover'=>url]. One query, no
+     * RTDB. This is the count/cover authority that REPLACED the world-open RTDB
+     * `Schools/{school}/Events/Media` tree (Critical C2). Cover = first image
+     * url, else first video thumbnail. Archived media is excluded.
+     */
+    private function _galleryMediaByAlbum(): array
+    {
+        $out = [];
+        foreach ((array) $this->firebase->firestoreQuery('galleryMedia', [
+                    ['schoolId', '==', $this->school_id],
+                ]) as $row) {
+            $m = (is_array($row) && isset($row['data']) && is_array($row['data'])) ? $row['data'] : (is_array($row) ? $row : []);
+            if (!empty($m['isArchived'])) continue;
+            $aid = (string) ($m['albumId'] ?? '');
+            if ($aid === '') continue;
+            if (!isset($out[$aid])) $out[$aid] = ['img' => 0, 'vid' => 0, 'cover' => ''];
+            if ((string) ($m['type'] ?? '') === 'video') {
+                $out[$aid]['vid']++;
+                if ($out[$aid]['cover'] === '' && !empty($m['thumbnail'])) {
+                    $out[$aid]['cover'] = (string) $m['thumbnail'];
+                }
+            } else {
+                $out[$aid]['img']++;
+                if ($out[$aid]['cover'] === '') $out[$aid]['cover'] = (string) ($m['url'] ?? '');
+            }
+        }
+        return $out;
+    }
+
     public function fetchGalleryAlbums()
     {
         $this->_require_role(self::VIEW_ROLES, 'view_gallery_albums');
         header('Content-Type: application/json');
         $school_name = $this->school_name;
 
-        // 1. Load all events for album listing
-        $events = $this->firebase->get("Schools/$school_name/Events/List") ?? [];
-        if (!is_array($events)) $events = [];
+        // 1. Event list — CORE C1 FIX (2026-07): events now live in Firestore
+        //    `events`, not the dead RTDB Events/List node. Source the event-album
+        //    picker from Firestore so gallery albums line up with real events
+        //    (and therefore with the apps). schoolId === school_name === SCH_ id.
+        $eventRows = $this->firebase->firestoreQuery(
+            'events', [['schoolId', '==', $this->school_id]], 'startDate', 'DESC'
+        );
+        $events = [];
+        foreach ((array) $eventRows as $row) {
+            // firestoreQuery returns rows shaped ['id'=>docId,'data'=>[...]]; the
+            // fields (title/status/…) live under `data`. Reading them flat left
+            // every event album blank + named by its raw id. Unwrap, and recover
+            // the RAW event id (strip "{schoolId}_") so album keys match the apps
+            // (which query galleryAlbums by eventId == raw EVT id) and uploads land
+            // in the right album.
+            $e    = (is_array($row) && isset($row['data']) && is_array($row['data'])) ? $row['data'] : (is_array($row) ? $row : []);
+            $full = (string) ($row['id'] ?? $e['id'] ?? '');
+            $eid  = (string) ($e['eventId'] ?? '');
+            if ($eid === '' && $full !== '') {
+                $eid = (strpos($full, $this->school_id . '_') === 0) ? substr($full, strlen($this->school_id) + 1) : $full;
+            }
+            if ($eid === '') continue;
+            $events[$eid] = [
+                'title'      => (string) ($e['title'] ?? $eid),
+                'category'   => (string) ($e['category'] ?? 'event'),
+                'start_date' => (string) ($e['start_date'] ?? $e['startDate'] ?? ''),
+                'status'     => (string) ($e['status'] ?? ''),
+            ];
+        }
 
-        // 2. Load all media
-        $mediaRoot = $this->firebase->get("Schools/$school_name/Events/Media") ?? [];
-        if (!is_array($mediaRoot)) $mediaRoot = [];
+        // 2. Canonical album metadata (coverImage / title) from Firestore
+        //    galleryAlbums — the very docs the apps read. Keyed by albumId.
+        $fsAlbums = [];
+        foreach ((array) $this->firebase->firestoreQuery('galleryAlbums', [['schoolId', '==', $this->school_id]]) as $row) {
+            $a = (is_array($row) && isset($row['data']) && is_array($row['data'])) ? $row['data'] : (is_array($row) ? $row : []);
+            $aid = (string) ($a['albumId'] ?? '');
+            if ($aid !== '') $fsAlbums[$aid] = $a;
+        }
+
+        // 3. Per-album image/video split + cover — sourced from the canonical
+        //    Firestore `galleryMedia` (the very docs the apps read). This REPLACES
+        //    the legacy world-open RTDB `Events/Media` tree (Critical C2). One
+        //    query, grouped by albumId. `galleryAlbums.mediaCount` is only a single
+        //    total, so we count image/video from galleryMedia here.
+        $mediaByAlbum = $this->_galleryMediaByAlbum();
 
         $albums      = [];
         $totalImages = 0;
@@ -532,13 +667,8 @@ class Schools extends MY_Controller
         // These always exist and are shown first.
         $defaultAlbumIds = ['__photos__', '__videos__'];
         foreach ($defaultAlbumIds as $defId) {
-            $defMedia = isset($mediaRoot[$defId]) && is_array($mediaRoot[$defId]) ? $mediaRoot[$defId] : [];
-            $imgC = 0; $vidC = 0; $cover = '';
-            foreach ($defMedia as $m) {
-                if (!is_array($m)) continue;
-                if (($m['type'] ?? '') === 'image') { $imgC++; if (!$cover) $cover = $m['url'] ?? ''; }
-                else { $vidC++; if (!$cover && !empty($m['thumbnail'])) $cover = $m['thumbnail']; }
-            }
+            $agg  = $mediaByAlbum[$defId] ?? ['img' => 0, 'vid' => 0, 'cover' => ''];
+            $imgC = (int) $agg['img']; $vidC = (int) $agg['vid']; $cover = (string) $agg['cover'];
             $totalImages += $imgC;
             $totalVideos += $vidC;
 
@@ -558,27 +688,72 @@ class Schools extends MY_Controller
             ];
         }
 
-        // ── Event albums ─────────────────────────────────────────────
+        // ── Event albums (driven by Firestore events) ────────────────
+        // Split counts + cover come from galleryMedia; the canonical Firestore
+        // coverImage (set via setEventCover) wins for cover when present.
+        // Upload picker options: EVERY event (title/date/status), so the admin can
+        // start a photo album for any event — including completed/ongoing ones —
+        // without empty event cards cluttering the album grid.
+        $eventOptions = [];
         foreach ($events as $id => $evt) {
-            if (!is_array($evt)) continue;
-            $eventMedia = isset($mediaRoot[$id]) && is_array($mediaRoot[$id]) ? $mediaRoot[$id] : [];
-            $imgCount = 0; $vidCount = 0; $cover = '';
-            foreach ($eventMedia as $m) {
-                if (!is_array($m)) continue;
-                if (($m['type'] ?? '') === 'image') { $imgCount++; if (!$cover) $cover = $m['url'] ?? ''; }
-                else { $vidCount++; }
-            }
-            if (!empty($evt['cover_image'])) $cover = $evt['cover_image'];
+            $eventOptions[] = [
+                'event_id'   => $id,
+                'title'      => $evt['title'],
+                'start_date' => $evt['start_date'],
+                'status'     => $evt['status'],
+                'category'   => $evt['category'],
+            ];
+        }
+
+        $consumedMediaKeys = ['__photos__' => true, '__videos__' => true];
+        foreach ($events as $id => $evt) {
+            $consumedMediaKeys[$id] = true;
+            $agg      = $mediaByAlbum[$id] ?? ['img' => 0, 'vid' => 0, 'cover' => ''];
+            $imgCount = (int) $agg['img']; $vidCount = (int) $agg['vid'];
+            $cover    = (string) $agg['cover'];
+            if (!empty($fsAlbums[$id]['coverImage'])) $cover = (string) $fsAlbums[$id]['coverImage'];
+
+            // Grid shows only event albums that actually HAVE media. Empty events
+            // live in the upload picker instead.
+            if ($imgCount + $vidCount === 0) continue;
 
             $totalImages += $imgCount;
             $totalVideos += $vidCount;
 
             $albums[] = [
                 'event_id'    => $id,
-                'title'       => $evt['title'] ?? $id,
-                'category'    => $evt['category'] ?? 'event',
-                'start_date'  => $evt['start_date'] ?? '',
-                'status'      => $evt['status'] ?? '',
+                'title'       => $evt['title'],
+                'category'    => $evt['category'],
+                'start_date'  => $evt['start_date'],
+                'status'      => $evt['status'],
+                'cover'       => $cover,
+                'image_count' => $imgCount,
+                'video_count' => $vidCount,
+                'total'       => $imgCount + $vidCount,
+            ];
+        }
+
+        // ── Orphaned albums ──────────────────────────────────────────
+        // galleryMedia grouped under an albumId that is neither a default album
+        // nor a current Firestore event (e.g. pre-cutover ids). Surface them so
+        // their media still displays.
+        foreach ($mediaByAlbum as $rid => $agg) {
+            $rid = (string) $rid;
+            if ($rid === '' || isset($consumedMediaKeys[$rid])) continue;
+            $imgCount = (int) $agg['img']; $vidCount = (int) $agg['vid'];
+            if ($imgCount + $vidCount === 0) continue;
+            $cover = (string) $agg['cover'];
+            if (!empty($fsAlbums[$rid]['coverImage'])) $cover = (string) $fsAlbums[$rid]['coverImage'];
+
+            $totalImages += $imgCount;
+            $totalVideos += $vidCount;
+
+            $albums[] = [
+                'event_id'    => $rid,
+                'title'       => (string) ($fsAlbums[$rid]['title'] ?? $rid),
+                'category'    => (string) ($fsAlbums[$rid]['category'] ?? 'event'),
+                'start_date'  => '',
+                'status'      => 'archived',
                 'cover'       => $cover,
                 'image_count' => $imgCount,
                 'video_count' => $vidCount,
@@ -620,10 +795,11 @@ class Schools extends MY_Controller
 
         $limits = self::GALLERY_LIMITS;
         echo json_encode([
-            'albums'       => $albums,
-            'total_images' => $totalImages,
-            'total_videos' => $totalVideos,
-            'limits'       => $limits,
+            'albums'        => $albums,
+            'event_options' => $eventOptions,
+            'total_images'  => $totalImages,
+            'total_videos'  => $totalVideos,
+            'limits'        => $limits,
         ]);
     }
 
@@ -648,7 +824,8 @@ class Schools extends MY_Controller
         $videos = [];
 
         if ($eventId === '__legacy__') {
-            // Legacy flat gallery
+            // Legacy flat gallery (distinct pre-Events RTDB path; harmless
+            // read-only fallback kept until confirmed empty for all schools).
             $galleryData = $this->firebase->get("Schools/$school_name/{$this->session_year}/Gallery") ?? [];
             if (is_array($galleryData)) {
                 foreach ($galleryData as $key => $media) {
@@ -670,25 +847,38 @@ class Schools extends MY_Controller
                 }
             }
         } else {
-            // Event-based media
-            $mediaData = $this->firebase->get("Schools/$school_name/Events/Media/$eventId") ?? [];
-            if (is_array($mediaData)) {
-                foreach ($mediaData as $key => $media) {
-                    if (!is_array($media) || empty($media['url'])) continue;
-                    $item = [
-                        'media_id'  => $key,
-                        'url'       => $media['url'],
-                        'timestamp' => strtotime($media['uploaded_at'] ?? '') ?: 0,
-                    ];
-                    if (($media['type'] ?? '') === 'image') {
-                        $item['type'] = 'image';
-                        $images[] = $item;
-                    } else {
-                        $item['type']      = 'video';
-                        $item['thumbnail'] = $media['thumbnail'] ?? '';
-                        $item['duration']  = $media['duration'] ?? '';
-                        $videos[] = $item;
-                    }
+            // Event + default albums — canonical Firestore `galleryMedia` (the
+            // docs the apps read). This REPLACES the world-open RTDB Events/Media
+            // read (Critical C2); Firestore is now the sole authority.
+            foreach ((array) $this->firebase->firestoreQuery('galleryMedia', [
+                        ['schoolId', '==', $this->school_id],
+                        ['albumId',  '==', $eventId],
+                    ]) as $row) {
+                $m = (is_array($row) && isset($row['data']) && is_array($row['data'])) ? $row['data'] : (is_array($row) ? $row : []);
+                if (!empty($m['isArchived'])) continue;
+                $url = (string) ($m['url'] ?? '');
+                if ($url === '') continue;
+                // galleryMedia doc-id is "{albumId}_{mediaId}". Return the RAW
+                // mediaId (strip the album prefix) so deleteMedia's
+                // syncDeleteGalleryMedia rebuilds "{albumId}_{mediaId}" correctly.
+                $rawMediaId  = (string) ($row['id'] ?? '');
+                $albumPrefix = $eventId . '_';
+                if ($albumPrefix !== '_' && strpos($rawMediaId, $albumPrefix) === 0) {
+                    $rawMediaId = substr($rawMediaId, strlen($albumPrefix));
+                }
+                $item = [
+                    'media_id'  => $rawMediaId,
+                    'url'       => $url,
+                    'timestamp' => strtotime((string) ($m['uploadedAt'] ?? '')) ?: 0,
+                ];
+                if ((string) ($m['type'] ?? '') === 'video') {
+                    $item['type']      = 'video';
+                    $item['thumbnail'] = (string) ($m['thumbnail'] ?? '');
+                    $item['duration']  = (string) ($m['duration'] ?? '');
+                    $videos[] = $item;
+                } else {
+                    $item['type'] = 'image';
+                    $images[] = $item;
                 }
             }
         }
@@ -706,9 +896,11 @@ class Schools extends MY_Controller
         header('Content-Type: application/json');
 
         $school_name = $this->school_name;
-        $fileUrl     = $this->input->get('url');
-        $eventId     = trim($this->input->get('event_id') ?? '');
-        $mediaId     = trim($this->input->get('media_id') ?? '');
+        // FIX-2 (CSRF): state-changing delete now arrives via POST so CI3's
+        // csrf_verify (POST-only) actually protects it. Reads switched to post().
+        $fileUrl     = $this->input->post('url');
+        $eventId     = trim($this->input->post('event_id') ?? '');
+        $mediaId     = trim($this->input->post('media_id') ?? '');
 
         $specialDeleteIds = ['__legacy__', '__photos__', '__videos__'];
         if ($eventId !== '' && !in_array($eventId, $specialDeleteIds)) {
@@ -728,7 +920,48 @@ class Schools extends MY_Controller
                 return;
             }
 
+            // FIX-1 (CROSS-TENANT DELETE IDOR): the Admin SDK delete bypasses
+            // Storage rules, so we MUST assert the extracted path belongs to the
+            // caller's school before touching anything. Accept the canonical
+            // ID-keyed prefix OR the legacy name-rooted Events prefix. Anything
+            // else is a cross-tenant probe: reject, log, delete NOTHING.
+            $canonicalPrefix = "schools/{$this->school_id}/";
+            $legacyPrefix    = "{$this->school_name}/Events/";
+            $ownedByCaller   = ($this->school_id   !== '' && strpos($filePath, $canonicalPrefix) === 0)
+                            || ($this->school_name !== '' && strpos($filePath, $legacyPrefix)    === 0);
+
+            if (!$ownedByCaller) {
+                // Mirror Homework::CROSS_TENANT_PROBE telemetry pattern.
+                $this->load->library('security_telemetry', null, 'sec_telem');
+                if (isset($this->sec_telem)) {
+                    $this->sec_telem->init(
+                        $this->firebase,
+                        (string) $this->school_id,
+                        ['uid' => $this->admin_id, 'role' => $this->admin_role]
+                    );
+                    if ($this->sec_telem->isReady()) {
+                        $this->sec_telem->emit('CROSS_TENANT_PROBE', 'warning', [
+                            'endpoint'        => 'Schools::deleteMedia',
+                            'attempted_path'  => $filePath,
+                            'attempted_url'   => (string) $fileUrl,
+                            'actor_school_id' => (string) $this->school_id,
+                        ]);
+                    }
+                }
+                log_message('error',
+                    "Schools::deleteMedia CROSS_TENANT_PROBE — actor school=[{$this->school_id}]"
+                    . " admin=[{$this->admin_id}] attempted path=[{$filePath}]"
+                );
+                http_response_code(403);
+                echo json_encode(['status' => 'error', 'message' => 'You are not allowed to delete this file.']);
+                return;
+            }
+
             $this->CM->delete_file_from_firebase($filePath);
+
+            // $fsMediaKey = the media doc-id component to remove from Firestore
+            // galleryMedia ({albumId}_{mediaId}); resolved per-branch below.
+            $fsMediaKey = $mediaId;
 
             if ($eventId === '__legacy__') {
                 // Legacy gallery — scan by URL match
@@ -742,19 +975,40 @@ class Schools extends MY_Controller
                                 if ($thumbPath) $this->CM->delete_file_from_firebase($thumbPath);
                             }
                             $this->firebase->delete("$galleryRef/$key");
+                            $fsMediaKey = (string) $key;
                             break;
                         }
                     }
                 }
             } else {
-                // Event media — direct path delete
-                $mediaPath = "Schools/$school_name/Events/Media/$eventId/$mediaId";
-                $existing  = $this->firebase->get($mediaPath);
-                if (is_array($existing) && !empty($existing['thumbnail'])) {
-                    $thumbPath = $this->extract_firebase_storage_path($existing['thumbnail']);
-                    if ($thumbPath) $this->CM->delete_file_from_firebase($thumbPath);
+                // Event/default album media — Firestore is authoritative now
+                // (RTDB Events/Media removed, Critical C2). Read the galleryMedia
+                // doc to also clean up its thumbnail Storage file, then let the
+                // Firestore delete below remove the doc.
+                try {
+                    $doc = $this->firebase->firestoreGet('galleryMedia', "{$eventId}_{$mediaId}");
+                    if (is_array($doc) && !empty($doc['thumbnail'])) {
+                        $thumbPath = $this->extract_firebase_storage_path((string) $doc['thumbnail']);
+                        if ($thumbPath) $this->CM->delete_file_from_firebase($thumbPath);
+                    }
+                } catch (\Throwable $e) {
+                    log_message('error', 'Schools::deleteMedia thumbnail lookup failed [' . $eventId . '/' . $mediaId . ']: ' . $e->getMessage());
                 }
-                $this->firebase->delete("Schools/$school_name/Events/Media/$eventId", $mediaId);
+            }
+
+            // ── Firestore delete (canonical) ─────────────────────────────
+            // Remove the galleryMedia doc and decrement the album mediaCount so
+            // the apps stay in sync. Best-effort/logged: a Firestore failure must
+            // NOT fail the request (the Storage file is already gone).
+            if ($eventId !== '' && $fsMediaKey !== '') {
+                try {
+                    $sync = $this->_entity_sync();
+                    if ($sync->syncDeleteGalleryMedia($eventId, $fsMediaKey)) {
+                        $sync->bumpGalleryAlbumCount($eventId, -1);
+                    }
+                } catch (\Throwable $e) {
+                    log_message('error', 'Schools::deleteMedia Firestore gallery sync failed [' . $eventId . '/' . $fsMediaKey . ']: ' . $e->getMessage());
+                }
             }
 
             echo json_encode(['status' => 'success', 'message' => 'File deleted successfully']);
@@ -808,21 +1062,44 @@ class Schools extends MY_Controller
             return;
         }
 
+        // ── Server-side content MIME verification (FIX-5) ────────────
+        // Extension + client-sent type are trivially spoofable. Sniff the
+        // real MIME from the file bytes via finfo and reject any mismatch.
+        $allowedImageMimes = ['image/jpeg', 'image/png', 'image/webp'];
+        $allowedVideoMimes = ['video/mp4', 'video/quicktime', 'video/x-msvideo',
+                              'video/avi', 'video/x-matroska', 'video/webm'];
+        $realMime = '';
+        if (function_exists('finfo_open')) {
+            $finfo = finfo_open(FILEINFO_MIME_TYPE);
+            if ($finfo !== false) {
+                $realMime = (string) finfo_file($finfo, $fileTmpPath);
+                finfo_close($finfo);
+            }
+        }
+        if ($realMime === '') {
+            echo json_encode(['status' => 'error', 'message' => 'Could not verify file content type.']);
+            return;
+        }
+        if ($fileType == '1' && !in_array($realMime, $allowedImageMimes, true)) {
+            echo json_encode(['status' => 'error', 'message' => "File content is not a valid image (detected: {$realMime})."]);
+            return;
+        }
+        if ($fileType == '2' && !in_array($realMime, $allowedVideoMimes, true)) {
+            echo json_encode(['status' => 'error', 'message' => "File content is not a valid video (detected: {$realMime})."]);
+            return;
+        }
+
         // ── Check per-school quota (total images/videos across all albums) ──
-        $mediaRoot = $this->firebase->get("Schools/$school_name/Events/Media") ?? [];
+        // Sourced from canonical Firestore galleryMedia (RTDB Events/Media removed,
+        // Critical C2). One query, grouped by album.
+        $mediaByAlbum = $this->_galleryMediaByAlbum();
         $totalImages = 0;
         $totalVideos = 0;
         $albumFileCount = 0;
-        if (is_array($mediaRoot)) {
-            foreach ($mediaRoot as $albumId => $albumMedia) {
-                if (!is_array($albumMedia)) continue;
-                foreach ($albumMedia as $m) {
-                    if (!is_array($m)) continue;
-                    if (($m['type'] ?? '') === 'image') $totalImages++;
-                    else $totalVideos++;
-                    if ($albumId === $eventId) $albumFileCount++;
-                }
-            }
+        foreach ($mediaByAlbum as $albumId => $agg) {
+            $totalImages += (int) $agg['img'];
+            $totalVideos += (int) $agg['vid'];
+            if ($albumId === $eventId) $albumFileCount += (int) $agg['img'] + (int) $agg['vid'];
         }
 
         if ($fileType == '1' && $totalImages >= $limits['max_images_per_school']) {
@@ -889,8 +1166,63 @@ class Schools extends MY_Controller
             }
         }
 
-        $dbPath = "Schools/$school_name/Events/Media/$eventId";
-        $this->firebase->update($dbPath, [$mediaId => $mediaData]);
+        // ── Firestore write (canonical — RTDB Events/Media removed, C2) ──
+        // The apps AND the admin gallery now read gallery ONLY from Firestore
+        // galleryAlbums/galleryMedia. albumId === $eventId. On failure the
+        // uploaded Storage file is rolled back so we never orphan a file.
+        try {
+            $sync = $this->_entity_sync();
+            $meta = $this->_gallery_album_meta($eventId);
+
+            // Upsert the album shell (title/category/source/eventId). mediaCount
+            // is maintained atomically below, not written here.
+            $sync->syncGalleryAlbum($eventId, [
+                'title'      => $meta['title'],
+                'category'   => $meta['category'],
+                'source'     => $meta['source'],
+                'eventId'    => $meta['eventId'],
+                'isArchived' => false,
+                'createdBy'  => $this->admin_id,
+                'createdAt'  => date('c'),
+            ]);
+
+            // Insert the media doc (same download url as RTDB).
+            $sync->syncGalleryMedia($eventId, $mediaId, [
+                'url'        => $downloadUrl,
+                'type'       => ($fileType == '1') ? 'image' : 'video',
+                'thumbnail'  => $mediaData['thumbnail'] ?? '',
+                'duration'   => $mediaData['duration']  ?? '',
+                'caption'    => '',
+                'isArchived' => false,
+                'uploadedBy' => $this->admin_id,
+                'uploadedAt' => $mediaData['uploaded_at'],
+            ]);
+
+            // Atomic mediaCount++ and default cover on first image.
+            $sync->bumpGalleryAlbumCount($eventId, 1);
+            if (($fileType == '1')) {
+                // Seed coverImage only if the album has none yet (merge-safe:
+                // syncGalleryAlbum skips empty, so we only set on first image).
+                $existingAlbum = $this->firebase->firestoreGet('galleryAlbums', "{$this->school_id}_{$eventId}");
+                if (!is_array($existingAlbum) || empty($existingAlbum['coverImage'])) {
+                    $sync->updateGalleryAlbumCover($eventId, $downloadUrl);
+                }
+            }
+        } catch (\Throwable $e) {
+            // Firestore is now the ONLY index for this media. If the write fails,
+            // the Storage file would be orphaned (invisible + counting toward
+            // quota), so roll it back and report the failure instead of a false
+            // success. Mirrors the Teacher app's orphan-rollback.
+            log_message('error', 'Schools::uploadMedia Firestore gallery sync failed [' . $eventId . ']: ' . $e->getMessage());
+            try {
+                $this->CM->delete_file_from_firebase($firebasePath);
+                if (!empty($thumbStoragePath)) $this->CM->delete_file_from_firebase($thumbStoragePath);
+            } catch (\Throwable $rollbackErr) {
+                log_message('error', 'Schools::uploadMedia rollback failed [' . $firebasePath . ']: ' . $rollbackErr->getMessage());
+            }
+            echo json_encode(['status' => 'error', 'message' => 'Upload could not be saved. Please try again.']);
+            return;
+        }
 
         echo json_encode([
             'status'    => 'success',
@@ -914,9 +1246,44 @@ class Schools extends MY_Controller
         }
         $eventId = $this->safe_path_segment($eventId, 'event_id');
 
-        $this->firebase->update("Schools/$school_name/Events/List/$eventId", [
-            'cover_image' => $coverUrl,
-        ]);
+        // FIX-3a (STORED XSS): cover_url is later injected into the album grid
+        // markup, so only accept a well-formed https Firebase Storage URL.
+        // Rejects javascript:/data: URIs and arbitrary hosts.
+        $parts = parse_url((string) $coverUrl);
+        $host  = strtolower($parts['host'] ?? '');
+        $isValidCover = is_array($parts)
+            && (($parts['scheme'] ?? '') === 'https')
+            && ($host === 'firebasestorage.googleapis.com' || $host === 'storage.googleapis.com')
+            && isset($parts['path']) && strpos($parts['path'], '/o/') !== false;
+        if (!$isValidCover) {
+            echo json_encode(['status' => 'error', 'message' => 'Invalid cover image URL.']);
+            return;
+        }
+
+        // Scope the cover to the caller's own school storage — reject pointing an
+        // album cover at another tenant's file (canonical ID prefix or legacy
+        // name-rooted Events prefix). Mirrors the deleteMedia ownership guard.
+        $coverPath = $this->extract_firebase_storage_path($coverUrl);
+        $ownedByCaller = $coverPath !== null && (
+            ($this->school_id   !== '' && strpos($coverPath, "schools/{$this->school_id}/") === 0)
+            || ($this->school_name !== '' && strpos($coverPath, "{$this->school_name}/Events/") === 0)
+        );
+        if (!$ownedByCaller) {
+            log_message('error', "Schools::setEventCover cross-tenant cover rejected — school=[{$this->school_id}] path=[{$coverPath}]");
+            echo json_encode(['status' => 'error', 'message' => 'That cover image is not allowed.']);
+            return;
+        }
+
+        // Canonical write: the cover lives on the galleryAlbums doc, which both
+        // the apps and the admin gallery read. (Legacy RTDB Events/List write
+        // removed — nothing reads it anymore; Critical C2 de-RTDB.)
+        try {
+            $this->_entity_sync()->updateGalleryAlbumCover($eventId, (string) $coverUrl);
+        } catch (\Throwable $e) {
+            log_message('error', 'Schools::setEventCover Firestore gallery sync failed [' . $eventId . ']: ' . $e->getMessage());
+            echo json_encode(['status' => 'error', 'message' => 'Could not set cover. Please try again.']);
+            return;
+        }
 
         echo json_encode(['status' => 'success', 'message' => 'Cover image set successfully']);
     }

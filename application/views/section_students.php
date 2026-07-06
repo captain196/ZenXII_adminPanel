@@ -471,7 +471,7 @@
     /* ============================================================
    STUDENT SEARCH (NAME / ID)
 ============================================================ */
-    $(document).on('keyup', '#studentSearchInput', function() {
+    $(document).on('keyup', '#studentSearchInput', ZXutil.debounce(function() {
 
         const query = $(this).val().trim().toLowerCase();
         let visibleCount = 0;
@@ -504,7 +504,7 @@
             </tr>
         `);
         }
-    });
+    }, 180));
 
     $(document).on('keydown', '#studentSearchInput', function(e) {
         if (e.key === 'Escape') {

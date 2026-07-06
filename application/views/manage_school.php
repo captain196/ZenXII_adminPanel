@@ -419,7 +419,7 @@ function showToast(msg, type) {
     var rows   = document.querySelectorAll('#msBody .ms-row');
     var rcEl   = document.getElementById('msRowCount');
     if (!search) return;
-    search.addEventListener('input', function() {
+    search.addEventListener('input', ZXutil.debounce(function() {
         var q = search.value.toLowerCase().trim();
         var n = 0;
         rows.forEach(function(row) {
@@ -429,7 +429,7 @@ function showToast(msg, type) {
             if (show) n++;
         });
         if (rcEl) rcEl.textContent = n + ' school(s)';
-    });
+    }, 180));
 })();
 
 /* ── Select-All features ── */

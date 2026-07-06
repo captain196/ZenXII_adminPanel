@@ -3498,6 +3498,26 @@ class Fee_management extends MY_Controller
         }
         echo $__op5ResponseJson;
         @flush();
+
+        // Best-effort "payment received" push to the parent, AFTER the response
+        // is flushed so it adds no client-perceived latency. Fires exactly once
+        // per genuine payment — network retries hit the idempotency
+        // early-return far above and never reach here. Parent app routes
+        // type=fee_payment_confirmed to the Fees screen.
+        try {
+            $this->load->library('Push_service', null, 'push_svc');
+            $this->push_svc->sendToUser((string) $studentId, [
+                'title' => 'Payment Received',
+                'body'  => 'Payment of Rs. ' . number_format((float) $paidAmount, 2) . ' received. Receipt ' . $receiptNo . '.',
+                'data'  => [
+                    'type'      => 'fee_payment_confirmed',
+                    'studentId' => (string) $studentId,
+                    'receiptNo' => (string) $receiptNo,
+                ],
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'parent_verify_payment: fee_payment_confirmed push failed - ' . $e->getMessage());
+        }
     }
 
     // parent_pay_from_wallet() removed in Phase 9 (wallet subsystem

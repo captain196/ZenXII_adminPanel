@@ -71,7 +71,9 @@ $config['allow_get_array']      = TRUE;
 //  ERROR LOGGING
 //  FIX: Set to 1 (errors only) on production — level 4 fills disk fast
 // ─────────────────────────────────────────────────────────────────────────────
-$config['log_threshold']        = 2;   // TESTING: errors + info (revert to 1 for production)
+// PERF: info/debug logging writes 50–120 flock'd file appends per hot request.
+// Env-overridable so you can flip to 2 (info) temporarily for debugging without a redeploy.
+$config['log_threshold']        = (int) (getenv('LOG_THRESHOLD') ?: 1);   // 1 = errors only (production default)
 $config['log_path']             = '';
 $config['log_file_extension']   = '';
 $config['log_file_permissions'] = 0644;
@@ -119,7 +121,10 @@ $config['payroll_engine_integration'] = (string) (getenv('PAYROLL_ENGINE_INTEGRA
 //  SESSION SETTINGS
 //  FIX: secure cookies, strict SameSite, HttpOnly, longer expiry
 // ─────────────────────────────────────────────────────────────────────────────
-$config['sess_driver']           = 'files';
+// PERF: env-switchable so sessions can move to Redis (which unblocks the file-lock
+// that serializes a user's concurrent AJAX) WITHOUT a code change. Default stays
+// 'files' — behaviour is identical unless SESS_DRIVER is set AND Redis is running.
+$config['sess_driver']           = getenv('SESS_DRIVER') ?: 'files';
 $config['sess_cookie_name']      = 'grader_session';     // ← not the default ci_session
 $config['sess_samesite']         = 'Lax';              // Lax = safe default; Strict breaks redirects from external links
 $config['sess_expiration']       = 28800;                // 8 hours — comfortable for a full work day
@@ -130,7 +135,10 @@ $config['sess_expiration']       = 28800;                // 8 hours — comforta
 // A dedicated dir ensures only our gc_maxlifetime setting applies.
 $_sess_dir = APPPATH . 'sessions';
 if (!is_dir($_sess_dir)) { @mkdir($_sess_dir, 0700, true); }
-$config['sess_save_path']        = $_sess_dir;
+// For the Redis driver set SESS_SAVE_PATH to a connection string, e.g.
+//   SESS_SAVE_PATH="tcp://127.0.0.1:6379"   (needs the phpredis extension + redis-server).
+// Default (files driver) keeps using the dedicated directory above.
+$config['sess_save_path']        = getenv('SESS_SAVE_PATH') ?: $_sess_dir;
 
 $config['sess_match_ip']         = FALSE;  // Disabled: localhost flips between 127.0.0.1/::1 causing logouts. Re-enable in production with stable IPs.
 $config['sess_time_to_update']   = 600;   // regenerate every 10 min (was 5 min — too aggressive, causes AJAX race conditions)

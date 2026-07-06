@@ -143,9 +143,18 @@ class Red_flags extends MY_Controller
     private function _collect_all_flags(
         ?array $classFilter = null,
         bool $includeDeleted = false,
-        ?int $sinceMs = null
+        ?int $sinceMs = null,
+        ?array &$meta = null
     ): array {
-        if (!isset($this->fs) || !$this->school_id) return [];
+        // $meta (by-ref, optional) reports read health to the caller so the UI
+        // can distinguish "genuinely no flags" from "couldn't read the store"
+        // and warn when the 500-row cap truncated the result. For a monitoring
+        // feature, a silent empty-on-failure is a dangerous false "all clear".
+        if ($meta !== null) { $meta['error'] = false; $meta['truncated'] = false; }
+        if (!isset($this->fs) || !$this->school_id) {
+            if ($meta !== null) $meta['error'] = true;
+            return [];
+        }
 
         // Time-window filter pushed down to Firestore (per retention
         // strategy: dashboards default to last 60 days, full history
@@ -177,6 +186,15 @@ class Red_flags extends MY_Controller
             'DESC',
             500
         );
+
+        // Either query hitting the 500 cap means the merged/filtered results
+        // below are computed over a truncated set — totals under-report and a
+        // filter can show zero matches for rows that exist but fell outside the
+        // most-recent 500. Surface it so the UI can warn instead of presenting
+        // partial data as authoritative.
+        if ($meta !== null && (count($bySchoolId) >= 500 || count($bySchoolCode) >= 500)) {
+            $meta['truncated'] = true;
+        }
 
         // Dedupe by document id; keep the row whose createdAtMs is greatest
         // (defensive — both queries return the same doc, so values match).
@@ -283,7 +301,20 @@ class Red_flags extends MY_Controller
     public function index()
     {
         $this->_require_role(self::VIEW_ROLES, 'red_flags_view');
-        $data = [];
+        // Server-authoritative manage capability, computed with the SAME
+        // case-insensitive logic the mutation endpoints enforce. Passing this
+        // to the view lets it hide action buttons from view-only roles without
+        // the client-side role-casing drift that previously caused false
+        // negatives (the old code gave up and hardcoded CAN_MANAGE=true).
+        $role = $this->admin_role ?? '';
+        $can_manage = (strcasecmp($role, 'Super Admin') === 0)
+            || (strcasecmp($role, 'School Super Admin') === 0);
+        if (!$can_manage) {
+            foreach (self::MANAGE_ROLES as $a) {
+                if (strcasecmp($role, $a) === 0) { $can_manage = true; break; }
+            }
+        }
+        $data = ['can_manage' => $can_manage];
         $this->load->view('include/header', $data);
         $this->load->view('red_flags/index', $data);
         $this->load->view('include/footer');
@@ -300,7 +331,7 @@ class Red_flags extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'red_flags_classes');
 
-        $classes = $this->_get_session_classes();
+        $classes = $this->_get_class_sections();
 
         // For Teacher role, filter to assigned classes only
         if (($this->admin_role ?? '') === 'Teacher') {
@@ -315,6 +346,75 @@ class Red_flags extends MY_Controller
         }
 
         $this->json_success(['classes' => $classes]);
+    }
+
+    /**
+     * Class + section list for the create-flag / filter dropdowns.
+     *
+     * FIX 2026-07-03: the create-flag modal was showing an empty class list.
+     * Root cause (confirmed in logs: `red_flags/get_classes firebase_ops=1`)
+     * was that `_get_session_classes()` reads the LEGACY RTDB tree
+     * `Schools/{school}/{session}/Class X/Section Y`, which is empty/stale for
+     * Firestore-onboarded schools — so it returned zero classes with no error.
+     *
+     * The canonical, migrated source is the Firestore `sections` collection
+     * (written by Classes.php; each doc has className + section). We read that
+     * first and only fall back to the RTDB enumeration for legacy schools whose
+     * sections predate the migration. Not session-filtered (sections are
+     * effectively static across sessions; mirrors Classes::get_all_classes).
+     */
+    private function _get_class_sections(): array
+    {
+        $classes = [];
+        $seen = [];
+        try {
+            if (isset($this->fs) && $this->school_id) {
+                $sectionDocs = (array) $this->fs->schoolWhere('sections', []);
+                foreach ($sectionDocs as $doc) {
+                    $d = is_array($doc) ? ($doc['data'] ?? $doc) : null;
+                    if (!is_array($d)) continue;
+                    $className = trim((string) ($d['className'] ?? ''));
+                    $section   = trim((string) ($d['section'] ?? ''));
+                    if ($className === '' || $section === '') continue;
+                    // The stored `section` field is inconsistent across writers —
+                    // some store the bare letter ("A"), the live data stores the
+                    // prefixed form ("Section A"). Normalize to the BARE letter to
+                    // match the legacy _get_session_classes contract that the rest
+                    // of the flag flow (student lookup, teacher-access filter,
+                    // create submit) is written against.
+                    $section  = preg_replace('/^Section\s+/i', '', $section);
+                    $classKey = Firestore_service::classKey($className);
+                    // Dedupe across sessions (we don't session-filter, so the same
+                    // class/section can appear more than once).
+                    $dedupeKey = $classKey . '|' . $section;
+                    if (isset($seen[$dedupeKey])) continue;
+                    $seen[$dedupeKey] = true;
+                    $classes[] = [
+                        'class_key'     => $classKey,
+                        'section'       => $section,
+                        'label'         => $classKey . ' / Section ' . $section,
+                        'class_section' => $classKey . " '" . $section . "'",
+                    ];
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Red_flags::_get_class_sections Firestore sections read failed: ' . $e->getMessage());
+        }
+
+        // Legacy fallback — older schools whose sections predate Firestore.
+        if (empty($classes)) {
+            $classes = $this->_get_session_classes();
+        }
+
+        // Stable human order: numeric class asc, then section.
+        usort($classes, function ($a, $b) {
+            $an = (int) preg_replace('/\D/', '', $a['class_key']);
+            $bn = (int) preg_replace('/\D/', '', $b['class_key']);
+            if ($an !== $bn) return $an <=> $bn;
+            return strcmp($a['section'], $b['section']);
+        });
+
+        return $classes;
     }
 
     /**
@@ -445,7 +545,8 @@ class Red_flags extends MY_Controller
         }
         // (sinceMs left null → _collect_all_flags applies the 60-day default)
 
-        $allFlags = $this->_collect_all_flags(null, $includeDeleted, $sinceMs);
+        $readMeta = [];
+        $allFlags = $this->_collect_all_flags(null, $includeDeleted, $sinceMs, $readMeta);
 
         // Apply filters from POST
         $fClassKey  = trim($this->input->post('class_key') ?? '');
@@ -503,8 +604,12 @@ class Red_flags extends MY_Controller
         }
 
         $this->json_success([
-            'flags'   => $filtered,
-            'total'   => count($filtered),
+            'flags'     => $filtered,
+            'total'     => count($filtered),
+            // Read health so the UI can warn rather than present partial /
+            // failed reads as an authoritative "all clear".
+            'truncated' => !empty($readMeta['truncated']),
+            'read_error' => !empty($readMeta['error']),
         ]);
     }
 

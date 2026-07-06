@@ -61,6 +61,9 @@ class Attendance_policy
     const STATUS_HOLIDAY = 'H';
     const STATUS_ABSENT  = 'A';
     const STATUS_VACANT  = 'V';
+    const STATUS_HALF     = 'M';   // half-day (worked ≥ halfDayHours but < fullDayHours)
+    const STATUS_WEEKLYOFF = 'O';  // scheduled weekly-off day
+    const STATUS_EXTRA    = 'W';   // worked on a rest day (weekly-off / holiday) → extra pay
 
     /** Server defaults applied when a policy omits a field (fail-safe, conservative). */
     const DEFAULT_MAX_ACCURACY_M   = 100.0;
@@ -68,6 +71,9 @@ class Attendance_policy
     const DEFAULT_LATE_THRESHOLD   = '09:00';
     const DEFAULT_EARLIEST_CHECKIN = '00:00';
     const DEFAULT_LATEST_CHECKIN   = '23:59';
+    const DEFAULT_FULL_DAY_HOURS   = 8.0;
+    const DEFAULT_HALF_DAY_HOURS   = 4.0;
+    const DEFAULT_BREAK_MIN        = 0;
 
     /**
      * Evaluate a punch request against the school's attendance policy.
@@ -152,16 +158,34 @@ class Attendance_policy
             return $this->_reject($base, 'outside_geofence');
         }
 
-        // ── Gate 6: precedence — approved leave / holiday win over a punch ──
+        // ── Gate 6: precedence — approved leave wins over any punch ──
         $currentMark = strtoupper((string) ($context['currentDayMark'] ?? self::STATUS_VACANT));
         if ($currentMark === self::STATUS_LEAVE) {
             return $this->_reject($base, 'on_leave');
         }
-        if (!empty($context['isHoliday']) || $currentMark === self::STATUS_HOLIDAY) {
-            return $this->_reject($base, 'on_holiday');
+
+        // ── Gate 6b: rest day (weekly-off / holiday) → extra work ────
+        // A rest day is not a normal attendance day. If the school allows
+        // working on rest days, an on-campus punch is recorded as EXTRA (W)
+        // — payroll pays it at the configured multiplier. Otherwise reject.
+        $isHoliday   = !empty($context['isHoliday'])   || $currentMark === self::STATUS_HOLIDAY;
+        $isWeeklyOff = !empty($context['isWeeklyOff']) || $currentMark === self::STATUS_WEEKLYOFF;
+        if ($isHoliday || $isWeeklyOff) {
+            if (empty($policy['allowWorkOnOff'])) {
+                return $this->_reject($base, $isHoliday ? 'on_holiday' : 'on_weekly_off');
+            }
+            if ($currentMark === self::STATUS_EXTRA) {            // idempotent re-punch
+                $d = $this->_allow($base, null, false);
+                $d['reason'] = 'already_checked_in';
+                return $d;
+            }
+            if ($direction === 'out') {                          // rest-day check-out: audit only
+                return $this->_allow($base, null, false);
+            }
+            return $this->_allow($base, self::STATUS_EXTRA, true); // rest-day check-in stamps W
         }
 
-        // ── Gate 7+: direction-specific window + classification ──────
+        // ── Gate 7+: normal-day window + classification ──────────────
         $windows = $this->_resolve_windows($policy, $shiftId);
         $nowMin  = $this->_now_minutes($context);
         if ($nowMin === null) {
@@ -170,7 +194,7 @@ class Attendance_policy
         }
 
         if ($direction === 'out') {
-            return $this->_evaluate_checkout($base, $windows, $nowMin);
+            return $this->_evaluate_checkout($base, $windows, $nowMin, $context);
         }
         return $this->_evaluate_checkin($base, $windows, $nowMin, $currentMark);
     }
@@ -193,7 +217,7 @@ class Attendance_policy
         // First-IN-of-day-wins: if today already carries a present/late
         // mark, this is a re-punch. Allowed (for check-in-time history) but
         // it does NOT re-set status — the controller treats it idempotently.
-        if ($currentMark === self::STATUS_PRESENT || $currentMark === self::STATUS_LATE) {
+        if (in_array($currentMark, [self::STATUS_PRESENT, self::STATUS_LATE, self::STATUS_HALF, self::STATUS_EXTRA], true)) {
             $d = $this->_allow($base, null, false);
             $d['reason'] = 'already_checked_in';
             return $d;
@@ -206,41 +230,52 @@ class Attendance_policy
             return $this->_reject($base, 'already_marked');
         }
 
-        $earliest  = $this->_to_minutes($w['earliestCheckIn']);
-        $latest    = $this->_to_minutes($w['latestCheckIn']);
-        $threshold = $this->_to_minutes($w['lateThreshold']);
-        $grace     = (int) $w['gracePeriodMin'];
-
-        if ($nowMin < $earliest) {
-            return $this->_reject($base, 'too_early');
-        }
-        if ($nowMin > $latest) {
+        // Optional hard latest-check-in cutoff — arriving after it means the day
+        // cannot be marked present (empty in the shift = no cutoff).
+        $latest = ($w['latestCheckIn'] !== null) ? $this->_to_minutes($w['latestCheckIn']) : null;
+        if ($latest !== null && $nowMin > $latest) {
             return $this->_reject($base, 'window_closed');
         }
 
-        $onTimeCutoff = $threshold + $grace;
-        if ($nowMin <= $onTimeCutoff) {
+        // On-time vs Late — driven by the Work Schedule's shiftStart + grace
+        // (single source; no separate late-threshold / earliest-check-in gate).
+        $start = $this->_to_minutes($w['shiftStart']);
+        $grace = (int) $w['gracePeriodMin'];
+        if ($nowMin <= $start + $grace) {
             return $this->_allow($base, self::STATUS_PRESENT, true); // P, lateMinutes 0
         }
-
-        // Late: measure minutes past the nominal threshold (not past grace).
         $d = $this->_allow($base, self::STATUS_LATE, true);
-        $d['lateMinutes'] = max(0, $nowMin - $threshold);
+        $d['lateMinutes'] = max(0, $nowMin - $start);
         return $d;
     }
 
-    private function _evaluate_checkout(array $base, array $w, int $nowMin): array
+    private function _evaluate_checkout(array $base, array $w, int $nowMin, array $context): array
     {
-        // Check-out never sets attendance status; it only records an OUT
-        // punch (worked-hours / early-departure are future consumers).
-        $start = isset($w['checkoutStart'])  ? $this->_to_minutes($w['checkoutStart'])  : null;
-        $end   = isset($w['checkoutLatest']) ? $this->_to_minutes($w['checkoutLatest']) : null;
+        // No check-out time gating — you may clock out at any time; the hours
+        // worked decide the day (this is what makes early half-day checkouts work).
 
-        if ($start !== null && $nowMin < $start) {
-            return $this->_reject($base, 'too_early');
-        }
-        if ($end !== null && $nowMin > $end) {
-            return $this->_reject($base, 'window_closed');
+        // Worked-hours classification — ONLY when a schedule (full/half hours)
+        // is configured AND today's check-in time is known. Downgrades the day
+        // to Half-day (M) or short-day → Absent (A). A full day keeps the P/T
+        // already set at check-in (audit-only here). Without a schedule the
+        // check-out stays audit-only (legacy behaviour, fully back-compatible).
+        $checkInMin = $context['checkInMinutes'] ?? null;
+        $full = (int) ($w['fullDayMinutes'] ?? 0);
+        $half = (int) ($w['halfDayMinutes'] ?? 0);
+        if (!empty($w['hoursEnabled']) && is_int($checkInMin) && $full > 0 && $half > 0 && $nowMin > $checkInMin) {
+            $worked = $nowMin - $checkInMin - (int) ($w['breakMinutes'] ?? 0);
+            if ($worked < 0) $worked = 0;
+            if ($worked >= $full) {
+                return $this->_allow($base, null, false);              // full day — keep P/T
+            }
+            if ($worked >= $half) {
+                $d = $this->_allow($base, self::STATUS_HALF, true);    // half-day
+                $d['workedMinutes'] = $worked;
+                return $d;
+            }
+            $d = $this->_allow($base, self::STATUS_ABSENT, true);      // below half → absent
+            $d['workedMinutes'] = $worked;
+            return $d;
         }
         return $this->_allow($base, null, false); // allowed, audit-only
     }
@@ -252,15 +287,26 @@ class Attendance_policy
         $shifts = is_array($policy['shifts'] ?? null) ? $policy['shifts'] : [];
         $shift  = is_array($shifts[$shiftId] ?? null) ? $shifts[$shiftId]
                 : (is_array($shifts['default'] ?? null) ? $shifts['default'] : []);
-        $w = is_array($shift['windows'] ?? null) ? $shift['windows'] : [];
+        $w     = is_array($shift['windows']  ?? null) ? $shift['windows']  : [];
+        $sched = is_array($shift['schedule'] ?? null) ? $shift['schedule'] : [];
+
+        // Work Schedule is the single source of truth; fall back to legacy
+        // windows (older policies) so nothing breaks pre-migration.
+        $shiftStart = (string) ($sched['shiftStart']    ?? $w['lateThreshold']  ?? self::DEFAULT_LATE_THRESHOLD);
+        $grace      = (int)    ($sched['graceMinutes']  ?? $w['gracePeriodMin'] ?? self::DEFAULT_GRACE_MIN);
+        $latestRaw  = (string) ($sched['latestCheckIn'] ?? $w['latestCheckIn']  ?? '');
 
         return [
-            'earliestCheckIn' => (string) ($w['earliestCheckIn'] ?? self::DEFAULT_EARLIEST_CHECKIN),
-            'latestCheckIn'   => (string) ($w['latestCheckIn']   ?? self::DEFAULT_LATEST_CHECKIN),
-            'lateThreshold'   => (string) ($w['lateThreshold']   ?? self::DEFAULT_LATE_THRESHOLD),
-            'gracePeriodMin'  => (int)    ($w['gracePeriodMin']  ?? self::DEFAULT_GRACE_MIN),
-            'checkoutStart'   => $w['checkoutStart']  ?? null,
-            'checkoutLatest'  => $w['checkoutLatest'] ?? null,
+            'shiftStart'      => $shiftStart,
+            'gracePeriodMin'  => $grace,
+            // Optional hard cutoff; '' or the sentinel 23:59 both mean "no cutoff".
+            'latestCheckIn'   => ($latestRaw !== '' && $latestRaw !== '23:59') ? $latestRaw : null,
+            // Work-schedule (hours model). hoursEnabled gates half-day/absent
+            // classification so schools without a schedule keep legacy behaviour.
+            'hoursEnabled'    => !empty($sched),
+            'fullDayMinutes'  => (int) round(((float) ($sched['fullDayHours'] ?? self::DEFAULT_FULL_DAY_HOURS)) * 60),
+            'halfDayMinutes'  => (int) round(((float) ($sched['halfDayHours'] ?? self::DEFAULT_HALF_DAY_HOURS)) * 60),
+            'breakMinutes'    => (int) ($sched['breakMinutes'] ?? self::DEFAULT_BREAK_MIN),
         ];
     }
 

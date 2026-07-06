@@ -64,6 +64,15 @@ class NoticeAnnouncement extends MY_Controller
      */
     private function getRecentNotices(int $limit = 10): array
     {
+        // PERF: the header bell fires this on EVERY page; the query is a ~1.7s
+        // cross-region read (DB is in nam5/US). Cache the assembled list per school
+        // for 45s — notices are not second-critical, and a new notice still shows
+        // within 45s. Read-only view path; nothing here writes state.
+        $this->load->driver('cache', ['adapter' => 'file']);
+        $bellKey = 'notice_bell_' . md5((string) $this->school_name . '|' . $limit);
+        $bellHit = $this->cache->get($bellKey);
+        if (is_array($bellHit)) return $bellHit;
+
         $rows = $this->firebase->firestoreQuery(self::COL_NOTICES, [
             ['schoolId', '==', $this->school_name],
         ], 'timestamp', 'DESC', $limit);
@@ -80,6 +89,7 @@ class NoticeAnnouncement extends MY_Controller
                 'source'      => 'firestore',
             ];
         }
+        $this->cache->save($bellKey, $out, 45);
         return $out;
     }
 
@@ -304,6 +314,16 @@ class NoticeAnnouncement extends MY_Controller
             // ── 4. Circulars collection (already watched by Parent/
             //        Teacher apps) ─────────────────────────────────────
             try {
+                // Canonical audience scoping (2026-07-03): a small, explicit
+                // recipient list becomes precise user:<id> keys (each parent /
+                // staff member matches their own); a bulk send (>50) is treated
+                // as school-wide ['all']. The apps filter on these so a targeted
+                // notice no longer leaks to everyone.
+                $recipientIds = array_values(array_map('strval', array_keys($sanitized_to_ids)));
+                $audienceKeys = (count($recipientIds) === 0 || count($recipientIds) > 50)
+                    ? ['all']
+                    : array_values(array_map(function ($id) { return 'user:' . $id; }, $recipientIds));
+
                 $this->firebase->firestoreSet(self::COL_CIRCULARS, $notice_id, [
                     'schoolId'       => $school_name,
                     'session'        => $session_year,
@@ -312,7 +332,9 @@ class NoticeAnnouncement extends MY_Controller
                     'author'         => $this->admin_name ?? $admin_id,
                     'category'       => $category,
                     'priority'       => $priority,
-                    'targetAudience' => array_values(array_map('strval', array_keys($sanitized_to_ids))),
+                    'targetAudience' => $recipientIds,
+                    'audienceKeys'   => $audienceKeys,
+                    'type'           => 'notice',
                     'attachmentUrl'  => '',
                     'sentAt'         => $now_iso,
                     'status'         => 'sent',

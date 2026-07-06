@@ -26,6 +26,18 @@ class Homework extends MY_Controller
     /** Roles that may view homework data */
     private const VIEW_ROLES = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Academic Coordinator', 'Class Teacher', 'Teacher'];
 
+    /* Firestore read/pagination caps — kept below Firestore's hard limits and
+       reused across the chunked-cursor scans (_fetch_all_homework,
+       _calc_submission_rate) and the cascade delete. */
+    /** Per-page chunk size for cursor-paginated scans (sub-500 headroom). */
+    private const FETCH_CHUNK = 499;
+    /** Safety cap on cursor-pagination iterations (FETCH_CHUNK × this ≈ 125k). */
+    private const FETCH_MAX_ITERS = 250;
+    /** Default single-shot query cap for roster / submission / section reads. */
+    private const QUERY_LIMIT = 500;
+    /** Larger single-shot cap for roster + subject-assignment reads. */
+    private const MAX_QUERY_LIMIT = 1000;
+
     public function __construct()
     {
         parent::__construct();
@@ -66,10 +78,11 @@ class Homework extends MY_Controller
         $all = $this->_fetch_all_homework();
         $today = $this->_school_today();  // Finding #9 2026-05-14 — school-timezone (IST), not server UTC; parity with M1A.7
 
-        $total   = 0;
-        $active  = 0;
-        $overdue = 0;
-        $closed  = 0;
+        $total    = 0;
+        $active   = 0;
+        $overdue  = 0;
+        $closed   = 0;
+        $archived = 0;
         $totalSubmissionRate = 0;
         $ratedCount = 0;
 
@@ -85,6 +98,14 @@ class Homework extends MY_Controller
                 }
             } elseif (strcasecmp($status, 'Closed') === 0) {
                 $closed++;
+            } elseif (strcasecmp($status, 'Archived') === 0) {
+                // BUG-2 — Archived was previously uncounted, so the status
+                // donut (Active/Overdue/Closed) never summed to `total` when
+                // archived homework existed. Counting it lets the view emit an
+                // Archived slice; with mutually-exclusive slices
+                // (Active-not-overdue + Overdue + Closed + Archived) the donut
+                // sums to `total`.
+                $archived++;
             }
 
             // Submission rate
@@ -130,6 +151,7 @@ class Homework extends MY_Controller
             'active'      => $active,
             'overdue'     => $overdue,
             'closed'      => $closed,
+            'archived'    => $archived,
             'avg_rate'    => $avgRate,
             'due_today'   => $dueToday,
             'due_week'    => $dueWeek,
@@ -247,85 +269,21 @@ class Homework extends MY_Controller
             $this->json_error('Homework not found.', 404);
         }
 
-        // Read submissions from Firestore
-        // BUG-011 — defense-in-depth: schoolId predicate matches the
-        // delete_homework / update_homework / teacherMarks pattern at
-        // lines ~1284, 1182, 258 in this file. Composite index served
-        // by indexes.json:238 per Finding #4d comment block.
-        $subDocs = $this->firebase->firestoreQuery(
-            'submissions',
-            [
-                ['schoolId',   '=', $this->school_name],
-                ['homeworkId', '=', $hwId],
-            ],
-            null, 'ASC', 500
-        );
+        // Merge submissions + teacherMarks + full class roster (submission >
+        // mark > pending) via the shared helper. Detail drops the tracker-only
+        // rollNo/source fields; the counts below derive from this merged list
+        // so submitted + pending always equals the row count.
+        $submissionList = $this->_merge_submissions($hw, $hwId, false);
 
-        $submissionList = [];
+        // Count from the merged list so submitted + pending == row count.
         $submitted = 0;
         $pending   = 0;
-        $seenStudentIds = [];  // dedupe against teacherMarks below
-
-        foreach ($subDocs as $sub) {
-            $d = $sub['data'];
-            $subStatus = $d['status'] ?? 'pending';
-            $sid = $d['studentId'] ?? '';
-            if ($sid !== '') $seenStudentIds[$sid] = true;
-            if (in_array(strtolower($subStatus), ['submitted', 'reviewed', 'complete', 'done'])) {
+        foreach ($submissionList as $r) {
+            if (in_array(strtolower($r['status']), ['submitted', 'reviewed', 'complete', 'done'])) {
                 $submitted++;
             } else {
                 $pending++;
             }
-            $submissionList[] = [
-                'studentId'   => $sid,
-                'studentName' => $d['studentName'] ?? '',
-                'status'      => $subStatus,
-                'text'        => $d['text'] ?? '',
-                'remarks'     => $d['remark'] ?? '',
-                'submittedAt' => $d['submittedAt'] ?? '',
-                'score'       => $d['score'] ?? -1,
-                'reviewedBy'  => $d['reviewedBy'] ?? '',
-            ];
-        }
-
-        // Include students evaluated via teacherMarks (no submission doc).
-        // Without this, evaluated non-submitters are invisible here even though
-        // the parent app shows them as "Evaluated".
-        try {
-            $tmDocs = $this->firebase->firestoreQuery(
-                'teacherMarks',
-                [
-                    ['schoolId',   '=', $this->school_name],
-                    ['homeworkId', '=', $hwId],
-                ],
-                null, 'ASC', 500
-            );
-            foreach ($tmDocs as $tm) {
-                $td  = $tm['data'];
-                $tsid = $td['studentId'] ?? '';
-                if ($tsid === '' || isset($seenStudentIds[$tsid])) continue;
-                // Read the teacherMark's actual status — was hardcoded to
-                // 'reviewed' before the Teacher app's reviewOrMark fix that
-                // started persisting the chosen status. Legacy docs without
-                // a status field default to 'reviewed' (the previous
-                // hardcoded value) so older marks render the same.
-                $tmStatus = $td['status'] ?? 'reviewed';
-                if (in_array(strtolower($tmStatus), ['submitted', 'reviewed', 'complete', 'done'])) {
-                    $submitted++;
-                }
-                $submissionList[] = [
-                    'studentId'   => $tsid,
-                    'studentName' => '',
-                    'status'      => $tmStatus,
-                    'text'        => '',
-                    'remarks'     => $td['remark'] ?? '',
-                    'submittedAt' => '',
-                    'score'       => $td['score'] ?? -1,
-                    'reviewedBy'  => $td['teacherId'] ?? '',
-                ];
-            }
-        } catch (\Exception $e) {
-            log_message('error', 'Homework::get_homework_detail — teacherMarks query failed: ' . $e->getMessage());
         }
 
         $today = $this->_school_today();  // Finding #9 2026-05-14 — school-timezone (IST), not server UTC; parity with M1A.7
@@ -393,167 +351,10 @@ class Homework extends MY_Controller
             $this->json_error('Homework not found.', 404);
         }
 
-        // Read submissions from Firestore
-        // BUG-011 — defense-in-depth: schoolId predicate matches the
-        // delete_homework / update_homework / teacherMarks pattern at
-        // lines ~1284, 1182, 258 in this file. Composite index served
-        // by indexes.json:238 per Finding #4d comment block.
-        $subDocs = $this->firebase->firestoreQuery(
-            'submissions',
-            [
-                ['schoolId',   '=', $this->school_name],
-                ['homeworkId', '=', $hwId],
-            ],
-            null, 'ASC', 500
-        );
-
-        // Index submissions by studentId
-        $subMap = [];
-        foreach ($subDocs as $sub) {
-            $d = $sub['data'];
-            $sid = $d['studentId'] ?? '';
-            $subMap[$sid] = [
-                'studentId'   => $sid,
-                'studentName' => $d['studentName'] ?? '',
-                'rollNo'      => '-',
-                'status'      => $d['status'] ?? 'pending',
-                'text'        => $d['text'] ?? '',
-                'remarks'     => $d['remark'] ?? '',
-                'submittedAt' => $d['submittedAt'] ?? '',
-                'score'       => $d['score'] ?? -1,
-                'reviewedBy'  => $d['reviewedBy'] ?? '',
-                'source'      => 'submission',
-            ];
-        }
-
-        // Index teacherMarks by studentId. The teacher app records evaluations
-        // for students who never submitted in a separate collection so it
-        // doesn't fabricate submission docs. Without merging, those students
-        // would show "Pending" here while the parent app shows them as
-        // evaluated.
-        $tmMap = [];
-        try {
-            $tmDocs = $this->firebase->firestoreQuery(
-                'teacherMarks',
-                [
-                    ['schoolId',   '=', $this->school_name],
-                    ['homeworkId', '=', $hwId],
-                ],
-                null, 'ASC', 500
-            );
-            foreach ($tmDocs as $tm) {
-                $td = $tm['data'];
-                $tsid = $td['studentId'] ?? '';
-                if ($tsid === '') continue;
-                // Read the teacherMark's actual status — pre-2026-05-06
-                // marks default to 'reviewed' (the previously hardcoded
-                // value) for back-compat.
-                $tmStatus = $td['status'] ?? 'reviewed';
-                $tmMap[$tsid] = [
-                    'studentId'   => $tsid,
-                    'studentName' => '',
-                    'rollNo'      => '-',
-                    'status'      => $tmStatus,
-                    'text'        => '',
-                    'remarks'     => $td['remark'] ?? '',
-                    'submittedAt' => '',
-                    'score'       => $td['score'] ?? -1,
-                    'reviewedBy'  => $td['teacherId'] ?? '',
-                    'source'      => 'teacherMark',
-                ];
-            }
-        } catch (\Exception $e) {
-            log_message('error', 'Homework::get_submissions — teacherMarks query failed: ' . $e->getMessage());
-        }
-
-        // Fetch full class roster from Firestore students collection
-        $cls = $hw['className'] ?? '';
-        $sec = $hw['section'] ?? '';
-        $result = [];
-
-        if ($cls && $sec) {
-            $sectionKey = "{$cls}/{$sec}";
-            try {
-                $studentDocs = $this->firebase->firestoreQuery(
-                    'students',
-                    [
-                        ['schoolId', '=', $this->school_name],
-                        ['sectionKey', '=', $sectionKey],
-                    ],
-                    null, 'ASC', 500
-                );
-                foreach ($studentDocs as $doc) {
-                    $sd = $doc['data'];
-                    // Student doc ID is "{schoolId}_{studentId}" but submission
-                    // stores just the raw studentId (e.g. "STU0001"). Match by
-                    // the studentId field inside the doc, not the doc ID.
-                    $sid = $sd['studentId'] ?? $sd['userId'] ?? $doc['id'];
-                    if (isset($subMap[$sid])) {
-                        // Student has a submission doc — use it (the canonical
-                        // record; teacher reviews update this, not teacherMarks)
-                        $entry = $subMap[$sid];
-                        $entry['studentName'] = $sd['name'] ?? $sd['Name'] ?? $entry['studentName'];
-                        $entry['rollNo'] = $sd['rollNo'] ?? $sd['RollNo'] ?? '-';
-                        $result[] = $entry;
-                        unset($subMap[$sid]);
-                        unset($tmMap[$sid]);  // submission supersedes any stray mark
-                    } elseif (isset($tmMap[$sid])) {
-                        // Teacher recorded a mark without a submission
-                        $entry = $tmMap[$sid];
-                        $entry['studentName'] = $sd['name'] ?? $sd['Name'] ?? $sid;
-                        $entry['rollNo']      = $sd['rollNo'] ?? $sd['RollNo'] ?? '-';
-                        $result[] = $entry;
-                        unset($tmMap[$sid]);
-                    } else {
-                        // No submission, no mark — pending
-                        $result[] = [
-                            'studentId'   => $sid,
-                            'studentName' => $sd['name'] ?? $sd['Name'] ?? $sid,
-                            'rollNo'      => $sd['rollNo'] ?? $sd['RollNo'] ?? '-',
-                            'status'      => 'pending',
-                            'text'        => '',
-                            'remarks'     => '',
-                            'submittedAt' => '',
-                            'score'       => -1,
-                            'reviewedBy'  => '',
-                            'source'      => 'roster',
-                        ];
-                    }
-                }
-            } catch (\Exception $e) {
-                log_message('error', 'Homework::get_submissions — students roster query failed: ' . $e->getMessage());
-            }
-        }
-
-        // Append any remaining submissions not matched to roster (edge case:
-        // student left the section after submitting).
-        foreach ($subMap as $entry) {
-            $result[] = $entry;
-        }
-        // Append any remaining teacher marks not matched to roster.
-        foreach ($tmMap as $entry) {
-            $result[] = $entry;
-        }
-
-        // If no roster found, fall back to submission docs only (and any
-        // teacherMarks already enqueued via $tmMap append above).
-        if (empty($result)) {
-            foreach ($subDocs as $sub) {
-                $d = $sub['data'];
-                $result[] = [
-                    'studentId'   => $d['studentId'] ?? '',
-                    'studentName' => $d['studentName'] ?? '',
-                    'rollNo'      => '-',
-                    'status'      => $d['status'] ?? 'pending',
-                    'text'        => $d['text'] ?? '',
-                    'remarks'     => $d['remark'] ?? '',
-                    'submittedAt' => $d['submittedAt'] ?? '',
-                    'score'       => $d['score'] ?? -1,
-                    'reviewedBy'  => $d['reviewedBy'] ?? '',
-                    'source'      => 'submission',
-                ];
-            }
-        }
+        // Merge submissions + teacherMarks + full class roster (submission >
+        // mark > pending) via the shared helper. The tracker keeps the
+        // rollNo/source fields.
+        $result = $this->_merge_submissions($hw, $hwId, true);
 
         $totalStudents = max(intval($hw['totalStudents'] ?? 0), count($result));
         $submittedCount = 0;
@@ -831,6 +632,22 @@ class Homework extends MY_Controller
 
         $class = trim($this->input->post('class') ?? '');
 
+        $this->json_success(['subjects' => $this->_subjects_for_class($class)]);
+    }
+
+    /**
+     * Valid, deduped, sorted subject names for a class in the current session.
+     *
+     * Single source of truth for the create-form dropdown
+     * (get_subjects_for_class) AND server-side validation in update_homework,
+     * so an edit can't set a subject the dropdown would never have offered.
+     *
+     * @param string $class Raw class label ("8" / "8th" / "Class 8th"); ''
+     *                      returns subjects across all classes this session.
+     * @return string[]
+     */
+    private function _subjects_for_class(string $class): array
+    {
         // Filter to the current session — subjectAssignments stores one doc
         // per (school, session, class, section, subjectCode) so an
         // un-scoped query returns last year's assignments alongside this
@@ -865,7 +682,7 @@ class Homework extends MY_Controller
         $subjects = [];
         try {
             $docs = $this->firebase->firestoreQuery(
-                'subjectAssignments', $filters, null, 'ASC', 1000
+                'subjectAssignments', $filters, null, 'ASC', self::MAX_QUERY_LIMIT
             );
             $seen = [];
             foreach ($docs as $doc) {
@@ -890,10 +707,10 @@ class Homework extends MY_Controller
             }
             sort($subjects, SORT_NATURAL | SORT_FLAG_CASE);
         } catch (\Exception $e) {
-            log_message('error', 'Homework::get_subjects_for_class — Firestore query failed: ' . $e->getMessage());
+            log_message('error', 'Homework::_subjects_for_class — Firestore query failed: ' . $e->getMessage());
         }
 
-        $this->json_success(['subjects' => $subjects]);
+        return $subjects;
     }
 
     /**
@@ -926,7 +743,7 @@ class Homework extends MY_Controller
                     ['schoolId',   '=', $this->school_name],
                     ['sectionKey', '=', $sectionKey],
                 ],
-                null, 'ASC', 500
+                null, 'ASC', self::QUERY_LIMIT
             );
             foreach ($docs as $doc) {
                 $d = $doc['data'];
@@ -958,7 +775,7 @@ class Homework extends MY_Controller
             $docs = $this->firebase->firestoreQuery(
                 'sections',
                 [['schoolId', '=', $this->school_name]],
-                null, 'ASC', 500
+                null, 'ASC', self::QUERY_LIMIT
             );
             foreach ($docs as $doc) {
                 $d = $doc['data'];
@@ -1088,7 +905,7 @@ class Homework extends MY_Controller
                         ['schoolId',   '=', $this->school_name],
                         ['sectionKey', '=', $sectionKey],
                     ],
-                    null, 'ASC', 1000
+                    null, 'ASC', self::MAX_QUERY_LIMIT
                 );
                 $totalStudents = is_array($rosterDocs) ? count($rosterDocs) : 0;
             } catch (\Exception $e) {
@@ -1256,8 +1073,30 @@ class Homework extends MY_Controller
         if ($desc !== '') $updates['description'] = $desc;
 
         $subj = trim($this->input->post('subject') ?? '');
-        if ($subj !== '' && strlen($subj) > 100) $this->json_error('Subject exceeds 100 characters.', 400);          // BUG-013
-        if ($subj !== '') $updates['subject'] = $subj;
+        if ($subj !== '') {
+            if (strlen($subj) > 100) $this->json_error('Subject exceeds 100 characters.', 400);                      // BUG-013
+            // BUG-4 — validate the submitted subject against the class's
+            // subjectAssignments (the same source the create-form dropdown
+            // uses) instead of accepting arbitrary free text. Enforce only
+            // when the class actually has assignments; an empty list (none
+            // configured, or a transient Firestore failure) falls back to the
+            // length guard above so a legitimate edit is never blocked.
+            $validSubjects = $this->_subjects_for_class((string) ($existing['className'] ?? ''));
+            if (!empty($validSubjects)) {
+                $match = null;
+                foreach ($validSubjects as $vs) {
+                    if (strcasecmp($vs, $subj) === 0) { $match = $vs; break; }
+                }
+                if ($match === null) {
+                    $this->json_error(
+                        'Invalid subject for this class. Choose one of: ' . implode(', ', $validSubjects),
+                        400
+                    );
+                }
+                $subj = $match;  // canonicalise to the assignment's spelling/case
+            }
+            $updates['subject'] = $subj;
+        }
 
         // Finding #21 2026-05-14 — guard retroactive dueDate shortening.
         // Before this guard, any MANAGE_ROLES holder could set dueDate to a
@@ -1401,9 +1240,9 @@ class Homework extends MY_Controller
         // batch commit is checked; any failure aborts and surfaces an error
         // without progressing to the homework delete.
         $totalDeleted = 0;
-        $chunkLimit   = 499;
+        $chunkLimit   = self::FETCH_CHUNK;
         $lastDocId    = '';
-        $maxIters     = 250;  // safety cap: 250 × 499 ≈ 125k subs/homework
+        $maxIters     = self::FETCH_MAX_ITERS;  // safety cap: 250 × 499 ≈ 125k subs/homework
 
         for ($iter = 0; $iter < $maxIters; $iter++) {
             try {
@@ -1676,8 +1515,8 @@ class Homework extends MY_Controller
         // Safety: 250 iterations × 499/chunk = ~125k homework hard ceiling;
         // beyond that, a warning is logged and partial result is returned
         // (still better than silent truncation at 500).
-        $chunkLimit = 499;
-        $maxIters   = 250;
+        $chunkLimit = self::FETCH_CHUNK;
+        $maxIters   = self::FETCH_MAX_ITERS;
         $lastDocId  = '';
 
         for ($iter = 0; $iter < $maxIters; $iter++) {
@@ -1755,6 +1594,191 @@ class Homework extends MY_Controller
     }
 
     /**
+     * Merge a homework's submissions + teacherMarks + full class roster into a
+     * single ordered list where every rostered student appears exactly once,
+     * with precedence submission > teacherMark > pending. Shared by
+     * get_homework_detail and get_submissions so the two endpoints can never
+     * drift (they previously carried ~90% duplicated merge logic).
+     *
+     * Row shape (submission tracker — $includeRosterMeta = true):
+     *   studentId, studentName, rollNo, status, text, remarks, submittedAt,
+     *   score, reviewedBy, source
+     * Detail modal ($includeRosterMeta = false) drops the tracker-only
+     * rollNo + source fields, preserving the historical detail row shape.
+     *
+     * @param array  $hw                Homework doc (needs className/section).
+     * @param string $hwId              Homework doc ID.
+     * @param bool   $includeRosterMeta Include rollNo + source fields.
+     * @return array Ordered list of merged rows.
+     */
+    private function _merge_submissions(array $hw, string $hwId, bool $includeRosterMeta): array
+    {
+        // Read submissions from Firestore. schoolId predicate is
+        // defense-in-depth (mirrors delete/update/teacherMarks pattern);
+        // composite (schoolId, homeworkId) index serves it.
+        $subDocs = $this->firebase->firestoreQuery(
+            'submissions',
+            [
+                ['schoolId',   '=', $this->school_name],
+                ['homeworkId', '=', $hwId],
+            ],
+            null, 'ASC', self::QUERY_LIMIT
+        );
+
+        // Index submissions by studentId.
+        $subMap = [];
+        foreach ($subDocs as $sub) {
+            $d = $sub['data'];
+            $sid = $d['studentId'] ?? '';
+            $subMap[$sid] = [
+                'studentId'   => $sid,
+                'studentName' => $d['studentName'] ?? '',
+                'rollNo'      => '-',
+                'status'      => $d['status'] ?? 'pending',
+                'text'        => $d['text'] ?? '',
+                'remarks'     => $d['remark'] ?? '',
+                'submittedAt' => $d['submittedAt'] ?? '',
+                'score'       => $d['score'] ?? -1,
+                'reviewedBy'  => $d['reviewedBy'] ?? '',
+                'source'      => 'submission',
+            ];
+        }
+
+        // Index teacherMarks by studentId (evaluations recorded for students
+        // who never submitted a doc). Legacy marks without a status field
+        // default to 'reviewed' (the previously hardcoded value) for
+        // back-compat.
+        $tmMap = [];
+        try {
+            $tmDocs = $this->firebase->firestoreQuery(
+                'teacherMarks',
+                [
+                    ['schoolId',   '=', $this->school_name],
+                    ['homeworkId', '=', $hwId],
+                ],
+                null, 'ASC', self::QUERY_LIMIT
+            );
+            foreach ($tmDocs as $tm) {
+                $td   = $tm['data'];
+                $tsid = $td['studentId'] ?? '';
+                if ($tsid === '') continue;
+                $tmMap[$tsid] = [
+                    'studentId'   => $tsid,
+                    'studentName' => '',
+                    'rollNo'      => '-',
+                    'status'      => $td['status'] ?? 'reviewed',
+                    'text'        => '',
+                    'remarks'     => $td['remark'] ?? '',
+                    'submittedAt' => '',
+                    'score'       => $td['score'] ?? -1,
+                    'reviewedBy'  => $td['teacherId'] ?? '',
+                    'source'      => 'teacherMark',
+                ];
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'Homework::_merge_submissions — teacherMarks query failed: ' . $e->getMessage());
+        }
+
+        // Fetch full class roster and merge (submission > mark > pending).
+        $cls = $hw['className'] ?? '';
+        $sec = $hw['section'] ?? '';
+        $result = [];
+
+        if ($cls && $sec) {
+            $sectionKey = "{$cls}/{$sec}";
+            try {
+                $studentDocs = $this->firebase->firestoreQuery(
+                    'students',
+                    [
+                        ['schoolId',   '=', $this->school_name],
+                        ['sectionKey', '=', $sectionKey],
+                    ],
+                    null, 'ASC', self::QUERY_LIMIT
+                );
+                foreach ($studentDocs as $doc) {
+                    $sd  = $doc['data'];
+                    // Submission stores raw studentId (e.g. "STU0001"); match
+                    // by the studentId field inside the doc, not the doc ID.
+                    $sid = $sd['studentId'] ?? $sd['userId'] ?? $doc['id'];
+                    if (isset($subMap[$sid])) {
+                        // Student has a submission doc — use it (the canonical
+                        // record; teacher reviews update this, not teacherMarks).
+                        $entry = $subMap[$sid];
+                        $entry['studentName'] = $sd['name'] ?? $sd['Name'] ?? $entry['studentName'];
+                        $entry['rollNo']      = $sd['rollNo'] ?? $sd['RollNo'] ?? '-';
+                        $result[] = $entry;
+                        unset($subMap[$sid]);
+                        unset($tmMap[$sid]);  // submission supersedes any stray mark
+                    } elseif (isset($tmMap[$sid])) {
+                        // Teacher recorded a mark without a submission.
+                        $entry = $tmMap[$sid];
+                        $entry['studentName'] = $sd['name'] ?? $sd['Name'] ?? $sid;
+                        $entry['rollNo']      = $sd['rollNo'] ?? $sd['RollNo'] ?? '-';
+                        $result[] = $entry;
+                        unset($tmMap[$sid]);
+                    } else {
+                        // No submission, no mark — pending.
+                        $result[] = [
+                            'studentId'   => $sid,
+                            'studentName' => $sd['name'] ?? $sd['Name'] ?? $sid,
+                            'rollNo'      => $sd['rollNo'] ?? $sd['RollNo'] ?? '-',
+                            'status'      => 'pending',
+                            'text'        => '',
+                            'remarks'     => '',
+                            'submittedAt' => '',
+                            'score'       => -1,
+                            'reviewedBy'  => '',
+                            'source'      => 'roster',
+                        ];
+                    }
+                }
+            } catch (\Exception $e) {
+                log_message('error', 'Homework::_merge_submissions — students roster query failed: ' . $e->getMessage());
+            }
+        }
+
+        // Append any submissions / marks not matched to the roster (edge case:
+        // student left the section after submitting / being marked).
+        foreach ($subMap as $entry) {
+            $result[] = $entry;
+        }
+        foreach ($tmMap as $entry) {
+            $result[] = $entry;
+        }
+
+        // No roster found — fall back to submission docs only.
+        if (empty($result)) {
+            foreach ($subDocs as $sub) {
+                $d = $sub['data'];
+                $result[] = [
+                    'studentId'   => $d['studentId'] ?? '',
+                    'studentName' => $d['studentName'] ?? '',
+                    'rollNo'      => '-',
+                    'status'      => $d['status'] ?? 'pending',
+                    'text'        => $d['text'] ?? '',
+                    'remarks'     => $d['remark'] ?? '',
+                    'submittedAt' => $d['submittedAt'] ?? '',
+                    'score'       => $d['score'] ?? -1,
+                    'reviewedBy'  => $d['reviewedBy'] ?? '',
+                    'source'      => 'submission',
+                ];
+            }
+        }
+
+        // Detail modal shape omits the tracker-only rollNo/source fields —
+        // strip them so the historical get_homework_detail row shape is
+        // preserved exactly.
+        if (!$includeRosterMeta) {
+            foreach ($result as &$row) {
+                unset($row['rollNo'], $row['source']);
+            }
+            unset($row);
+        }
+
+        return $result;
+    }
+
+    /**
      * Calculate submission rate for a homework item.
      *
      * Uses submissionCount / totalStudents from the homework doc.
@@ -1801,8 +1825,8 @@ class Homework extends MY_Controller
         // pattern as _fetch_all_homework + delete_homework cascade. Counts
         // (total + submitted) accumulate incrementally per chunk; rate is
         // computed once at the end.
-        $chunkLimit = 499;
-        $maxIters   = 250;
+        $chunkLimit = self::FETCH_CHUNK;
+        $maxIters   = self::FETCH_MAX_ITERS;
         $lastSubId  = '';
         $total      = 0;
         $submitted  = 0;

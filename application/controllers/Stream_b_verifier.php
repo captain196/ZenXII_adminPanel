@@ -9,7 +9,7 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *
  * Six assertions:
  *   A1 — staffAttendance/* docs carry the canonical field set
- *   A2 — staffAttendanceSummary.dayWise length == cal_days_in_month, charset == {P,A,L,H,T,V}
+ *   A2 — staffAttendanceSummary.dayWise length == cal_days_in_month, charset == {P,A,L,H,T,V,M,W,O}
  *   A3 — staff-domain RTDB site count in PHP source matches the locked inventory (34 ACTIVE)
  *   A4 — Hr.php carries ZERO active RTDB-staff-attendance writes (post-dead-code-removal)
  *   A5 — staffAttendanceLocks/* doc shape (schoolId, session, month, lockedAtMs presence — forward-looking)
@@ -63,7 +63,7 @@ class Stream_b_verifier extends CI_Controller
         'schoolId', 'date', 'staffId', 'status', 'markedBy', 'markedAt',
     ];
 
-    private const ALLOWED_DAYWISE_CHARS = ['P','A','L','H','T','V'];
+    private const ALLOWED_DAYWISE_CHARS = ['P','A','L','H','T','V','M','W','O'];
 
     /**
      * Locked baseline after Phase I Step 2 (2026-06-12).

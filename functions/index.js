@@ -1,16 +1,21 @@
 /**
- * SchoolSync Notice / Circular push dispatcher.
+ * SchoolSync real-time push dispatcher.
  *
- * Triggered on every new `pushRequests/{docId}` doc. Handles the two mark
- * types added by Communication.php + Hr.php:
- *   - NOTICE_CREATED    (source=notice_created, noticeId=<NOTxxxx>)
- *   - CIRCULAR_CREATED  (source=circular_created, circularId=<CIRxxxx>)
+ * Triggered on every new `pushRequests/{docId}` doc. Handles the marks that
+ * need real-time, admin-independent delivery:
+ *   - NOTICE_CREATED / CIRCULAR_CREATED / EVENT_CREATED  (broadcast by audience)
+ *   - MESSAGE_RECEIVED                                   (per-conversation)
+ *   - PTM_CLASS_TEACHER                                  (per class-teacher)
+ *   - FLAG_CREATED                                       (per-student → parent)
  *
- * Does NOT overlap with existing homework / attendance CFs because those
- * use different mark values. Deployed alongside — safe to merge.
+ * The mark-space is PARTITIONED with the admin panel's PHP poller
+ * (MY_Controller::_auto_process_push_requests), which owns the homework /
+ * leave / attendance marks (source=teacher / homework_* / teacher_leave_*).
+ * NEVER handle the same mark in both — that double-sends.
  *
  * Fan-out strategy:
- *   target_group → audience roles → userDevices query → fcmToken list → FCM multicast.
+ *   target_group → audience (role broadcast OR class/section students' parents)
+ *   → userDevices query → fcmToken list → FCM multicast.
  */
 
 const admin = require('firebase-admin');
@@ -33,10 +38,19 @@ const messaging = admin.messaging();
 const MARKS_HANDLED = new Set([
   'NOTICE_CREATED',
   'CIRCULAR_CREATED',
+  'EVENT_CREATED',        // Event published by admin → notify audience
   'MESSAGE_RECEIVED',
   'PTM_CLASS_TEACHER',
   'FLAG_CREATED',         // Red Flag raised by teacher → notify parent
 ]);
+
+// The broadcast marks share one recipient-resolution path (target_group →
+// audience). Each maps to the data.type + id field the apps switch on.
+const BROADCAST_MARKS = {
+  NOTICE_CREATED:   { type: 'notice_created',   idKey: 'noticeId',   fTitle: 'New Notice',    fBody: 'A new notice has been posted' },
+  CIRCULAR_CREATED: { type: 'circular_created', idKey: 'circularId', fTitle: 'New Circular',  fBody: 'A new circular has been posted' },
+  EVENT_CREATED:    { type: 'event_created',    idKey: 'eventId',    fTitle: 'New Event',     fBody: 'Tap to view details' },
+};
 
 /**
  * Resolve target_group → list of appRole(s) to query.
@@ -46,12 +60,75 @@ function rolesForTarget(targetGroup) {
   const t = String(targetGroup || 'All School').trim().toLowerCase();
   if (t === 'all teachers' || t === 'teachers' || t === 'all staff' || t === 'staff') return ['teacher'];
   if (t === 'all parents' || t === 'parents' || t === 'all students' || t === 'students') return ['parent'];
-  // Class/section-targeted (e.g. "Class 10th|Section A") — ship to parents only.
-  // Teachers assigned to that section get their own Teacher app list — out of
-  // scope for this Cloud Function; can be extended later via staff-assignment
-  // lookup if needed.
+  // Class/section-targeted groups are handled by classSectionTarget() below
+  // (resolved to the section's students → their parents), never reached here.
+  // Any residual class-ish string ships to parents only as a safe fallback.
   if (t.includes('class ')) return ['parent'];
   return ['teacher', 'parent']; // "All School" and unknowns
+}
+
+/**
+ * Detect a class- or section-scoped target_group and normalise it to a
+ * student query. Returns null for role/all targets (handled by rolesForTarget).
+ *
+ *   "Class 10th|Section A"  → { sectionKey: "Class 10th/Section A" }
+ *   "Class 10th"            → { className: "Class 10th" }
+ *   "10th"                  → { className: "Class 10th" }
+ *   "All Parents" / "All School" / "" → null
+ *
+ * Mirrors the admin panel's Communication::_audience_keys_from_group() class
+ * detection so push targeting matches the in-app audience filter exactly.
+ */
+function classSectionTarget(targetGroup) {
+  const raw = String(targetGroup || '').trim();
+  if (!raw) return null;
+  const low = raw.toLowerCase();
+  if (low === 'all' || low.startsWith('all ')) return null;
+  if (/(teacher|staff|faculty|admin|principal|parent|guardian|student)/.test(low)) return null;
+
+  if (raw.includes('|')) {
+    const [clsRaw, secRaw] = raw.split('|').map((s) => s.trim());
+    const cls = /^class\s/i.test(clsRaw) ? clsRaw : (clsRaw ? `Class ${clsRaw}` : '');
+    if (cls && secRaw) return { sectionKey: `${cls}/${secRaw}` };
+    if (cls) return { className: cls };
+    return null;
+  }
+  if (/^class\s/i.test(raw) || /^\d/.test(raw) || /(nursery|lkg|ukg|playgroup)/i.test(low)) {
+    const cls = /^class\s/i.test(raw) ? raw : `Class ${raw}`;
+    return { className: cls };
+  }
+  return null;
+}
+
+/**
+ * Tokens for the PARENTS of every active student in a class (all sections) or
+ * a single section. Parents authenticate with their child's studentId as the
+ * Firebase Auth UID, so a student's id IS the parent's userDevices.userId.
+ *
+ * Uses a single-field equality query (sectionKey OR className) so NO composite
+ * index is required; schoolId is filtered client-side because those field
+ * values are not globally unique across schools. Withdrawn/inactive students
+ * are excluded so their parents don't get pushes.
+ */
+async function tokensForParentsOfClassSection(schoolId, target) {
+  let snap;
+  if (target.sectionKey) {
+    snap = await db.collection('students').where('sectionKey', '==', target.sectionKey).get();
+  } else if (target.className) {
+    snap = await db.collection('students').where('className', '==', target.className).get();
+  } else {
+    return [];
+  }
+  const studentIds = [];
+  snap.forEach((d) => {
+    const s = d.data() || {};
+    if (s.schoolId !== schoolId) return;
+    const st = String(s.status || '').toLowerCase();
+    if (st === 'inactive' || st === 'left' || st === 'withdrawn' || st === 'deleted') return;
+    const sid = String(s.studentId || d.id || '').trim();
+    if (sid) studentIds.push(sid);
+  });
+  return tokensForUsers(schoolId, [...new Set(studentIds)]);
 }
 
 async function tokensForSchool(schoolId, roles) {
@@ -250,22 +327,28 @@ exports.dispatchNoticeAndCircularPushes = onDocumentCreated(
       };
       logger.info(`[${mark}] school=${schoolId} staffIds=${recipientStaffIds.length} tokens=${tokens.length}`);
     } else {
-      const isNotice = mark === 'NOTICE_CREATED';
-      const typeKey  = isNotice ? 'notice_created' : 'circular_created';
-      const idKey    = isNotice ? 'noticeId' : 'circularId';
-      const resourceId = String(doc[idKey] || doc.source_id || '');
+      // Broadcast marks: NOTICE_CREATED / CIRCULAR_CREATED / EVENT_CREATED.
+      const spec = BROADCAST_MARKS[mark];
+      const resourceId = String(doc[spec.idKey] || doc.source_id || '');
 
-      const title = String(doc.title || (isNotice ? 'New Notice' : 'New Circular')).slice(0, 120);
-      const body  = String(doc.body  || (isNotice ? 'A new notice has been posted' : 'A new circular has been posted')).slice(0, 240);
+      const title = String(doc.title || spec.fTitle).slice(0, 120);
+      const body  = String(doc.body  || spec.fBody).slice(0, 240);
 
-      const roles = rolesForTarget(doc.target_group);
-      logger.info(`[${mark}] school=${schoolId} target="${doc.target_group}" → roles=${roles.join(',')} resource=${resourceId}`);
-      tokens = await tokensForSchool(schoolId, roles);
-      logger.info(`[${mark}] fcm recipients: ${tokens.length}`);
+      // Class/section-scoped → resolve to that group's students' parents so we
+      // don't over-broadcast to the whole school. Otherwise fan out by role.
+      const cs = classSectionTarget(doc.target_group);
+      if (cs) {
+        tokens = await tokensForParentsOfClassSection(schoolId, cs);
+        logger.info(`[${mark}] school=${schoolId} target="${doc.target_group}" → ${cs.sectionKey ? 'section ' + cs.sectionKey : 'class ' + cs.className} → recipients=${tokens.length}`);
+      } else {
+        const roles = rolesForTarget(doc.target_group);
+        tokens = await tokensForSchool(schoolId, roles);
+        logger.info(`[${mark}] school=${schoolId} target="${doc.target_group}" → roles=${roles.join(',')} recipients=${tokens.length}`);
+      }
       notification = { title, body };
       dataPayload = {
-        type: typeKey,
-        [idKey]: resourceId,
+        type: spec.type,
+        [spec.idKey]: resourceId,
         category: String(doc.category || ''),
         schoolId,
       };

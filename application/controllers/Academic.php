@@ -499,11 +499,20 @@ class Academic extends MY_Controller
 
         $allWarnings = array_merge($result['warnings'], $workloadWarnings);
 
+        // Auto-sync timetable periods for this class/section (see save_class_matrix).
+        $sync = ['docsUpdated' => 0, 'periodsChanged' => 0];
+        try {
+            $sync = $this->_timetable_svc()->reconcileClassFromMatrix($fbKey, $sectionKey);
+        } catch (\Throwable $e) {
+            log_message('error', 'save_subject_assignments timetable auto-sync failed: ' . $e->getMessage());
+        }
+
         return $this->json_success([
-            'class'    => $fbKey,
-            'section'  => $sectionKey,
-            'count'    => $result['saved'],
-            'warnings' => $allWarnings,
+            'class'         => $fbKey,
+            'section'       => $sectionKey,
+            'count'         => $result['saved'],
+            'warnings'      => $allWarnings,
+            'timetableSync' => $sync,
         ]);
     }
 
@@ -841,7 +850,22 @@ class Academic extends MY_Controller
         if (!empty($errors)) {
             return $this->json_error(implode("\n", array_unique($errors)));
         }
-        return $this->json_success(['count' => $saved, 'warnings' => []]);
+
+        // Auto-sync: propagate teacher changes into already-generated
+        // timetable periods for this class so a reassignment shows up in the
+        // app immediately (prevents matrix↔timetable teacherId drift).
+        $sync = ['docsUpdated' => 0, 'periodsChanged' => 0];
+        try {
+            $sync = $this->_timetable_svc()->reconcileClassFromMatrix($canonicalClass, '');
+        } catch (\Throwable $e) {
+            log_message('error', 'save_class_matrix timetable auto-sync failed: ' . $e->getMessage());
+        }
+
+        return $this->json_success([
+            'count'          => $saved,
+            'warnings'       => [],
+            'timetableSync'  => $sync,
+        ]);
     }
 
     /**
@@ -922,7 +946,18 @@ class Academic extends MY_Controller
         $result = $this->sas->saveClassAssignments($toKey, '', $subjects);
         $count = $result['count'] ?? count($subjects);
 
-        return $this->json_success(['from' => $fromKey, 'to' => $toKey, 'count' => $count]);
+        // Auto-sync destination class's timetable periods (see save_class_matrix).
+        $sync = ['docsUpdated' => 0, 'periodsChanged' => 0];
+        try {
+            $sync = $this->_timetable_svc()->reconcileClassFromMatrix($toKey, '');
+        } catch (\Throwable $e) {
+            log_message('error', 'copy_subject_assignments timetable auto-sync failed: ' . $e->getMessage());
+        }
+
+        return $this->json_success([
+            'from' => $fromKey, 'to' => $toKey, 'count' => $count,
+            'timetableSync' => $sync,
+        ]);
     }
 
     /* ══════════════════════════════════════════════════════════════════════

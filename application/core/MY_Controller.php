@@ -52,6 +52,34 @@ class MY_Controller extends CI_Controller
         'admin_login/get_server_date',
     ];
 
+    /**
+     * Writable directory (trailing slash) for staging file uploads before they
+     * are pushed to Firebase Storage and unlinked by the caller.
+     *
+     * Production-safety: on a box where application/ is not group-writable by
+     * the web user, APPPATH.'temp/' cannot be created and CI's Upload library
+     * fails with "The upload path does not appear to be valid" (root cause of
+     * the school-logo upload failures). Prefer APPPATH.'temp/' when it is (or
+     * can be made) writable; otherwise fall back to the system temp dir, which
+     * the PHP process user can always write to. The staged file is unlinked
+     * right after upload, so the exact location is immaterial.
+     */
+    protected function _upload_staging_dir(): string
+    {
+        $preferred = APPPATH . 'temp/';
+        if (is_dir($preferred) && is_writable($preferred)) {
+            return $preferred;
+        }
+        if (!is_dir($preferred) && @mkdir($preferred, 0775, true) && is_writable($preferred)) {
+            return $preferred;
+        }
+        $fallback = rtrim(sys_get_temp_dir(), "/\\") . '/zenxii_uploads/';
+        if (!is_dir($fallback)) {
+            @mkdir($fallback, 0775, true);
+        }
+        return $fallback;
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     public function __construct()
     {
@@ -1359,11 +1387,12 @@ class MY_Controller extends CI_Controller
                         $section = $d['section'] ?? '';
                         if ($class !== '' && $section !== '') {
                             $students = $this->_build_student_list_for_push($class, $section);
+                            $hwId = (string) ($d['homeworkId'] ?? '');
                             foreach ($students as $sid) {
                                 $this->push_service->sendToUser($sid, [
                                     'title' => "New Homework: {$subject}",
                                     'body'  => "{$title} — due {$dueDate}. By {$markedBy}.",
-                                    'data'  => ['type' => 'homework_created'],
+                                    'data'  => ['type' => 'homework_created', 'homeworkId' => $hwId],
                                 ]);
                             }
                         }
@@ -1376,7 +1405,7 @@ class MY_Controller extends CI_Controller
                         $this->push_service->sendToUser($studentId, [
                             'title' => 'Homework Graded',
                             'body'  => "{$scoreText}Reviewed by {$markedBy}." . ($remark ? " \"{$remark}\"" : ''),
-                            'data'  => ['type' => 'homework_reviewed'],
+                            'data'  => ['type' => 'homework_reviewed', 'homeworkId' => (string) ($d['homeworkId'] ?? '')],
                         ]);
                         break;
                 }

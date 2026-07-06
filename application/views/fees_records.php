@@ -247,7 +247,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     /* Live search */
     if (search) {
-        search.addEventListener('input', function() {
+        search.addEventListener('input', ZXutil.debounce(function() {
             var q = search.value.toLowerCase().trim();
             var n = 0;
             rows.forEach(function(row) {
@@ -262,7 +262,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 picked = null;
                 if (viewBtn) viewBtn.disabled = true;
             }
-        });
+        }, 180));
     }
 
     /* CSV Export */

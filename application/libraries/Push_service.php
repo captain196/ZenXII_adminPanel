@@ -125,13 +125,21 @@ class Push_service
         if ($title !== '' && !isset($stringData['title'])) $stringData['title'] = $title;
         if ($body  !== '' && !isset($stringData['body']))  $stringData['body']  = $body;
 
+        // NOTE: no hardcoded channel_id. Push_service targets BOTH the Parent
+        // app (channel "schoolsync_notifications") and the Teacher app (channel
+        // "school_sync_channel"); pinning one id dropped the other app's pushes
+        // when it was backgrounded/killed (Android silently discards a
+        // notification whose channel does not exist on the device). Omitting
+        // channel_id makes Android use each app's manifest
+        // default_notification_channel_id, which is valid in both apps. When an
+        // app is foregrounded its FCMService.onMessageReceived re-routes to the
+        // correct per-category channel via NotificationChannels.channelForType.
         $message = CloudMessage::new()
             ->withNotification(Notification::create($title, $body))
             ->withData($stringData)
             ->withAndroidConfig(AndroidConfig::fromArray([
                 'priority' => 'high',
                 'notification' => [
-                    'channel_id' => 'schoolsync_notifications',
                     'sound' => 'default',
                 ],
             ]));

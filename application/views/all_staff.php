@@ -698,7 +698,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     /* ── Event listeners ── */
-    if (searchInput) searchInput.addEventListener('input', applyFilters);
+    if (searchInput) searchInput.addEventListener('input', ZXutil.debounce(applyFilters, 180));
     if (filterDept)  filterDept.addEventListener('change', applyFilters);
     if (filterPos)   filterPos.addEventListener('change', applyFilters);
 

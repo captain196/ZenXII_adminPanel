@@ -174,12 +174,23 @@ class Staff_attendance extends MY_Controller
         $dayWise   = is_array($summary) ? (string) ($summary['dayWise'] ?? '') : '';
         $currentMark = (strlen($dayWise) >= $day) ? strtoupper($dayWise[$day - 1]) : 'V';
 
+        // Weekly-off for today (from policy.weeklyOffs, engine-authoritative).
+        $isWeeklyOff = in_array($now->format('D'), (array) ($policy['weeklyOffs'] ?? []), true);
+
+        // On check-out, resolve today's check-in time so the engine can classify
+        // full vs half day by hours worked. Only read when checking out.
+        $checkInMinutes = ($direction === 'out')
+            ? $this->_today_checkin_minutes($staffId, $dateISO)
+            : null;
+
         // ── Decision: pure business-rule engine ──
         $this->load->library('attendance_policy');
         $decision = $this->attendance_policy->evaluate($policy, $request, [
             'serverTime'     => $serverTime,
             'currentDayMark' => $currentMark,
             'isHoliday'      => $isHoliday,
+            'isWeeklyOff'    => $isWeeklyOff,
+            'checkInMinutes' => $checkInMinutes,
             'shiftId'        => 'default',
         ]);
 
@@ -221,9 +232,7 @@ class Staff_attendance extends MY_Controller
 
         return $this->json_success([
             'apiVersion'     => 1,
-            'message'        => $decision['setsStatus']
-                ? ($decision['mark'] === 'T' ? 'Checked in (late).' : 'Checked in.')
-                : ($direction === 'out' ? 'Checked out.' : 'Already checked in.'),
+            'message'        => $this->_punch_message($decision, $direction),
             'direction'      => $direction,
             'status'         => $decision['mark'],     // P|T|null
             'mark'           => $decision['mark'],
@@ -273,28 +282,56 @@ class Staff_attendance extends MY_Controller
         $curSum  = is_array($curSum) ? $curSum : [];
         $prevSum = is_array($prevSum) ? $prevSum : [];
 
-        $curDayWise = (string) ($curSum['dayWise'] ?? '');
+        // Phase 2 — "no vacant": overlay past days → weekly-offs O, holidays H, and
+        // unmarked working days → Absent (A) ONLY when policy.autoAbsent is on
+        // (default). With autoAbsent off, working days stay Vacant (V). Read-only;
+        // the nightly finaliser persists the same marks for payroll.
+        $this->load->library('holiday_service');
+        $this->holiday_service->init($this->fs, $this->school_id, $this->session_year);
+        $curDayWise  = $this->_overlay_daywise((string) ($curSum['dayWise'] ?? ''),  $monthKey, $pol, $dateISO);
+        $prevDayWise = $this->_overlay_daywise((string) ($prevSum['dayWise'] ?? ''), $prevKey,  $pol, $dateISO);
+
         $todayStatus = (strlen($curDayWise) >= $day) ? strtoupper($curDayWise[$day - 1]) : 'V';
+        $counts = $this->_count_daywise($curDayWise);
+
+        // Rest-day flags for TODAY (overlay leaves today untouched) so the app
+        // can offer the "work on a rest day = extra" flow.
+        $todayIsHoliday = false;
+        try { $todayIsHoliday = $this->holiday_service->is_holiday($dateISO); } catch (\Throwable $e) {}
+        $todayIsWeeklyOff = in_array($now->format('D'), (array) ($pol['weeklyOffs'] ?? []), true);
 
         $history = av_build_history([
-            $prevKey  => (string) ($prevSum['dayWise'] ?? ''),
+            $prevKey  => $prevDayWise,
             $monthKey => $curDayWise,
         ], $dateISO, 30);
 
-        // Today's accepted punches → check-in/out times.
-        $todayPunches = [];
+        // Accepted punches across the 30-day window → per-day check-in/out times.
+        // One query feeds BOTH today's times and the history calendar so each day
+        // can show when the employee clocked in/out, not just a status colour.
+        $windowStartISO = (clone $now)->modify('-29 days')->format('Y-m-d');
+        $punchesByDate = [];
         try {
             $rows = $this->fs->schoolWhere('attendancePunches', [
                 ['staffId', '==', $staffId],
-                ['date',    '==', $dateISO],
+                ['date',    '>=', $windowStartISO],
             ]);
             foreach ((array) $rows as $r) {
-                $todayPunches[] = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+                $p = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+                $d = (string) ($p['date'] ?? '');
+                if ($d !== '') $punchesByDate[$d][] = $p;
             }
         } catch (\Throwable $e) {
             log_message('error', 'Staff_attendance::me punches query failed: ' . $e->getMessage());
         }
-        $times = av_today_times($todayPunches);
+        $times = av_today_times($punchesByDate[$dateISO] ?? []);
+
+        // Enrich each history day with its check-in/out times (null when none).
+        foreach ($history as &$_h) {
+            $ht = av_today_times($punchesByDate[$_h['date']] ?? []);
+            $_h['checkInAt']  = $ht['checkInAt'];
+            $_h['checkOutAt'] = $ht['checkOutAt'];
+        }
+        unset($_h);
 
         return $this->json_success([
             'apiVersion' => 1,
@@ -303,23 +340,29 @@ class Staff_attendance extends MY_Controller
             'session'    => $this->session_year,
             'serverTime' => $now->format('c'),
             'today'      => [
-                'date'        => $dateISO,
-                'status'      => $todayStatus,            // P|T|A|L|H|V
-                'checkInAt'   => $times['checkInAt'],     // ISO-8601 | null
-                'checkOutAt'  => $times['checkOutAt'],    // ISO-8601 | null
+                'date'           => $dateISO,
+                'status'         => $todayStatus,         // P|T|M|A|L|H|O|W|V
+                'checkInAt'      => $times['checkInAt'],  // ISO-8601 | null
+                'checkOutAt'     => $times['checkOutAt'], // ISO-8601 | null
+                'isHoliday'      => $todayIsHoliday,
+                'isWeeklyOff'    => $todayIsWeeklyOff,
+                'allowWorkOnOff' => !empty($pol['allowWorkOnOff']),
             ],
             'month'      => [
                 'monthKey'    => $monthKey,
-                'present'     => (int) ($curSum['present']     ?? 0),
-                'absent'      => (int) ($curSum['absent']      ?? 0),
-                'leave'       => (int) ($curSum['leave']       ?? 0),
-                'holiday'     => (int) ($curSum['holiday']     ?? 0),
-                'tardy'       => (int) ($curSum['tardy']       ?? 0),
-                'void'        => (int) ($curSum['void']        ?? 0),
-                'workingDays' => (int) ($curSum['workingDays'] ?? 0),
-                'totalDays'   => (int) ($curSum['totalDays']   ?? 0),
+                'present'     => $counts['P'],
+                'absent'      => $counts['A'],
+                'leave'       => $counts['L'],
+                'holiday'     => $counts['H'],
+                'tardy'       => $counts['T'],
+                'halfDay'     => $counts['M'],
+                'extraWorked' => $counts['W'],
+                'weeklyOff'   => $counts['O'],
+                'void'        => $counts['V'],
+                'workingDays' => $counts['P'] + $counts['T'] + $counts['L'] + $counts['M'],
+                'totalDays'   => strlen($curDayWise),
             ],
-            'history'    => $history,   // [{date,status}] oldest→newest, last 30 days
+            'history'    => $history,   // [{date,status,checkInAt,checkOutAt}] oldest→newest, 30d
         ]);
     }
 
@@ -448,6 +491,99 @@ class Staff_attendance extends MY_Controller
         return empty($out) ? null : $out;
     }
 
+    /**
+     * Earliest accepted check-IN time today, as minutes since midnight (policy
+     * tz), or null if none. Feeds the engine's worked-hours (full/half) logic
+     * at check-out. Reads the attendancePunches audit rows already written by
+     * check-in — no schema change.
+     */
+    private function _today_checkin_minutes(string $staffId, string $dateISO): ?int
+    {
+        try {
+            $rows = $this->fs->schoolWhere('attendancePunches', [
+                ['staffId', '==', $staffId],
+                ['date',    '==', $dateISO],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff_attendance::_today_checkin_minutes query failed: ' . $e->getMessage());
+            return null;
+        }
+        $best = null;
+        foreach ((array) $rows as $r) {
+            $d = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+            if (($d['outcome'] ?? '') !== 'accepted' || ($d['direction'] ?? '') !== 'in') continue;
+            $st = (string) ($d['serverTime'] ?? '');   // 'Y-m-d H:i:s' in policy tz
+            if (!preg_match('/\b(\d{1,2}):(\d{2})/', $st, $m)) continue;
+            $min = ((int) $m[1]) * 60 + (int) $m[2];
+            if ($best === null || $min < $best) $best = $min;   // earliest IN wins
+        }
+        return $best;
+    }
+
+    /**
+     * "No vacant" overlay: for a month's dayWise, replace every PAST unmarked
+     * ('V') day with Absent (A), or weekly-off (O) / holiday (H) when the day
+     * is a rest day. Today and future days are left untouched. Pure transform
+     * (needs holiday_service already init'd).
+     */
+    private function _overlay_daywise(string $dayWise, string $monthKey, array $policy, string $todayISO): string
+    {
+        if ($dayWise === '') return $dayWise;
+        $weeklyOffs = (array) ($policy['weeklyOffs'] ?? []);
+        // autoAbsent (default ON): close past unmarked working days as Absent (A).
+        // When OFF, leave them Vacant (V); weekly-offs/holidays are still labelled O/H.
+        $autoAbsent = array_key_exists('autoAbsent', $policy) ? !empty($policy['autoAbsent']) : true;
+        $len = strlen($dayWise);
+        for ($d = 1; $d <= $len; $d++) {
+            if (strtoupper($dayWise[$d - 1]) !== 'V') continue;      // only fill vacant
+            $dateISO = sprintf('%s-%02d', $monthKey, $d);
+            if ($dateISO >= $todayISO) continue;                    // today + future untouched
+            try { $isHol = $this->holiday_service->is_holiday($dateISO); }
+            catch (\Throwable $e) { $isHol = false; }
+            if ($isHol) {
+                $dayWise[$d - 1] = 'H';
+            } else {
+                $dow = date('D', strtotime($dateISO));
+                if (in_array($dow, $weeklyOffs, true)) {
+                    $dayWise[$d - 1] = 'O';
+                } elseif ($autoAbsent) {
+                    $dayWise[$d - 1] = 'A';
+                }
+                // else: autoAbsent OFF → leave the day Vacant (V)
+            }
+        }
+        return $dayWise;
+    }
+
+    /** Count each status char in a dayWise string → keyed totals. */
+    private function _count_daywise(string $dw): array
+    {
+        $c = ['P' => 0, 'A' => 0, 'L' => 0, 'H' => 0, 'T' => 0, 'V' => 0, 'M' => 0, 'W' => 0, 'O' => 0];
+        $len = strlen($dw);
+        for ($i = 0; $i < $len; $i++) {
+            $ch = strtoupper($dw[$i]);
+            if (isset($c[$ch])) $c[$ch]++;
+        }
+        return $c;
+    }
+
+    /** Human message for an accepted punch, covering half-day / extra / short-day. */
+    private function _punch_message(array $decision, string $direction): string
+    {
+        $mark = $decision['mark'] ?? null;
+        if ($direction === 'out') {
+            if ($mark === 'M') return 'Checked out — half day recorded.';
+            if ($mark === 'A') return 'Checked out — below minimum hours; marked absent.';
+            return 'Checked out.';
+        }
+        if (!empty($decision['setsStatus'])) {
+            if ($mark === 'T') return 'Checked in (late).';
+            if ($mark === 'W') return 'Checked in — extra day (rest-day working).';
+            return 'Checked in.';
+        }
+        return 'Already checked in.';
+    }
+
     /** Map an engine rejection reason → HTTP status (pure). */
     private function _reason_http(string $reason): int
     {
@@ -465,6 +601,7 @@ class Staff_attendance extends MY_Controller
             case 'window_closed':
             case 'on_leave':
             case 'on_holiday':
+            case 'on_weekly_off':
             case 'already_marked':
             case 'duplicate':
             case 'month_locked':
@@ -489,6 +626,7 @@ class Staff_attendance extends MY_Controller
             'window_closed'     => 'The attendance window for today has closed.',
             'on_leave'          => 'You are on approved leave today.',
             'on_holiday'        => 'Today is a holiday.',
+            'on_weekly_off'     => 'Today is a weekly-off.',
             'already_marked'    => 'Attendance for today is already marked. Please contact admin for a correction.',
             'month_locked'      => 'Attendance for this month is locked.',
         ];
