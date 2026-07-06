@@ -2,9 +2,12 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <!-- Set the theme on <html> BEFORE any CSS paints, so pages never flash the
-         default (night) palette on navigation. Mirrors applyTheme() below. -->
-    <script>(function(){try{var t=localStorage.getItem('graderiq_theme');if(!t){var h=new Date().getHours();t=(h>=6&&h<18)?'day':'night';}document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+    <!-- Kill the black flash between pages: declare a light color-scheme so the
+         browser never paints a DARK canvas during navigation (the macOS dark-mode
+         cause), and set the theme + an explicit <html> background before any CSS
+         paints. Night-theme users get color-scheme:dark set via the script below. -->
+    <meta name="color-scheme" content="light">
+    <script>(function(){try{var t=localStorage.getItem('graderiq_theme');if(!t){var h=new Date().getHours();t=(h>=6&&h<18)?'day':'night';}var d=document.documentElement,dark=(t==='night');d.setAttribute('data-theme',t);d.style.backgroundColor=dark?'#070f1c':'#f0f7f5';if(dark)d.style.colorScheme='dark';}catch(e){}})();</script>
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <title>ZenXii Admin</title>

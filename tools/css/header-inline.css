@@ -98,6 +98,7 @@
             transition:background-color var(--ease),background var(--ease),border-color var(--ease),color var(--ease),box-shadow var(--ease) !important;
         }
         *,*::before,*::after{box-sizing:border-box;}
+        html{background:var(--bg) !important;}
         body{font-family:var(--font-b) !important;background:var(--bg) !important;color:var(--t1) !important;}
         body.hold-transition{visibility:visible !important;}
         a{text-decoration:none !important;}
