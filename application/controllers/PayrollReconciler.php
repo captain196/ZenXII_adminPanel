@@ -28,8 +28,6 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *   • The 'posted' flip is a targeted nested-field update
  *     (updateMask payments.<seq>.journal_status) — it never clobbers sibling
  *     payments, and concurrent payment CAS writes re-read past it.
- *   • Engine-flag gated: if payroll_engine_integration is OFF there are no
- *     engine payments to recover, and the sweep no-ops.
  */
 class PayrollReconciler extends CI_Controller
 {
@@ -103,7 +101,7 @@ class PayrollReconciler extends CI_Controller
         $payAcct = new PayrollAccountingService();
         $payAcct->init($this->firebase, $this->schoolFs, $this->sessionYear, 'SYSTEM_PAYROLL_RECON', $this);
         if (!$payAcct->isEnabled()) {
-            echo "payroll_engine_integration is OFF for {$this->schoolFs} — nothing to recover.\n";
+            echo "PayrollAccountingService not ready for {$this->schoolFs} — check firebase/school/session init.\n";
             return;
         }
 
@@ -201,6 +199,84 @@ class PayrollReconciler extends CI_Controller
 
                 log_message('error',
                     "PAYROLL_RECON healed schoolId={$this->schoolFs} run={$runId} seq={$seq} entry={$posted}");
+            }
+
+            // ── C2: accrual outbox recovery (one accrual per run) ────────────
+            // Same Phase-1/Phase-2 contract as payments: generate_payroll commits
+            // the accrual intent to the run (accrual_journal_status='pending')
+            // BEFORE posting, and flips to 'posted' once the engine confirms. A
+            // failure in between leaves it 'pending'; this re-posts the
+            // DETERMINISTIC JE_HR_PAYROLL_<runId> idempotently, then flips.
+            if ((string) ($run['accrual_journal_status'] ?? '') === 'pending') {
+                $found++;
+
+                // Age gate — leave a freshly-created run to the request path.
+                $runTs = strtotime((string) ($run['created_at'] ?? $run['updatedAt'] ?? '')) ?: 0;
+                if ($runTs > 0 && ($nowTs - $runTs) < self::STALE_SEC) {
+                    $skipped++;
+                    continue;
+                }
+
+                // The exact figures captured at generation — needed to rebuild
+                // the identical journal. Absent ⇒ cannot safely reconstruct; skip.
+                $payload = is_array($run['accrual_payload'] ?? null) ? $run['accrual_payload'] : [];
+                if (empty($payload)) { $skipped++; continue; }
+
+                $this->lastEngineError = '';
+                $accrualJournalId = PayrollAccountingService::accrualJournalIdFor($runId);
+                $posted = '';
+                try {
+                    $posted = (string) $payAcct->postRunAccrual(array_merge([
+                        'run_id'       => $runId,
+                        'month'        => $month,
+                        'year'         => $year,
+                        'journal_date' => (string) ($run['accrual_journal_date'] ?? date('Y-m-d')),
+                    ], $payload));
+                } catch (\Throwable $e) {
+                    log_message('error', "PAYROLL_RECON accrual post threw run={$runId}: " . $e->getMessage());
+                }
+
+                if ($posted === '') {
+                    // R2-style diagnostics on the run doc; NO auto-repair of
+                    // accounts/periods/config (human decision).
+                    $failed++;
+                    $reason     = $this->lastEngineError !== '' ? $this->lastEngineError : 'engine returned no entry';
+                    $prevDiag   = is_array($run['accrual_posting_diag'] ?? null) ? $run['accrual_posting_diag'] : [];
+                    $retryCount = (int) ($prevDiag['retry_count'] ?? 0) + 1;
+                    $firstAt    = (string) ($prevDiag['first_failure_at'] ?? date('c'));
+                    $this->firebase->firestoreUpdate('salarySlips', $runDocId, [
+                        'accrual_posting_diag' => [
+                            'journal_id'        => $accrualJournalId,
+                            'run_id'            => $runId,
+                            'failure_reason'    => $reason,
+                            'required_action'   => $this->_operatorAction($reason),
+                            'retry_count'       => $retryCount,
+                            'first_failure_at'  => $firstAt,
+                            'last_retry_at'     => date('c'),
+                            'last_retry_result' => 'failed',
+                        ],
+                    ]);
+                    log_message('error',
+                        "PAYROLL_RECON accrual failed schoolId={$this->schoolFs} run={$runId} "
+                        . "retry={$retryCount} reason={$reason}");
+                    continue;
+                }
+                $reposted++;
+
+                // Flip intent → posted + record the recovered journal id.
+                $prevDiag = is_array($run['accrual_posting_diag'] ?? null) ? $run['accrual_posting_diag'] : [];
+                $ok = (bool) $this->firebase->firestoreUpdate('salarySlips', $runDocId, [
+                    'accrual_journal_status'                  => 'posted',
+                    'expense_journal_id'                      => $posted,
+                    'accrual_posting_diag.last_retry_at'      => date('c'),
+                    'accrual_posting_diag.last_retry_result'  => 'recovered',
+                    'accrual_posting_diag.retry_count'        => (int) ($prevDiag['retry_count'] ?? 0) + 1,
+                    'updatedAt'                               => date('c'),
+                ]);
+                if ($ok) { $flipped++; } else { $failed++; }
+
+                log_message('error',
+                    "PAYROLL_RECON accrual healed schoolId={$this->schoolFs} run={$runId} entry={$posted}");
             }
         }
 

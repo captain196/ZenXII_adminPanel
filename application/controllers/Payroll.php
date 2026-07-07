@@ -36,8 +36,6 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *  SAFETY PROPERTIES
  * ──────────────────────────────────────────────────────────────────────
  *    • Every POST endpoint is role-gated to FINANCE_ROLES
- *    • Every POST endpoint checks the payroll_engine_integration flag
- *      (returns HTTP 503 with logged refusal if disabled)
  *    • All write paths go through PayrollAccountingService::post*; no
  *      controller method invokes Operations_accounting directly nor
  *      writes to any accounting Firestore collection
@@ -84,7 +82,6 @@ class Payroll extends MY_Controller
         $this->_require_role(self::FINANCE_ROLES);
         $data = [
             'page_title'      => 'Payroll Posting',
-            'flag_enabled'    => (bool) $this->config->item('payroll_engine_integration'),
             'school_name'     => $this->school_name,
             'session_year'    => $this->session_year,
             'admin_id'        => $this->admin_id,
@@ -177,7 +174,6 @@ class Payroll extends MY_Controller
     public function post_accrual(): void
     {
         $this->_require_role(self::FINANCE_ROLES);
-        if (!$this->_assertFlagEnabled()) return;
         $payload = $this->_collectAccrualPayload();
         $err = $this->_validateAccrualPayload($payload);
         if ($err !== '') $this->json_error($err);
@@ -191,7 +187,6 @@ class Payroll extends MY_Controller
     public function post_payout(): void
     {
         $this->_require_role(self::FINANCE_ROLES);
-        if (!$this->_assertFlagEnabled()) return;
         $payload = $this->_collectPayoutPayload();
         $err = $this->_validatePayoutPayload($payload);
         if ($err !== '') $this->json_error($err);
@@ -205,7 +200,6 @@ class Payroll extends MY_Controller
     public function post_statutory_deposit(): void
     {
         $this->_require_role(self::FINANCE_ROLES);
-        if (!$this->_assertFlagEnabled()) return;
         $payload = $this->_collectStatutoryPayload();
         $err = $this->_validateStatutoryPayload($payload);
         if ($err !== '') $this->json_error($err);
@@ -219,7 +213,6 @@ class Payroll extends MY_Controller
     public function post_reversal(): void
     {
         $this->_require_role(self::FINANCE_ROLES);
-        if (!$this->_assertFlagEnabled()) return;
         $originalEntryId = trim((string) $this->input->post('original_entry_id'));
         $reason          = trim((string) $this->input->post('reason'));
         $journalDate     = trim((string) $this->input->post('journal_date'));
@@ -367,26 +360,6 @@ class Payroll extends MY_Controller
         $this->load->library('Payroll_operational_repo', null, 'payOpsRepo');
         $this->payOpsRepo->init($this->firebase, $this->school_id, $this->session_year);
         return $this->payOpsRepo;
-    }
-
-    /**
-     * Returns false (and emits 503 + logged refusal) if the flag is OFF.
-     * Caller must short-circuit on false; this method already wrote the
-     * JSON error to output.
-     */
-    private function _assertFlagEnabled(): bool
-    {
-        if (!(bool) $this->config->item('payroll_engine_integration')) {
-            log_message('error',
-                "PAYROLL_UI_REFUSED reason='flag_off' actor={$this->admin_id} "
-                . "endpoint={$this->uri->uri_string()}");
-            $this->json_error(
-                'Payroll engine integration is disabled. Set PAYROLL_ENGINE_INTEGRATION=1 to enable.',
-                503
-            );
-            return false;
-        }
-        return true;
     }
 
     private function _collectAccrualPayload(): array

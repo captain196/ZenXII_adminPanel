@@ -33,8 +33,6 @@ defined('BASEPATH') or exit('No direct script access allowed');
  *      payload and return the resulting entryId.
  *    • Build reversal payloads from existing ledger docs (read-only) and
  *      route those reversals through the engine identically.
- *    • Honor the `payroll_engine_integration` feature flag — when off,
- *      every method short-circuits with a logged refusal.
  *
  * ──────────────────────────────────────────────────────────────────────
  *  NON-RESPONSIBILITIES (out of scope, by design)
@@ -116,7 +114,6 @@ defined('BASEPATH') or exit('No direct script access allowed');
  */
 final class PayrollAccountingService
 {
-    private const FLAG = 'payroll_engine_integration';
 
     // Default account routing — operator can override via feeAccountMap
     // (Stage 3+) or by passing explicit codes in the payload (Stage 4+).
@@ -155,14 +152,13 @@ final class PayrollAccountingService
     }
 
     /**
-     * Reports whether the engine-integration feature flag is enabled.
-     * When false, every public posting method refuses with a logged event;
-     * no ledger writes happen.
+     * Reports whether the service is initialised and ready to post. Callers
+     * (reconciler, verification tools) use this as a readiness guard; the
+     * posting methods enforce readiness internally via _assertReady().
      */
     public function isEnabled(): bool
     {
-        if (!$this->ready) return false;
-        return (bool) $this->CI->config->item(self::FLAG);
+        return $this->ready;
     }
 
     /**
@@ -185,6 +181,21 @@ final class PayrollAccountingService
     public static function journalIdFor(string $runId, int $seq): string
     {
         return 'JE_HR_PAYROLL_' . $runId . '_' . $seq;
+    }
+
+    /**
+     * THE canonical payroll ACCRUAL journal-id algorithm — one accrual journal
+     * per run. Equals what the engine derives for (source='HR_Payroll',
+     * sourceRef=runId): idempKey = "JE_HR_PAYROLL_" . runId.
+     *
+     * Callers that need the id BEFORE the engine returns it — Hr's Phase-1
+     * accrual-outbox write, and the reconciler's recovery sweep — MUST use this
+     * so no path derives a different id. Distinct from journalIdFor() (which
+     * appends _<seq> for payments), so accrual and payment ids never collide.
+     */
+    public static function accrualJournalIdFor(string $runId): string
+    {
+        return 'JE_HR_PAYROLL_' . $runId;
     }
 
     // ═════════════════════════════════════════════════════════════════
@@ -489,25 +500,15 @@ final class PayrollAccountingService
     }
 
     // ═════════════════════════════════════════════════════════════════
-    //  CONSOLIDATED PER-RUN POSTING  (LC-P1, 2026-07-06)
+    //  CONSOLIDATED PER-RUN POSTING
     // ═════════════════════════════════════════════════════════════════
     //
-    //  These two methods reproduce the EXACT accounting output of the
-    //  legacy Hr::_create_acct_journal payroll path — same accounts, same
-    //  line structure, same source ('HR_Payroll'), same voucher type
-    //  ('Journal' → 'JV-…'), same narration and amounts — but route the
-    //  post through the canonical engine (idempotent deterministic
-    //  entryId, Dr=Cr validation, account + period-lock guard, atomic CAS
-    //  balance batch). ONE consolidated journal per run (source_ref =
-    //  runId) preserves today's voucher count and report shape (the
-    //  operator-approved consolidated model).
-    //
-    //  Legacy parity anchors in Hr.php:
-    //    Accrual : lines per generate_payroll()   (Hr.php ~5095-5118)
-    //    Payment : lines per mark_payroll_paid()   (Hr.php ~5738-5750)
-    //
-    //  ADDITIVE ONLY (LC-P1): no caller yet; inert while the
-    //  `payroll_engine_integration` flag is off (guarded by _assertReady).
+    //  ONE consolidated journal per run through the canonical engine —
+    //  Dr salary expense, Cr net payable + statutory liabilities (accrual);
+    //  Dr salary payable, Cr cash/bank (payment) — with idempotent
+    //  deterministic entryId, Dr=Cr validation, account + period-lock guards,
+    //  and an atomic CAS balance batch. source_ref = runId (accrual) /
+    //  runId_seq (payment) keeps exactly one voucher per event.
     // ═════════════════════════════════════════════════════════════════
 
     /**
@@ -622,6 +623,44 @@ final class PayrollAccountingService
             'run_id' => $runId,
             'kind'   => 'payment',
             'seq'    => $paymentSeq,
+        ]);
+    }
+
+    /**
+     * Consolidated payroll ADJUSTMENT journal for one run — posts a DELTA
+     * (not a reversal) when a slip is regenerated. Mirrors the legacy
+     * Hr::regenerate_staff_payroll adjustment (Dr/Cr = the changed expense +
+     * liability deltas), but routes the post through the canonical engine so
+     * accountingClosingBalances stays authoritative.
+     *
+     * Idempotent on the caller-supplied DETERMINISTIC $source_ref
+     * (e.g. "<runId>_<staffId>_ADJ<regenCount>"), which MUST be unique per
+     * regeneration: distinct regenerations post distinct journals, while a
+     * retry of the SAME regeneration dedups to exactly one. The engine
+     * validates Dr=Cr; the caller guarantees the delta lines balance.
+     *
+     * @param array $adj { run_id, source_ref, lines[], narration,
+     *                     journal_date (optional; defaults to today) }
+     * @return string|null entryId, or null (flag off / validation / engine).
+     */
+    public function postRunAdjustment(array $adj): ?string
+    {
+        if (!$this->_assertReady('postRunAdjustment')) return null;
+
+        $runId       = (string) ($adj['run_id'] ?? '');
+        $sourceRef   = (string) ($adj['source_ref'] ?? '');
+        $lines       = is_array($adj['lines'] ?? null) ? $adj['lines'] : [];
+        $narration   = (string) ($adj['narration'] ?? '');
+        $journalDate = (string) ($adj['journal_date'] ?? date('Y-m-d'));
+
+        if ($runId === '' || $sourceRef === '' || count($lines) < 2 || $narration === '') {
+            $this->_log("PAYROLL_RUN_ADJ_REJECTED reason='missing run_id/source_ref/lines/narration' run={$runId}");
+            return null;
+        }
+
+        return $this->_commit('HR_Payroll', $sourceRef, $narration, $lines, $journalDate, [
+            'run_id' => $runId,
+            'kind'   => 'adjustment',
         ]);
     }
 
@@ -745,10 +784,6 @@ final class PayrollAccountingService
     {
         if (!$this->ready) {
             $this->_log("PAYROLL_NOT_READY method={$method}");
-            return false;
-        }
-        if (!$this->isEnabled()) {
-            $this->_log("PAYROLL_FLAG_DISABLED method={$method} flag=" . self::FLAG);
             return false;
         }
         return true;

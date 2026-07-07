@@ -754,9 +754,9 @@ $route['accounting/suggest_matches']                    = 'Accounting/suggest_ma
 $route['accounting/carry_forward_balances']             = 'Accounting/carry_forward_balances';
 $route['accounting/get_audit_log']                      = 'Accounting/get_audit_log';
 
-// ─── Payroll Stage 3 — UI integration around PayrollAccountingService ──────
+// ─── Payroll — UI integration around PayrollAccountingService ──────────────
 //   All POST endpoints route through PayrollAccountingService → Operations_accounting.
-//   No bypass paths; feature-flag gated via payroll_engine_integration.
+//   No bypass paths.
 $route['payroll']                                       = 'Payroll/index';
 $route['payroll/preview_accrual']                       = 'Payroll/preview_accrual';
 $route['payroll/preview_payout']                        = 'Payroll/preview_payout';

@@ -844,6 +844,24 @@ class Hr extends MY_Controller
     }
 
     /**
+     * Non-halting sibling of _assert_period_open(): returns whether the
+     * accounting period is OPEN for $date (today by default), WITHOUT emitting
+     * json_error. Used by regenerate_staff_payroll's engine path so a closed
+     * period DEFERS the adjustment journal (non-fatal, matching legacy) instead
+     * of aborting the regenerate.
+     */
+    private function _period_is_open(string $date = ''): bool
+    {
+        if ($date === '') $date = date('Y-m-d');
+        $this->load->library('Accounting_cache', null, 'acctCache');
+        $this->load->library('Accounting_period_lock', null, 'acctLock');
+        $this->acctCache->init($this->school_id, $this->session_year);
+        $this->acctLock->init($this->firebase, $this->acctCache, $this->school_id, $this->session_year);
+        $lock = $this->acctLock->forceValidate($date);
+        return empty($lock['locked']);
+    }
+
+    /**
      * LC-P3b — engine-path payment application with a CAS-FIRST, contention-
      * only retry. The run write is the serialization point: winning the
      * compare-and-swap atomically CLAIMS the payment seq, and ONLY the winner
@@ -1035,290 +1053,6 @@ class Hr extends MY_Controller
             'message' => $message,
         ], $data));
         exit;
-    }
-
-    /**
-     * Create a journal entry compatible with the Accounting module.
-     *
-     * @param string $narration  Human-readable description
-     * @param array  $lines      Array of [account_code, dr, cr] entries
-     * @param string $sourceRef  Reference ID (e.g. payroll run ID)
-     * @return string            The generated entry ID
-     */
-    /**
-     * @param string $narration   Human-readable description
-     * @param array  $lines       Array of [account_code, dr, cr, cost_center?]
-     * @param string $sourceRef   Reference ID (e.g. payroll run ID)
-     * @return string             The generated entry ID
-     */
-    private function _create_acct_journal(string $narration, array $lines, string $sourceRef = ''): string
-    {
-        // Generate voucher number via Firestore counter
-        $newSeq = 0;
-        try {
-            $schoolDoc = $this->fs->get('schools', $this->fs->docId('profile'));
-            $counters = (is_array($schoolDoc) && isset($schoolDoc['acctCounters'])) ? $schoolDoc['acctCounters'] : [];
-            $cur = isset($counters['Journal']) && is_numeric($counters['Journal']) ? (int) $counters['Journal'] : 0;
-            $newSeq = $cur + 1;
-            $this->fs->update('schools', $this->fs->docId('profile'), [
-                'acctCounters.Journal' => $newSeq,
-            ]);
-        } catch (\Exception $e) {
-            log_message('error', "HR _create_acct_journal counter failed: " . $e->getMessage());
-            $newSeq = (int) (microtime(true) * 1000) % 1000000;
-        }
-        $voucherNo = 'JV-' . str_pad($newSeq, 6, '0', STR_PAD_LEFT);
-
-        // Generate entry ID matching Accounting format
-        $entryId = 'JE_' . date('YmdHis') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
-
-        // Resolve account names from PAYROLL_ACCOUNTS or Firestore CoA
-        $coa = [];
-        try {
-            $fsDocs = $this->fs->schoolWhere('accounting', [['type', '==', 'chartOfAccounts']]);
-            if (is_array($fsDocs)) {
-                foreach ($fsDocs as $doc) {
-                    $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    $code = $d['code'] ?? '';
-                    if ($code !== '') $coa[$code] = $d;
-                }
-            }
-        } catch (\Exception $e) {}
-
-        // Calculate totals and affected accounts
-        $totalDr = 0;
-        $totalCr = 0;
-        $affected = [];
-        foreach ($lines as &$line) {
-            $dr = round((float) ($line['dr'] ?? 0), 2);
-            $cr = round((float) ($line['cr'] ?? 0), 2);
-            $line['dr'] = $dr;
-            $line['cr'] = $cr;
-            $totalDr += $dr;
-            $totalCr += $cr;
-            $ac = $line['account_code'] ?? '';
-            if ($ac !== '' && empty($line['account_name'])) {
-                $line['account_name'] = $coa[$ac]['name']
-                    ?? (self::PAYROLL_ACCOUNTS[$ac]['name'] ?? '');
-            }
-            if ($ac !== '') {
-                $affected[$ac] = [
-                    'dr' => ($affected[$ac]['dr'] ?? 0) + $dr,
-                    'cr' => ($affected[$ac]['cr'] ?? 0) + $cr,
-                ];
-            }
-        }
-        unset($line);
-
-        $entry = [
-            'date'         => date('Y-m-d'),
-            'voucher_no'   => $voucherNo,
-            'voucher_type' => 'Journal',
-            'narration'    => $narration,
-            'lines'        => array_values($lines),
-            'total_dr'     => round($totalDr, 2),
-            'total_cr'     => round($totalCr, 2),
-            'source'       => 'HR_Payroll',
-            'source_ref'   => $sourceRef ?: null,
-            'is_finalized' => false,
-            'status'       => 'active',
-            'created_by'   => $this->admin_id ?? '',
-            'created_at'   => date('c'),
-            'schoolId'     => $this->school_id,
-            'session'      => $this->session_year,
-            'type'         => 'ledger',
-        ];
-
-        // Write ledger entry to Firestore
-        try {
-            $this->firebase->firestoreSet('accounting', $this->fs->docId($entryId), $entry, true);
-        } catch (\Exception $e) {
-            log_message('error', "HR _create_acct_journal ledger write failed: " . $e->getMessage());
-        }
-
-        // Write indices to Firestore
-        $safeDate = date('Y-m-d');
-        try {
-            $this->firebase->firestoreSet('accounting', $this->fs->docId("IDX_DATE_{$safeDate}_{$entryId}"), [
-                'type' => 'ledger_index_by_date', 'date' => $safeDate, 'entryId' => $entryId,
-                'schoolId' => $this->school_id, 'session' => $this->session_year,
-            ], true);
-            foreach (array_keys($affected) as $acCode) {
-                $this->firebase->firestoreSet('accounting', $this->fs->docId("IDX_ACCT_{$acCode}_{$entryId}"), [
-                    'type' => 'ledger_index_by_account', 'accountCode' => $acCode, 'entryId' => $entryId,
-                    'schoolId' => $this->school_id, 'session' => $this->session_year,
-                ], true);
-            }
-        } catch (\Exception $e) {
-            log_message('error', "HR _create_acct_journal index write failed: " . $e->getMessage());
-        }
-
-        // Update closing balances cache in Firestore
-        foreach ($affected as $code => $amounts) {
-            try {
-                $balDocId = $this->fs->docId("BAL_{$this->session_year}_{$code}");
-                $current = $this->firebase->firestoreGet('accounting', $balDocId);
-                if (!is_array($current)) $current = [];
-                $pDr = (float) ($current['period_dr'] ?? 0) + $amounts['dr'];
-                $pCr = (float) ($current['period_cr'] ?? 0) + $amounts['cr'];
-                $this->firebase->firestoreSet('accounting', $balDocId, [
-                    'type'          => 'closing_balance',
-                    'accountCode'   => $code,
-                    'schoolId'      => $this->school_id,
-                    'session'       => $this->session_year,
-                    'period_dr'     => round($pDr, 2),
-                    'period_cr'     => round($pCr, 2),
-                    'last_computed' => date('c'),
-                ], true);
-            } catch (\Exception $e) {
-                log_message('error', "HR _create_acct_journal balance update failed for {$code}: " . $e->getMessage());
-            }
-        }
-
-        // Phase 1 (RTDB elimination): the RTDB Accounts/Ledger mirror was
-        // removed. Accounting.php reads the canonical Firestore `accounting`
-        // collection (written above), so no RTDB write is required. Closing
-        // balances are maintained in Firestore `accounting` (BAL_ docs) above.
-
-        return $entryId;
-    }
-
-    /**
-     * Soft-delete a journal entry, reverse balances, and clean indices.
-     * Matches Accounting.php delete_journal_entry() behavior.
-     */
-    private function _delete_acct_journal(string $entryId): void
-    {
-        $entry = null;
-        try {
-            $entry = $this->firebase->firestoreGet('accounting', $this->fs->docId($entryId));
-        } catch (\Exception $e) {
-            log_message('error', "HR _delete_acct_journal Firestore read failed: " . $e->getMessage());
-        }
-        if (!is_array($entry) || ($entry['status'] ?? '') === 'deleted') {
-            return;
-        }
-
-        // Collect affected accounts from lines
-        $affected = [];
-        foreach ($entry['lines'] ?? [] as $line) {
-            $ac = $line['account_code'] ?? '';
-            if ($ac === '') continue;
-            $affected[$ac] = [
-                'dr' => ($affected[$ac]['dr'] ?? 0) + (float) ($line['dr'] ?? 0),
-                'cr' => ($affected[$ac]['cr'] ?? 0) + (float) ($line['cr'] ?? 0),
-            ];
-        }
-
-        // Reverse closing balances in Firestore
-        foreach ($affected as $code => $amounts) {
-            try {
-                $balDocId = $this->fs->docId("BAL_{$this->session_year}_{$code}");
-                $current = $this->firebase->firestoreGet('accounting', $balDocId);
-                if (!is_array($current)) $current = [];
-                $pDr = (float) ($current['period_dr'] ?? 0) - $amounts['dr'];
-                $pCr = (float) ($current['period_cr'] ?? 0) - $amounts['cr'];
-                $this->firebase->firestoreSet('accounting', $balDocId, [
-                    'type'          => 'closing_balance',
-                    'accountCode'   => $code,
-                    'schoolId'      => $this->school_id,
-                    'session'       => $this->session_year,
-                    'period_dr'     => round($pDr, 2),
-                    'period_cr'     => round($pCr, 2),
-                    'last_computed' => date('c'),
-                ], true);
-            } catch (\Exception $e) {
-                log_message('error', "HR _delete_acct_journal balance reverse failed for {$code}: " . $e->getMessage());
-            }
-        }
-
-        // Remove indices from Firestore
-        $date = $entry['date'] ?? '';
-        try {
-            if ($date !== '') {
-                $this->firebase->firestoreDelete('accounting', $this->fs->docId("IDX_DATE_{$date}_{$entryId}"));
-            }
-            foreach (array_keys($affected) as $acCode) {
-                $this->firebase->firestoreDelete('accounting', $this->fs->docId("IDX_ACCT_{$acCode}_{$entryId}"));
-            }
-        } catch (\Exception $e) {
-            log_message('error', "HR _delete_acct_journal index delete failed: " . $e->getMessage());
-        }
-
-        // Soft-delete the entry in Firestore
-        try {
-            $this->firebase->firestoreSet('accounting', $this->fs->docId($entryId), [
-                'status'     => 'deleted',
-                'deleted_by' => $this->admin_id ?? '',
-                'deleted_at' => date('c'),
-            ], true);
-        } catch (\Exception $e) {
-            log_message('error', "HR _delete_acct_journal soft-delete failed: " . $e->getMessage());
-        }
-
-        // Phase 1 (RTDB elimination): the RTDB Accounts/Ledger delete-mirror
-        // was removed. The Firestore `accounting` soft-delete + Firestore index
-        // deletes + Firestore closing-balance reversal above are canonical;
-        // Accounting.php reads Firestore only.
-    }
-
-    /**
-     * Create a REVERSAL journal entry — proper accounting correction.
-     * The original entry stays intact (audit trail); a new entry with
-     * swapped DR/CR is created to cancel its effect.
-     *
-     * @param  string $originalId  The ledger entry ID to reverse
-     * @param  string $reason      Reason for reversal
-     * @return string              The reversal entry ID
-     */
-    private function _create_reversal_journal(string $originalId, string $reason = ''): string
-    {
-        $original = null;
-        try {
-            $original = $this->firebase->firestoreGet('accounting', $this->fs->docId($originalId));
-        } catch (\Exception $e) {
-            log_message('error', "HR _create_reversal_journal Firestore read failed: " . $e->getMessage());
-        }
-
-        if (!is_array($original) || ($original['status'] ?? '') === 'deleted') {
-            log_message('error', "Cannot reverse entry {$originalId} — not found or already deleted");
-            return '';
-        }
-
-        // Swap DR/CR on every line
-        $reversedLines = [];
-        foreach ($original['lines'] ?? [] as $line) {
-            $reversedLines[] = [
-                'account_code' => $line['account_code'] ?? '',
-                'account_name' => $line['account_name'] ?? '',
-                'dr'           => round((float) ($line['cr'] ?? 0), 2),
-                'cr'           => round((float) ($line['dr'] ?? 0), 2),
-            ];
-        }
-
-        $narration = 'REVERSAL: ' . ($original['narration'] ?? '');
-        if ($reason !== '') $narration .= " — Reason: {$reason}";
-
-        $reversalId = $this->_create_acct_journal($narration, $reversedLines, $originalId);
-
-        // Mark original as reversed (not deleted — it stays in the ledger)
-        try {
-            $this->firebase->firestoreSet('accounting', $this->fs->docId($originalId), [
-                'is_reversed'     => true,
-                'reversal_id'     => $reversalId,
-                'reversed_by'     => $this->admin_id ?? '',
-                'reversed_at'     => date('c'),
-                'reversal_reason' => $reason,
-            ], true);
-        } catch (\Exception $e) {
-            log_message('error', "HR _create_reversal_journal mark-reversed failed: " . $e->getMessage());
-        }
-
-        log_message('info',
-            "Reversal journal created: original={$originalId} reversal={$reversalId} school=[{$this->school_name}]"
-        );
-
-        return $reversalId;
     }
 
     /**
@@ -4817,6 +4551,170 @@ HTML;
     }
 
     /**
+     * Compute one employee's payslip amounts for a pay period.
+     *
+     * Shared by generate_payroll() and regenerate_staff_payroll() so both paths
+     * run the identical calculation and cannot drift. Pure function — no Firestore,
+     * no session, no side effects; all inputs are passed in and the breakdown is
+     * returned, so it is safe to call inside the per-employee loop.
+     *
+     * Statutory deductions (PF/ESI/TDS) are % of the EARNED (prorated) wage — the
+     * same base as earnings — so a deduction can never exceed what was earned, and
+     * employer PF/ESI use the same base as their employee counterpart. Flat PT/Other
+     * are reduced (Other first, then PT) only when needed to keep net pay ≥ 0. Net
+     * is gross − total deductions, so the accrual journal balances by construction.
+     *
+     * Rates come verbatim from the salary structure. No statutory ceilings,
+     * eligibility thresholds, slabs, tax engines, carry-forward, or per-school
+     * policy are applied — those are out of scope here.
+     *
+     * @param array $sal              Validated salary structure (rates + flats).
+     * @param float $staffWorkingDays Payable working days in the employment window.
+     * @param float $daysAbsent       Unpaid absent days (already window-capped).
+     * @param float $lwpDays          Leave-without-pay days (supports 0.5).
+     * @return array Per-employee breakdown consumed by both callers.
+     */
+    private function _compute_payslip(array $sal, float $staffWorkingDays, float $daysAbsent, float $lwpDays): array
+    {
+        $warnings = [];
+
+        // Earned wages: unpaid absence + LWP reduce pay proportionally; paid leave does not.
+        if ($daysAbsent > $staffWorkingDays) $daysAbsent = $staffWorkingDays;
+        $deductionDays = $daysAbsent + $lwpDays;
+        if ($deductionDays > $staffWorkingDays) $deductionDays = $staffWorkingDays;
+
+        $absentFraction = ($staffWorkingDays > 0) ? ($deductionDays / $staffWorkingDays) : 0.0;
+        $retention      = 1 - $absentFraction;
+
+        $daysWorked = $staffWorkingDays - $daysAbsent - $lwpDays;
+        if ($daysWorked < 0) $daysWorked = 0;
+
+        $basic = (float) ($sal['basic'] ?? 0);
+
+        $effectiveBasic  = round($basic                                  * $retention, 2);
+        $hra             = round((float) ($sal['hra'] ?? 0)              * $retention, 2);
+        $da              = round((float) ($sal['da'] ?? 0)               * $retention, 2);
+        $ta              = round((float) ($sal['ta'] ?? 0)              * $retention, 2);
+        $medical         = round((float) ($sal['medical'] ?? 0)          * $retention, 2);
+        $otherAllowances = round((float) ($sal['other_allowances'] ?? 0) * $retention, 2);
+
+        $gross = round($effectiveBasic + $hra + $da + $ta + $medical + $otherAllowances, 2);
+
+        // Display-only day accounting (unchanged semantics).
+        $dailySalary  = ($staffWorkingDays > 0) ? round($basic / $staffWorkingDays, 2) : 0.0;
+        $lwpDeduction = round($dailySalary * $lwpDays, 2);
+
+        // Statutory deductions: % of the earned basic/gross (same base as earnings),
+        // so a deduction can never outstrip what was earned.
+        $pfPct      = (float) ($sal['pf_employee'] ?? 0);
+        $esiPct     = (float) ($sal['esi_employee'] ?? 0);
+        $tdsPct     = (float) ($sal['tds'] ?? 0);
+
+        $pfEmployee  = round($effectiveBasic * ($pfPct  / 100), 2);
+        $esiEmployee = round($gross          * ($esiPct / 100), 2);
+        $tds         = round($gross          * ($tdsPct / 100), 2);
+
+        // Employer contributions use the same earned base as their employee
+        // counterpart (PF on earned basic, ESI on earned gross).
+        $pfEmployer  = round($effectiveBasic * ((float) ($sal['pf_employer']  ?? 0) / 100), 2);
+        $esiEmployer = round($gross          * ((float) ($sal['esi_employer'] ?? 0) / 100), 2);
+
+        // Flat deductions.
+        $professionalTax = (float) ($sal['professional_tax'] ?? 0);
+        $otherDeductions = (float) ($sal['other_deductions'] ?? 0);
+
+        // Net pay. Statutory-on-earned-base is ≤ gross for any sane config, so this
+        // normally does nothing. It engages only when flat PT+Other would push total
+        // deductions past a (very low) earned gross: reduce Other first, then PT, so
+        // net lands at 0 — never negative — and gross == net + Σ deductions exactly.
+        $deferredOther = 0.0; $deferredPt = 0.0; $deferredStatutory = 0.0;
+        $employeeDeductions = round($pfEmployee + $esiEmployee + $tds + $professionalTax + $otherDeductions, 2);
+
+        if ($employeeDeductions > $gross) {
+            $overflow = round($employeeDeductions - $gross, 2);
+
+            $cut = min($otherDeductions, $overflow);
+            $otherDeductions = round($otherDeductions - $cut, 2);
+            $deferredOther   = round($cut, 2);
+            $overflow        = round($overflow - $cut, 2);
+
+            if ($overflow > 0) {
+                $cut = min($professionalTax, $overflow);
+                $professionalTax = round($professionalTax - $cut, 2);
+                $deferredPt      = round($cut, 2);
+                $overflow        = round($overflow - $cut, 2);
+            }
+
+            // Last-resort guard: only reachable with an INVALID structure whose
+            // statutory rates themselves sum to >100% of earnings. Clamp the
+            // statutory trio proportionally to keep the two hard invariants
+            // (net ≥ 0, journal balanced) and warn loudly so the misconfigured
+            // salary structure is corrected. Not a normal-absence path.
+            $statutory = round($pfEmployee + $esiEmployee + $tds, 2);
+            if ($overflow > 0.005 && $statutory > 0) {
+                $factor = ($gross > 0) ? ($gross / $statutory) : 0.0;
+                $pfEmployee  = round($pfEmployee  * $factor, 2);
+                $esiEmployee = round($esiEmployee * $factor, 2);
+                $tds         = round($tds         * $factor, 2);
+                $deferredStatutory = round($overflow, 2);
+                $warnings[] = 'statutory rates exceed 100% of earned wages — check salary structure (PF/ESI/TDS %)';
+            }
+
+            // Recompute total, then absorb any paisa rounding residual into the
+            // largest remaining positive component so total === gross exactly.
+            $employeeDeductions = round($pfEmployee + $esiEmployee + $tds + $professionalTax + $otherDeductions, 2);
+            $residual = round($gross - $employeeDeductions, 2);
+            if (abs($residual) >= 0.01) {
+                if ($otherDeductions > 0)      { $otherDeductions = round($otherDeductions + $residual, 2); }
+                elseif ($professionalTax > 0)  { $professionalTax = round($professionalTax + $residual, 2); }
+                elseif ($tds > 0)              { $tds             = round($tds + $residual, 2); }
+                elseif ($esiEmployee > 0)      { $esiEmployee     = round($esiEmployee + $residual, 2); }
+                else                           { $pfEmployee      = round($pfEmployee + $residual, 2); }
+                $employeeDeductions = round($pfEmployee + $esiEmployee + $tds + $professionalTax + $otherDeductions, 2);
+            }
+        }
+
+        $netPay = round($gross - $employeeDeductions, 2);
+        if ($netPay < 0) $netPay = 0; // invariant guard; unreachable after waterfall
+
+        return [
+            // day accounting
+            'days_worked'        => $daysWorked,
+            'deduction_days'     => $deductionDays,
+            'absent_fraction'    => $absentFraction,
+            'daily_salary'       => $dailySalary,
+            'lwp_deduction'      => $lwpDeduction,
+            // earned wages
+            'basic'              => $effectiveBasic,
+            'hra'                => $hra,
+            'da'                 => $da,
+            'ta'                 => $ta,
+            'medical'            => $medical,
+            'other_allowances'   => $otherAllowances,
+            'gross'              => $gross,
+            // statutory + employer
+            'pf_employee'        => $pfEmployee,
+            'pf_employer'        => $pfEmployer,
+            'esi_employee'       => $esiEmployee,
+            'esi_employer'       => $esiEmployer,
+            'tds'                => $tds,
+            // voluntary / flat
+            'professional_tax'   => $professionalTax,
+            'other_deductions'   => $otherDeductions,
+            // totals
+            'total_deductions'   => $employeeDeductions,
+            'net_pay'            => $netPay,
+            // amounts not deducted because they exceeded earned gross (display only)
+            'deferred'           => [
+                'other_deductions' => $deferredOther,
+                'professional_tax' => $deferredPt,
+                'statutory'        => $deferredStatutory,
+            ],
+            'warnings'           => $warnings,
+        ];
+    }
+
+    /**
      * POST — Generate payroll for a given month/year.
      * Params: month (e.g. 'January'), year (e.g. '2026')
      *
@@ -5156,61 +5054,36 @@ HTML;
             // pre-join / post-exit days, so deductions and base pay are
             // proportional to the employment window.
             if ($daysAbsent > $staffWorkingDays) $daysAbsent = $staffWorkingDays;
-            $daysWorked = $staffWorkingDays - $daysAbsent - $staffLwpDays;
-            if ($daysWorked < 0) $daysWorked = 0;
 
-            // Calculate pay — basic reduced proportionally for absent + LWP days only
-            // Paid leave days do NOT reduce salary
-            $basic = (float) ($sal['basic'] ?? 0);
-            $deductionDays  = $daysAbsent + $staffLwpDays;
-            if ($deductionDays > $staffWorkingDays) $deductionDays = $staffWorkingDays;
-            $absentFraction = ($staffWorkingDays > 0) ? ($deductionDays / $staffWorkingDays) : 0;
-            $effectiveBasic = round($basic * (1 - $absentFraction), 2);
+            // C1 — all payslip arithmetic (earned wages, statutory/employer
+            // deductions on the earned base, voluntary waterfall, net pay) comes
+            // from the single shared calculator so this path and
+            // regenerate_staff_payroll() can never drift. Pure in-memory call —
+            // no Firestore, safe inside this per-employee loop.
+            $calc = $this->_compute_payslip($sal, (float) $staffWorkingDays, (float) $daysAbsent, (float) $staffLwpDays);
 
-            // Calculate LWP deduction amount separately for payslip display
-            $dailySalary   = ($staffWorkingDays > 0) ? round($basic / $staffWorkingDays, 2) : 0;
-            $lwpDeduction  = round($dailySalary * $staffLwpDays, 2);
-
-            // HR-6 FIX: Pro-rate allowances by the same absent fraction as basic
-            $hra             = round((float) ($sal['hra'] ?? 0) * (1 - $absentFraction), 2);
-            $da              = round((float) ($sal['da'] ?? 0) * (1 - $absentFraction), 2);
-            $ta              = round((float) ($sal['ta'] ?? 0) * (1 - $absentFraction), 2);
-            $medical         = round((float) ($sal['medical'] ?? 0) * (1 - $absentFraction), 2);
-            $otherAllowances = round((float) ($sal['other_allowances'] ?? 0) * (1 - $absentFraction), 2);
-
-            $gross = round($effectiveBasic + $hra + $da + $ta + $medical + $otherAllowances, 2);
-
-            // Deductions: PF/ESI/TDS are stored as PERCENTAGES in salary structure
-            // PF = % of original basic (before pro-ration)
-            // ESI = % of original gross
-            // TDS = % of original gross
-            // Professional Tax & Other Deductions = flat amounts (not %)
-            $origBasic = (float) ($sal['basic'] ?? 0);
-            $origGross = $origBasic
-                + (float) ($sal['hra'] ?? 0)
-                + (float) ($sal['da'] ?? 0)
-                + (float) ($sal['ta'] ?? 0)
-                + (float) ($sal['medical'] ?? 0)
-                + (float) ($sal['other_allowances'] ?? 0);
-
-            $pfPct               = (float) ($sal['pf_employee'] ?? 0);
-            $pfEmployee          = round($origBasic * ($pfPct / 100), 2);
-            $pfEmployerPct       = (float) ($sal['pf_employer'] ?? 0);
-            $pfEmployer          = round($origBasic * ($pfEmployerPct / 100), 2);
-            $esiPct              = (float) ($sal['esi_employee'] ?? 0);
-            $esiEmployee         = round($origGross * ($esiPct / 100), 2);
-            $esiEmployerPct      = (float) ($sal['esi_employer'] ?? 0);
-            $esiEmployer         = round($origGross * ($esiEmployerPct / 100), 2);
-            $tdsPct              = (float) ($sal['tds'] ?? 0);
-            $tds                 = round($origGross * ($tdsPct / 100), 2);
-            $professionalTax     = (float) ($sal['professional_tax'] ?? 0); // flat amount
-            $otherDeductions     = (float) ($sal['other_deductions'] ?? 0); // flat amount
-
-            $employeeDeductions = round(
-                $pfEmployee + $esiEmployee + $professionalTax + $tds + $otherDeductions, 2
-            );
-            $netPay = round($gross - $employeeDeductions, 2);
-            if ($netPay < 0) $netPay = 0;
+            $daysWorked         = $calc['days_worked'];
+            $deductionDays      = $calc['deduction_days'];
+            $absentFraction     = $calc['absent_fraction'];
+            $dailySalary        = $calc['daily_salary'];
+            $lwpDeduction       = $calc['lwp_deduction'];
+            $effectiveBasic     = $calc['basic'];
+            $hra                = $calc['hra'];
+            $da                 = $calc['da'];
+            $ta                 = $calc['ta'];
+            $medical            = $calc['medical'];
+            $otherAllowances    = $calc['other_allowances'];
+            $gross              = $calc['gross'];
+            $pfEmployee         = $calc['pf_employee'];
+            $pfEmployer         = $calc['pf_employer'];
+            $esiEmployee        = $calc['esi_employee'];
+            $esiEmployer        = $calc['esi_employer'];
+            $tds                = $calc['tds'];
+            $professionalTax    = $calc['professional_tax'];
+            $otherDeductions    = $calc['other_deductions'];
+            $employeeDeductions = $calc['total_deductions'];
+            $netPay             = $calc['net_pay'];
+            foreach ($calc['warnings'] as $w) { $payrollWarnings[] = $staffName . ': ' . $w; }
 
             // Classify as Teaching or Non-Teaching for expense accounts
             // Primary: use staff_roles + role category from Config/StaffRoles
@@ -5366,22 +5239,36 @@ HTML;
             'dept_breakdown'   => $deptGross,
         ];
 
-        // LC-P2b — engine-path PRE-FLIGHT before any operational record is
-        // written. The feature flag is evaluated ONCE here and reused by the
-        // posting branch below (CI config is immutable per request, so the
-        // value is deterministic). When the engine path is selected we verify
+        // Engine PRE-FLIGHT before any operational record is written: verify
         // every accrual posting account exists + is active AND the accounting
-        // period is open; any failure hard-blocks (json_error) BEFORE the run
-        // or slips are written, so no orphan operational record can be left
-        // behind (approved fail-fast). Flag OFF: this block is skipped
-        // entirely → legacy behaviour is byte-identical.
-        $useEngine = (bool) $this->config->item('payroll_engine_integration');
-        if ($useEngine) {
-            $this->_preflight_engine_accrual(
-                $totalTeachingExp, $totalNonTeachingExp,
-                $totalPF, $totalESI, $totalTDS, $totalProfTax, $totalOtherDed
-            );
-        }
+        // period is open; any failure hard-blocks (json_error) BEFORE the run or
+        // slips are written, so no orphan operational record can be left behind.
+        $accrualJournalDate = date('Y-m-d');
+        $this->_preflight_engine_accrual(
+            $totalTeachingExp, $totalNonTeachingExp,
+            $totalPF, $totalESI, $totalTDS, $totalProfTax, $totalOtherDed
+        );
+
+        // Accrual transactional outbox (Phase 1): persist the DURABLE accrual
+        // intent + the exact figures the reconciler needs to re-post it INTO the
+        // run doc written just below — BEFORE the journal is posted. A failure
+        // between here and the post leaves the run at accrual_journal_status
+        // 'pending', which the PayrollReconciler re-posts idempotently. Rides the
+        // SAME run write — no extra Firestore op.
+        require_once APPPATH . 'services/PayrollAccountingService.php';
+        $runData['accrual_journal_id']     = PayrollAccountingService::accrualJournalIdFor($runId);
+        $runData['accrual_journal_status'] = 'pending';
+        $runData['accrual_journal_date']   = $accrualJournalDate;
+        $runData['accrual_payload']        = [
+            'total_teaching_exp'     => $totalTeachingExp,
+            'total_non_teaching_exp' => $totalNonTeachingExp,
+            'total_net'              => $totalNet,
+            'total_pf'               => $totalPF,
+            'total_esi'              => $totalESI,
+            'total_tds'              => $totalTDS,
+            'total_prof_tax'         => $totalProfTax,
+            'total_other_ded'        => $totalOtherDed,
+        ];
 
         // 1. Firestore FIRST — sync payroll run + slips
         $this->_fsSyncPayrollRun($runId, $runData);
@@ -5389,77 +5276,48 @@ HTML;
             $this->_fsSyncPayslip($runId, $sid, $slip);
         }
 
-        // ── Expense journal entry (Debit salary expenses, Credit payable accounts) ──
-        // DR side: gross salary expense (teaching + non-teaching)
-        // CR side: net salary payable (2020) + statutory deductions to separate liability accounts
-        //   2030 = PF Payable, 2031 = ESI Payable, 2032 = TDS Payable
-        // This ensures 2020 only holds the net amount cleared on payment day,
-        // while statutory liabilities sit in their own accounts until remitted to government.
-        $narration = "Salary accrual - {$month} {$year}";
-        $journalLines = [];
-        if ($totalTeachingExp > 0) {
-            $journalLines[] = ['account_code' => '5010', 'dr' => $totalTeachingExp, 'cr' => 0];
-        }
-        if ($totalNonTeachingExp > 0) {
-            $journalLines[] = ['account_code' => '5020', 'dr' => $totalNonTeachingExp, 'cr' => 0];
-        }
-        $journalLines[] = ['account_code' => '2020', 'dr' => 0, 'cr' => $totalNet];
-        if ($totalPF > 0) {
-            $journalLines[] = ['account_code' => '2030', 'dr' => 0, 'cr' => $totalPF];
-        }
-        if ($totalESI > 0) {
-            $journalLines[] = ['account_code' => '2031', 'dr' => 0, 'cr' => $totalESI];
-        }
-        if ($totalTDS > 0) {
-            $journalLines[] = ['account_code' => '2032', 'dr' => 0, 'cr' => $totalTDS];
-        }
-        if ($totalProfTax > 0) {
-            $journalLines[] = ['account_code' => '2033', 'dr' => 0, 'cr' => $totalProfTax];
-        }
-        if ($totalOtherDed > 0) {
-            $journalLines[] = ['account_code' => '2034', 'dr' => 0, 'cr' => $totalOtherDed];
+        // ── Post the accrual journal through the canonical engine ───────
+        // postRunAccrual builds the lines/narration/source ('HR_Payroll')/
+        // voucher ('Journal') internally and posts idempotently
+        // (JE_HR_PAYROLL_<runId>) with Dr=Cr + account + period-lock guards and
+        // an atomic CAS balance batch → accountingClosingBalances.
+        $payAcct = new PayrollAccountingService();
+        $payAcct->init($this->firebase, $this->school_id, $this->session_year, $this->admin_id, $this);
+        $journalId = (string) $payAcct->postRunAccrual([
+            'run_id'                 => $runId,
+            'month'                  => $month,
+            'year'                   => $year,
+            'journal_date'           => $accrualJournalDate,
+            'total_teaching_exp'     => $totalTeachingExp,
+            'total_non_teaching_exp' => $totalNonTeachingExp,
+            'total_net'              => $totalNet,
+            'total_pf'               => $totalPF,
+            'total_esi'              => $totalESI,
+            'total_tds'              => $totalTDS,
+            'total_prof_tax'         => $totalProfTax,
+            'total_other_ded'        => $totalOtherDed,
+        ]);
+
+        // If the accrual post did not confirm, the run is still created and
+        // DURABLE at accrual_journal_status='pending'; the reconciler posts it
+        // automatically (exactly once, deterministic id). Surface as a warning.
+        if ($journalId === '') {
+            $payrollWarnings[] = 'Accrual journal deferred — it will be posted automatically by the payroll reconciler.';
+            $this->_log_payroll_warning('accrual_deferred', $runId,
+                'postRunAccrual returned empty — accrual outbox left pending for reconciler recovery');
         }
 
-        // ── Post the accrual journal (LC-P2 feature-flag branch) ────────
-        // Uses the SAME $useEngine evaluated once in the pre-flight above —
-        // one flag evaluation for the whole request (deterministic). A strict
-        // if/else guarantees MUTUAL EXCLUSION — the legacy poster and the
-        // canonical-engine method can never both run in the same request, so
-        // no duplicate journal/voucher/posting is possible.
-        // Rollback: set payroll_engine_integration OFF → legacy path resumes
-        // with byte-identical behaviour (default).
-        if ($useEngine) {
-            // Canonical engine path. postRunAccrual builds byte-identical
-            // lines/narration/source ('HR_Payroll')/voucher ('Journal')
-            // internally (verified LC-P1) and posts idempotently
-            // (JE_HR_PAYROLL_<runId>) with Dr=Cr + account + period-lock
-            // guards and an atomic CAS balance batch. The service also
-            // re-checks the flag via _assertReady (defense-in-depth; reads
-            // the same immutable config, so the value cannot diverge).
-            require_once APPPATH . 'services/PayrollAccountingService.php';
-            $payAcct = new PayrollAccountingService();
-            $payAcct->init($this->firebase, $this->school_id, $this->session_year, $this->admin_id, $this);
-            $journalId = (string) $payAcct->postRunAccrual([
-                'run_id'                 => $runId,
-                'month'                  => $month,
-                'year'                   => $year,
-                'total_teaching_exp'     => $totalTeachingExp,
-                'total_non_teaching_exp' => $totalNonTeachingExp,
-                'total_net'              => $totalNet,
-                'total_pf'               => $totalPF,
-                'total_esi'              => $totalESI,
-                'total_tds'              => $totalTDS,
-                'total_prof_tax'         => $totalProfTax,
-                'total_other_ded'        => $totalOtherDed,
-            ]);
-        } else {
-            // Legacy path — unchanged default (flag OFF).
-            $journalId = $this->_create_acct_journal($narration, $journalLines, $runId);
-        }
-
-        // Store expense journal ID in run (Firestore)
+        // Store expense journal ID in run (Firestore). This same write is the
+        // accrual-outbox Phase-2 flip: mark the accrual 'posted' only when the
+        // engine confirmed a journal id; otherwise leave it 'pending' so the
+        // reconciler re-posts idempotently. One write — no extra Firestore op.
+        $runPatch = [
+            'expense_journal_id'     => $journalId,
+            'warnings'               => $payrollWarnings,
+            'accrual_journal_status' => ($journalId !== '') ? 'posted' : 'pending',
+        ];
         try {
-            $this->_fsSyncPayrollRun($runId, array_merge($runData, ['expense_journal_id' => $journalId]));
+            $this->_fsSyncPayrollRun($runId, array_merge($runData, $runPatch));
         } catch (\Exception $e) {}
 
         $this->_log_payroll('generated', $runId, [
@@ -6070,90 +5928,32 @@ HTML;
             $payAmount = $remaining; // full payment
         }
 
-        $isFullPayment = (abs($payAmount - $remaining) < 0.01);
-        $newTotalPaid  = round($totalPaid + $payAmount, 2);
-
-        // ── Post payment + update run (LC-P3 / LC-P3b feature-flag branch) ──
-        // The flag is evaluated EXACTLY ONCE for this request. A strict
-        // if/else guarantees MUTUAL EXCLUSION — the legacy poster and the
-        // engine method can never both run. Rollback: set
-        // payroll_engine_integration OFF → legacy path resumes unchanged.
-        $useEngine  = (bool) $this->config->item('payroll_engine_integration');
+        // ── Post payment + update run through the canonical engine ──────
+        // CAS-FIRST, contention-only retry. The run write is the serialization
+        // point (atomic seq claim); only the CAS winner posts the idempotent
+        // journal. Concurrent payments get distinct seqs + distinct journals →
+        // no duplicate state, no ledger/run mismatch, correct partial
+        // sequencing. Uncontended: reuses the run already loaded ($run) — NO
+        // extra read.
         $payAccount = ($paymentMode === 'Cash') ? '1010' : '1020';
+        require_once APPPATH . 'services/PayrollAccountingService.php';
+        $payAcct = new PayrollAccountingService();
+        $payAcct->init($this->firebase, $this->school_id, $this->session_year, $this->admin_id, $this);
 
-        if ($useEngine) {
-            // Engine path — CAS-FIRST, contention-only retry (LC-P3b). The run
-            // write is the serialization point (atomic seq claim); only the
-            // CAS winner posts the idempotent journal. Concurrent payments get
-            // distinct seqs + distinct journals → no duplicate state, no
-            // ledger/run mismatch, correct partial sequencing. Uncontended:
-            // reuses the run already loaded above ($run) — NO extra read.
-            require_once APPPATH . 'services/PayrollAccountingService.php';
-            $payAcct = new PayrollAccountingService();
-            $payAcct->init($this->firebase, $this->school_id, $this->session_year, $this->admin_id, $this);
-
-            $res = $this->_engine_apply_payment(
-                $runId, $run, $totalNet, $month, $year,
-                $paymentMode, $paymentDate, $paymentReference, $payAccount,
-                $this->input->post('amount'), $payAcct
-            );
-            // Adopt the ACTUAL applied values — a retry may have re-derived the
-            // seq and amount from a concurrently-updated run.
-            $journalId     = (string) $res['journal_id'];
-            $paymentSeq    = (int)    $res['payment_seq'];
-            $payAmount     = (float)  $res['pay_amount'];
-            $newTotalPaid  = (float)  $res['new_total_paid'];
-            $isFullPayment = (bool)   $res['is_full'];
-            $newStatus     = (string) $res['status'];
-            $paidAt        = (string) $res['paid_at'];
-        } else {
-            // Legacy path — unchanged default (flag OFF). Byte-identical to the
-            // pre-LC-P3b implementation.
-            $this->_validate_accounts(['2020', $payAccount]);
-
-            $paymentSeq = count($run['payments'] ?? []) + 1;
-            $narration  = "Salary payment" . ($isFullPayment ? '' : " (Part {$paymentSeq})")
-                . " - {$month} {$year} via {$paymentMode}";
-            if ($paymentReference !== '') $narration .= " (Ref: {$paymentReference})";
-
-            $journalId = $this->_create_acct_journal($narration, [
-                ['account_code' => '2020',      'dr' => $payAmount, 'cr' => 0],
-                ['account_code' => $payAccount, 'dr' => 0,          'cr' => $payAmount],
-            ], $runId);
-
-            $paidAt = date('c');
-            $paymentRecord = [
-                'seq'               => $paymentSeq,
-                'amount'            => $payAmount,
-                'payment_mode'      => $paymentMode,
-                'payment_date'      => $paymentDate,
-                'payment_reference' => $paymentReference,
-                'journal_id'        => $journalId,
-                'paid_by'           => $this->admin_name,
-                'paid_at'           => $paidAt,
-                'recon_status'      => 'pending',
-            ];
-            $newStatus = $isFullPayment ? 'Paid' : 'Partially Paid';
-            $runUpdate = [
-                'status'      => $newStatus,
-                'total_paid'  => $newTotalPaid,
-                'balance_due' => round($totalNet - $newTotalPaid, 2),
-                'journal_id'  => $journalId,
-            ];
-            if ($isFullPayment) {
-                $runUpdate['paid_at']           = $paidAt;
-                $runUpdate['paid_by']           = $this->admin_name;
-                $runUpdate['payment_mode']      = $paymentMode;
-                $runUpdate['payment_date']      = $paymentDate;
-                $runUpdate['payment_reference'] = $paymentReference;
-            }
-            $runLatest = $this->_fsGetRun($runId);
-            $runMerged = array_merge(is_array($runLatest) ? $runLatest : [], $runUpdate);
-            $existingPayments = $runMerged['payments'] ?? [];
-            $existingPayments[$paymentSeq] = $paymentRecord;
-            $runMerged['payments'] = $existingPayments;
-            $this->_fsSyncPayrollRun($runId, $runMerged);
-        }
+        $res = $this->_engine_apply_payment(
+            $runId, $run, $totalNet, $month, $year,
+            $paymentMode, $paymentDate, $paymentReference, $payAccount,
+            $this->input->post('amount'), $payAcct
+        );
+        // Adopt the ACTUAL applied values — a retry may have re-derived the seq
+        // and amount from a concurrently-updated run.
+        $journalId     = (string) $res['journal_id'];
+        $paymentSeq    = (int)    $res['payment_seq'];
+        $payAmount     = (float)  $res['pay_amount'];
+        $newTotalPaid  = (float)  $res['new_total_paid'];
+        $isFullPayment = (bool)   $res['is_full'];
+        $newStatus     = (string) $res['status'];
+        $paidAt        = (string) $res['paid_at'];
 
         // Update slip statuses only on full payment
         if ($isFullPayment) {
@@ -6255,6 +6055,36 @@ HTML;
                             ];
                         }
                     } elseif ($lastRes === 'recovered') {
+                        $recovered++;
+                    }
+                }
+
+                // C2 — accrual outbox health (one per run). Same scan, no extra
+                // reads. Mirrors the payment rollup so a pending/failed/recovered
+                // accrual surfaces on the same Health view.
+                $aStatus = (string) ($run['accrual_journal_status'] ?? '');
+                if ($aStatus !== '') {
+                    $aDiag    = is_array($run['accrual_posting_diag'] ?? null) ? $run['accrual_posting_diag'] : [];
+                    $retriesTotal += (int) ($aDiag['retry_count'] ?? 0);
+                    $aLastRes = (string) ($aDiag['last_retry_result'] ?? '');
+                    if ($aStatus === 'pending') {
+                        $pending++;
+                        if ($aLastRes === 'failed') {
+                            $failedCnt++;
+                            $failedList[] = [
+                                'run_id'            => $runId,
+                                'seq'               => 'accrual',
+                                'journal_id'        => (string) ($aDiag['journal_id'] ?? ($run['accrual_journal_id'] ?? '')),
+                                'amount'            => (float) ($run['total_net'] ?? 0),
+                                'failure_reason'    => (string) ($aDiag['failure_reason'] ?? ''),
+                                'required_action'   => (string) ($aDiag['required_action'] ?? ''),
+                                'retry_count'       => (int) ($aDiag['retry_count'] ?? 0),
+                                'first_failure_at'  => (string) ($aDiag['first_failure_at'] ?? ''),
+                                'last_retry_at'     => (string) ($aDiag['last_retry_at'] ?? ''),
+                                'last_retry_result' => $aLastRes,
+                            ];
+                        }
+                    } elseif ($aLastRes === 'recovered') {
                         $recovered++;
                     }
                 }
@@ -6521,7 +6351,31 @@ HTML;
             'total_net' => $run['total_net'] ?? 0,
         ]);
 
-        // Firestore — remove run + slip docs
+        $expenseJournalId = $run['expense_journal_id'] ?? '';
+
+        // Reverse the accrual through the canonical engine BEFORE removing
+        // payroll data, so a period-lock/account refusal leaves the run intact
+        // (never an orphaned, un-reversed accrual). The original journal stays
+        // IMMUTABLE; the reversal entry is the audit trail. postReversal is
+        // idempotent (JE_PAYROLL_REVERSAL_<id>).
+        if ($expenseJournalId !== '') {
+            require_once APPPATH . 'services/PayrollAccountingService.php';
+            $payAcct = new PayrollAccountingService();
+            $payAcct->init($this->firebase, $this->school_id, $this->session_year, $this->admin_id, $this);
+            $payAcct->postReversal($expenseJournalId, "Payroll run {$runId} deleted");
+        }
+        $this->_delete_payroll_docs($runId);
+
+        $this->json_success(['message' => 'Payroll run and associated slips deleted.']);
+    }
+
+    /**
+     * Remove a payroll run's slip docs + the run doc from Firestore. Extracted
+     * so the engine and legacy delete paths share one identical removal
+     * implementation (behaviour is unchanged from the pre-H1 inline block).
+     */
+    private function _delete_payroll_docs(string $runId): void
+    {
         try {
             $slips = $this->_fsGetAllSlips($runId);
             foreach (array_keys($slips) as $sid) {
@@ -6531,14 +6385,6 @@ HTML;
         } catch (\Exception $e) {
             log_message('error', "HR delete_payroll FS failed: " . $e->getMessage());
         }
-
-        // Reverse journal entry
-        $expenseJournalId = $run['expense_journal_id'] ?? '';
-        if ($expenseJournalId !== '') {
-            $this->_create_reversal_journal($expenseJournalId, "Payroll run {$runId} deleted");
-        }
-
-        $this->json_success(['message' => 'Payroll run and associated slips deleted.']);
     }
 
     // ====================================================================
@@ -7677,6 +7523,12 @@ HTML;
             $this->json_error('Slip not found in this run for that staff member.');
         }
 
+        // H1 — deterministic per-regeneration counter. Drives the adjustment
+        // journal's idempotency key on the engine path so distinct
+        // regenerations post distinct journals while a retry of the same one
+        // dedups to exactly one. Read from the loaded slip — no extra read.
+        $regenCount = (int) ($oldSlip['regen_count'] ?? 0) + 1;
+
         // ── M-3: Atomic Processing flag (prevent concurrent regenerate) ─
         // Same pattern as decide_leave: flip to Processing, re-read to
         // confirm we won the race. Final new-slip write naturally clears
@@ -7852,40 +7704,34 @@ HTML;
             $this->json_error("Cannot regenerate — {$vacantDays} day(s) unmarked. Backfill attendance or change vacant_treatment policy.");
         }
 
-        // ── Pay computation (same formula as generate_payroll) ──────
+        // ── Pay computation — single shared calculator (C1) ─────────
+        // Same _compute_payslip() as generate_payroll(): identical earned-base
+        // statutory/employer math + voluntary waterfall. One source of truth,
+        // so generate and regenerate can never produce different numbers.
         if ($daysAbsent > $staffWorkingDays) $daysAbsent = $staffWorkingDays;
-        $daysWorked = $staffWorkingDays - $daysAbsent - $lwpDays;
-        if ($daysWorked < 0) $daysWorked = 0;
 
-        $basic = (float) ($sal['basic'] ?? 0);
-        $deductionDays  = $daysAbsent + $lwpDays;
-        if ($deductionDays > $staffWorkingDays) $deductionDays = $staffWorkingDays;
-        $absentFraction = ($staffWorkingDays > 0) ? ($deductionDays / $staffWorkingDays) : 0;
-        $effectiveBasic = round($basic * (1 - $absentFraction), 2);
+        $calc = $this->_compute_payslip($sal, (float) $staffWorkingDays, (float) $daysAbsent, (float) $lwpDays);
 
-        $dailySalary  = ($staffWorkingDays > 0) ? round($basic / $staffWorkingDays, 2) : 0;
-        $lwpDeduction = round($dailySalary * $lwpDays, 2);
-
-        $hra      = round((float) ($sal['hra'] ?? 0)              * (1 - $absentFraction), 2);
-        $da       = round((float) ($sal['da']  ?? 0)              * (1 - $absentFraction), 2);
-        $ta       = round((float) ($sal['ta']  ?? 0)              * (1 - $absentFraction), 2);
-        $medical  = round((float) ($sal['medical'] ?? 0)          * (1 - $absentFraction), 2);
-        $otherAll = round((float) ($sal['other_allowances'] ?? 0) * (1 - $absentFraction), 2);
-        $gross    = round($effectiveBasic + $hra + $da + $ta + $medical + $otherAll, 2);
-
-        $origBasic = (float) ($sal['basic'] ?? 0);
-        $origGross = $origBasic + (float) ($sal['hra'] ?? 0) + (float) ($sal['da'] ?? 0)
-                   + (float) ($sal['ta'] ?? 0) + (float) ($sal['medical'] ?? 0)
-                   + (float) ($sal['other_allowances'] ?? 0);
-
-        $pfEmployee   = round($origBasic * ((float) ($sal['pf_employee'] ?? 0) / 100), 2);
-        $esiEmployee  = round($origGross * ((float) ($sal['esi_employee'] ?? 0) / 100), 2);
-        $tds          = round($origGross * ((float) ($sal['tds'] ?? 0) / 100), 2);
-        $profTax      = (float) ($sal['professional_tax'] ?? 0);
-        $otherDed     = (float) ($sal['other_deductions'] ?? 0);
-        $totalDed     = round($pfEmployee + $esiEmployee + $tds + $profTax + $otherDed, 2);
-        $netPay       = round($gross - $totalDed, 2);
-        if ($netPay < 0) $netPay = 0;
+        $daysWorked     = $calc['days_worked'];
+        $deductionDays  = $calc['deduction_days'];
+        $absentFraction = $calc['absent_fraction'];
+        $dailySalary    = $calc['daily_salary'];
+        $lwpDeduction   = $calc['lwp_deduction'];
+        $effectiveBasic = $calc['basic'];
+        $hra            = $calc['hra'];
+        $da             = $calc['da'];
+        $ta             = $calc['ta'];
+        $medical        = $calc['medical'];
+        $otherAll       = $calc['other_allowances'];
+        $gross          = $calc['gross'];
+        $pfEmployee     = $calc['pf_employee'];
+        $esiEmployee    = $calc['esi_employee'];
+        $tds            = $calc['tds'];
+        $profTax        = $calc['professional_tax'];
+        $otherDed       = $calc['other_deductions'];
+        $totalDed       = $calc['total_deductions'];
+        $netPay         = $calc['net_pay'];
+        foreach ($calc['warnings'] as $w) { $regenWarnings[] = $w; }
 
         $oldNetPay = (float) ($oldSlip['net_pay'] ?? 0);
 
@@ -7948,6 +7794,9 @@ HTML;
             'previousNetPay'   => $oldNetPay,
             'updatedAt'        => date('c'),
         ]);
+        // Persist the regen counter — it drives the adjustment journal's
+        // deterministic idempotency id.
+        $newSlip['regen_count'] = $regenCount;
         $this->fs->set('salarySlips', $slipDocId, $newSlip, true);
 
         // ── CR-2: Adjustment journal entry to keep books in sync ────
@@ -7955,9 +7804,10 @@ HTML;
         // accounting books match the regenerated slip. Sign convention:
         //   • dGross > 0 (salary increased): DR expense, CR liabilities
         //   • dGross < 0 (salary decreased): CR expense, DR liabilities
-        // Deductions are usually constant across regenerates (PF/ESI/TDS
-        // ride on origBasic / origGross which the salary structure owns),
-        // so most regens produce a journal with just expense + 2020 lines.
+        // C1: PF/ESI/TDS now ride the EARNED base, so changed attendance shifts
+        // the deductions too. The delta JE stays balanced BY CONSTRUCTION because
+        // gross === net + Σ employee deductions on both the old and new slip, so
+        // dGross === dNet + Σ deduction deltas for every regeneration.
         $dGross    = round($gross        - (float) ($oldSlip['gross']            ?? 0), 2);
         $dNet      = round($netPay       - (float) ($oldSlip['net_pay']          ?? 0), 2);
         $dPF       = round($pfEmployee   - (float) ($oldSlip['pf_employee']      ?? 0), 2);
@@ -8028,14 +7878,33 @@ HTML;
             }
 
             if (!empty($adjLines)) {
-                try {
-                    $narration = "Payroll adjustment - {$month} {$year} - regenerated slip for {$staffId}"
-                               . " (net Δ " . ($netPay - $oldNetPay >= 0 ? '+' : '') . round($netPay - $oldNetPay, 2) . ")";
-                    $adjJournalId = $this->_create_acct_journal($narration, $adjLines, $runId);
-                } catch (\Exception $e) {
-                    log_message('error', 'regenerate_staff_payroll: adjustment journal failed: ' . $e->getMessage());
-                    // Don't fail the regenerate just because the journal didn't post.
-                    // Surface the gap in the audit log so operator can re-post manually.
+                $narration = "Payroll adjustment - {$month} {$year} - regenerated slip for {$staffId}"
+                           . " (net Δ " . ($netPay - $oldNetPay >= 0 ? '+' : '') . round($netPay - $oldNetPay, 2) . ")";
+
+                // Post the DELTA through the canonical engine. Non-fatal: a
+                // closed period DEFERS the journal (warn) rather than aborting the
+                // regenerate. The deterministic source_ref makes retries idempotent.
+                if ($this->_period_is_open()) {
+                    try {
+                        require_once APPPATH . 'services/PayrollAccountingService.php';
+                        $payAcct = new PayrollAccountingService();
+                        $payAcct->init($this->firebase, $this->school_id, $this->session_year, $this->admin_id, $this);
+                        $adjJournalId = (string) $payAcct->postRunAdjustment([
+                            'run_id'     => $runId,
+                            'source_ref' => "{$runId}_{$staffId}_ADJ{$regenCount}",
+                            'lines'      => $adjLines,
+                            'narration'  => $narration,
+                        ]);
+                        if ($adjJournalId === '') {
+                            $regenWarnings[] = 'Adjustment journal not posted (engine declined) — verify accounting and re-post if needed.';
+                        }
+                    } catch (\Throwable $e) {
+                        log_message('error', 'regenerate_staff_payroll: engine adjustment failed: ' . $e->getMessage());
+                        $regenWarnings[] = 'Adjustment journal not posted (engine error) — verify accounting and re-post if needed.';
+                    }
+                } else {
+                    $regenWarnings[] = 'Adjustment journal deferred — accounting period is closed. Reopen the period and re-post.';
+                    log_message('error', "regenerate_staff_payroll: period closed — adjustment deferred run={$runId} staff={$staffId}");
                 }
             }
         }
