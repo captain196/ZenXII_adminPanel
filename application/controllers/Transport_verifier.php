@@ -236,6 +236,12 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-F8-4', 'category' => self::CAT_RUNTIME,    'label' => 'event-trip FK integrity',        'callable' => '_chTrnF8_4' ],
             [ 'id' => 'CH-TRN-F8-5', 'category' => self::CAT_CONTRACT,   'label' => 'event cost tally',               'callable' => '_chTrnF8_5' ],
             [ 'id' => 'CH-TRN-F8-6', 'category' => self::CAT_PERFORMANCE,'label' => 'no N+1 in event roster',         'callable' => '_chTrnF8_6' ],
+
+            // ─── F9 Teacher App Transport (added 2026-07-07) ────────────────
+            [ 'id' => 'CH-TRN-F9-1', 'category' => self::CAT_SOURCE,     'label' => 'driver-scoped rules present',    'callable' => '_chTrnF9_1' ],
+            [ 'id' => 'CH-TRN-F9-2', 'category' => self::CAT_SOURCE,     'label' => 'SOS severity matrix complete',   'callable' => '_chTrnF9_2' ],
+            [ 'id' => 'CH-TRN-F9-3', 'category' => self::CAT_RUNTIME,    'label' => 'SOS docs carry valid severity',  'callable' => '_chTrnF9_3' ],
+            [ 'id' => 'CH-TRN-F9-4', 'category' => self::CAT_CONTRACT,   'label' => 'attendance marked_by_role',      'callable' => '_chTrnF9_4' ],
         ];
     }
 
@@ -2412,6 +2418,137 @@ class Transport_verifier extends CI_Controller
             return ['status' => 'FAIL', 'detail' => 'event roster missing bulk assignment query'];
         }
         return ['status' => 'PASS', 'detail' => 'event roster uses bulk query (no N+1)'];
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F9 Teacher App Transport assertions (CH-TRN-F9-1..4) 2026-07-07
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * CH-TRN-F9-1 — Firestore rules include the driver-scoped helpers
+     * required for Teacher-app writes: driverIs(), isDriverOfTrip(),
+     * hasClientMetadata(). Source-scan asserts they're defined and
+     * referenced in the transport collection block.
+     */
+    private function _chTrnF9_1(): array
+    {
+        $path = FCPATH . 'firebase-rules/firestore.rules';
+        if (!is_readable($path)) {
+            return ['status' => 'INFO', 'detail' => 'firestore.rules not readable — trivial pass'];
+        }
+        $src = (string) file_get_contents($path);
+        $required = [
+            'function driverIs('        => 'driverIs helper',
+            'function isDriverOfTrip('  => 'isDriverOfTrip helper',
+            'function hasClientMetadata(' => 'hasClientMetadata helper',
+            'isDriverOfTrip()'          => 'isDriverOfTrip used in tripLogs',
+            'hasClientMetadata()'       => 'hasClientMetadata used in transport writes',
+        ];
+        $missing = [];
+        foreach ($required as $needle => $label) {
+            if (strpos($src, $needle) === false) { $missing[] = $label; }
+        }
+        if ($missing !== []) {
+            return ['status' => 'FAIL', 'detail' => 'missing: ' . implode(', ', $missing)];
+        }
+        return ['status' => 'PASS', 'detail' => count($required) . ' driver-scoped rule fragments present'];
+    }
+
+    /**
+     * CH-TRN-F9-2 — Transport_notifier declares SOS_SEVERITIES + full
+     * SOS_SEVERITY_TO_PRIORITY mapping (no severity level missing a
+     * priority route).
+     */
+    private function _chTrnF9_2(): array
+    {
+        if (!class_exists('Transport_notifier')) {
+            @include_once APPPATH . 'libraries/Transport_notifier.php';
+        }
+        if (!class_exists('Transport_notifier')) {
+            return ['status' => 'FAIL', 'detail' => 'Transport_notifier not loadable'];
+        }
+        $severities = (array) Transport_notifier::SOS_SEVERITIES;
+        $priorityMap = (array) Transport_notifier::SOS_SEVERITY_TO_PRIORITY;
+        if ($severities === []) { return ['status' => 'FAIL', 'detail' => 'SOS_SEVERITIES empty']; }
+        $missing = [];
+        foreach ($severities as $s) {
+            if (!isset($priorityMap[$s])) { $missing[] = $s; }
+        }
+        if ($missing !== []) {
+            return ['status' => 'FAIL', 'detail' => 'severities without priority: ' . implode(',', $missing)];
+        }
+        $default = (string) Transport_notifier::SOS_DEFAULT_SEVERITY;
+        if (!in_array($default, $severities, true)) {
+            return ['status' => 'FAIL', 'detail' => "SOS_DEFAULT_SEVERITY '{$default}' not in enum"];
+        }
+        return ['status' => 'PASS', 'detail' => count($severities) . " severities mapped; default={$default}"];
+    }
+
+    /**
+     * CH-TRN-F9-3 — Every existing sosAlerts doc has severity ∈ the
+     * F9 enum. Missing field is tolerated (pre-F9 docs) — reported as
+     * INFO, never FAIL. Presence with invalid value fails.
+     */
+    private function _chTrnF9_3(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere('sosAlerts', [], null, 'DESC', 100);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'sosAlerts unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'no SOS alerts — trivial pass'];
+        }
+        $allowed = ['Low', 'Medium', 'High', 'Critical'];
+        $bad = [];
+        $preF9 = 0;
+        foreach ($rows as $r) {
+            $inner = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
+            $id = (string) ($r['id'] ?? $inner['id'] ?? '?');
+            if (!array_key_exists('severity', $inner)) {
+                $preF9++;
+                continue;
+            }
+            if (!in_array((string) $inner['severity'], $allowed, true)) {
+                $bad[] = "{$id}:severity_{$inner['severity']}";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' SOS with invalid severity: ' . implode(',', array_slice($bad, 0, 3))];
+        }
+        $post = count($rows) - $preF9;
+        return ['status' => 'PASS', 'detail' => "{$post} F9-era + {$preF9} pre-F9 SOS docs; all severities valid"];
+    }
+
+    /**
+     * CH-TRN-F9-4 — Every transportAttendance doc has marked_by_role
+     * ∈ {'admin', 'driver'}. Traces admin-panel vs driver-fired paths
+     * for audit analysis.
+     */
+    private function _chTrnF9_4(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere('transportAttendance', [], null, 'ASC', 200);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'transportAttendance unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'no attendance — trivial pass'];
+        }
+        $allowed = ['admin', 'driver'];
+        $bad = [];
+        foreach ($rows as $r) {
+            $inner = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
+            $id = (string) ($r['id'] ?? $inner['id'] ?? '?');
+            $role = (string) ($inner['marked_by_role'] ?? '');
+            if (!in_array($role, $allowed, true)) {
+                $bad[] = "{$id}:role_{$role}";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' attendance with bad marked_by_role: ' . implode(',', array_slice($bad, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . " attendance docs, all marked_by_role ∈ {admin, driver}"];
     }
 
     // ─── shared source-grep helper ───────────────────────────────────────

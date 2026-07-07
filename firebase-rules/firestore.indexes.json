@@ -3381,6 +3381,17 @@
       ]
     },
     {
+      "_comment": "TMS F9 (2026-07-07) — Teacher app observeMyActiveTrips query (schoolId==, driver_staff_id==, status==, date DESC).",
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "driver_staff_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "maintenanceLogs",
       "queryScope": "COLLECTION",
       "fields": [

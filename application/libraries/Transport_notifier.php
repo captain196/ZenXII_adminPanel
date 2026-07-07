@@ -67,6 +67,25 @@ class Transport_notifier
     public const SCOPE_PARENTS_OF_STUDENTS = 'parents_of_students';   // F7
     public const SCOPE_STAFF_ADMIN_ONLY    = 'staff_admin_only';
 
+    // F9 (2026-07-07) — SOS severity levels + priority routing.
+    // Teacher-app default is 'High' (Refinement 1 — bias toward
+    // operational safety); driver may explicitly lower.
+    public const SOS_SEVERITIES = ['Low', 'Medium', 'High', 'Critical'];
+    public const SOS_DEFAULT_SEVERITY = 'High';
+
+    /**
+     * Severity → notifier priority. High + Critical route as Urgent
+     * (safety exemption preserved — never deduped via DEDUP_TTL
+     * omission of sos.raised). Medium → Important (respects existing
+     * dedup TTL). Low → Normal.
+     */
+    public const SOS_SEVERITY_TO_PRIORITY = [
+        'Low'      => self::PRIORITY_NORMAL,
+        'Medium'   => self::PRIORITY_IMPORTANT,
+        'High'     => self::PRIORITY_URGENT,
+        'Critical' => self::PRIORITY_URGENT,
+    ];
+
     /**
      * The 18 canonical F6 categories. Every emitter must reference one of
      * these strings; a category not present here is a LogicException.
@@ -455,6 +474,9 @@ class Transport_notifier
         $lat             = (float)  ($payload['lat']               ?? 0);
         $lng             = (float)  ($payload['lng']               ?? 0);
         $alertType       = (string) ($payload['alert_type']        ?? 'emergency');
+        // F9 (2026-07-07) — severity picker (Refinement 1: default High).
+        // Client uses the same enum on Kotlin side; rules enforce membership.
+        $severity        = (string) ($payload['severity']          ?? self::SOS_DEFAULT_SEVERITY);
         $message         = trim((string) ($payload['message']      ?? ''));
 
         if ($message === '') {
@@ -462,6 +484,9 @@ class Transport_notifier
         }
         if (!in_array($alertType, ['emergency', 'breakdown', 'accident', 'medical', 'other'], true)) {
             throw new \InvalidArgumentException("Invalid SOS alert_type: {$alertType}");
+        }
+        if (!in_array($severity, self::SOS_SEVERITIES, true)) {
+            throw new \InvalidArgumentException("Invalid SOS severity: {$severity}. Allowed: " . implode(',', self::SOS_SEVERITIES));
         }
 
         $sosId = $this->numbering->next('trn_sos', [
@@ -480,6 +505,9 @@ class Transport_notifier
             'lat'               => $lat,
             'lng'               => $lng,
             'alertType'         => $alertType,
+            // F9 (2026-07-07) — severity: shipped-client compat kept
+            // (adds field to SosAlertDoc.kt in the same F9 release).
+            'severity'          => $severity,
             'message'           => $message,
             // Dual-write for shipped-client compat:
             'status'            => 'active',
@@ -508,18 +536,27 @@ class Transport_notifier
         ];
         $this->fs->setEntity(self::COL_SOS_ALERTS, $sosId, $doc, /* merge */ false);
 
-        // Fire the cascade — URGENT to ops + parents_of_vehicle (if vehicle
-        // known and has an active route assignment).
+        // Fire the cascade. F9 (2026-07-07) — severity drives the notifier
+        // priority via SOS_SEVERITY_TO_PRIORITY. High + Critical stay
+        // Urgent (safety exemption in DEDUP_TTL preserved — sos.raised is
+        // absent from the dedup table so it's ALWAYS emitted). Low/Medium
+        // downshift to Normal/Important without changing dedup semantics.
+        $priorityOverride = self::SOS_SEVERITY_TO_PRIORITY[$severity] ?? self::PRIORITY_URGENT;
         $notifyResult = $this->notify('sos.raised', [
             'sos_id'      => $sosId,
             'vehicle_id'  => $vehicleId,
             'route_id'    => $routeId,
             'alert_type'  => $alertType,
+            'severity'    => $severity,
             'message'     => $message,
             'triggered_by'=> $triggeredBy,
             'lat'         => $lat,
             'lng'         => $lng,
-        ], ['firedBy' => $triggeredBy, 'firedByRole' => $triggeredByRole]);
+        ], [
+            'firedBy'     => $triggeredBy,
+            'firedByRole' => $triggeredByRole,
+            'priority'    => $priorityOverride,
+        ]);
 
         // If parents_of_vehicle applied, mirror the resolved user IDs into
         // the SOS doc for downstream audit/UI. Preserve Kotlin Int contract

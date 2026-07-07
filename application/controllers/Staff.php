@@ -1422,6 +1422,7 @@ class Staff extends MY_Controller
                 'school_id'     => $this->school_id,
                 'school_code'   => $this->school_code,
                 'parent_db_key' => $this->parent_db_key,
+                'user_id'       => $staffId,   // F9: driver-identity for Firestore rules
             ]);
         } catch (Exception $e) {
             log_message('error', "Staff import Firebase Auth failed for {$staffId}: " . $e->getMessage());
@@ -2201,6 +2202,7 @@ class Staff extends MY_Controller
                         'school_id'     => $this->school_id,
                         'school_code'   => $this->school_code,
                         'parent_db_key' => $this->parent_db_key,
+                        'user_id'       => $staffId,   // F9: driver-identity for Firestore rules
                     ]);
                 } catch (Exception $e) {
                     log_message('error', 'Staff: Firebase Auth create failed for ' . $staffId . ': ' . $e->getMessage());
@@ -2585,6 +2587,7 @@ class Staff extends MY_Controller
             'school_id'     => $this->school_id,
             'school_code'   => $this->school_code,
             'parent_db_key' => $this->parent_db_key,
+            'user_id'       => $staff_id,   // F9: driver-identity for Firestore rules
             'extra'         => [
                 'must_change_password' => true,
                 'password_reset_at'    => time(),

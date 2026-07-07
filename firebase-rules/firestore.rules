@@ -168,6 +168,40 @@ service cloud.firestore {
       return isAuth() && request.auth.token.role in ['Super Admin', 'super_admin'];
     }
 
+    // F9 (2026-07-07) — driver identity for driver-scoped Transport writes.
+    // user_id custom claim carries the SIS staff id (e.g. STA0001) minted by
+    // Firebase::setCanonicalClaims(). Enables field-level rules like
+    // "driver may update their own trip's actual_end_at but not the roster".
+    // Empty user_id (staff whose claims predate F9) fails driverIs() — they
+    // must re-login for the claim to be issued.
+    function driverIs(staffId) {
+      return isStaff()
+        && request.auth.token.user_id is string
+        && request.auth.token.user_id != ''
+        && request.auth.token.user_id == staffId;
+    }
+
+    // F9 — a driver may update tripLogs / write transportAttendance ONLY
+    // when the incoming payload doesn't attempt to change the doc's
+    // driver_staff_id (protecting F4 driver ownership from client-side
+    // hijack). Existing doc's driver_staff_id must match caller's user_id.
+    function isDriverOfTrip() {
+      return driverIs(resource.data.driver_staff_id);
+    }
+
+    // F9 (Refinement additional) — client diagnostic metadata guard.
+    // Teacher-app writes must carry app_version + client_platform (string)
+    // and client_timestamp (integer ms). Values are NOT used for authz —
+    // they're operational telemetry for troubleshooting and audit analysis.
+    // Presence-only check: missing metadata → reject with a clean signal.
+    function hasClientMetadata() {
+      return request.resource.data.get('app_version', '') is string
+        && request.resource.data.get('app_version', '') != ''
+        && request.resource.data.get('client_platform', '') is string
+        && request.resource.data.get('client_platform', '') in ['android', 'ios', 'web']
+        && request.resource.data.get('client_timestamp', 0) is int;
+    }
+
     // Per-student fee collections need to differentiate "this parent
     // accessing their own child's data" from "this parent accessing
     // some other student's data". Parent-app auth uses the student's
@@ -1327,8 +1361,17 @@ service cloud.firestore {
       // Same-school read: parents, teachers, admin, drivers can see
       // active alerts for their school. Writes allowed for admin +
       // staff (drivers/teachers trigger SOS from Teacher App).
+      // F9 (2026-07-07) — SOS severity enum + alertType enum enforced
+      // at rule level so a client can't submit malformed values that
+      // would trip the Transport_notifier priority routing. Client
+      // diagnostic metadata required on driver-fired writes (staff),
+      // exempted for admin PHP writes (bypass rules).
       allow read: if isSameSchool();
-      allow create: if isSameSchoolWrite() && (isAdmin() || isStaff());
+      allow create: if isSameSchoolWrite()
+        && (isAdmin() || isStaff())
+        && request.resource.data.get('alertType', '') in ['emergency', 'breakdown', 'accident', 'medical', 'other']
+        && request.resource.data.get('severity', 'High') in ['Low', 'Medium', 'High', 'Critical']
+        && (isAdmin() || hasClientMetadata());
       allow update, delete: if isAdmin() && isSameSchool();
     }
 
@@ -1361,20 +1404,57 @@ service cloud.firestore {
       // staff/admin only (parents don't see fleet ops).
       allow read: if isSameSchool() && isStaff();
       allow create: if isSameSchoolWrite() && (isAdmin() || isStaff());
-      allow update, delete: if isAdmin() && isSameSchool();
+      // F9 (2026-07-07) — driver may update ONLY their own trip and
+      // ONLY the fields that belong to the trip-execution surface:
+      // actual_start_at, actual_end_at, endTime, endOdometer, distance,
+      // distance_km, fuelUsed, stopsCompleted, alerts, checkpoints,
+      // status, notes, route_progress_pct, next_checkpoint_id,
+      // updated_at + client diagnostic metadata (Refinement additional).
+      // Roster + driver_staff_id + event_id + gps_session_id + all
+      // create-time immutables STAY locked from driver mutation.
+      // Trip start ownership (Refinement 2): assigned driver is the
+      // normal path; admin override permitted for operational recovery
+      // and is fully audited via emitAudit() at the service layer.
+      allow update: if isSameSchool() && (
+        isAdmin() ||
+        (isDriverOfTrip()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'actual_start_at', 'actual_end_at', 'endTime', 'endOdometer',
+              'distance', 'distance_km', 'fuelUsed', 'stopsCompleted',
+              'alerts', 'checkpoints', 'status', 'notes',
+              'route_progress_pct', 'next_checkpoint_id', 'updated_at',
+              'app_version', 'client_platform', 'client_timestamp'
+             ])
+          && hasClientMetadata()
+          && (resource.data.status in ['Ready', 'InProgress'])
+          && (request.resource.data.status in ['Ready', 'InProgress', 'Completed'])
+        )
+      );
+      allow delete: if isAdmin() && isSameSchool();
     }
 
     // F7 (2026-07-07) — per-student boarding-event log. Staff-gated read
-    // for admin panel + Teacher App driver UI (F9 will consume). Parents
-    // do NOT read this collection directly; they receive events via the
-    // `notifications` inbox that Transport_notifier writes (Firestore
-    // rules on notifications already gate to per-user). Client writes
-    // are blocked at F7 — the Teacher-app driver-write path lands in F9
-    // with the appropriate rule loosening. PHP service-account writes
-    // bypass client rules entirely.
+    // for admin panel + Teacher App driver UI. Parents do NOT read this
+    // collection directly; they receive events via the `notifications`
+    // inbox that Transport_notifier writes.
+    //
+    // F9 (2026-07-07) — driver-write path enabled. Every write must:
+    //   • carry a valid `tripId` string
+    //   • declare `marked_by_role` ∈ {'admin', 'driver'} (F9-4 gate)
+    //   • carry client diagnostic metadata (Refinement additional)
+    // Updates blocked at the collection level because F7's deterministic
+    // {schoolId}_{tripId}_{studentId}_{event_type} doc-id makes repeat
+    // driver taps idempotent via create-overwrite semantics; a genuine
+    // update path would signal a schema-drift bug.
     match /transportAttendance/{docId} {
       allow read: if isSameSchool() && isStaff();
-      allow write: if false;
+      allow create: if isSameSchoolWrite()
+        && (isAdmin() || isStaff())
+        && hasClientMetadata()
+        && request.resource.data.get('tripId', '') is string
+        && request.resource.data.get('tripId', '') != ''
+        && request.resource.data.get('marked_by_role', '') in ['admin', 'driver'];
+      allow update, delete: if false;
     }
 
     match /maintenanceLogs/{docId} {
@@ -1384,8 +1464,23 @@ service cloud.firestore {
 
     match /fuelLogs/{docId} {
       // Drivers may enter fuel from Teacher App; admin from panel.
+      // F9 (Refinement 3, 2026-07-07) — driver-submitted fuel logs are
+      // restricted to the driver's currently assigned vehicle. Admin
+      // retains unrestricted access. Enforced by:
+      //   • payload's vehicle_id must exist
+      //   • when NOT admin: driver's user_id claim must match a vehicle
+      //     document's staff_id field (checked via a get() to /vehicles).
+      // Client diagnostic metadata required on driver writes.
       allow read: if isSameSchool() && isStaff();
-      allow create: if isSameSchoolWrite() && (isAdmin() || isStaff());
+      allow create: if isSameSchoolWrite() && (
+        isAdmin() ||
+        (isStaff()
+          && hasClientMetadata()
+          && request.resource.data.get('vehicle_id', '') is string
+          && request.resource.data.get('vehicle_id', '') != ''
+          && get(/databases/$(database)/documents/vehicles/$(request.resource.data.schoolId + '_' + request.resource.data.vehicle_id)).data.staff_id == request.auth.token.user_id
+        )
+      );
       allow update, delete: if isAdmin() && isSameSchool();
     }
 

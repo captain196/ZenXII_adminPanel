@@ -835,6 +835,13 @@ class Firebase
         $schoolId    = (string) ($ctx['school_id'] ?? '');
         $schoolCode  = (string) ($ctx['school_code'] ?? '');
         $parentDbKey = (string) ($ctx['parent_db_key'] ?? '');
+        // F9 (2026-07-07) — user_id claim for driver-scoped Firestore rules.
+        // The Teacher-app synthetic email is {userId.lowercase()}@schoolsync.app;
+        // rules previously had no way to compare the caller's staff/user id to
+        // a document field (e.g. tripLogs.driver_staff_id). Emitting user_id
+        // + userId (dual-cased) closes that gap without breaking any existing
+        // claim consumer.
+        $userId = (string) ($ctx['user_id'] ?? '');
 
         // Dual-cased tenant contract — snake for Firestore rules, camel for
         // admin-panel login. Always both, so neither surface can be locked out.
@@ -847,6 +854,8 @@ class Firebase
             'schoolCode'    => $schoolCode,
             'parent_db_key' => $parentDbKey,
             'parentDbKey'   => $parentDbKey,
+            'user_id'       => $userId,
+            'userId'        => $userId,
         ];
 
         // Student/parent identity claims (used by studentFlags rules + the
