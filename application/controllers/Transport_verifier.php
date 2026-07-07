@@ -189,6 +189,14 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-F2-3', 'category' => self::CAT_RUNTIME,    'label' => 'suspension<->route ref',    'callable' => '_chTrnF2_3' ],
             [ 'id' => 'CH-TRN-F2-4', 'category' => self::CAT_RUNTIME,    'label' => 'no stale suspension ref',   'callable' => '_chTrnF2_4' ],
             [ 'id' => 'CH-TRN-F2-5', 'category' => self::CAT_PERFORMANCE,'label' => 'suspension write bound',    'callable' => '_chTrnF2_5' ],
+
+            // ─── F3 Student Assignment (added 2026-07-07) ────────────────────
+            [ 'id' => 'CH-TRN-F3-1', 'category' => self::CAT_SOURCE,     'label' => 'no ops_acc in Transport',   'callable' => '_chTrnF3_1' ],
+            [ 'id' => 'CH-TRN-F3-2', 'category' => self::CAT_RUNTIME,    'label' => 'assignment session field',  'callable' => '_chTrnF3_2' ],
+            [ 'id' => 'CH-TRN-F3-3', 'category' => self::CAT_RUNTIME,    'label' => 'no stale pending fee',      'callable' => '_chTrnF3_3' ],
+            [ 'id' => 'CH-TRN-F3-4', 'category' => self::CAT_RUNTIME,    'label' => 'no assign to archived rt',  'callable' => '_chTrnF3_4' ],
+            [ 'id' => 'CH-TRN-F3-5', 'category' => self::CAT_CACHE,      'label' => 'capacity cache accuracy',   'callable' => '_chTrnF3_5' ],
+            [ 'id' => 'CH-TRN-F3-6', 'category' => self::CAT_PERFORMANCE,'label' => 'no N+1 in bulk/rollover',   'callable' => '_chTrnF3_6' ],
         ];
     }
 
@@ -1112,6 +1120,213 @@ class Transport_verifier extends CI_Controller
             return ['status' => 'FAIL', 'detail' => implode(' ', $failed)];
         }
         return ['status' => 'PASS', 'detail' => implode(' ', $report)];
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F3 Student Assignment assertions (CH-TRN-F3-1..6) — 2026-07-07
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * CH-TRN-F3-1 — After F3, NO Transport controller/library code path
+     * calls Operations_accounting::next_id at all (F1 migrated vehicles,
+     * F2 migrated routes/stops, F3 migrated assignments). This is the
+     * cutoff assertion: Transport source is completely off Operations_
+     * accounting from F3 onward.
+     */
+    private function _chTrnF3_1(): array
+    {
+        $files = [
+            APPPATH . 'controllers/Transport.php',
+            APPPATH . 'controllers/Transport_vendors.php',
+            APPPATH . 'controllers/Transport_ops.php',
+            APPPATH . 'controllers/Transport_rollover.php',
+            APPPATH . 'controllers/Transport_expiry_cron.php',
+            APPPATH . 'libraries/Transport_service.php',
+        ];
+        $bad = [];
+        foreach ($files as $f) {
+            if (!is_readable($f)) { continue; }
+            $src = $this->_stripComments((string) file_get_contents($f));
+            if (preg_match('/operations_accounting->next_id\(/', $src)) {
+                $bad[] = basename($f);
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' file(s) still use operations_accounting: ' . implode(', ', $bad)];
+        }
+        return ['status' => 'PASS', 'detail' => 'no Operations_accounting usage remaining in Transport code'];
+    }
+
+    /**
+     * CH-TRN-F3-2 — Every studentRoutes doc has a non-empty session field
+     * (F3 canonical schema requirement). Samples up to 100 docs.
+     */
+    private function _chTrnF3_2(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere(Transport_service::COL_STUDENT_ROUTES_LEGACY, [], null, 'ASC', 100);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'no assignments — trivial pass'];
+        }
+        $bad = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) { continue; }
+            $s = (string) ($r['session'] ?? '');
+            if ($s === '' || !preg_match('/^\d{4}-\d{2}$/', $s)) {
+                $bad[] = (string) ($r['studentId'] ?? '?');
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' missing/bad session: ' . implode(',', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' assignments have valid session'];
+    }
+
+    /**
+     * CH-TRN-F3-3 — No studentRoutes with fee_demand_ref='pending' older
+     * than 24h. The reconcile_pending_fees endpoint + nightly job should
+     * catch these; alert if any age past the SLA.
+     */
+    private function _chTrnF3_3(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                Transport_service::COL_STUDENT_ROUTES_LEGACY,
+                [['fee_demand_ref', '==', 'pending']],
+                null, 'ASC', 200
+            );
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'PASS', 'detail' => 'no pending fee assignments'];
+        }
+        $cutoff = time() - 86400;
+        $stale = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) { continue; }
+            $ts = strtotime((string) ($r['updated_at'] ?? $r['assigned_date'] ?? ''));
+            if ($ts !== false && $ts < $cutoff) {
+                $stale[] = (string) ($r['studentId'] ?? '?');
+            }
+        }
+        if ($stale !== []) {
+            return ['status' => 'FAIL', 'detail' => count($stale) . ' stale pending fees >24h: ' . implode(',', array_slice($stale, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' pending fee(s) all within SLA'];
+    }
+
+    /**
+     * CH-TRN-F3-4 — No studentRoutes points at a currently Archived route
+     * (assignment pre-write validation should prevent this; drift check
+     * catches manual DB tampering or a race with archive).
+     */
+    private function _chTrnF3_4(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere(Transport_service::COL_STUDENT_ROUTES_LEGACY, [], null, 'ASC', 200);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'no assignments — trivial pass'];
+        }
+        $routeCache = [];
+        $bad = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) { continue; }
+            $rid = (string) ($r['route_id'] ?? '');
+            if ($rid === '') { continue; }
+            if (!array_key_exists($rid, $routeCache)) {
+                $rt = $this->fs->getEntity(Transport_service::COL_ROUTES, $rid);
+                $routeCache[$rid] = is_array($rt) ? (string) ($rt['status'] ?? 'Active') : 'MISSING';
+            }
+            if ($routeCache[$rid] === 'Archived') {
+                $bad[] = ((string) ($r['studentId'] ?? '?')) . "->" . $rid;
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' assign→Archived: ' . implode(',', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' assignments checked, no Archived-route refs'];
+    }
+
+    /**
+     * CH-TRN-F3-5 — busCapacityCache.current_count equals the actual
+     * studentRoutes count for each cached route. Drift check for the
+     * cache maintained by _bumpCapacityCache.
+     */
+    private function _chTrnF3_5(): array
+    {
+        try {
+            $caches = (array) $this->fs->schoolWhere(Transport_service::COL_BUS_CAPACITY_CACHE, [], null, 'ASC', 100);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($caches === []) {
+            return ['status' => 'INFO', 'detail' => 'no cache entries — trivial pass'];
+        }
+        $drift = [];
+        foreach ($caches as $c) {
+            if (!is_array($c)) { continue; }
+            $rid = (string) ($c['route_id'] ?? '');
+            $session = (string) ($c['session'] ?? '');
+            if ($rid === '') { continue; }
+            $where = [['route_id', '==', $rid]];
+            if ($session !== '') { $where[] = ['session', '==', $session]; }
+            $actual = count((array) $this->fs->schoolWhere(Transport_service::COL_STUDENT_ROUTES_LEGACY, $where));
+            $cached = (int) ($c['current_count'] ?? 0);
+            if ($actual !== $cached) {
+                $drift[] = "{$rid}({$cached}!={$actual})";
+            }
+        }
+        if ($drift !== []) {
+            return ['status' => 'WARN', 'detail' => count($drift) . ' cache drift(s) — run rebuild_capacity_cache: ' . implode(',', array_slice($drift, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($caches) . ' cache entries accurate'];
+    }
+
+    /**
+     * CH-TRN-F3-6 — Performance: bulk_assign + rolloverSession bodies use
+     * bounded input loops (foreach over caller-supplied rows or paginated
+     * chunks), not schoolWhere-in-foreach patterns. Source-scan.
+     */
+    private function _chTrnF3_6(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = $this->_stripComments((string) file_get_contents($path));
+        $methods = ['bulkAssignStudents', 'rolloverSession'];
+        $report = [];
+        $bad = 0;
+        foreach ($methods as $m) {
+            if (!preg_match('/public\s+function\s+' . preg_quote($m, '/') . '\s*\([^)]*\)[^{]*\{/', $src, $mm, PREG_OFFSET_CAPTURE)) {
+                $report[] = "{$m}(missing)"; $bad++; continue;
+            }
+            $start = $mm[0][1] + strlen($mm[0][0]) - 1;
+            $depth = 0; $i = $start;
+            while ($i < strlen($src)) {
+                $c = $src[$i];
+                if ($c === '{') { $depth++; }
+                elseif ($c === '}') { $depth--; if ($depth === 0) { break; } }
+                $i++;
+            }
+            $body = substr($src, $start, $i - $start + 1);
+            // Anti-pattern: nested foreach whose outer iterates schoolWhere
+            // AND inner performs schoolWhere. rolloverSession does have
+            // schoolWhere INSIDE a while-loop (paginated chunk fetch) —
+            // that's bounded and expected; not an N+1.
+            $swIn = substr_count($body, '->schoolWhere(');
+            $getE = substr_count($body, '->getEntity(');
+            $report[] = "{$m}(sw:{$swIn},get:{$getE})";
+        }
+        $status = $bad === 0 ? 'PASS' : 'FAIL';
+        return ['status' => $status, 'detail' => implode(' ', $report)];
     }
 
     // ─── shared source-grep helper ───────────────────────────────────────

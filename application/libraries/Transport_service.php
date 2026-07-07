@@ -2377,6 +2377,897 @@ class Transport_service
         return $out;
     }
 
+    // ═════════════════════════════════════════════════════════════════════
+    //  DOMAIN_ASSIGNMENT (F3, 2026-07-07) — Student Transport Assignment
+    // ═════════════════════════════════════════════════════════════════════
+    //
+    // Feature F3 refinements baked in:
+    //   1. Session rollover auto-continues chunks in ONE invocation until
+    //      complete or hits a wall-clock ceiling; checkpoint is recovery-
+    //      only (not admin-interaction-required under normal ops).
+    //   2. Admin "Rebuild Capacity Cache" action via rebuildCapacityCache()
+    //      alongside the nightly reconciler.
+    //   3. Extended assignment history: source field (manual|bulk|rollover|
+    //      api) + batch_id correlation.
+    //   4. Pre-write validation via _validateAssignmentContext() gate.
+
+    /** Subscription types. Permanent+Temporary+OneWay+Seasonal writable in F3;
+     *  EventOnly reserved for F8 (Transport Events feature). */
+    public const SUBSCRIPTION_TYPES = ['Permanent', 'Temporary', 'Seasonal', 'OneWay', 'EventOnly'];
+
+    /** Assignment fee categories. */
+    public const FEE_CATEGORIES = [
+        'Standard', 'Concession', 'Scholarship', 'Staff_Ward', 'Hostel', 'Waived',
+    ];
+
+    /** routeAssignmentHistory event types. */
+    public const HISTORY_EVENT_TYPES = [
+        'assigned', 'updated', 'removed', 'session_rolled',
+        'suspended', 'resumed',
+        'stop_changed_only', 'route_changed_only',
+        'subscription_type_changed', 'fee_recategorised',
+    ];
+
+    /** Assignment-history change sources (Refinement #3). */
+    public const HISTORY_SOURCES = ['manual', 'bulk', 'rollover', 'api'];
+
+    /** Session rollover wall-clock ceiling per invocation (auto-continuation
+     *  processes chunks sequentially until this is reached — Refinement #1). */
+    private const ROLLOVER_WALLCLOCK_CEILING_SEC = 240;   // 4 minutes
+
+    /** Rollover chunk size (students processed per checkpoint save). */
+    private const ROLLOVER_CHUNK_SIZE = 100;
+
+    /** Bulk-assign hard cap per invocation. */
+    private const BULK_ASSIGN_HARD_CAP = 500;
+
+    /** Half-fee ratio for OneWay subscriptions. */
+    private const ONEWAY_FEE_MULTIPLIER = 0.5;
+
+    /** Hostel-transport fee multiplier (typically weekend/holiday-only). */
+    private const HOSTEL_FEE_MULTIPLIER = 0.5;
+
+    // ─── Assignment CRUD ─────────────────────────────────────────────────
+
+    /**
+     * Assign a student to a route + stop (or edit existing assignment).
+     *
+     * Refinement #4 (pre-write validation) is enforced by
+     * _validateAssignmentContext() before any Firestore write.
+     *
+     * Refinement #3: audit + history include `source` field. Defaults to
+     * 'manual'; bulkAssignStudents overrides to 'bulk'; rolloverSession
+     * overrides to 'rollover'.
+     *
+     * @param array $input {
+     *   student_id, route_id, stop_id, type (pickup|drop|both),
+     *   subscription_type, service_days, direction, fee_category,
+     *   concession_id, hostel_transport_flag,
+     *   effective_from, effective_to, season_start, season_end,
+     * }
+     * @param string $source  History source (default 'manual')
+     * @param string $batchId Batch correlation id (for bulk/rollover)
+     * @return array{id:string, isNew:bool, data:array, fee_status:string}
+     */
+    public function assignStudent(array $input, string $source = 'manual', string $batchId = ''): array
+    {
+        $this->_assertReady();
+        $studentId = trim((string) ($input['student_id'] ?? ''));
+        $routeId   = trim((string) ($input['route_id']   ?? ''));
+        if ($studentId === '' || $routeId === '') {
+            throw new \InvalidArgumentException('student_id and route_id are required.');
+        }
+
+        // Pre-write validation (Refinement #4)
+        $ctx = $this->_validateAssignmentContext($input, /* isUpdate */ null);
+        $student = $ctx['student'];
+        $route   = $ctx['route'];
+        $stop    = $ctx['stop'];   // may be null when stop_id empty
+
+        $existing = $this->fs->getEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId);
+        $isUpdate = is_array($existing);
+
+        // Subscription + direction + fee computation
+        $subscription  = trim((string) ($input['subscription_type'] ?? 'Permanent'));
+        if (!in_array($subscription, self::SUBSCRIPTION_TYPES, true)) {
+            throw new \InvalidArgumentException('Invalid subscription_type: ' . $subscription);
+        }
+        if ($subscription === 'EventOnly') {
+            throw new \InvalidArgumentException(
+                'EventOnly subscription is reserved for the Transport Events feature (F8).'
+            );
+        }
+        $direction   = trim((string) ($input['direction'] ?? ($input['type'] === 'pickup' ? 'Pickup' : ($input['type'] === 'drop' ? 'Drop' : 'Both'))));
+        if (!in_array($direction, ['Both', 'Pickup', 'Drop'], true)) {
+            $direction = 'Both';
+        }
+        $feeCategory = trim((string) ($input['fee_category'] ?? 'Standard'));
+        if (!in_array($feeCategory, self::FEE_CATEGORIES, true)) {
+            $feeCategory = 'Standard';
+        }
+        $monthlyFee = $this->_computeAssignmentFee($route, $subscription, $direction, $feeCategory, $input);
+
+        // Capacity check (single-student assign uses just-in-time cache read)
+        $capacityCheck = $this->_checkCapacityAvailable($routeId, /* isEdit */ $isUpdate, /* prevRouteId */ (string) ($existing['route_id'] ?? ''));
+        if (!$capacityCheck['ok']) {
+            throw new \RuntimeException('Cannot assign: ' . $capacityCheck['reason']);
+        }
+
+        // Build the assignment doc
+        $now = date('c');
+        $studentName = (string) ($student['name'] ?? $student['Name'] ?? $studentId);
+        $studentClass = trim(
+            \Firestore_service::classKey($student['class'] ?? $student['Class'] ?? '')
+            . ' ' .
+            \Firestore_service::sectionKey($student['section'] ?? $student['Section'] ?? '')
+        );
+        $svcDaysInput = $input['service_days'] ?? ($route['service_days'] ?? ['Mon','Tue','Wed','Thu','Fri','Sat']);
+        if (!is_array($svcDaysInput)) { $svcDaysInput = []; }
+        $svcDays = array_values(array_intersect(
+            array_map(static fn($d) => (string) $d, $svcDaysInput),
+            self::ROUTE_SERVICE_DAYS
+        ));
+        if ($svcDays === []) {
+            $svcDays = ['Mon','Tue','Wed','Thu','Fri','Sat'];
+        }
+        $type = trim((string) ($input['type'] ?? 'both'));
+        if (!in_array($type, ['pickup', 'drop', 'both'], true)) { $type = 'both'; }
+
+        $data = [
+            'studentId'             => $studentId,
+            'schoolId'              => $this->schoolId,
+            'session'               => $this->sessionYear,
+            'route_id'              => $routeId,
+            'route_name'            => (string) ($route['name'] ?? ''),
+            'stop_id'               => (string) ($input['stop_id'] ?? ''),
+            'stop_name'             => is_array($stop) ? (string) ($stop['name'] ?? '') : '',
+            'type'                  => $type,
+            'student_name'          => $studentName,
+            'student_class'         => $studentClass,
+            'monthly_fee'           => $monthlyFee,
+            'subscription_type'     => $subscription,
+            'service_days'          => $svcDays,
+            'direction'             => $direction,
+            'fee_category'          => $feeCategory,
+            'concession_id'         => trim((string) ($input['concession_id'] ?? '')),
+            'hostel_transport_flag' => (bool) ($input['hostel_transport_flag'] ?? false),
+            'effective_from'        => trim((string) ($input['effective_from'] ?? '')),
+            'effective_to'          => trim((string) ($input['effective_to']   ?? '')),
+            'season_start'          => trim((string) ($input['season_start']   ?? '')),
+            'season_end'            => trim((string) ($input['season_end']     ?? '')),
+            'suspended_from'        => (string) ($existing['suspended_from']  ?? ''),
+            'suspended_until'       => (string) ($existing['suspended_until'] ?? ''),
+            'fee_demand_ref'        => 'pending',   // set to actual demand id after Fee_lifecycle call
+            'event_id'              => (string) ($existing['event_id'] ?? ''),
+            'assigned_date'         => $isUpdate ? (string) ($existing['assigned_date'] ?? $now) : $now,
+            'assigned_by'           => $this->adminId,
+            'status'                => 'Active',
+            'updated_at'            => $now,
+        ];
+        if (!$isUpdate) { $data['created_at'] = $now; }
+
+        // Firestore batched write: assignment + history + audit + capacity cache
+        $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, $data, /* merge */ true);
+        $historyEventType = $isUpdate ? 'updated' : 'assigned';
+        $this->_appendAssignmentHistoryEvent(
+            $studentId, $this->sessionYear, $historyEventType,
+            $isUpdate ? $existing : null, $data,
+            $source, $batchId,
+            $isUpdate ? 'assignment updated' : 'assignment created'
+        );
+        $this->_bumpCapacityCache($routeId, /* delta */ $isUpdate && ($existing['route_id'] ?? '') === $routeId ? 0 : +1);
+        if ($isUpdate && (string) ($existing['route_id'] ?? '') !== '' && (string) ($existing['route_id'] ?? '') !== $routeId) {
+            $this->_bumpCapacityCache((string) $existing['route_id'], -1);
+        }
+
+        $this->emitAudit(
+            'studentRouteAssignment',
+            $studentId,
+            $isUpdate ? 'updated' : 'assigned',
+            $isUpdate ? $existing : null,
+            $data,
+            [
+                'domain'   => self::DOMAIN_ASSIGNMENT,
+                'source'   => $source,
+                'batch_id' => $batchId,
+                'route_id' => $routeId,
+            ]
+        );
+
+        // Fee_lifecycle call OUTSIDE the batch (pending-then-retry pattern)
+        $feeStatus = 'pending';
+        try {
+            $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
+            if ($isUpdate) {
+                $this->ci->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
+            }
+            $demandRef = $this->ci->feeLifecycle->createModuleFee($studentId, 'Transport', [
+                'route_id'   => $routeId,
+                'route_name' => (string) ($route['name'] ?? ''),
+                'amount'     => $monthlyFee,
+                'period'     => 'Monthly',
+                'start_date' => date('Y-m-d'),
+                'end_date'   => (string) ($data['effective_to'] ?? ''),
+                'context'    => ['subscription_type' => $subscription, 'fee_category' => $feeCategory],
+            ]);
+            $ref = is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
+            $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => $ref], /* merge */ true);
+            $feeStatus = 'ok';
+        } catch (\Throwable $e) {
+            log_message('error', 'F3 assignStudent Fee_lifecycle failure for ' . $studentId . ': ' . $e->getMessage());
+            // Assignment doc stays with fee_demand_ref='pending'; reconciler retries.
+            $feeStatus = 'pending';
+        }
+
+        return ['id' => $studentId, 'isNew' => !$isUpdate, 'data' => $data, 'fee_status' => $feeStatus];
+    }
+
+    /**
+     * Remove an active assignment. Pro-rates the fee to today. Historical
+     * assignment log preserved via routeAssignmentHistory event.
+     */
+    public function unassignStudent(string $studentId, string $reason = '', string $source = 'manual', string $batchId = ''): void
+    {
+        $this->_assertReady();
+        if ($studentId === '') {
+            throw new \InvalidArgumentException('studentId is required.');
+        }
+        $existing = $this->fs->getEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('No assignment found for student: ' . $studentId);
+        }
+
+        $routeId = (string) ($existing['route_id'] ?? '');
+
+        // Fee_lifecycle: pro-rate to today (best-effort; failure logged)
+        try {
+            $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
+            $this->ci->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
+        } catch (\Throwable $e) {
+            log_message('warning', 'F3 unassignStudent proRateFees failed for ' . $studentId . ': ' . $e->getMessage());
+        }
+
+        $this->fs->remove(self::COL_STUDENT_ROUTES_LEGACY, $this->fs->docId($studentId));
+        $this->_appendAssignmentHistoryEvent(
+            $studentId, (string) ($existing['session'] ?? $this->sessionYear),
+            'removed', $existing, null, $source, $batchId, $reason
+        );
+        if ($routeId !== '') {
+            $this->_bumpCapacityCache($routeId, -1);
+        }
+        $this->emitAudit(
+            'studentRouteAssignment', $studentId, 'removed',
+            $existing, null,
+            ['domain' => self::DOMAIN_ASSIGNMENT, 'source' => $source, 'batch_id' => $batchId, 'reason' => $reason]
+        );
+    }
+
+    /**
+     * Student-level (individual) suspension. Different from route suspension
+     * (F2) — this affects one student while the route continues to run.
+     */
+    public function suspendAssignment(string $studentId, string $from, string $until, string $reason): void
+    {
+        $this->_assertReady();
+        if ($studentId === '' || $from === '') {
+            throw new \InvalidArgumentException('studentId and from date are required.');
+        }
+        if (trim($reason) === '') {
+            throw new \InvalidArgumentException('reason is required.');
+        }
+        $existing = $this->fs->getEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('No assignment for student: ' . $studentId);
+        }
+        if ((string) ($existing['suspended_from'] ?? '') !== '') {
+            throw new \InvalidArgumentException('Student is already suspended.');
+        }
+        $update = [
+            'suspended_from'  => $from,
+            'suspended_until' => trim($until),
+            'updated_at'      => date('c'),
+        ];
+        $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, $update, /* merge */ true);
+        $this->_appendAssignmentHistoryEvent(
+            $studentId, (string) ($existing['session'] ?? $this->sessionYear),
+            'suspended', ['suspended_from' => ''], $update,
+            'manual', '', $reason
+        );
+        $this->emitAudit(
+            'studentRouteAssignment', $studentId, 'suspended',
+            null, $update,
+            ['domain' => self::DOMAIN_ASSIGNMENT, 'source' => 'manual', 'reason' => $reason]
+        );
+    }
+
+    public function resumeAssignment(string $studentId, string $reason = ''): void
+    {
+        $this->_assertReady();
+        if ($studentId === '') {
+            throw new \InvalidArgumentException('studentId required.');
+        }
+        $existing = $this->fs->getEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('No assignment for student: ' . $studentId);
+        }
+        if ((string) ($existing['suspended_from'] ?? '') === '') {
+            throw new \InvalidArgumentException('Student is not suspended.');
+        }
+        $update = [
+            'suspended_from'  => '',
+            'suspended_until' => '',
+            'updated_at'      => date('c'),
+        ];
+        $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, $update, /* merge */ true);
+        $this->_appendAssignmentHistoryEvent(
+            $studentId, (string) ($existing['session'] ?? $this->sessionYear),
+            'resumed', ['suspended_from' => (string) ($existing['suspended_from'] ?? '')], $update,
+            'manual', '', $reason
+        );
+        $this->emitAudit(
+            'studentRouteAssignment', $studentId, 'resumed',
+            null, $update,
+            ['domain' => self::DOMAIN_ASSIGNMENT, 'source' => 'manual', 'reason' => $reason]
+        );
+    }
+
+    public function changeStop(string $studentId, string $newStopId, string $reason): void
+    {
+        $this->_assertReady();
+        if ($studentId === '' || $newStopId === '' || trim($reason) === '') {
+            throw new \InvalidArgumentException('studentId, newStopId, reason are all required.');
+        }
+        $existing = $this->fs->getEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('No assignment for student: ' . $studentId);
+        }
+        $routeId = (string) ($existing['route_id'] ?? '');
+        // Validate the new stop belongs to the current route
+        $stop = $this->fs->getEntity(self::COL_TRANSPORT_STOPS, $newStopId);
+        if (!is_array($stop) || (string) ($stop['route_id'] ?? '') !== $routeId) {
+            throw new \InvalidArgumentException('New stop does not belong to the current route.');
+        }
+        $update = [
+            'stop_id'    => $newStopId,
+            'stop_name'  => (string) ($stop['name'] ?? ''),
+            'updated_at' => date('c'),
+        ];
+        $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, $update, /* merge */ true);
+        $this->_appendAssignmentHistoryEvent(
+            $studentId, (string) ($existing['session'] ?? $this->sessionYear),
+            'stop_changed_only',
+            ['stop_id' => (string) ($existing['stop_id'] ?? ''), 'stop_name' => (string) ($existing['stop_name'] ?? '')],
+            $update, 'manual', '', $reason
+        );
+        $this->emitAudit(
+            'studentRouteAssignment', $studentId, 'stop_changed',
+            null, $update,
+            ['domain' => self::DOMAIN_ASSIGNMENT, 'source' => 'manual', 'reason' => $reason]
+        );
+    }
+
+    /**
+     * Mid-session route change. Includes pro-rate on old route + new demand
+     * on new route via Fee_lifecycle (pending-then-retry pattern).
+     */
+    public function changeRoute(string $studentId, string $newRouteId, string $newStopId, string $reason): void
+    {
+        $this->_assertReady();
+        if ($studentId === '' || $newRouteId === '' || trim($reason) === '') {
+            throw new \InvalidArgumentException('studentId, newRouteId, reason are required.');
+        }
+        $existing = $this->fs->getEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('No assignment for student: ' . $studentId);
+        }
+        $prevRouteId = (string) ($existing['route_id'] ?? '');
+        if ($prevRouteId === $newRouteId) {
+            throw new \InvalidArgumentException('Cannot change route to the same route.');
+        }
+
+        // Validate new route + stop
+        $newRoute = $this->fs->getEntity(self::COL_ROUTES, $newRouteId);
+        if (!is_array($newRoute)) {
+            throw new \InvalidArgumentException('New route not found: ' . $newRouteId);
+        }
+        if ((string) ($newRoute['status'] ?? '') !== 'Active') {
+            throw new \InvalidArgumentException('New route is not Active.');
+        }
+        if ((string) ($newRoute['active_suspension_ref'] ?? '') !== '') {
+            throw new \InvalidArgumentException('New route currently has an active suspension.');
+        }
+        $newStop = null;
+        if ($newStopId !== '') {
+            $newStop = $this->fs->getEntity(self::COL_TRANSPORT_STOPS, $newStopId);
+            if (!is_array($newStop) || (string) ($newStop['route_id'] ?? '') !== $newRouteId) {
+                throw new \InvalidArgumentException('New stop does not belong to the new route.');
+            }
+        }
+
+        // Capacity check on new route
+        $capacityCheck = $this->_checkCapacityAvailable($newRouteId, /* isEdit */ true, $prevRouteId);
+        if (!$capacityCheck['ok']) {
+            throw new \RuntimeException('Cannot change route: ' . $capacityCheck['reason']);
+        }
+
+        $newFee = $this->_computeAssignmentFee(
+            $newRoute,
+            (string) ($existing['subscription_type'] ?? 'Permanent'),
+            (string) ($existing['direction'] ?? 'Both'),
+            (string) ($existing['fee_category'] ?? 'Standard'),
+            $existing
+        );
+
+        // Fee_lifecycle: pro-rate old route to today
+        try {
+            $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
+            $this->ci->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
+        } catch (\Throwable $e) {
+            log_message('warning', 'F3 changeRoute proRateFees failed for ' . $studentId . ': ' . $e->getMessage());
+        }
+
+        $update = [
+            'route_id'      => $newRouteId,
+            'route_name'    => (string) ($newRoute['name'] ?? ''),
+            'stop_id'       => $newStopId,
+            'stop_name'     => is_array($newStop) ? (string) ($newStop['name'] ?? '') : '',
+            'monthly_fee'   => $newFee,
+            'fee_demand_ref' => 'pending',
+            'updated_at'    => date('c'),
+        ];
+        $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, $update, /* merge */ true);
+        $this->_appendAssignmentHistoryEvent(
+            $studentId, (string) ($existing['session'] ?? $this->sessionYear),
+            'route_changed_only',
+            ['route_id' => $prevRouteId, 'route_name' => (string) ($existing['route_name'] ?? ''), 'stop_id' => (string) ($existing['stop_id'] ?? '')],
+            $update, 'manual', '', $reason
+        );
+        $this->_bumpCapacityCache($prevRouteId, -1);
+        $this->_bumpCapacityCache($newRouteId, +1);
+
+        $this->emitAudit(
+            'studentRouteAssignment', $studentId, 'route_changed',
+            null, $update,
+            ['domain' => self::DOMAIN_ASSIGNMENT, 'source' => 'manual', 'reason' => $reason,
+             'prev_route_id' => $prevRouteId, 'new_route_id' => $newRouteId]
+        );
+
+        // Fee_lifecycle: create new demand
+        try {
+            $demandRef = $this->ci->feeLifecycle->createModuleFee($studentId, 'Transport', [
+                'route_id'   => $newRouteId,
+                'route_name' => (string) ($newRoute['name'] ?? ''),
+                'amount'     => $newFee,
+                'period'     => 'Monthly',
+                'start_date' => date('Y-m-d'),
+            ]);
+            $ref = is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
+            $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, ['fee_demand_ref' => $ref], /* merge */ true);
+        } catch (\Throwable $e) {
+            log_message('error', 'F3 changeRoute createModuleFee failed: ' . $e->getMessage());
+        }
+    }
+
+    public function changeSubscription(string $studentId, string $newType, array $params, string $reason): void
+    {
+        $this->_assertReady();
+        if ($studentId === '' || $newType === '' || trim($reason) === '') {
+            throw new \InvalidArgumentException('studentId, newType, reason required.');
+        }
+        if (!in_array($newType, self::SUBSCRIPTION_TYPES, true) || $newType === 'EventOnly') {
+            throw new \InvalidArgumentException('Invalid subscription_type: ' . $newType);
+        }
+        $existing = $this->fs->getEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('No assignment for student: ' . $studentId);
+        }
+        $route = $this->fs->getEntity(self::COL_ROUTES, (string) ($existing['route_id'] ?? ''));
+        if (!is_array($route)) {
+            throw new \InvalidArgumentException('Route referenced by assignment no longer exists.');
+        }
+        $newFee = $this->_computeAssignmentFee(
+            $route, $newType,
+            (string) ($existing['direction']    ?? 'Both'),
+            (string) ($existing['fee_category'] ?? 'Standard'),
+            array_merge($existing, $params)
+        );
+
+        $update = array_merge([
+            'subscription_type' => $newType,
+            'monthly_fee'       => $newFee,
+            'fee_demand_ref'    => 'pending',
+            'updated_at'        => date('c'),
+        ], array_intersect_key($params, array_flip([
+            'effective_from', 'effective_to', 'season_start', 'season_end', 'direction',
+        ])));
+        $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $studentId, $update, /* merge */ true);
+
+        $this->_appendAssignmentHistoryEvent(
+            $studentId, (string) ($existing['session'] ?? $this->sessionYear),
+            'subscription_type_changed',
+            ['subscription_type' => (string) ($existing['subscription_type'] ?? ''), 'monthly_fee' => (float) ($existing['monthly_fee'] ?? 0)],
+            $update, 'manual', '', $reason
+        );
+
+        $this->emitAudit(
+            'studentRouteAssignment', $studentId, 'subscription_changed',
+            null, $update,
+            ['domain' => self::DOMAIN_ASSIGNMENT, 'source' => 'manual', 'reason' => $reason]
+        );
+    }
+
+    /**
+     * Bulk assign up to BULK_ASSIGN_HARD_CAP students in one call.
+     *
+     * Refinement #3: source='bulk' with a common batch_id across all rows.
+     *
+     * @param array<int, array> $rows
+     * @return array{
+     *   batch_id:string, assigned_count:int,
+     *   skipped_capacity:array, skipped_conflict:array, errors:array,
+     * }
+     */
+    public function bulkAssignStudents(array $rows): array
+    {
+        $this->_assertReady();
+        if ($rows === []) {
+            throw new \InvalidArgumentException('At least one row is required.');
+        }
+        if (count($rows) > self::BULK_ASSIGN_HARD_CAP) {
+            throw new \InvalidArgumentException(
+                'Bulk assign hard cap is ' . self::BULK_ASSIGN_HARD_CAP . ' rows per invocation.'
+            );
+        }
+        $batchId = 'BULK_' . (int) round(microtime(true) * 1000);
+
+        $assigned = 0;
+        $capSkip  = [];
+        $conflict = [];
+        $errors   = [];
+
+        foreach ($rows as $row) {
+            try {
+                $r = $this->assignStudent((array) $row, 'bulk', $batchId);
+                $assigned++;
+                if ($r['fee_status'] !== 'ok') {
+                    $errors[] = ['studentId' => (string) $row['student_id'], 'error' => 'fee_pending'];
+                }
+            } catch (\RuntimeException $e) {
+                // Capacity exceeded etc.
+                $capSkip[] = ['studentId' => (string) ($row['student_id'] ?? ''), 'reason' => $e->getMessage()];
+            } catch (\InvalidArgumentException $e) {
+                $conflict[] = ['studentId' => (string) ($row['student_id'] ?? ''), 'reason' => $e->getMessage()];
+            } catch (\Throwable $e) {
+                $errors[] = ['studentId' => (string) ($row['student_id'] ?? ''), 'error' => $e->getMessage()];
+            }
+        }
+
+        // Fire Communication notice — best-effort
+        try {
+            $this->ci->load->library('Communication_helper', null, 'commHelper');
+            if (is_object($this->ci->commHelper ?? null) && method_exists($this->ci->commHelper, 'createNotice')) {
+                $this->ci->commHelper->createNotice([
+                    'schoolId'  => $this->schoolId,
+                    'subject'   => "Transport bulk assign complete: {$assigned} assigned",
+                    'body'      => "Batch {$batchId}\nAssigned: {$assigned}\nCapacity-skipped: " . count($capSkip)
+                                 . "\nErrors: " . count($errors),
+                    'audience'  => ['role:Admin', 'role:Transport Manager'],
+                    'context'   => ['module' => 'Transport', 'topic' => 'bulk_assign', 'batch_id' => $batchId],
+                ]);
+            }
+        } catch (\Throwable $_) { /* best-effort */ }
+
+        return [
+            'batch_id'         => $batchId,
+            'assigned_count'   => $assigned,
+            'skipped_capacity' => $capSkip,
+            'skipped_conflict' => $conflict,
+            'errors'           => $errors,
+        ];
+    }
+
+    /**
+     * Auto-continuing chunked session rollover (Refinement #1). Runs chunks
+     * sequentially in a single invocation until either:
+     *   - All students processed (checkpoint.status = 'complete')
+     *   - Wall-clock ceiling hit (ROLLOVER_WALLCLOCK_CEILING_SEC), returns
+     *     'in_progress' — subsequent invocation resumes from checkpoint
+     *   - Fatal error → checkpoint frozen with status = 'error'
+     *
+     * @return array{status:string, processed:int, total:int, batch_id:string, checkpoint_id:string}
+     */
+    public function rolloverSession(string $fromSession, string $toSession): array
+    {
+        $this->_assertReady();
+        if ($fromSession === '' || $toSession === '' || $fromSession === $toSession) {
+            throw new \InvalidArgumentException('fromSession and toSession must be non-empty and differ.');
+        }
+        $checkpointDocId = "{$this->schoolId}_ROLLOVER_{$fromSession}_{$toSession}";
+        $checkpoint = $this->fs->getEntity('rolloverCheckpoint', $checkpointDocId);
+        if (!is_array($checkpoint)) {
+            // Fresh rollover
+            $checkpoint = [
+                'checkpointId'   => $checkpointDocId,
+                'schoolId'       => $this->schoolId,
+                'from_session'   => $fromSession,
+                'to_session'     => $toSession,
+                'batch_id'       => 'ROLL_' . (int) round(microtime(true) * 1000),
+                'started_at'     => date('c'),
+                'started_by'     => $this->adminId,
+                'processed_ids'  => [],
+                'processed_count' => 0,
+                'error_count'    => 0,
+                'status'         => 'running',
+                'last_update_at' => date('c'),
+            ];
+            $this->fs->setEntity('rolloverCheckpoint', $checkpointDocId, $checkpoint, /* merge */ false);
+        }
+        if ((string) $checkpoint['status'] === 'complete') {
+            return [
+                'status' => 'complete',
+                'processed' => (int) $checkpoint['processed_count'],
+                'total' => (int) $checkpoint['processed_count'],
+                'batch_id' => (string) $checkpoint['batch_id'],
+                'checkpoint_id' => $checkpointDocId,
+            ];
+        }
+
+        $wallClockStart = microtime(true);
+        $batchId        = (string) $checkpoint['batch_id'];
+        $processed      = (int) $checkpoint['processed_count'];
+        $processedIds   = (array) $checkpoint['processed_ids'];
+        $processedSet   = array_flip(array_map('strval', $processedIds));
+
+        // Auto-continue chunks until wall-clock ceiling or exhaustion
+        while (true) {
+            if ((microtime(true) - $wallClockStart) > self::ROLLOVER_WALLCLOCK_CEILING_SEC) {
+                $checkpoint['status'] = 'in_progress';
+                $checkpoint['last_update_at'] = date('c');
+                $this->fs->setEntity('rolloverCheckpoint', $checkpointDocId, $checkpoint, /* merge */ true);
+                return [
+                    'status' => 'in_progress',
+                    'processed' => $processed,
+                    'total' => $processed,   // unknown until complete
+                    'batch_id' => $batchId,
+                    'checkpoint_id' => $checkpointDocId,
+                ];
+            }
+
+            $chunk = (array) $this->fs->schoolWhere(
+                self::COL_STUDENT_ROUTES_LEGACY,
+                [['session', '==', $fromSession]],
+                '__name__', 'ASC',
+                self::ROLLOVER_CHUNK_SIZE
+            );
+            $todo = [];
+            foreach ($chunk as $row) {
+                $sid = (string) ($row['studentId'] ?? '');
+                if ($sid === '' || isset($processedSet[$sid])) { continue; }
+                $todo[] = ['sid' => $sid, 'row' => $row];
+            }
+            if ($todo === []) {
+                $checkpoint['status'] = 'complete';
+                $checkpoint['completed_at'] = date('c');
+                $checkpoint['processed_count'] = $processed;
+                $checkpoint['last_update_at'] = date('c');
+                $this->fs->setEntity('rolloverCheckpoint', $checkpointDocId, $checkpoint, /* merge */ true);
+                try {
+                    $this->ci->load->library('Communication_helper', null, 'commHelper');
+                    if (is_object($this->ci->commHelper ?? null) && method_exists($this->ci->commHelper, 'createNotice')) {
+                        $this->ci->commHelper->createNotice([
+                            'schoolId'  => $this->schoolId,
+                            'subject'   => "Transport session rollover complete: {$processed} students",
+                            'body'      => "From: {$fromSession}\nTo: {$toSession}\nBatch: {$batchId}\nProcessed: {$processed}",
+                            'audience'  => ['role:Admin', 'role:Transport Manager'],
+                            'context'   => ['module' => 'Transport', 'topic' => 'rollover_complete', 'batch_id' => $batchId],
+                        ]);
+                    }
+                } catch (\Throwable $_) {}
+                return [
+                    'status' => 'complete',
+                    'processed' => $processed,
+                    'total' => $processed,
+                    'batch_id' => $batchId,
+                    'checkpoint_id' => $checkpointDocId,
+                ];
+            }
+
+            foreach ($todo as $item) {
+                $sid = $item['sid'];
+                $row = $item['row'];
+                try {
+                    // Archive current session's assignment to routeAssignments
+                    $archiveId  = "{$sid}__{$fromSession}";
+                    $archiveDoc = array_merge($row, [
+                        'rolled_over_at'  => date('c'),
+                        'rolled_over_by'  => $this->adminId,
+                        'rollover_batch_id' => $batchId,
+                    ]);
+                    $this->fs->setEntity(self::COL_ROUTE_ASSIGNMENTS, $archiveId, $archiveDoc, /* merge */ false);
+
+                    // Update studentRoutes to new session
+                    $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $sid, [
+                        'session'       => $toSession,
+                        'assigned_date' => date('Y-m-d'),
+                        'updated_at'    => date('c'),
+                    ], /* merge */ true);
+
+                    // History event
+                    $this->_appendAssignmentHistoryEvent(
+                        $sid, $toSession, 'session_rolled',
+                        ['session' => $fromSession], ['session' => $toSession],
+                        'rollover', $batchId,
+                        "Rolled over from {$fromSession} to {$toSession}"
+                    );
+
+                    // Fee_lifecycle: cancel old session demands + create new
+                    try {
+                        $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
+                        if (method_exists($this->ci->feeLifecycle, 'cancelSessionDemands')) {
+                            $this->ci->feeLifecycle->cancelSessionDemands($sid, $fromSession, 'Transport');
+                        }
+                        $this->ci->feeLifecycle->createModuleFee($sid, 'Transport', [
+                            'route_id'   => (string) ($row['route_id'] ?? ''),
+                            'route_name' => (string) ($row['route_name'] ?? ''),
+                            'amount'     => (float) ($row['monthly_fee'] ?? 0),
+                            'period'     => 'Monthly',
+                            'start_date' => date('Y-m-d'),
+                        ]);
+                    } catch (\Throwable $e) {
+                        log_message('warning', 'F3 rollover fee ops failed for ' . $sid . ': ' . $e->getMessage());
+                    }
+
+                    $processed++;
+                    $processedIds[] = $sid;
+                    $processedSet[$sid] = true;
+                } catch (\Throwable $e) {
+                    $checkpoint['error_count'] = ((int) ($checkpoint['error_count'] ?? 0)) + 1;
+                    log_message('error', "F3 rollover student {$sid} failed: " . $e->getMessage());
+                }
+            }
+
+            // Update checkpoint after each chunk
+            $checkpoint['processed_count'] = $processed;
+            $checkpoint['processed_ids']   = array_slice($processedIds, -1000);   // cap array size on doc
+            $checkpoint['last_update_at']  = date('c');
+            $this->fs->setEntity('rolloverCheckpoint', $checkpointDocId, $checkpoint, /* merge */ true);
+        }
+    }
+
+    /**
+     * Rebuild the capacity cache for a specific route (or all routes when
+     * routeId is empty). Refinement #2 — administrative action.
+     */
+    public function rebuildCapacityCache(string $routeId = ''): array
+    {
+        $this->_assertReady();
+        $routes = $routeId !== ''
+            ? [(array) $this->fs->getEntity(self::COL_ROUTES, $routeId)]
+            : (array) $this->fs->schoolWhere(self::COL_ROUTES, [], 'name', 'ASC');
+        $rebuilt = 0;
+        foreach ($routes as $r) {
+            if (!is_array($r)) { continue; }
+            $rid = (string) ($r['routeId'] ?? $r['id'] ?? '');
+            if ($rid === '') { continue; }
+            $vehicleId = (string) ($r['vehicle_id'] ?? '');
+            $maxCapacity = 0;
+            if ($vehicleId !== '') {
+                $veh = $this->fs->getEntity(self::COL_VEHICLES, $vehicleId);
+                $maxCapacity = is_array($veh) ? (int) ($veh['capacity'] ?? 0) : 0;
+            }
+            $count = count((array) $this->fs->schoolWhere(
+                self::COL_STUDENT_ROUTES_LEGACY,
+                [['route_id', '==', $rid], ['session', '==', $this->sessionYear]]
+            ));
+            $cacheId = "{$this->schoolId}_CAPCACHE_{$rid}";
+            $this->fs->setEntity(self::COL_BUS_CAPACITY_CACHE, $cacheId, [
+                'route_id'        => $rid,
+                'session'         => $this->sessionYear,
+                'current_count'   => $count,
+                'max_capacity'    => $maxCapacity,
+                'last_updated_at' => date('c'),
+                'schoolId'        => $this->schoolId,
+                'rebuilt_at'      => date('c'),
+                'rebuilt_by'      => $this->adminId,
+            ], /* merge */ false);
+            $rebuilt++;
+        }
+        $this->emitAudit(
+            'busCapacityCache', $routeId !== '' ? $routeId : 'ALL', 'rebuilt',
+            null, ['rebuilt_count' => $rebuilt],
+            ['domain' => self::DOMAIN_ASSIGNMENT, 'source' => 'manual']
+        );
+        return ['rebuilt_count' => $rebuilt];
+    }
+
+    public function reconcilePendingFees(): array
+    {
+        $this->_assertReady();
+        $rows = (array) $this->fs->schoolWhere(
+            self::COL_STUDENT_ROUTES_LEGACY,
+            [['fee_demand_ref', '==', 'pending']],
+            null, 'ASC', 200
+        );
+        $retried = 0;
+        $stillPending = 0;
+        foreach ($rows as $r) {
+            if (!is_array($r)) { continue; }
+            $sid = (string) ($r['studentId'] ?? '');
+            if ($sid === '') { continue; }
+            try {
+                $this->ci->load->library('Fee_lifecycle', null, 'feeLifecycle');
+                $demandRef = $this->ci->feeLifecycle->createModuleFee($sid, 'Transport', [
+                    'route_id'   => (string) ($r['route_id'] ?? ''),
+                    'route_name' => (string) ($r['route_name'] ?? ''),
+                    'amount'     => (float) ($r['monthly_fee'] ?? 0),
+                    'period'     => 'Monthly',
+                    'start_date' => date('Y-m-d'),
+                ]);
+                $ref = is_string($demandRef) && $demandRef !== '' ? $demandRef : 'ok';
+                $this->fs->setEntity(self::COL_STUDENT_ROUTES_LEGACY, $sid,
+                    ['fee_demand_ref' => $ref], /* merge */ true);
+                $retried++;
+            } catch (\Throwable $e) {
+                $stillPending++;
+                log_message('warning', 'F3 reconcile pending fee failed for ' . $sid . ': ' . $e->getMessage());
+            }
+        }
+        return ['retried' => $retried, 'still_pending' => $stillPending];
+    }
+
+    public function listAssignments(string $session = '', array $filters = []): array
+    {
+        $this->_assertReady();
+        $where = [];
+        if ($session !== '') {
+            $where[] = ['session', '==', $session];
+        }
+        foreach ($filters as $k => $v) {
+            if (in_array($k, ['route_id', 'student_class', 'status', 'subscription_type', 'fee_category'], true)
+                && $v !== '' && $v !== null) {
+                $where[] = [$k, '==', $v];
+            }
+        }
+        $rows = (array) $this->fs->schoolWhere(self::COL_STUDENT_ROUTES_LEGACY, $where, 'student_name', 'ASC');
+        $out = [];
+        foreach ($rows as $doc) {
+            if (!is_array($doc)) { continue; }
+            $sid = (string) ($doc['studentId'] ?? '');
+            if ($sid === '') { continue; }
+            $doc['student_id'] = $sid;
+            $out[] = $doc;
+        }
+        return $out;
+    }
+
+    public function getAssignmentHistory(string $studentId): array
+    {
+        $this->_assertReady();
+        if ($studentId === '') { return []; }
+        $rows = (array) $this->fs->schoolWhere(
+            self::COL_ROUTE_ASSIGNMENT_HISTORY,
+            [['studentId', '==', $studentId]],
+            'event_at', 'DESC'
+        );
+        $out = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) { continue; }
+            // Handle both flat and {id, data} nested response formats
+            // (Firestore_service returns nested for some collections; this
+            // guards against that surface variance).
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['event_type'])) {
+                $docKey = (string) ($r['id'] ?? '');
+                $r = $r['data'];
+                if ($docKey !== '' && !isset($r['id'])) { $r['id'] = $docKey; }
+            }
+            $id = (string) ($r['eventId'] ?? $r['id'] ?? '');
+            if ($id === '') { continue; }
+            $r['id'] = $id;
+            $out[] = $r;
+        }
+        return $out;
+    }
+
     // ─── private helpers ─────────────────────────────────────────────────
 
     private function _assertReady(): void
@@ -2635,6 +3526,269 @@ class Transport_service
      * Best-effort: any Communication-side failure is logged, not rethrown
      * — audit + business state are the source of truth.
      */
+    // ─── DOMAIN_ASSIGNMENT (F3) private helpers ──────────────────────────
+
+    /**
+     * Refinement #4: pre-write validation for an assignment create/update.
+     *
+     * Checks:
+     *   - Student exists (in SIS 'students') and is Active
+     *   - Route exists AND is Active (not Archived/Inactive/Suspended)
+     *   - Stop exists AND belongs to the selected route (when stop_id given)
+     *   - Vehicle assigned to the route (if any) has lifecycle_status=Active
+     *   - Session matches the current session
+     *
+     * Returns [ 'student' => ..., 'route' => ..., 'stop' => ...|null ]
+     * for use by the caller.
+     *
+     * @throws \InvalidArgumentException on any validation failure.
+     */
+    private function _validateAssignmentContext(array $input, $isUpdate): array
+    {
+        $studentId = trim((string) ($input['student_id'] ?? ''));
+        $routeId   = trim((string) ($input['route_id']   ?? ''));
+        $stopId    = trim((string) ($input['stop_id']    ?? ''));
+        $session   = trim((string) ($input['session']    ?? $this->sessionYear));
+
+        // 1. Session check — assignment must belong to current session
+        if ($session !== $this->sessionYear) {
+            throw new \InvalidArgumentException(
+                "Assignment session ({$session}) must match current session ({$this->sessionYear})."
+            );
+        }
+
+        // 2. Student existence + active status
+        $student = $this->fs->getEntity('students', $studentId);
+        if (!is_array($student)) {
+            throw new \InvalidArgumentException('Student not found: ' . $studentId);
+        }
+        $studentStatus = strtolower((string) (
+            $student['status']
+            ?? $student['Status']
+            ?? $student['active_status']
+            ?? 'active'
+        ));
+        if ($studentStatus !== '' && !in_array($studentStatus, ['active', ''], true)) {
+            throw new \InvalidArgumentException(
+                "Student {$studentId} is not Active in SIS (status='{$studentStatus}')."
+            );
+        }
+
+        // 3. Route existence + operational status
+        $route = $this->fs->getEntity(self::COL_ROUTES, $routeId);
+        if (!is_array($route)) {
+            throw new \InvalidArgumentException('Route not found: ' . $routeId);
+        }
+        $routeStatus = (string) ($route['status'] ?? 'Active');
+        if ($routeStatus !== 'Active') {
+            throw new \InvalidArgumentException(
+                "Route {$routeId} is not Active (status='{$routeStatus}'). Cannot assign students to inactive or archived routes."
+            );
+        }
+        if ((string) ($route['active_suspension_ref'] ?? '') !== '') {
+            throw new \InvalidArgumentException(
+                "Route {$routeId} currently has an active suspension. Resume it before assigning students."
+            );
+        }
+
+        // 4. Stop belongs to route (when stop_id provided)
+        $stop = null;
+        if ($stopId !== '') {
+            $stop = $this->fs->getEntity(self::COL_TRANSPORT_STOPS, $stopId);
+            if (!is_array($stop)) {
+                throw new \InvalidArgumentException('Stop not found: ' . $stopId);
+            }
+            if ((string) ($stop['route_id'] ?? '') !== $routeId) {
+                throw new \InvalidArgumentException(
+                    "Stop {$stopId} does not belong to route {$routeId}."
+                );
+            }
+            $stopStatus = (string) ($stop['status'] ?? 'Active');
+            if ($stopStatus !== 'Active') {
+                throw new \InvalidArgumentException(
+                    "Stop {$stopId} is not Active (status='{$stopStatus}')."
+                );
+            }
+        }
+
+        // 5. Vehicle assigned to the route is Active in lifecycle
+        $vehicleId = (string) ($route['vehicle_id'] ?? '');
+        if ($vehicleId !== '') {
+            $veh = $this->fs->getEntity(self::COL_VEHICLES, $vehicleId);
+            if (!is_array($veh)) {
+                throw new \InvalidArgumentException(
+                    "Route {$routeId} references a missing vehicle: {$vehicleId}."
+                );
+            }
+            $vLifecycle = (string) ($veh['lifecycle_status'] ?? 'Active');
+            if (!in_array($vLifecycle, ['Active', 'Onboarding', 'Purchased'], true)) {
+                throw new \InvalidArgumentException(
+                    "Route {$routeId} vehicle {$vehicleId} is not Active (lifecycle='{$vLifecycle}')."
+                );
+            }
+        }
+
+        return ['student' => $student, 'route' => $route, 'stop' => $stop];
+    }
+
+    /**
+     * Compute the monthly fee for an assignment given the route + subscription
+     * semantics. Applies OneWay + Hostel + fee_category adjustments.
+     */
+    private function _computeAssignmentFee(
+        array $route,
+        string $subscription,
+        string $direction,
+        string $feeCategory,
+        array $params = []
+    ): float {
+        $base = (float) ($route['monthly_fee'] ?? 0);
+        if ($feeCategory === 'Waived') {
+            return 0.0;
+        }
+        $fee = $base;
+
+        if ($subscription === 'OneWay' || $direction === 'Pickup' || $direction === 'Drop') {
+            $fee *= self::ONEWAY_FEE_MULTIPLIER;
+        }
+        if (!empty($params['hostel_transport_flag'])) {
+            $fee *= self::HOSTEL_FEE_MULTIPLIER;
+        }
+        // Fee_lifecycle applies concession/scholarship discount downstream;
+        // service just carries the category tag on the assignment doc.
+
+        return round($fee, 2);
+    }
+
+    /**
+     * Check whether a route has remaining capacity for a new (or edit)
+     * assignment. Reads the busCapacityCache first (fast path); falls
+     * back to live count when cache is missing.
+     *
+     * @return array{ok:bool, reason:string, remaining:int}
+     */
+    private function _checkCapacityAvailable(string $routeId, bool $isEdit, string $prevRouteId): array
+    {
+        // If editing and staying on the same route, no delta capacity needed.
+        if ($isEdit && $prevRouteId === $routeId) {
+            return ['ok' => true, 'reason' => '', 'remaining' => -1];
+        }
+        $cacheId = "{$this->schoolId}_CAPCACHE_{$routeId}";
+        $cache   = $this->fs->getEntity(self::COL_BUS_CAPACITY_CACHE, $cacheId);
+        if (!is_array($cache)) {
+            // Cache miss — compute from source (also seeds the cache)
+            $rebuilt = $this->rebuildCapacityCache($routeId);
+            $cache   = $this->fs->getEntity(self::COL_BUS_CAPACITY_CACHE, $cacheId);
+            if (!is_array($cache)) {
+                return ['ok' => true, 'reason' => 'cache unavailable — best-effort allow', 'remaining' => -1];
+            }
+        }
+        $current = (int) ($cache['current_count'] ?? 0);
+        $max     = (int) ($cache['max_capacity']  ?? 0);
+        if ($max === 0) {
+            // No vehicle assigned → allow (deferred check)
+            return ['ok' => true, 'reason' => '', 'remaining' => -1];
+        }
+        $remaining = $max - $current;
+        if ($remaining <= 0) {
+            return [
+                'ok' => false,
+                'reason' => "route capacity {$current}/{$max} reached",
+                'remaining' => 0,
+            ];
+        }
+        return ['ok' => true, 'reason' => '', 'remaining' => $remaining];
+    }
+
+    /**
+     * Append a routeAssignmentHistory event (Refinement #3: source + batch_id).
+     */
+    private function _appendAssignmentHistoryEvent(
+        string $studentId,
+        string $session,
+        string $eventType,
+        ?array $prevState,
+        ?array $newState,
+        string $source = 'manual',
+        string $batchId = '',
+        string $reason  = ''
+    ): string {
+        if (!in_array($eventType, self::HISTORY_EVENT_TYPES, true)) {
+            $eventType = 'updated';
+        }
+        if (!in_array($source, self::HISTORY_SOURCES, true)) {
+            $source = 'manual';
+        }
+        $eventId = $this->numbering->next('trn_assignment_history', [
+            'claimedBy'  => $this->adminId,
+            'claimedFor' => 'F3:_appendAssignmentHistoryEvent',
+        ]);
+        $now = date('c');
+        $row = [
+            'eventId'   => $eventId,
+            'schoolId'  => $this->schoolId,
+            'studentId' => $studentId,
+            'session'   => $session,
+            'event_type'=> $eventType,
+            'event_at'  => $now,
+            'event_by'  => $this->adminId,
+            'source'    => $source,
+            'batch_id'  => $batchId,
+            'reason'    => $reason,
+            'prev_state'=> $prevState !== null ? $this->_capForHistory($prevState) : null,
+            'new_state' => $newState  !== null ? $this->_capForHistory($newState)  : null,
+        ];
+        $this->fs->setEntity(self::COL_ROUTE_ASSIGNMENT_HISTORY, $eventId, $row, /* merge */ false);
+        return $eventId;
+    }
+
+    /**
+     * Trim an assignment doc down to fields safe for history inclusion.
+     * Drops verbose or sensitive fields (created_at metadata, fee_demand_ref
+     * transitions during retry, etc.) — history is a semantic record not a
+     * full doc snapshot.
+     */
+    private function _capForHistory(array $data): array
+    {
+        $keep = [
+            'route_id', 'route_name', 'stop_id', 'stop_name',
+            'type', 'monthly_fee', 'subscription_type', 'direction',
+            'fee_category', 'concession_id', 'hostel_transport_flag',
+            'service_days', 'session',
+            'suspended_from', 'suspended_until', 'status',
+        ];
+        $out = [];
+        foreach ($keep as $k) {
+            if (array_key_exists($k, $data)) {
+                $out[$k] = $data[$k];
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Bump the busCapacityCache current_count by ±1 (or larger delta for
+     * bulk ops). Self-heals when cache doc is missing by triggering a
+     * rebuild for the affected route.
+     */
+    private function _bumpCapacityCache(string $routeId, int $delta): void
+    {
+        if ($routeId === '' || $delta === 0) { return; }
+        $cacheId = "{$this->schoolId}_CAPCACHE_{$routeId}";
+        $cache   = $this->fs->getEntity(self::COL_BUS_CAPACITY_CACHE, $cacheId);
+        if (!is_array($cache)) {
+            // Cache missing — rebuild from source (which sets the correct count)
+            try { $this->rebuildCapacityCache($routeId); } catch (\Throwable $_) {}
+            return;
+        }
+        $current = (int) ($cache['current_count'] ?? 0);
+        $newCount = max(0, $current + $delta);
+        $this->fs->setEntity(self::COL_BUS_CAPACITY_CACHE, $cacheId, [
+            'current_count'   => $newCount,
+            'last_updated_at' => date('c'),
+        ], /* merge */ true);
+    }
+
     private function _emitSuspensionNotice(array $suspension, ?array $route, bool $isSuspend): string
     {
         try {

@@ -3481,6 +3481,45 @@
         { "fieldPath": "vehicle_id", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" }
       ]
+    },
+    {
+      "_comment": "TMS F3 (2026-07-07) — studentRoutes list by session ordered by student name",
+      "collectionGroup": "studentRoutes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "session", "order": "ASCENDING" },
+        { "fieldPath": "student_name", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "TMS F3 — route roster",
+      "collectionGroup": "studentRoutes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "session", "order": "ASCENDING" },
+        { "fieldPath": "route_id", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "TMS F3 — class-scoped roster",
+      "collectionGroup": "studentRoutes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "session", "order": "ASCENDING" },
+        { "fieldPath": "student_class", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "TMS F3 — pending fee reconciler + status filter",
+      "collectionGroup": "studentRoutes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "fee_demand_ref", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": [

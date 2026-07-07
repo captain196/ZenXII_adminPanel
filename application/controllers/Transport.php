@@ -36,16 +36,14 @@ class Transport extends MY_Controller
     {
         parent::__construct();
         require_permission('Operations');
-        $this->load->library('operations_accounting');
-        $this->operations_accounting->init(
-            $this->firebase, $this->school_name, $this->session_year, $this->admin_id, $this, $this->parent_db_key
-        );
+        // TMS F3 (2026-07-07): Operations_accounting load removed —
+        // F1 migrated vehicle allocation, F2 migrated route/stop, F3
+        // migrates assignments. No Transport code path uses
+        // Operations_accounting after F3. Keep Fee_lifecycle for
+        // assignment fee calls.
         $this->load->library('Fee_lifecycle', null, 'feeLifecycle');
         $this->feeLifecycle->init($this->firebase, $this->school_name, $this->session_year, $this->admin_id ?? 'system');
 
-        // TMS F1 (2026-07-07): Fleet endpoints delegate to Transport_service.
-        // Route / Stop / Assignment endpoints stay on operations_accounting for
-        // now — features F2 (Route) and F3 (Student Assignment) migrate them.
         $this->load->library('numbering_service', null, 'numbering');
         $this->numbering->init($this->fs, $this->school_name, $this->session_year);
         $this->load->library('transport_service', null, 'transport');
@@ -658,109 +656,64 @@ class Transport extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'transport_view');
         $this->_require_view();
-        // TMS Phase 0: schoolWhere auto-injects schoolId equality.
-        $rows = $this->fs->schoolWhere(self::COL_ASSIGNMENTS,
-            [], 'student_name', 'ASC');
-        $list = [];
-        foreach ((array) $rows as $doc) {
-            $a = is_array($doc) ? $doc : [];
-            $sid = (string) ($a['studentId'] ?? $a['student_id'] ?? '');
-            if ($sid === '') continue;
-            $a['student_id'] = $sid;
-            $list[] = $a;
-        }
-        $this->json_success(['assignments' => $list]);
+        // TMS F3 (2026-07-07): delegate to Transport_service. Filters:
+        // ?route_id, ?class, ?status, ?subscription_type, ?fee_category.
+        $filters = [
+            'route_id'          => trim($this->input->get('route_id') ?? ''),
+            'student_class'     => trim($this->input->get('class') ?? ''),
+            'status'            => trim($this->input->get('status') ?? ''),
+            'subscription_type' => trim($this->input->get('subscription_type') ?? ''),
+            'fee_category'      => trim($this->input->get('fee_category') ?? ''),
+        ];
+        $sessionFilter = trim($this->input->get('session') ?? $this->session_year);
+        $this->json_success(['assignments' => $this->transport->listAssignments($sessionFilter, $filters)]);
     }
 
     public function save_assignment()
     {
         $this->_require_role(self::MANAGE_ROLES, 'save_assignment');
         $this->_require_manage();
-        $studentId = $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id');
-        $routeId   = $this->safe_path_segment(trim($this->input->post('route_id') ?? ''), 'route_id');
-        $stopId    = trim($this->input->post('stop_id') ?? '');
-        $type      = trim($this->input->post('type') ?? 'both');
-
-        if ($studentId === '') $this->json_error('Please select a student.');
-        if ($routeId === '') $this->json_error('Please select a route.');
-        if ($stopId !== '') $stopId = $this->safe_path_segment($stopId, 'stop_id');
-        if (!in_array($type, ['pickup', 'drop', 'both'], true)) $type = 'both';
-
-        // Verify student via Firestore students collection.
-        $student = $this->fs->getEntity('students', $studentId);
-        if (!is_array($student)) $this->json_error('Student not found.');
-
-        // Verify route.
-        $route = $this->fs->getEntity(self::COL_ROUTES, $routeId);
-        if (!is_array($route)) $this->json_error('Route not found.');
-
-        // Verify stop belongs to selected route (if provided).
-        $stopName = '';
-        if ($stopId !== '') {
-            $stop = $this->fs->getEntity(self::COL_STOPS, $stopId);
-            if (!is_array($stop)) $this->json_error('Stop not found.');
-            if (($stop['route_id'] ?? '') !== $routeId) {
-                $this->json_error('Selected stop does not belong to the chosen route.');
-            }
-            $stopName = $stop['name'] ?? '';
-        }
-
-        // Check prior assignment (drives isUpdate branching for fee pro-rating).
-        $existing = $this->fs->getEntity(self::COL_ASSIGNMENTS, $studentId);
-        $isUpdate = is_array($existing);
-
-        $studentName  = $student['name']  ?? $student['Name']  ?? $studentId;
-        $studentClass = Firestore_service::classKey($student['class'] ?? $student['Class'] ?? '')
-                      . ' '
-                      . Firestore_service::sectionKey($student['section'] ?? $student['Section'] ?? '');
-
-        $data = [
-            'studentId'     => $studentId,
-            'route_id'      => $routeId,
-            'route_name'    => $route['name'] ?? '',
-            'stop_id'       => $stopId,
-            'stop_name'     => $stopName,
-            'type'          => $type,
-            'student_name'  => $studentName,
-            'student_class' => trim($studentClass),
-            'monthly_fee'   => (float) ($route['monthly_fee'] ?? 0),
-            'assigned_date' => $isUpdate ? ($existing['assigned_date'] ?? date('Y-m-d')) : date('Y-m-d'),
-            'assigned_by'   => $this->admin_name,
-            'status'        => 'Active',
-            'updated_at'    => date('c'),
+        // TMS F3 (2026-07-07): delegate to Transport_service::assignStudent
+        // with pre-write validation (student active in SIS, route
+        // operational, stop belongs to route, vehicle Active).
+        $sd = $this->input->post('service_days');
+        $sd = is_array($sd) ? $sd : (is_string($sd) && $sd !== '' ? explode(',', $sd) : null);
+        $input = [
+            'student_id'            => $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id'),
+            'route_id'              => $this->safe_path_segment(trim($this->input->post('route_id') ?? ''), 'route_id'),
+            'stop_id'               => trim($this->input->post('stop_id') ?? ''),
+            'type'                  => trim($this->input->post('type') ?? 'both'),
+            'subscription_type'     => trim($this->input->post('subscription_type') ?? 'Permanent'),
+            'direction'             => trim($this->input->post('direction') ?? ''),
+            'fee_category'          => trim($this->input->post('fee_category') ?? 'Standard'),
+            'concession_id'         => trim($this->input->post('concession_id') ?? ''),
+            'hostel_transport_flag' => ((string) ($this->input->post('hostel_transport_flag') ?? '')) === '1',
+            'effective_from'        => trim($this->input->post('effective_from') ?? ''),
+            'effective_to'          => trim($this->input->post('effective_to') ?? ''),
+            'season_start'          => trim($this->input->post('season_start') ?? ''),
+            'season_end'            => trim($this->input->post('season_end') ?? ''),
         ];
+        if ($sd !== null) { $input['service_days'] = array_map('trim', $sd); }
 
-        $this->fs->setEntity(self::COL_ASSIGNMENTS, $studentId, $data, /* merge */ true);
-
-        // Fee_lifecycle owns fee demand creation — it writes Firestore feeDemands directly.
         try {
-            if ($isUpdate) {
-                $this->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
-                $this->feeLifecycle->createModuleFee($studentId, 'Transport', [
-                    'route_id'   => $routeId,
-                    'route_name' => $route['name'] ?? '',
-                    'amount'     => (float) ($route['monthly_fee'] ?? 0),
-                    'period'     => 'Monthly',
-                    'start_date' => date('Y-m-d'),
-                ]);
-                log_message('info', "Fee_lifecycle: transport fee updated (route change) for student {$studentId} route {$routeId}");
-            } else {
-                $this->feeLifecycle->createModuleFee($studentId, 'Transport', [
-                    'route_id'   => $routeId,
-                    'route_name' => $route['name'] ?? '',
-                    'amount'     => (float) ($route['monthly_fee'] ?? 0),
-                    'period'     => 'Monthly',
-                    'start_date' => date('Y-m-d'),
-                    'end_date'   => '',
-                ]);
-                log_message('info', "Fee_lifecycle: transport fee created for student {$studentId} route {$routeId}");
-            }
-        } catch (Exception $e) {
-            log_message('error', "Fee_lifecycle::createModuleFee(Transport) failed for {$studentId}: " . $e->getMessage());
+            $result = $this->transport->assignStudent($input);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::save_assignment failed: ' . $e->getMessage());
+            $this->json_error('Failed to save assignment: ' . $e->getMessage());
         }
-
-        $action = $isUpdate ? 'updated' : 'assigned';
-        $this->json_success(['message' => "Student {$action} to route {$route['name']}."]);
+        $verb = $result['isNew'] ? 'assigned' : 'updated';
+        $suffix = ($result['fee_status'] === 'pending')
+            ? ' (fee demand pending — will retry).'
+            : '.';
+        $this->json_success([
+            'id'         => $result['id'],
+            'fee_status' => $result['fee_status'],
+            'message'    => "Student {$verb}{$suffix}",
+        ]);
     }
 
     public function delete_assignment()
@@ -768,19 +721,211 @@ class Transport extends MY_Controller
         $this->_require_role(self::MANAGE_ROLES, 'delete_assignment');
         $this->_require_manage();
         $studentId = $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id');
-
-        $existing = $this->fs->getEntity(self::COL_ASSIGNMENTS, $studentId);
-        if (!is_array($existing)) $this->json_error('No assignment found for this student.');
-
-        // Fee_lifecycle owns transport-fee cancellation — pro-rate to end-date.
+        $reason    = trim($this->input->post('reason') ?? 'unassigned via admin');
         try {
-            $this->feeLifecycle->proRateFees($studentId, date('Y-m-d'), 'Transport');
-        } catch (Exception $e) {
-            log_message('error', "Transport fee pro-rate failed for {$studentId}: " . $e->getMessage());
+            $this->transport->unassignStudent($studentId, $reason);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::delete_assignment failed: ' . $e->getMessage());
+            $this->json_error('Failed to remove assignment.');
         }
-
-        $this->fs->remove(self::COL_ASSIGNMENTS, $this->fs->docId($studentId));
         $this->json_success(['message' => 'Assignment removed.']);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  TMS F3 (2026-07-07) — Assignment lifecycle + bulk + history
+    // ═══════════════════════════════════════════════════════════════════
+
+    /** POST /transport/suspend_assignment — student_id, from, until, reason */
+    public function suspend_assignment()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'suspend_assignment');
+        $this->_require_manage();
+        try {
+            $this->transport->suspendAssignment(
+                $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id'),
+                trim($this->input->post('from')   ?? ''),
+                trim($this->input->post('until')  ?? ''),
+                trim($this->input->post('reason') ?? '')
+            );
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::suspend_assignment failed: ' . $e->getMessage());
+            $this->json_error('Failed to suspend assignment.');
+        }
+        $this->json_success(['message' => 'Assignment suspended.']);
+    }
+
+    /** POST /transport/resume_assignment — student_id, reason */
+    public function resume_assignment()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'resume_assignment');
+        $this->_require_manage();
+        try {
+            $this->transport->resumeAssignment(
+                $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id'),
+                trim($this->input->post('reason') ?? '')
+            );
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::resume_assignment failed: ' . $e->getMessage());
+            $this->json_error('Failed to resume assignment.');
+        }
+        $this->json_success(['message' => 'Assignment resumed.']);
+    }
+
+    /** POST /transport/change_stop — student_id, new_stop_id, reason */
+    public function change_stop()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'change_stop');
+        $this->_require_manage();
+        try {
+            $this->transport->changeStop(
+                $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id'),
+                $this->safe_path_segment(trim($this->input->post('new_stop_id') ?? ''), 'stop_id'),
+                trim($this->input->post('reason') ?? '')
+            );
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::change_stop failed: ' . $e->getMessage());
+            $this->json_error('Failed to change stop.');
+        }
+        $this->json_success(['message' => 'Stop changed.']);
+    }
+
+    /** POST /transport/change_route — student_id, new_route_id, new_stop_id, reason */
+    public function change_route()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'change_route');
+        $this->_require_manage();
+        try {
+            $this->transport->changeRoute(
+                $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id'),
+                $this->safe_path_segment(trim($this->input->post('new_route_id') ?? ''), 'route_id'),
+                trim($this->input->post('new_stop_id') ?? ''),
+                trim($this->input->post('reason') ?? '')
+            );
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::change_route failed: ' . $e->getMessage());
+            $this->json_error('Failed to change route.');
+        }
+        $this->json_success(['message' => 'Route changed.']);
+    }
+
+    /** POST /transport/change_subscription — student_id, new_type, params, reason */
+    public function change_subscription()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'change_subscription');
+        $this->_require_manage();
+        $params = [
+            'effective_from' => trim($this->input->post('effective_from') ?? ''),
+            'effective_to'   => trim($this->input->post('effective_to')   ?? ''),
+            'season_start'   => trim($this->input->post('season_start')   ?? ''),
+            'season_end'     => trim($this->input->post('season_end')     ?? ''),
+            'direction'      => trim($this->input->post('direction')      ?? ''),
+        ];
+        try {
+            $this->transport->changeSubscription(
+                $this->safe_path_segment(trim($this->input->post('student_id') ?? ''), 'student_id'),
+                trim($this->input->post('new_type') ?? ''),
+                $params,
+                trim($this->input->post('reason') ?? '')
+            );
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::change_subscription failed: ' . $e->getMessage());
+            $this->json_error('Failed to change subscription.');
+        }
+        $this->json_success(['message' => 'Subscription changed.']);
+    }
+
+    /**
+     * POST /transport/bulk_assign
+     * Params: rows_json (JSON array up to 500 rows). Each row:
+     *   {student_id, route_id, stop_id, type, subscription_type, ...}
+     */
+    public function bulk_assign()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'bulk_assign');
+        $this->_require_manage();
+        $raw  = trim($this->input->post('rows_json') ?? '');
+        if ($raw === '') {
+            $this->json_error('rows_json is required.');
+        }
+        $rows = json_decode($raw, true);
+        if (!is_array($rows)) {
+            $this->json_error('rows_json must be a JSON array.');
+        }
+        try {
+            $result = $this->transport->bulkAssignStudents($rows);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::bulk_assign failed: ' . $e->getMessage());
+            $this->json_error('Bulk assign failed.');
+        }
+        $this->json_success([
+            'batch_id'         => $result['batch_id'],
+            'assigned_count'   => $result['assigned_count'],
+            'skipped_capacity' => $result['skipped_capacity'],
+            'skipped_conflict' => $result['skipped_conflict'],
+            'errors'           => $result['errors'],
+            'message'          => "Bulk assign complete: {$result['assigned_count']} assigned",
+        ]);
+    }
+
+    /** GET /transport/get_assignment_history?student_id=STU0007 */
+    public function get_assignment_history()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_view();
+        $sid = $this->safe_path_segment(trim($this->input->get('student_id') ?? ''), 'student_id');
+        $this->json_success(['history' => $this->transport->getAssignmentHistory($sid)]);
+    }
+
+    /** POST /transport/reconcile_pending_fees — admin trigger */
+    public function reconcile_pending_fees()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'reconcile_pending_fees');
+        $this->_require_manage();
+        try {
+            $r = $this->transport->reconcilePendingFees();
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::reconcile_pending_fees failed: ' . $e->getMessage());
+            $this->json_error('Reconciliation failed.');
+        }
+        $this->json_success([
+            'retried'       => $r['retried'],
+            'still_pending' => $r['still_pending'],
+            'message'       => "Reconciled: {$r['retried']} retried, {$r['still_pending']} still pending",
+        ]);
+    }
+
+    /** POST /transport/rebuild_capacity_cache — admin trigger (Refinement #2) */
+    public function rebuild_capacity_cache()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'rebuild_capacity_cache');
+        $this->_require_manage();
+        $routeId = trim($this->input->post('route_id') ?? '');
+        try {
+            $r = $this->transport->rebuildCapacityCache($routeId);
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::rebuild_capacity_cache failed: ' . $e->getMessage());
+            $this->json_error('Capacity cache rebuild failed.');
+        }
+        $this->json_success([
+            'rebuilt_count' => $r['rebuilt_count'],
+            'message'       => "Capacity cache rebuilt for {$r['rebuilt_count']} route(s).",
+        ]);
     }
 
     /** GET — Search students for assignment. ?q=name */

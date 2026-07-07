@@ -132,11 +132,22 @@ $tab_map = [
     </div>
   </div>
 
-  <!-- ASSIGNMENTS -->
+  <!-- ASSIGNMENTS (F3 extended) -->
   <div class="trn-panel<?= $at === 'assignments' ? ' active' : '' ?>" id="panelAssignments">
     <div class="trn-card">
-      <div class="trn-card-title"><span>Student Transport Assignments</span><button class="trn-btn trn-btn-primary" onclick="TRN.openAsnModal()"><i class="fa fa-plus"></i> Assign Student</button></div>
-      <table class="trn-table"><thead><tr><th>Student</th><th>Class</th><th>Route</th><th>Stop</th><th>Type</th><th>Fee/Month</th><th>Assigned</th><th>Actions</th></tr></thead><tbody id="asnTbody"></tbody></table>
+      <div class="trn-card-title">
+        <span>Student Transport Assignments</span>
+        <div style="display:flex;gap:6px">
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.openBulkAssign()"><i class="fa fa-list"></i> Bulk Assign</button>
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.openRollover()"><i class="fa fa-refresh"></i> Session Rollover</button>
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.reconcilePendingFees()" title="Retry any pending fee demands"><i class="fa fa-wrench"></i> Reconcile Fees</button>
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.rebuildCapacityCache()" title="Rebuild capacity cache from source"><i class="fa fa-database"></i> Rebuild Cache</button>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openAsnModal()"><i class="fa fa-plus"></i> Assign Student</button>
+        </div>
+      </div>
+      <table class="trn-table"><thead><tr>
+        <th>Student</th><th>Class</th><th>Route</th><th>Stop</th><th>Subscription</th><th>Fee/Month</th><th>Status</th><th>Actions</th>
+      </tr></thead><tbody id="asnTbody"></tbody></table>
     </div>
   </div>
 </div></section></div>
@@ -201,6 +212,12 @@ $tab_map = [
 
 <!-- F2 Suspension + Archive modals (partial) -->
 <?php $this->load->view('transport/partials/route_suspension_modal'); ?>
+
+<!-- F3 Bulk assign + history + change + suspend modals -->
+<?php $this->load->view('transport/partials/bulk_assign_modal'); ?>
+
+<!-- F3 Session rollover modal -->
+<?php $this->load->view('transport/partials/rollover_modal'); ?>
 
 
 <!-- ROUTE MODAL -->
@@ -699,15 +716,35 @@ document.addEventListener('DOMContentLoaded', function(){
   TRN.saveStop=function(){post('transport/save_stop',{id:$('#stId').val(),route_id:$('#stRouteId').val(),name:$('#stName').val(),pickup_time:$('#stPickup').val(),drop_time:$('#stDrop').val(),order:$('#stOrder').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeStopModal();loadStops()}else toast(r.message,false)})};
   TRN.delStop=function(id){if(!confirm('Delete stop?'))return;post('transport/delete_stop',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadStops()}else toast(r.message,false)})};
 
-  // ── Assignments ──
+  // ── Assignments (F3 extended) ──
   var assignments=[];
   function loadAssignments(){
     getJSON('transport/get_assignments').done(function(r){
       if(r.status!=='success') return; assignments=r.assignments||[];
       var html=''; assignments.forEach(function(a){
-        var typeBadge=a.type==='both'?'Pickup & Drop':a.type==='pickup'?'Pickup Only':'Drop Only';
-        html+='<tr><td>'+escH(a.student_name)+'</td><td>'+escH(a.student_class)+'</td><td>'+escH(a.route_name)+'</td><td>'+escH(a.stop_name||'—')+'</td><td><span class="trn-badge trn-badge-blue">'+typeBadge+'</span></td><td>Rs '+a.monthly_fee+'</td><td>'+escH(a.assigned_date)+'</td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editAsn(\''+a.student_id+'\')"><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delAsn(\''+a.student_id+'\')"><i class="fa fa-times"></i></button></td></tr>';
+        var subs = a.subscription_type || 'Permanent';
+        var subCls = subs==='Permanent'?'trn-badge-green':subs==='Temporary'?'trn-badge-amber':subs==='Seasonal'?'trn-badge-blue':'trn-badge-blue';
+        var isSuspended = (a.suspended_from||'')!=='';
+        var status = isSuspended?'Suspended':(a.status||'Active');
+        var stCls = isSuspended?'trn-badge-amber':status==='Active'?'trn-badge-green':'trn-badge-red';
+        var feeIsPending = a.fee_demand_ref==='pending';
+        var feeSuffix = feeIsPending?' <small style="color:var(--rose)">(pending)</small>':'';
+        html+='<tr><td>'+escH(a.student_name)+'</td><td>'+escH(a.student_class)+'</td><td>'+escH(a.route_name)+'</td><td>'+escH(a.stop_name||'—')+'</td>';
+        html+='<td><span class="trn-badge '+subCls+'">'+escH(subs)+'</span></td>';
+        html+='<td>Rs '+a.monthly_fee+feeSuffix+'</td>';
+        html+='<td><span class="trn-badge '+stCls+'">'+status+'</span></td>';
+        html+='<td>';
+        html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editAsn(\''+a.student_id+'\')" title="Edit"><i class="fa fa-pencil"></i></button> ';
+        html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openHistory(\''+a.student_id+'\',\''+escH(a.student_name)+'\')" title="History"><i class="fa fa-history"></i></button> ';
+        if (isSuspended) {
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.resumeAsn(\''+a.student_id+'\')" title="Resume"><i class="fa fa-play"></i></button> ';
+        } else {
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openChange(\''+a.student_id+'\',\'route\')" title="Change Route"><i class="fa fa-exchange"></i></button> ';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openChange(\''+a.student_id+'\',\'stop\')" title="Change Stop"><i class="fa fa-map-marker"></i></button> ';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSuspendAsn(\''+a.student_id+'\')" title="Suspend"><i class="fa fa-pause"></i></button> ';
+        }
+        html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delAsn(\''+a.student_id+'\')" title="Unassign"><i class="fa fa-times"></i></button>';
+        html+='</td></tr>';
       });
       $('#asnTbody').html(html||'<tr><td colspan="8" style="text-align:center;color:var(--t3)">No assignments</td></tr>');
     });
@@ -754,7 +791,192 @@ document.addEventListener('DOMContentLoaded', function(){
     var sid=$('#asnStudentId').val();if(!sid){toast('Please select a student.',false);return}
     var rid=$('#asnRouteId').val();if(!rid){toast('Please select a route.',false);return}
     post('transport/save_assignment',{student_id:sid,route_id:rid,stop_id:$('#asnStopId').val(),type:$('#asnType').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeAsnModal();loadAssignments()}else toast(r.message,false)})};
-  TRN.delAsn=function(sid){if(!confirm('Remove transport assignment?'))return;post('transport/delete_assignment',{student_id:sid}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadAssignments()}else toast(r.message,false)})};
+  TRN.delAsn=function(sid){
+    if(!confirm('Remove transport assignment?'))return;
+    var reason = prompt('Reason (optional):','unassigned via admin');
+    post('transport/delete_assignment',{student_id:sid,reason:reason||''}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadAssignments()}else toast(r.message,false)});
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  F3 Assignment lifecycle
+  // ═════════════════════════════════════════════════════════════════════
+  TRN.openBulkAssign=function(){$('#baRowsJson,#baResult').val('');$('#baResult').html('');$('#bulkAssignModal').addClass('show')};
+  TRN.closeBulkAssign=function(){$('#bulkAssignModal').removeClass('show')};
+  TRN.doBulkAssign=function(){
+    var raw=$('#baRowsJson').val().trim();
+    if(!raw){toast('Paste a JSON rows array.',false);return}
+    try { JSON.parse(raw); } catch(e){toast('Invalid JSON: '+e.message,false);return}
+    $('#baResult').html('<div style="color:var(--t3)">Processing...</div>');
+    post('transport/bulk_assign',{rows_json:raw}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){
+        var html='<div style="font-family:var(--font-b);font-size:13px">';
+        html+='<b>Batch:</b> '+escH(r.batch_id)+'<br>';
+        html+='<b>Assigned:</b> '+r.assigned_count+'<br>';
+        if(r.skipped_capacity.length) html+='<b style="color:var(--rose)">Capacity-skipped:</b> '+r.skipped_capacity.length+'<br>';
+        if(r.skipped_conflict.length) html+='<b style="color:var(--rose)">Conflict-skipped:</b> '+r.skipped_conflict.length+'<br>';
+        if(r.errors.length) html+='<b style="color:var(--rose)">Errors:</b> '+r.errors.length+'<br>';
+        html+='</div>';
+        $('#baResult').html(html);
+        loadAssignments();
+      } else toast(r.message,false);
+    });
+  };
+
+  TRN.openHistory=function(sid,name){
+    $('#ahStudent').text('— '+name);
+    $('#ahTbody').html('<tr><td colspan="6" style="text-align:center;color:var(--t3)">Loading...</td></tr>');
+    getJSON('transport/get_assignment_history?student_id='+encodeURIComponent(sid)).done(function(r){
+      if(r.status!=='success')return;
+      var html='';
+      (r.history||[]).forEach(function(e){
+        html+='<tr><td>'+escH(e.event_type)+'</td><td>'+escH((e.event_at||'').slice(0,16).replace('T',' '))+'</td><td>'+escH(e.event_by||'')+'</td><td>'+escH(e.source||'')+'</td><td>'+escH(e.batch_id||'')+'</td><td>'+escH(e.reason||'')+'</td></tr>';
+      });
+      $('#ahTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No history</td></tr>');
+    });
+    $('#asnHistoryModal').addClass('show');
+  };
+  TRN.closeHistory=function(){$('#asnHistoryModal').removeClass('show')};
+
+  TRN.openChange=function(sid,mode){
+    $('#acStudentId').val(sid);$('#acMode').val(mode);
+    $('#acTitle').text(mode==='route'?'Change Route':'Change Stop');
+    $('#acRouteField').toggle(mode==='route');
+    var a=assignments.find(function(x){return x.student_id===sid});
+    if(!a){toast('Assignment not found.',false);return}
+    if(mode==='route'){
+      var opts='<option value="">-- Select --</option>';
+      routes.forEach(function(rt){if(rt.status!=='Archived'&&rt.id!==a.route_id)opts+='<option value="'+rt.id+'">'+escH(rt.name)+'</option>'});
+      $('#acRouteId').html(opts);
+      $('#acStopId').html('<option value="">-- Select route first --</option>');
+    } else {
+      // Populate stops for current route
+      getJSON('transport/get_stops?route_id='+encodeURIComponent(a.route_id)).done(function(r){
+        var opts='<option value="">-- Select --</option>';
+        (r.stops||[]).forEach(function(s){if(s.id!==a.stop_id)opts+='<option value="'+s.id+'">'+escH(s.name)+'</option>'});
+        $('#acStopId').html(opts);
+      });
+    }
+    $('#acReason').val('');
+    $('#asnChangeModal').addClass('show');
+  };
+  TRN.acRouteChanged=function(){
+    var rid=$('#acRouteId').val();
+    if(!rid){$('#acStopId').html('<option value="">-- Select route first --</option>');return}
+    getJSON('transport/get_stops?route_id='+encodeURIComponent(rid)).done(function(r){
+      var opts='<option value="">-- Select --</option>';
+      (r.stops||[]).forEach(function(s){opts+='<option value="'+s.id+'">'+escH(s.name)+'</option>'});
+      $('#acStopId').html(opts);
+    });
+  };
+  TRN.closeChange=function(){$('#asnChangeModal').removeClass('show')};
+  TRN.doChange=function(){
+    var sid=$('#acStudentId').val();var mode=$('#acMode').val();var reason=$('#acReason').val();
+    if(!reason){toast('Reason required.',false);return}
+    if(mode==='route'){
+      var rid=$('#acRouteId').val();var stopId=$('#acStopId').val();
+      if(!rid){toast('Select new route.',false);return}
+      post('transport/change_route',{student_id:sid,new_route_id:rid,new_stop_id:stopId,reason:reason}).done(function(r){
+        r=typeof r==='string'?JSON.parse(r):r;
+        if(r.status==='success'){toast(r.message,true);TRN.closeChange();loadAssignments();}else toast(r.message,false);
+      });
+    } else {
+      var stopId=$('#acStopId').val();
+      if(!stopId){toast('Select new stop.',false);return}
+      post('transport/change_stop',{student_id:sid,new_stop_id:stopId,reason:reason}).done(function(r){
+        r=typeof r==='string'?JSON.parse(r):r;
+        if(r.status==='success'){toast(r.message,true);TRN.closeChange();loadAssignments();}else toast(r.message,false);
+      });
+    }
+  };
+
+  TRN.openSuspendAsn=function(sid){
+    $('#sasStudentId').val(sid);
+    $('#sasFrom').val(new Date().toISOString().slice(0,10));
+    $('#sasUntil,#sasReason').val('');
+    $('#asnSuspendModal').addClass('show');
+  };
+  TRN.closeSuspendAsn=function(){$('#asnSuspendModal').removeClass('show')};
+  TRN.doSuspendAsn=function(){
+    var sid=$('#sasStudentId').val();var from=$('#sasFrom').val();var until=$('#sasUntil').val();var reason=$('#sasReason').val();
+    if(!from||!reason){toast('From date and reason required.',false);return}
+    post('transport/suspend_assignment',{student_id:sid,from:from,until:until,reason:reason}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);TRN.closeSuspendAsn();loadAssignments();}else toast(r.message,false);
+    });
+  };
+  TRN.resumeAsn=function(sid){
+    var reason=prompt('Resume reason (optional):','resumed');
+    post('transport/resume_assignment',{student_id:sid,reason:reason||''}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);loadAssignments();}else toast(r.message,false);
+    });
+  };
+
+  TRN.reconcilePendingFees=function(){
+    if(!confirm('Retry any pending fee demands for assignments?'))return;
+    post('transport/reconcile_pending_fees',{}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);loadAssignments();}else toast(r.message,false);
+    });
+  };
+
+  TRN.rebuildCapacityCache=function(){
+    if(!confirm('Rebuild capacity cache from source data? (This iterates all routes and counts current assignments.)'))return;
+    post('transport/rebuild_capacity_cache',{route_id:''}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);loadAssignments();}else toast(r.message,false);
+    });
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  F3 Session rollover (auto-continuing)
+  // ═════════════════════════════════════════════════════════════════════
+  TRN.openRollover=function(){
+    $('#roFrom,#roTo').val('');
+    $('#roStatus').hide().text('');
+    $('#roStartBtn').text('Start Rollover').prop('disabled',false);
+    $('#rolloverModal').addClass('show');
+  };
+  TRN.closeRollover=function(){$('#rolloverModal').removeClass('show')};
+  TRN.startRollover=function(){
+    var from=$('#roFrom').val().trim();var to=$('#roTo').val().trim();
+    if(!from||!to){toast('Both from and to sessions are required.',false);return}
+    if(from===to){toast('From and to sessions must differ.',false);return}
+    if(!confirm('Roll over ALL transport assignments from '+from+' to '+to+'? This cannot be easily undone.'))return;
+    $('#roStartBtn').text('Processing...').prop('disabled',true);
+    TRN.rolloverPump(from,to);
+  };
+  TRN.rolloverPump=function(from,to){
+    // Auto-continuing pump — invokes /start (idempotent, resumes via checkpoint)
+    // in a loop until status='complete' or an error.
+    post('transport_rollover/start',{from_session:from,to_session:to}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status!=='success'){
+        $('#roStartBtn').text('Retry').prop('disabled',false);
+        $('#roStatus').show().html('<span style="color:var(--rose)">'+escH(r.message||'Failed')+'</span>');
+        return;
+      }
+      var st=r.status||'';
+      $('#roStatus').show().html('<b>Status:</b> '+escH(st)+' — <b>Processed:</b> '+r.processed+' — <b>Batch:</b> '+escH(r.batch_id||''));
+      if(st==='complete'){
+        $('#roStartBtn').text('Done').prop('disabled',true);
+        toast(r.message,true);
+        loadAssignments();
+        return;
+      }
+      if(st==='in_progress'){
+        // Auto-continue (Refinement #1) — no admin interaction required
+        setTimeout(function(){TRN.rolloverPump(from,to)},500);
+        return;
+      }
+      // 'error' or unknown
+      $('#roStartBtn').text('Retry').prop('disabled',false);
+    }).fail(function(){
+      $('#roStartBtn').text('Retry').prop('disabled',false);
+      $('#roStatus').show().html('<span style="color:var(--rose)">Network error — click Retry.</span>');
+    });
+  };
 
   // Init
   // F1 (2026-07-07): load vendors FIRST so the vendor picker inside the

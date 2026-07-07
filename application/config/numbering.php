@@ -389,8 +389,9 @@ $config['numbering'] = [
         'trn_route'                => 'enabled',
         'trn_stop'                 => 'enabled',
         'trn_route_suspension'     => 'enabled',
+        // Feature F3 (Student Assignment) cutover 2026-07-07:
+        'trn_assignment_history'   => 'enabled',
         // Still disabled — future features:
-        'trn_assignment_history'   => 'disabled',
         'trn_trip'                 => 'disabled',
         'trn_expense'              => 'disabled',
         'trn_driver_incident'      => 'disabled',

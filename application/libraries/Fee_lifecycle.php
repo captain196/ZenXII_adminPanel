@@ -364,7 +364,14 @@ class Fee_lifecycle
             $built = $this->_routedBuildAdmissionSpecs($studentId, $class, $section);
 
             if (!$built['chartFound']) {
-                log_message('info', "Fee_lifecycle::assignInitialFees — no Firestore feeStructure for [{$class}/{$section}] student [{$studentId}]");
+                // Visibility fix: a missing fee structure at admission time
+                // means this student silently gets ZERO demands (bills) and
+                // is unpayable at the counter until someone re-saves the
+                // class Fee Structure or runs Generate Demands. Raise to
+                // 'warning' (was 'info') so it's monitorable, and make the
+                // remedy explicit. Admission still succeeds — this is a
+                // best-effort, non-fatal signal.
+                log_message('warning', "Fee_lifecycle::assignInitialFees — NO fee structure for [{$class}/{$section}]; student [{$studentId}] admitted with ZERO fee demands. Set up fees for this class then run Generate Demands (or re-save the Fee Structure) to bill this student.");
                 return [];
             }
 
@@ -667,6 +674,71 @@ class Fee_lifecycle
      * The demand is categorised so clearance checks + reports can group
      * it correctly.
      */
+    /**
+     * TMS F3 (2026-07-07) — cancel all outstanding demands for a specific
+     * student in a specific session for the given module.
+     *
+     * Used by Transport session rollover to clean up the old session's
+     * transport demands before creating new session's demands. Preserves
+     * historical demand records (never deletes) — flips status to 'cancelled'
+     * and records the cancellation actor + reason.
+     *
+     * The session parameter is the Indian academic session (e.g. "2026-27");
+     * internally maps to the periodKey format createModuleFee wrote.
+     *
+     * @return int Number of demands cancelled.
+     */
+    public function cancelSessionDemands(string $studentId, string $session, string $moduleType = 'Transport', string $reason = 'session_rollover'): int
+    {
+        if ($studentId === '' || $session === '' || $moduleType === '') {
+            return 0;
+        }
+        // Session periodKey — Transport demands created via createModuleFee
+        // use format YYYY-04 (Indian FY start month).
+        $year = (int) substr($session, 0, 4);
+        $periodKey = sprintf('%04d-%02d', $year, self::ACADEMIC_START_MONTH);
+
+        try {
+            $rows = (array) $this->fs->schoolWhere('feeDemands', [
+                ['studentId', '==', $studentId],
+                ['category',  '==', $moduleType],
+                ['periodKey', '==', $periodKey],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'Fee_lifecycle::cancelSessionDemands query failed: ' . $e->getMessage());
+            return 0;
+        }
+        $cancelled = 0;
+        foreach ($rows as $row) {
+            if (!is_array($row)) { continue; }
+            $status = (string) ($row['status'] ?? '');
+            if ($status === 'cancelled' || $status === 'paid') {
+                continue;   // don't cancel already-paid or already-cancelled
+            }
+            $demandId = (string) ($row['demandId'] ?? $row['id'] ?? '');
+            if ($demandId === '') { continue; }
+            try {
+                $this->fsTxn->writeDemand($demandId, [
+                    'status'        => 'cancelled',
+                    'cancelledAt'   => date('c'),
+                    'cancelledBy'   => $this->adminId,
+                    'cancelReason'  => $reason,
+                    'updatedAt'     => date('c'),
+                ]);
+                $cancelled++;
+            } catch (\Throwable $e) {
+                log_message('warning', 'Fee_lifecycle::cancelSessionDemands writeDemand failed for ' . $demandId . ': ' . $e->getMessage());
+            }
+        }
+        $this->_log('session_demands_cancelled', $studentId, [
+            'module'    => $moduleType,
+            'session'   => $session,
+            'cancelled' => $cancelled,
+            'reason'    => $reason,
+        ]);
+        return $cancelled;
+    }
+
     public function createModuleFee(string $studentId, string $moduleType, array $feeData): ?string
     {
         try {
