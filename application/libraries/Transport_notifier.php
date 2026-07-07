@@ -61,10 +61,11 @@ class Transport_notifier
     public const PRIORITY_IMPORTANT = 'Important';
     public const PRIORITY_URGENT    = 'Urgent';
 
-    public const SCOPE_OPS                = 'ops';
-    public const SCOPE_PARENTS_OF_ROUTE   = 'parents_of_route';
-    public const SCOPE_PARENTS_OF_VEHICLE = 'parents_of_vehicle';
-    public const SCOPE_STAFF_ADMIN_ONLY   = 'staff_admin_only';
+    public const SCOPE_OPS                 = 'ops';
+    public const SCOPE_PARENTS_OF_ROUTE    = 'parents_of_route';
+    public const SCOPE_PARENTS_OF_VEHICLE  = 'parents_of_vehicle';
+    public const SCOPE_PARENTS_OF_STUDENTS = 'parents_of_students';   // F7
+    public const SCOPE_STAFF_ADMIN_ONLY    = 'staff_admin_only';
 
     /**
      * The 18 canonical F6 categories. Every emitter must reference one of
@@ -96,6 +97,10 @@ class Transport_notifier
         // Trip (F6 - admin-fired MVP; F9 adds teacher-fired)
         'trip.delay',
         'trip.disruption',
+        // Trip lifecycle + boarding (F7, 2026-07-07)
+        'trip.started',
+        'trip.completed',
+        'trip.student_no_show',
     ];
 
     /**
@@ -135,6 +140,10 @@ class Transport_notifier
         // Trip
         'trip.delay'                      => self::PRIORITY_IMPORTANT,
         'trip.disruption'                 => self::PRIORITY_URGENT,
+        // F7 (2026-07-07) — trip lifecycle + boarding
+        'trip.started'                    => self::PRIORITY_NORMAL,
+        'trip.completed'                  => self::PRIORITY_NORMAL,
+        'trip.student_no_show'            => self::PRIORITY_IMPORTANT,
     ];
 
     /**
@@ -159,6 +168,10 @@ class Transport_notifier
         'sos.resolved'                    => self::SCOPE_OPS,
         'trip.delay'                      => self::SCOPE_PARENTS_OF_ROUTE,
         'trip.disruption'                 => self::SCOPE_PARENTS_OF_ROUTE,
+        // F7 (2026-07-07)
+        'trip.started'                    => self::SCOPE_OPS,
+        'trip.completed'                  => self::SCOPE_OPS,
+        'trip.student_no_show'            => self::SCOPE_PARENTS_OF_STUDENTS,
     ];
 
     /**
@@ -182,6 +195,9 @@ class Transport_notifier
         'sos.raised'                  => ['Admin', 'Transport Manager', 'Principal'],
         'sos.responded'               => ['Admin', 'Transport Manager'],
         'sos.resolved'                => ['Admin', 'Transport Manager'],
+        // F7 (2026-07-07) — trip lifecycle ops audiences
+        'trip.started'                => ['Admin', 'Transport Manager'],
+        'trip.completed'              => ['Admin', 'Transport Manager'],
     ];
 
     /**
@@ -208,6 +224,13 @@ class Transport_notifier
         'sos.resolved'                    => 60,
         'trip.delay'                      => 900,     // 15min
         'trip.disruption'                 => 900,
+        // F7 (2026-07-07) — trip lifecycle + no-show
+        'trip.started'                    => 300,     // 5min guard on double-start UI
+        'trip.completed'                  => 300,     // 5min guard on double-complete UI
+        // trip.student_no_show intentionally OMITTED — never dedupe a
+        // per-student no-show notification (Refinement 4 + safety
+        // exemption: a repeat no-show for the same student on a fresh
+        // trip must always reach the parent).
         // sos.raised + driver.critical_incident intentionally OMITTED —
         // never dedupe safety events.
     ];
@@ -336,6 +359,9 @@ class Transport_notifier
                 break;
             case self::SCOPE_PARENTS_OF_VEHICLE:
                 $result = $this->_fanoutParentsOfVehicle($category, $priority, $title, $body, $mergedContext, $firedBy, $firedRol);
+                break;
+            case self::SCOPE_PARENTS_OF_STUDENTS:
+                $result = $this->_fanoutParentsOfStudents($category, $priority, $title, $body, $mergedContext, $firedBy, $firedRol);
                 break;
             default:
                 throw new \LogicException("Transport_notifier: unknown scope '{$scope}'.");
@@ -683,6 +709,35 @@ class Transport_notifier
     }
 
     /**
+     * parents_of_students fanout (F7) — accept an explicit student_ids
+     * list, resolve each to parent userId, then reuse the shared
+     * per-user notifications-collection fanout path.
+     */
+    private function _fanoutParentsOfStudents(
+        string $category, string $priority, string $title, string $body,
+        array $ctx, string $firedBy, string $firedByRole
+    ): array {
+        $studentIds = (array) ($ctx['student_ids'] ?? []);
+        if ($studentIds === [] && !empty($ctx['student_id'])) {
+            $studentIds = [(string) $ctx['student_id']];
+        }
+        $studentIds = array_values(array_unique(array_filter(array_map('strval', $studentIds))));
+        if ($studentIds === []) {
+            return ['emitted' => false, 'notice_id' => '', 'per_user_count' => 0, 'dedupe_skipped' => false, 'notified_user_ids' => []];
+        }
+        $userIds = [];
+        foreach ($studentIds as $sid) {
+            try {
+                $stu = $this->fs->getEntity('students', $sid);
+                if (!is_array($stu)) { continue; }
+                $pid = (string) ($stu['parent_db_key'] ?? $stu['parentId'] ?? $stu['parent_id'] ?? '');
+                if ($pid !== '') { $userIds[$pid] = true; }
+            } catch (\Throwable $_) {}
+        }
+        return $this->_fanoutNotifications($category, $priority, $title, $body, $ctx, array_keys($userIds), $firedBy, $firedByRole);
+    }
+
+    /**
      * Write per-parent notifications docs in chunks (Firestore 500-write
      * limit per batch). Also fires per-user push best-effort via
      * Push_service::sendToUser if available.
@@ -998,6 +1053,39 @@ class Transport_notifier
                     "Route: "  . (string) ($ctx['route_name'] ?? $ctx['route_id'] ?? '')
                     . "\nReason: " . (string) ($ctx['reason'] ?? '')
                     . "\nAction: " . (string) ($ctx['action_taken'] ?? 'Alternate arrangements being made.'),
+                ];
+            case 'trip.started':
+                return [
+                    "Transport trip started — " . (string) ($ctx['trip_id'] ?? ''),
+                    "Trip: "     . (string) ($ctx['trip_id'] ?? '')
+                    . "\nRoute: "  . (string) ($ctx['route_id'] ?? '')
+                    . "\nVehicle: ". (string) ($ctx['vehicle_id'] ?? '')
+                    . "\nDriver: " . (string) ($ctx['driver_id'] ?? '')
+                    . "\nDirection: " . (string) ($ctx['direction'] ?? '')
+                    . "\nDate: "   . (string) ($ctx['trip_date'] ?? '')
+                    . "\nRoster: " . (int)    ($ctx['roster_size'] ?? 0) . ' students',
+                ];
+            case 'trip.completed':
+                return [
+                    "Transport trip completed — " . (string) ($ctx['trip_id'] ?? ''),
+                    "Trip: "        . (string) ($ctx['trip_id'] ?? '')
+                    . "\nRoute: "     . (string) ($ctx['route_id'] ?? '')
+                    . "\nDriver: "    . (string) ($ctx['driver_id'] ?? '')
+                    . "\nDate: "      . (string) ($ctx['trip_date'] ?? '')
+                    . "\nDuration: "  . (int) ($ctx['duration_minutes'] ?? 0) . ' min'
+                    . "\nDistance: "  . (float) ($ctx['distance_km'] ?? 0) . ' km'
+                    . "\nOn-time: "   . ((bool) ($ctx['on_time'] ?? false) ? 'yes' : 'no')
+                    . "\nBoarded: "   . (int) ($ctx['boarded'] ?? 0)
+                    . "\nNo-shows: "  . (int) ($ctx['no_show'] ?? 0),
+                ];
+            case 'trip.student_no_show':
+                return [
+                    "Your child did not board the bus today",
+                    "Route: "  . (string) ($ctx['route_name'] ?? $ctx['route_id'] ?? '')
+                    . "\nDate: "  . (string) ($ctx['trip_date'] ?? '')
+                    . "\nDirection: " . (string) ($ctx['direction'] ?? '')
+                    . "\n\nIf your child took an alternate transport home, please ignore this message. "
+                    . "If not, please contact the school Transport Office.",
                 ];
         }
         return ['Transport notification', json_encode($ctx)];

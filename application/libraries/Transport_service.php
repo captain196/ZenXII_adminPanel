@@ -305,6 +305,7 @@ class Transport_service
             self::COL_ROUTE_ASSIGNMENTS,
             self::COL_ROUTE_ASSIGNMENT_HISTORY,
             self::COL_TRIP_LOGS,
+            self::COL_TRANSPORT_ATTENDANCE,
             self::COL_MAINTENANCE_LOGS,
             self::COL_FUEL_LOGS,
             self::COL_TRANSPORT_EXPENSES,
@@ -3805,23 +3806,27 @@ class Transport_service
         ];
         if ($staffId === '' || $from === '' || $to === '') { return $snap; }
 
-        // Trip aggregates (F7 populates tripLogs; empty until then)
+        // Trip aggregates. F7 (2026-07-07) landed tripLogs with a schema
+        // that dual-carries Kotlin-canonical fields (`date`, `distance`)
+        // + PHP additive aliases (`trip_date`, `distance_km`). Reader
+        // prefers additive keys for backward compat with any older writes
+        // and falls back to the Kotlin fields.
         try {
             $trips = (array) $this->fs->schoolWhere(
                 self::COL_TRIP_LOGS,
                 [
                     ['driver_staff_id', '==', $staffId],
-                    ['trip_date', '>=', $from],
-                    ['trip_date', '<=', $to],
+                    ['date', '>=', $from],
+                    ['date', '<=', $to],
                 ]
             );
             $tripsNorm = [];
             foreach ($trips as $t) {
-                $t = $this->_unwrapNestedRow($t, 'trip_date');
+                $t = $this->_unwrapNestedRow($t, 'date');
                 if (!is_array($t)) { continue; }
                 $tripsNorm[] = $t;
                 $snap['trips_count']++;
-                $snap['total_km'] += (int) ($t['distance_km'] ?? 0);
+                $snap['total_km'] += (int) ($t['distance_km'] ?? $t['distance'] ?? 0);
             }
             if ($snap['trips_count'] > 0) {
                 $onTimeTrips = 0;
@@ -3830,7 +3835,7 @@ class Transport_service
                 }
                 $snap['on_time_pct'] = round(($onTimeTrips / $snap['trips_count']) * 100, 1);
             }
-        } catch (\Throwable $_) { /* tripLogs unavailable — F7 not yet shipped */ }
+        } catch (\Throwable $_) { /* tripLogs unavailable — driver has no trips in window */ }
 
         // Incident aggregates
         try {
@@ -5319,6 +5324,793 @@ class Transport_service
             'total_amount'          => (float)  ($expense['total_amount'] ?? 0),
             'accounting_last_error' => (string) ($expense['accounting_last_error'] ?? ''),
         ]);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  DOMAIN_TRIP (F7, 2026-07-07) — Trip Logs + Transport Attendance
+    // ═════════════════════════════════════════════════════════════════════
+    //
+    // Feature F7 delivers LC-17 (tripLogs) + LC-18 (transportAttendance).
+    // The design is GPS-NATIVE from day 0 per operator directive: every
+    // trip/checkpoint/boarding-event has first-class extension points for
+    // the dedicated GPS phase (session id, location refs, geofence radii,
+    // ETA + route-progress fields, correlation IDs). F7 itself writes NULL
+    // to all live-position fields — verifier CH-TRN-F7-1 enforces this —
+    // so the GPS phase adds telemetry acquisition, not schema redesign.
+    //
+    // Lifecycle (operator Refinement + additional 2026-07-07):
+    //   Ready → InProgress → Completed | Cancelled
+    //   Ready → Cancelled
+    //
+    // Ready is the dispatch-preparation state: roster snapshotted, driver
+    // resolved via _effectiveDriverStaffId (F4 temp overlay), checkpoints
+    // frozen from route's stop list, but actual_start_at not set. Aligns
+    // naturally with GPS session establishment in Phase 5.
+    //
+    // Ownership boundary: Transport writes to transportAttendance ONLY.
+    // The core `attendance` collection remains owned by class teachers —
+    // Transport does NOT auto-mark daily attendance from boarding events.
+
+    // Trip lifecycle states
+    public const TRIP_STATUSES     = ['Ready', 'InProgress', 'Completed', 'Cancelled'];
+    private const TRIP_ACTIVE_STATUSES = ['Ready', 'InProgress'];
+    private const TRIP_TERMINAL_STATUSES = ['Completed', 'Cancelled'];
+
+    // Trip directions — match F2 route directions vocabulary
+    public const TRIP_DIRECTIONS = ['Pickup', 'Drop'];
+
+    // Checkpoint states
+    public const CHECKPOINT_STATES = ['Pending', 'Reached', 'Skipped'];
+
+    // Boarding event types — enum for transportAttendance.event_type
+    public const BOARDING_EVENT_TYPES = [
+        'boarded_pickup',      // student got on the pickup trip
+        'dropped_home',        // student was dropped at end-of-drop-trip
+        'no_show',             // student expected but did not board
+        'alternate_pickup',    // student boarded at a non-planned stop
+    ];
+
+    // Collection name for the per-student boarding-event log
+    public const COL_TRANSPORT_ATTENDANCE = 'transportAttendance';
+
+    // Default geofence radius for a checkpoint (metres) — reserved for
+    // GPS-phase stop-arrival detection. Schools may override per-stop
+    // later without touching the F7 schema.
+    private const DEFAULT_CHECKPOINT_GEOFENCE_RADIUS_M = 50;
+
+    // Prefix used to build the GPS session id from a trip id — the
+    // dedicated GPS phase writes vehicle telemetry keyed by this same
+    // string, providing zero-refactor correlation.
+    private const GPS_SESSION_ID_PREFIX = 'GPSSESS_';
+
+    // ─── Public API ──────────────────────────────────────────────────────
+
+    /**
+     * Create a trip in Ready state (dispatch preparation). Snapshots the
+     * roster + checkpoints; resolves the effective driver via F4 overlay;
+     * establishes the GPS correlation id used later by the GPS phase.
+     *
+     * @param array $input {
+     *   vehicle_id: string (required),
+     *   route_id:   string (required),
+     *   trip_date:  string YYYY-MM-DD (default: today),
+     *   trip_direction: 'Pickup'|'Drop' (required),
+     *   scheduled_start_at: ISO ts (optional),
+     *   notes: string (optional),
+     * }
+     * @return array {tripId, data}
+     */
+    public function createTrip(array $input): array
+    {
+        $this->_assertReady();
+        $vehicleId  = trim((string) ($input['vehicle_id'] ?? ''));
+        $routeId    = trim((string) ($input['route_id']   ?? ''));
+        $tripDate   = trim((string) ($input['trip_date']  ?? date('Y-m-d')));
+        $direction  = trim((string) ($input['trip_direction'] ?? ''));
+
+        if ($vehicleId === '') { throw new \InvalidArgumentException('vehicle_id is required.'); }
+        if ($routeId === '')   { throw new \InvalidArgumentException('route_id is required.'); }
+        if (!in_array($direction, self::TRIP_DIRECTIONS, true)) {
+            throw new \InvalidArgumentException("Invalid trip_direction: '{$direction}'. Allowed: " . implode(',', self::TRIP_DIRECTIONS));
+        }
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $tripDate)) {
+            throw new \InvalidArgumentException("Invalid trip_date: '{$tripDate}'. Expected YYYY-MM-DD.");
+        }
+
+        $vehicle = $this->fs->getEntity(self::COL_VEHICLES, $vehicleId);
+        if (!is_array($vehicle)) {
+            throw new \InvalidArgumentException("Vehicle not found: {$vehicleId}");
+        }
+        $route = $this->fs->getEntity(self::COL_ROUTES, $routeId);
+        if (!is_array($route)) {
+            throw new \InvalidArgumentException("Route not found: {$routeId}");
+        }
+        if ((string) ($route['status'] ?? 'Active') !== 'Active') {
+            throw new \InvalidArgumentException("Route is not Active: {$routeId}");
+        }
+
+        // Resolve effective driver — honours F4 temporary assignments
+        $driverStaffId = (string) ($this->getEffectiveDriver($vehicleId, $tripDate) ?? '');
+        if ($driverStaffId === '') {
+            throw new \InvalidArgumentException("No effective driver for vehicle {$vehicleId} on {$tripDate}.");
+        }
+
+        // Snapshot checkpoints from route stops (frozen at trip creation)
+        $stops = $this->listStops($routeId);
+        if ($stops === []) {
+            throw new \InvalidArgumentException("Route {$routeId} has no stops — cannot create trip.");
+        }
+        $checkpoints = [];
+        foreach ($stops as $s) {
+            $checkpoints[] = [
+                'stop_id'                => (string) ($s['stopId']    ?? $s['id'] ?? ''),
+                'stop_name'              => (string) ($s['name']      ?? ''),
+                'order'                  => (int)    ($s['order']     ?? 0),
+                'scheduled_pickup_time'  => (string) ($s['pickup_time'] ?? ''),
+                'scheduled_drop_time'    => (string) ($s['drop_time']   ?? ''),
+                // GPS-native planned location (from F2 stop registry)
+                'stop_location'          => [
+                    'lat' => (float) ($s['latitude']  ?? 0),
+                    'lng' => (float) ($s['longitude'] ?? 0),
+                ],
+                'geofence_radius_m'      => self::DEFAULT_CHECKPOINT_GEOFENCE_RADIUS_M,
+                // Runtime state
+                'checkpoint_state'       => 'Pending',
+                'reached_at'             => null,
+                'left_at'                => null,
+                'students_boarded_count' => 0,
+                'students_no_show_count' => 0,
+                // GPS-native runtime placeholders — NULL in F7
+                'arrival_location_ref'   => null,
+                'departure_location_ref' => null,
+                'arrival_lat'            => null,
+                'arrival_lng'            => null,
+                'departure_lat'          => null,
+                'departure_lng'          => null,
+                'arrival_variance_m'     => null,
+            ];
+        }
+
+        // Snapshot roster — read once, cache on trip doc
+        $roster = $this->_computeTripRoster($routeId, $tripDate, $direction);
+
+        // Numbering
+        $tripId = $this->numbering->next('trn_trip', [
+            'claimedBy'  => $this->adminId,
+            'claimedFor' => 'F7:createTrip',
+        ]);
+        $gpsSessionId = self::GPS_SESSION_ID_PREFIX . $tripId;
+
+        $now = date('c');
+        $data = [
+            // ─── Kotlin-canonical base (matches shipped TripLogDoc.kt on
+            //     both Parent + Teacher apps; app deserialization ignores
+            //     the additive PHP-only fields below) ──────────────────
+            'id'                 => $tripId,
+            'schoolId'           => $this->schoolId,
+            'vehicleId'          => $vehicleId,
+            'date'               => $tripDate,
+            'tripType'           => $direction === 'Pickup' ? 'morning' : 'afternoon',
+            'startTime'          => trim((string) ($input['scheduled_start_at'] ?? '')),
+            'endTime'            => '',
+            'startOdometer'      => 0,
+            'endOdometer'        => 0,
+            'distance'           => 0.0,
+            'fuelUsed'           => 0.0,
+            'stopsCompleted'     => 0,
+            'alerts'             => [],
+
+            // ─── Additive PHP admin-side fields (Kotlin ignores them) ──
+            'driver_staff_id'    => $driverStaffId,
+            'route_id'           => $routeId,
+            'route_snapshot'     => [
+                'name'      => (string) ($route['name'] ?? ''),
+                'direction' => (string) ($route['direction'] ?? ''),
+            ],
+            'session'            => $this->sessionYear,
+            'trip_direction'     => $direction,
+            'trip_date'          => $tripDate,                          // alias for reader at L3813
+            'scheduled_start_at' => (string) ($input['scheduled_start_at'] ?? ''),
+            'actual_start_at'    => null,
+            'actual_end_at'      => null,
+            'status'             => 'Ready',
+            'on_time'            => null,                               // set on complete
+            'duration_minutes'   => null,
+            'distance_km'        => 0.0,                                // alias of `distance`
+            'incidents_count'    => 0,
+            'notes'              => trim((string) ($input['notes'] ?? '')),
+            'checkpoints'        => $checkpoints,
+            'roster_student_ids' => $roster,
+            'roster_size'        => count($roster),
+            'roster_frozen_at'   => $now,                               // immutable snapshot marker
+
+            // ─── GPS-native architecture (Refinement additional) ──────
+            // Correlation key used by the future GPS phase without
+            // requiring a schema migration. NULL live-position fields
+            // are reserved so the GPS phase adds telemetry acquisition,
+            // not schema redesign.
+            'gps_session_id'       => $gpsSessionId,
+            'live_tracking_enabled'=> false,
+            'route_progress_pct'   => 0,
+            'next_checkpoint_id'   => count($checkpoints) > 0 ? (string) $checkpoints[0]['stop_id'] : '',
+            'next_checkpoint_eta'  => null,
+            'vehicle_location_ref' => null,      // future: vehicleLivePositions doc id
+            'gps_start_lat'        => null,
+            'gps_start_lng'        => null,
+            'gps_start_at'         => null,
+            'gps_end_lat'          => null,
+            'gps_end_lng'          => null,
+            'gps_end_at'           => null,
+            'gps_last_position_at' => null,
+            'gps_track_url'        => null,
+
+            'created_at'         => $now,
+            'created_by'         => $this->adminId,
+            'updated_at'         => $now,
+        ];
+        $this->fs->setEntity(self::COL_TRIP_LOGS, $tripId, $data, /* merge */ false);
+
+        $this->emitAudit(
+            'trip', $tripId, 'created', null, $data,
+            ['domain' => self::DOMAIN_TRIP]
+        );
+        return ['tripId' => $tripId, 'data' => $data];
+    }
+
+    /**
+     * Transition trip Ready → InProgress. Sets actual_start_at, fires
+     * trip.started notification.
+     */
+    public function startTrip(string $tripId): array
+    {
+        $this->_assertReady();
+        $trip = $this->_loadTripOrFail($tripId);
+        if ($trip['status'] !== 'Ready') {
+            throw new \InvalidArgumentException("Trip {$tripId} is not in Ready state (current: {$trip['status']}).");
+        }
+        $now = date('c');
+        $update = [
+            'status'          => 'InProgress',
+            'actual_start_at' => $now,
+            'startTime'       => $trip['startTime'] !== '' ? $trip['startTime'] : $now,
+            'updated_at'      => $now,
+        ];
+        $this->fs->setEntity(self::COL_TRIP_LOGS, $tripId, $update, /* merge */ true);
+        $this->emitAudit('trip', $tripId, 'started', $trip, array_merge($trip, $update),
+            ['domain' => self::DOMAIN_TRIP]);
+        $this->_notify('trip.started', [
+            'trip_id'      => $tripId,
+            'route_id'     => (string) ($trip['route_id'] ?? ''),
+            'vehicle_id'   => (string) ($trip['vehicleId'] ?? ''),
+            'driver_id'    => (string) ($trip['driver_staff_id'] ?? ''),
+            'trip_date'    => (string) ($trip['trip_date'] ?? ''),
+            'direction'    => (string) ($trip['trip_direction'] ?? ''),
+            'roster_size'  => (int) ($trip['roster_size'] ?? 0),
+        ]);
+        return ['tripId' => $tripId, 'status' => 'InProgress'];
+    }
+
+    /**
+     * Mark a checkpoint as reached. Server-timestamped; GPS location refs
+     * remain NULL at F7 (GPS phase will populate).
+     */
+    public function markCheckpointReached(string $tripId, string $stopId): array
+    {
+        $this->_assertReady();
+        return $this->_updateCheckpointState($tripId, $stopId, 'Reached');
+    }
+
+    /** Mark a checkpoint as departed (after Reached). Idempotent — retap safe. */
+    public function markCheckpointLeft(string $tripId, string $stopId): array
+    {
+        $this->_assertReady();
+        $trip = $this->_loadTripOrFail($tripId);
+        if ($trip['status'] !== 'InProgress') {
+            throw new \InvalidArgumentException("Trip {$tripId} not InProgress.");
+        }
+        $now = date('c');
+        $found = false;
+        $checkpoints = (array) ($trip['checkpoints'] ?? []);
+        foreach ($checkpoints as $i => $cp) {
+            if ((string) ($cp['stop_id'] ?? '') !== $stopId) { continue; }
+            if (($cp['checkpoint_state'] ?? 'Pending') !== 'Reached') {
+                throw new \InvalidArgumentException("Cannot mark left — checkpoint state is '{$cp['checkpoint_state']}', expected 'Reached'.");
+            }
+            $checkpoints[$i]['left_at'] = $now;
+            $found = true;
+            break;
+        }
+        if (!$found) {
+            throw new \InvalidArgumentException("Stop {$stopId} not found in trip {$tripId} checkpoints.");
+        }
+        $this->fs->setEntity(self::COL_TRIP_LOGS, $tripId, [
+            'checkpoints' => $checkpoints,
+            'updated_at'  => $now,
+        ], /* merge */ true);
+        return ['tripId' => $tripId, 'stop_id' => $stopId, 'left_at' => $now];
+    }
+
+    /** Mark a checkpoint as skipped (per Refinement 4 — allows Completed with unreached stops). */
+    public function markCheckpointSkipped(string $tripId, string $stopId, string $reason): array
+    {
+        $this->_assertReady();
+        return $this->_updateCheckpointState($tripId, $stopId, 'Skipped', $reason);
+    }
+
+    /**
+     * Mark a student boarded on a Pickup trip. Idempotent via deterministic
+     * doc-id; validates eligibility from the frozen roster snapshot.
+     */
+    public function markStudentBoarded(string $tripId, string $studentId, ?string $actualStopId = null, string $notes = ''): array
+    {
+        return $this->_writeBoardingEvent($tripId, $studentId, 'boarded_pickup', $actualStopId, $notes);
+    }
+
+    /** Mark a student dropped on a Drop trip. Idempotent. */
+    public function markStudentDropped(string $tripId, string $studentId, ?string $actualStopId = null, string $notes = ''): array
+    {
+        return $this->_writeBoardingEvent($tripId, $studentId, 'dropped_home', $actualStopId, $notes);
+    }
+
+    /** Record a no-show. Fires trip.student_no_show (Important) to the parent. */
+    public function markStudentNoShow(string $tripId, string $studentId, string $notes = ''): array
+    {
+        $ret = $this->_writeBoardingEvent($tripId, $studentId, 'no_show', null, $notes);
+
+        // Fire parent notification (F6-Refined categories; only no-show
+        // fires at F7 per operator Refinement 1 — boarded/dropped
+        // notifications deferred to Parent-App preferences feature).
+        $trip = $this->_loadTripOrFail($tripId);
+        $this->_notify('trip.student_no_show', [
+            'trip_id'    => $tripId,
+            'student_id' => $studentId,
+            'student_ids'=> [$studentId],
+            'route_id'   => (string) ($trip['route_id'] ?? ''),
+            'route_name' => (string) ($trip['route_snapshot']['name'] ?? ''),
+            'trip_date'  => (string) ($trip['trip_date'] ?? ''),
+            'direction'  => (string) ($trip['trip_direction'] ?? ''),
+        ]);
+        return $ret;
+    }
+
+    /**
+     * Complete the trip. Requires EVERY checkpoint to be either Reached or
+     * Skipped (Refinement 4). Computes trip summary (distance, duration,
+     * on_time, students_boarded_count, no_show_count). Fires trip.completed.
+     */
+    public function completeTrip(string $tripId, array $input = []): array
+    {
+        $this->_assertReady();
+        $trip = $this->_loadTripOrFail($tripId);
+        if ($trip['status'] !== 'InProgress') {
+            throw new \InvalidArgumentException("Trip {$tripId} not InProgress.");
+        }
+        $checkpoints = (array) ($trip['checkpoints'] ?? []);
+        foreach ($checkpoints as $cp) {
+            $st = (string) ($cp['checkpoint_state'] ?? 'Pending');
+            if ($st === 'Pending') {
+                throw new \InvalidArgumentException(
+                    "Cannot complete — checkpoint '{$cp['stop_name']}' is still Pending. "
+                    . "Mark it Reached or Skipped first (Refinement 4)."
+                );
+            }
+        }
+
+        $now = date('c');
+        $endTime      = trim((string) ($input['end_time'] ?? $now));
+        $endOdometer  = (float) ($input['end_odometer'] ?? 0);
+        $startOdo     = (float) ($trip['startOdometer'] ?? 0);
+        $distanceKm   = $endOdometer > $startOdo ? round($endOdometer - $startOdo, 2) : (float) ($input['distance_km'] ?? 0);
+        $fuelUsed     = (float) ($input['fuel_used'] ?? 0);
+        $notes        = trim((string) ($input['notes'] ?? ''));
+
+        // Compute counts + duration from checkpoints/events
+        $stopsCompleted = 0;
+        foreach ($checkpoints as $cp) {
+            if (($cp['checkpoint_state'] ?? '') === 'Reached') { $stopsCompleted++; }
+        }
+        $startTs = strtotime((string) ($trip['actual_start_at'] ?? '')) ?: 0;
+        $endTs   = strtotime($endTime) ?: 0;
+        $durationMinutes = ($startTs > 0 && $endTs > $startTs) ? (int) round(($endTs - $startTs) / 60) : 0;
+
+        // On-time = last-reached checkpoint left_at <= scheduled + 15min slack
+        $onTime = $this->_computeOnTime($trip, $checkpoints);
+
+        // Boarding tallies from transportAttendance (single-query aggregate)
+        $tally = $this->_tallyBoardingEvents($tripId);
+
+        $update = [
+            'status'           => 'Completed',
+            'actual_end_at'    => $now,
+            'endTime'          => $endTime,
+            'endOdometer'      => $endOdometer,
+            'distance'         => $distanceKm,
+            'distance_km'      => $distanceKm,
+            'fuelUsed'         => $fuelUsed,
+            'stopsCompleted'   => $stopsCompleted,
+            'duration_minutes' => $durationMinutes,
+            'on_time'          => $onTime,
+            'notes'            => $notes,
+            'route_progress_pct' => 100,
+            'next_checkpoint_id' => '',
+            'boarded_count'    => (int) ($tally['boarded'] ?? 0),
+            'dropped_count'    => (int) ($tally['dropped'] ?? 0),
+            'no_show_count'    => (int) ($tally['no_show'] ?? 0),
+            'updated_at'       => $now,
+        ];
+        $this->fs->setEntity(self::COL_TRIP_LOGS, $tripId, $update, /* merge */ true);
+        $this->emitAudit('trip', $tripId, 'completed', $trip, array_merge($trip, $update),
+            ['domain' => self::DOMAIN_TRIP]);
+        $this->_notify('trip.completed', [
+            'trip_id'         => $tripId,
+            'route_id'        => (string) ($trip['route_id'] ?? ''),
+            'vehicle_id'      => (string) ($trip['vehicleId'] ?? ''),
+            'driver_id'       => (string) ($trip['driver_staff_id'] ?? ''),
+            'trip_date'       => (string) ($trip['trip_date'] ?? ''),
+            'direction'       => (string) ($trip['trip_direction'] ?? ''),
+            'duration_minutes'=> $durationMinutes,
+            'distance_km'     => $distanceKm,
+            'on_time'         => $onTime,
+            'boarded'         => (int) ($tally['boarded'] ?? 0),
+            'no_show'         => (int) ($tally['no_show'] ?? 0),
+        ]);
+        return ['tripId' => $tripId, 'status' => 'Completed', 'summary' => $update];
+    }
+
+    /** Cancel a Ready or InProgress trip. Terminal. */
+    public function cancelTrip(string $tripId, string $reason): array
+    {
+        $this->_assertReady();
+        if (trim($reason) === '') {
+            throw new \InvalidArgumentException('cancel reason is required.');
+        }
+        $trip = $this->_loadTripOrFail($tripId);
+        if (!in_array($trip['status'], self::TRIP_ACTIVE_STATUSES, true)) {
+            throw new \InvalidArgumentException("Trip {$tripId} not in cancellable state (status: {$trip['status']}).");
+        }
+        $now = date('c');
+        $update = [
+            'status'         => 'Cancelled',
+            'actual_end_at'  => $now,
+            'cancel_reason'  => $reason,
+            'cancelled_by'   => $this->adminId,
+            'updated_at'     => $now,
+        ];
+        $this->fs->setEntity(self::COL_TRIP_LOGS, $tripId, $update, /* merge */ true);
+        $this->emitAudit('trip', $tripId, 'cancelled', $trip, array_merge($trip, $update),
+            ['domain' => self::DOMAIN_TRIP, 'cancel_reason' => $reason]);
+        return ['tripId' => $tripId, 'status' => 'Cancelled'];
+    }
+
+    /** List trips, optionally filtered by date + status. */
+    public function listTrips(array $filters = []): array
+    {
+        $this->_assertReady();
+        $where = [];
+        if (!empty($filters['date'])) {
+            $where[] = ['date', '==', (string) $filters['date']];
+        }
+        if (!empty($filters['status'])) {
+            $where[] = ['status', '==', (string) $filters['status']];
+        }
+        if (!empty($filters['route_id'])) {
+            $where[] = ['route_id', '==', (string) $filters['route_id']];
+        }
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_TRIP_LOGS, $where, 'date', 'DESC', 200);
+        } catch (\Throwable $_) { return []; }
+        $out = [];
+        foreach ($rows as $r) {
+            $out[] = $this->_unwrapNestedRow($r, 'date');
+        }
+        return array_values(array_filter($out, static fn($t) => is_array($t) && !empty($t)));
+    }
+
+    public function getTrip(string $tripId): ?array
+    {
+        $this->_assertReady();
+        if ($tripId === '') { return null; }
+        $t = $this->fs->getEntity(self::COL_TRIP_LOGS, $tripId);
+        return is_array($t) ? $t : null;
+    }
+
+    public function getTripRoster(string $tripId): array
+    {
+        $trip = $this->getTrip($tripId);
+        return is_array($trip) ? (array) ($trip['roster_student_ids'] ?? []) : [];
+    }
+
+    public function getTripBoardingEvents(string $tripId): array
+    {
+        $this->_assertReady();
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_TRANSPORT_ATTENDANCE,
+                [['tripId', '==', $tripId]], 'event_at', 'ASC', 1000);
+        } catch (\Throwable $_) { return []; }
+        $out = [];
+        foreach ($rows as $r) {
+            $out[] = $this->_unwrapNestedRow($r, 'tripId');
+        }
+        return array_values(array_filter($out, static fn($e) => is_array($e) && !empty($e)));
+    }
+
+    // ─── Internals ───────────────────────────────────────────────────────
+
+    private function _loadTripOrFail(string $tripId): array
+    {
+        if ($tripId === '') { throw new \InvalidArgumentException('tripId required.'); }
+        $trip = $this->fs->getEntity(self::COL_TRIP_LOGS, $tripId);
+        if (!is_array($trip)) {
+            throw new \InvalidArgumentException("Trip not found: {$tripId}");
+        }
+        return $trip;
+    }
+
+    private function _updateCheckpointState(string $tripId, string $stopId, string $newState, string $reason = ''): array
+    {
+        if (!in_array($newState, self::CHECKPOINT_STATES, true)) {
+            throw new \InvalidArgumentException("Invalid checkpoint state: {$newState}");
+        }
+        $trip = $this->_loadTripOrFail($tripId);
+        if ($trip['status'] !== 'InProgress') {
+            throw new \InvalidArgumentException("Trip {$tripId} not InProgress (status: {$trip['status']}).");
+        }
+        $now = date('c');
+        $checkpoints = (array) ($trip['checkpoints'] ?? []);
+        $found = false;
+        foreach ($checkpoints as $i => $cp) {
+            if ((string) ($cp['stop_id'] ?? '') !== $stopId) { continue; }
+            $currentState = (string) ($cp['checkpoint_state'] ?? 'Pending');
+            if (in_array($currentState, ['Reached', 'Skipped'], true) && $currentState !== $newState) {
+                throw new \InvalidArgumentException("Checkpoint already {$currentState} — no further transition allowed.");
+            }
+            $checkpoints[$i]['checkpoint_state'] = $newState;
+            if ($newState === 'Reached') {
+                $checkpoints[$i]['reached_at'] = $now;
+            } elseif ($newState === 'Skipped') {
+                $checkpoints[$i]['skipped_at'] = $now;
+                $checkpoints[$i]['skip_reason'] = $reason;
+            }
+            $found = true;
+            break;
+        }
+        if (!$found) {
+            throw new \InvalidArgumentException("Stop {$stopId} not found in trip {$tripId}.");
+        }
+
+        // Recompute route progress + next checkpoint pointer
+        $reachedOrSkipped = 0;
+        $nextPending = '';
+        foreach ($checkpoints as $cp) {
+            $st = (string) ($cp['checkpoint_state'] ?? 'Pending');
+            if ($st === 'Reached' || $st === 'Skipped') { $reachedOrSkipped++; }
+            elseif ($nextPending === '') { $nextPending = (string) ($cp['stop_id'] ?? ''); }
+        }
+        $progressPct = count($checkpoints) > 0 ? (int) round(($reachedOrSkipped / count($checkpoints)) * 100) : 0;
+
+        $this->fs->setEntity(self::COL_TRIP_LOGS, $tripId, [
+            'checkpoints'        => $checkpoints,
+            'route_progress_pct' => $progressPct,
+            'next_checkpoint_id' => $nextPending,
+            'updated_at'         => $now,
+        ], /* merge */ true);
+        $this->emitAudit('trip_checkpoint', $tripId . ':' . $stopId, strtolower($newState),
+            null, ['stop_id' => $stopId, 'new_state' => $newState, 'reason' => $reason],
+            ['domain' => self::DOMAIN_TRIP]);
+        return ['tripId' => $tripId, 'stop_id' => $stopId, 'checkpoint_state' => $newState, 'progress_pct' => $progressPct];
+    }
+
+    /**
+     * Write a boarding event to transportAttendance. Deterministic doc-id
+     * = idempotent on repeat driver taps (F7-4 verifier gate).
+     */
+    private function _writeBoardingEvent(string $tripId, string $studentId, string $eventType, ?string $actualStopId, string $notes): array
+    {
+        $this->_assertReady();
+        if (!in_array($eventType, self::BOARDING_EVENT_TYPES, true)) {
+            throw new \InvalidArgumentException("Invalid boarding event_type: {$eventType}");
+        }
+        $trip = $this->_loadTripOrFail($tripId);
+        if ($trip['status'] !== 'InProgress') {
+            throw new \InvalidArgumentException("Trip {$tripId} not InProgress (status: {$trip['status']}).");
+        }
+        // Roster gate (Refinement 3 — immutable roster)
+        $roster = (array) ($trip['roster_student_ids'] ?? []);
+        if ($eventType !== 'no_show' && !in_array($studentId, $roster, true)) {
+            throw new \InvalidArgumentException("Student {$studentId} is not on the frozen roster for trip {$tripId}.");
+        }
+        // Direction guard
+        $direction = (string) ($trip['trip_direction'] ?? '');
+        if ($eventType === 'boarded_pickup' && $direction !== 'Pickup') {
+            throw new \InvalidArgumentException("Cannot board on a Drop trip; use dropped_home instead.");
+        }
+        if ($eventType === 'dropped_home' && $direction !== 'Drop') {
+            throw new \InvalidArgumentException("Cannot drop on a Pickup trip; use boarded_pickup instead.");
+        }
+
+        // Look up planned stop from assignment (may be null if no_show)
+        $plannedStopId = $this->_lookupPlannedStop($studentId, (string) ($trip['route_id'] ?? ''));
+
+        // Deterministic doc-id → idempotent repeat taps
+        $docId = "{$this->schoolId}_{$tripId}_{$studentId}_{$eventType}";
+        $correlationId = substr(sha1($docId), 0, 24);
+        $now = date('c');
+
+        $data = [
+            'id'                    => $docId,
+            'schoolId'              => $this->schoolId,
+            'tripId'                => $tripId,
+            'studentId'             => $studentId,
+            'route_id'              => (string) ($trip['route_id'] ?? ''),
+            'session'               => (string) ($trip['session']  ?? $this->sessionYear),
+            'trip_date'             => (string) ($trip['trip_date'] ?? ''),
+            'trip_direction'        => $direction,
+            'planned_stop_id'       => $plannedStopId,
+            'actual_stop_id'        => $actualStopId ?: $plannedStopId,
+            'event_type'            => $eventType,
+            'event_at'              => $now,
+            'marked_by_staff_id'    => $this->adminId,
+            'marked_by_role'        => 'admin',
+            'checkpoint_sequence'   => $this->_currentCheckpointSequence($trip, $actualStopId ?: $plannedStopId),
+            'notes'                 => trim($notes),
+            // GPS-native placeholders — NULL at F7, populated by GPS phase
+            'event_location_ref'    => null,
+            'event_lat'             => null,
+            'event_lng'             => null,
+            'event_at_gps'          => null,
+            'gps_session_id'        => (string) ($trip['gps_session_id'] ?? ''),
+            'correlation_id'        => $correlationId,
+            // Reserved for future geofence validation (arrival_variance_m
+            // — how far from stop_location did the event fire)
+            'geofence_variance_m'   => null,
+            'geofence_verified'     => null,
+            'created_at'            => $now,
+        ];
+        $this->fs->setEntity(self::COL_TRANSPORT_ATTENDANCE, $docId, $data, /* merge */ true);
+
+        // Update trip's per-checkpoint boarding tally
+        $this->_updateCheckpointTally($tripId, $data['actual_stop_id'], $eventType);
+
+        $this->emitAudit('transportAttendance', $docId, $eventType, null, $data,
+            ['domain' => self::DOMAIN_TRIP]);
+        return ['docId' => $docId, 'data' => $data];
+    }
+
+    /**
+     * Compute the roster for a trip — reads studentRoutes LEGACY (F3 still
+     * writes there) with an additive routeAssignments fallback. Filters by
+     * status='Active', direction/type appropriate for the trip direction,
+     * and service_days ∋ today's dayName.
+     */
+    private function _computeTripRoster(string $routeId, string $tripDate, string $tripDirection): array
+    {
+        $dayName = date('l', strtotime($tripDate));   // e.g. 'Monday'
+
+        $students = [];
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_STUDENT_ROUTES_LEGACY,
+                [['route_id', '==', $routeId], ['status', '==', 'Active']], null, 'ASC', 1000);
+            foreach ($rows as $r) {
+                $inner = $this->_unwrapNestedRow($r, 'route_id');
+                if (!is_array($inner) || empty($inner['studentId'])) { continue; }
+                if (!$this->_studentEligibleForTrip($inner, $tripDirection, $dayName)) { continue; }
+                $students[(string) $inner['studentId']] = true;
+            }
+        } catch (\Throwable $_) {}
+
+        // Additive routeAssignments fallback (v2 schema, currently empty)
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_ROUTE_ASSIGNMENTS,
+                [['route_id', '==', $routeId], ['status', '==', 'Active'],
+                 ['session',  '==', $this->sessionYear]], null, 'ASC', 1000);
+            foreach ($rows as $r) {
+                $inner = $this->_unwrapNestedRow($r, 'route_id');
+                if (!is_array($inner) || empty($inner['studentId'])) { continue; }
+                if (!$this->_studentEligibleForTrip($inner, $tripDirection, $dayName)) { continue; }
+                $students[(string) $inner['studentId']] = true;
+            }
+        } catch (\Throwable $_) {}
+
+        return array_keys($students);
+    }
+
+    private function _studentEligibleForTrip(array $assignment, string $tripDirection, string $dayName): bool
+    {
+        // Direction/type gate — Pickup trip needs type ∈ {pickup, both},
+        // Drop needs {drop, both}
+        $type = strtolower((string) ($assignment['type'] ?? 'both'));
+        if ($tripDirection === 'Pickup' && !in_array($type, ['pickup', 'both'], true)) { return false; }
+        if ($tripDirection === 'Drop'   && !in_array($type, ['drop',   'both'], true)) { return false; }
+
+        // Service-days gate (allow missing = all days for backward compat)
+        $days = (array) ($assignment['service_days'] ?? []);
+        if ($days !== [] && !in_array($dayName, $days, true)) { return false; }
+        return true;
+    }
+
+    private function _lookupPlannedStop(string $studentId, string $routeId): string
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_STUDENT_ROUTES_LEGACY,
+                [['studentId', '==', $studentId], ['route_id', '==', $routeId]], null, 'ASC', 1);
+            foreach ($rows as $r) {
+                $inner = $this->_unwrapNestedRow($r, 'route_id');
+                if (is_array($inner) && !empty($inner['stop_id'])) {
+                    return (string) $inner['stop_id'];
+                }
+            }
+        } catch (\Throwable $_) {}
+        return '';
+    }
+
+    private function _currentCheckpointSequence(array $trip, string $stopId): int
+    {
+        foreach ((array) ($trip['checkpoints'] ?? []) as $cp) {
+            if ((string) ($cp['stop_id'] ?? '') === $stopId) {
+                return (int) ($cp['order'] ?? 0);
+            }
+        }
+        return 0;
+    }
+
+    private function _updateCheckpointTally(string $tripId, string $stopId, string $eventType): void
+    {
+        $trip = $this->fs->getEntity(self::COL_TRIP_LOGS, $tripId);
+        if (!is_array($trip)) { return; }
+        $checkpoints = (array) ($trip['checkpoints'] ?? []);
+        foreach ($checkpoints as $i => $cp) {
+            if ((string) ($cp['stop_id'] ?? '') !== $stopId) { continue; }
+            if (in_array($eventType, ['boarded_pickup', 'dropped_home', 'alternate_pickup'], true)) {
+                $checkpoints[$i]['students_boarded_count'] = (int) ($cp['students_boarded_count'] ?? 0) + 1;
+            } elseif ($eventType === 'no_show') {
+                $checkpoints[$i]['students_no_show_count'] = (int) ($cp['students_no_show_count'] ?? 0) + 1;
+            }
+            break;
+        }
+        $this->fs->setEntity(self::COL_TRIP_LOGS, $tripId, [
+            'checkpoints' => $checkpoints,
+            'updated_at'  => date('c'),
+        ], /* merge */ true);
+    }
+
+    private function _tallyBoardingEvents(string $tripId): array
+    {
+        $tally = ['boarded' => 0, 'dropped' => 0, 'no_show' => 0];
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_TRANSPORT_ATTENDANCE,
+                [['tripId', '==', $tripId]], null, 'ASC', 1000);
+            foreach ($rows as $r) {
+                $inner = $this->_unwrapNestedRow($r, 'tripId');
+                if (!is_array($inner)) { continue; }
+                $t = (string) ($inner['event_type'] ?? '');
+                if ($t === 'boarded_pickup' || $t === 'alternate_pickup') { $tally['boarded']++; }
+                elseif ($t === 'dropped_home') { $tally['dropped']++; }
+                elseif ($t === 'no_show')      { $tally['no_show']++; }
+            }
+        } catch (\Throwable $_) {}
+        return $tally;
+    }
+
+    private function _computeOnTime(array $trip, array $checkpoints): bool
+    {
+        // Conservative on-time gate: trip on-time iff the LAST reached
+        // checkpoint's left_at (or reached_at) is within 15min of its
+        // scheduled time. Missing schedule data → assume true (don't
+        // penalize schools without stop-timing data).
+        $lastReached = null;
+        foreach ($checkpoints as $cp) {
+            if (($cp['checkpoint_state'] ?? '') === 'Reached') { $lastReached = $cp; }
+        }
+        if ($lastReached === null) { return true; }
+        $sched = (string) ($lastReached['scheduled_drop_time'] ?? $lastReached['scheduled_pickup_time'] ?? '');
+        $actual = (string) ($lastReached['left_at'] ?? $lastReached['reached_at'] ?? '');
+        if ($sched === '' || $actual === '') { return true; }
+
+        $tripDate = (string) ($trip['trip_date'] ?? '');
+        $schedTs  = strtotime("{$tripDate} {$sched}");
+        $actualTs = strtotime($actual);
+        if ($schedTs === false || $actualTs === false) { return true; }
+        return ($actualTs - $schedTs) <= 15 * 60;
     }
 
     // ═════════════════════════════════════════════════════════════════════

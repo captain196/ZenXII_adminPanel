@@ -3321,6 +3321,46 @@
       ]
     },
     {
+      "_comment": "TMS F7 (2026-07-07) — driver-performance snapshot post-Kotlin-canonical rename (schoolId==, driver_staff_id==, date DESC).",
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "driver_staff_id", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "TMS F7 (2026-07-07) — Transport_trip::list_all filter (schoolId==, status==, date DESC).",
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "TMS F7 (2026-07-07) — Transport_service::getTripBoardingEvents (schoolId==, tripId==, event_at ASC).",
+      "collectionGroup": "transportAttendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "tripId", "order": "ASCENDING" },
+        { "fieldPath": "event_at", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "TMS F7 (2026-07-07) — per-student boarding history (schoolId==, studentId==, trip_date DESC).",
+      "collectionGroup": "transportAttendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "studentId", "order": "ASCENDING" },
+        { "fieldPath": "trip_date", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "maintenanceLogs",
       "queryScope": "COLLECTION",
       "fields": [

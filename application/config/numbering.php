@@ -410,8 +410,9 @@ $config['numbering'] = [
         'trn_expense'              => 'enabled',
         // Feature F6 (Communication Integration + SOS) cutover 2026-07-07:
         'trn_sos'                  => 'enabled',
+        // Feature F7 (Trip Logs + Transport Attendance) cutover 2026-07-07:
+        'trn_trip'                 => 'enabled',
         // Still disabled — future features:
-        'trn_trip'                 => 'disabled',
         'trn_event'                => 'disabled',
         'trn_event_assign'         => 'disabled',
     ],

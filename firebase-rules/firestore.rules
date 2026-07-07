@@ -1364,6 +1364,19 @@ service cloud.firestore {
       allow update, delete: if isAdmin() && isSameSchool();
     }
 
+    // F7 (2026-07-07) — per-student boarding-event log. Staff-gated read
+    // for admin panel + Teacher App driver UI (F9 will consume). Parents
+    // do NOT read this collection directly; they receive events via the
+    // `notifications` inbox that Transport_notifier writes (Firestore
+    // rules on notifications already gate to per-user). Client writes
+    // are blocked at F7 — the Teacher-app driver-write path lands in F9
+    // with the appropriate rule loosening. PHP service-account writes
+    // bypass client rules entirely.
+    match /transportAttendance/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
     match /maintenanceLogs/{docId} {
       allow read: if isSameSchool() && isStaff();
       allow write: if isAdmin() && isSameSchoolWrite();

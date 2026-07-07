@@ -220,6 +220,14 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-F6-4', 'category' => self::CAT_RUNTIME,    'label' => 'SOS dual-field client compat',   'callable' => '_chTrnF6_4' ],
             [ 'id' => 'CH-TRN-F6-5', 'category' => self::CAT_CONTRACT,   'label' => 'notification audit-emission',    'callable' => '_chTrnF6_5' ],
             [ 'id' => 'CH-TRN-F6-6', 'category' => self::CAT_PERFORMANCE,'label' => 'fanout batch limit',             'callable' => '_chTrnF6_6' ],
+
+            // ─── F7 Trip Logs + Transport Attendance (added 2026-07-07) ─────
+            [ 'id' => 'CH-TRN-F7-1', 'category' => self::CAT_RUNTIME,    'label' => 'GPS-null discipline',           'callable' => '_chTrnF7_1' ],
+            [ 'id' => 'CH-TRN-F7-2', 'category' => self::CAT_RUNTIME,    'label' => 'trip required fields',          'callable' => '_chTrnF7_2' ],
+            [ 'id' => 'CH-TRN-F7-3', 'category' => self::CAT_RUNTIME,    'label' => 'attendance FK to trip',         'callable' => '_chTrnF7_3' ],
+            [ 'id' => 'CH-TRN-F7-4', 'category' => self::CAT_RUNTIME,    'label' => 'boarding-event docid determinism','callable' => '_chTrnF7_4' ],
+            [ 'id' => 'CH-TRN-F7-5', 'category' => self::CAT_CONTRACT,   'label' => 'completed trip tally consistency','callable' => '_chTrnF7_5' ],
+            [ 'id' => 'CH-TRN-F7-6', 'category' => self::CAT_PERFORMANCE,'label' => 'no N+1 in roster snapshot',     'callable' => '_chTrnF7_6' ],
         ];
     }
 
@@ -1953,6 +1961,222 @@ class Transport_verifier extends CI_Controller
             return ['status' => 'FAIL', 'detail' => 'array_chunk with FIRESTORE_BATCH_LIMIT not found in fanout'];
         }
         return ['status' => 'PASS', 'detail' => "fanout chunks bounded by FIRESTORE_BATCH_LIMIT={$limit}"];
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F7 Trip Logs + Transport Attendance assertions (CH-TRN-F7-1..6) 2026-07-07
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * CH-TRN-F7-1 — GPS-null discipline. F7 is GPS-native by schema but
+     * MUST NOT populate live GPS fields (that belongs to the dedicated
+     * GPS phase). Verifies every tripLogs + transportAttendance doc has
+     * NULL for reserved live-position fields.
+     */
+    private function _chTrnF7_1(): array
+    {
+        $tripGpsFields = ['gps_start_lat','gps_start_lng','gps_end_lat','gps_end_lng','gps_last_position_at','gps_track_url'];
+        $attGpsFields  = ['event_location_ref','event_lat','event_lng','event_at_gps','geofence_variance_m','geofence_verified'];
+
+        $violations = [];
+        try {
+            $trips = (array) $this->fs->schoolWhere('tripLogs', [], null, 'ASC', 100);
+        } catch (\Throwable $_) { $trips = []; }
+        foreach ($trips as $t) {
+            $inner = (isset($t['data']) && is_array($t['data'])) ? $t['data'] : $t;
+            foreach ($tripGpsFields as $f) {
+                if (array_key_exists($f, $inner) && $inner[$f] !== null && $inner[$f] !== '') {
+                    $violations[] = "tripLogs:" . (string) ($t['id'] ?? $inner['id'] ?? '?') . ":{$f}";
+                }
+            }
+        }
+        try {
+            $att = (array) $this->fs->schoolWhere('transportAttendance', [], null, 'ASC', 100);
+        } catch (\Throwable $_) { $att = []; }
+        foreach ($att as $a) {
+            $inner = (isset($a['data']) && is_array($a['data'])) ? $a['data'] : $a;
+            foreach ($attGpsFields as $f) {
+                if (array_key_exists($f, $inner) && $inner[$f] !== null && $inner[$f] !== '') {
+                    $violations[] = "transportAttendance:" . (string) ($a['id'] ?? $inner['id'] ?? '?') . ":{$f}";
+                }
+            }
+        }
+        if ($violations !== []) {
+            return ['status' => 'FAIL', 'detail' => count($violations) . ' GPS-field writes pre-GPS-phase: ' . implode(',', array_slice($violations, 0, 3))];
+        }
+        $sampled = count($trips) + count($att);
+        if ($sampled === 0) {
+            return ['status' => 'INFO', 'detail' => 'no trips/attendance yet — trivial pass'];
+        }
+        return ['status' => 'PASS', 'detail' => "{$sampled} docs sampled; all live-GPS fields NULL (GPS phase ready)"];
+    }
+
+    /**
+     * CH-TRN-F7-2 — Every tripLogs doc has driver_staff_id + date +
+     * vehicleId + status (with status in the allowed enum).
+     */
+    private function _chTrnF7_2(): array
+    {
+        try {
+            $trips = (array) $this->fs->schoolWhere('tripLogs', [], null, 'ASC', 100);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'tripLogs unreachable — trivial pass'];
+        }
+        if ($trips === []) {
+            return ['status' => 'INFO', 'detail' => 'no trips — trivial pass'];
+        }
+        $bad = [];
+        $allowedStatus = ['Ready', 'InProgress', 'Completed', 'Cancelled'];
+        foreach ($trips as $t) {
+            $inner = (isset($t['data']) && is_array($t['data'])) ? $t['data'] : $t;
+            $id = (string) ($t['id'] ?? $inner['id'] ?? '?');
+            if (empty($inner['driver_staff_id'])) { $bad[] = "{$id}:no_driver"; continue; }
+            if (empty($inner['date']))            { $bad[] = "{$id}:no_date";   continue; }
+            if (empty($inner['vehicleId']))       { $bad[] = "{$id}:no_vehicle"; continue; }
+            $st = (string) ($inner['status'] ?? '');
+            if (!in_array($st, $allowedStatus, true)) { $bad[] = "{$id}:bad_status_{$st}"; }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' trips fail required-field/status check: ' . implode(',', array_slice($bad, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => count($trips) . ' trips have valid required fields + status'];
+    }
+
+    /**
+     * CH-TRN-F7-3 — Every transportAttendance doc references an existing
+     * tripLogs doc (FK integrity).
+     */
+    private function _chTrnF7_3(): array
+    {
+        try {
+            $att = (array) $this->fs->schoolWhere('transportAttendance', [], null, 'ASC', 100);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'transportAttendance unreachable — trivial pass'];
+        }
+        if ($att === []) {
+            return ['status' => 'INFO', 'detail' => 'no attendance events — trivial pass'];
+        }
+        $orphans = [];
+        $tripCache = [];
+        foreach ($att as $a) {
+            $inner = (isset($a['data']) && is_array($a['data'])) ? $a['data'] : $a;
+            $tripId = (string) ($inner['tripId'] ?? '');
+            if ($tripId === '') { $orphans[] = ($a['id'] ?? '?') . ':no_tripId'; continue; }
+            if (!array_key_exists($tripId, $tripCache)) {
+                try {
+                    $t = $this->fs->getEntity('tripLogs', $tripId);
+                    $tripCache[$tripId] = is_array($t);
+                } catch (\Throwable $_) { $tripCache[$tripId] = false; }
+            }
+            if (!$tripCache[$tripId]) {
+                $orphans[] = ($a['id'] ?? '?') . ':orphan_trip_' . $tripId;
+            }
+        }
+        if ($orphans !== []) {
+            return ['status' => 'FAIL', 'detail' => count($orphans) . ' orphan attendance events: ' . implode(',', array_slice($orphans, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => count($att) . ' attendance events FK-valid'];
+    }
+
+    /**
+     * CH-TRN-F7-4 — Boarding-event doc-id determinism: no duplicate
+     * events for the same (tripId, studentId, event_type). The
+     * `{schoolId}_{tripId}_{studentId}_{event_type}` doc-id makes
+     * duplicates impossible-by-design; this asserts no path bypasses
+     * the deterministic scheme.
+     */
+    private function _chTrnF7_4(): array
+    {
+        try {
+            $att = (array) $this->fs->schoolWhere('transportAttendance', [], null, 'ASC', 200);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($att === []) {
+            return ['status' => 'INFO', 'detail' => 'no attendance events — trivial pass'];
+        }
+        $seen = [];
+        $dupes = [];
+        foreach ($att as $a) {
+            $inner = (isset($a['data']) && is_array($a['data'])) ? $a['data'] : $a;
+            $key = ($inner['tripId'] ?? '') . '|' . ($inner['studentId'] ?? '') . '|' . ($inner['event_type'] ?? '');
+            if (isset($seen[$key])) { $dupes[] = $key; }
+            $seen[$key] = true;
+        }
+        if ($dupes !== []) {
+            return ['status' => 'FAIL', 'detail' => count($dupes) . ' duplicate boarding events: ' . implode(',', array_slice($dupes, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => count($att) . " attendance events, no duplicates by (tripId, studentId, event_type)"];
+    }
+
+    /**
+     * CH-TRN-F7-5 — For every Completed trip, stopsCompleted must equal
+     * the count of checkpoints in state 'Reached'. Sanity check for the
+     * completion routine's tally consistency.
+     */
+    private function _chTrnF7_5(): array
+    {
+        try {
+            $trips = (array) $this->fs->schoolWhere('tripLogs',
+                [['status', '==', 'Completed']], null, 'ASC', 50);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($trips === []) {
+            return ['status' => 'INFO', 'detail' => 'no completed trips — trivial pass'];
+        }
+        $bad = [];
+        foreach ($trips as $t) {
+            $inner = (isset($t['data']) && is_array($t['data'])) ? $t['data'] : $t;
+            $id = (string) ($t['id'] ?? $inner['id'] ?? '?');
+            $sc = (int) ($inner['stopsCompleted'] ?? -1);
+            $reachedCount = 0;
+            foreach ((array) ($inner['checkpoints'] ?? []) as $cp) {
+                if (($cp['checkpoint_state'] ?? '') === 'Reached') { $reachedCount++; }
+            }
+            if ($sc !== $reachedCount) {
+                $bad[] = "{$id}:tally_mismatch({$sc}!={$reachedCount})";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' completed trips tally mismatch: ' . implode(',', array_slice($bad, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => count($trips) . ' completed trips have consistent tally'];
+    }
+
+    /**
+     * CH-TRN-F7-6 — Roster snapshot uses a single filtered query per
+     * assignment schema (studentRoutes LEGACY + routeAssignments
+     * fallback), never a per-student getEntity loop.
+     */
+    private function _chTrnF7_6(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = $this->_stripComments((string) file_get_contents($path));
+        if (!preg_match('/private\s+function\s+_computeTripRoster\s*\([^)]*\)[^{]*\{/', $src, $m, PREG_OFFSET_CAPTURE)) {
+            return ['status' => 'FAIL', 'detail' => '_computeTripRoster method not found'];
+        }
+        $start = $m[0][1] + strlen($m[0][0]) - 1;
+        $depth = 0; $i = $start;
+        while ($i < strlen($src)) {
+            $c = $src[$i];
+            if ($c === '{') { $depth++; }
+            elseif ($c === '}') { $depth--; if ($depth === 0) { break; } }
+            $i++;
+        }
+        $body = substr($src, $start, $i - $start + 1);
+        // Anti-pattern: getEntity inside a foreach
+        if (preg_match('/foreach\s*\([^)]+\)\s*\{[^}]*->getEntity\(/', $body)) {
+            return ['status' => 'FAIL', 'detail' => 'roster snapshot has per-student getEntity (N+1)'];
+        }
+        // Expect at least one schoolWhere call (bulk assignment read)
+        if (!preg_match('/->schoolWhere\s*\(/', $body)) {
+            return ['status' => 'FAIL', 'detail' => 'roster snapshot missing bulk assignment query'];
+        }
+        return ['status' => 'PASS', 'detail' => 'roster snapshot uses bulk queries (no N+1)'];
     }
 
     // ─── shared source-grep helper ───────────────────────────────────────

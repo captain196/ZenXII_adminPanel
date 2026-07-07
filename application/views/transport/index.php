@@ -5,6 +5,7 @@ $tab_map = [
     'vendors'     => ['panel'=>'panelVendors',     'icon'=>'fa-handshake-o',   'label'=>'Vendors'],
     'drivers'     => ['panel'=>'panelDrivers',     'icon'=>'fa-id-card-o',     'label'=>'Drivers'],
     'expenses'    => ['panel'=>'panelExpenses',    'icon'=>'fa-money',         'label'=>'Expenses'],
+    'trips'       => ['panel'=>'panelTrips',       'icon'=>'fa-map-signs',     'label'=>'Trips'],
     'sos'         => ['panel'=>'panelSos',         'icon'=>'fa-bell',          'label'=>'SOS Monitor'],
     'expiry'      => ['panel'=>'panelExpiry',      'icon'=>'fa-exclamation-triangle', 'label'=>'Expiry Dashboard'],
     'routes'      => ['panel'=>'panelRoutes',      'icon'=>'fa-road',          'label'=>'Routes & Stops'],
@@ -114,6 +115,33 @@ $tab_map = [
       </div>
       <div id="expensesSummaryBar" style="margin-bottom:14px"></div>
       <table class="trn-table"><thead><tr><th>ID</th><th>Date</th><th>Type</th><th>Vehicle</th><th>Amount</th><th>Payee</th><th>Accounting</th><th>Status</th><th>Actions</th></tr></thead><tbody id="expensesTbody"></tbody></table>
+    </div>
+  </div>
+
+  <!-- TRIPS (F7) -->
+  <div class="trn-panel<?= $at === 'trips' ? ' active' : '' ?>" id="panelTrips">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>Trip Monitor</span>
+        <div style="display:flex;gap:6px">
+          <input type="date" id="tripDateFilter" onchange="TRN.loadTrips()" class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1);cursor:pointer">
+          <select id="tripStatusFilter" onchange="TRN.loadTrips()" class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1);cursor:pointer">
+            <option value="">All statuses</option>
+            <option value="Ready">Ready</option>
+            <option value="InProgress">In Progress</option>
+            <option value="Completed">Completed</option>
+            <option value="Cancelled">Cancelled</option>
+          </select>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openCreateTrip()"><i class="fa fa-plus"></i> Create Trip</button>
+        </div>
+      </div>
+      <div style="background:rgba(34,197,94,.06);border-left:3px solid #22c55e;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
+        F7 Trip Logs + Transport Attendance. Lifecycle: <b>Ready → InProgress → Completed | Cancelled</b>. Roster is snapshot at create time (immutable). Completion requires every checkpoint to be Reached or Skipped. GPS-native schema is ready for the dedicated GPS phase (all live-position fields written NULL today).
+      </div>
+      <table class="trn-table">
+        <thead><tr><th>ID</th><th>Date</th><th>Direction</th><th>Vehicle</th><th>Route</th><th>Driver</th><th>Progress</th><th>Boarded</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="tripsTbody"></tbody>
+      </table>
     </div>
   </div>
 
@@ -291,6 +319,9 @@ $tab_map = [
 
 <!-- F6 SOS modal (admin-fired MVP) -->
 <?php $this->load->view('transport/partials/sos_modal'); ?>
+
+<!-- F7 Trip modals (create + manage + complete + cancel + skip) -->
+<?php $this->load->view('transport/partials/trip_modal'); ?>
 
 
 <!-- ROUTE MODAL -->
@@ -1394,6 +1425,234 @@ document.addEventListener('DOMContentLoaded', function(){
   };
 
   // ═════════════════════════════════════════════════════════════════════
+  //  F7 Trip Monitor (LC-17, LC-18, 2026-07-07)
+  // ═════════════════════════════════════════════════════════════════════
+  var trips = [], tripCurrent = null;
+  TRN.loadTrips = function(){
+    var d = $('#tripDateFilter').val() || '';
+    var s = $('#tripStatusFilter').val() || '';
+    getJSON('transport_trip/list_all?date=' + encodeURIComponent(d) + '&status=' + encodeURIComponent(s)).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status !== 'success'){ $('#tripsTbody').html('<tr><td colspan="10" style="text-align:center;color:var(--rose)">'+(r.message||'load failed')+'</td></tr>'); return; }
+      trips = r.trips || [];
+      if(trips.length === 0){ $('#tripsTbody').html('<tr><td colspan="10" style="text-align:center;color:var(--t3)">No trips</td></tr>'); return; }
+      var html = '';
+      trips.forEach(function(t){
+        var st = String(t.status||'');
+        var cls = st === 'Ready' ? 'trn-badge-blue' : (st === 'InProgress' ? 'trn-badge-amber' : (st === 'Completed' ? 'trn-badge-green' : 'trn-badge-red'));
+        var progress = (t.route_progress_pct||0) + '%';
+        var boarded = (t.boarded_count||0) + '/' + (t.roster_size||0);
+        html += '<tr>';
+        html += '<td>' + escH(t.id||'') + '</td>';
+        html += '<td>' + escH(t.date||'') + '</td>';
+        html += '<td>' + escH(t.trip_direction||t.tripType||'') + '</td>';
+        html += '<td>' + escH(t.vehicleId||'') + '</td>';
+        html += '<td>' + escH((t.route_snapshot && t.route_snapshot.name)||t.route_id||'') + '</td>';
+        html += '<td>' + escH(t.driver_staff_id||'') + '</td>';
+        html += '<td>' + progress + '</td>';
+        html += '<td>' + boarded + '</td>';
+        html += '<td><span class="trn-badge ' + cls + '">' + escH(st) + '</span></td>';
+        html += '<td>';
+        if(st === 'Ready'){
+          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.startTrip(\''+t.id+'\')" title="Start Trip"><i class="fa fa-play"></i></button> ';
+        }
+        if(st === 'InProgress' || st === 'Ready'){
+          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openTripManage(\''+t.id+'\')" title="Manage"><i class="fa fa-cog"></i></button>';
+        }
+        if(st === 'Completed' || st === 'Cancelled'){
+          html += '<button class="trn-btn trn-btn-sm" onclick="TRN.openTripManage(\''+t.id+'\')" style="background:var(--bg);border:1px solid var(--border);color:var(--t1)" title="View"><i class="fa fa-eye"></i></button>';
+        }
+        html += '</td></tr>';
+      });
+      $('#tripsTbody').html(html);
+    });
+  };
+
+  TRN.openCreateTrip = function(){
+    // Populate vehicle + route pickers
+    var vopts = '';
+    (vehicles||[]).forEach(function(v){ vopts += '<option value="'+v.id+'">'+escH(v.number)+'</option>'; });
+    $('#tcVehicle').html(vopts);
+    var ropts = '';
+    (routes||[]).forEach(function(r){ ropts += '<option value="'+r.id+'">'+escH(r.name||r.id)+'</option>'; });
+    $('#tcRoute').html(ropts);
+    $('#tcDate').val(new Date().toISOString().slice(0,10));
+    $('#tcDirection').val('Pickup');
+    $('#tcSchedStart,#tcNotes').val('');
+    $('#tripCreateModal').addClass('show');
+  };
+  TRN.closeTripCreate = function(){ $('#tripCreateModal').removeClass('show'); };
+  TRN.confirmCreateTrip = function(){
+    post('transport_trip/create', {
+      vehicle_id:         $('#tcVehicle').val(),
+      route_id:           $('#tcRoute').val(),
+      trip_date:          $('#tcDate').val(),
+      trip_direction:     $('#tcDirection').val(),
+      scheduled_start_at: $('#tcSchedStart').val(),
+      notes:              $('#tcNotes').val(),
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeTripCreate(); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.startTrip = function(id){
+    if(!confirm('Start this trip? Fires trip.started notification to Admin + Transport Manager.')) return;
+    post('transport_trip/start', {id: id}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openTripManage = function(id){
+    // Fetch trip + events, render checkpoints and roster grid
+    tripCurrent = id;
+    getJSON('transport_trip/get?id=' + encodeURIComponent(id)).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status !== 'success' || !r.trip){ toast(r.message||'load failed', false); return; }
+      var t = r.trip;
+      $('#tmTitle').text('Trip ' + t.id + ' — ' + (t.trip_direction||t.tripType) + ' (' + t.status + ')');
+      $('#tmMeta').text('Route: ' + ((t.route_snapshot && t.route_snapshot.name) || t.route_id) + ' | Vehicle: ' + t.vehicleId + ' | Driver: ' + t.driver_staff_id + ' | Date: ' + t.date + ' | Progress: ' + (t.route_progress_pct||0) + '%');
+      // Checkpoints
+      var cpHtml = '';
+      (t.checkpoints||[]).forEach(function(cp, i){
+        var st = cp.checkpoint_state || 'Pending';
+        var stCls = st === 'Reached' ? 'trn-badge-green' : (st === 'Skipped' ? 'trn-badge-amber' : 'trn-badge-blue');
+        cpHtml += '<tr>';
+        cpHtml += '<td>' + (cp.order||i+1) + '</td>';
+        cpHtml += '<td>' + escH(cp.stop_name||cp.stop_id||'') + '</td>';
+        cpHtml += '<td><span class="trn-badge ' + stCls + '">' + escH(st) + '</span></td>';
+        cpHtml += '<td>' + escH(cp.reached_at ? String(cp.reached_at).substring(11,19) : '—') + '</td>';
+        cpHtml += '<td>';
+        if(t.status === 'InProgress' && st === 'Pending'){
+          cpHtml += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.reachCheckpoint(\''+t.id+'\',\''+cp.stop_id+'\')" title="Reached"><i class="fa fa-check"></i></button> ';
+          cpHtml += '<button class="trn-btn trn-btn-sm" onclick="TRN.openSkipCheckpoint(\''+t.id+'\',\''+cp.stop_id+'\')" style="background:var(--bg);border:1px solid var(--border);color:var(--t1)" title="Skip"><i class="fa fa-forward"></i></button>';
+        } else if(t.status === 'InProgress' && st === 'Reached' && !cp.left_at){
+          cpHtml += '<button class="trn-btn trn-btn-sm" onclick="TRN.leftCheckpoint(\''+t.id+'\',\''+cp.stop_id+'\')" style="background:var(--bg);border:1px solid var(--border);color:var(--t1)" title="Departed"><i class="fa fa-arrow-right"></i></button>';
+        }
+        cpHtml += '</td></tr>';
+      });
+      $('#tmCheckpoints').html(cpHtml || '<tr><td colspan="5" style="text-align:center;color:var(--t3)">No checkpoints</td></tr>');
+
+      // Roster + boarding events
+      $('#tmRosterSize').text((t.roster_student_ids||[]).length);
+      getJSON('transport_trip/events?id=' + encodeURIComponent(t.id)).done(function(er){
+        er = typeof er === 'string' ? JSON.parse(er) : er;
+        var events = (er && er.status === 'success') ? (er.events || []) : [];
+        var lastByStudent = {};
+        events.forEach(function(e){ lastByStudent[e.studentId] = e.event_type; });
+        var rHtml = '';
+        (t.roster_student_ids||[]).forEach(function(sid){
+          var currentEvent = lastByStudent[sid] || '';
+          var st = currentEvent === 'boarded_pickup' ? 'Boarded' : (currentEvent === 'dropped_home' ? 'Dropped' : (currentEvent === 'no_show' ? 'No-show' : 'Pending'));
+          var stCls = st === 'Pending' ? 'trn-badge-blue' : (st === 'No-show' ? 'trn-badge-red' : 'trn-badge-green');
+          rHtml += '<tr>';
+          rHtml += '<td>' + escH(sid) + '</td>';
+          rHtml += '<td><span class="trn-badge ' + stCls + '">' + st + '</span></td>';
+          rHtml += '<td>';
+          if(t.status === 'InProgress' && st === 'Pending'){
+            var actionEndpoint = t.trip_direction === 'Pickup' ? 'board_student' : 'drop_student';
+            var actionLabel = t.trip_direction === 'Pickup' ? 'Board' : 'Drop';
+            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.boardOrDrop(\''+t.id+'\',\''+sid+'\',\''+actionEndpoint+'\')" title="'+actionLabel+'"><i class="fa fa-check"></i></button> ';
+            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.noShow(\''+t.id+'\',\''+sid+'\')" title="No-show"><i class="fa fa-times"></i></button>';
+          }
+          rHtml += '</td></tr>';
+        });
+        $('#tmRoster').html(rHtml || '<tr><td colspan="3" style="text-align:center;color:var(--t3)">Empty roster</td></tr>');
+      });
+      $('#tripManageModal').addClass('show');
+    });
+  };
+  TRN.closeTripManage = function(){ $('#tripManageModal').removeClass('show'); tripCurrent = null; };
+
+  TRN.reachCheckpoint = function(tid, sid){
+    post('transport_trip/checkpoint_reached', {trip_id: tid, stop_id: sid}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openTripManage(tid); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.leftCheckpoint = function(tid, sid){
+    post('transport_trip/checkpoint_left', {trip_id: tid, stop_id: sid}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openTripManage(tid); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.openSkipCheckpoint = function(tid, sid){
+    $('#cskTripId').val(tid); $('#cskStopId').val(sid); $('#cskReason').val('');
+    $('#checkpointSkipModal').addClass('show');
+  };
+  TRN.closeCheckpointSkip = function(){ $('#checkpointSkipModal').removeClass('show'); };
+  TRN.confirmCheckpointSkip = function(){
+    var reason = $('#cskReason').val().trim();
+    if(!reason){ toast('Reason required.', false); return; }
+    var tid = $('#cskTripId').val(), sid = $('#cskStopId').val();
+    post('transport_trip/checkpoint_skipped', {trip_id: tid, stop_id: sid, reason: reason}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeCheckpointSkip(); TRN.openTripManage(tid); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.boardOrDrop = function(tid, sid, endpoint){
+    post('transport_trip/' + endpoint, {trip_id: tid, student_id: sid, actual_stop_id: '', notes: ''}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openTripManage(tid); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.noShow = function(tid, sid){
+    if(!confirm('Mark student '+sid+' as NO-SHOW? Parent will receive an Important notification.')) return;
+    post('transport_trip/no_show_student', {trip_id: tid, student_id: sid, notes: 'marked from admin panel'}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openTripManage(tid); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openCompleteTrip = function(){
+    if(!tripCurrent){ toast('No trip selected.', false); return; }
+    $('#tcplId').val(tripCurrent);
+    $('#tcplEndTime').val(new Date().toISOString());
+    $('#tcplEndOdo,#tcplDistance,#tcplFuel,#tcplNotes').val('');
+    $('#tripCompleteModal').addClass('show');
+  };
+  TRN.closeTripComplete = function(){ $('#tripCompleteModal').removeClass('show'); };
+  TRN.confirmCompleteTrip = function(){
+    post('transport_trip/complete', {
+      id:           $('#tcplId').val(),
+      end_time:     $('#tcplEndTime').val(),
+      end_odometer: $('#tcplEndOdo').val() || 0,
+      distance_km:  $('#tcplDistance').val() || 0,
+      fuel_used:    $('#tcplFuel').val() || 0,
+      notes:        $('#tcplNotes').val(),
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeTripComplete(); TRN.closeTripManage(); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openCancelTrip = function(){
+    if(!tripCurrent){ toast('No trip selected.', false); return; }
+    $('#tccId').val(tripCurrent); $('#tccReason').val('');
+    $('#tripCancelModal').addClass('show');
+  };
+  TRN.closeTripCancel = function(){ $('#tripCancelModal').removeClass('show'); };
+  TRN.confirmCancelTrip = function(){
+    var reason = $('#tccReason').val().trim();
+    if(!reason){ toast('Reason required.', false); return; }
+    post('transport_trip/cancel', {id: $('#tccId').val(), reason: reason}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeTripCancel(); TRN.closeTripManage(); TRN.loadTrips(); }
+      else toast(r.message, false);
+    });
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
   //  F6 SOS Monitor (LC-13, 2026-07-07)
   // ═════════════════════════════════════════════════════════════════════
   TRN.loadSos = function(){
@@ -1489,6 +1748,8 @@ document.addEventListener('DOMContentLoaded', function(){
   loadExpenseCategories();
   loadExpenses();
   TRN.loadSos();
+  $('#tripDateFilter').val(new Date().toISOString().slice(0,10));
+  TRN.loadTrips();
   setTimeout(function(){loadStops();loadAssignments();loadExpiry();},500);
 })();
 });
