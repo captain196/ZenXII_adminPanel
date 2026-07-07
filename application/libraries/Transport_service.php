@@ -1665,10 +1665,10 @@ class Transport_service
         $cacheDocId = $this->schoolId . '_VEXPCACHE';
         $this->fs->setEntity(self::COL_VEHICLE_EXPIRY_DASHBOARD_CACHE, $cacheDocId, $cache, /* merge */ false);
 
-        // Notify Admin + Transport Manager on 7-day expiries via existing
-        // Communication kind. Individual notice per item keeps the notice
-        // body actionable; Communication's own queue handles fanout.
-        if ($count7 > 0 && class_exists('Communication_helper')) {
+        // Notify Admin + Transport Manager on 7-day expiries. Post-F6 this
+        // routes through Transport_notifier (fleet.doc_expiring category,
+        // Important priority, 24h dedup bucket).
+        if ($count7 > 0) {
             $this->_emitExpiryNotices(array_filter($items, static fn($i) => $i['window'] === 7));
         }
 
@@ -2942,20 +2942,13 @@ class Transport_service
             }
         }
 
-        // Fire Communication notice — best-effort
-        try {
-            $this->ci->load->library('Communication_helper', null, 'commHelper');
-            if (is_object($this->ci->commHelper ?? null) && method_exists($this->ci->commHelper, 'createNotice')) {
-                $this->ci->commHelper->createNotice([
-                    'schoolId'  => $this->schoolId,
-                    'subject'   => "Transport bulk assign complete: {$assigned} assigned",
-                    'body'      => "Batch {$batchId}\nAssigned: {$assigned}\nCapacity-skipped: " . count($capSkip)
-                                 . "\nErrors: " . count($errors),
-                    'audience'  => ['role:Admin', 'role:Transport Manager'],
-                    'context'   => ['module' => 'Transport', 'topic' => 'bulk_assign', 'batch_id' => $batchId],
-                ]);
-            }
-        } catch (\Throwable $_) { /* best-effort */ }
+        // Fire completion notice via Transport_notifier (F6).
+        $this->_notify('assignment.bulk_complete', [
+            'batch_id'         => $batchId,
+            'assigned'         => $assigned,
+            'skipped_capacity' => count($capSkip),
+            'errors'           => count($errors),
+        ]);
 
         return [
             'batch_id'         => $batchId,
@@ -3051,18 +3044,12 @@ class Transport_service
                 $checkpoint['processed_count'] = $processed;
                 $checkpoint['last_update_at'] = date('c');
                 $this->fs->setEntity('rolloverCheckpoint', $checkpointDocId, $checkpoint, /* merge */ true);
-                try {
-                    $this->ci->load->library('Communication_helper', null, 'commHelper');
-                    if (is_object($this->ci->commHelper ?? null) && method_exists($this->ci->commHelper, 'createNotice')) {
-                        $this->ci->commHelper->createNotice([
-                            'schoolId'  => $this->schoolId,
-                            'subject'   => "Transport session rollover complete: {$processed} students",
-                            'body'      => "From: {$fromSession}\nTo: {$toSession}\nBatch: {$batchId}\nProcessed: {$processed}",
-                            'audience'  => ['role:Admin', 'role:Transport Manager'],
-                            'context'   => ['module' => 'Transport', 'topic' => 'rollover_complete', 'batch_id' => $batchId],
-                        ]);
-                    }
-                } catch (\Throwable $_) {}
+                $this->_notify('assignment.rollover_complete', [
+                    'from_session' => $fromSession,
+                    'to_session'   => $toSession,
+                    'batch_id'     => $batchId,
+                    'processed'    => $processed,
+                ]);
                 return [
                     'status' => 'complete',
                     'processed' => $processed,
@@ -5326,27 +5313,62 @@ class Transport_service
      */
     private function _emitPendingStalenessNotice(array $expense): void
     {
+        $this->_notify('expense.pending_stale', [
+            'expense_id'            => (string) ($expense['expenseId']   ?? ''),
+            'expense_type'          => (string) ($expense['expense_type'] ?? ''),
+            'total_amount'          => (float)  ($expense['total_amount'] ?? 0),
+            'accounting_last_error' => (string) ($expense['accounting_last_error'] ?? ''),
+        ]);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F6 — Transport_notifier bridge
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * Lazy-load + init Transport_notifier. Cached on the CI instance so
+     * repeat notify() calls in the same request reuse the same object.
+     * Returns null when the notifier can't be initialised — callers must
+     * guard and fall back to log-only (best-effort).
+     */
+    private function _notifier(): ?Transport_notifier
+    {
         try {
-            $this->ci->load->library('Communication_helper', null, 'commHelper');
-        } catch (\Throwable $_) { return; }
-        $helper = $this->ci->commHelper ?? null;
-        if (!is_object($helper) || !method_exists($helper, 'createNotice')) { return; }
-        $id     = (string) ($expense['expenseId']   ?? '');
-        $type   = (string) ($expense['expense_type'] ?? '');
-        $amt    = (float)  ($expense['total_amount'] ?? 0);
-        $err    = (string) ($expense['accounting_last_error'] ?? '');
-        $subject = "Transport expense FAILED to post to Accounting: {$id}";
-        $body    = "Expense: {$id}\nType: {$type}\nAmount: INR {$amt}\nLast error: {$err}\n\nAction: review and manually reconcile via Transport Ops → Reconcile Pending Posts.";
-        try {
-            $helper->createNotice([
-                'schoolId' => $this->schoolId,
-                'subject'  => $subject,
-                'body'     => $body,
-                'audience' => ['role:Admin', 'role:Accountant', 'role:Transport Manager'],
-                'context'  => ['module' => 'Transport', 'topic' => 'expense_post_failed', 'expense_id' => $id],
-            ]);
+            if (!isset($this->ci->transportNotifier)) {
+                $this->ci->load->library('transport_notifier', null, 'transportNotifier');
+                if (isset($this->ci->transportNotifier)
+                    && method_exists($this->ci->transportNotifier, 'init')
+                    && !$this->ci->transportNotifier->isEnabled()) {
+                    $this->ci->transportNotifier->init(
+                        $this->fs, $this->numbering, $this,
+                        $this->schoolId, $this->sessionYear, $this->adminId
+                    );
+                }
+            }
+            return $this->ci->transportNotifier ?? null;
         } catch (\Throwable $e) {
-            log_message('warning', 'F5 pending-staleness notice failed: ' . $e->getMessage());
+            log_message('warning', 'Transport_notifier load failed: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * F6 helper — fire a notification for the given category, swallowing
+     * all failures (notifications are best-effort by design; the caller's
+     * primary state change already succeeded and must not be reverted for
+     * a notice miss).
+     */
+    private function _notify(string $category, array $ctx, array $overrides = []): void
+    {
+        $n = $this->_notifier();
+        if ($n === null || !method_exists($n, 'notify')) {
+            log_message('warning', "Transport_notifier unavailable for {$category}");
+            return;
+        }
+        try {
+            $n->notify($category, $ctx, $overrides);
+        } catch (\Throwable $e) {
+            log_message('warning', "Transport_notifier {$category} failed: " . $e->getMessage());
         }
     }
 
@@ -5514,58 +5536,19 @@ class Transport_service
      */
     private function _emitCriticalIncidentNotice(array $incident, ?array $staff): void
     {
-        try {
-            $this->ci->load->library('Communication_helper', null, 'commHelper');
-        } catch (\Throwable $_) {
-            log_message('warning', 'F4 critical-incident notice: Communication_helper unavailable — skipped.');
-            return;
-        }
-        $helper = $this->ci->commHelper ?? null;
-        if (!is_object($helper) || !method_exists($helper, 'createNotice')) {
-            return;
-        }
         $staffName = is_array($staff) ? (string) ($staff['name'] ?? $staff['Name'] ?? '') : '';
-        $staffId   = (string) ($incident['staff_id'] ?? '');
-        $type      = (string) ($incident['incident_type'] ?? '');
-        $desc      = (string) ($incident['description']   ?? '');
-        $vehicleId = (string) ($incident['related_vehicle_id'] ?? '');
-        $subject   = "Transport CRITICAL: {$type} — {$staffName}";
-        $body      = "Driver: {$staffName} ({$staffId})\n"
-                   . "Vehicle: " . ($vehicleId !== '' ? $vehicleId : '-') . "\n"
-                   . "Type: {$type}\n"
-                   . "Details: {$desc}";
-        try {
-            $helper->createNotice([
-                'schoolId' => $this->schoolId,
-                'subject'  => $subject,
-                'body'     => $body,
-                'audience' => ['role:Admin', 'role:HR Manager', 'role:Transport Manager'],
-                'context'  => [
-                    'module'      => 'Transport',
-                    'topic'       => 'critical_incident',
-                    'staff_id'    => $staffId,
-                    'incident_id' => (string) ($incident['incidentId'] ?? ''),
-                    'severity'    => 'Critical',
-                ],
-            ]);
-        } catch (\Throwable $e) {
-            log_message('warning', 'F4 critical-incident notice failed: ' . $e->getMessage());
-        }
+        $this->_notify('driver.critical_incident', [
+            'staff_id'      => (string) ($incident['staff_id'] ?? ''),
+            'staff_name'    => $staffName,
+            'incident_id'   => (string) ($incident['incidentId'] ?? ''),
+            'incident_type' => (string) ($incident['incident_type'] ?? ''),
+            'description'   => (string) ($incident['description']   ?? ''),
+            'vehicle_id'    => (string) ($incident['related_vehicle_id'] ?? ''),
+        ]);
     }
 
     private function _emitSuspensionNotice(array $suspension, ?array $route, bool $isSuspend): string
     {
-        try {
-            $this->ci->load->library('Communication_helper', null, 'commHelper');
-        } catch (\Throwable $_) {
-            log_message('warning', 'Transport_service: Communication_helper unavailable — suspension notice skipped.');
-            return '';
-        }
-        $helper = $this->ci->commHelper ?? null;
-        if (!is_object($helper) || !method_exists($helper, 'createNotice')) {
-            log_message('warning', 'Transport_service: Communication_helper::createNotice not available.');
-            return '';
-        }
         $routeName = is_array($route) ? (string) ($route['name'] ?? '') : '';
         $routeId   = (string) ($suspension['route_id'] ?? '');
         $category  = (string) ($suspension['reason_category'] ?? '');
@@ -5573,56 +5556,26 @@ class Transport_service
         $from      = (string) ($suspension['suspended_from'] ?? '');
         $to        = (string) ($suspension['suspended_to']   ?? '');
         $verb      = $isSuspend ? 'suspended' : 'resumed';
-        $catLabel  = str_replace('_', ' ', $category);
-        $subject   = "Transport route {$verb}: {$routeName}";
-        $body      = "Route: {$routeName} ({$routeId})\n"
-                   . "Category: {$catLabel}\n"
-                   . "Reason: {$reason}\n"
-                   . "From: {$from}"
-                   . ($to !== '' ? "\nTo: {$to}" : '');
+        $suspId    = (string) ($suspension['suspensionId'] ?? '');
+        $baseCtx = [
+            'route_id'        => $routeId,
+            'route_name'      => $routeName,
+            'reason_category' => $category,
+            'reason'          => $reason,
+            'from_date'       => $from,
+            'to_date'         => $to,
+            'action'          => $verb,
+            'suspension_id'   => $suspId,
+        ];
 
         // Operational audience — always notified
-        try {
-            $helper->createNotice([
-                'schoolId' => $this->schoolId,
-                'subject'  => $subject,
-                'body'     => $body,
-                'audience' => ['role:Admin', 'role:Transport Manager'],
-                'context'  => [
-                    'module'        => 'Transport',
-                    'topic'         => 'route_suspension',
-                    'action'        => $verb,
-                    'route_id'      => $routeId,
-                    'category'      => $category,
-                    'suspension_id' => (string) ($suspension['suspensionId'] ?? ''),
-                ],
-            ]);
-        } catch (\Throwable $e) {
-            log_message('warning', 'Transport_service suspension notice (ops) failed: ' . $e->getMessage());
-        }
+        $this->_notify($isSuspend ? 'route.suspended' : 'route.resumed', $baseCtx);
 
         // Parent audience — conditional on business rule
         $notifyParents = (bool) ($suspension['notify_parents'] ?? false);
         if ($notifyParents) {
-            try {
-                $helper->createNotice([
-                    'schoolId' => $this->schoolId,
-                    'subject'  => $subject,
-                    'body'     => $body,
-                    'audience' => ['parents_of_route:' . $routeId],
-                    'context'  => [
-                        'module'        => 'Transport',
-                        'topic'         => 'route_suspension',
-                        'action'        => $verb,
-                        'route_id'      => $routeId,
-                        'category'      => $category,
-                        'suspension_id' => (string) ($suspension['suspensionId'] ?? ''),
-                    ],
-                ]);
-                return date('c');
-            } catch (\Throwable $e) {
-                log_message('warning', 'Transport_service suspension notice (parents) failed: ' . $e->getMessage());
-            }
+            $this->_notify('route.suspension_notice_parents', $baseCtx);
+            return date('c');
         }
         return '';
     }
@@ -5641,39 +5594,14 @@ class Transport_service
      */
     private function _emitExpiryNotices(array $items): void
     {
-        try {
-            $this->ci->load->library('Communication_helper', null, 'commHelper');
-        } catch (\Throwable $_) {
-            log_message('warning', 'Transport_service: Communication_helper unavailable — expiry notices skipped.');
-            return;
-        }
-        // The Communication_helper API surface varies across installs; we
-        // route through its documented ::createNotice signature if present,
-        // otherwise degrade to log-only.
-        $helper = $this->ci->commHelper ?? null;
-        if (!is_object($helper) || !method_exists($helper, 'createNotice')) {
-            log_message('warning', 'Transport_service: Communication_helper::createNotice not available — expiry notices skipped.');
-            return;
-        }
         foreach ($items as $it) {
-            $vid    = (string) ($it['vehicleId']   ?? '');
-            $label  = (string) ($it['label']       ?? 'Expiry');
-            $number = (string) ($it['number']      ?? '');
-            $exp    = (string) ($it['expiry_date'] ?? '');
-            $days   = (int)    ($it['days_left']   ?? 0);
-            $subject = "Transport: {$label} expiring in {$days}d for vehicle {$number}";
-            $body    = "Vehicle: {$number} ({$vid})\nItem: {$label}\nExpires: {$exp} ({$days} days from today)\nAction: renew before expiry.";
-            try {
-                $helper->createNotice([
-                    'schoolId'  => $this->schoolId,
-                    'subject'   => $subject,
-                    'body'      => $body,
-                    'audience'  => ['role:Admin', 'role:Transport Manager'],
-                    'context'   => ['module' => 'Transport', 'topic' => 'expiry', 'vehicle_id' => $vid],
-                ]);
-            } catch (\Throwable $e) {
-                log_message('warning', 'Transport_service expiry notice failed: ' . $e->getMessage());
-            }
+            $this->_notify('fleet.doc_expiring', [
+                'vehicle_id'  => (string) ($it['vehicleId']   ?? ''),
+                'number'      => (string) ($it['number']      ?? ''),
+                'label'       => (string) ($it['label']       ?? 'Expiry'),
+                'expiry_date' => (string) ($it['expiry_date'] ?? ''),
+                'days_left'   => (int)    ($it['days_left']   ?? 0),
+            ]);
         }
     }
 

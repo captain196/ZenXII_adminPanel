@@ -3456,6 +3456,25 @@
       ]
     },
     {
+      "_comment": "TMS F6 (2026-07-07) — Transport_sos::list_all status filter (schoolId==, status==, orderBy createdAt DESC).",
+      "collectionGroup": "sosAlerts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "TMS F6 (2026-07-07) — Transport_notifier idempotency-doc retention sweep (schoolId==, orderBy expiresAt).",
+      "collectionGroup": "transportNoticeIdempotency",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "expiresAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "transportAuditLog",
       "queryScope": "COLLECTION",
       "fields": [

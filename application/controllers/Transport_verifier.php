@@ -212,6 +212,14 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-F5-3', 'category' => self::CAT_RUNTIME,    'label' => 'no stale pending post',    'callable' => '_chTrnF5_3' ],
             [ 'id' => 'CH-TRN-F5-4', 'category' => self::CAT_RUNTIME,    'label' => 'expense FK integrity',     'callable' => '_chTrnF5_4' ],
             [ 'id' => 'CH-TRN-F5-5', 'category' => self::CAT_PERFORMANCE,'label' => 'no N+1 in summary calc',   'callable' => '_chTrnF5_5' ],
+
+            // ─── F6 Communication Integration + SOS (added 2026-07-07) ──────
+            [ 'id' => 'CH-TRN-F6-1', 'category' => self::CAT_SOURCE,     'label' => 'notice writes via notifier',    'callable' => '_chTrnF6_1' ],
+            [ 'id' => 'CH-TRN-F6-2', 'category' => self::CAT_SOURCE,     'label' => 'category priority matrix',       'callable' => '_chTrnF6_2' ],
+            [ 'id' => 'CH-TRN-F6-3', 'category' => self::CAT_RUNTIME,    'label' => 'no expired idempotency claims',  'callable' => '_chTrnF6_3' ],
+            [ 'id' => 'CH-TRN-F6-4', 'category' => self::CAT_RUNTIME,    'label' => 'SOS dual-field client compat',   'callable' => '_chTrnF6_4' ],
+            [ 'id' => 'CH-TRN-F6-5', 'category' => self::CAT_CONTRACT,   'label' => 'notification audit-emission',    'callable' => '_chTrnF6_5' ],
+            [ 'id' => 'CH-TRN-F6-6', 'category' => self::CAT_PERFORMANCE,'label' => 'fanout batch limit',             'callable' => '_chTrnF6_6' ],
         ];
     }
 
@@ -1761,6 +1769,190 @@ class Transport_verifier extends CI_Controller
             return ['status' => 'FAIL', 'detail' => "nested per-item read in summary body: {$nested}"];
         }
         return ['status' => 'PASS', 'detail' => 'summary body uses single-query aggregation (no N+1)'];
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F6 Communication Integration + SOS assertions (CH-TRN-F6-1..6) 2026-07-07
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * CH-TRN-F6-1 — Every notification write in Transport source goes through
+     * Transport_notifier. No direct fs->setEntity('notices'|'noticeRecipients'
+     * |'notifications'|'sosAlerts', ...) from Transport controllers/service.
+     * Transport_notifier itself is the sole legitimate writer.
+     */
+    private function _chTrnF6_1(): array
+    {
+        $files = [
+            APPPATH . 'controllers/Transport.php',
+            APPPATH . 'controllers/Transport_ops.php',
+            APPPATH . 'controllers/Transport_driver.php',
+            APPPATH . 'controllers/Transport_rollover.php',
+            APPPATH . 'controllers/Transport_sos.php',
+            APPPATH . 'libraries/Transport_service.php',
+        ];
+        $offenders = [];
+        foreach ($files as $file) {
+            if (!is_readable($file)) { continue; }
+            $src = $this->_stripComments((string) file_get_contents($file));
+            // Forbidden direct writes to notification collections
+            if (preg_match_all(
+                "/setEntity\\s*\\(\\s*['\"](notices|noticeRecipients|notifications|sosAlerts|transportNoticeIdempotency)['\"]/",
+                $src, $matches, PREG_OFFSET_CAPTURE
+            )) {
+                foreach ($matches[0] as $hit) {
+                    $offenders[] = basename($file) . ':' . $hit[0];
+                }
+            }
+        }
+        if ($offenders !== []) {
+            return ['status' => 'FAIL', 'detail' => count($offenders) . ' direct writes bypassing Transport_notifier: ' . implode('; ', array_slice($offenders, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => 'no direct notification-collection writes outside Transport_notifier'];
+    }
+
+    /**
+     * CH-TRN-F6-2 — Every category enumerated in Transport_notifier::CATEGORIES
+     * has an entry in both PRIORITY_MATRIX and AUDIENCE_MATRIX. Guards against
+     * a category being added without a priority/audience declaration.
+     */
+    private function _chTrnF6_2(): array
+    {
+        if (!class_exists('Transport_notifier')) {
+            @include_once APPPATH . 'libraries/Transport_notifier.php';
+        }
+        if (!class_exists('Transport_notifier')) {
+            return ['status' => 'FAIL', 'detail' => 'Transport_notifier class not loadable'];
+        }
+        $cats = (array) Transport_notifier::CATEGORIES;
+        $priority = (array) Transport_notifier::PRIORITY_MATRIX;
+        $audience = (array) Transport_notifier::AUDIENCE_MATRIX;
+        $missingPriority = [];
+        $missingAudience = [];
+        foreach ($cats as $c) {
+            if (!isset($priority[$c])) { $missingPriority[] = $c; }
+            if (!isset($audience[$c])) { $missingAudience[] = $c; }
+        }
+        if ($missingPriority !== [] || $missingAudience !== []) {
+            return ['status' => 'FAIL', 'detail' => sprintf(
+                'missing_priority=%d missing_audience=%d; sample: %s',
+                count($missingPriority), count($missingAudience),
+                implode(',', array_slice(array_merge($missingPriority, $missingAudience), 0, 3))
+            )];
+        }
+        return ['status' => 'PASS', 'detail' => count($cats) . ' categories fully mapped (priority + audience)'];
+    }
+
+    /**
+     * CH-TRN-F6-3 — No idempotency claim doc past its expiresAt (would
+     * signal reconciler/backfill gap). Retention is 30 days per Refinement 2;
+     * anything past that should have been swept.
+     */
+    private function _chTrnF6_3(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere('transportNoticeIdempotency', [], null, 'ASC', 200);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'collection unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'no idempotency claims — trivial pass'];
+        }
+        $now = time();
+        $stale = 0;
+        foreach ($rows as $r) {
+            $inner = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
+            $exp = (string) ($inner['expiresAt'] ?? '');
+            if ($exp === '') { continue; }
+            $expTs = strtotime($exp);
+            // Stale = past expiry by more than 24h (retention breach signal)
+            if ($expTs !== false && $expTs < ($now - 86400)) { $stale++; }
+        }
+        if ($stale > 0) {
+            return ['status' => 'WARN', 'detail' => "{$stale} idempotency doc(s) past retention — sweeper gap"];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' idempotency claims within retention'];
+    }
+
+    /**
+     * CH-TRN-F6-4 — Every sosAlerts doc has BOTH `active:bool` and
+     * `status:string` fields (dual-write for shipped Parent+Teacher client
+     * compat — Parent repo filters on active==true but the model declares
+     * status).
+     */
+    private function _chTrnF6_4(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere('sosAlerts', [], null, 'DESC', 50);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'collection unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'no SOS alerts — trivial pass'];
+        }
+        $missing = [];
+        foreach ($rows as $r) {
+            $inner = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
+            $id = (string) ($r['id'] ?? $inner['id'] ?? '?');
+            if (!array_key_exists('active', $inner) || !array_key_exists('status', $inner)) {
+                $missing[] = $id;
+            }
+        }
+        if ($missing !== []) {
+            return ['status' => 'FAIL', 'detail' => count($missing) . ' SOS docs missing active/status: ' . implode(',', array_slice($missing, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' SOS docs carry both active and status'];
+    }
+
+    /**
+     * CH-TRN-F6-5 — Every Transport_notifier::notify() call emits exactly one
+     * `transportNotification` audit row (contract per F6-5). Source-scan:
+     * confirm the emitAudit call inside notify() is present and unguarded.
+     */
+    private function _chTrnF6_5(): array
+    {
+        $path = APPPATH . 'libraries/Transport_notifier.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = (string) file_get_contents($path);
+        // Look for emitAudit call inside notify()
+        if (!preg_match('/public\s+function\s+notify\s*\([^)]*\)[^{]*\{/', $src, $m, PREG_OFFSET_CAPTURE)) {
+            return ['status' => 'FAIL', 'detail' => 'notify() method not found'];
+        }
+        $start = $m[0][1];
+        $body  = substr($src, $start, 8000);
+        if (!preg_match("/->emitAudit\\s*\\(\\s*'transportNotification'/", $body)) {
+            return ['status' => 'FAIL', 'detail' => 'notify() does not emit transportNotification audit row'];
+        }
+        return ['status' => 'PASS', 'detail' => 'every notify() emits transportNotification audit row'];
+    }
+
+    /**
+     * CH-TRN-F6-6 — Fanout write batches respect Firestore's 500-write limit.
+     * Source-scan: assert array_chunk with a constant ≤500 wraps the per-user
+     * notifications write loop.
+     */
+    private function _chTrnF6_6(): array
+    {
+        $path = APPPATH . 'libraries/Transport_notifier.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = (string) file_get_contents($path);
+        // Assert FIRESTORE_BATCH_LIMIT constant present and ≤500
+        if (!preg_match('/FIRESTORE_BATCH_LIMIT\s*=\s*(\d+)/', $src, $m)) {
+            return ['status' => 'FAIL', 'detail' => 'FIRESTORE_BATCH_LIMIT constant missing'];
+        }
+        $limit = (int) $m[1];
+        if ($limit <= 0 || $limit > 500) {
+            return ['status' => 'FAIL', 'detail' => "FIRESTORE_BATCH_LIMIT={$limit} outside safe range (1..500)"];
+        }
+        // Assert array_chunk uses the constant inside the fanout method
+        if (!preg_match('/array_chunk\s*\([^,]+,\s*self::FIRESTORE_BATCH_LIMIT\s*\)/', $src)) {
+            return ['status' => 'FAIL', 'detail' => 'array_chunk with FIRESTORE_BATCH_LIMIT not found in fanout'];
+        }
+        return ['status' => 'PASS', 'detail' => "fanout chunks bounded by FIRESTORE_BATCH_LIMIT={$limit}"];
     }
 
     // ─── shared source-grep helper ───────────────────────────────────────

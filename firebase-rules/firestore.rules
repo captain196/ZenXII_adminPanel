@@ -1434,6 +1434,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // F6 (2026-07-07) — Transport_notifier idempotency layer. Server-only
+    // writes (PHP service account via Transport_notifier); operational
+    // reads gated to staff for retention/dedup investigation.
+    match /transportNoticeIdempotency/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
     // ── Transport: denormalised caches (server-only writes) ──────
     match /busCapacityCache/{docId} {
       allow read: if isSameSchool();

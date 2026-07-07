@@ -5,6 +5,7 @@ $tab_map = [
     'vendors'     => ['panel'=>'panelVendors',     'icon'=>'fa-handshake-o',   'label'=>'Vendors'],
     'drivers'     => ['panel'=>'panelDrivers',     'icon'=>'fa-id-card-o',     'label'=>'Drivers'],
     'expenses'    => ['panel'=>'panelExpenses',    'icon'=>'fa-money',         'label'=>'Expenses'],
+    'sos'         => ['panel'=>'panelSos',         'icon'=>'fa-bell',          'label'=>'SOS Monitor'],
     'expiry'      => ['panel'=>'panelExpiry',      'icon'=>'fa-exclamation-triangle', 'label'=>'Expiry Dashboard'],
     'routes'      => ['panel'=>'panelRoutes',      'icon'=>'fa-road',          'label'=>'Routes & Stops'],
     'assignments' => ['panel'=>'panelAssignments',  'icon'=>'fa-users',         'label'=>'Assignments'],
@@ -113,6 +114,31 @@ $tab_map = [
       </div>
       <div id="expensesSummaryBar" style="margin-bottom:14px"></div>
       <table class="trn-table"><thead><tr><th>ID</th><th>Date</th><th>Type</th><th>Vehicle</th><th>Amount</th><th>Payee</th><th>Accounting</th><th>Status</th><th>Actions</th></tr></thead><tbody id="expensesTbody"></tbody></table>
+    </div>
+  </div>
+
+  <!-- SOS MONITOR (F6) -->
+  <div class="trn-panel<?= $at === 'sos' ? ' active' : '' ?>" id="panelSos">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>SOS Alerts</span>
+        <div style="display:flex;gap:6px">
+          <select id="sosStatusFilter" onchange="TRN.loadSos()" class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1);cursor:pointer">
+            <option value="">All statuses</option>
+            <option value="active" selected>Active only</option>
+            <option value="responded">Responded</option>
+            <option value="resolved">Resolved</option>
+          </select>
+          <button class="trn-btn trn-btn-danger" onclick="TRN.openRaiseSos()"><i class="fa fa-exclamation-triangle"></i> Raise SOS</button>
+        </div>
+      </div>
+      <div style="background:rgba(220,38,38,.06);border-left:3px solid #dc2626;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
+        F6 admin-fired SOS MVP. Teacher-app SOS trigger path lands in F9. Escalation is manual only — architecture stays open for future auto-escalation without redesign.
+      </div>
+      <table class="trn-table">
+        <thead><tr><th>ID</th><th>Raised</th><th>Type</th><th>Vehicle</th><th>Route</th><th>Message</th><th>Status</th><th>Responder</th><th>Actions</th></tr></thead>
+        <tbody id="sosTbody"></tbody>
+      </table>
     </div>
   </div>
 
@@ -262,6 +288,9 @@ $tab_map = [
 
 <!-- F5 Expense modal -->
 <?php $this->load->view('transport/partials/expense_modal'); ?>
+
+<!-- F6 SOS modal (admin-fired MVP) -->
+<?php $this->load->view('transport/partials/sos_modal'); ?>
 
 
 <!-- ROUTE MODAL -->
@@ -1364,6 +1393,92 @@ document.addEventListener('DOMContentLoaded', function(){
     post('transport_ops/rebuild_expense_summary',{year_month:''}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);}else toast(r.message,false)});
   };
 
+  // ═════════════════════════════════════════════════════════════════════
+  //  F6 SOS Monitor (LC-13, 2026-07-07)
+  // ═════════════════════════════════════════════════════════════════════
+  TRN.loadSos = function(){
+    var st = $('#sosStatusFilter').val() || '';
+    getJSON('transport_sos/list_all?status=' + encodeURIComponent(st) + '&limit=100').done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status !== 'success'){ $('#sosTbody').html('<tr><td colspan="9" style="text-align:center;color:var(--rose)">'+(r.message||'load failed')+'</td></tr>'); return; }
+      var rows = r.alerts || [];
+      if(rows.length === 0){ $('#sosTbody').html('<tr><td colspan="9" style="text-align:center;color:var(--t3)">No SOS alerts</td></tr>'); return; }
+      var html = '';
+      rows.forEach(function(a){
+        var st = String(a.status||'');
+        var cls = st === 'active' ? 'trn-badge-red' : (st === 'responded' ? 'trn-badge-amber' : 'trn-badge-green');
+        html += '<tr>';
+        html += '<td>' + escH(a.id||'') + '</td>';
+        html += '<td>' + escH((a.createdAt||'').substring(0,19).replace('T',' ')) + '</td>';
+        html += '<td>' + escH(a.alertType||'') + '</td>';
+        html += '<td>' + escH(a.vehicleId||'—') + '</td>';
+        html += '<td>' + escH(a.routeId||'—') + '</td>';
+        html += '<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escH(a.message||'')+'">' + escH((a.message||'').substring(0,50)) + '</td>';
+        html += '<td><span class="trn-badge ' + cls + '">' + escH(st) + '</span></td>';
+        html += '<td>' + escH(a.respondedBy||'—') + '</td>';
+        html += '<td>';
+        if(st === 'active'){
+          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSosAction(\''+a.id+'\',\'respond\')"><i class="fa fa-check"></i></button> ';
+        }
+        if(st === 'active' || st === 'responded'){
+          html += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSosAction(\''+a.id+'\',\'resolve\')"><i class="fa fa-flag-checkered"></i></button>';
+        }
+        html += '</td></tr>';
+      });
+      $('#sosTbody').html(html);
+    });
+  };
+  TRN.openRaiseSos = function(){
+    // Populate vehicle + route pickers
+    var vopts = '<option value="">-- None --</option>';
+    (vehicles||[]).forEach(function(v){ vopts += '<option value="'+v.id+'">'+escH(v.number)+'</option>'; });
+    $('#sosVehicle').html(vopts);
+    var ropts = '<option value="">-- None --</option>';
+    (routes||[]).forEach(function(r){ ropts += '<option value="'+r.id+'">'+escH(r.name||r.id)+'</option>'; });
+    $('#sosRoute').html(ropts);
+    $('#sosMessage,#sosLat,#sosLng').val('');
+    $('#sosAlertType').val('emergency');
+    $('#sosRaiseModal').addClass('show');
+  };
+  TRN.closeSosRaise = function(){ $('#sosRaiseModal').removeClass('show'); };
+  TRN.confirmRaiseSos = function(){
+    var msg = $('#sosMessage').val().trim();
+    if(!msg){ toast('Message is required.', false); return; }
+    if(!confirm('This will fire an URGENT alert to Admin, Transport Manager, Principal AND all parents on the affected route. Continue?')) return;
+    post('transport_sos/raise', {
+      vehicle_id: $('#sosVehicle').val(),
+      route_id:   $('#sosRoute').val(),
+      lat:        $('#sosLat').val() || 0,
+      lng:        $('#sosLng').val() || 0,
+      alert_type: $('#sosAlertType').val(),
+      message:    msg,
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeSosRaise(); TRN.loadSos(); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.openSosAction = function(id, kind){
+    $('#sosActionId').val(id); $('#sosActionKind').val(kind);
+    $('#sosActionTitle').text(kind === 'respond' ? 'Respond to SOS' : 'Resolve SOS');
+    $('#sosActionNotes').val('');
+    $('#sosActionModal').addClass('show');
+  };
+  TRN.closeSosAction = function(){ $('#sosActionModal').removeClass('show'); };
+  TRN.confirmSosAction = function(){
+    var notes = $('#sosActionNotes').val().trim();
+    if(!notes){ toast('Notes required.', false); return; }
+    var kind = $('#sosActionKind').val();
+    post('transport_sos/' + kind, {
+      sos_id: $('#sosActionId').val(),
+      notes:  notes,
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeSosAction(); TRN.loadSos(); }
+      else toast(r.message, false);
+    });
+  };
+
   // Init
   // F1 (2026-07-07): load vendors FIRST so the vendor picker inside the
   // vehicle modal is populated before the first Add-Vehicle click.
@@ -1373,6 +1488,7 @@ document.addEventListener('DOMContentLoaded', function(){
   loadDrivers();
   loadExpenseCategories();
   loadExpenses();
+  TRN.loadSos();
   setTimeout(function(){loadStops();loadAssignments();loadExpiry();},500);
 })();
 });

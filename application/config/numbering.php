@@ -281,6 +281,17 @@ $config['numbering'] = [
             ],
         ],
 
+        'trn_sos' => [
+            'prefix'       => 'SOS',
+            'padWidth'     => 4,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'sosAlerts',
+                'pattern'    => '/^SOS(\d+)$/',
+            ],
+        ],
+
         'trn_driver_incident' => [
             'prefix'       => 'DINC',
             'padWidth'     => 6,
@@ -397,6 +408,8 @@ $config['numbering'] = [
         'trn_temp_driver_assign'   => 'enabled',
         // Feature F5 (Transport Expenses + Accounting) cutover 2026-07-07:
         'trn_expense'              => 'enabled',
+        // Feature F6 (Communication Integration + SOS) cutover 2026-07-07:
+        'trn_sos'                  => 'enabled',
         // Still disabled — future features:
         'trn_trip'                 => 'disabled',
         'trn_event'                => 'disabled',
