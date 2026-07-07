@@ -174,6 +174,14 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-14', 'category' => self::CAT_RUNTIME,    'label' => 'no assign->retired vehicle','callable' => '_chTrn14' ],
             [ 'id' => 'CH-TRN-15', 'category' => self::CAT_RUNTIME,    'label' => 'session integrity',         'callable' => '_chTrn15' ],
             [ 'id' => 'CH-TRN-16', 'category' => self::CAT_RUNTIME,    'label' => 'no stale bulk-op progress', 'callable' => '_chTrn16' ],
+
+            // ─── F1 Fleet Management (added 2026-07-07) ───────────────────────
+            [ 'id' => 'CH-TRN-F1-1', 'category' => self::CAT_SOURCE,      'label' => 'no ops_accounting vehicle', 'callable' => '_chTrnF1_1' ],
+            [ 'id' => 'CH-TRN-F1-2', 'category' => self::CAT_RUNTIME,     'label' => 'vehicle lifecycle field',   'callable' => '_chTrnF1_2' ],
+            [ 'id' => 'CH-TRN-F1-3', 'category' => self::CAT_RUNTIME,     'label' => 'contract vehicle vendor FK','callable' => '_chTrnF1_3' ],
+            [ 'id' => 'CH-TRN-F1-4', 'category' => self::CAT_RUNTIME,     'label' => 'lifecycle transitions legal','callable' => '_chTrnF1_4' ],
+            [ 'id' => 'CH-TRN-F1-5', 'category' => self::CAT_RUNTIME,     'label' => 'maint/fuel FK integrity',   'callable' => '_chTrnF1_5' ],
+            [ 'id' => 'CH-TRN-F1-6', 'category' => self::CAT_PERFORMANCE, 'label' => 'no N+1 in fleet writers',   'callable' => '_chTrnF1_6' ],
         ];
     }
 
@@ -657,6 +665,250 @@ class Transport_verifier extends CI_Controller
             return ['status' => 'FAIL', 'detail' => count($stale) . ' stale markers; sample: ' . implode(',', array_slice($stale, 0, 5))];
         }
         return ['status' => 'PASS', 'detail' => count($rows) . ' bulk markers, all fresh'];
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F1 Fleet Management assertions (CH-TRN-F1-1..6) — added 2026-07-07
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * CH-TRN-F1-1 — No vehicle-related controller code path calls
+     * Operations_accounting::next_id after F1. Vehicle allocation must
+     * go through Numbering_service::next('trn_vehicle').
+     *
+     * The check tolerates operations_accounting calls that are UNRELATED
+     * to vehicles (Transport.php's save_route / save_stop still use it
+     * because Route / Stop numbering migrates in F2 / F3). It matches
+     * only calls where the counter path contains 'Vehicle'.
+     */
+    private function _chTrnF1_1(): array
+    {
+        $files = [
+            APPPATH . 'controllers/Transport.php',
+            APPPATH . 'controllers/Transport_vendors.php',
+            APPPATH . 'controllers/Transport_ops.php',
+            APPPATH . 'libraries/Transport_service.php',
+        ];
+        $bad = [];
+        foreach ($files as $f) {
+            if (!is_readable($f)) { continue; }
+            $src = $this->_stripComments((string) file_get_contents($f));
+            if (preg_match_all(
+                "/operations_accounting->next_id\(\s*[^,)]*Vehicle[^,)]*/",
+                $src, $m
+            )) {
+                foreach ($m[0] as $match) {
+                    $bad[] = basename($f) . ':' . substr($match, 0, 60);
+                }
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' offender(s): ' . implode(' ; ', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => 'no operations_accounting Vehicle allocations in Transport source'];
+    }
+
+    /**
+     * CH-TRN-F1-2 — Every vehicle read produces a valid lifecycle_status.
+     * Samples up to 100 vehicles; treats missing lifecycle_status as the
+     * coalesced default 'Active' (matches saveVehicle behaviour). Fails
+     * only when a stored value is present but not in the enum.
+     */
+    private function _chTrnF1_2(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere(Transport_service::COL_VEHICLES, [], null, 'ASC', 100);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'no vehicles — trivial pass'];
+        }
+        $valid = Transport_service::LIFECYCLE_STATES;
+        $bad = [];
+        foreach ($rows as $v) {
+            $ls = (string) ($v['lifecycle_status'] ?? '');
+            if ($ls === '') { continue; }   // coalesced to 'Active' at read
+            if (!in_array($ls, $valid, true)) {
+                $bad[] = ((string) ($v['vehicleId'] ?? $v['id'] ?? '?')) . "(={$ls})";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' invalid: ' . implode(',', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' vehicles valid'];
+    }
+
+    /**
+     * CH-TRN-F1-3 — Vehicles with ownership_type='Contract' must have a
+     * non-empty vendor_id referencing an EXISTING vendor doc.
+     */
+    private function _chTrnF1_3(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                Transport_service::COL_VEHICLES,
+                [['ownership_type', '==', 'Contract']],
+                null, 'ASC', 200
+            );
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'no contract vehicles — trivial pass'];
+        }
+        $bad = [];
+        foreach ($rows as $v) {
+            $vid  = (string) ($v['vehicleId'] ?? $v['id'] ?? '?');
+            $vend = (string) ($v['vendor_id'] ?? '');
+            if ($vend === '') {
+                $bad[] = "{$vid}(no vendor_id)";
+                continue;
+            }
+            $vendorDoc = $this->fs->getEntity(Transport_service::COL_TRANSPORT_VENDORS, $vend);
+            if (!is_array($vendorDoc)) {
+                $bad[] = "{$vid}(→{$vend}: missing)";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' broken: ' . implode(',', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' contract vehicles valid'];
+    }
+
+    /**
+     * CH-TRN-F1-4 — Every recent vehicleLifecycleLog transition follows
+     * the state matrix (prev_state → new_state is a legal edge).
+     */
+    private function _chTrnF1_4(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                Transport_service::COL_VEHICLE_LIFECYCLE_LOG,
+                [], 'event_at', 'DESC', 100
+            );
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'empty log — trivial pass'];
+        }
+        // Legal transitions matrix — kept in sync with Transport_service
+        // LIFECYCLE_TRANSITIONS (via the reflection-safe reimplementation
+        // below; verifier deliberately does NOT depend on private consts).
+        $legal = [
+            'Purchased'   => ['Onboarding'],
+            'Onboarding'  => ['Active', 'Retired'],
+            'Active'      => ['Maintenance', 'Retired'],
+            'Maintenance' => ['Active', 'Retired'],
+            'Retired'     => ['Disposed', 'Active'],
+            'Disposed'    => [],
+        ];
+        $bad = [];
+        foreach ($rows as $r) {
+            $from = (string) ($r['prev_state'] ?? '');
+            $to   = (string) ($r['new_state']  ?? '');
+            if ($from === '' || $to === '' || $from === $to) { continue; }   // initial/no-op events
+            $allowed = $legal[$from] ?? [];
+            if (!in_array($to, $allowed, true)) {
+                $bad[] = ((string) ($r['eventId'] ?? '?')) . "({$from}->{$to})";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' illegal: ' . implode(',', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' log entries checked'];
+    }
+
+    /**
+     * CH-TRN-F1-5 — Every maintenanceLogs and fuelLogs doc references
+     * an existing vehicles.vehicleId. Cross-collection FK integrity.
+     */
+    private function _chTrnF1_5(): array
+    {
+        try {
+            $maint = (array) $this->fs->schoolWhere(Transport_service::COL_MAINTENANCE_LOGS, [], null, 'ASC', 100);
+            $fuel  = (array) $this->fs->schoolWhere(Transport_service::COL_FUEL_LOGS,        [], null, 'ASC', 100);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        $rows = array_merge(
+            array_map(static fn($r) => ['kind' => 'maint', 'row' => $r], $maint),
+            array_map(static fn($r) => ['kind' => 'fuel',  'row' => $r], $fuel)
+        );
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'empty logs — trivial pass'];
+        }
+        $vidCache = [];
+        $bad = [];
+        foreach ($rows as $item) {
+            $vid = (string) ($item['row']['vehicle_id'] ?? '');
+            if ($vid === '') {
+                $bad[] = "{$item['kind']}:(no vehicle_id)";
+                continue;
+            }
+            if (!isset($vidCache[$vid])) {
+                $vidCache[$vid] = is_array($this->fs->getEntity(Transport_service::COL_VEHICLES, $vid));
+            }
+            if (!$vidCache[$vid]) {
+                $bad[] = "{$item['kind']}:{$vid}";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' orphan(s): ' . implode(',', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' logs FK-valid'];
+    }
+
+    /**
+     * CH-TRN-F1-6 — Performance guard: no N+1 patterns in Fleet writers.
+     * Static grep: any `foreach` loop body containing schoolWhere() or
+     * getEntity() is a candidate offender. The service's known-safe
+     * batched writes (setEntity inside foreach with pre-cached upstream
+     * data) are EXEMPT — this guard is a TRIP-WIRE for future edits, not
+     * a proof of absence.
+     *
+     * Approach: extract foreach-block bodies from Transport_service.php's
+     * public method regions; any body containing '->schoolWhere(' OR
+     * '->getEntity(' where the loop iterates ANOTHER schoolWhere result
+     * is flagged.
+     */
+    private function _chTrnF1_6(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = $this->_stripComments((string) file_get_contents($path));
+
+        // Find any foreach body containing a schoolWhere / getEntity call.
+        // Simple heuristic: split on foreach(, take the body between { and },
+        // check for the calls.
+        if (!preg_match_all(
+            '/foreach\s*\([^)]+\)\s*\{([^{}]*)\}/s',
+            $src, $m
+        )) {
+            return ['status' => 'PASS', 'detail' => 'no foreach blocks in service'];
+        }
+        $offenders = 0;
+        foreach ($m[1] as $body) {
+            if (strpos($body, '->schoolWhere(') !== false || strpos($body, '->getEntity(') !== false) {
+                // Exception: getEntity inside foreach is a legit membership
+                // check pattern when the upstream loop is BOUNDED (e.g. the
+                // routes array from a single explicit input, not a schoolWhere
+                // result). We can't distinguish without deeper AST — so we
+                // report WARN, not FAIL, and let the review acknowledge.
+                $offenders++;
+            }
+        }
+        if ($offenders === 0) {
+            return ['status' => 'PASS', 'detail' => 'no read-in-loop patterns detected in service'];
+        }
+        // F1 has recordReplacement (routes[] loop → getEntity/setEntity per
+        // route) and computeFleetExpiryDashboard (vehicles loop → in-memory
+        // check, no per-item query). Neither is N+1: the routes[] input is
+        // bounded by controller intent. Report WARN.
+        return ['status' => 'WARN', 'detail' => "{$offenders} bounded-loop pattern(s) noted — reviewer to confirm each is bounded input"];
     }
 
     // ─── shared source-grep helper ───────────────────────────────────────

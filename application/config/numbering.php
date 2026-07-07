@@ -364,28 +364,33 @@ $config['numbering'] = [
         'queue'    => 'enabled',
         'log'      => 'enabled',
 
-        // Transport (TMS Phase 0 foundation, 2026-07-06) — all disabled.
-        // Each kind is flipped 'enabled' by the specific Phase 1+ LC that
-        // starts allocating IDs of that kind (see TMS v2.1 roadmap §7.3).
-        'trn_vehicle'              => 'disabled',
-        'trn_vehicle_doc'          => 'disabled',
-        'trn_vehicle_lifecycle'    => 'disabled',
-        'trn_vehicle_replacement'  => 'disabled',
-        'trn_vehicle_transfer'     => 'disabled',
-        'trn_vendor'               => 'disabled',
+        // Transport — Feature F1 (Fleet Management) cutover 2026-07-07:
+        // 9 Fleet + Vendor + audit kinds flipped to 'enabled' as F1 landed.
+        // Remaining 11 kinds stay 'disabled' — activated by their respective
+        // features per [[transport_feature_milestones]] (F2 flips trn_route/
+        // trn_stop / trn_route_suspension, F3 flips trn_assignment_history,
+        // F4 flips driver kinds, F5 flips trn_expense, F7 flips trn_trip,
+        // F8 flips event kinds).
+        'trn_vehicle'              => 'enabled',
+        'trn_vehicle_doc'          => 'enabled',
+        'trn_vehicle_lifecycle'    => 'enabled',
+        'trn_vehicle_replacement'  => 'enabled',
+        'trn_vehicle_transfer'     => 'enabled',
+        'trn_vendor'               => 'enabled',
+        'trn_maintenance'          => 'enabled',
+        'trn_fuel'                 => 'enabled',
+        'trn_audit'                => 'enabled',
+        // Still disabled — future features:
         'trn_route'                => 'disabled',
         'trn_stop'                 => 'disabled',
         'trn_route_suspension'     => 'disabled',
         'trn_assignment_history'   => 'disabled',
         'trn_trip'                 => 'disabled',
-        'trn_maintenance'          => 'disabled',
-        'trn_fuel'                 => 'disabled',
         'trn_expense'              => 'disabled',
         'trn_driver_incident'      => 'disabled',
         'trn_driver_review'        => 'disabled',
         'trn_temp_driver_assign'   => 'disabled',
         'trn_event'                => 'disabled',
         'trn_event_assign'         => 'disabled',
-        'trn_audit'                => 'disabled',
     ],
 ];

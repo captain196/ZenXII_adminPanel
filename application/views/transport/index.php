@@ -2,6 +2,8 @@
 $at = isset($active_tab) ? $active_tab : 'vehicles';
 $tab_map = [
     'vehicles'    => ['panel'=>'panelVehicles',    'icon'=>'fa-bus',           'label'=>'Vehicles'],
+    'vendors'     => ['panel'=>'panelVendors',     'icon'=>'fa-handshake-o',   'label'=>'Vendors'],
+    'expiry'      => ['panel'=>'panelExpiry',      'icon'=>'fa-exclamation-triangle', 'label'=>'Expiry Dashboard'],
     'routes'      => ['panel'=>'panelRoutes',      'icon'=>'fa-road',          'label'=>'Routes & Stops'],
     'assignments' => ['panel'=>'panelAssignments',  'icon'=>'fa-users',         'label'=>'Assignments'],
 ];
@@ -65,7 +67,42 @@ $tab_map = [
   <div class="trn-panel<?= $at === 'vehicles' ? ' active' : '' ?>" id="panelVehicles">
     <div class="trn-card">
       <div class="trn-card-title"><span>Vehicles</span><button class="trn-btn trn-btn-primary" onclick="TRN.openVehModal()"><i class="fa fa-plus"></i> Add Vehicle</button></div>
-      <table class="trn-table"><thead><tr><th>ID</th><th>Number</th><th>Type</th><th>Capacity</th><th>Driver</th><th>Phone</th><th>Status</th><th>Actions</th></tr></thead><tbody id="vehTbody"></tbody></table>
+      <table class="trn-table"><thead><tr><th>ID</th><th>Number</th><th>Type</th><th>Capacity</th><th>Driver</th><th>Ownership</th><th>Lifecycle</th><th>Actions</th></tr></thead><tbody id="vehTbody"></tbody></table>
+    </div>
+  </div>
+
+  <!-- VENDORS (F1) -->
+  <div class="trn-panel<?= $at === 'vendors' ? ' active' : '' ?>" id="panelVendors">
+    <div class="trn-card">
+      <div class="trn-card-title"><span>Transport Vendors</span><button class="trn-btn trn-btn-primary" onclick="TRN.openVendorModal()"><i class="fa fa-plus"></i> Add Vendor</button></div>
+      <table class="trn-table"><thead><tr><th>ID</th><th>Name</th><th>Contact</th><th>Phone</th><th>GSTIN</th><th>Status</th><th>Actions</th></tr></thead><tbody id="vendorsTbody"></tbody></table>
+    </div>
+  </div>
+
+  <!-- EXPIRY DASHBOARD (F1) -->
+  <div class="trn-panel<?= $at === 'expiry' ? ' active' : '' ?>" id="panelExpiry">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>Fleet Expiry Dashboard</span>
+        <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.recomputeExpiry()"><i class="fa fa-refresh"></i> Recompute Now</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:16px">
+        <div class="trn-card" style="text-align:center;margin:0;border-left:4px solid var(--rose)">
+          <div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">Expiring in 7 days</div>
+          <div style="font-size:2.4rem;font-weight:700;font-family:var(--font-b);color:var(--rose)" id="exp7">—</div>
+        </div>
+        <div class="trn-card" style="text-align:center;margin:0;border-left:4px solid #f59e0b">
+          <div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">Expiring in 15 days</div>
+          <div style="font-size:2.4rem;font-weight:700;font-family:var(--font-b);color:#f59e0b" id="exp15">—</div>
+        </div>
+        <div class="trn-card" style="text-align:center;margin:0;border-left:4px solid #3b82f6">
+          <div style="font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.3px">Expiring in 30 days</div>
+          <div style="font-size:2.4rem;font-weight:700;font-family:var(--font-b);color:#3b82f6" id="exp30">—</div>
+        </div>
+      </div>
+      <div id="expLastRun" style="font-size:12px;color:var(--t3);margin-bottom:10px;font-family:var(--font-b)"></div>
+      <table class="trn-table"><thead><tr><th>Vehicle</th><th>Item</th><th>Expiry</th><th>Days Left</th><th>Window</th></tr></thead>
+      <tbody id="expTbody"></tbody></table>
     </div>
   </div>
 
@@ -93,17 +130,64 @@ $tab_map = [
   </div>
 </div></section></div>
 
-<!-- VEHICLE MODAL -->
-<div class="trn-modal-bg" id="vehModal"><div class="trn-modal">
+<!-- VEHICLE MODAL (F1 extended fields) -->
+<div class="trn-modal-bg" id="vehModal"><div class="trn-modal" style="width:720px">
   <div class="trn-modal-title"><span id="vehModalTitle">Add Vehicle</span><button class="trn-modal-close" onclick="TRN.closeVehModal()">&times;</button></div>
   <input type="hidden" id="vhId">
   <div class="trn-form-row"><div class="trn-form-group"><label>Vehicle Number *</label><input type="text" id="vhNumber"></div><div class="trn-form-group"><label>Type</label><select id="vhType"><option>Bus</option><option>Van</option><option>Auto</option><option>Car</option></select></div></div>
-  <div class="trn-form-row"><div class="trn-form-group"><label>Capacity</label><input type="number" id="vhCapacity" value="40" min="1"></div><div class="trn-form-group"><label>Driver Name</label><input type="text" id="vhDriverName"></div></div>
-  <div class="trn-form-row"><div class="trn-form-group"><label>Driver Phone</label><input type="text" id="vhDriverPhone"></div><div class="trn-form-group"><label>GPS Enabled</label><select id="vhGps"><option value="0">No</option><option value="1">Yes</option></select></div></div>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Capacity</label><input type="number" id="vhCapacity" value="40" min="1"></div><div class="trn-form-group"><label>Fuel Type</label><select id="vhFuelType"><option>Diesel</option><option>Petrol</option><option>CNG</option><option>Electric</option><option>Hybrid</option></select></div></div>
+
+  <!-- HR-linked driver: staff_id is the canonical FK; driver_name/phone are
+       historical snapshots taken at save time. -->
+  <div class="trn-form-row"><div class="trn-form-group"><label>Driver Staff ID (HR link)</label><input type="text" id="vhStaffId" placeholder="STA0001 (optional)"></div><div class="trn-form-group"><label>Conductor Staff ID</label><input type="text" id="vhConductorStaffId" placeholder="STA0002 (optional)"></div></div>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Driver Name (fallback if no staff)</label><input type="text" id="vhDriverName"></div><div class="trn-form-group"><label>Driver Phone (fallback if no staff)</label><input type="text" id="vhDriverPhone"></div></div>
+
+  <!-- Ownership + vendor (Contract requires vendor_id) -->
+  <div class="trn-form-row"><div class="trn-form-group"><label>Ownership</label><select id="vhOwnership" onchange="TRN.vhToggleContract()"><option value="School">School</option><option value="Contract">Contract</option></select></div><div class="trn-form-group"><label>Vendor (if Contract)</label><select id="vhVendorId"><option value="">-- None --</option></select></div></div>
+  <div class="trn-form-row" id="vhContractRow" style="display:none">
+    <div class="trn-form-group"><label>Monthly Hire (Rs)</label><input type="number" id="vhHire" min="0" step="0.01" value="0"></div>
+    <div class="trn-form-group"><label>Contract Start</label><input type="date" id="vhContractStart"></div>
+  </div>
+  <div class="trn-form-row" id="vhContractRow2" style="display:none">
+    <div class="trn-form-group"><label>Contract End</label><input type="date" id="vhContractEnd"></div>
+    <div class="trn-form-group"></div>
+  </div>
+
+  <!-- Statutory documents (top-level, quick fields) -->
   <div class="trn-form-row"><div class="trn-form-group"><label>Insurance No.</label><input type="text" id="vhInsNo"></div><div class="trn-form-group"><label>Insurance Expiry</label><input type="date" id="vhInsExp"></div></div>
-  <div class="trn-form-row"><div class="trn-form-group"><label>Fitness Expiry</label><input type="date" id="vhFitExp"></div><div class="trn-form-group"><label>Status</label><select id="vhStatus"><option value="Active">Active</option><option value="Inactive">Inactive</option><option value="Maintenance">Maintenance</option></select></div></div>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Permit No.</label><input type="text" id="vhPermitNo"></div><div class="trn-form-group"><label>Permit Expiry</label><input type="date" id="vhPermitExp"></div></div>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Fitness Expiry</label><input type="date" id="vhFitExp"></div><div class="trn-form-group"><label>Pollution (PUC) Expiry</label><input type="date" id="vhPollutionExp"></div></div>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Road Tax Expiry</label><input type="date" id="vhRoadTaxExp"></div><div class="trn-form-group"><label>Service KM Interval</label><input type="number" id="vhSvcKmInt" min="0" value="10000"></div></div>
+
+  <!-- GPS (F1 fields only; Phase 5 owns live position writes) -->
+  <div class="trn-form-row"><div class="trn-form-group"><label>GPS Enabled</label><select id="vhGps"><option value="0">No</option><option value="1">Yes</option></select></div><div class="trn-form-group"><label>GPS Device ID</label><input type="text" id="vhGpsDeviceId" placeholder="(Phase 5 will populate live fields)"></div></div>
+
   <button class="trn-btn trn-btn-primary" onclick="TRN.saveVehicle()" style="width:100%;margin-top:8px">Save Vehicle</button>
 </div></div>
+
+<!-- VENDOR MODAL (F1) -->
+<div class="trn-modal-bg" id="vendorModal"><div class="trn-modal" style="width:560px">
+  <div class="trn-modal-title"><span id="vendorModalTitle">Add Vendor</span><button class="trn-modal-close" onclick="TRN.closeVendorModal()">&times;</button></div>
+  <input type="hidden" id="vndId">
+  <div class="trn-form-group"><label>Vendor Name *</label><input type="text" id="vndName"></div>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Contact Person</label><input type="text" id="vndContact"></div><div class="trn-form-group"><label>Phone</label><input type="text" id="vndPhone"></div></div>
+  <div class="trn-form-row"><div class="trn-form-group"><label>Email</label><input type="email" id="vndEmail"></div><div class="trn-form-group"><label>GSTIN</label><input type="text" id="vndGstin"></div></div>
+  <div class="trn-form-group"><label>Address</label><input type="text" id="vndAddress"></div>
+  <div class="trn-form-group"><label>Notes</label><input type="text" id="vndNotes"></div>
+  <button class="trn-btn trn-btn-primary" onclick="TRN.saveVendor()" style="width:100%;margin-top:8px">Save Vendor</button>
+</div></div>
+
+<!-- VENDOR TERMINATE MODAL (F1) -->
+<div class="trn-modal-bg" id="vendorTerminateModal"><div class="trn-modal" style="width:440px">
+  <div class="trn-modal-title"><span>Terminate Vendor</span><button class="trn-modal-close" onclick="TRN.closeVendorTerminate()">&times;</button></div>
+  <input type="hidden" id="vndTermId">
+  <div class="trn-form-group"><label>Reason *</label><input type="text" id="vndTermReason" placeholder="e.g. Contract not renewed"></div>
+  <button class="trn-btn trn-btn-danger" onclick="TRN.confirmTerminateVendor()" style="width:100%">Terminate</button>
+</div></div>
+
+<!-- Vehicle Manage modal (partial) -->
+<?php $this->load->view('transport/partials/vehicle_manage_modal'); ?>
+
 
 <!-- ROUTE MODAL -->
 <div class="trn-modal-bg" id="routeModal"><div class="trn-modal" style="width:480px">
@@ -151,25 +235,280 @@ document.addEventListener('DOMContentLoaded', function(){
 
   window.TRN={};
 
-  // ── Vehicles ──
+  // ── Vehicles (F1 extended) ──
+  var vendors=[];   // populated by loadVendors()
   function loadVehicles(){
     getJSON('transport/get_vehicles').done(function(r){
       if(r.status!=='success') return; vehicles=r.vehicles||[];
       var html=''; vehicles.forEach(function(v){
-        var stCls=v.status==='Active'?'trn-badge-green':v.status==='Maintenance'?'trn-badge-amber':'trn-badge-red';
-        html+='<tr><td>'+escH(v.id)+'</td><td>'+escH(v.number)+'</td><td>'+escH(v.type)+'</td><td>'+v.capacity+'</td><td>'+escH(v.driver_name)+'</td><td>'+escH(v.driver_phone)+'</td><td><span class="trn-badge '+stCls+'">'+v.status+'</span></td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editVeh(\''+v.id+'\')"><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delVeh(\''+v.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+        var lc = v.lifecycle_status || 'Active';
+        var lcCls = lc==='Active'?'trn-badge-green':lc==='Maintenance'?'trn-badge-amber':(lc==='Retired'||lc==='Disposed')?'trn-badge-red':'trn-badge-blue';
+        var own = v.ownership_type || 'School';
+        html+='<tr><td>'+escH(v.id)+'</td><td>'+escH(v.number)+'</td><td>'+escH(v.type)+'</td><td>'+v.capacity+'</td><td>'+escH(v.driver_name||'—')+(v.staff_id?' <small style="opacity:.6">('+escH(v.staff_id)+')</small>':'')+'</td>';
+        html+='<td>'+escH(own)+(v.vendor_id?' <small style="opacity:.6">'+escH(v.vendor_id)+'</small>':'')+'</td>';
+        html+='<td><span class="trn-badge '+lcCls+'">'+lc+'</span></td>';
+        html+='<td>'+
+          '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editVeh(\''+v.id+'\')"><i class="fa fa-pencil"></i></button> '+
+          '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openVehManage(\''+v.id+'\')"><i class="fa fa-cog"></i> Manage</button> '+
+          '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delVeh(\''+v.id+'\')"><i class="fa fa-trash"></i></button>'+
+          '</td></tr>';
       });
       $('#vehTbody').html(html||'<tr><td colspan="8" style="text-align:center;color:var(--t3)">No vehicles</td></tr>');
       var opts='<option value="">-- None --</option>'; vehicles.forEach(function(v){opts+='<option value="'+v.id+'">'+escH(v.number)+'</option>'});
       $('#rtVehicleId').html(opts);
+      $('#vmReplVeh').html(opts);
     });
   }
-  TRN.openVehModal=function(){$('#vhId,#vhNumber,#vhDriverName,#vhDriverPhone,#vhInsNo,#vhInsExp,#vhFitExp').val('');$('#vhCapacity').val(40);$('#vhType').val('Bus');$('#vhGps').val('0');$('#vhStatus').val('Active');$('#vehModalTitle').text('Add Vehicle');$('#vehModal').addClass('show')};
+  TRN.openVehModal=function(){
+    $('#vhId,#vhNumber,#vhDriverName,#vhDriverPhone,#vhInsNo,#vhInsExp,#vhFitExp,#vhStaffId,#vhConductorStaffId,#vhPermitNo,#vhPermitExp,#vhPollutionExp,#vhRoadTaxExp,#vhGpsDeviceId,#vhContractStart,#vhContractEnd').val('');
+    $('#vhCapacity').val(40);$('#vhType').val('Bus');$('#vhFuelType').val('Diesel');$('#vhGps').val('0');
+    $('#vhOwnership').val('School');$('#vhVendorId').val('');$('#vhHire').val(0);$('#vhSvcKmInt').val(10000);
+    TRN.vhToggleContract();
+    $('#vehModalTitle').text('Add Vehicle');$('#vehModal').addClass('show');
+  };
   TRN.closeVehModal=function(){$('#vehModal').removeClass('show')};
-  TRN.editVeh=function(id){var v=vehicles.find(function(x){return x.id===id});if(!v)return;$('#vhId').val(v.id);$('#vhNumber').val(v.number);$('#vhType').val(v.type);$('#vhCapacity').val(v.capacity);$('#vhDriverName').val(v.driver_name);$('#vhDriverPhone').val(v.driver_phone);$('#vhGps').val(v.gps_enabled?'1':'0');$('#vhInsNo').val(v.insurance_no);$('#vhInsExp').val(v.insurance_expiry);$('#vhFitExp').val(v.fitness_expiry);$('#vhStatus').val(v.status||'Active');$('#vehModalTitle').text('Edit Vehicle');$('#vehModal').addClass('show')};
-  TRN.saveVehicle=function(){post('transport/save_vehicle',{id:$('#vhId').val(),number:$('#vhNumber').val(),type:$('#vhType').val(),capacity:$('#vhCapacity').val(),driver_name:$('#vhDriverName').val(),driver_phone:$('#vhDriverPhone').val(),gps_enabled:$('#vhGps').val(),insurance_no:$('#vhInsNo').val(),insurance_expiry:$('#vhInsExp').val(),fitness_expiry:$('#vhFitExp').val(),status:$('#vhStatus').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVehModal();loadVehicles()}else toast(r.message,false)})};
+  TRN.editVeh=function(id){
+    var v=vehicles.find(function(x){return x.id===id});if(!v)return;
+    $('#vhId').val(v.id);$('#vhNumber').val(v.number);$('#vhType').val(v.type);$('#vhCapacity').val(v.capacity);
+    $('#vhStaffId').val(v.staff_id||'');$('#vhConductorStaffId').val(v.conductor_staff_id||'');
+    $('#vhDriverName').val(v.driver_name||'');$('#vhDriverPhone').val(v.driver_phone||'');
+    $('#vhFuelType').val(v.fuel_type||'Diesel');
+    $('#vhGps').val(v.gps_enabled?'1':'0');$('#vhGpsDeviceId').val(v.gps_device_id||'');
+    $('#vhInsNo').val(v.insurance_no||'');$('#vhInsExp').val(v.insurance_expiry||'');
+    $('#vhPermitNo').val(v.permit_no||'');$('#vhPermitExp').val(v.permit_expiry||'');
+    $('#vhFitExp').val(v.fitness_expiry||'');$('#vhPollutionExp').val(v.pollution_expiry||'');
+    $('#vhRoadTaxExp').val(v.road_tax_expiry||'');$('#vhSvcKmInt').val(v.service_km_interval||10000);
+    $('#vhOwnership').val(v.ownership_type||'School');$('#vhVendorId').val(v.vendor_id||'');
+    $('#vhHire').val(v.monthly_hire_amount||0);$('#vhContractStart').val(v.contract_start_date||'');$('#vhContractEnd').val(v.contract_end_date||'');
+    TRN.vhToggleContract();
+    $('#vehModalTitle').text('Edit Vehicle');$('#vehModal').addClass('show');
+  };
+  TRN.vhToggleContract=function(){var isC=$('#vhOwnership').val()==='Contract';$('#vhContractRow,#vhContractRow2').toggle(isC);};
+  TRN.saveVehicle=function(){
+    post('transport/save_vehicle',{
+      id:$('#vhId').val(),number:$('#vhNumber').val(),type:$('#vhType').val(),capacity:$('#vhCapacity').val(),
+      staff_id:$('#vhStaffId').val(),conductor_staff_id:$('#vhConductorStaffId').val(),
+      driver_name:$('#vhDriverName').val(),driver_phone:$('#vhDriverPhone').val(),
+      fuel_type:$('#vhFuelType').val(),
+      gps_enabled:$('#vhGps').val(),gps_device_id:$('#vhGpsDeviceId').val(),
+      insurance_no:$('#vhInsNo').val(),insurance_expiry:$('#vhInsExp').val(),
+      permit_no:$('#vhPermitNo').val(),permit_expiry:$('#vhPermitExp').val(),
+      fitness_expiry:$('#vhFitExp').val(),pollution_expiry:$('#vhPollutionExp').val(),
+      road_tax_expiry:$('#vhRoadTaxExp').val(),service_km_interval:$('#vhSvcKmInt').val(),
+      ownership_type:$('#vhOwnership').val(),vendor_id:$('#vhVendorId').val(),
+      monthly_hire_amount:$('#vhHire').val(),contract_start_date:$('#vhContractStart').val(),contract_end_date:$('#vhContractEnd').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVehModal();loadVehicles()}else toast(r.message,false)})
+  };
   TRN.delVeh=function(id){if(!confirm('Delete vehicle?'))return;post('transport/delete_vehicle',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadVehicles()}else toast(r.message,false)})};
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  Vendors (F1) — CRUD + terminate
+  // ═════════════════════════════════════════════════════════════════════
+  function loadVendors(){
+    getJSON('transport_vendors/get_vendors').done(function(r){
+      if(r.status!=='success') return; vendors=r.vendors||[];
+      var html='';
+      vendors.forEach(function(v){
+        var cls = (v.status==='Active')?'trn-badge-green':'trn-badge-red';
+        html+='<tr><td>'+escH(v.id)+'</td><td>'+escH(v.vendor_name)+'</td><td>'+escH(v.contact_person||'—')+'</td><td>'+escH(v.phone||'—')+'</td><td>'+escH(v.gstin||'—')+'</td>';
+        html+='<td><span class="trn-badge '+cls+'">'+escH(v.status)+'</span></td>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editVendor(\''+v.id+'\')"><i class="fa fa-pencil"></i></button>';
+        if(v.status==='Active') html+=' <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.openVendorTerminate(\''+v.id+'\')"><i class="fa fa-ban"></i> Terminate</button>';
+        html+='</td></tr>';
+      });
+      $('#vendorsTbody').html(html||'<tr><td colspan="7" style="text-align:center;color:var(--t3)">No vendors</td></tr>');
+      // Also refresh the vendor picker inside the vehicle modal
+      var opts='<option value="">-- None --</option>';
+      vendors.filter(function(v){return v.status==='Active'}).forEach(function(v){opts+='<option value="'+v.id+'">'+escH(v.vendor_name)+' ('+v.id+')</option>'});
+      $('#vhVendorId').html(opts);
+    });
+  }
+  TRN.openVendorModal=function(){$('#vndId,#vndName,#vndContact,#vndPhone,#vndEmail,#vndGstin,#vndAddress,#vndNotes').val('');$('#vendorModalTitle').text('Add Vendor');$('#vendorModal').addClass('show')};
+  TRN.closeVendorModal=function(){$('#vendorModal').removeClass('show')};
+  TRN.editVendor=function(id){var v=vendors.find(function(x){return x.id===id});if(!v)return;$('#vndId').val(v.id);$('#vndName').val(v.vendor_name);$('#vndContact').val(v.contact_person||'');$('#vndPhone').val(v.phone||'');$('#vndEmail').val(v.email||'');$('#vndGstin').val(v.gstin||'');$('#vndAddress').val(v.address||'');$('#vndNotes').val(v.notes||'');$('#vendorModalTitle').text('Edit Vendor');$('#vendorModal').addClass('show')};
+  TRN.saveVendor=function(){post('transport_vendors/save_vendor',{id:$('#vndId').val(),vendor_name:$('#vndName').val(),contact_person:$('#vndContact').val(),phone:$('#vndPhone').val(),email:$('#vndEmail').val(),gstin:$('#vndGstin').val(),address:$('#vndAddress').val(),notes:$('#vndNotes').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVendorModal();loadVendors()}else toast(r.message,false)})};
+  TRN.openVendorTerminate=function(id){$('#vndTermId').val(id);$('#vndTermReason').val('');$('#vendorTerminateModal').addClass('show')};
+  TRN.closeVendorTerminate=function(){$('#vendorTerminateModal').removeClass('show')};
+  TRN.confirmTerminateVendor=function(){var id=$('#vndTermId').val();var reason=$('#vndTermReason').val();if(!reason){toast('Reason is required.',false);return}post('transport_vendors/terminate_vendor',{id:id,reason:reason}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeVendorTerminate();loadVendors()}else toast(r.message,false)})};
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  Vehicle Manage modal (F1) — Lifecycle, Docs, Maintenance, Fuel,
+  //  Replacement, Transfer.
+  // ═════════════════════════════════════════════════════════════════════
+  var vmCurrentVid = '';
+  var LC_STATES = ['Purchased','Onboarding','Active','Maintenance','Retired','Disposed'];
+  var LC_MATRIX = {
+    Purchased:['Onboarding'],Onboarding:['Active','Retired'],
+    Active:['Maintenance','Retired'],Maintenance:['Active','Retired'],
+    Retired:['Disposed','Active'],Disposed:[]
+  };
+  TRN.openVehManage=function(vid){
+    vmCurrentVid = vid;
+    var v = vehicles.find(function(x){return x.id===vid});if(!v)return;
+    $('#vmVehLabel').text(v.number+' ('+vid+')');
+    $('#vmLifecycleNow').text(v.lifecycle_status||'Active');
+    // Populate the "Transition To" dropdown from legal states
+    var opts = '<option value="">-- Select --</option>';
+    (LC_MATRIX[v.lifecycle_status||'Active']||[]).forEach(function(s){opts+='<option value="'+s+'">'+s+'</option>'});
+    $('#vmToState').html(opts);
+    // Populate route dropdowns for Transfer
+    var rOpts = '<option value="">-- Select --</option>';
+    (routes||[]).forEach(function(r){rOpts+='<option value="'+r.id+'">'+escH(r.name)+'</option>'});
+    $('#vmXferFrom').html(rOpts);$('#vmXferTo').html(rOpts);
+    // Reset input fields
+    $('#vmReason,#vmDocType,#vmDocNumber,#vmDocIssue,#vmDocExpiry,#vmDocNotes,#vmMaintWorkshop,#vmMaintParts,#vmMaintNotes,#vmMaintNextDate,#vmFuelStation,#vmFuelNotes,#vmReplReason,#vmReplNotes,#vmXferReason').val('');
+    $('#vmMaintKm,#vmMaintCost,#vmFuelOdo,#vmFuelLitres,#vmFuelPpl,#vmFuelTotal').val('');
+    $('#vmMaintType').val('Routine');$('#vmReplType').val('Temporary');
+    var today = new Date().toISOString().slice(0,10);
+    $('#vmMaintDate,#vmFuelDate,#vmReplFrom').val(today);
+    $('#vmFuelKmpl').text('');
+    // Default to lifecycle tab
+    TRN.vmSwitch('lifecycle');
+    // Load lifecycle + docs + maint + fuel
+    TRN.vmLoadLifecycle();
+    TRN.vmLoadDocs();
+    TRN.vmLoadMaint();
+    TRN.vmLoadFuel();
+    $('#vehManageModal').addClass('show');
+  };
+  TRN.closeVehManage=function(){$('#vehManageModal').removeClass('show'); vmCurrentVid=''; loadVehicles();};
+  TRN.vmSwitch=function(t){
+    $('[data-vmtab]').removeClass('active');
+    $('[data-vmtab="'+t+'"]').addClass('active');
+    $('[data-vmpanel]').hide();
+    $('[data-vmpanel="'+t+'"]').show();
+  };
+  TRN.vmLoadLifecycle=function(){
+    if(!vmCurrentVid) return;
+    getJSON('transport/get_lifecycle_log?vehicle_id='+encodeURIComponent(vmCurrentVid)).done(function(r){
+      if(r.status!=='success') return;
+      var html='';
+      (r.events||[]).forEach(function(e){
+        html+='<tr><td>'+escH((e.event_at||'').slice(0,16).replace('T',' '))+'</td><td>'+escH(e.event_type)+'</td><td>'+escH(e.prev_state)+' → '+escH(e.new_state)+'</td><td>'+escH(e.reason||'')+'</td><td>'+escH(e.event_by||'')+'</td></tr>';
+      });
+      $('#vmLifecycleTbody').html(html||'<tr><td colspan="5" style="text-align:center;color:var(--t3)">No events yet</td></tr>');
+    });
+  };
+  TRN.vmTransition=function(){
+    var to=$('#vmToState').val();var reason=$('#vmReason').val();
+    if(!to){toast('Select a target state.',false);return}
+    if(!reason){toast('Reason is required.',false);return}
+    post('transport/transition_vehicle_lifecycle',{id:vmCurrentVid,to_state:to,reason:reason}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);TRN.vmLoadLifecycle();loadVehicles();$('#vmLifecycleNow').text(to);}
+      else toast(r.message,false);
+    });
+  };
+  TRN.vmLoadDocs=function(){
+    if(!vmCurrentVid) return;
+    getJSON('transport/get_vehicle_documents?vehicle_id='+encodeURIComponent(vmCurrentVid)).done(function(r){
+      if(r.status!=='success') return;
+      var html='';
+      (r.documents||[]).forEach(function(d){
+        var link=d.file_path?'<a href="'+escH(d.file_path)+'" target="_blank">Open</a>':'—';
+        html+='<tr><td>'+escH(d.doc_type)+'</td><td>'+escH(d.doc_number||'')+'</td><td>'+escH(d.issue_date||'')+'</td><td>'+escH(d.expiry_date||'')+'</td><td>'+link+'</td>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.vmDeleteDoc(\''+d.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+      });
+      $('#vmDocsTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No documents</td></tr>');
+    });
+  };
+  TRN.vmUploadDoc=function(){
+    var type=$('#vmDocType').val();var file=$('#vmDocFile')[0].files[0];
+    if(!type){toast('Type is required.',false);return}
+    if(!file){toast('Select a file.',false);return}
+    var fd = new FormData();
+    fd.append('vehicle_id',vmCurrentVid);
+    fd.append('doc_type',type);
+    fd.append('doc_number',$('#vmDocNumber').val());
+    fd.append('issue_date',$('#vmDocIssue').val());
+    fd.append('expiry_date',$('#vmDocExpiry').val());
+    fd.append('notes',$('#vmDocNotes').val());
+    fd.append('file',file);
+    fd.append(CSRF_NAME,CSRF_HASH);
+    $.ajax({url:BASE+'transport/upload_vehicle_document',method:'POST',data:fd,processData:false,contentType:false}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);$('#vmDocType,#vmDocNumber,#vmDocIssue,#vmDocExpiry,#vmDocNotes').val('');$('#vmDocFile').val('');TRN.vmLoadDocs();}
+      else toast(r.message,false);
+    });
+  };
+  TRN.vmDeleteDoc=function(id){if(!confirm('Delete document?'))return;post('transport/delete_vehicle_document',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.vmLoadDocs();}else toast(r.message,false)})};
+  TRN.vmLoadMaint=function(){
+    if(!vmCurrentVid) return;
+    getJSON('transport_ops/get_maintenance_logs?vehicle_id='+encodeURIComponent(vmCurrentVid)).done(function(r){
+      if(r.status!=='success') return;
+      var html='';
+      (r.logs||[]).forEach(function(l){
+        html+='<tr><td>'+escH(l.service_date)+'</td><td>'+escH(l.service_type)+'</td><td>'+l.service_km+'</td><td>Rs '+l.cost+'</td><td>'+escH(l.workshop||'')+'</td><td>'+escH(l.notes||'')+'</td></tr>';
+      });
+      $('#vmMaintTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No maintenance yet</td></tr>');
+    });
+  };
+  TRN.vmSaveMaint=function(){
+    post('transport_ops/save_maintenance_log',{
+      vehicle_id:vmCurrentVid,service_type:$('#vmMaintType').val(),service_date:$('#vmMaintDate').val(),
+      service_km:$('#vmMaintKm').val(),cost:$('#vmMaintCost').val(),workshop:$('#vmMaintWorkshop').val(),
+      parts_replaced:$('#vmMaintParts').val(),next_service_date_projected:$('#vmMaintNextDate').val(),
+      notes:$('#vmMaintNotes').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.vmLoadMaint();}else toast(r.message,false)});
+  };
+  TRN.vmLoadFuel=function(){
+    if(!vmCurrentVid) return;
+    getJSON('transport_ops/get_fuel_logs?vehicle_id='+encodeURIComponent(vmCurrentVid)).done(function(r){
+      if(r.status!=='success') return;
+      var html='';
+      (r.logs||[]).forEach(function(l){
+        html+='<tr><td>'+escH(l.fuel_date)+'</td><td>'+l.litres+'</td><td>Rs '+l.price_per_litre+'</td><td>Rs '+l.total_amount+'</td><td>'+l.odometer_km+'</td><td>'+(l.computed_kmpl||'—')+'</td></tr>';
+      });
+      $('#vmFuelTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No fuel entries yet</td></tr>');
+    });
+  };
+  TRN.vmSaveFuel=function(){
+    post('transport_ops/save_fuel_log',{
+      vehicle_id:vmCurrentVid,fuel_date:$('#vmFuelDate').val(),
+      litres:$('#vmFuelLitres').val(),price_per_litre:$('#vmFuelPpl').val(),total_amount:$('#vmFuelTotal').val(),
+      station:$('#vmFuelStation').val(),odometer_km:$('#vmFuelOdo').val(),notes:$('#vmFuelNotes').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){
+        toast(r.message,true);
+        if(r.computed_kmpl>0) $('#vmFuelKmpl').text('Rolling kmpl (last 5 entries): '+r.computed_kmpl);
+        TRN.vmLoadFuel();
+      }else toast(r.message,false);
+    });
+  };
+  TRN.vmRecordReplacement=function(){
+    var repl=$('#vmReplVeh').val();var type=$('#vmReplType').val();var from=$('#vmReplFrom').val();var to=$('#vmReplTo').val();var reason=$('#vmReplReason').val();
+    if(!repl){toast('Select a replacement vehicle.',false);return}
+    if(!reason){toast('Reason is required.',false);return}
+    post('transport/record_replacement',{
+      original_vehicle_id:vmCurrentVid,replacement_vehicle_id:repl,replacement_type:type,
+      effective_from:from,effective_to:to,reason:reason,notes:$('#vmReplNotes').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadVehicles();TRN.vmLoadLifecycle();}else toast(r.message,false)});
+  };
+  TRN.vmTransfer=function(){
+    var f=$('#vmXferFrom').val();var t=$('#vmXferTo').val();var reason=$('#vmXferReason').val();
+    if(!f||!t){toast('Select both from and to routes.',false);return}
+    if(!reason){toast('Reason is required.',false);return}
+    post('transport/transfer_vehicle_between_routes',{vehicle_id:vmCurrentVid,from_route_id:f,to_route_id:t,reason:reason}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadRoutes();}else toast(r.message,false)});
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  Expiry Dashboard (F1)
+  // ═════════════════════════════════════════════════════════════════════
+  function loadExpiry(){
+    getJSON('transport_ops/get_expiry_dashboard').done(function(r){
+      if(r.status!=='success') return;
+      var d = r.dashboard || {};
+      $('#exp7').text(d.count_7_days||0);$('#exp15').text(d.count_15_days||0);$('#exp30').text(d.count_30_days||0);
+      $('#expLastRun').text(d.computed_at?('Last computed: '+d.computed_at):'Not yet computed — click "Recompute Now"');
+      var html='';
+      (d.items||[]).forEach(function(i){
+        var wCls = i.window===7?'trn-badge-red':i.window===15?'trn-badge-amber':'trn-badge-blue';
+        html+='<tr><td>'+escH(i.number||i.vehicleId)+'</td><td>'+escH(i.label)+'</td><td>'+escH(i.expiry_date)+'</td><td>'+i.days_left+'</td><td><span class="trn-badge '+wCls+'">'+i.window+'d</span></td></tr>';
+      });
+      $('#expTbody').html(html||'<tr><td colspan="5" style="text-align:center;color:var(--t3)">No expirations in the next 30 days</td></tr>');
+    });
+  }
+  TRN.recomputeExpiry=function(){post('transport_ops/recompute_expiry_dashboard',{}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadExpiry();}else toast(r.message,false)})};
 
   // ── Routes ──
   function loadRoutes(){
@@ -270,8 +609,12 @@ document.addEventListener('DOMContentLoaded', function(){
   TRN.delAsn=function(sid){if(!confirm('Remove transport assignment?'))return;post('transport/delete_assignment',{student_id:sid}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadAssignments()}else toast(r.message,false)})};
 
   // Init
-  loadVehicles();loadRoutes();
-  setTimeout(function(){loadStops();loadAssignments()},500);
+  // F1 (2026-07-07): load vendors FIRST so the vendor picker inside the
+  // vehicle modal is populated before the first Add-Vehicle click.
+  loadVendors();
+  loadVehicles();
+  loadRoutes();
+  setTimeout(function(){loadStops();loadAssignments();loadExpiry();},500);
 })();
 });
 </script>

@@ -3471,6 +3471,16 @@
         { "fieldPath": "schoolId", "order": "ASCENDING" },
         { "fieldPath": "event_at", "order": "DESCENDING" }
       ]
+    },
+    {
+      "_comment": "TMS F1 (2026-07-07) — delta from Phase 0. Serves Transport_service::deleteVehicle's active-route probe: schoolId==+vehicle_id==+status==. Bounded regardless of fleet growth.",
+      "collectionGroup": "routes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "vehicle_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": [

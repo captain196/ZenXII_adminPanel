@@ -42,6 +42,18 @@ class Transport extends MY_Controller
         );
         $this->load->library('Fee_lifecycle', null, 'feeLifecycle');
         $this->feeLifecycle->init($this->firebase, $this->school_name, $this->session_year, $this->admin_id ?? 'system');
+
+        // TMS F1 (2026-07-07): Fleet endpoints delegate to Transport_service.
+        // Route / Stop / Assignment endpoints stay on operations_accounting for
+        // now — features F2 (Route) and F3 (Student Assignment) migrate them.
+        $this->load->library('numbering_service', null, 'numbering');
+        $this->numbering->init($this->fs, $this->school_name, $this->session_year);
+        $this->load->library('transport_service', null, 'transport');
+        $this->transport->init(
+            $this->fs, $this->numbering,
+            $this->school_name, $this->session_year,
+            $this->admin_id ?? 'system'
+        );
     }
 
     private function _require_manage()
@@ -84,74 +96,59 @@ class Transport extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'transport_view');
         $this->_require_view();
-        // TMS Phase 0 (2026-07-06): use Firestore_service::schoolWhere
-        // (auto-injects schoolId equality). Behaviour-equivalent to the
-        // prior firebase->firestoreQuery call.
-        $rows = $this->fs->schoolWhere(self::COL_VEHICLES,
-            [], 'number', 'ASC');
-        $list = [];
-        foreach ((array) $rows as $doc) {
-            $v = is_array($doc) ? $doc : [];
-            $id = (string) ($v['vehicleId'] ?? $v['id'] ?? '');
-            if ($id === '') continue;
-            $v['id'] = $id;
-            $list[] = $v;
-        }
-        $this->json_success(['vehicles' => $list]);
+        // TMS F1 (2026-07-07): delegate to Transport_service.
+        $this->json_success(['vehicles' => $this->transport->listVehicles()]);
     }
 
     public function save_vehicle()
     {
         $this->_require_role(self::MANAGE_ROLES, 'save_vehicle');
         $this->_require_manage();
-        $id          = trim($this->input->post('id') ?? '');
-        $number      = trim($this->input->post('number') ?? '');
-        $type        = trim($this->input->post('type') ?? 'Bus');
-        $capacity    = max(1, (int) ($this->input->post('capacity') ?? 40));
-        $driverName  = trim($this->input->post('driver_name') ?? '');
-        $driverPhone = trim($this->input->post('driver_phone') ?? '');
-        $staffId     = trim($this->input->post('staff_id') ?? '');
-        $insuranceNo = trim($this->input->post('insurance_no') ?? '');
-        $insuranceExp = trim($this->input->post('insurance_expiry') ?? '');
-        $fitnessExp  = trim($this->input->post('fitness_expiry') ?? '');
-        $gpsEnabled  = ($this->input->post('gps_enabled') ?? '0') === '1';
 
-        if ($number === '') $this->json_error('Vehicle number is required.');
+        // TMS F1 (2026-07-07): full input payload extended with LC-1 fields
+        // (lifecycle_status defaults are handled service-side; ownership_type
+        // + vendor_id + contract fields flow through). Service throws typed
+        // exceptions; controller normalises to a JSON error response.
+        $input = [
+            'id'                  => trim($this->input->post('id') ?? ''),
+            'number'              => trim($this->input->post('number') ?? ''),
+            'type'                => trim($this->input->post('type') ?? 'Bus'),
+            'capacity'            => (int) ($this->input->post('capacity') ?? 40),
+            'staff_id'            => trim($this->input->post('staff_id') ?? ''),
+            'driver_name'         => trim($this->input->post('driver_name') ?? ''),
+            'driver_phone'        => trim($this->input->post('driver_phone') ?? ''),
+            'conductor_staff_id'  => trim($this->input->post('conductor_staff_id') ?? ''),
+            'insurance_no'        => trim($this->input->post('insurance_no') ?? ''),
+            'insurance_expiry'    => trim($this->input->post('insurance_expiry') ?? ''),
+            'fitness_expiry'      => trim($this->input->post('fitness_expiry') ?? ''),
+            'permit_no'           => trim($this->input->post('permit_no') ?? ''),
+            'permit_expiry'       => trim($this->input->post('permit_expiry') ?? ''),
+            'pollution_expiry'    => trim($this->input->post('pollution_expiry') ?? ''),
+            'road_tax_expiry'     => trim($this->input->post('road_tax_expiry') ?? ''),
+            'gps_enabled'         => ($this->input->post('gps_enabled') ?? '0'),
+            'gps_device_id'       => trim($this->input->post('gps_device_id') ?? ''),
+            'ownership_type'      => trim($this->input->post('ownership_type') ?? ''),
+            'vendor_id'           => trim($this->input->post('vendor_id') ?? ''),
+            'monthly_hire_amount' => (float) ($this->input->post('monthly_hire_amount') ?? 0),
+            'contract_start_date' => trim($this->input->post('contract_start_date') ?? ''),
+            'contract_end_date'   => trim($this->input->post('contract_end_date') ?? ''),
+            'contract_terms_path' => trim($this->input->post('contract_terms_path') ?? ''),
+            'fuel_type'           => trim($this->input->post('fuel_type') ?? 'Diesel'),
+            'average_kmpl'        => (float) ($this->input->post('average_kmpl') ?? 0),
+            'service_km_interval' => (int) ($this->input->post('service_km_interval') ?? 10000),
+        ];
 
-        $isNew = ($id === '');
-        if ($isNew) {
-            $id = $this->operations_accounting->next_id($this->_counters('Vehicle'), 'VH');
-        } else {
-            $id = $this->safe_path_segment($id, 'vehicle_id');
-            // Preserve staff_id from Firestore (not in form — future staff integration)
-            if ($staffId === '') {
-                $existing = $this->fs->getEntity(self::COL_VEHICLES, $id);
-                $staffId = is_array($existing) ? ($existing['staff_id'] ?? '') : '';
-            }
+        try {
+            $result = $this->transport->saveVehicle($input);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::save_vehicle failed: ' . $e->getMessage());
+            $this->json_error('Failed to save vehicle: ' . $e->getMessage());
         }
 
-        $status = trim($this->input->post('status') ?? 'Active');
-        if (!in_array($status, ['Active', 'Inactive', 'Maintenance'], true)) $status = 'Active';
-
-        $data = [
-            'vehicleId'        => $id,
-            'number'           => $number,
-            'type'             => $type,
-            'capacity'         => $capacity,
-            'driver_name'      => $driverName,
-            'driver_phone'     => $driverPhone,
-            'staff_id'         => $staffId,
-            'insurance_no'     => $insuranceNo,
-            'insurance_expiry' => $insuranceExp,
-            'fitness_expiry'   => $fitnessExp,
-            'gps_enabled'      => $gpsEnabled,
-            'status'           => $status,
-            'updated_at'       => date('c'),
-        ];
-        if ($isNew) $data['created_at'] = date('c');
-
-        $this->fs->setEntity(self::COL_VEHICLES, $id, $data, /* merge */ true);
-        $this->json_success(['id' => $id, 'message' => 'Vehicle saved.']);
+        $verb = $result['isNew'] ? 'created' : 'updated';
+        $this->json_success(['id' => $result['id'], 'message' => "Vehicle {$verb}."]);
     }
 
     public function delete_vehicle()
@@ -160,17 +157,214 @@ class Transport extends MY_Controller
         $this->_require_manage();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'vehicle_id');
 
-        // Block deletion if any active route references this vehicle.
-        // TMS Phase 0: schoolWhere auto-injects schoolId equality.
-        $activeRoutes = $this->fs->schoolWhere(self::COL_ROUTES, [
-            ['vehicle_id', '==', $id],
-            ['status',     '==', 'Active'],
-        ]);
-        if (!empty($activeRoutes)) {
-            $this->json_error('Cannot delete: vehicle is assigned to an active route.');
+        try {
+            $this->transport->deleteVehicle($id);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->json_error($e->getMessage());   // e.g. blocked by active route
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::delete_vehicle failed: ' . $e->getMessage());
+            $this->json_error('Failed to delete vehicle.');
         }
-        $this->fs->remove(self::COL_VEHICLES, $this->fs->docId($id));
         $this->json_success(['message' => 'Vehicle deleted.']);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  TMS F1 (2026-07-07) — Vehicle lifecycle + documents + replacement
+    //  + route transfer + get lifecycle timeline
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * POST /transport/transition_vehicle_lifecycle
+     * Params: id (vehicle), to_state, reason
+     */
+    public function transition_vehicle_lifecycle()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'transition_vehicle_lifecycle');
+        $this->_require_manage();
+        $vid    = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'vehicle_id');
+        $to     = trim($this->input->post('to_state') ?? '');
+        $reason = trim($this->input->post('reason') ?? '');
+        try {
+            $eventId = $this->transport->transitionVehicleLifecycle($vid, $to, $reason);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::transition_vehicle_lifecycle failed: ' . $e->getMessage());
+            $this->json_error('Failed to transition lifecycle.');
+        }
+        $this->json_success(['event_id' => $eventId, 'message' => "Vehicle transitioned to {$to}."]);
+    }
+
+    /**
+     * GET /transport/get_lifecycle_log?vehicle_id=VH0007
+     */
+    public function get_lifecycle_log()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_view();
+        $vid = $this->safe_path_segment(trim($this->input->get('vehicle_id') ?? ''), 'vehicle_id');
+        if ($vid === '') { $this->json_success(['events' => []]); }
+        $rows = (array) $this->fs->schoolWhere(
+            'vehicleLifecycleLog',
+            [['vehicle_id', '==', $vid]],
+            'event_at', 'DESC'
+        );
+        $out = [];
+        foreach ($rows as $r) {
+            $r['id'] = (string) ($r['eventId'] ?? $r['id'] ?? '');
+            $out[] = $r;
+        }
+        $this->json_success(['events' => $out]);
+    }
+
+    /**
+     * POST /transport/upload_vehicle_document
+     * Multipart:
+     *   vehicle_id, doc_type, doc_number, issue_date, expiry_date, notes
+     *   file[] — the actual upload
+     * Storage path canonical: schools/{schoolId}/transport/vehicles/{VH}/{docId}_{orig}
+     */
+    public function upload_vehicle_document()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'upload_vehicle_document');
+        $this->_require_manage();
+        $vid  = $this->safe_path_segment(trim($this->input->post('vehicle_id') ?? ''), 'vehicle_id');
+        $type = trim($this->input->post('doc_type') ?? '');
+        if ($vid === '' || $type === '') {
+            $this->json_error('vehicle_id and doc_type are required.');
+        }
+        if (empty($_FILES['file']['name'])) {
+            $this->json_error('No file was uploaded.');
+        }
+        // Route the upload through the existing Firebase Storage helper
+        // (same pattern used by School_config document uploads).
+        $filePath = null;
+        try {
+            $filePath = $this->firebase->uploadFile(
+                $_FILES['file']['tmp_name'],
+                "schools/{$this->school_name}/transport/vehicles/{$vid}/",
+                $_FILES['file']['name']
+            );
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport doc upload Storage failed: ' . $e->getMessage());
+            $this->json_error('Storage upload failed: ' . $e->getMessage());
+        }
+        if (!$filePath) {
+            $this->json_error('Storage upload returned no path.');
+        }
+        try {
+            $result = $this->transport->uploadVehicleDocument([
+                'vehicle_id'  => $vid,
+                'doc_type'    => $type,
+                'doc_number'  => trim($this->input->post('doc_number')  ?? ''),
+                'issue_date'  => trim($this->input->post('issue_date')  ?? ''),
+                'expiry_date' => trim($this->input->post('expiry_date') ?? ''),
+                'file_path'   => $filePath,
+                'notes'       => trim($this->input->post('notes')       ?? ''),
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::upload_vehicle_document metadata failed: ' . $e->getMessage());
+            $this->json_error('Failed to save document metadata.');
+        }
+        $this->json_success(['id' => $result['id'], 'file_path' => $filePath, 'message' => 'Document uploaded.']);
+    }
+
+    /** POST /transport/delete_vehicle_document — id */
+    public function delete_vehicle_document()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'delete_vehicle_document');
+        $this->_require_manage();
+        $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'document_id');
+        try {
+            $this->transport->deleteVehicleDocument($id);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::delete_vehicle_document failed: ' . $e->getMessage());
+            $this->json_error('Failed to delete document.');
+        }
+        $this->json_success(['message' => 'Document deleted.']);
+    }
+
+    /** GET /transport/get_vehicle_documents?vehicle_id=VH0007 */
+    public function get_vehicle_documents()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_view();
+        $vid = $this->safe_path_segment(trim($this->input->get('vehicle_id') ?? ''), 'vehicle_id');
+        $this->json_success(['documents' => $this->transport->listVehicleDocuments($vid)]);
+    }
+
+    /** GET /transport/get_expiring_documents?days=30 */
+    public function get_expiring_documents()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_view();
+        $days = max(1, (int) ($this->input->get('days') ?? 30));
+        $this->json_success(['documents' => $this->transport->listExpiringDocuments($days)]);
+    }
+
+    /**
+     * POST /transport/record_replacement
+     * Params: original_vehicle_id, replacement_vehicle_id, replacement_type,
+     *         route_ids[] (optional), effective_from, effective_to,
+     *         reason, notes
+     */
+    public function record_replacement()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'record_replacement');
+        $this->_require_manage();
+        $routeIds = (array) ($this->input->post('route_ids') ?? []);
+        try {
+            $result = $this->transport->recordReplacement([
+                'original_vehicle_id'    => trim($this->input->post('original_vehicle_id')    ?? ''),
+                'replacement_vehicle_id' => trim($this->input->post('replacement_vehicle_id') ?? ''),
+                'replacement_type'       => trim($this->input->post('replacement_type')       ?? ''),
+                'route_ids'              => $routeIds,
+                'effective_from'         => trim($this->input->post('effective_from')         ?? ''),
+                'effective_to'           => trim($this->input->post('effective_to')           ?? ''),
+                'reason'                 => trim($this->input->post('reason')                 ?? ''),
+                'notes'                  => trim($this->input->post('notes')                  ?? ''),
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::record_replacement failed: ' . $e->getMessage());
+            $this->json_error('Failed to record replacement.');
+        }
+        $this->json_success([
+            'id'             => $result['id'],
+            'routes_updated' => $result['routes_updated'],
+            'message'        => "Replacement recorded ({$result['routes_updated']} route(s) updated).",
+        ]);
+    }
+
+    /**
+     * POST /transport/transfer_vehicle_between_routes
+     * Params: vehicle_id, from_route_id, to_route_id, reason
+     */
+    public function transfer_vehicle_between_routes()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'transfer_vehicle_between_routes');
+        $this->_require_manage();
+        try {
+            $result = $this->transport->transferVehicleBetweenRoutes(
+                $this->safe_path_segment(trim($this->input->post('vehicle_id') ?? ''), 'vehicle_id'),
+                $this->safe_path_segment(trim($this->input->post('from_route_id') ?? ''), 'route_id'),
+                $this->safe_path_segment(trim($this->input->post('to_route_id') ?? ''), 'route_id'),
+                trim($this->input->post('reason') ?? '')
+            );
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::transfer_vehicle_between_routes failed: ' . $e->getMessage());
+            $this->json_error('Failed to transfer vehicle.');
+        }
+        $this->json_success(['id' => $result['id'], 'message' => 'Vehicle transferred between routes.']);
     }
 
     // ====================================================================
