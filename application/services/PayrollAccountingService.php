@@ -665,6 +665,100 @@ final class PayrollAccountingService
     }
 
     // ═════════════════════════════════════════════════════════════════
+    //  TRANSPORT EXPENSE (F5, 2026-07-07)
+    // ═════════════════════════════════════════════════════════════════
+
+    /** Counter-account resolution for the payment method side of a
+     *  Transport expense post. Payment_method maps to a cash/bank/PP
+     *  ledger code. Vendor payables aren't used here — Transport expenses
+     *  post at payment time, not at receipt of a vendor invoice. */
+    private const TRANSPORT_PAYMENT_METHOD_TO_ACCT = [
+        'Cash'          => '1000',
+        'Bank_Transfer' => '1010',
+        'Cheque'        => '1010',
+        'UPI'           => '1010',
+        'Card'          => '1010',
+        'Petty_Cash'    => '1005',
+    ];
+
+    /**
+     * Post a Transport expense to the ledger. Called by Transport_service
+     * DOMAIN_EXPENSE (F5). Two-line journal:
+     *   Dr <ledger_code>       (expense account, e.g. 6210 for maintenance)
+     *   Cr <counter-account>   (cash/bank/petty per payment_method)
+     *
+     * Returns the ledger entryId (JE_...) on success; null on validation
+     * or engine rejection.
+     *
+     * @param array $payload {
+     *   source_module       : "Transport",
+     *   source_doc_id       : "TEXP000042",
+     *   ledger_code         : "6210",
+     *   amount              : 5000.00,
+     *   tax_amount          : 0.00 (informational; single-line for now),
+     *   total_amount        : 5000.00,
+     *   expense_date        : "2026-07-05",
+     *   payee_type          : "External" | "Vendor" | "Staff" | "Driver",
+     *   payee_id            : "" | "VND0001" | ...,
+     *   payee_name          : "Sharma Garage",
+     *   expense_type        : "Vehicle_Maintenance",
+     *   payment_method      : "Bank_Transfer" | ...,
+     *   payment_reference   : "TXN12345",
+     *   notes               : "Annual service",
+     *   schoolId            : "SCH_...",
+     *   created_by          : "STA_..._id",
+     * }
+     */
+    public function postExpense(array $payload): ?string
+    {
+        if (!$this->_assertReady('postExpense')) return null;
+
+        $sourceDocId = trim((string) ($payload['source_doc_id'] ?? ''));
+        $ledgerCode  = trim((string) ($payload['ledger_code']   ?? ''));
+        $total       = round((float)  ($payload['total_amount'] ?? $payload['amount'] ?? 0), 2);
+        $expenseDate = (string) ($payload['expense_date'] ?? date('Y-m-d'));
+        $paymentMethod = (string) ($payload['payment_method'] ?? 'Cash');
+        $expenseType = (string) ($payload['expense_type'] ?? '');
+        $payeeName   = (string) ($payload['payee_name']   ?? '');
+        $payRef      = (string) ($payload['payment_reference'] ?? '');
+
+        if ($sourceDocId === '' || $ledgerCode === '' || $total <= 0) {
+            $this->_log("TRANSPORT_EXPENSE_REJECTED reason='missing_required_fields' source_doc={$sourceDocId} ledger_code={$ledgerCode} total={$total}");
+            return null;
+        }
+
+        $counterAcct = self::TRANSPORT_PAYMENT_METHOD_TO_ACCT[$paymentMethod] ?? '1000';
+
+        $lines = [
+            $this->_line(
+                $ledgerCode, $total, 0,
+                "Transport {$expenseType} — {$payeeName} ({$sourceDocId})"
+            ),
+            $this->_line(
+                $counterAcct, 0, $total,
+                "Payment via {$paymentMethod}" . ($payRef !== '' ? " ref {$payRef}" : '')
+            ),
+        ];
+
+        // Deterministic source_ref = TRN_EXPENSE_{expenseId} — idempotent
+        // across retries. Transport's pending-then-retry pattern relies
+        // on this; a re-post of the same expense hits the engine's
+        // idempotency claim and returns the existing entryId.
+        $sourceRef = 'TRN_EXPENSE_' . preg_replace('/[^A-Za-z0-9_]/', '_', $sourceDocId);
+        $narration = "Transport expense {$sourceDocId} — {$expenseType} — {$payeeName}";
+
+        return $this->_commit(
+            'Transport', $sourceRef, $narration, $lines, $expenseDate,
+            [
+                'source_module' => 'Transport',
+                'source_doc_id' => $sourceDocId,
+                'expense_type'  => $expenseType,
+                'schoolId'      => (string) ($payload['schoolId'] ?? ''),
+            ]
+        );
+    }
+
+    // ═════════════════════════════════════════════════════════════════
     //  INTERNALS
     // ═════════════════════════════════════════════════════════════════
 

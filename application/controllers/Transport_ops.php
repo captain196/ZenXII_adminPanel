@@ -187,4 +187,232 @@ class Transport_ops extends MY_Controller
             'message'       => 'Dashboard recomputed.',
         ]);
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  F5 Transport Expenses + Accounting (2026-07-07)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /** GET /transport_ops/get_expenses[?filters] */
+    public function get_expenses()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_view();
+        $filters = [
+            'expense_type' => trim($this->input->get('expense_type') ?? ''),
+            'vehicle_id'   => trim($this->input->get('vehicle_id') ?? ''),
+            'status'       => trim($this->input->get('status') ?? ''),
+            'date_from'    => trim($this->input->get('date_from') ?? ''),
+            'date_to'      => trim($this->input->get('date_to') ?? ''),
+        ];
+        $this->json_success(['expenses' => $this->transport->listExpenses($filters)]);
+    }
+
+    /** GET /transport_ops/get_expense?id=X */
+    public function get_expense()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_view();
+        $id = $this->safe_path_segment(trim($this->input->get('id') ?? ''), 'expense_id');
+        $this->json_success(['expense' => $this->transport->getExpense($id)]);
+    }
+
+    /** POST /transport_ops/save_expense */
+    public function save_expense()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'save_expense');
+        $this->_require_manage();
+        $attachments = $this->input->post('attachments_json');
+        $attachments = is_string($attachments) && $attachments !== '' ? json_decode($attachments, true) : [];
+        if (!is_array($attachments)) { $attachments = []; }
+        $input = [
+            'id'                     => trim($this->input->post('id') ?? ''),
+            'expense_type'           => trim($this->input->post('expense_type') ?? ''),
+            'expense_type_custom'    => trim($this->input->post('expense_type_custom') ?? ''),
+            'expense_date'           => trim($this->input->post('expense_date') ?? date('Y-m-d')),
+            'amount'                 => (float) ($this->input->post('amount') ?? 0),
+            'tax_amount'             => (float) ($this->input->post('tax_amount') ?? 0),
+            'tax_rate'               => (float) ($this->input->post('tax_rate') ?? 0),
+            'payee_type'             => trim($this->input->post('payee_type') ?? 'External'),
+            'payee_id'               => trim($this->input->post('payee_id') ?? ''),
+            'payee_name'             => trim($this->input->post('payee_name') ?? ''),
+            'vehicle_id'             => trim($this->input->post('vehicle_id') ?? ''),
+            'related_maintenance_id' => trim($this->input->post('related_maintenance_id') ?? ''),
+            'related_fuel_id'        => trim($this->input->post('related_fuel_id') ?? ''),
+            'related_incident_id'    => trim($this->input->post('related_incident_id') ?? ''),
+            'payment_method'         => trim($this->input->post('payment_method') ?? 'Cash'),
+            'payment_reference'      => trim($this->input->post('payment_reference') ?? ''),
+            'attachments'            => $attachments,
+            'notes'                  => trim($this->input->post('notes') ?? ''),
+            'force_post'             => ((string) ($this->input->post('force_post') ?? '')) === '1',
+        ];
+        try {
+            $result = $this->transport->saveExpense($input);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport_ops::save_expense failed: ' . $e->getMessage());
+            $this->json_error('Failed to save expense: ' . $e->getMessage());
+        }
+        $verb = $result['isNew'] ? 'created' : 'updated';
+        $this->json_success([
+            'id'       => $result['id'],
+            'posting'  => $result['posting'],
+            'message'  => "Expense {$verb}." . ($result['posting']['status'] === 'posted' ? ' Posted to Accounting.' : ($result['posting']['status'] === 'pending' ? ' Pending post (will retry).' : '')),
+        ]);
+    }
+
+    /** POST /transport_ops/void_expense */
+    public function void_expense()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'void_expense');
+        $this->_require_manage();
+        try {
+            $this->transport->voidExpense(
+                $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'expense_id'),
+                trim($this->input->post('reason') ?? '')
+            );
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport_ops::void_expense failed: ' . $e->getMessage());
+            $this->json_error('Failed to void expense.');
+        }
+        $this->json_success(['message' => 'Expense voided.']);
+    }
+
+    /** POST /transport_ops/create_expense_from_maintenance */
+    public function create_expense_from_maintenance()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'create_expense_from_maintenance');
+        $this->_require_manage();
+        try {
+            $result = $this->transport->createExpenseFromMaintenanceLog(
+                $this->safe_path_segment(trim($this->input->post('maintenance_id') ?? ''), 'maintenance_id'),
+                []
+            );
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport_ops::create_expense_from_maintenance failed: ' . $e->getMessage());
+            $this->json_error('Failed to create expense.');
+        }
+        $this->json_success(['id' => $result['id'], 'posting' => $result['posting'], 'message' => 'Expense created from maintenance log.']);
+    }
+
+    /** POST /transport_ops/create_expense_from_fuel */
+    public function create_expense_from_fuel()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'create_expense_from_fuel');
+        $this->_require_manage();
+        try {
+            $result = $this->transport->createExpenseFromFuelLog(
+                $this->safe_path_segment(trim($this->input->post('fuel_id') ?? ''), 'fuel_id'),
+                []
+            );
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport_ops::create_expense_from_fuel failed: ' . $e->getMessage());
+            $this->json_error('Failed to create expense.');
+        }
+        $this->json_success(['id' => $result['id'], 'posting' => $result['posting'], 'message' => 'Expense created from fuel log.']);
+    }
+
+    /** POST /transport_ops/reconcile_pending_posts */
+    public function reconcile_pending_posts()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'reconcile_pending_posts');
+        $this->_require_manage();
+        try {
+            $r = $this->transport->reconcilePendingAccountingPosts(50);
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport_ops::reconcile_pending_posts failed: ' . $e->getMessage());
+            $this->json_error('Reconciliation failed.');
+        }
+        $this->json_success([
+            'retried' => $r['retried'], 'posted' => $r['posted'], 'failed' => $r['failed'],
+            'message' => "Reconciled: {$r['retried']} retried, {$r['posted']} posted, {$r['failed']} failed",
+        ]);
+    }
+
+    /** POST /transport_ops/retry_expense_post */
+    public function retry_expense_post()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'retry_expense_post');
+        $this->_require_manage();
+        try {
+            $r = $this->transport->retryExpensePost(
+                $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'expense_id')
+            );
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport_ops::retry_expense_post failed: ' . $e->getMessage());
+            $this->json_error('Retry failed.');
+        }
+        $this->json_success(['posting' => $r, 'message' => "Retry status: {$r['status']}"]);
+    }
+
+    /** POST /transport_ops/post_expense_now — for manual-mode expenses */
+    public function post_expense_now()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'post_expense_now');
+        $this->_require_manage();
+        try {
+            $r = $this->transport->postExpenseNow(
+                $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'expense_id')
+            );
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport_ops::post_expense_now failed: ' . $e->getMessage());
+            $this->json_error('Post failed.');
+        }
+        $this->json_success(['posting' => $r, 'message' => "Post status: {$r['status']}"]);
+    }
+
+    /** GET /transport_ops/get_expense_categories */
+    public function get_expense_categories()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_view();
+        $this->json_success($this->transport->getExpenseCategories());
+    }
+
+    /** GET /transport_ops/get_expense_summary?year_month=YYYY-MM */
+    public function get_expense_summary()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_view();
+        $ym = trim($this->input->get('year_month') ?? date('Y-m'));
+        $docId = $this->school_name . '_FMES__' . $ym;
+        $doc = $this->fs->getEntity('fleetMonthlyExpenseSummary', $docId);
+        if (!is_array($doc)) {
+            $doc = ['summaryId' => $docId, 'period_year_month' => $ym, 'total_amount' => 0, 'expenses_count' => 0];
+        }
+        $this->json_success(['summary' => $doc]);
+    }
+
+    /** POST /transport_ops/rebuild_expense_summary */
+    public function rebuild_expense_summary()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'rebuild_expense_summary');
+        $this->_require_manage();
+        $ym = trim($this->input->post('year_month') ?? '');
+        try {
+            $r = $this->transport->rebuildMonthlyExpenseSummary($ym);
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport_ops::rebuild_expense_summary failed: ' . $e->getMessage());
+            $this->json_error('Rebuild failed.');
+        }
+        $this->json_success([
+            'total_amount'    => $r['total_amount'],
+            'expenses_count'  => $r['expenses_count'],
+            'message'         => "Expense summary rebuilt for {$r['period_year_month']}: {$r['expenses_count']} expenses, INR {$r['total_amount']}",
+        ]);
+    }
 }

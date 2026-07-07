@@ -4,6 +4,7 @@ $tab_map = [
     'vehicles'    => ['panel'=>'panelVehicles',    'icon'=>'fa-bus',           'label'=>'Vehicles'],
     'vendors'     => ['panel'=>'panelVendors',     'icon'=>'fa-handshake-o',   'label'=>'Vendors'],
     'drivers'     => ['panel'=>'panelDrivers',     'icon'=>'fa-id-card-o',     'label'=>'Drivers'],
+    'expenses'    => ['panel'=>'panelExpenses',    'icon'=>'fa-money',         'label'=>'Expenses'],
     'expiry'      => ['panel'=>'panelExpiry',      'icon'=>'fa-exclamation-triangle', 'label'=>'Expiry Dashboard'],
     'routes'      => ['panel'=>'panelRoutes',      'icon'=>'fa-road',          'label'=>'Routes & Stops'],
     'assignments' => ['panel'=>'panelAssignments',  'icon'=>'fa-users',         'label'=>'Assignments'],
@@ -93,6 +94,25 @@ $tab_map = [
         Drivers are managed in HR. This surface exposes Transport-specific meta (licence, medical, badge, availability), incidents, reviews and temp-cover assignments. Comprehensive readiness validation applies to every driver-vehicle assignment.
       </div>
       <table class="trn-table"><thead><tr><th>Staff ID</th><th>Name</th><th>Phone</th><th>Licence Expires</th><th>Medical Expires</th><th>Op. Status</th><th>Actions</th></tr></thead><tbody id="driversTbody"></tbody></table>
+    </div>
+  </div>
+
+  <!-- EXPENSES (F5) -->
+  <div class="trn-panel<?= $at === 'expenses' ? ' active' : '' ?>" id="panelExpenses">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>Transport Expenses</span>
+        <div style="display:flex;gap:6px">
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.reconcilePendingPosts()" title="Retry pending Accounting posts"><i class="fa fa-wrench"></i> Reconcile Pending</button>
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.rebuildExpenseSummary()" title="Rebuild monthly summary"><i class="fa fa-refresh"></i> Rebuild Summary</button>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openExpense()"><i class="fa fa-plus"></i> Record Expense</button>
+        </div>
+      </div>
+      <div style="background:rgba(59,130,246,.08);border-left:3px solid #3b82f6;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
+        Posting to Accounting follows the school's <code>schoolControl.transport.expense_posting_mode</code> (default 'manual'). Auto mode posts immediately; manual mode leaves the expense unpostpated until admin clicks "Post Now" or ticks "Force Post" on save.
+      </div>
+      <div id="expensesSummaryBar" style="margin-bottom:14px"></div>
+      <table class="trn-table"><thead><tr><th>ID</th><th>Date</th><th>Type</th><th>Vehicle</th><th>Amount</th><th>Payee</th><th>Accounting</th><th>Status</th><th>Actions</th></tr></thead><tbody id="expensesTbody"></tbody></table>
     </div>
   </div>
 
@@ -239,6 +259,9 @@ $tab_map = [
 <!-- F4 Driver management + incident modals -->
 <?php $this->load->view('transport/partials/driver_manage_modal'); ?>
 <?php $this->load->view('transport/partials/incident_modal'); ?>
+
+<!-- F5 Expense modal -->
+<?php $this->load->view('transport/partials/expense_modal'); ?>
 
 
 <!-- ROUTE MODAL -->
@@ -1214,6 +1237,133 @@ document.addEventListener('DOMContentLoaded', function(){
     post('transport_driver/rebuild_activity',{staff_id:'',year_month:''}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);}else toast(r.message,false)});
   };
 
+  // ═════════════════════════════════════════════════════════════════════
+  //  F5 Expenses (2026-07-07)
+  // ═════════════════════════════════════════════════════════════════════
+  var expenseCategories={types:[],payee_types:[],payment_methods:[],attachment_types:[]};
+  var expenses=[];
+  function loadExpenseCategories(){
+    getJSON('transport_ops/get_expense_categories').done(function(r){
+      if(r.status!=='success')return;
+      expenseCategories={
+        types:r.types||[],payee_types:r.payee_types||[],
+        payment_methods:r.payment_methods||[],attachment_types:r.attachment_types||[]
+      };
+    });
+  }
+  function loadExpenses(){
+    getJSON('transport_ops/get_expenses').done(function(r){
+      if(r.status!=='success')return; expenses=r.expenses||[];
+      var html=''; var totalActive=0;
+      expenses.forEach(function(e){
+        var acctRef=e.accounting_journal_ref||'';
+        var acctCls=acctRef===''?'trn-badge-amber':acctRef==='pending'?'trn-badge-amber':acctRef==='failed'?'trn-badge-red':'trn-badge-green';
+        var acctLabel=acctRef===''?'Not posted':acctRef==='pending'?'Pending':acctRef==='failed'?'Failed':'Posted';
+        var stCls=e.status==='Voided'?'trn-badge-red':'trn-badge-green';
+        if(e.status==='Active') totalActive+=(e.total_amount||e.amount||0);
+        html+='<tr><td>'+escH(e.expenseId||e.id||'')+'</td>';
+        html+='<td>'+escH(e.expense_date||'')+'</td>';
+        html+='<td>'+escH((e.expense_type||'').replace(/_/g,' '))+'</td>';
+        html+='<td>'+escH(e.vehicle_id||'—')+'</td>';
+        html+='<td>INR '+(e.total_amount||e.amount||0).toFixed(2)+'</td>';
+        html+='<td>'+escH(e.payee_name||e.payee_id||e.payee_type||'')+'</td>';
+        html+='<td><span class="trn-badge '+acctCls+'">'+acctLabel+'</span>';
+        if(acctRef && acctRef!=='pending' && acctRef!=='failed') html+=' <small style="opacity:.6">'+escH(acctRef.substring(0,12))+'</small>';
+        html+='</td>';
+        html+='<td><span class="trn-badge '+stCls+'">'+escH(e.status||'Active')+'</span></td>';
+        html+='<td>';
+        if(e.status==='Active'){
+          if(acctRef===''){html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.postExpenseNow(\''+e.expenseId+'\')" title="Post to Accounting"><i class="fa fa-upload"></i></button> ';}
+          if(acctRef==='pending'||acctRef==='failed'){html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.retryExpensePost(\''+e.expenseId+'\')" title="Retry post"><i class="fa fa-repeat"></i></button> ';}
+          html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.openVoidExpense(\''+e.expenseId+'\')" title="Void"><i class="fa fa-times"></i></button>';
+        }
+        html+='</td></tr>';
+      });
+      $('#expensesTbody').html(html||'<tr><td colspan="9" style="text-align:center;color:var(--t3)">No expenses recorded</td></tr>');
+      $('#expensesSummaryBar').html('<b>Active month-to-date:</b> INR '+totalActive.toFixed(2)+' across '+expenses.filter(function(e){return e.status==='Active'}).length+' expense(s)');
+    });
+  }
+  TRN.openExpense=function(){
+    $('#expId,#expAmount,#expTaxAmt,#expTaxRate,#expCustomType,#expPayeeId,#expPayeeName,#expPayRef,#expRelMnt,#expRelFuel,#expNotes,#expVehicle').val('');
+    $('#expTaxAmt,#expTaxRate').val(0);
+    $('#expDate').val(new Date().toISOString().slice(0,10));
+    $('#expForcePost').prop('checked',false);
+    // Populate type dropdown
+    var to='';(expenseCategories.types||[]).forEach(function(t){to+='<option value="'+t+'">'+escH(t.replace(/_/g,' '))+'</option>'});$('#expType').html(to);
+    // Payment method
+    var pmo='';(expenseCategories.payment_methods||[]).forEach(function(t){pmo+='<option value="'+t+'">'+escH(t.replace(/_/g,' '))+'</option>'});$('#expPayMethod').html(pmo);
+    // Payee type
+    var pto='';(expenseCategories.payee_types||[]).forEach(function(t){pto+='<option value="'+t+'">'+escH(t)+'</option>'});$('#expPayeeType').html(pto).val('External');
+    // Vehicle picker
+    var vopts='<option value="">-- None --</option>';(vehicles||[]).forEach(function(v){vopts+='<option value="'+v.id+'">'+escH(v.number)+'</option>'});$('#expVehicle').html(vopts);
+    // Reset attachments container
+    $('#expAttachments').html('');
+    TRN.expTypeChanged();
+    $('#expenseModal').addClass('show');
+  };
+  TRN.closeExpense=function(){$('#expenseModal').removeClass('show')};
+  TRN.expTypeChanged=function(){
+    $('#expCustomTypeRow').toggle($('#expType').val()==='Other');
+  };
+  TRN.expPayeeTypeChanged=function(){
+    var t=$('#expPayeeType').val();
+    if(t==='External'){$('#expPayeeId').prop('placeholder','(optional for external)');}
+    else if(t==='Vendor'){$('#expPayeeId').prop('placeholder','VND0001 (required)');}
+    else{$('#expPayeeId').prop('placeholder','STA0001 (required)');}
+  };
+  TRN.expAddAttachment=function(){
+    var opts='';(expenseCategories.attachment_types||[]).forEach(function(t){opts+='<option value="'+t+'">'+escH(t.replace(/_/g,' '))+'</option>'});
+    var idx=$('#expAttachments .trn-att-row').length;
+    var html='<div class="trn-att-row" style="display:grid;grid-template-columns:150px 1fr 1fr 30px;gap:8px;margin-bottom:6px" data-idx="'+idx+'">';
+    html+='<select class="trn-att-type">'+opts+'</select>';
+    html+='<input type="text" class="trn-att-path" placeholder="storage path or URL">';
+    html+='<input type="text" class="trn-att-notes" placeholder="notes">';
+    html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="$(this).parent().remove()"><i class="fa fa-times"></i></button>';
+    html+='</div>';
+    $('#expAttachments').append(html);
+  };
+  TRN.saveExpense=function(){
+    var attachments=[];
+    $('#expAttachments .trn-att-row').each(function(){
+      var p=$(this).find('.trn-att-path').val().trim();
+      if(!p)return;
+      attachments.push({type:$(this).find('.trn-att-type').val(),path:p,notes:$(this).find('.trn-att-notes').val()});
+    });
+    post('transport_ops/save_expense',{
+      id:$('#expId').val(),
+      expense_type:$('#expType').val(),expense_type_custom:$('#expCustomType').val(),
+      expense_date:$('#expDate').val(),
+      amount:$('#expAmount').val(),tax_amount:$('#expTaxAmt').val(),tax_rate:$('#expTaxRate').val(),
+      payee_type:$('#expPayeeType').val(),payee_id:$('#expPayeeId').val(),payee_name:$('#expPayeeName').val(),
+      vehicle_id:$('#expVehicle').val(),
+      payment_method:$('#expPayMethod').val(),payment_reference:$('#expPayRef').val(),
+      related_maintenance_id:$('#expRelMnt').val(),related_fuel_id:$('#expRelFuel').val(),
+      attachments_json:JSON.stringify(attachments),
+      notes:$('#expNotes').val(),
+      force_post:$('#expForcePost').is(':checked')?'1':'0'
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeExpense();loadExpenses();}else toast(r.message,false)});
+  };
+  TRN.postExpenseNow=function(id){
+    if(!confirm('Post this expense to Accounting now?'))return;
+    post('transport_ops/post_expense_now',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadExpenses();}else toast(r.message,false)});
+  };
+  TRN.retryExpensePost=function(id){
+    post('transport_ops/retry_expense_post',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadExpenses();}else toast(r.message,false)});
+  };
+  TRN.openVoidExpense=function(id){$('#expVoidId').val(id);$('#expVoidReason').val('');$('#expVoidModal').addClass('show')};
+  TRN.closeExpVoid=function(){$('#expVoidModal').removeClass('show')};
+  TRN.confirmVoidExpense=function(){
+    var reason=$('#expVoidReason').val();if(!reason){toast('Reason required.',false);return}
+    post('transport_ops/void_expense',{id:$('#expVoidId').val(),reason:reason}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeExpVoid();loadExpenses();}else toast(r.message,false)});
+  };
+  TRN.reconcilePendingPosts=function(){
+    if(!confirm('Retry all pending Accounting posts?'))return;
+    post('transport_ops/reconcile_pending_posts',{}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadExpenses();}else toast(r.message,false)});
+  };
+  TRN.rebuildExpenseSummary=function(){
+    post('transport_ops/rebuild_expense_summary',{year_month:''}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);}else toast(r.message,false)});
+  };
+
   // Init
   // F1 (2026-07-07): load vendors FIRST so the vendor picker inside the
   // vehicle modal is populated before the first Add-Vehicle click.
@@ -1221,6 +1371,8 @@ document.addEventListener('DOMContentLoaded', function(){
   loadVehicles();
   loadRoutes();
   loadDrivers();
+  loadExpenseCategories();
+  loadExpenses();
   setTimeout(function(){loadStops();loadAssignments();loadExpiry();},500);
 })();
 });

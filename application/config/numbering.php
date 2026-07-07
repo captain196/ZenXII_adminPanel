@@ -395,9 +395,10 @@ $config['numbering'] = [
         'trn_driver_incident'      => 'enabled',
         'trn_driver_review'        => 'enabled',
         'trn_temp_driver_assign'   => 'enabled',
+        // Feature F5 (Transport Expenses + Accounting) cutover 2026-07-07:
+        'trn_expense'              => 'enabled',
         // Still disabled — future features:
         'trn_trip'                 => 'disabled',
-        'trn_expense'              => 'disabled',
         'trn_event'                => 'disabled',
         'trn_event_assign'         => 'disabled',
     ],

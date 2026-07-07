@@ -205,6 +205,13 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-F4-4', 'category' => self::CAT_RUNTIME,    'label' => 'no temp overlap per vehicle','callable' => '_chTrnF4_4' ],
             [ 'id' => 'CH-TRN-F4-5', 'category' => self::CAT_CACHE,      'label' => 'activity summary freshness','callable' => '_chTrnF4_5' ],
             [ 'id' => 'CH-TRN-F4-6', 'category' => self::CAT_PERFORMANCE,'label' => 'no N+1 in activity compute','callable' => '_chTrnF4_6' ],
+
+            // ─── F5 Transport Expenses + Accounting (added 2026-07-07) ──────
+            [ 'id' => 'CH-TRN-F5-1', 'category' => self::CAT_SOURCE,     'label' => 'no direct ledger from F5', 'callable' => '_chTrnF5_1' ],
+            [ 'id' => 'CH-TRN-F5-2', 'category' => self::CAT_RUNTIME,    'label' => 'expense type validity',    'callable' => '_chTrnF5_2' ],
+            [ 'id' => 'CH-TRN-F5-3', 'category' => self::CAT_RUNTIME,    'label' => 'no stale pending post',    'callable' => '_chTrnF5_3' ],
+            [ 'id' => 'CH-TRN-F5-4', 'category' => self::CAT_RUNTIME,    'label' => 'expense FK integrity',     'callable' => '_chTrnF5_4' ],
+            [ 'id' => 'CH-TRN-F5-5', 'category' => self::CAT_PERFORMANCE,'label' => 'no N+1 in summary calc',   'callable' => '_chTrnF5_5' ],
         ];
     }
 
@@ -282,8 +289,15 @@ class Transport_verifier extends CI_Controller
             }
             foreach ((array) $rows as $row) {
                 $samples++;
-                if (!is_array($row) || !array_key_exists('schoolId', $row) || $row['schoolId'] === '') {
-                    $bad[] = "{$col}:" . (string) ($row['id'] ?? '?');
+                if (!is_array($row)) { $bad[] = "{$col}:?"; continue; }
+                // schoolWhere returns Firestore's nested {id, data:{...}}
+                // shape; unwrap so the schoolId lookup is uniform across all
+                // owned collections (matches the pattern used elsewhere in
+                // Transport_service via _unwrapNestedRow).
+                $inner = (isset($row['data']) && is_array($row['data'])) ? $row['data'] : $row;
+                $sid = (string) ($inner['schoolId'] ?? '');
+                if ($sid === '') {
+                    $bad[] = "{$col}:" . (string) ($row['id'] ?? ($inner['id'] ?? '?'));
                 }
             }
         }
@@ -1555,6 +1569,198 @@ class Transport_verifier extends CI_Controller
             return ['status' => 'FAIL', 'detail' => "nested schoolWhere-in-foreach in compute body: {$nested}"];
         }
         return ['status' => 'PASS', 'detail' => "compute:sw={$sw} (bounded, no N+1)"];
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F5 Transport Expenses + Accounting assertions (CH-TRN-F5-1..5) 2026-07-07
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * CH-TRN-F5-1 — No direct 'ledger' write from Transport source
+     * (F5 posts via PayrollAccountingService only). Extends CH-TRN-9's
+     * general check to Transport_expense_reconciler.php.
+     */
+    private function _chTrnF5_1(): array
+    {
+        return $this->_grepTransportSourceForbidden(
+            "/setEntity\(\s*['\"]ledger['\"]|removeEntity\(\s*['\"]ledger['\"]|firestoreSet\(\s*['\"]accounting['\"]/",
+            'direct ledger/accounting write'
+        );
+    }
+
+    /**
+     * CH-TRN-F5-2 — Every transportExpenses doc has expense_type in the
+     * known enum OR expense_type='Other' with non-empty expense_type_custom.
+     */
+    private function _chTrnF5_2(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                Transport_service::COL_TRANSPORT_EXPENSES,
+                [], 'expense_date', 'DESC', 100
+            );
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'no expenses — trivial pass'];
+        }
+        $valid = Transport_service::EXPENSE_TYPES;
+        $bad = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) { continue; }
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['expense_type'])) {
+                $r = $r['data'];
+            }
+            $type = (string) ($r['expense_type'] ?? '');
+            if (!in_array($type, $valid, true)) {
+                $bad[] = (string) ($r['expenseId'] ?? '?') . "(={$type})";
+                continue;
+            }
+            if ($type === 'Other' && trim((string) ($r['expense_type_custom'] ?? '')) === '') {
+                $bad[] = (string) ($r['expenseId'] ?? '?') . '(Other/no-custom)';
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' invalid types: ' . implode(',', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' expenses have valid type'];
+    }
+
+    /**
+     * CH-TRN-F5-3 — No transportExpenses with accounting_journal_ref='pending'
+     * older than 24h (reconciler working). WARN when pending count > 0.
+     */
+    private function _chTrnF5_3(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                Transport_service::COL_TRANSPORT_EXPENSES,
+                [['accounting_journal_ref', '==', 'pending']],
+                null, 'ASC', 200
+            );
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'PASS', 'detail' => 'no pending expense posts'];
+        }
+        $cutoff = time() - 86400;
+        $stale = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) { continue; }
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['expense_type'])) {
+                $r = $r['data'];
+            }
+            $ts = strtotime((string) ($r['updated_at'] ?? $r['created_at'] ?? ''));
+            if ($ts !== false && $ts < $cutoff) {
+                $stale[] = (string) ($r['expenseId'] ?? '?');
+            }
+        }
+        if ($stale !== []) {
+            return ['status' => 'FAIL', 'detail' => count($stale) . ' stale >24h pending — run transport_expense_reconciler: ' . implode(',', array_slice($stale, 0, 5))];
+        }
+        return ['status' => 'WARN', 'detail' => count($rows) . ' pending posts within SLA — reconciler will retry'];
+    }
+
+    /**
+     * CH-TRN-F5-4 — FK integrity: every expense with vehicle_id, vendor_id,
+     * payee_id (Driver/Staff), related_maintenance_id, or related_fuel_id
+     * references an existing entity.
+     */
+    private function _chTrnF5_4(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                Transport_service::COL_TRANSPORT_EXPENSES, [], null, 'ASC', 100
+            );
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'no expenses — trivial pass'];
+        }
+        $vehCache = []; $vendCache = []; $staffCache = []; $mntCache = []; $fuelCache = [];
+        $bad = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) { continue; }
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['expense_type'])) {
+                $r = $r['data'];
+            }
+            $id = (string) ($r['expenseId'] ?? '?');
+            $vid = (string) ($r['vehicle_id'] ?? '');
+            if ($vid !== '') {
+                if (!isset($vehCache[$vid])) {
+                    $vehCache[$vid] = is_array($this->fs->getEntity(Transport_service::COL_VEHICLES, $vid));
+                }
+                if (!$vehCache[$vid]) { $bad[] = "{$id}(veh:{$vid})"; }
+            }
+            $payeeType = (string) ($r['payee_type'] ?? '');
+            $payeeId   = (string) ($r['payee_id']   ?? '');
+            if ($payeeType === 'Vendor' && $payeeId !== '') {
+                if (!isset($vendCache[$payeeId])) {
+                    $vendCache[$payeeId] = is_array($this->fs->getEntity(Transport_service::COL_TRANSPORT_VENDORS, $payeeId));
+                }
+                if (!$vendCache[$payeeId]) { $bad[] = "{$id}(vend:{$payeeId})"; }
+            }
+            if (in_array($payeeType, ['Staff', 'Driver'], true) && $payeeId !== '') {
+                if (!isset($staffCache[$payeeId])) {
+                    $staffCache[$payeeId] = is_array($this->fs->getEntity('staff', $payeeId));
+                }
+                if (!$staffCache[$payeeId]) { $bad[] = "{$id}(staff:{$payeeId})"; }
+            }
+            $mid = (string) ($r['related_maintenance_id'] ?? '');
+            if ($mid !== '') {
+                if (!isset($mntCache[$mid])) {
+                    $mntCache[$mid] = is_array($this->fs->getEntity(Transport_service::COL_MAINTENANCE_LOGS, $mid));
+                }
+                if (!$mntCache[$mid]) { $bad[] = "{$id}(mnt:{$mid})"; }
+            }
+            $fid = (string) ($r['related_fuel_id'] ?? '');
+            if ($fid !== '') {
+                if (!isset($fuelCache[$fid])) {
+                    $fuelCache[$fid] = is_array($this->fs->getEntity(Transport_service::COL_FUEL_LOGS, $fid));
+                }
+                if (!$fuelCache[$fid]) { $bad[] = "{$id}(fuel:{$fid})"; }
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' orphans: ' . implode(',', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' expenses FK-valid'];
+    }
+
+    /**
+     * CH-TRN-F5-5 — Performance guard: computeFleetMonthlyExpenseSummary
+     * uses a single filtered query (via listExpenses) + in-memory
+     * aggregation. Source-scan asserts no per-expense foreach → getEntity
+     * (N+1 anti-pattern).
+     */
+    private function _chTrnF5_5(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = $this->_stripComments((string) file_get_contents($path));
+        if (!preg_match('/public\s+function\s+computeFleetMonthlyExpenseSummary\s*\([^)]*\)[^{]*\{/', $src, $m, PREG_OFFSET_CAPTURE)) {
+            return ['status' => 'FAIL', 'detail' => 'computeFleetMonthlyExpenseSummary missing'];
+        }
+        $start = $m[0][1] + strlen($m[0][0]) - 1;
+        $depth = 0; $i = $start;
+        while ($i < strlen($src)) {
+            $c = $src[$i];
+            if ($c === '{') { $depth++; }
+            elseif ($c === '}') { $depth--; if ($depth === 0) { break; } }
+            $i++;
+        }
+        $body = substr($src, $start, $i - $start + 1);
+        // Anti-pattern: foreach containing getEntity/schoolWhere inside
+        $nested = preg_match_all('/foreach\s*\([^)]+\)\s*\{[^}]*->(getEntity|schoolWhere)\(/', $body, $_);
+        if ($nested > 0) {
+            return ['status' => 'FAIL', 'detail' => "nested per-item read in summary body: {$nested}"];
+        }
+        return ['status' => 'PASS', 'detail' => 'summary body uses single-query aggregation (no N+1)'];
     }
 
     // ─── shared source-grep helper ───────────────────────────────────────

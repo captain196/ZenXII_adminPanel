@@ -4131,6 +4131,479 @@ class Transport_service
         return ['rebuilt_count' => $count, 'year_month' => $ym];
     }
 
+    // ═════════════════════════════════════════════════════════════════════
+    //  DOMAIN_EXPENSE (F5, 2026-07-07) — Transport Expenses + Accounting
+    // ═════════════════════════════════════════════════════════════════════
+    //
+    // F5 architecture summary:
+    //   • Expense taxonomy via enum (18 known types + free 'Other')
+    //   • Payee model: Vendor | Staff | Driver | External
+    //   • Cross-links to F1 maintenance/fuel logs (bidirectional read)
+    //   • Pending-then-retry Accounting integration via
+    //     PayrollAccountingService::postExpense (Payroll library owns the
+    //     accounting seam; no direct ledger writes from Transport)
+    //   • Configurable posting mode (schoolControl.transport.expense_
+    //     posting_mode = 'manual' | 'auto'; default 'manual')
+    //   • Generic attachments (not receipt-only) — schema supports
+    //     Receipt | Invoice | Quotation | Workshop_Estimate | Warranty |
+    //     Approval_Letter | Other without schema changes
+    //   • Denormalised monthly per-vehicle expense summary
+    //   • Reconciler for pending posts + admin retry surface
+
+    /** Known expense types (free 'Other' + expense_type_custom allowed). */
+    public const EXPENSE_TYPES = [
+        // Vehicle operating
+        'Vehicle_Fuel', 'Vehicle_Maintenance', 'Vehicle_Repair', 'Vehicle_Tyre_Replacement',
+        // Vehicle statutory
+        'Vehicle_Insurance_Premium', 'Vehicle_Permit_Fee', 'Vehicle_Fitness_Fee',
+        'Vehicle_Pollution_Fee', 'Vehicle_Road_Tax',
+        // Route operating
+        'Toll_Fee', 'Parking_Fee', 'Emergency_Repair',
+        // Driver
+        'Driver_Allowance', 'Driver_Overtime', 'Driver_Uniform', 'Driver_Training_Fee',
+        // Vendor
+        'Vendor_Contract_Payment',
+        // Catch-all
+        'Miscellaneous', 'Other',
+    ];
+
+    public const PAYEE_TYPES = ['Vendor', 'Staff', 'Driver', 'External'];
+
+    public const PAYMENT_METHODS = [
+        'Cash', 'Bank_Transfer', 'Cheque', 'UPI', 'Card', 'Petty_Cash',
+    ];
+
+    /** Generic attachment categories — additive; schools may add 'Other'
+     *  with a note without any schema change. */
+    public const EXPENSE_ATTACHMENT_TYPES = [
+        'Receipt', 'Invoice', 'Quotation', 'Workshop_Estimate',
+        'Warranty', 'Approval_Letter', 'Other',
+    ];
+
+    public const EXPENSE_STATUSES = ['Active', 'Voided'];
+
+    /** Retry cap for pending accounting posts before status flips to 'failed'. */
+    private const EXPENSE_ACCOUNTING_MAX_ATTEMPTS = 5;
+
+    /**
+     * Expense type → Chart of Accounts code map. Codes are illustrative;
+     * the school's actual CoA determines final. PayrollAccountingService
+     * receives the code and routes to the correct journal line.
+     */
+    private const EXPENSE_TYPE_TO_LEDGER_CODE = [
+        'Vehicle_Fuel'                => '6200',
+        'Vehicle_Maintenance'         => '6210',
+        'Vehicle_Repair'              => '6210',
+        'Vehicle_Tyre_Replacement'    => '6220',
+        'Vehicle_Insurance_Premium'   => '6230',
+        'Toll_Fee'                    => '6240',
+        'Parking_Fee'                 => '6240',
+        'Driver_Allowance'            => '6250',
+        'Driver_Overtime'             => '6250',
+        'Driver_Uniform'              => '6250',
+        'Driver_Training_Fee'         => '6250',
+        'Vehicle_Permit_Fee'          => '6260',
+        'Vehicle_Fitness_Fee'         => '6260',
+        'Vehicle_Pollution_Fee'       => '6260',
+        'Vehicle_Road_Tax'            => '6260',
+        'Emergency_Repair'            => '6210',
+        'Vendor_Contract_Payment'     => '6280',
+        'Miscellaneous'               => '6290',
+        'Other'                       => '6290',
+    ];
+
+    // ─── Expense CRUD ───────────────────────────────────────────────────
+
+    /**
+     * Save (create or update) a transport expense. Follows the pending-
+     * then-retry Accounting pattern (F3 Fee_lifecycle precedent):
+     *
+     *   1. Validate payload
+     *   2. Write expense doc with:
+     *      - accounting_journal_ref = '' (manual mode, waiting for admin
+     *        click) OR 'pending' (auto mode, first post will attempt now)
+     *   3. If posting mode is 'auto' (or force_post=true): call
+     *      PayrollAccountingService::postExpense; on success update ref;
+     *      on failure leave 'pending' for reconciler
+     *
+     * Attachments (Refinement additional 2026-07-07): stored as an
+     * array of {type, path, uploaded_at, uploaded_by, notes} objects —
+     * supports receipts + invoices + quotations + workshop estimates +
+     * warranty documents + approval letters without schema changes.
+     */
+    public function saveExpense(array $input): array
+    {
+        $this->_assertReady();
+        $id      = trim((string) ($input['id'] ?? ''));
+        $isNew   = ($id === '');
+        $existing = $isNew ? null : $this->fs->getEntity(self::COL_TRANSPORT_EXPENSES, $id);
+
+        $this->_validateExpensePayload($input, $isNew);
+
+        if ($isNew) {
+            $id = $this->numbering->next('trn_expense', [
+                'claimedBy'  => $this->adminId,
+                'claimedFor' => 'F5:saveExpense',
+            ]);
+        }
+
+        // Posting mode: force_post overrides; else schoolControl setting
+        $forcePost   = !empty($input['force_post']);
+        $postingMode = $forcePost ? 'auto' : $this->_getExpensePostingMode();
+
+        // Normalise attachments — accept legacy 'receipt_path' as an implicit
+        // Receipt attachment for backward compat with derived-from-log flows.
+        $attachments = $this->_normaliseAttachments((array) ($input['attachments'] ?? []), (string) ($input['receipt_path'] ?? ''));
+
+        $now = date('c');
+        $amount = round((float) ($input['amount'] ?? 0), 2);
+        $taxAmount = round((float) ($input['tax_amount'] ?? 0), 2);
+        $data = [
+            'expenseId'               => $id,
+            'schoolId'                => $this->schoolId,
+            'expense_type'            => (string) $input['expense_type'],
+            'expense_type_custom'     => trim((string) ($input['expense_type_custom'] ?? '')),
+            'expense_date'            => trim((string) ($input['expense_date'] ?? date('Y-m-d'))),
+            'amount'                  => $amount,
+            'tax_amount'              => $taxAmount,
+            'tax_rate'                => round((float) ($input['tax_rate'] ?? 0), 2),
+            'total_amount'            => round($amount + $taxAmount, 2),
+            'currency'                => 'INR',
+            'payee_type'              => (string) $input['payee_type'],
+            'payee_id'                => trim((string) ($input['payee_id']   ?? '')),
+            'payee_name'              => trim((string) ($input['payee_name'] ?? '')),
+            'vehicle_id'              => trim((string) ($input['vehicle_id'] ?? '')),
+            'related_maintenance_id'  => trim((string) ($input['related_maintenance_id'] ?? '')),
+            'related_fuel_id'         => trim((string) ($input['related_fuel_id']        ?? '')),
+            'related_incident_id'     => trim((string) ($input['related_incident_id']    ?? '')),
+            'payment_method'          => (string) ($input['payment_method'] ?? 'Cash'),
+            'payment_reference'       => trim((string) ($input['payment_reference'] ?? '')),
+            'paid_by_staff_id'        => trim((string) ($input['paid_by_staff_id'] ?? $this->adminId)),
+            'attachments'             => $attachments,
+            'accounting_journal_ref'  => $postingMode === 'auto' ? 'pending' : '',
+            'accounting_attempts'     => 0,
+            'accounting_last_error'   => '',
+            'notes'                   => trim((string) ($input['notes'] ?? '')),
+            'status'                  => 'Active',
+            'updated_at'              => $now,
+        ];
+        if ($isNew) {
+            $data['created_at'] = $now;
+            $data['created_by'] = $this->adminId;
+        }
+        $this->fs->setEntity(self::COL_TRANSPORT_EXPENSES, $id, $data, /* merge */ !$isNew);
+
+        $this->emitAudit(
+            'transportExpense', $id,
+            $isNew ? 'created' : 'updated',
+            $isNew ? null : $existing,
+            $data,
+            ['domain' => self::DOMAIN_EXPENSE, 'posting_mode' => $postingMode]
+        );
+
+        // Auto-post to Accounting (fire-and-await; failure leaves 'pending')
+        $postResult = ['status' => $postingMode === 'auto' ? 'pending' : 'manual', 'journal_ref' => ''];
+        if ($postingMode === 'auto') {
+            $postResult = $this->_postToAccounting($id, $data);
+        }
+        return ['id' => $id, 'isNew' => $isNew, 'data' => $data, 'posting' => $postResult];
+    }
+
+    public function getExpense(string $expenseId): ?array
+    {
+        $this->_assertReady();
+        if ($expenseId === '') { return null; }
+        $e = $this->fs->getEntity(self::COL_TRANSPORT_EXPENSES, $expenseId);
+        return is_array($e) ? $e : null;
+    }
+
+    /** Void (soft-delete) an expense. Only Active expenses may be voided. */
+    public function voidExpense(string $expenseId, string $reason): void
+    {
+        $this->_assertReady();
+        if ($expenseId === '' || trim($reason) === '') {
+            throw new \InvalidArgumentException('expenseId and reason are required.');
+        }
+        $existing = $this->fs->getEntity(self::COL_TRANSPORT_EXPENSES, $expenseId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('Expense not found: ' . $expenseId);
+        }
+        if ((string) ($existing['status'] ?? '') !== 'Active') {
+            throw new \InvalidArgumentException('Expense is not Active.');
+        }
+        $now = date('c');
+        $update = [
+            'status'      => 'Voided',
+            'voided_at'   => $now,
+            'voided_by'   => $this->adminId,
+            'void_reason' => trim($reason),
+            'updated_at'  => $now,
+        ];
+        $this->fs->setEntity(self::COL_TRANSPORT_EXPENSES, $expenseId, $update, /* merge */ true);
+        $this->emitAudit(
+            'transportExpense', $expenseId, 'voided',
+            ['status' => 'Active'], $update,
+            ['domain' => self::DOMAIN_EXPENSE, 'reason' => $reason]
+        );
+    }
+
+    /** List expenses with optional filters. */
+    public function listExpenses(array $filters = []): array
+    {
+        $this->_assertReady();
+        $where = [];
+        if (!empty($filters['expense_type'])) { $where[] = ['expense_type', '==', $filters['expense_type']]; }
+        if (!empty($filters['vehicle_id']))   { $where[] = ['vehicle_id',   '==', $filters['vehicle_id']]; }
+        if (!empty($filters['status']))       { $where[] = ['status',       '==', $filters['status']]; }
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                self::COL_TRANSPORT_EXPENSES, $where,
+                'expense_date', 'DESC'
+            );
+        } catch (\Throwable $_) { return []; }
+        $out = [];
+        foreach ($rows as $r) {
+            $r = $this->_unwrapNestedRow($r, 'expense_type');
+            if (!is_array($r)) { continue; }
+            $id = (string) ($r['expenseId'] ?? $r['id'] ?? '');
+            if ($id === '') { continue; }
+            // Date-range post-filter (Firestore composite already indexes
+            // by expense_date DESC; range predicates in-memory keep query
+            // count bounded)
+            if (!empty($filters['date_from']) && (string) ($r['expense_date'] ?? '') < $filters['date_from']) { continue; }
+            if (!empty($filters['date_to'])   && (string) ($r['expense_date'] ?? '') > $filters['date_to'])   { continue; }
+            $r['id'] = $id;
+            $out[] = $r;
+        }
+        return $out;
+    }
+
+    // ─── Cross-link derivation from F1 logs ────────────────────────────
+
+    /**
+     * Convert a saved F1 maintenanceLogs entry into a transport expense.
+     * One-click UI path — admin looks at a maintenance log row and posts
+     * it to Accounting via this method.
+     */
+    public function createExpenseFromMaintenanceLog(string $maintenanceId, array $overrides = []): array
+    {
+        $this->_assertReady();
+        $ml = $this->fs->getEntity(self::COL_MAINTENANCE_LOGS, $maintenanceId);
+        if (!is_array($ml)) {
+            throw new \InvalidArgumentException('Maintenance log not found: ' . $maintenanceId);
+        }
+        // Guard against double-posting: search existing expenses for this link
+        $existing = (array) $this->fs->schoolWhere(
+            self::COL_TRANSPORT_EXPENSES,
+            [['related_maintenance_id', '==', $maintenanceId], ['status', '==', 'Active']]
+        );
+        if ($existing !== []) {
+            throw new \RuntimeException('An active expense already exists for maintenance log ' . $maintenanceId);
+        }
+        $input = array_merge([
+            'expense_type'           => 'Vehicle_Maintenance',
+            'expense_date'           => (string) ($ml['service_date'] ?? date('Y-m-d')),
+            'amount'                 => (float)  ($ml['cost']         ?? 0),
+            'payee_type'             => 'External',
+            'payee_name'             => (string) ($ml['workshop']     ?? ''),
+            'vehicle_id'             => (string) ($ml['vehicle_id']   ?? ''),
+            'related_maintenance_id' => $maintenanceId,
+            'payment_method'         => 'Bank_Transfer',
+            'notes'                  => 'Derived from maintenance log ' . $maintenanceId,
+            'receipt_path'           => (string) ($ml['receipt_path'] ?? ''),
+        ], $overrides);
+        return $this->saveExpense($input);
+    }
+
+    /** Same pattern for F1 fuel logs. */
+    public function createExpenseFromFuelLog(string $fuelId, array $overrides = []): array
+    {
+        $this->_assertReady();
+        $fl = $this->fs->getEntity(self::COL_FUEL_LOGS, $fuelId);
+        if (!is_array($fl)) {
+            throw new \InvalidArgumentException('Fuel log not found: ' . $fuelId);
+        }
+        $existing = (array) $this->fs->schoolWhere(
+            self::COL_TRANSPORT_EXPENSES,
+            [['related_fuel_id', '==', $fuelId], ['status', '==', 'Active']]
+        );
+        if ($existing !== []) {
+            throw new \RuntimeException('An active expense already exists for fuel log ' . $fuelId);
+        }
+        $input = array_merge([
+            'expense_type'    => 'Vehicle_Fuel',
+            'expense_date'    => (string) ($fl['fuel_date'] ?? date('Y-m-d')),
+            'amount'          => (float)  ($fl['total_amount'] ?? 0),
+            'payee_type'      => 'External',
+            'payee_name'      => (string) ($fl['station'] ?? ''),
+            'vehicle_id'      => (string) ($fl['vehicle_id'] ?? ''),
+            'related_fuel_id' => $fuelId,
+            'payment_method'  => 'Card',
+            'notes'           => 'Derived from fuel log ' . $fuelId,
+            'receipt_path'    => (string) ($fl['receipt_path'] ?? ''),
+        ], $overrides);
+        return $this->saveExpense($input);
+    }
+
+    // ─── Reconciliation ────────────────────────────────────────────────
+
+    /**
+     * Retry all expenses in 'pending' state up to $maxRetriesPerCall.
+     * Nightly cron + admin action call this.
+     */
+    public function reconcilePendingAccountingPosts(int $maxRetriesPerCall = 50): array
+    {
+        $this->_assertReady();
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                self::COL_TRANSPORT_EXPENSES,
+                [['accounting_journal_ref', '==', 'pending']],
+                null, 'ASC', $maxRetriesPerCall
+            );
+        } catch (\Throwable $_) { return ['retried' => 0, 'posted' => 0, 'failed' => 0]; }
+        $retried = 0; $posted = 0; $failed = 0;
+        foreach ($rows as $r) {
+            $r = $this->_unwrapNestedRow($r, 'expense_type');
+            if (!is_array($r)) { continue; }
+            $id = (string) ($r['expenseId'] ?? $r['id'] ?? '');
+            if ($id === '') { continue; }
+            $retried++;
+            $res = $this->_postToAccounting($id, $r);
+            if ($res['status'] === 'posted') { $posted++; }
+            elseif ($res['status'] === 'failed') { $failed++; }
+        }
+        return ['retried' => $retried, 'posted' => $posted, 'failed' => $failed];
+    }
+
+    /** Retry a single expense's pending post. */
+    public function retryExpensePost(string $expenseId): array
+    {
+        $this->_assertReady();
+        $existing = $this->fs->getEntity(self::COL_TRANSPORT_EXPENSES, $expenseId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('Expense not found: ' . $expenseId);
+        }
+        return $this->_postToAccounting($expenseId, $existing);
+    }
+
+    /**
+     * Admin-triggered manual post for expenses saved in 'manual' mode
+     * (accounting_journal_ref='').
+     */
+    public function postExpenseNow(string $expenseId): array
+    {
+        $this->_assertReady();
+        $existing = $this->fs->getEntity(self::COL_TRANSPORT_EXPENSES, $expenseId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('Expense not found: ' . $expenseId);
+        }
+        $ref = (string) ($existing['accounting_journal_ref'] ?? '');
+        if ($ref !== '' && $ref !== 'pending' && $ref !== 'failed') {
+            throw new \InvalidArgumentException('Expense already posted to Accounting: ' . $ref);
+        }
+        // Mark as pending, then attempt post
+        $this->fs->setEntity(self::COL_TRANSPORT_EXPENSES, $expenseId, [
+            'accounting_journal_ref' => 'pending', 'updated_at' => date('c'),
+        ], /* merge */ true);
+        $existing['accounting_journal_ref'] = 'pending';
+        return $this->_postToAccounting($expenseId, $existing);
+    }
+
+    // ─── Aggregation ───────────────────────────────────────────────────
+
+    /**
+     * Compute per-vehicle monthly expense summary for the specified month.
+     * Aggregates transportExpenses + F1 maintenance costs + F1 fuel totals
+     * so a single query answers "total spend on this vehicle this month".
+     */
+    public function computeFleetMonthlyExpenseSummary(string $yearMonth): array
+    {
+        $this->_assertReady();
+        if (!preg_match('/^\d{4}-\d{2}$/', $yearMonth)) {
+            throw new \InvalidArgumentException('YYYY-MM yearMonth required.');
+        }
+        $monthStart = $yearMonth . '-01';
+        $monthEnd   = date('Y-m-t', strtotime($monthStart));
+
+        // Fetch all Active expenses in month range
+        $expenses = $this->listExpenses([
+            'status' => 'Active', 'date_from' => $monthStart, 'date_to' => $monthEnd,
+        ]);
+
+        $summary = [
+            'summaryId'              => "{$this->schoolId}_FMES__{$yearMonth}",
+            'schoolId'               => $this->schoolId,
+            'period_year_month'      => $yearMonth,
+            'period_start'           => $monthStart,
+            'period_end'             => $monthEnd,
+            'expenses_count'         => count($expenses),
+            'total_amount'           => 0.0,
+            'per_category'           => [],
+            'per_vehicle'            => [],
+            'per_payee_type'         => ['Vendor' => 0.0, 'Staff' => 0.0, 'Driver' => 0.0, 'External' => 0.0],
+            'pending_accounting'     => 0,
+            'failed_accounting'      => 0,
+            'computed_at'            => date('c'),
+            'computed_by'            => in_array($this->adminId, ['cron', 'transport_expense_reconciler'], true) ? 'cron' : 'manual_rebuild',
+        ];
+        foreach ($expenses as $e) {
+            if (!is_array($e)) { continue; }
+            $amt = (float) ($e['total_amount'] ?? $e['amount'] ?? 0);
+            $summary['total_amount'] += $amt;
+            $cat = (string) ($e['expense_type'] ?? 'Other');
+            $summary['per_category'][$cat] = ($summary['per_category'][$cat] ?? 0.0) + $amt;
+            $vid = (string) ($e['vehicle_id'] ?? '');
+            if ($vid !== '') {
+                $summary['per_vehicle'][$vid] = ($summary['per_vehicle'][$vid] ?? 0.0) + $amt;
+            }
+            $pt = (string) ($e['payee_type'] ?? 'External');
+            if (isset($summary['per_payee_type'][$pt])) {
+                $summary['per_payee_type'][$pt] += $amt;
+            }
+            $ref = (string) ($e['accounting_journal_ref'] ?? '');
+            if ($ref === 'pending') { $summary['pending_accounting']++; }
+            if ($ref === 'failed')  { $summary['failed_accounting']++; }
+        }
+        $summary['total_amount'] = round($summary['total_amount'], 2);
+        foreach ($summary['per_category'] as $k => $v) { $summary['per_category'][$k] = round($v, 2); }
+        foreach ($summary['per_vehicle']  as $k => $v) { $summary['per_vehicle'][$k]  = round($v, 2); }
+        foreach ($summary['per_payee_type'] as $k => $v) { $summary['per_payee_type'][$k] = round($v, 2); }
+
+        $this->fs->setEntity(self::COL_FLEET_MONTHLY_EXPENSE_SUMMARY, $summary['summaryId'], $summary, /* merge */ false);
+        return $summary;
+    }
+
+    /** Rebuild monthly summaries (admin power action). */
+    public function rebuildMonthlyExpenseSummary(string $yearMonth = ''): array
+    {
+        $ym = $yearMonth !== '' ? $yearMonth : date('Y-m');
+        return $this->computeFleetMonthlyExpenseSummary($ym);
+    }
+
+    // ─── Read helpers ──────────────────────────────────────────────────
+
+    public function getExpenseCategories(): array
+    {
+        return [
+            'types'             => self::EXPENSE_TYPES,
+            'payee_types'       => self::PAYEE_TYPES,
+            'payment_methods'   => self::PAYMENT_METHODS,
+            'attachment_types'  => self::EXPENSE_ATTACHMENT_TYPES,
+        ];
+    }
+
+    public function getPendingAccountingCount(): int
+    {
+        $this->_assertReady();
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                self::COL_TRANSPORT_EXPENSES,
+                [['accounting_journal_ref', '==', 'pending']]
+            );
+            return count($rows);
+        } catch (\Throwable $_) { return 0; }
+    }
+
     // ─── private helpers ─────────────────────────────────────────────────
 
     private function _assertReady(): void
@@ -4650,6 +5123,231 @@ class Transport_service
             'current_count'   => $newCount,
             'last_updated_at' => date('c'),
         ], /* merge */ true);
+    }
+
+    // ─── DOMAIN_EXPENSE (F5) private helpers ─────────────────────────────
+
+    /**
+     * Validate the expense payload before write. Hard-checks catch
+     * mis-typed input at the service boundary.
+     */
+    private function _validateExpensePayload(array $input, bool $isNew): void
+    {
+        $type = trim((string) ($input['expense_type'] ?? ''));
+        if ($type === '' || !in_array($type, self::EXPENSE_TYPES, true)) {
+            throw new \InvalidArgumentException('Invalid expense_type: ' . $type);
+        }
+        if ($type === 'Other' && trim((string) ($input['expense_type_custom'] ?? '')) === '') {
+            throw new \InvalidArgumentException('expense_type_custom is required when expense_type is Other.');
+        }
+        $amount = (float) ($input['amount'] ?? 0);
+        if ($amount <= 0) {
+            throw new \InvalidArgumentException('amount must be > 0.');
+        }
+        $taxRate = (float) ($input['tax_rate'] ?? 0);
+        if ($taxRate < 0 || $taxRate > 100) {
+            throw new \InvalidArgumentException('tax_rate must be 0-100.');
+        }
+        $payeeType = trim((string) ($input['payee_type'] ?? ''));
+        if (!in_array($payeeType, self::PAYEE_TYPES, true)) {
+            throw new \InvalidArgumentException('Invalid payee_type: ' . $payeeType);
+        }
+        // Vendor / Staff / Driver payees require a payee_id
+        if (in_array($payeeType, ['Vendor', 'Staff', 'Driver'], true)
+            && trim((string) ($input['payee_id'] ?? '')) === '') {
+            throw new \InvalidArgumentException('payee_id required for payee_type=' . $payeeType);
+        }
+        $method = trim((string) ($input['payment_method'] ?? 'Cash'));
+        if (!in_array($method, self::PAYMENT_METHODS, true)) {
+            throw new \InvalidArgumentException('Invalid payment_method: ' . $method);
+        }
+    }
+
+    /**
+     * Read the configured expense-posting mode from schoolControl.
+     * Defaults to 'manual' when unset (safer — admin must explicitly
+     * post to Accounting).
+     */
+    private function _getExpensePostingMode(): string
+    {
+        try {
+            $ctrl = $this->fs->getEntity('schoolControl', $this->schoolId);
+            if (is_array($ctrl)) {
+                $mode = (string) ($ctrl['transport']['expense_posting_mode'] ?? '');
+                if (in_array($mode, ['manual', 'auto'], true)) {
+                    return $mode;
+                }
+            }
+        } catch (\Throwable $_) {}
+        return 'manual';
+    }
+
+    /**
+     * Normalise the attachments payload into the canonical
+     * [{type, path, uploaded_at, uploaded_by, notes}] shape.
+     *
+     * Backward compat: a legacy top-level `receipt_path` string is
+     * absorbed into an implicit Receipt attachment (used by the F1-derived
+     * createExpenseFromMaintenanceLog / createExpenseFromFuelLog flows).
+     */
+    private function _normaliseAttachments(array $attachments, string $legacyReceiptPath = ''): array
+    {
+        $out = [];
+        foreach ($attachments as $a) {
+            if (!is_array($a)) { continue; }
+            $type = (string) ($a['type'] ?? 'Receipt');
+            if (!in_array($type, self::EXPENSE_ATTACHMENT_TYPES, true)) {
+                $type = 'Other';
+            }
+            $path = trim((string) ($a['path'] ?? ''));
+            if ($path === '') { continue; }
+            $out[] = [
+                'type'        => $type,
+                'path'        => $path,
+                'uploaded_at' => (string) ($a['uploaded_at'] ?? date('c')),
+                'uploaded_by' => (string) ($a['uploaded_by'] ?? $this->adminId),
+                'notes'       => (string) ($a['notes'] ?? ''),
+            ];
+        }
+        if ($legacyReceiptPath !== '' && $out === []) {
+            $out[] = [
+                'type'        => 'Receipt',
+                'path'        => $legacyReceiptPath,
+                'uploaded_at' => date('c'),
+                'uploaded_by' => $this->adminId,
+                'notes'       => 'derived',
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Post an expense to Accounting via PayrollAccountingService (which
+     * F5 extended with a Transport-facing postExpense method — see
+     * PayrollAccountingService source). Success updates the expense's
+     * accounting_journal_ref; failure increments attempts and leaves
+     * status='pending' until the retry cap is reached, then flips to
+     * 'failed' + fires an admin notice.
+     *
+     * @return array{status:string, journal_ref:string, error:string}
+     */
+    private function _postToAccounting(string $expenseId, array $expense): array
+    {
+        $ledgerCode = $this->_ledgerCodeFor((string) ($expense['expense_type'] ?? 'Other'));
+        try {
+            // PayrollAccountingService lives in application/services/ (not
+            // application/libraries/), so we mirror the load pattern used by
+            // Payroll.php: manual require + new + init. Cached on CI instance
+            // so subsequent expenses in the same request reuse the object.
+            if (!isset($this->ci->transportAccountingSvc)) {
+                if (!class_exists('PayrollAccountingService')) {
+                    require_once APPPATH . 'services/PayrollAccountingService.php';
+                }
+                $svc = new \PayrollAccountingService();
+                // firebase is a raw Firebase_service reference; Transport_service
+                // already holds it as $this->fs->firebase. Fall back to fs itself
+                // when the raw handle isn't available (fs->firebase surface has
+                // varied historically); PayrollAccountingService::init treats
+                // the first arg opaquely and only null triggers a not-ready.
+                // Firebase_service is loaded as $this->ci->firebase by
+                // upstream controllers. Fall back to null (init still returns
+                // self; isEnabled() then reports false) — probe log will show.
+                $firebaseHandle = isset($this->ci->firebase) ? $this->ci->firebase : null;
+                $svc->init($firebaseHandle, $this->schoolId, $this->sessionYear, $this->adminId, $this->ci);
+                $this->ci->transportAccountingSvc = $svc;
+            }
+            $accountingSvc = $this->ci->transportAccountingSvc;
+            if (!is_object($accountingSvc) || !method_exists($accountingSvc, 'postExpense')) {
+                throw new \RuntimeException('PayrollAccountingService::postExpense not available');
+            }
+            $journalRef = $accountingSvc->postExpense([
+                'source_module'   => 'Transport',
+                'source_doc_id'   => $expenseId,
+                'ledger_code'     => $ledgerCode,
+                'amount'          => (float) ($expense['amount']       ?? 0),
+                'tax_amount'      => (float) ($expense['tax_amount']   ?? 0),
+                'total_amount'    => (float) ($expense['total_amount'] ?? 0),
+                'expense_date'    => (string) ($expense['expense_date'] ?? date('Y-m-d')),
+                'payee_type'      => (string) ($expense['payee_type']   ?? ''),
+                'payee_id'        => (string) ($expense['payee_id']     ?? ''),
+                'payee_name'      => (string) ($expense['payee_name']   ?? ''),
+                'expense_type'    => (string) ($expense['expense_type'] ?? ''),
+                'payment_method'  => (string) ($expense['payment_method'] ?? ''),
+                'payment_reference' => (string) ($expense['payment_reference'] ?? ''),
+                'notes'           => (string) ($expense['notes']        ?? ''),
+                'schoolId'        => $this->schoolId,
+                'created_by'      => $this->adminId,
+            ]);
+            if (!is_string($journalRef) || $journalRef === '') {
+                throw new \RuntimeException('postExpense returned no journal ref');
+            }
+            $this->fs->setEntity(self::COL_TRANSPORT_EXPENSES, $expenseId, [
+                'accounting_journal_ref' => $journalRef,
+                'accounting_attempts'    => (int) ($expense['accounting_attempts'] ?? 0) + 1,
+                'accounting_last_error'  => '',
+                'updated_at'             => date('c'),
+            ], /* merge */ true);
+            $this->emitAudit(
+                'transportExpense', $expenseId, 'posted_to_accounting',
+                ['accounting_journal_ref' => (string) ($expense['accounting_journal_ref'] ?? '')],
+                ['accounting_journal_ref' => $journalRef, 'ledger_code' => $ledgerCode],
+                ['domain' => self::DOMAIN_EXPENSE]
+            );
+            return ['status' => 'posted', 'journal_ref' => $journalRef, 'error' => ''];
+        } catch (\Throwable $e) {
+            $attempts = (int) ($expense['accounting_attempts'] ?? 0) + 1;
+            $shouldFail = $attempts >= self::EXPENSE_ACCOUNTING_MAX_ATTEMPTS;
+            $update = [
+                'accounting_journal_ref' => $shouldFail ? 'failed' : 'pending',
+                'accounting_attempts'    => $attempts,
+                'accounting_last_error'  => substr((string) $e->getMessage(), 0, 500),
+                'updated_at'             => date('c'),
+            ];
+            try {
+                $this->fs->setEntity(self::COL_TRANSPORT_EXPENSES, $expenseId, $update, /* merge */ true);
+            } catch (\Throwable $_) {}
+            log_message('error', 'F5 postToAccounting failed for ' . $expenseId . ' attempt ' . $attempts . ': ' . $e->getMessage());
+            if ($shouldFail) {
+                $this->_emitPendingStalenessNotice(array_merge($expense, $update));
+                return ['status' => 'failed', 'journal_ref' => '', 'error' => $e->getMessage()];
+            }
+            return ['status' => 'pending', 'journal_ref' => '', 'error' => $e->getMessage()];
+        }
+    }
+
+    private function _ledgerCodeFor(string $expenseType): string
+    {
+        return (string) (self::EXPENSE_TYPE_TO_LEDGER_CODE[$expenseType] ?? self::EXPENSE_TYPE_TO_LEDGER_CODE['Other']);
+    }
+
+    /**
+     * Notify Admin + Accountant + Transport Manager when an expense
+     * exhausts its Accounting retry budget.
+     */
+    private function _emitPendingStalenessNotice(array $expense): void
+    {
+        try {
+            $this->ci->load->library('Communication_helper', null, 'commHelper');
+        } catch (\Throwable $_) { return; }
+        $helper = $this->ci->commHelper ?? null;
+        if (!is_object($helper) || !method_exists($helper, 'createNotice')) { return; }
+        $id     = (string) ($expense['expenseId']   ?? '');
+        $type   = (string) ($expense['expense_type'] ?? '');
+        $amt    = (float)  ($expense['total_amount'] ?? 0);
+        $err    = (string) ($expense['accounting_last_error'] ?? '');
+        $subject = "Transport expense FAILED to post to Accounting: {$id}";
+        $body    = "Expense: {$id}\nType: {$type}\nAmount: INR {$amt}\nLast error: {$err}\n\nAction: review and manually reconcile via Transport Ops → Reconcile Pending Posts.";
+        try {
+            $helper->createNotice([
+                'schoolId' => $this->schoolId,
+                'subject'  => $subject,
+                'body'     => $body,
+                'audience' => ['role:Admin', 'role:Accountant', 'role:Transport Manager'],
+                'context'  => ['module' => 'Transport', 'topic' => 'expense_post_failed', 'expense_id' => $id],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('warning', 'F5 pending-staleness notice failed: ' . $e->getMessage());
+        }
     }
 
     /**
