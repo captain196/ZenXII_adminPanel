@@ -197,6 +197,14 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-F3-4', 'category' => self::CAT_RUNTIME,    'label' => 'no assign to archived rt',  'callable' => '_chTrnF3_4' ],
             [ 'id' => 'CH-TRN-F3-5', 'category' => self::CAT_CACHE,      'label' => 'capacity cache accuracy',   'callable' => '_chTrnF3_5' ],
             [ 'id' => 'CH-TRN-F3-6', 'category' => self::CAT_PERFORMANCE,'label' => 'no N+1 in bulk/rollover',   'callable' => '_chTrnF3_6' ],
+
+            // ─── F4 Driver Management (added 2026-07-07) ─────────────────────
+            [ 'id' => 'CH-TRN-F4-1', 'category' => self::CAT_SOURCE,     'label' => 'staff-write discipline',    'callable' => '_chTrnF4_1' ],
+            [ 'id' => 'CH-TRN-F4-2', 'category' => self::CAT_RUNTIME,    'label' => 'incident staff FK',         'callable' => '_chTrnF4_2' ],
+            [ 'id' => 'CH-TRN-F4-3', 'category' => self::CAT_RUNTIME,    'label' => 'no stale active temp',      'callable' => '_chTrnF4_3' ],
+            [ 'id' => 'CH-TRN-F4-4', 'category' => self::CAT_RUNTIME,    'label' => 'no temp overlap per vehicle','callable' => '_chTrnF4_4' ],
+            [ 'id' => 'CH-TRN-F4-5', 'category' => self::CAT_CACHE,      'label' => 'activity summary freshness','callable' => '_chTrnF4_5' ],
+            [ 'id' => 'CH-TRN-F4-6', 'category' => self::CAT_PERFORMANCE,'label' => 'no N+1 in activity compute','callable' => '_chTrnF4_6' ],
         ];
     }
 
@@ -1327,6 +1335,226 @@ class Transport_verifier extends CI_Controller
         }
         $status = $bad === 0 ? 'PASS' : 'FAIL';
         return ['status' => $status, 'detail' => implode(' ', $report)];
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F4 Driver Management assertions (CH-TRN-F4-1..6) — 2026-07-07
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * CH-TRN-F4-1 — HR-staff-write discipline. Transport code MAY only
+     * write these top-level keys on staff docs: 'driver_meta',
+     * 'updated_at'. Grep every setEntity('staff', ...) call in Transport
+     * source; parse the payload array literal; assert each key.
+     */
+    private function _chTrnF4_1(): array
+    {
+        $files = [
+            APPPATH . 'controllers/Transport.php',
+            APPPATH . 'controllers/Transport_driver.php',
+            APPPATH . 'controllers/Transport_vendors.php',
+            APPPATH . 'controllers/Transport_ops.php',
+            APPPATH . 'controllers/Transport_rollover.php',
+            APPPATH . 'libraries/Transport_service.php',
+        ];
+        $allowed = ['driver_meta', 'updated_at'];
+        $bad = [];
+        foreach ($files as $f) {
+            if (!is_readable($f)) { continue; }
+            $src = $this->_stripComments((string) file_get_contents($f));
+            if (!preg_match_all(
+                "/setEntity\(\s*['\"]staff['\"]\s*,\s*[^,]+,\s*(\[[^\]]*?\])/",
+                $src, $m
+            )) { continue; }
+            foreach ($m[1] as $literal) {
+                if (preg_match_all("/['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\s*=>/", $literal, $keys)) {
+                    foreach ($keys[1] as $key) {
+                        if (!in_array($key, $allowed, true)) {
+                            $bad[] = basename($f) . ':' . $key;
+                        }
+                    }
+                }
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' violation(s): ' . implode(', ', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => 'staff writes restricted to driver_meta/updated_at only'];
+    }
+
+    private function _chTrnF4_2(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                Transport_service::COL_DRIVER_INCIDENTS,
+                [], 'incident_date', 'DESC', 100
+            );
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'no incidents — trivial pass'];
+        }
+        $bad = [];
+        $staffCache = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) { continue; }
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['staff_id'])) {
+                $r = $r['data'];
+            }
+            $sid = (string) ($r['staff_id'] ?? '');
+            if ($sid === '') {
+                $bad[] = ((string) ($r['incidentId'] ?? '?')) . '(no staff_id)';
+                continue;
+            }
+            if (!isset($staffCache[$sid])) {
+                $staffCache[$sid] = is_array($this->fs->getEntity('staff', $sid));
+            }
+            if (!$staffCache[$sid]) {
+                $bad[] = ((string) ($r['incidentId'] ?? '?')) . "->{$sid}";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' orphans: ' . implode(',', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' incidents FK-valid'];
+    }
+
+    private function _chTrnF4_3(): array
+    {
+        try {
+            $active = (array) $this->fs->schoolWhere(
+                Transport_service::COL_TEMPORARY_DRIVER_ASSIGNMENTS,
+                [['status', '==', 'Active']], null, 'ASC', 100
+            );
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($active === []) {
+            return ['status' => 'INFO', 'detail' => 'no active temp assignments — trivial pass'];
+        }
+        $today = date('Y-m-d');
+        $stale = [];
+        foreach ($active as $t) {
+            if (!is_array($t)) { continue; }
+            if (isset($t['data']) && is_array($t['data']) && !isset($t['effective_to'])) {
+                $t = $t['data'];
+            }
+            $to = (string) ($t['effective_to'] ?? '');
+            if ($to !== '' && $to < $today) {
+                $stale[] = (string) ($t['assignmentId'] ?? '?');
+            }
+        }
+        if ($stale !== []) {
+            return ['status' => 'FAIL', 'detail' => count($stale) . ' stale active temp: ' . implode(',', array_slice($stale, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($active) . ' active temp assignments, none stale'];
+    }
+
+    private function _chTrnF4_4(): array
+    {
+        try {
+            $active = (array) $this->fs->schoolWhere(
+                Transport_service::COL_TEMPORARY_DRIVER_ASSIGNMENTS,
+                [['status', '==', 'Active']], null, 'ASC', 200
+            );
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if (count($active) < 2) {
+            return ['status' => 'INFO', 'detail' => 'insufficient active — trivial pass'];
+        }
+        $rows = [];
+        foreach ($active as $t) {
+            if (!is_array($t)) { continue; }
+            if (isset($t['data']) && is_array($t['data']) && !isset($t['vehicle_id'])) { $t = $t['data']; }
+            $rows[] = [
+                'id'   => (string) ($t['assignmentId'] ?? '?'),
+                'vid'  => (string) ($t['vehicle_id']   ?? ''),
+                'from' => (string) ($t['effective_from'] ?? ''),
+                'to'   => (string) ($t['effective_to']   ?? ''),
+            ];
+        }
+        $byVehicle = [];
+        foreach ($rows as $r) {
+            if ($r['vid'] === '') { continue; }
+            $byVehicle[$r['vid']][] = $r;
+        }
+        $bad = [];
+        foreach ($byVehicle as $vid => $list) {
+            $n = count($list);
+            for ($i = 0; $i < $n; $i++) {
+                for ($j = $i + 1; $j < $n; $j++) {
+                    $a = $list[$i]; $b = $list[$j];
+                    if ($a['from'] === '' || $a['to'] === '' || $b['from'] === '' || $b['to'] === '') { continue; }
+                    if (!($a['to'] < $b['from'] || $a['from'] > $b['to'])) {
+                        $bad[] = "{$vid}({$a['id']}<>{$b['id']})";
+                    }
+                }
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' overlap(s): ' . implode(', ', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' active temp assignments, no overlaps'];
+    }
+
+    private function _chTrnF4_5(): array
+    {
+        try {
+            $drivers = $this->transport->listActiveDrivers();
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($drivers === []) {
+            return ['status' => 'INFO', 'detail' => 'no active drivers — trivial pass'];
+        }
+        $ym = date('Y-m');
+        $cutoff = time() - (48 * 3600);
+        $stale = 0;
+        $missing = 0;
+        foreach ($drivers as $d) {
+            if (!is_array($d)) { continue; }
+            $sid = (string) ($d['staff_id'] ?? '');
+            if ($sid === '') { continue; }
+            $docId = $this->schoolId . '_DACT_' . $sid . '__' . $ym;
+            $sum = $this->fs->getEntity(Transport_service::COL_DRIVER_ACTIVITY_SUMMARY, $docId);
+            if (!is_array($sum)) { $missing++; continue; }
+            $ts = strtotime((string) ($sum['computed_at'] ?? ''));
+            if ($ts !== false && $ts < $cutoff) { $stale++; }
+        }
+        if ($missing > 0 || $stale > 0) {
+            return ['status' => 'WARN', 'detail' => "missing:{$missing} stale:{$stale} — run rebuild_activity"];
+        }
+        return ['status' => 'PASS', 'detail' => count($drivers) . ' drivers, activity summaries fresh (<48h)'];
+    }
+
+    private function _chTrnF4_6(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = $this->_stripComments((string) file_get_contents($path));
+        if (!preg_match('/public\s+function\s+computeDriverActivitySummary\s*\([^)]*\)[^{]*\{/', $src, $m, PREG_OFFSET_CAPTURE)) {
+            return ['status' => 'FAIL', 'detail' => 'computeDriverActivitySummary missing'];
+        }
+        $start = $m[0][1] + strlen($m[0][0]) - 1;
+        $depth = 0; $i = $start;
+        while ($i < strlen($src)) {
+            $c = $src[$i];
+            if ($c === '{') { $depth++; }
+            elseif ($c === '}') { $depth--; if ($depth === 0) { break; } }
+            $i++;
+        }
+        $body = substr($src, $start, $i - $start + 1);
+        $sw = substr_count($body, '->schoolWhere(');
+        // Nested foreach with schoolWhere inside — N+1 anti-pattern
+        $nested = preg_match_all('/foreach\s*\([^)]+\)\s*\{[^}]*->schoolWhere\(/', $body, $_);
+        if ($nested > 0) {
+            return ['status' => 'FAIL', 'detail' => "nested schoolWhere-in-foreach in compute body: {$nested}"];
+        }
+        return ['status' => 'PASS', 'detail' => "compute:sw={$sw} (bounded, no N+1)"];
     }
 
     // ─── shared source-grep helper ───────────────────────────────────────

@@ -391,12 +391,13 @@ $config['numbering'] = [
         'trn_route_suspension'     => 'enabled',
         // Feature F3 (Student Assignment) cutover 2026-07-07:
         'trn_assignment_history'   => 'enabled',
+        // Feature F4 (Driver Management) cutover 2026-07-07:
+        'trn_driver_incident'      => 'enabled',
+        'trn_driver_review'        => 'enabled',
+        'trn_temp_driver_assign'   => 'enabled',
         // Still disabled — future features:
         'trn_trip'                 => 'disabled',
         'trn_expense'              => 'disabled',
-        'trn_driver_incident'      => 'disabled',
-        'trn_driver_review'        => 'disabled',
-        'trn_temp_driver_assign'   => 'disabled',
         'trn_event'                => 'disabled',
         'trn_event_assign'         => 'disabled',
     ],

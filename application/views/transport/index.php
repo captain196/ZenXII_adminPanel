@@ -3,6 +3,7 @@ $at = isset($active_tab) ? $active_tab : 'vehicles';
 $tab_map = [
     'vehicles'    => ['panel'=>'panelVehicles',    'icon'=>'fa-bus',           'label'=>'Vehicles'],
     'vendors'     => ['panel'=>'panelVendors',     'icon'=>'fa-handshake-o',   'label'=>'Vendors'],
+    'drivers'     => ['panel'=>'panelDrivers',     'icon'=>'fa-id-card-o',     'label'=>'Drivers'],
     'expiry'      => ['panel'=>'panelExpiry',      'icon'=>'fa-exclamation-triangle', 'label'=>'Expiry Dashboard'],
     'routes'      => ['panel'=>'panelRoutes',      'icon'=>'fa-road',          'label'=>'Routes & Stops'],
     'assignments' => ['panel'=>'panelAssignments',  'icon'=>'fa-users',         'label'=>'Assignments'],
@@ -76,6 +77,22 @@ $tab_map = [
     <div class="trn-card">
       <div class="trn-card-title"><span>Transport Vendors</span><button class="trn-btn trn-btn-primary" onclick="TRN.openVendorModal()"><i class="fa fa-plus"></i> Add Vendor</button></div>
       <table class="trn-table"><thead><tr><th>ID</th><th>Name</th><th>Contact</th><th>Phone</th><th>GSTIN</th><th>Status</th><th>Actions</th></tr></thead><tbody id="vendorsTbody"></tbody></table>
+    </div>
+  </div>
+
+  <!-- DRIVERS (F4) -->
+  <div class="trn-panel<?= $at === 'drivers' ? ' active' : '' ?>" id="panelDrivers">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>Drivers</span>
+        <div style="display:flex;gap:6px">
+          <button class="trn-btn trn-btn-primary trn-btn-sm" onclick="TRN.dmRebuildActivityAll()" title="Rebuild all activity summaries for current month"><i class="fa fa-refresh"></i> Rebuild Activity</button>
+        </div>
+      </div>
+      <div style="background:rgba(59,130,246,.08);border-left:3px solid #3b82f6;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
+        Drivers are managed in HR. This surface exposes Transport-specific meta (licence, medical, badge, availability), incidents, reviews and temp-cover assignments. Comprehensive readiness validation applies to every driver-vehicle assignment.
+      </div>
+      <table class="trn-table"><thead><tr><th>Staff ID</th><th>Name</th><th>Phone</th><th>Licence Expires</th><th>Medical Expires</th><th>Op. Status</th><th>Actions</th></tr></thead><tbody id="driversTbody"></tbody></table>
     </div>
   </div>
 
@@ -218,6 +235,10 @@ $tab_map = [
 
 <!-- F3 Session rollover modal -->
 <?php $this->load->view('transport/partials/rollover_modal'); ?>
+
+<!-- F4 Driver management + incident modals -->
+<?php $this->load->view('transport/partials/driver_manage_modal'); ?>
+<?php $this->load->view('transport/partials/incident_modal'); ?>
 
 
 <!-- ROUTE MODAL -->
@@ -978,12 +999,228 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   };
 
+  // ═════════════════════════════════════════════════════════════════════
+  //  F4 Driver Management
+  // ═════════════════════════════════════════════════════════════════════
+  var drivers=[];
+  function loadDrivers(){
+    getJSON('transport_driver/list').done(function(r){
+      if(r.status!=='success')return;
+      drivers=r.drivers||[];
+      var today=new Date().toISOString().slice(0,10);
+      var html='';
+      drivers.forEach(function(d){
+        var m=d.driver_meta||{};
+        var licExp=m.licence_expires||'—';
+        var medExp=m.medical_expires||'—';
+        var licCls=m.licence_expires&&m.licence_expires<today?'trn-badge-red':'trn-badge-green';
+        var medCls=m.medical_expires&&m.medical_expires<today?'trn-badge-red':'trn-badge-green';
+        var op=(m.operational_status||'Available');
+        var opCls=op==='Available'?'trn-badge-green':op==='On_Leave'?'trn-badge-amber':'trn-badge-red';
+        html+='<tr><td>'+escH(d.staff_id||d.id||'')+'</td>';
+        html+='<td>'+escH(d.name||d.Name||'')+'</td>';
+        html+='<td>'+escH(d.phone||'')+'</td>';
+        html+='<td><span class="trn-badge '+licCls+'">'+escH(licExp)+'</span></td>';
+        html+='<td><span class="trn-badge '+medCls+'">'+escH(medExp)+'</span></td>';
+        html+='<td><span class="trn-badge '+opCls+'">'+escH(op)+'</span></td>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openDrvManage(\''+(d.staff_id||d.id)+'\')" title="Manage"><i class="fa fa-cog"></i> Manage</button></td>';
+        html+='</tr>';
+      });
+      $('#driversTbody').html(html||'<tr><td colspan="7" style="text-align:center;color:var(--t3)">No drivers — enable a staff\'s flags.can_drive_transport in HR</td></tr>');
+    });
+  }
+  var dmCurrentStaff='';
+  TRN.openDrvManage=function(sid){
+    dmCurrentStaff=sid;
+    var d=drivers.find(function(x){return (x.staff_id||x.id)===sid});
+    if(!d){toast('Driver not found.',false);return}
+    $('#dmStaffId').val(sid);
+    $('#dmName').text('— '+(d.name||d.Name||sid));
+    $('#dmHrName').text(d.name||d.Name||'—');
+    $('#dmHrPhone').text(d.phone||'—');
+    $('#dmHrRole').text(d.role||d.Role||'—');
+    var m=d.driver_meta||{};
+    $('#dmLicNo').val(m.licence_no||'');
+    $('#dmLicClass').val(m.licence_class||'');
+    $('#dmLicIssued').val(m.licence_issued||'');
+    $('#dmLicExpires').val(m.licence_expires||'');
+    $('#dmLicAuth').val(m.licence_authority||'');
+    $('#dmYearsExp').val(m.years_experience||0);
+    $('#dmMedLast').val(m.medical_check_last||'');
+    $('#dmMedExpires').val(m.medical_expires||'');
+    $('#dmBadgeNo').val(m.badge_no||'');
+    $('#dmBadgeExpires').val(m.badge_expires||'');
+    $('#dmCanDrive').val((m.can_drive_types||[]).join(','));
+    $('#dmOpStatus').val(m.operational_status||'Available');
+    $('#dmEmerName').val(m.emergency_contact_name||'');
+    $('#dmEmerPhone').val(m.emergency_contact_phone||'');
+    $('#dmReplAvail').val(m.replacement_availability?'1':'0');
+    TRN.dmSwitch('profile');
+    TRN.dmLoadIncidents();
+    TRN.dmLoadReviews();
+    TRN.dmLoadTemp();
+    TRN.dmLoadActivity();
+    $('#drvManageModal').addClass('show');
+  };
+  TRN.closeDrvManage=function(){$('#drvManageModal').removeClass('show');dmCurrentStaff='';loadDrivers();};
+  TRN.dmSwitch=function(t){
+    $('[data-dmtab]').removeClass('active');
+    $('[data-dmtab="'+t+'"]').addClass('active');
+    $('[data-dmpanel]').hide();
+    $('[data-dmpanel="'+t+'"]').show();
+  };
+  TRN.dmSaveMeta=function(){
+    post('transport_driver/save_meta',{
+      staff_id:dmCurrentStaff,
+      licence_no:$('#dmLicNo').val(),licence_class:$('#dmLicClass').val(),
+      licence_issued:$('#dmLicIssued').val(),licence_expires:$('#dmLicExpires').val(),
+      licence_authority:$('#dmLicAuth').val(),years_experience:$('#dmYearsExp').val(),
+      medical_check_last:$('#dmMedLast').val(),medical_expires:$('#dmMedExpires').val(),
+      badge_no:$('#dmBadgeNo').val(),badge_expires:$('#dmBadgeExpires').val(),
+      can_drive_types:$('#dmCanDrive').val(),operational_status:$('#dmOpStatus').val(),
+      emergency_contact_name:$('#dmEmerName').val(),emergency_contact_phone:$('#dmEmerPhone').val(),
+      replacement_availability:$('#dmReplAvail').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);}else toast(r.message,false)});
+  };
+  TRN.dmLoadIncidents=function(){
+    if(!dmCurrentStaff)return;
+    getJSON('transport_driver/list_incidents?staff_id='+encodeURIComponent(dmCurrentStaff)).done(function(r){
+      if(r.status!=='success')return;
+      var html='';
+      (r.incidents||[]).forEach(function(i){
+        var sevCls=i.severity==='Critical'?'trn-badge-red':i.severity==='Major'?'trn-badge-amber':i.severity==='Minor'?'trn-badge-blue':'trn-badge-green';
+        var resolved=i.resolved_at?'<span class="trn-badge trn-badge-green">Yes</span>':'<span class="trn-badge trn-badge-red">No</span>';
+        html+='<tr><td>'+escH(i.incident_date||'')+'</td><td>'+escH((i.incident_type||'').replace(/_/g,' '))+'</td>';
+        html+='<td><span class="trn-badge '+sevCls+'">'+escH(i.severity||'')+'</span></td>';
+        html+='<td>'+escH((i.description||'').substring(0,80))+'</td><td>'+resolved+'</td>';
+        html+='<td>'+(!i.resolved_at?'<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openResolveIncident(\''+i.id+'\')"><i class="fa fa-check"></i></button>':'')+'</td></tr>';
+      });
+      $('#dmIncidentsTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No incidents</td></tr>');
+    });
+  };
+  TRN.openIncident=function(){
+    $('#incStaffId').val(dmCurrentStaff);
+    var d=drivers.find(function(x){return(x.staff_id||x.id)===dmCurrentStaff});
+    $('#incStaffLabel').text(d?'('+d.name+')':'');
+    $('#incType').val('Complaint');$('#incSeverity').val('Minor');
+    $('#incDate').val(new Date().toISOString().slice(0,10));$('#incTime,#incTripId,#incLocation,#incDesc').val('');
+    // Populate vehicle picker
+    var vopts='<option value="">-- None --</option>';(vehicles||[]).forEach(function(v){vopts+='<option value="'+v.id+'">'+escH(v.number)+'</option>'});
+    $('#incVehicle').html(vopts);
+    $('#incidentModal').addClass('show');
+  };
+  TRN.closeIncident=function(){$('#incidentModal').removeClass('show')};
+  TRN.doRecordIncident=function(){
+    var desc=$('#incDesc').val().trim();
+    if(!desc){toast('Description required.',false);return}
+    post('transport_driver/record_incident',{
+      staff_id:$('#incStaffId').val(),incident_type:$('#incType').val(),severity:$('#incSeverity').val(),
+      incident_date:$('#incDate').val(),incident_time:$('#incTime').val(),
+      related_vehicle_id:$('#incVehicle').val(),related_trip_id:$('#incTripId').val(),
+      location:$('#incLocation').val(),description:desc
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeIncident();TRN.dmLoadIncidents();}else toast(r.message,false)});
+  };
+  TRN.openResolveIncident=function(id){$('#incResId').val(id);$('#incResText,#incResAction').val('');$('#incResolveModal').addClass('show')};
+  TRN.closeResolveIncident=function(){$('#incResolveModal').removeClass('show')};
+  TRN.doResolveIncident=function(){
+    var res=$('#incResText').val();if(!res){toast('Resolution required.',false);return}
+    post('transport_driver/resolve_incident',{incident_id:$('#incResId').val(),resolution:res,action_taken:$('#incResAction').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeResolveIncident();TRN.dmLoadIncidents();}else toast(r.message,false)});
+  };
+  TRN.dmLoadReviews=function(){
+    if(!dmCurrentStaff)return;
+    getJSON('transport_driver/list_reviews?staff_id='+encodeURIComponent(dmCurrentStaff)).done(function(r){
+      if(r.status!=='success')return;
+      var html='';
+      (r.reviews||[]).forEach(function(v){
+        html+='<tr><td>'+escH(v.review_period_start||'')+' → '+escH(v.review_period_end||'')+'</td>';
+        html+='<td>'+v.total_trips+'</td><td>'+v.total_km+'</td><td>'+v.incidents_count+'</td>';
+        html+='<td>'+'⭐'.repeat(v.rating||0)+'</td><td>'+escH(v.reviewer_staff_id||'')+'</td></tr>';
+      });
+      $('#dmReviewsTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No reviews</td></tr>');
+    });
+  };
+  TRN.dmOpenReviewForm=function(){
+    var today=new Date();var first=new Date(today.getFullYear(),today.getMonth(),1);
+    $('#dmRvStart').val(first.toISOString().slice(0,10));
+    $('#dmRvEnd').val(today.toISOString().slice(0,10));
+    $('#dmRvRating').val(3);$('#dmRvNext,#dmRvNotes,#dmRvActions').val('');
+    $('#dmReviewForm').show();
+  };
+  TRN.dmSaveReview=function(){
+    post('transport_driver/save_review',{
+      staff_id:dmCurrentStaff,review_period_start:$('#dmRvStart').val(),review_period_end:$('#dmRvEnd').val(),
+      rating:$('#dmRvRating').val(),notes:$('#dmRvNotes').val(),
+      action_items:$('#dmRvActions').val(),next_review_due:$('#dmRvNext').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);$('#dmReviewForm').hide();TRN.dmLoadReviews();}else toast(r.message,false)});
+  };
+  TRN.dmLoadTemp=function(){
+    if(!dmCurrentStaff)return;
+    getJSON('transport_driver/list_temp?vehicle_id=&active_only=0').done(function(r){
+      if(r.status!=='success')return;
+      var mine=(r.assignments||[]).filter(function(t){return t.covering_staff_id===dmCurrentStaff});
+      var html='';
+      mine.forEach(function(t){
+        var st=t.status||'Active';
+        var stCls=st==='Active'?'trn-badge-green':st==='Resolved'?'trn-badge-blue':'trn-badge-red';
+        html+='<tr><td>'+escH(t.vehicle_id||'')+'</td><td>'+escH(t.effective_from||'')+'</td><td>'+escH(t.effective_to||'')+'</td>';
+        html+='<td>'+escH(t.reason||'')+'</td><td><span class="trn-badge '+stCls+'">'+st+'</span></td>';
+        html+='<td>'+(st==='Active'?'<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.dmResolveTemp(\''+t.id+'\')"><i class="fa fa-check"></i> Resolve</button>':'')+'</td></tr>';
+      });
+      $('#dmTempTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No temporary assignments</td></tr>');
+    });
+  };
+  TRN.dmOpenTempAssign=function(){
+    var vopts='<option value="">-- Select --</option>';(vehicles||[]).forEach(function(v){vopts+='<option value="'+v.id+'">'+escH(v.number)+'</option>'});
+    $('#dmTaVehicle').html(vopts);
+    $('#dmTaFrom').val(new Date().toISOString().slice(0,10));$('#dmTaTo,#dmTaReason,#dmTaNotes').val('');
+    $('#dmTempForm').show();
+  };
+  TRN.dmSaveTemp=function(){
+    var reason=$('#dmTaReason').val();var vid=$('#dmTaVehicle').val();var to=$('#dmTaTo').val();
+    if(!vid||!to||!reason){toast('Vehicle, effective-to and reason required.',false);return}
+    post('transport_driver/assign_temp',{
+      vehicle_id:vid,covering_staff_id:dmCurrentStaff,
+      effective_from:$('#dmTaFrom').val(),effective_to:to,
+      reason:reason,notes:$('#dmTaNotes').val()
+    }).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);$('#dmTempForm').hide();TRN.dmLoadTemp();}else toast(r.message,false)});
+  };
+  TRN.dmResolveTemp=function(id){
+    post('transport_driver/resolve_temp',{assignment_id:id,reason:'manual'}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.dmLoadTemp();}else toast(r.message,false)});
+  };
+  TRN.dmLoadActivity=function(){
+    if(!dmCurrentStaff){return}
+    var today=new Date();var first=new Date(today.getFullYear(),today.getMonth(),1);
+    getJSON('transport_driver/activity_snapshot?staff_id='+encodeURIComponent(dmCurrentStaff)+'&from='+first.toISOString().slice(0,10)+'&to='+today.toISOString().slice(0,10)).done(function(r){
+      if(r.status!=='success')return;
+      var s=r.snapshot||{};
+      var html='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">';
+      html+='<div><b>Trips:</b> '+s.trips_count+'</div>';
+      html+='<div><b>Total KM:</b> '+s.total_km+'</div>';
+      html+='<div><b>On-Time %:</b> '+s.on_time_pct+'</div>';
+      html+='<div><b>Incidents:</b> '+s.incidents_count+'</div>';
+      html+='<div><b>Critical:</b> <span style="color:var(--rose)">'+s.critical_incidents+'</span></div>';
+      html+='<div><b>Complaints:</b> '+s.complaints_count+'</div>';
+      html+='<div><b>Positive Recognition:</b> <span style="color:var(--green)">'+s.positive_recognitions+'</span></div>';
+      html+='</div>';
+      html+='<div style="margin-top:12px;font-size:11px;color:var(--t3);font-style:italic">Trip data is populated once the Trip Logs feature (F7) ships. Incident data live from F4.</div>';
+      $('#dmActivityBody').html(html);
+    });
+  };
+  TRN.dmRebuildActivity=function(){
+    post('transport_driver/rebuild_activity',{staff_id:dmCurrentStaff,year_month:''}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.dmLoadActivity();}else toast(r.message,false)});
+  };
+  TRN.dmRebuildActivityAll=function(){
+    if(!confirm('Rebuild activity summaries for ALL drivers for the current month?'))return;
+    post('transport_driver/rebuild_activity',{staff_id:'',year_month:''}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);}else toast(r.message,false)});
+  };
+
   // Init
   // F1 (2026-07-07): load vendors FIRST so the vendor picker inside the
   // vehicle modal is populated before the first Add-Vehicle click.
   loadVendors();
   loadVehicles();
   loadRoutes();
+  loadDrivers();
   setTimeout(function(){loadStops();loadAssignments();loadExpiry();},500);
 })();
 });

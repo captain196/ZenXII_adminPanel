@@ -62,15 +62,30 @@ class Transport_expiry_cron extends CI_Controller
             fwrite(STDERR, "ERROR: computeFleetExpiryDashboard threw — " . $e->getMessage() . "\n");
             exit(2);
         }
+
+        // F4 (2026-07-07) — Refinement #7: extend the same nightly cron to
+        // auto-resolve temporary driver assignments whose effective_to has
+        // passed. Keeps ops surface small — one nightly cron file handles
+        // both fleet expiries + driver-assignment expiries.
+        $tempResolved = 0;
+        try {
+            $tr = $this->transport->autoResolveExpiredTempAssignments();
+            $tempResolved = (int) ($tr['resolved'] ?? 0);
+        } catch (\Throwable $e) {
+            log_message('warning', 'transport_expiry_cron auto-resolve temp assignments failed: ' . $e->getMessage());
+        }
+
         $duration = (int) round((microtime(true) - $started) * 1000);
         echo sprintf(
             "transport_expiry_cron tenant=%s session=%s "
-            . "expiring_7d=%d expiring_15d=%d expiring_30d=%d duration_ms=%d\n",
+            . "expiring_7d=%d expiring_15d=%d expiring_30d=%d "
+            . "temp_assignments_auto_resolved=%d duration_ms=%d\n",
             $schoolId,
             $sessionYear,
             (int) ($summary['count_7_days']  ?? 0),
             (int) ($summary['count_15_days'] ?? 0),
             (int) ($summary['count_30_days'] ?? 0),
+            $tempResolved,
             $duration
         );
         exit(0);

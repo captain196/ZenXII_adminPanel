@@ -3268,6 +3268,869 @@ class Transport_service
         return $out;
     }
 
+    // ═════════════════════════════════════════════════════════════════════
+    //  DOMAIN_DRIVER (F4, 2026-07-07) — Driver Management
+    // ═════════════════════════════════════════════════════════════════════
+    //
+    // F4 architecture summary:
+    //   • HR (staff master) is the SOLE source of truth for staff data.
+    //   • Transport owns ONLY the `driver_meta` subobject on staff docs +
+    //     the driverIncidents / driverPerformanceReviews /
+    //     temporaryDriverAssignments / driverActivitySummary collections.
+    //   • Temporary driver assignments use an OVERLAY pattern —
+    //     vehicle.driver_staff_id is NEVER mutated during a temp window.
+    //     getEffectiveDriver() computes on read.
+    //   • Comprehensive readiness validation via _validateDriverReadiness
+    //     runs before every driver-vehicle assignment (permanent + temp).
+
+    /** Incident types recognised on driverIncidents. */
+    public const INCIDENT_TYPES = [
+        'Accident', 'Complaint', 'Traffic_Violation', 'Late_Arrival',
+        'Absenteeism', 'Safety_Breach', 'Positive_Recognition',
+    ];
+
+    /** Incident severity levels. Critical triggers immediate notification. */
+    public const INCIDENT_SEVERITIES = ['Info', 'Minor', 'Major', 'Critical'];
+
+    /** Driver-meta enums documented for UI + validation. */
+    public const DRIVER_LICENCE_CLASSES  = ['LMV', 'HMV', 'Bus', 'Auto', 'Multi'];
+    public const DRIVER_VEHICLE_TYPES    = ['Bus', 'Van', 'Auto', 'Car'];
+
+    /**
+     * Operational availability status. driver_meta.operational_status
+     * is checked by _validateDriverReadiness.
+     *
+     * Administrative states (persistent — admin/HR sets these):
+     *   Available       — normal
+     *   Unavailable     — generic block; admin knows the reason but the
+     *                     specific category doesn't fit others
+     *   On_Leave        — general leave (personal, vacation, etc.)
+     *   Medical_Leave   — health-specific leave (aids HR reporting)
+     *   Training        — attending a training programme
+     *   Suspended       — disciplinary action; blocks assignments
+     *
+     * NOT in this enum:
+     *   Assigned — this is a COMPUTED runtime state derived from active
+     *              temp cover / trip in progress. See
+     *              getEffectiveDriverAvailabilityStatus() for the read
+     *              path. Storing "Assigned" as a persistent flag causes
+     *              stale-state drift when trips end without an admin
+     *              explicitly resetting the flag.
+     */
+    public const DRIVER_OPERATIONAL_STATUSES = [
+        'Available', 'Unavailable', 'On_Leave',
+        'Medical_Leave', 'Training', 'Suspended',
+    ];
+
+    /** Statuses that BLOCK new driver-vehicle assignments. Any admin-set
+     *  state other than Available is treated as blocking by
+     *  _validateDriverReadiness. */
+    private const DRIVER_BLOCKING_STATUSES = [
+        'Unavailable', 'On_Leave', 'Medical_Leave', 'Training', 'Suspended',
+    ];
+
+    /** Temporary assignment status enum. */
+    public const TEMP_ASSIGNMENT_STATUSES = ['Active', 'Resolved', 'Cancelled'];
+
+    /**
+     * Fields Transport MAY write on staff docs. Enforced by
+     * _assertStaffFieldDiscipline() and verifier CH-TRN-F4-1. Every
+     * top-level payload key on a staff setEntity call must appear here.
+     */
+    private const ALLOWED_STAFF_TOP_LEVEL_KEYS = [
+        'driver_meta', 'updated_at',
+    ];
+
+    // ─── Driver identity + meta ────────────────────────────────────────
+
+    /**
+     * List staff who have flags.can_drive_transport=true. Joins the
+     * driver_meta subobject into the returned rows for UI convenience.
+     *
+     * Note: reads staff at tenant scale (typically ≤200 driver-flagged
+     * staff). Uses composite index staff(schoolId, flags.can_drive_
+     * transport) — HR-side index; F4 assumes it exists.
+     */
+    public function listActiveDrivers(): array
+    {
+        $this->_assertReady();
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                'staff',
+                [['flags.can_drive_transport', '==', true]],
+                'name', 'ASC'
+            );
+        } catch (\Throwable $e) {
+            // Fall back to full staff scan + in-memory filter when index missing
+            $all  = (array) $this->fs->schoolWhere('staff', []);
+            $rows = array_filter($all, static function ($s) {
+                return is_array($s) && !empty($s['flags']['can_drive_transport']);
+            });
+        }
+        $out = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) { continue; }
+            $sid = (string) ($r['staffId'] ?? $r['id'] ?? '');
+            if ($sid === '') { continue; }
+            $r['staff_id'] = $sid;
+            $out[] = $r;
+        }
+        return $out;
+    }
+
+    public function getDriver(string $staffId): ?array
+    {
+        $this->_assertReady();
+        if ($staffId === '') { return null; }
+        $s = $this->fs->getEntity('staff', $staffId);
+        return is_array($s) ? $s : null;
+    }
+
+    /**
+     * Update the Transport-owned driver_meta subobject on a staff doc.
+     * HR staff fields (name/phone/role/etc.) are NEVER touched — the
+     * write is a strict merge of only driver_meta.* keys.
+     */
+    public function updateDriverMeta(string $staffId, array $meta): void
+    {
+        $this->_assertReady();
+        if ($staffId === '') {
+            throw new \InvalidArgumentException('staffId is required.');
+        }
+        $staff = $this->fs->getEntity('staff', $staffId);
+        if (!is_array($staff)) {
+            throw new \InvalidArgumentException('Staff not found: ' . $staffId);
+        }
+        // Normalise + validate driver_meta fields
+        $clean = [];
+        foreach ($meta as $k => $v) {
+            $clean[$k] = is_string($v) ? trim($v) : $v;
+        }
+        // Enum validation
+        if (isset($clean['licence_class']) && $clean['licence_class'] !== ''
+            && !in_array($clean['licence_class'], self::DRIVER_LICENCE_CLASSES, true)) {
+            throw new \InvalidArgumentException('Invalid licence_class: ' . $clean['licence_class']);
+        }
+        if (isset($clean['operational_status']) && $clean['operational_status'] !== ''
+            && !in_array($clean['operational_status'], self::DRIVER_OPERATIONAL_STATUSES, true)) {
+            throw new \InvalidArgumentException('Invalid operational_status: ' . $clean['operational_status']);
+        }
+        if (isset($clean['can_drive_types']) && is_array($clean['can_drive_types'])) {
+            $clean['can_drive_types'] = array_values(array_intersect(
+                array_map(static fn($t) => (string) $t, $clean['can_drive_types']),
+                self::DRIVER_VEHICLE_TYPES
+            ));
+        }
+        $clean['last_updated_by'] = $this->adminId;
+        $clean['last_updated_at'] = date('c');
+
+        $payload = ['driver_meta' => $clean, 'updated_at' => date('c')];
+        $this->_assertStaffFieldDiscipline($payload);
+        $this->fs->setEntity('staff', $staffId, $payload, /* merge */ true);
+
+        $prevMeta = (array) ($staff['driver_meta'] ?? []);
+        $this->emitAudit(
+            'driverMeta', $staffId, 'updated',
+            ['driver_meta' => $prevMeta], $payload,
+            ['domain' => self::DOMAIN_DRIVER]
+        );
+    }
+
+    /**
+     * Return the current effective driver for a vehicle on a given date.
+     *
+     * Overlay pattern: reads vehicle.driver_staff_id (permanent) then
+     * checks active temporaryDriverAssignments for the vehicle. If an
+     * active temp overlay covers $onDate, returns the covering driver;
+     * otherwise returns the permanent driver.
+     *
+     * @return string|null Effective staff_id (or null when no permanent
+     *                     driver is assigned to the vehicle either).
+     */
+    public function getEffectiveDriver(string $vehicleId, ?string $onDate = null): ?string
+    {
+        $this->_assertReady();
+        if ($vehicleId === '') { return null; }
+        $onDate = $onDate ?? date('Y-m-d');
+        $vehicle = $this->fs->getEntity(self::COL_VEHICLES, $vehicleId);
+        if (!is_array($vehicle)) { return null; }
+        $permanent = (string) ($vehicle['staff_id'] ?? $vehicle['driver_staff_id'] ?? '');
+
+        // Query active temp assignments for this vehicle that cover $onDate
+        try {
+            $temps = (array) $this->fs->schoolWhere(
+                self::COL_TEMPORARY_DRIVER_ASSIGNMENTS,
+                [
+                    ['vehicle_id', '==', $vehicleId],
+                    ['status',     '==', 'Active'],
+                ],
+                'effective_from', 'DESC'
+            );
+        } catch (\Throwable $_) {
+            return $permanent !== '' ? $permanent : null;
+        }
+        foreach ($temps as $t) {
+            $t = $this->_unwrapNestedRow($t, 'effective_from');
+            if (!is_array($t)) { continue; }
+            $from = (string) ($t['effective_from'] ?? '');
+            $to   = (string) ($t['effective_to']   ?? '');
+            if ($from !== '' && $to !== '' && $from <= $onDate && $onDate <= $to) {
+                return (string) ($t['covering_staff_id'] ?? $permanent);
+            }
+        }
+        return $permanent !== '' ? $permanent : null;
+    }
+
+    /**
+     * Compute the effective availability status for a driver on a given
+     * date. Blends the admin-set driver_meta.operational_status with
+     * the computed runtime state 'Assigned' (currently covering a
+     * vehicle via an active temp assignment).
+     *
+     * Return semantics:
+     *   - If admin-set status is anything other than 'Available' →
+     *     return the admin-set value verbatim (blocking state takes
+     *     precedence)
+     *   - Else if driver is currently covering a vehicle in an active
+     *     temp assignment → return 'Assigned'
+     *   - Else → return 'Available'
+     *
+     * Note: this is a READ operation; nothing is written. UI dashboards
+     * call this to show at-a-glance driver status; validation callers
+     * use _validateDriverReadiness (which reads only the admin-set
+     * status — 'Assigned' does not block new assignments because a
+     * driver can be temp-covering one vehicle and being considered
+     * for another with different windows).
+     */
+    public function getEffectiveDriverAvailabilityStatus(string $staffId, ?string $onDate = null): string
+    {
+        $this->_assertReady();
+        if ($staffId === '') { return 'Available'; }
+        $onDate = $onDate ?? date('Y-m-d');
+        $staff = $this->fs->getEntity('staff', $staffId);
+        if (!is_array($staff)) { return 'Available'; }
+        $meta = (array) ($staff['driver_meta'] ?? []);
+        $admin = (string) ($meta['operational_status'] ?? 'Available');
+        if ($admin !== 'Available' && $admin !== '') {
+            return $admin;
+        }
+        // Compute 'Assigned' from active temp coverage
+        try {
+            $active = (array) $this->fs->schoolWhere(
+                self::COL_TEMPORARY_DRIVER_ASSIGNMENTS,
+                [['covering_staff_id', '==', $staffId], ['status', '==', 'Active']]
+            );
+            foreach ($active as $t) {
+                $t = $this->_unwrapNestedRow($t, 'effective_from');
+                if (!is_array($t)) { continue; }
+                $from = (string) ($t['effective_from'] ?? '');
+                $to   = (string) ($t['effective_to']   ?? '');
+                if ($from !== '' && $to !== '' && $from <= $onDate && $onDate <= $to) {
+                    return 'Assigned';
+                }
+            }
+        } catch (\Throwable $_) {}
+        return 'Available';
+    }
+
+    /**
+     * Permanently replace the driver on a vehicle (LC-16 permanent path).
+     * Runs comprehensive driver-readiness validation on the new driver,
+     * updates vehicle.staff_id, and writes a lifecycle log entry.
+     */
+    public function replaceDriverPermanently(string $vehicleId, string $newStaffId, string $reason): void
+    {
+        $this->_assertReady();
+        if ($vehicleId === '' || $newStaffId === '' || trim($reason) === '') {
+            throw new \InvalidArgumentException('vehicleId, newStaffId and reason are all required.');
+        }
+        $vehicle = $this->fs->getEntity(self::COL_VEHICLES, $vehicleId);
+        if (!is_array($vehicle)) {
+            throw new \InvalidArgumentException('Vehicle not found: ' . $vehicleId);
+        }
+        $prevStaffId = (string) ($vehicle['staff_id'] ?? '');
+
+        // Driver readiness validation (Refinement additional 2026-07-07)
+        $this->_validateDriverReadiness($newStaffId, date('Y-m-d'));
+
+        // Snapshot driver name/phone from staff for HR-history denorm
+        $staffSnap = $this->_snapshotDriverFromStaff($newStaffId);
+        $now = date('c');
+        $vehUpdate = [
+            'staff_id'    => $newStaffId,
+            'driver_name' => $staffSnap['name']  ?? '',
+            'driver_phone'=> $staffSnap['phone'] ?? '',
+            'updated_at'  => $now,
+        ];
+        $this->fs->setEntity(self::COL_VEHICLES, $vehicleId, $vehUpdate, /* merge */ true);
+
+        // Lifecycle log — 'Ownership_Transferred' repurposed for driver change;
+        // event_type semantic covers "driver identity changed on vehicle".
+        $this->_appendLifecycleEvent(
+            $vehicleId,
+            'Ownership_Transferred',
+            (string) ($vehicle['lifecycle_status'] ?? 'Active'),
+            (string) ($vehicle['lifecycle_status'] ?? 'Active'),
+            "Driver replaced: {$prevStaffId} → {$newStaffId}. {$reason}",
+            [],
+            null
+        );
+
+        $this->emitAudit(
+            'vehicle', $vehicleId, 'driver_replaced',
+            ['staff_id' => $prevStaffId],
+            $vehUpdate,
+            ['domain' => self::DOMAIN_DRIVER, 'reason' => $reason, 'prev_staff_id' => $prevStaffId, 'new_staff_id' => $newStaffId]
+        );
+    }
+
+    // ─── Driver Incidents ──────────────────────────────────────────────
+
+    public function recordDriverIncident(array $input): array
+    {
+        $this->_assertReady();
+        $staffId = trim((string) ($input['staff_id'] ?? ''));
+        $type    = trim((string) ($input['incident_type'] ?? ''));
+        $sev     = trim((string) ($input['severity'] ?? 'Minor'));
+        $desc    = trim((string) ($input['description'] ?? ''));
+        if ($staffId === '' || $desc === '') {
+            throw new \InvalidArgumentException('staff_id and description are required.');
+        }
+        if (!in_array($type, self::INCIDENT_TYPES, true)) {
+            throw new \InvalidArgumentException('Invalid incident_type: ' . $type);
+        }
+        if (!in_array($sev, self::INCIDENT_SEVERITIES, true)) {
+            $sev = 'Minor';
+        }
+        $staff = $this->fs->getEntity('staff', $staffId);
+        if (!is_array($staff)) {
+            throw new \InvalidArgumentException('Staff not found: ' . $staffId);
+        }
+
+        $id = $this->numbering->next('trn_driver_incident', [
+            'claimedBy'  => $this->adminId,
+            'claimedFor' => 'F4:recordDriverIncident',
+        ]);
+        $now = date('c');
+        $data = [
+            'incidentId'         => $id,
+            'schoolId'           => $this->schoolId,
+            'staff_id'           => $staffId,
+            'incident_type'      => $type,
+            'incident_date'      => trim((string) ($input['incident_date'] ?? date('Y-m-d'))),
+            'incident_time'      => trim((string) ($input['incident_time'] ?? '')),
+            'severity'           => $sev,
+            'description'        => strlen($desc) > 4096 ? (substr($desc, 0, 4096) . '…') : $desc,
+            'reported_by'        => $this->adminId,
+            'related_trip_id'    => trim((string) ($input['related_trip_id']    ?? '')),
+            'related_vehicle_id' => trim((string) ($input['related_vehicle_id'] ?? '')),
+            'location'           => trim((string) ($input['location']           ?? '')),
+            'resolution'         => '',
+            'action_taken'       => '',
+            'resolved_at'        => '',
+            'resolved_by'        => '',
+            'attachment_paths'   => array_values(array_filter(array_map(
+                'strval', (array) ($input['attachment_paths'] ?? [])
+            ))),
+            'created_at'         => $now,
+            'created_by'         => $this->adminId,
+            'updated_at'         => $now,
+        ];
+        $this->fs->setEntity(self::COL_DRIVER_INCIDENTS, $id, $data, /* merge */ false);
+
+        $this->emitAudit(
+            'driverIncident', $id, 'recorded',
+            null, $data,
+            ['domain' => self::DOMAIN_DRIVER, 'staff_id' => $staffId, 'severity' => $sev, 'incident_type' => $type]
+        );
+
+        // Critical-severity Communication notice
+        if ($sev === 'Critical') {
+            $this->_emitCriticalIncidentNotice($data, $staff);
+        }
+        return ['id' => $id, 'data' => $data];
+    }
+
+    public function resolveDriverIncident(string $incidentId, string $resolution, string $actionTaken): void
+    {
+        $this->_assertReady();
+        if ($incidentId === '' || trim($resolution) === '') {
+            throw new \InvalidArgumentException('incidentId and resolution are required.');
+        }
+        $existing = $this->fs->getEntity(self::COL_DRIVER_INCIDENTS, $incidentId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('Incident not found: ' . $incidentId);
+        }
+        if ((string) ($existing['resolved_at'] ?? '') !== '') {
+            throw new \InvalidArgumentException('Incident is already resolved.');
+        }
+        $now = date('c');
+        $update = [
+            'resolution'   => trim($resolution),
+            'action_taken' => trim($actionTaken),
+            'resolved_at'  => $now,
+            'resolved_by'  => $this->adminId,
+            'updated_at'   => $now,
+        ];
+        $this->fs->setEntity(self::COL_DRIVER_INCIDENTS, $incidentId, $update, /* merge */ true);
+        $this->emitAudit(
+            'driverIncident', $incidentId, 'resolved',
+            ['resolved_at' => ''], $update,
+            ['domain' => self::DOMAIN_DRIVER, 'staff_id' => (string) ($existing['staff_id'] ?? '')]
+        );
+    }
+
+    public function listDriverIncidents(string $staffId = '', string $severity = ''): array
+    {
+        $this->_assertReady();
+        $where = [];
+        if ($staffId !== '')  { $where[] = ['staff_id', '==', $staffId]; }
+        if ($severity !== '') { $where[] = ['severity', '==', $severity]; }
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                self::COL_DRIVER_INCIDENTS, $where,
+                'incident_date', 'DESC'
+            );
+        } catch (\Throwable $_) {
+            $rows = [];
+        }
+        $out = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) { continue; }
+            // Handle {id, data} nested format if present
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['incidentId'])) {
+                $docKey = (string) ($r['id'] ?? '');
+                $r = $r['data'];
+                if ($docKey !== '' && !isset($r['id'])) { $r['id'] = $docKey; }
+            }
+            $id = (string) ($r['incidentId'] ?? $r['id'] ?? '');
+            if ($id === '') { continue; }
+            $r['id'] = $id;
+            $out[] = $r;
+        }
+        return $out;
+    }
+
+    // ─── Performance Reviews ───────────────────────────────────────────
+
+    public function savePerformanceReview(array $input): array
+    {
+        $this->_assertReady();
+        $staffId = trim((string) ($input['staff_id'] ?? ''));
+        $start   = trim((string) ($input['review_period_start'] ?? ''));
+        $end     = trim((string) ($input['review_period_end']   ?? ''));
+        if ($staffId === '' || $start === '' || $end === '') {
+            throw new \InvalidArgumentException('staff_id, review_period_start, review_period_end are required.');
+        }
+        if ($end < $start) {
+            throw new \InvalidArgumentException('review_period_end must be on or after review_period_start.');
+        }
+        $rating = max(1, min(5, (int) ($input['rating'] ?? 3)));
+
+        // Auto-populate numeric fields from activity snapshot if not supplied
+        $snap = $this->getDriverActivitySnapshot($staffId, $start, $end);
+
+        $id = trim((string) ($input['id'] ?? ''));
+        $isNew = ($id === '');
+        if ($isNew) {
+            $id = $this->numbering->next('trn_driver_review', [
+                'claimedBy'  => $this->adminId,
+                'claimedFor' => 'F4:savePerformanceReview',
+            ]);
+        }
+        $now = date('c');
+        $data = [
+            'reviewId'              => $id,
+            'schoolId'              => $this->schoolId,
+            'staff_id'              => $staffId,
+            'review_period_start'   => $start,
+            'review_period_end'     => $end,
+            'total_trips'           => (int)   ($input['total_trips']       ?? $snap['trips_count']),
+            'total_km'              => (int)   ($input['total_km']          ?? $snap['total_km']),
+            'on_time_pct'           => (float) ($input['on_time_pct']       ?? $snap['on_time_pct']),
+            'incidents_count'       => (int)   ($input['incidents_count']   ?? $snap['incidents_count']),
+            'critical_incidents'    => (int)   ($input['critical_incidents'] ?? $snap['critical_incidents']),
+            'complaints_count'      => (int)   ($input['complaints_count']  ?? $snap['complaints_count']),
+            'positive_recognitions' => (int)   ($input['positive_recognitions'] ?? $snap['positive_recognitions']),
+            'rating'                => $rating,
+            'reviewer_staff_id'     => trim((string) ($input['reviewer_staff_id'] ?? $this->adminId)),
+            'notes'                 => trim((string) ($input['notes'] ?? '')),
+            'action_items'          => array_values(array_filter(array_map(
+                'strval', (array) ($input['action_items'] ?? [])
+            ))),
+            'next_review_due'       => trim((string) ($input['next_review_due'] ?? '')),
+            'updated_at'            => $now,
+        ];
+        if ($isNew) {
+            $data['created_at'] = $now;
+            $data['created_by'] = $this->adminId;
+        }
+        $this->fs->setEntity(self::COL_DRIVER_PERFORMANCE_REVIEWS, $id, $data, /* merge */ true);
+        $this->emitAudit(
+            'driverPerformanceReview', $id,
+            $isNew ? 'created' : 'updated',
+            null, $data,
+            ['domain' => self::DOMAIN_DRIVER, 'staff_id' => $staffId]
+        );
+        return ['id' => $id, 'isNew' => $isNew, 'data' => $data];
+    }
+
+    public function listPerformanceReviews(string $staffId): array
+    {
+        $this->_assertReady();
+        if ($staffId === '') { return []; }
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                self::COL_DRIVER_PERFORMANCE_REVIEWS,
+                [['staff_id', '==', $staffId]],
+                'review_period_end', 'DESC'
+            );
+        } catch (\Throwable $_) {
+            return [];
+        }
+        $out = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) { continue; }
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['reviewId'])) {
+                $docKey = (string) ($r['id'] ?? '');
+                $r = $r['data'];
+                if ($docKey !== '' && !isset($r['id'])) { $r['id'] = $docKey; }
+            }
+            $id = (string) ($r['reviewId'] ?? $r['id'] ?? '');
+            if ($id === '') { continue; }
+            $r['id'] = $id;
+            $out[] = $r;
+        }
+        return $out;
+    }
+
+    /**
+     * Numeric activity snapshot for a driver over a date range. Used by
+     * performance-review autofill + admin driver profile pages.
+     */
+    public function getDriverActivitySnapshot(string $staffId, string $from, string $to): array
+    {
+        $this->_assertReady();
+        $snap = [
+            'trips_count' => 0, 'total_km' => 0, 'on_time_pct' => 0.0,
+            'incidents_count' => 0, 'critical_incidents' => 0,
+            'complaints_count' => 0, 'positive_recognitions' => 0,
+        ];
+        if ($staffId === '' || $from === '' || $to === '') { return $snap; }
+
+        // Trip aggregates (F7 populates tripLogs; empty until then)
+        try {
+            $trips = (array) $this->fs->schoolWhere(
+                self::COL_TRIP_LOGS,
+                [
+                    ['driver_staff_id', '==', $staffId],
+                    ['trip_date', '>=', $from],
+                    ['trip_date', '<=', $to],
+                ]
+            );
+            $tripsNorm = [];
+            foreach ($trips as $t) {
+                $t = $this->_unwrapNestedRow($t, 'trip_date');
+                if (!is_array($t)) { continue; }
+                $tripsNorm[] = $t;
+                $snap['trips_count']++;
+                $snap['total_km'] += (int) ($t['distance_km'] ?? 0);
+            }
+            if ($snap['trips_count'] > 0) {
+                $onTimeTrips = 0;
+                foreach ($tripsNorm as $t) {
+                    if (!empty($t['on_time'])) { $onTimeTrips++; }
+                }
+                $snap['on_time_pct'] = round(($onTimeTrips / $snap['trips_count']) * 100, 1);
+            }
+        } catch (\Throwable $_) { /* tripLogs unavailable — F7 not yet shipped */ }
+
+        // Incident aggregates
+        try {
+            $incidents = (array) $this->fs->schoolWhere(
+                self::COL_DRIVER_INCIDENTS,
+                [
+                    ['staff_id', '==', $staffId],
+                    ['incident_date', '>=', $from],
+                    ['incident_date', '<=', $to],
+                ]
+            );
+            foreach ($incidents as $i) {
+                $i = $this->_unwrapNestedRow($i, 'severity');
+                if (!is_array($i)) { continue; }
+                $snap['incidents_count']++;
+                if (($i['severity'] ?? '') === 'Critical') { $snap['critical_incidents']++; }
+                if (($i['incident_type'] ?? '') === 'Complaint') { $snap['complaints_count']++; }
+                if (($i['incident_type'] ?? '') === 'Positive_Recognition') { $snap['positive_recognitions']++; }
+            }
+        } catch (\Throwable $_) {}
+
+        return $snap;
+    }
+
+    // ─── Temporary + permanent assignment ──────────────────────────────
+
+    public function assignTemporaryDriver(array $input): array
+    {
+        $this->_assertReady();
+        $vehicleId       = trim((string) ($input['vehicle_id']       ?? ''));
+        $coveringStaffId = trim((string) ($input['covering_staff_id']?? ''));
+        $from            = trim((string) ($input['effective_from']   ?? ''));
+        $to              = trim((string) ($input['effective_to']     ?? ''));
+        $reason          = trim((string) ($input['reason']           ?? ''));
+        if ($vehicleId === '' || $coveringStaffId === '' || $from === '' || $to === '' || $reason === '') {
+            throw new \InvalidArgumentException('vehicle_id, covering_staff_id, effective_from, effective_to, and reason are all required.');
+        }
+        if ($to < $from) {
+            throw new \InvalidArgumentException('effective_to must be on or after effective_from.');
+        }
+        $vehicle = $this->fs->getEntity(self::COL_VEHICLES, $vehicleId);
+        if (!is_array($vehicle)) {
+            throw new \InvalidArgumentException('Vehicle not found: ' . $vehicleId);
+        }
+
+        // Driver readiness validation
+        $this->_validateDriverReadiness($coveringStaffId, $from);
+
+        // Overlap detection — no active temp for same vehicle covering this window
+        try {
+            $existing = (array) $this->fs->schoolWhere(
+                self::COL_TEMPORARY_DRIVER_ASSIGNMENTS,
+                [['vehicle_id', '==', $vehicleId], ['status', '==', 'Active']]
+            );
+            foreach ($existing as $t) {
+                $t = $this->_unwrapNestedRow($t, 'effective_from');
+                if (!is_array($t)) { continue; }
+                $eFrom = (string) ($t['effective_from'] ?? '');
+                $eTo   = (string) ($t['effective_to']   ?? '');
+                if ($eFrom !== '' && $eTo !== ''
+                    && !($to < $eFrom || $from > $eTo)) {
+                    throw new \RuntimeException(
+                        'Overlap detected: an active temporary driver assignment already covers this vehicle in the window '
+                        . $eFrom . ' → ' . $eTo
+                    );
+                }
+            }
+        } catch (\RuntimeException $e) { throw $e; }
+        catch (\Throwable $_) {}
+
+        $id = $this->numbering->next('trn_temp_driver_assign', [
+            'claimedBy'  => $this->adminId,
+            'claimedFor' => 'F4:assignTemporaryDriver',
+        ]);
+        $now = date('c');
+        $data = [
+            'assignmentId'      => $id,
+            'schoolId'          => $this->schoolId,
+            'vehicle_id'        => $vehicleId,
+            'original_staff_id' => (string) ($vehicle['staff_id'] ?? $vehicle['driver_staff_id'] ?? ''),
+            'covering_staff_id' => $coveringStaffId,
+            'effective_from'    => $from,
+            'effective_to'      => $to,
+            'reason'            => $reason,
+            'authorised_by'     => $this->adminId,
+            'notes'             => trim((string) ($input['notes'] ?? '')),
+            'status'            => 'Active',
+            'auto_resolved_at'  => '',
+            'resolved_by'       => '',
+            'created_at'        => $now,
+        ];
+        $this->fs->setEntity(self::COL_TEMPORARY_DRIVER_ASSIGNMENTS, $id, $data, /* merge */ false);
+        $this->emitAudit(
+            'temporaryDriverAssignment', $id, 'assigned',
+            null, $data,
+            ['domain' => self::DOMAIN_DRIVER, 'vehicle_id' => $vehicleId, 'covering_staff_id' => $coveringStaffId]
+        );
+        return ['id' => $id, 'data' => $data];
+    }
+
+    public function resolveTemporaryDriver(string $assignmentId, string $reason = 'manual'): void
+    {
+        $this->_assertReady();
+        if ($assignmentId === '') {
+            throw new \InvalidArgumentException('assignmentId required.');
+        }
+        $existing = $this->fs->getEntity(self::COL_TEMPORARY_DRIVER_ASSIGNMENTS, $assignmentId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('Temporary assignment not found: ' . $assignmentId);
+        }
+        if ((string) ($existing['status'] ?? '') !== 'Active') {
+            throw new \InvalidArgumentException('Temporary assignment is not Active.');
+        }
+        $now = date('c');
+        $update = [
+            'status'           => 'Resolved',
+            'auto_resolved_at' => $reason === 'auto' ? $now : '',
+            'resolved_by'      => $this->adminId,
+            'resolved_at'      => $now,
+        ];
+        $this->fs->setEntity(self::COL_TEMPORARY_DRIVER_ASSIGNMENTS, $assignmentId, $update, /* merge */ true);
+        $this->emitAudit(
+            'temporaryDriverAssignment', $assignmentId, 'resolved',
+            ['status' => 'Active'], $update,
+            ['domain' => self::DOMAIN_DRIVER, 'reason' => $reason]
+        );
+    }
+
+    public function listTemporaryAssignments(string $vehicleId = '', bool $activeOnly = true): array
+    {
+        $this->_assertReady();
+        $where = [];
+        if ($vehicleId !== '') { $where[] = ['vehicle_id', '==', $vehicleId]; }
+        if ($activeOnly)       { $where[] = ['status',     '==', 'Active']; }
+        try {
+            $rows = (array) $this->fs->schoolWhere(
+                self::COL_TEMPORARY_DRIVER_ASSIGNMENTS, $where,
+                'effective_from', 'DESC'
+            );
+        } catch (\Throwable $_) { $rows = []; }
+        $out = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) { continue; }
+            if (isset($r['data']) && is_array($r['data']) && !isset($r['assignmentId'])) {
+                $docKey = (string) ($r['id'] ?? '');
+                $r = $r['data'];
+                if ($docKey !== '' && !isset($r['id'])) { $r['id'] = $docKey; }
+            }
+            $id = (string) ($r['assignmentId'] ?? $r['id'] ?? '');
+            if ($id === '') { continue; }
+            $r['id'] = $id;
+            $out[] = $r;
+        }
+        return $out;
+    }
+
+    /**
+     * Auto-resolve temp assignments whose effective_to is past today.
+     * Invoked by the nightly Transport_expiry_cron extension.
+     */
+    public function autoResolveExpiredTempAssignments(): array
+    {
+        $this->_assertReady();
+        $today = date('Y-m-d');
+        try {
+            $active = (array) $this->fs->schoolWhere(
+                self::COL_TEMPORARY_DRIVER_ASSIGNMENTS,
+                [['status', '==', 'Active']]
+            );
+        } catch (\Throwable $_) { return ['resolved' => 0]; }
+        $resolved = 0;
+        foreach ($active as $t) {
+            $t = $this->_unwrapNestedRow($t, 'effective_to');
+            if (!is_array($t)) { continue; }
+            $to = (string) ($t['effective_to'] ?? '');
+            if ($to === '' || $to >= $today) { continue; }
+            $id = (string) ($t['assignmentId'] ?? '');
+            if ($id === '') { continue; }
+            try {
+                $this->resolveTemporaryDriver($id, 'auto');
+                $resolved++;
+            } catch (\Throwable $_) { /* per-doc failure logged by emitAudit; continue */ }
+        }
+        return ['resolved' => $resolved];
+    }
+
+    // ─── Driver Activity Summary ───────────────────────────────────────
+
+    /**
+     * Compute (or recompute) driverActivitySummary for one driver × one
+     * month. Returns the summary payload also written to cache.
+     */
+    public function computeDriverActivitySummary(string $staffId, string $yearMonth): array
+    {
+        $this->_assertReady();
+        if ($staffId === '' || !preg_match('/^\d{4}-\d{2}$/', $yearMonth)) {
+            throw new \InvalidArgumentException('staffId and YYYY-MM yearMonth required.');
+        }
+        $monthStart = $yearMonth . '-01';
+        $monthEnd   = date('Y-m-t', strtotime($monthStart));
+        $snap = $this->getDriverActivitySnapshot($staffId, $monthStart, $monthEnd);
+
+        // Temp cover days — sum of active temp windows this month
+        $tempCoverDays = 0;
+        try {
+            $temps = (array) $this->fs->schoolWhere(
+                self::COL_TEMPORARY_DRIVER_ASSIGNMENTS,
+                [['covering_staff_id', '==', $staffId]]
+            );
+            foreach ($temps as $t) {
+                if (!is_array($t)) { continue; }
+                $from = (string) ($t['effective_from'] ?? '');
+                $to   = (string) ($t['effective_to']   ?? '');
+                if ($from === '' || $to === '') { continue; }
+                // Overlap with the month
+                $ovFrom = max($from, $monthStart);
+                $ovTo   = min($to, $monthEnd);
+                if ($ovFrom > $ovTo) { continue; }
+                $tempCoverDays += ((int) ((strtotime($ovTo) - strtotime($ovFrom)) / 86400)) + 1;
+            }
+        } catch (\Throwable $_) {}
+
+        // Primary vehicles for this driver
+        $primary = [];
+        try {
+            $vehicles = (array) $this->fs->schoolWhere(
+                self::COL_VEHICLES,
+                [['staff_id', '==', $staffId]]
+            );
+            foreach ($vehicles as $v) {
+                if (!is_array($v)) { continue; }
+                $vid = (string) ($v['vehicleId'] ?? $v['id'] ?? '');
+                if ($vid !== '') { $primary[] = $vid; }
+            }
+        } catch (\Throwable $_) {}
+
+        $now = date('c');
+        $docId = "{$this->schoolId}_DACT_{$staffId}__{$yearMonth}";
+        $data = [
+            'summaryId'             => $docId,
+            'schoolId'              => $this->schoolId,
+            'staff_id'              => $staffId,
+            'period_year_month'     => $yearMonth,
+            'period_start'          => $monthStart,
+            'period_end'            => $monthEnd,
+            'trips_count'           => (int)   $snap['trips_count'],
+            'total_km'              => (int)   $snap['total_km'],
+            'on_time_pct'           => (float) $snap['on_time_pct'],
+            'incidents_count'       => (int)   $snap['incidents_count'],
+            'critical_incidents'    => (int)   $snap['critical_incidents'],
+            'positive_recognitions' => (int)   $snap['positive_recognitions'],
+            'temp_cover_days'       => $tempCoverDays,
+            'primary_vehicles'      => $primary,
+            'computed_at'           => $now,
+            'computed_by'           => in_array($this->adminId, ['cron','transport_activity_cron','transport_expiry_cron'], true) ? 'cron' : 'manual_rebuild',
+        ];
+        $this->fs->setEntity(self::COL_DRIVER_ACTIVITY_SUMMARY, $docId, $data, /* merge */ false);
+        return $data;
+    }
+
+    /**
+     * Rebuild activity summaries (admin power action). When staffId is
+     * empty, iterates all active drivers. When yearMonth is empty, uses
+     * the current month.
+     */
+    public function rebuildActivitySummary(string $staffId = '', string $yearMonth = ''): array
+    {
+        $this->_assertReady();
+        $ym = $yearMonth !== '' ? $yearMonth : date('Y-m');
+        if ($staffId !== '') {
+            $this->computeDriverActivitySummary($staffId, $ym);
+            return ['rebuilt_count' => 1, 'year_month' => $ym];
+        }
+        $drivers = $this->listActiveDrivers();
+        $count = 0;
+        foreach ($drivers as $d) {
+            if (!is_array($d)) { continue; }
+            $sid = (string) ($d['staff_id'] ?? '');
+            if ($sid === '') { continue; }
+            try {
+                $this->computeDriverActivitySummary($sid, $ym);
+                $count++;
+            } catch (\Throwable $_) {}
+        }
+        return ['rebuilt_count' => $count, 'year_month' => $ym];
+    }
+
     // ─── private helpers ─────────────────────────────────────────────────
 
     private function _assertReady(): void
@@ -3787,6 +4650,209 @@ class Transport_service
             'current_count'   => $newCount,
             'last_updated_at' => date('c'),
         ], /* merge */ true);
+    }
+
+    /**
+     * F4 helper — normalise a Firestore_service::schoolWhere row that
+     * comes back in the {id, data} nested wrapper format used for some
+     * collections (transportAuditLog, routeAssignmentHistory,
+     * driverIncidents, temporaryDriverAssignments, ...). When the row
+     * looks flat already (marker field present at top level), returns
+     * it as-is; when nested, spreads $row['data'] to top level while
+     * preserving the doc id.
+     */
+    private function _unwrapNestedRow($row, string $markerField): array
+    {
+        if (!is_array($row)) { return []; }
+        if (isset($row[$markerField])) { return $row; }
+        if (isset($row['data']) && is_array($row['data'])) {
+            $data = $row['data'];
+            if (!empty($row['id']) && !isset($data['id'])) {
+                $data['id'] = $row['id'];
+            }
+            return $data;
+        }
+        return $row;
+    }
+
+    // ─── DOMAIN_DRIVER (F4) private helpers ──────────────────────────────
+
+    /**
+     * Comprehensive driver-readiness validation (Refinement — additional
+     * 2026-07-07). Called before every driver-vehicle assignment
+     * (permanent + temporary). 7 checks:
+     *
+     *   1. Staff exists AND is HR-active (status='active')
+     *   2. flags.can_drive_transport === true
+     *   3. driver_meta.licence_expires > $onDate (or empty allowed if
+     *      the school hasn't captured licence data yet — WARN via log,
+     *      don't block; toggleable via strictMode)
+     *   4. driver_meta.medical_expires > $onDate (same soft-check)
+     *   5. driver_meta.badge_expires > $onDate WHEN badge_no is set
+     *   6. driver_meta.operational_status != 'Unavailable' / 'On_Leave'
+     *   7. No conflicting active temporary assignment where this staff
+     *      is already covering another vehicle at the same window
+     *
+     * Throws \InvalidArgumentException on hard failure. Soft warnings
+     * are logged (log_message('warning', ...)) — schools rolling out
+     * driver_meta gradually still get useful validation on the fields
+     * they HAVE captured.
+     */
+    private function _validateDriverReadiness(string $staffId, string $onDate): void
+    {
+        if ($staffId === '') {
+            throw new \InvalidArgumentException('Driver staffId is required.');
+        }
+        // 1. Staff exists + HR active
+        $staff = $this->fs->getEntity('staff', $staffId);
+        if (!is_array($staff)) {
+            throw new \InvalidArgumentException('Driver staff not found: ' . $staffId);
+        }
+        $status = strtolower((string) ($staff['status'] ?? $staff['Status'] ?? 'active'));
+        if ($status !== '' && !in_array($status, ['active', ''], true)) {
+            throw new \InvalidArgumentException(
+                "Driver {$staffId} is not Active in HR (status='{$status}'). Cannot assign."
+            );
+        }
+        // 2. flags.can_drive_transport
+        $canDrive = !empty($staff['flags']['can_drive_transport']);
+        if (!$canDrive) {
+            throw new \InvalidArgumentException(
+                "Staff {$staffId} does not have transport-driving enabled (flags.can_drive_transport)."
+            );
+        }
+        $meta = (array) ($staff['driver_meta'] ?? []);
+
+        // 3. Licence validity
+        $licenceExp = (string) ($meta['licence_expires'] ?? '');
+        if ($licenceExp !== '' && $licenceExp < $onDate) {
+            throw new \InvalidArgumentException(
+                "Driver {$staffId} licence expired on {$licenceExp} (before {$onDate})."
+            );
+        }
+        // 4. Medical validity
+        $medicalExp = (string) ($meta['medical_expires'] ?? '');
+        if ($medicalExp !== '' && $medicalExp < $onDate) {
+            throw new \InvalidArgumentException(
+                "Driver {$staffId} medical certificate expired on {$medicalExp}."
+            );
+        }
+        // 5. Badge validity — only enforce when a badge is present
+        $badgeNo  = (string) ($meta['badge_no'] ?? '');
+        $badgeExp = (string) ($meta['badge_expires'] ?? '');
+        if ($badgeNo !== '' && $badgeExp !== '' && $badgeExp < $onDate) {
+            throw new \InvalidArgumentException(
+                "Driver {$staffId} transport badge expired on {$badgeExp}."
+            );
+        }
+        // 6. Operational availability — reject any admin-set blocking state
+        $opStatus = (string) ($meta['operational_status'] ?? 'Available');
+        if (in_array($opStatus, self::DRIVER_BLOCKING_STATUSES, true)) {
+            throw new \InvalidArgumentException(
+                "Driver {$staffId} is currently {$opStatus} (driver_meta.operational_status)."
+            );
+        }
+        // 7. Conflicting active temp assignment where THIS staff is already covering
+        try {
+            $activeAsCovering = (array) $this->fs->schoolWhere(
+                self::COL_TEMPORARY_DRIVER_ASSIGNMENTS,
+                [
+                    ['covering_staff_id', '==', $staffId],
+                    ['status',            '==', 'Active'],
+                ]
+            );
+            foreach ($activeAsCovering as $t) {
+                $t = $this->_unwrapNestedRow($t, 'effective_from');
+                if (!is_array($t)) { continue; }
+                $from = (string) ($t['effective_from'] ?? '');
+                $to   = (string) ($t['effective_to']   ?? '');
+                if ($from !== '' && $to !== '' && $from <= $onDate && $onDate <= $to) {
+                    throw new \InvalidArgumentException(
+                        "Driver {$staffId} is already covering vehicle {$t['vehicle_id']} "
+                        . "in window {$from}..{$to}. Resolve that assignment first."
+                    );
+                }
+            }
+        } catch (\InvalidArgumentException $e) { throw $e; }
+        catch (\Throwable $_) { /* query unavailable — trust caller */ }
+
+        // Soft warnings — log missing licence/medical data for admin visibility
+        if ($licenceExp === '') {
+            log_message('warning', "F4 driver readiness: {$staffId} has no licence_expires date (soft-check)");
+        }
+        if ($medicalExp === '') {
+            log_message('warning', "F4 driver readiness: {$staffId} has no medical_expires date (soft-check)");
+        }
+    }
+
+    /**
+     * HR ownership discipline (Refinement 1 for F4). Every payload written
+     * to the `staff` collection by Transport code must satisfy:
+     *   - top-level keys are all in ALLOWED_STAFF_TOP_LEVEL_KEYS
+     *     (currently: 'driver_meta', 'updated_at')
+     *
+     * Verifier CH-TRN-F4-1 statically confirms Transport source never
+     * calls setEntity('staff', ...) with disallowed keys; this runtime
+     * check is the defensive counterpart.
+     */
+    private function _assertStaffFieldDiscipline(array $payload): void
+    {
+        foreach (array_keys($payload) as $k) {
+            if (!in_array($k, self::ALLOWED_STAFF_TOP_LEVEL_KEYS, true)) {
+                throw new \LogicException(
+                    'Transport_service (F4) staff-write discipline violation: '
+                    . "top-level key '{$k}' is not owned by Transport. "
+                    . 'Allowed: ' . implode(', ', self::ALLOWED_STAFF_TOP_LEVEL_KEYS)
+                );
+            }
+        }
+    }
+
+    /**
+     * Emit a Communication notice for a Critical-severity incident.
+     * Audience: Admin + HR Manager + Transport Manager (per operator's
+     * approved decision — Principal escalation is business-rule based
+     * on top of this baseline, not a default target).
+     */
+    private function _emitCriticalIncidentNotice(array $incident, ?array $staff): void
+    {
+        try {
+            $this->ci->load->library('Communication_helper', null, 'commHelper');
+        } catch (\Throwable $_) {
+            log_message('warning', 'F4 critical-incident notice: Communication_helper unavailable — skipped.');
+            return;
+        }
+        $helper = $this->ci->commHelper ?? null;
+        if (!is_object($helper) || !method_exists($helper, 'createNotice')) {
+            return;
+        }
+        $staffName = is_array($staff) ? (string) ($staff['name'] ?? $staff['Name'] ?? '') : '';
+        $staffId   = (string) ($incident['staff_id'] ?? '');
+        $type      = (string) ($incident['incident_type'] ?? '');
+        $desc      = (string) ($incident['description']   ?? '');
+        $vehicleId = (string) ($incident['related_vehicle_id'] ?? '');
+        $subject   = "Transport CRITICAL: {$type} — {$staffName}";
+        $body      = "Driver: {$staffName} ({$staffId})\n"
+                   . "Vehicle: " . ($vehicleId !== '' ? $vehicleId : '-') . "\n"
+                   . "Type: {$type}\n"
+                   . "Details: {$desc}";
+        try {
+            $helper->createNotice([
+                'schoolId' => $this->schoolId,
+                'subject'  => $subject,
+                'body'     => $body,
+                'audience' => ['role:Admin', 'role:HR Manager', 'role:Transport Manager'],
+                'context'  => [
+                    'module'      => 'Transport',
+                    'topic'       => 'critical_incident',
+                    'staff_id'    => $staffId,
+                    'incident_id' => (string) ($incident['incidentId'] ?? ''),
+                    'severity'    => 'Critical',
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('warning', 'F4 critical-incident notice failed: ' . $e->getMessage());
+        }
     }
 
     private function _emitSuspensionNotice(array $suspension, ?array $route, bool $isSuspend): string
