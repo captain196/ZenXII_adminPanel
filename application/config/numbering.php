@@ -183,12 +183,14 @@ $config['numbering'] = [
         ],
 
         'trn_route' => [
-            // Route IDs reset per Indian academic session — mirrors the
-            // session-scoped ownership of routes/{schoolId}_RT####__{session}.
+            // F2 (2026-07-07) design decision: routes are session-AGNOSTIC
+            // physical infrastructure; session-scoping is enforced at the
+            // student assignment layer (F3). RT numbering is therefore
+            // monotonic per tenant, not per session.
             'prefix'       => 'RT',
             'padWidth'     => 4,
             'gaplessClass' => 'OPERATIONAL',
-            'periodScope'  => 'session',
+            'periodScope'  => 'none',
             'seedSource'   => [
                 'collection' => 'routes',
                 'pattern'    => '/^RT(\d+)$/',
@@ -207,11 +209,13 @@ $config['numbering'] = [
         ],
 
         'trn_route_suspension' => [
-            // Session-scoped to match routes.
+            // F2 (2026-07-07): monotonic per tenant. Suspensions are
+            // date-windowed events on session-agnostic routes; no session
+            // tag needed on the ID.
             'prefix'       => 'RSP',
             'padWidth'     => 4,
             'gaplessClass' => 'OPERATIONAL',
-            'periodScope'  => 'session',
+            'periodScope'  => 'none',
             'seedSource'   => [
                 'collection' => 'routeSuspensions',
                 'pattern'    => '/^RSP(\d+)$/',
@@ -380,10 +384,12 @@ $config['numbering'] = [
         'trn_maintenance'          => 'enabled',
         'trn_fuel'                 => 'enabled',
         'trn_audit'                => 'enabled',
+        // Feature F2 (Route & Stop Management) cutover 2026-07-07:
+        // 3 route/stop/suspension kinds flipped 'enabled'.
+        'trn_route'                => 'enabled',
+        'trn_stop'                 => 'enabled',
+        'trn_route_suspension'     => 'enabled',
         // Still disabled — future features:
-        'trn_route'                => 'disabled',
-        'trn_stop'                 => 'disabled',
-        'trn_route_suspension'     => 'disabled',
         'trn_assignment_history'   => 'disabled',
         'trn_trip'                 => 'disabled',
         'trn_expense'              => 'disabled',

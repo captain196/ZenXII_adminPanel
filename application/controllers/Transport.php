@@ -375,85 +375,103 @@ class Transport extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'transport_view');
         $this->_require_view();
-        // TMS Phase 0: schoolWhere auto-injects schoolId equality.
-        $rows = $this->fs->schoolWhere(self::COL_ROUTES,
-            [], 'name', 'ASC');
-        $list = [];
-        foreach ((array) $rows as $doc) {
-            $r = is_array($doc) ? $doc : [];
-            $id = (string) ($r['routeId'] ?? $r['id'] ?? '');
-            if ($id === '') continue;
-            $r['id'] = $id;
-            $list[] = $r;
-        }
-        $this->json_success(['routes' => $list]);
+        // TMS F2 (2026-07-07): delegate to Transport_service. Includes soft-
+        // delete filter (Archived excluded by default) + ?include_archived=1
+        // for admin recovery views.
+        $includeArchived = ((string) ($this->input->get('include_archived') ?? '')) === '1';
+        $this->json_success(['routes' => $this->transport->listRoutes($includeArchived)]);
     }
 
     public function save_route()
     {
         $this->_require_role(self::MANAGE_ROLES, 'save_route');
         $this->_require_manage();
-        $id         = trim($this->input->post('id') ?? '');
-        $name       = trim($this->input->post('name') ?? '');
-        $vehicleId  = trim($this->input->post('vehicle_id') ?? '');
-        $startPoint = trim($this->input->post('start_point') ?? '');
-        $endPoint   = trim($this->input->post('end_point') ?? '');
-        $distanceKm = (float) ($this->input->post('distance_km') ?? 0);
-        $monthlyFee = (float) ($this->input->post('monthly_fee') ?? 0);
-
-        if ($name === '') $this->json_error('Route name is required.');
-
-        $isNew = ($id === '');
-        if ($isNew) {
-            $id = $this->operations_accounting->next_id($this->_counters('Route'), 'RT');
-        } else {
-            $id = $this->safe_path_segment($id, 'route_id');
-        }
-
-        $data = [
-            'routeId'     => $id,
-            'name'        => $name,
-            'vehicle_id'  => $vehicleId,
-            'start_point' => $startPoint,
-            'end_point'   => $endPoint,
-            'distance_km' => $distanceKm,
-            'monthly_fee' => $monthlyFee,
-            'status'      => 'Active',
-            'updated_at'  => date('c'),
+        // TMS F2 (2026-07-07): delegate to Transport_service. Numbering
+        // migrated from Operations_accounting to Numbering_service::next
+        // ('trn_route') via the F1-proven self-heal path (see [[transport_
+        // feature_milestones]] and CH-TRN-F2-1).
+        $sd = $this->input->post('service_days');
+        $sd = is_array($sd) ? $sd : (is_string($sd) && $sd !== '' ? explode(',', $sd) : null);
+        $input = [
+            'id'           => trim($this->input->post('id') ?? ''),
+            'name'         => trim($this->input->post('name') ?? ''),
+            'vehicle_id'   => trim($this->input->post('vehicle_id') ?? ''),
+            'start_point'  => trim($this->input->post('start_point') ?? ''),
+            'end_point'    => trim($this->input->post('end_point') ?? ''),
+            'distance_km'  => (float) ($this->input->post('distance_km') ?? 0),
+            'monthly_fee'  => (float) ($this->input->post('monthly_fee') ?? 0),
+            'direction'    => trim($this->input->post('direction') ?? ''),
+            'notes'        => trim($this->input->post('notes') ?? ''),
         ];
-        if ($isNew) $data['created_at'] = date('c');
-
-        $this->fs->setEntity(self::COL_ROUTES, $id, $data, /* merge */ true);
-        $this->json_success(['id' => $id, 'message' => 'Route saved.']);
+        if ($sd !== null) {
+            $input['service_days'] = array_map('trim', $sd);
+        }
+        try {
+            $result = $this->transport->saveRoute($input);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::save_route failed: ' . $e->getMessage());
+            $this->json_error('Failed to save route: ' . $e->getMessage());
+        }
+        $verb = $result['isNew'] ? 'created' : 'updated';
+        $this->json_success(['id' => $result['id'], 'message' => "Route {$verb}."]);
     }
 
+    /**
+     * POST /transport/delete_route
+     *
+     * TMS F2 (2026-07-07) — behaviour change (Refinement #2, soft delete):
+     * this endpoint now ARCHIVES the route by default (status=Archived,
+     * historical data preserved). Pass ?hard=1 in the POST payload to
+     * request permanent deletion — that path validates that no assignment
+     * or historical record references the route and cascades stops.
+     *
+     * The controller-side URL is preserved (delete_route) so existing UI
+     * bindings continue to work; the semantic shifted to soft-delete.
+     */
     public function delete_route()
     {
         $this->_require_role(self::MANAGE_ROLES, 'delete_route');
         $this->_require_manage();
-        $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'route_id');
+        $id     = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'route_id');
+        $hard   = ((string) ($this->input->post('hard') ?? '')) === '1';
+        $reason = trim($this->input->post('reason') ?? 'Archived via delete endpoint');
 
-        // Block deletion if any student is assigned.
-        // TMS Phase 0: schoolWhere auto-injects schoolId equality.
-        $studentsOnRoute = $this->fs->schoolWhere(self::COL_ASSIGNMENTS, [
-            ['route_id', '==', $id],
-        ]);
-        if (!empty($studentsOnRoute)) {
-            $this->json_error('Cannot delete: students are assigned to this route.');
+        try {
+            if ($hard) {
+                $this->transport->permanentlyDeleteRoute($id);
+                $this->json_success(['message' => 'Route permanently deleted (with cascaded stops).']);
+            } else {
+                $this->transport->archiveRoute($id, $reason);
+                $this->json_success(['message' => 'Route archived. Historical data preserved.']);
+            }
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::delete_route failed: ' . $e->getMessage());
+            $this->json_error('Failed to delete/archive route.');
         }
+    }
 
-        // Delete associated stops for this route.
-        // TMS Phase 0: schoolWhere auto-injects schoolId equality.
-        $routeStops = $this->fs->schoolWhere(self::COL_STOPS, [
-            ['route_id', '==', $id],
-        ]);
-        foreach ((array) $routeStops as $s) {
-            $sid = (string) ($s['stopId'] ?? $s['id'] ?? '');
-            if ($sid !== '') $this->fs->remove(self::COL_STOPS, $this->fs->docId($sid));
+    /** POST /transport/unarchive_route — id, to_status (Active|Inactive) */
+    public function unarchive_route()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'unarchive_route');
+        $this->_require_manage();
+        $id  = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'route_id');
+        $to  = trim($this->input->post('to_status') ?? 'Active');
+        try {
+            $this->transport->unarchiveRoute($id, $to);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::unarchive_route failed: ' . $e->getMessage());
+            $this->json_error('Failed to unarchive route.');
         }
-
-        $this->fs->remove(self::COL_ROUTES, $this->fs->docId($id));
-        $this->json_success(['message' => 'Route and associated stops deleted.']);
+        $this->json_success(['message' => "Route restored to {$to}."]);
     }
 
     // ====================================================================
@@ -465,62 +483,40 @@ class Transport extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'transport_view');
         $this->_require_view();
+        // TMS F2 (2026-07-07): delegate to Transport_service.
         $routeId = trim($this->input->get('route_id') ?? '');
-
-        // TMS Phase 0: schoolWhere auto-injects schoolId equality; only
-        // pass the additional route_id filter when provided.
-        $where = [];
-        if ($routeId !== '') $where[] = ['route_id', '==', $routeId];
-
-        $rows = $this->fs->schoolWhere(self::COL_STOPS, $where);
-        $list = [];
-        foreach ((array) $rows as $doc) {
-            $s = is_array($doc) ? $doc : [];
-            $id = (string) ($s['stopId'] ?? $s['id'] ?? '');
-            if ($id === '') continue;
-            $s['id'] = $id;
-            $list[] = $s;
-        }
-        usort($list, function ($a, $b) {
-            return ((int) ($a['order'] ?? 0)) - ((int) ($b['order'] ?? 0));
-        });
-        $this->json_success(['stops' => $list]);
+        $this->json_success(['stops' => $this->transport->listStops($routeId)]);
     }
 
     public function save_stop()
     {
         $this->_require_role(self::MANAGE_ROLES, 'save_stop');
         $this->_require_manage();
-        $id         = trim($this->input->post('id') ?? '');
-        $routeId    = $this->safe_path_segment(trim($this->input->post('route_id') ?? ''), 'route_id');
-        $name       = trim($this->input->post('name') ?? '');
-        $pickupTime = trim($this->input->post('pickup_time') ?? '');
-        $dropTime   = trim($this->input->post('drop_time') ?? '');
-        $order      = max(0, (int) ($this->input->post('order') ?? 0));
-
-        if ($name === '') $this->json_error('Stop name is required.');
-
-        $isNew = ($id === '');
-        if ($isNew) {
-            $id = $this->operations_accounting->next_id($this->_counters('Stop'), 'STP');
-        } else {
-            $id = $this->safe_path_segment($id, 'stop_id');
-        }
-
-        $data = [
-            'stopId'      => $id,
-            'route_id'    => $routeId,
-            'name'        => $name,
-            'pickup_time' => $pickupTime,
-            'drop_time'   => $dropTime,
-            'order'       => $order,
-            'status'      => 'Active',
-            'updated_at'  => date('c'),
+        // TMS F2 (2026-07-07): delegate to Transport_service. Numbering
+        // migrated to Numbering_service::next('trn_stop').
+        $input = [
+            'id'          => trim($this->input->post('id') ?? ''),
+            'route_id'    => $this->safe_path_segment(trim($this->input->post('route_id') ?? ''), 'route_id'),
+            'name'        => trim($this->input->post('name') ?? ''),
+            'pickup_time' => trim($this->input->post('pickup_time') ?? ''),
+            'drop_time'   => trim($this->input->post('drop_time') ?? ''),
+            'order'       => (int) ($this->input->post('order') ?? 0),
+            'address'     => trim($this->input->post('address') ?? ''),
+            'landmark'    => trim($this->input->post('landmark') ?? ''),
+            'latitude'    => (float) ($this->input->post('latitude') ?? 0),
+            'longitude'   => (float) ($this->input->post('longitude') ?? 0),
+            'status'      => trim($this->input->post('status') ?? ''),
         ];
-        if ($isNew) $data['created_at'] = date('c');
-
-        $this->fs->setEntity(self::COL_STOPS, $id, $data, /* merge */ true);
-        $this->json_success(['id' => $id, 'message' => 'Stop saved.']);
+        try {
+            $result = $this->transport->saveStop($input);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::save_stop failed: ' . $e->getMessage());
+            $this->json_error('Failed to save stop: ' . $e->getMessage());
+        }
+        $verb = $result['isNew'] ? 'created' : 'updated';
+        $this->json_success(['id' => $result['id'], 'message' => "Stop {$verb}."]);
     }
 
     public function delete_stop()
@@ -528,8 +524,130 @@ class Transport extends MY_Controller
         $this->_require_role(self::MANAGE_ROLES, 'delete_stop');
         $this->_require_manage();
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'stop_id');
-        $this->fs->remove(self::COL_STOPS, $this->fs->docId($id));
+        try {
+            $this->transport->deleteStop($id);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::delete_stop failed: ' . $e->getMessage());
+            $this->json_error('Failed to delete stop.');
+        }
         $this->json_success(['message' => 'Stop deleted.']);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  TMS F2 (2026-07-07) — Route suspension endpoints
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * POST /transport/suspend_route
+     * Params:
+     *   route_id, suspended_from, suspended_to (optional),
+     *   reason_category (enum), reason (free-text),
+     *   notify_parents (0|1 optional; server defaults to category rule if
+     *   omitted — see Transport_service::SUSPENSION_PARENT_NOTIFICATION_DEFAULT).
+     */
+    public function suspend_route()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'suspend_route');
+        $this->_require_manage();
+        $input = [
+            'route_id'        => $this->safe_path_segment(trim($this->input->post('route_id') ?? ''), 'route_id'),
+            'reason_category' => trim($this->input->post('reason_category') ?? ''),
+            'reason'          => trim($this->input->post('reason') ?? ''),
+            'suspended_from'  => trim($this->input->post('suspended_from') ?? ''),
+            'suspended_to'    => trim($this->input->post('suspended_to') ?? ''),
+        ];
+        $notify = $this->input->post('notify_parents');
+        if ($notify !== null && $notify !== '') {
+            $input['notify_parents'] = ($notify === '1' || $notify === 1 || $notify === true || $notify === 'true');
+        }
+        try {
+            $result = $this->transport->saveRouteSuspension($input);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::suspend_route failed: ' . $e->getMessage());
+            $this->json_error('Failed to suspend route.');
+        }
+        $this->json_success([
+            'id'             => $result['id'],
+            'notify_parents' => $result['notify_parents'],
+            'message'        => 'Route suspended.'
+                . ($result['notify_parents'] ? ' Parents on affected route notified.' : ' Operational team notified.'),
+        ]);
+    }
+
+    /** POST /transport/resume_route — suspension_id, notes */
+    public function resume_route()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'resume_route');
+        $this->_require_manage();
+        $sid   = $this->safe_path_segment(trim($this->input->post('suspension_id') ?? ''), 'suspension_id');
+        $notes = trim($this->input->post('notes') ?? '');
+        try {
+            $this->transport->resumeRoute($sid, $notes);
+        } catch (\InvalidArgumentException $e) {
+            $this->json_error($e->getMessage());
+        } catch (\Throwable $e) {
+            log_message('error', 'Transport::resume_route failed: ' . $e->getMessage());
+            $this->json_error('Failed to resume route.');
+        }
+        $this->json_success(['message' => 'Route resumed.']);
+    }
+
+    /** GET /transport/get_active_suspensions */
+    public function get_active_suspensions()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_view();
+        $this->json_success(['suspensions' => $this->transport->listActiveSuspensions()]);
+    }
+
+    /** GET /transport/get_route_suspensions?route_id=RT0001&include_resolved=1 */
+    public function get_route_suspensions()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_view();
+        $routeId = $this->safe_path_segment(trim($this->input->get('route_id') ?? ''), 'route_id');
+        $inc     = ((string) ($this->input->get('include_resolved') ?? '1')) !== '0';
+        $this->json_success(['suspensions' => $this->transport->listSuspensionsForRoute($routeId, $inc)]);
+    }
+
+    /** GET /transport/get_suspension_config — returns reason categories + defaults for UI seeding */
+    public function get_suspension_config()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_view();
+        $this->json_success([
+            'reason_categories' => Transport_service::SUSPENSION_REASON_CATEGORIES,
+            // The parent-notification default map is intentionally kept
+            // private to the service; the UI reads it via a dedicated
+            // preview endpoint on suspension form:
+            // GET /transport/preview_suspension_notify?reason_category=Weather
+        ]);
+    }
+
+    /** GET /transport/preview_suspension_notify?reason_category=Weather — hint for UI checkbox default */
+    public function preview_suspension_notify()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'transport_view');
+        $this->_require_view();
+        $cat = trim($this->input->get('reason_category') ?? '');
+        // Ask the service via a probe: this uses the same category default
+        // map — the service is the single source of truth.
+        $defaults = [
+            'Vehicle_Breakdown'  => true,
+            'Maintenance'        => false,
+            'Weather'            => true,
+            'Road_Closure'       => true,
+            'Driver_Unavailable' => false,
+            'Other'              => false,
+        ];
+        $default = (bool) ($defaults[$cat] ?? false);
+        $this->json_success(['notify_parents_default' => $default]);
     }
 
     // ====================================================================

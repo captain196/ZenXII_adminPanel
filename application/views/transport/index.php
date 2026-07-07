@@ -108,9 +108,20 @@ $tab_map = [
 
   <!-- ROUTES & STOPS -->
   <div class="trn-panel<?= $at === 'routes' ? ' active' : '' ?>" id="panelRoutes">
+    <!-- F2 (2026-07-07): active suspensions banner (rendered above routes) -->
+    <?php $this->load->view('transport/partials/route_suspension_list'); ?>
+
     <div class="trn-card">
-      <div class="trn-card-title"><span>Routes</span><button class="trn-btn trn-btn-primary" onclick="TRN.openRouteModal()"><i class="fa fa-plus"></i> Add Route</button></div>
-      <table class="trn-table"><thead><tr><th>ID</th><th>Name</th><th>Vehicle</th><th>Distance</th><th>Monthly Fee</th><th>Actions</th></tr></thead><tbody id="routesTbody"></tbody></table>
+      <div class="trn-card-title">
+        <span>Routes</span>
+        <div style="display:flex;gap:6px;align-items:center">
+          <label style="font-size:12px;color:var(--t3);font-family:var(--font-b);cursor:pointer">
+            <input type="checkbox" id="routeShowArchived" onchange="loadRoutes()"> Show Archived
+          </label>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openRouteModal()"><i class="fa fa-plus"></i> Add Route</button>
+        </div>
+      </div>
+      <table class="trn-table"><thead><tr><th>ID</th><th>Name</th><th>Vehicle</th><th>Distance</th><th>Monthly Fee</th><th>Status</th><th>Actions</th></tr></thead><tbody id="routesTbody"></tbody></table>
     </div>
     <div class="trn-card">
       <div class="trn-card-title"><span>Stops</span><button class="trn-btn trn-btn-primary" onclick="TRN.openStopModal()"><i class="fa fa-plus"></i> Add Stop</button></div>
@@ -187,6 +198,9 @@ $tab_map = [
 
 <!-- Vehicle Manage modal (partial) -->
 <?php $this->load->view('transport/partials/vehicle_manage_modal'); ?>
+
+<!-- F2 Suspension + Archive modals (partial) -->
+<?php $this->load->view('transport/partials/route_suspension_modal'); ?>
 
 
 <!-- ROUTE MODAL -->
@@ -510,25 +524,159 @@ document.addEventListener('DOMContentLoaded', function(){
   }
   TRN.recomputeExpiry=function(){post('transport_ops/recompute_expiry_dashboard',{}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadExpiry();}else toast(r.message,false)})};
 
-  // ── Routes ──
+  // ── Routes (F2 extended) ──
   function loadRoutes(){
-    getJSON('transport/get_routes').done(function(r){
+    var includeArchived = $('#routeShowArchived').is(':checked') ? '1' : '0';
+    getJSON('transport/get_routes?include_archived='+includeArchived).done(function(r){
       if(r.status!=='success') return; routes=r.routes||[];
       var html=''; routes.forEach(function(rt){
-        html+='<tr><td>'+escH(rt.id)+'</td><td>'+escH(rt.name)+'</td><td>'+escH(vehName(rt.vehicle_id))+'</td><td>'+rt.distance_km+' km</td><td>Rs '+rt.monthly_fee+'</td>';
-        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editRoute(\''+rt.id+'\')"><i class="fa fa-pencil"></i></button> <button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.delRoute(\''+rt.id+'\')"><i class="fa fa-trash"></i></button></td></tr>';
+        var st = rt.status || 'Active';
+        var isArchived = st === 'Archived';
+        var isSuspended = (rt.active_suspension_ref || '') !== '';
+        var badge;
+        if (isArchived) badge = '<span class="trn-badge trn-badge-red">Archived</span>';
+        else if (isSuspended) badge = '<span class="trn-badge trn-badge-amber">Suspended</span>';
+        else if (st === 'Inactive') badge = '<span class="trn-badge trn-badge-red">Inactive</span>';
+        else badge = '<span class="trn-badge trn-badge-green">Active</span>';
+        html+='<tr><td>'+escH(rt.id)+'</td><td>'+escH(rt.name)+'</td><td>'+escH(vehName(rt.vehicle_id))+'</td><td>'+rt.distance_km+' km</td><td>Rs '+rt.monthly_fee+'</td><td>'+badge+'</td>';
+        html+='<td>';
+        html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.editRoute(\''+rt.id+'\')" title="Edit"><i class="fa fa-pencil"></i></button> ';
+        if (isArchived) {
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.unarchiveRoute(\''+rt.id+'\')" title="Unarchive"><i class="fa fa-undo"></i></button>';
+        } else if (isSuspended) {
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openResumeModal(\''+rt.active_suspension_ref+'\',\''+escH(rt.name)+'\')" title="Resume"><i class="fa fa-play"></i></button>';
+        } else {
+          html+='<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openSuspendModal(\''+rt.id+'\',\''+escH(rt.name)+'\')" title="Suspend"><i class="fa fa-ban"></i></button> ';
+          html+='<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.openArchiveModal(\''+rt.id+'\')" title="Archive / Delete"><i class="fa fa-archive"></i></button>';
+        }
+        html+='</td></tr>';
       });
-      $('#routesTbody').html(html||'<tr><td colspan="6" style="text-align:center;color:var(--t3)">No routes</td></tr>');
+      $('#routesTbody').html(html||'<tr><td colspan="7" style="text-align:center;color:var(--t3)">No routes</td></tr>');
       var opts='<option value="">All Routes</option>',selOpts='';
-      routes.forEach(function(rt){opts+='<option value="'+rt.id+'">'+escH(rt.name)+'</option>';selOpts+='<option value="'+rt.id+'">'+escH(rt.name)+'</option>'});
+      routes.forEach(function(rt){
+        if (rt.status === 'Archived') return;
+        opts+='<option value="'+rt.id+'">'+escH(rt.name)+'</option>';
+        selOpts+='<option value="'+rt.id+'">'+escH(rt.name)+'</option>';
+      });
       $('#stopRouteFilter').html(opts);$('#stRouteId').html(selOpts);$('#asnRouteId').html(selOpts);
+      // Refresh active suspensions banner after routes reload
+      TRN.loadActiveSuspensions();
     });
   }
   TRN.openRouteModal=function(){$('#rtId,#rtName,#rtStart,#rtEnd').val('');$('#rtFee,#rtDistance').val(0);$('#rtVehicleId').val('');$('#routeModalTitle').text('Add Route');$('#routeModal').addClass('show')};
   TRN.closeRouteModal=function(){$('#routeModal').removeClass('show')};
   TRN.editRoute=function(id){var r=routes.find(function(x){return x.id===id});if(!r)return;$('#rtId').val(r.id);$('#rtName').val(r.name);$('#rtVehicleId').val(r.vehicle_id);$('#rtFee').val(r.monthly_fee);$('#rtStart').val(r.start_point);$('#rtEnd').val(r.end_point);$('#rtDistance').val(r.distance_km);$('#routeModalTitle').text('Edit Route');$('#routeModal').addClass('show')};
   TRN.saveRoute=function(){post('transport/save_route',{id:$('#rtId').val(),name:$('#rtName').val(),vehicle_id:$('#rtVehicleId').val(),monthly_fee:$('#rtFee').val(),start_point:$('#rtStart').val(),end_point:$('#rtEnd').val(),distance_km:$('#rtDistance').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeRouteModal();loadRoutes()}else toast(r.message,false)})};
-  TRN.delRoute=function(id){if(!confirm('Delete route and its stops?'))return;post('transport/delete_route',{id:id}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);loadRoutes();loadStops()}else toast(r.message,false)})};
+  // F2: soft-delete by default via delete_route (archives); hard delete only from Archive modal
+  TRN.delRoute=function(id){
+    // Legacy binding — now routes to Archive modal for safety.
+    TRN.openArchiveModal(id);
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
+  //  F2 — Route suspension + archive/unarchive
+  // ═════════════════════════════════════════════════════════════════════
+  TRN.openSuspendModal=function(routeId,routeName){
+    $('#rsRouteId').val(routeId);
+    $('#rsModalRoute').text(routeName?'('+routeName+')':'');
+    $('#rsCategory,#rsNotifyParents,#rsFrom,#rsTo,#rsReason').val('');
+    $('#rsFrom').val(new Date().toISOString().slice(0,10));
+    $('#rsNotifyHint').text('');
+    $('#suspendModal').addClass('show');
+  };
+  TRN.closeSuspendModal=function(){$('#suspendModal').removeClass('show')};
+  TRN.suspendCategoryChanged=function(){
+    var cat=$('#rsCategory').val();
+    if(!cat){$('#rsNotifyHint').text('');return}
+    getJSON('transport/preview_suspension_notify?reason_category='+encodeURIComponent(cat)).done(function(r){
+      if(r.status!=='success')return;
+      var def=r.notify_parents_default?'Yes':'No';
+      $('#rsNotifyHint').text('Category default for parent notification: '+def);
+    });
+  };
+  TRN.doSuspendRoute=function(){
+    var routeId=$('#rsRouteId').val();
+    var cat=$('#rsCategory').val();
+    var reason=$('#rsReason').val();
+    var from=$('#rsFrom').val();
+    var to=$('#rsTo').val();
+    var np=$('#rsNotifyParents').val(); // '', '0', or '1'
+    if(!cat){toast('Select a reason category.',false);return}
+    if(!reason){toast('Reason is required.',false);return}
+    if(!from){toast('Suspended-from date is required.',false);return}
+    var payload={route_id:routeId,reason_category:cat,reason:reason,suspended_from:from,suspended_to:to};
+    if(np==='0'||np==='1')payload.notify_parents=np;
+    post('transport/suspend_route',payload).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);TRN.closeSuspendModal();loadRoutes();}
+      else toast(r.message,false);
+    });
+  };
+  TRN.openResumeModal=function(suspensionId,routeName){
+    $('#rrSuspensionId').val(suspensionId);
+    $('#rrModalRoute').text(routeName?'('+routeName+')':'');
+    $('#rrNotes').val('');
+    $('#resumeModal').addClass('show');
+  };
+  TRN.closeResumeModal=function(){$('#resumeModal').removeClass('show')};
+  TRN.doResumeRoute=function(){
+    var sid=$('#rrSuspensionId').val();var notes=$('#rrNotes').val();
+    post('transport/resume_route',{suspension_id:sid,notes:notes}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);TRN.closeResumeModal();loadRoutes();}
+      else toast(r.message,false);
+    });
+  };
+  TRN.openArchiveModal=function(routeId){
+    $('#arRouteId').val(routeId);$('#arReason').val('');
+    $('#archiveModal').addClass('show');
+  };
+  TRN.closeArchiveModal=function(){$('#archiveModal').removeClass('show')};
+  TRN.doArchiveRoute=function(){
+    var id=$('#arRouteId').val();var reason=$('#arReason').val()||'Archived';
+    post('transport/delete_route',{id:id,reason:reason}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);TRN.closeArchiveModal();loadRoutes();loadStops();}
+      else toast(r.message,false);
+    });
+  };
+  TRN.doPermanentlyDeleteRoute=function(){
+    if(!confirm('PERMANENT delete: this action cannot be undone. Only proceed for routes never referenced by any assignment. Continue?'))return;
+    var id=$('#arRouteId').val();
+    post('transport/delete_route',{id:id,hard:'1'}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);TRN.closeArchiveModal();loadRoutes();loadStops();}
+      else toast(r.message,false);
+    });
+  };
+  TRN.unarchiveRoute=function(id){
+    if(!confirm('Restore this route to Active?'))return;
+    post('transport/unarchive_route',{id:id,to_status:'Active'}).done(function(r){
+      r=typeof r==='string'?JSON.parse(r):r;
+      if(r.status==='success'){toast(r.message,true);loadRoutes();}
+      else toast(r.message,false);
+    });
+  };
+
+  // Active suspensions banner (top of Routes tab)
+  TRN.loadActiveSuspensions=function(){
+    getJSON('transport/get_active_suspensions').done(function(r){
+      if(r.status!=='success')return;
+      var list=r.suspensions||[];
+      if(list.length===0){$('#activeSuspensionsCard').hide();return}
+      $('#activeSuspensionsCard').show();
+      $('#activeSuspCount').text('('+list.length+')');
+      var html='';
+      list.forEach(function(s){
+        var routeName='';
+        for(var i=0;i<routes.length;i++)if(routes[i].id===s.route_id){routeName=routes[i].name;break}
+        var np=s.notify_parents?'<span class="trn-badge trn-badge-blue">Notified</span>':'<span class="trn-badge trn-badge-amber">Ops only</span>';
+        html+='<tr><td>'+escH(s.id)+'</td><td>'+escH(routeName||s.route_id)+'</td><td>'+escH((s.reason_category||'').replace(/_/g,' '))+'</td><td>'+escH(s.suspended_from||'')+'</td><td>'+escH(s.reason||'')+'</td><td>'+np+'</td>';
+        html+='<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openResumeModal(\''+s.id+'\',\''+escH(routeName||'')+'\')" title="Resume"><i class="fa fa-play"></i> Resume</button></td></tr>';
+      });
+      $('#activeSuspTbody').html(html);
+    });
+  };
 
   // ── Stops ──
   function loadStops(){

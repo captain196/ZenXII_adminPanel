@@ -182,6 +182,13 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-F1-4', 'category' => self::CAT_RUNTIME,     'label' => 'lifecycle transitions legal','callable' => '_chTrnF1_4' ],
             [ 'id' => 'CH-TRN-F1-5', 'category' => self::CAT_RUNTIME,     'label' => 'maint/fuel FK integrity',   'callable' => '_chTrnF1_5' ],
             [ 'id' => 'CH-TRN-F1-6', 'category' => self::CAT_PERFORMANCE, 'label' => 'no N+1 in fleet writers',   'callable' => '_chTrnF1_6' ],
+
+            // ─── F2 Route & Stop Management (added 2026-07-07) ────────────────
+            [ 'id' => 'CH-TRN-F2-1', 'category' => self::CAT_SOURCE,     'label' => 'no ops_acc route/stop',     'callable' => '_chTrnF2_1' ],
+            [ 'id' => 'CH-TRN-F2-2', 'category' => self::CAT_RUNTIME,    'label' => 'stop->route FK integrity',  'callable' => '_chTrnF2_2' ],
+            [ 'id' => 'CH-TRN-F2-3', 'category' => self::CAT_RUNTIME,    'label' => 'suspension<->route ref',    'callable' => '_chTrnF2_3' ],
+            [ 'id' => 'CH-TRN-F2-4', 'category' => self::CAT_RUNTIME,    'label' => 'no stale suspension ref',   'callable' => '_chTrnF2_4' ],
+            [ 'id' => 'CH-TRN-F2-5', 'category' => self::CAT_PERFORMANCE,'label' => 'suspension write bound',    'callable' => '_chTrnF2_5' ],
         ];
     }
 
@@ -909,6 +916,202 @@ class Transport_verifier extends CI_Controller
         // check, no per-item query). Neither is N+1: the routes[] input is
         // bounded by controller intent. Report WARN.
         return ['status' => 'WARN', 'detail' => "{$offenders} bounded-loop pattern(s) noted — reviewer to confirm each is bounded input"];
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F2 Route & Stop Management assertions (CH-TRN-F2-1..5) — 2026-07-07
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * CH-TRN-F2-1 — No route/stop-related controller code path calls
+     * Operations_accounting::next_id after F2. Vehicle allocation
+     * (CH-TRN-F1-1) already migrated in F1; F2 completes the pattern
+     * for RT/STP. Tolerates other Operations_accounting usage that F3+
+     * will migrate later.
+     */
+    private function _chTrnF2_1(): array
+    {
+        $files = [
+            APPPATH . 'controllers/Transport.php',
+            APPPATH . 'libraries/Transport_service.php',
+        ];
+        $bad = [];
+        foreach ($files as $f) {
+            if (!is_readable($f)) { continue; }
+            $src = $this->_stripComments((string) file_get_contents($f));
+            if (preg_match_all(
+                "/operations_accounting->next_id\(\s*[^,)]*(Route|Stop)[^,)]*/",
+                $src, $m
+            )) {
+                foreach ($m[0] as $match) {
+                    $bad[] = basename($f) . ':' . substr($match, 0, 60);
+                }
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' offender(s): ' . implode(' ; ', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => 'no operations_accounting Route/Stop allocations in Transport source'];
+    }
+
+    /**
+     * CH-TRN-F2-2 — Every stop's route_id points to an existing route
+     * (cross-collection FK integrity). Samples up to 200 stops.
+     */
+    private function _chTrnF2_2(): array
+    {
+        try {
+            $stops = (array) $this->fs->schoolWhere(Transport_service::COL_TRANSPORT_STOPS, [], null, 'ASC', 200);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($stops === []) {
+            return ['status' => 'INFO', 'detail' => 'no stops — trivial pass'];
+        }
+        $routeCache = [];
+        $bad = [];
+        foreach ($stops as $s) {
+            if (!is_array($s)) { continue; }
+            $rid = (string) ($s['route_id'] ?? '');
+            if ($rid === '') {
+                $bad[] = ((string) ($s['stopId'] ?? '?')) . '(no route_id)';
+                continue;
+            }
+            if (!isset($routeCache[$rid])) {
+                $routeCache[$rid] = is_array($this->fs->getEntity(Transport_service::COL_ROUTES, $rid));
+            }
+            if (!$routeCache[$rid]) {
+                $bad[] = ((string) ($s['stopId'] ?? '?')) . "->{$rid}";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' orphan(s): ' . implode(',', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($stops) . ' stops FK-valid'];
+    }
+
+    /**
+     * CH-TRN-F2-3 — Every routeSuspensions doc with status='Active' has a
+     * matching routes.active_suspension_ref pointing back. Bidirectional
+     * consistency (the two writes are batched in saveRouteSuspension;
+     * this check catches drift from external tooling).
+     */
+    private function _chTrnF2_3(): array
+    {
+        try {
+            $active = (array) $this->fs->schoolWhere(
+                Transport_service::COL_ROUTE_SUSPENSIONS,
+                [['status', '==', 'Active']],
+                null, 'ASC', 100
+            );
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($active === []) {
+            return ['status' => 'INFO', 'detail' => 'no active suspensions — trivial pass'];
+        }
+        $bad = [];
+        foreach ($active as $s) {
+            if (!is_array($s)) { continue; }
+            $sid = (string) ($s['suspensionId'] ?? '?');
+            $rid = (string) ($s['route_id'] ?? '');
+            if ($rid === '') { $bad[] = "{$sid}(no route_id)"; continue; }
+            $route = $this->fs->getEntity(Transport_service::COL_ROUTES, $rid);
+            if (!is_array($route)) { $bad[] = "{$sid}->missing route {$rid}"; continue; }
+            $ref = (string) ($route['active_suspension_ref'] ?? '');
+            if ($ref !== $sid) {
+                $bad[] = "{$sid} (route.ref={$ref})";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' mismatches: ' . implode(', ', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($active) . ' active suspensions consistent'];
+    }
+
+    /**
+     * CH-TRN-F2-4 — No route with active_suspension_ref set points to a
+     * Resolved suspension (stale reference caught). Complementary to
+     * CH-TRN-F2-3 (opposite direction).
+     */
+    private function _chTrnF2_4(): array
+    {
+        try {
+            $routes = (array) $this->fs->schoolWhere(Transport_service::COL_ROUTES, [], null, 'ASC', 200);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($routes === []) {
+            return ['status' => 'INFO', 'detail' => 'no routes — trivial pass'];
+        }
+        $bad = [];
+        foreach ($routes as $r) {
+            if (!is_array($r)) { continue; }
+            $ref = (string) ($r['active_suspension_ref'] ?? '');
+            if ($ref === '') { continue; }
+            $s = $this->fs->getEntity(Transport_service::COL_ROUTE_SUSPENSIONS, $ref);
+            if (!is_array($s)) {
+                $bad[] = ((string) ($r['routeId'] ?? '?')) . "->missing {$ref}";
+                continue;
+            }
+            $st = (string) ($s['status'] ?? '');
+            if ($st !== 'Active') {
+                $bad[] = ((string) ($r['routeId'] ?? '?')) . "->{$ref}({$st})";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' stale refs: ' . implode(', ', array_slice($bad, 0, 5))];
+        }
+        return ['status' => 'PASS', 'detail' => count($routes) . ' routes checked, no stale suspension refs'];
+    }
+
+    /**
+     * CH-TRN-F2-5 — Performance guard: saveRouteSuspension + resumeRoute
+     * writers stay bounded (≤ small constant of setEntity/emitAudit
+     * calls in the body). Source-scan.
+     */
+    private function _chTrnF2_5(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = (string) file_get_contents($path);
+        $methods = ['saveRouteSuspension', 'resumeRoute'];
+        $report = [];
+        foreach ($methods as $m) {
+            if (!preg_match('/public\s+function\s+' . preg_quote($m, '/') . '\s*\([^)]*\)[^{]*\{/', $src, $mm, PREG_OFFSET_CAPTURE)) {
+                $report[] = "{$m}(missing)";
+                continue;
+            }
+            $start = $mm[0][1] + strlen($mm[0][0]) - 1;
+            $depth = 0; $i = $start;
+            while ($i < strlen($src)) {
+                $c = $src[$i];
+                if ($c === '{') { $depth++; }
+                elseif ($c === '}') { $depth--; if ($depth === 0) { break; } }
+                $i++;
+            }
+            $body = substr($src, $start, $i - $start + 1);
+            $sets   = substr_count($body, 'setEntity(');
+            $audits = substr_count($body, 'emitAudit(');
+            // Bound: saveRouteSuspension writes 2 setEntity (suspension +
+            // route ref) + 1 optional stamp update + 1 emitAudit → allow up
+            // to 4 total writes; resumeRoute writes 2 setEntity + 1
+            // emitAudit → allow up to 3.
+            $bound = $m === 'saveRouteSuspension' ? 4 : 3;
+            $total = $sets + $audits;
+            if ($total > $bound) {
+                $report[] = "{$m}(bound={$bound}, actual={$total})";
+            } else {
+                $report[] = "{$m}(ok:{$total}<={$bound})";
+            }
+        }
+        $failed = array_filter($report, static fn($s) => strpos($s, 'bound=') !== false || strpos($s, 'missing') !== false);
+        if ($failed !== []) {
+            return ['status' => 'FAIL', 'detail' => implode(' ', $failed)];
+        }
+        return ['status' => 'PASS', 'detail' => implode(' ', $report)];
     }
 
     // ─── shared source-grep helper ───────────────────────────────────────

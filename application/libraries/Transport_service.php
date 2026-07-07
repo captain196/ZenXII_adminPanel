@@ -1675,6 +1675,708 @@ class Transport_service
         return $cache;
     }
 
+    // ═════════════════════════════════════════════════════════════════════
+    //  DOMAIN_ROUTE (F2, 2026-07-07) — Routes, Stops, Route Suspensions
+    // ═════════════════════════════════════════════════════════════════════
+    //
+    // Feature F2 refinements baked in:
+    //   1. Parent notification via business rule (category-defaulted +
+    //      admin override).
+    //   2. Soft delete via archiveRoute; permanentlyDeleteRoute kept as
+    //      power-user action for pre-referenced cleanup.
+    //   3. Stop ordering extensibility — reserved field-name registry
+    //      RESERVED_STOP_OPTIMIZATION_FIELDS enforced by guard method so
+    //      the future route-optimisation feature lands without collisions.
+    //   4. Standardised suspension reason categories +  free-text notes.
+
+    /** Route status enum — soft-delete anchor. */
+    public const ROUTE_STATUSES = ['Active', 'Inactive', 'Archived'];
+
+    /** Direction of service on a route (reserved for F3 subscription types). */
+    public const ROUTE_DIRECTIONS = ['Both', 'Pickup', 'Drop'];
+
+    /** Days a route may operate. */
+    public const ROUTE_SERVICE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+    /**
+     * Stop-schema fields RESERVED for future route-optimisation feature.
+     * F2 code MUST NOT write any of these — guard enforced by
+     * _assertNoReservedStopOptimizationWrites(). Documents the forward-
+     * compat contract so the optimisation feature can land without a
+     * schema bump.
+     */
+    private const RESERVED_STOP_OPTIMIZATION_FIELDS = [
+        'optimized_order',
+        'distance_from_prev_km',
+        'optimization_score',
+        'route_optimizer_version',
+    ];
+
+    /**
+     * Suspension reason categories (Refinement #4).
+     *
+     * Kept as a class constant for F2. Future per-tenant customisation
+     * (e.g., schoolConfig.transportSuspensionCategories[]) can be layered
+     * on later without breaking existing suspension docs — the field
+     * remains a free string; the constant is just the recommended enum
+     * the UI seeds a dropdown from.
+     */
+    public const SUSPENSION_REASON_CATEGORIES = [
+        'Vehicle_Breakdown',
+        'Maintenance',
+        'Weather',
+        'Road_Closure',
+        'Driver_Unavailable',
+        'Other',
+    ];
+
+    /**
+     * Per-category default for whether parents on the affected route
+     * should be notified. Refinement #1: parents notified only when
+     * meaningful operational impact.
+     *
+     *   Vehicle_Breakdown  — unplanned, sudden. Parents need to know.
+     *   Weather            — urgent, safety.
+     *   Road_Closure       — impacts pickup schedule.
+     *   Maintenance        — planned, internal.
+     *   Driver_Unavailable — usually a short-term substitute; parents
+     *                        rarely affected by the driver identity.
+     *   Other              — conservative default; admin can opt-in.
+     *
+     * Admin can override in the UI via the `notify_parents` field on the
+     * suspension form.
+     */
+    private const SUSPENSION_PARENT_NOTIFICATION_DEFAULT = [
+        'Vehicle_Breakdown'  => true,
+        'Maintenance'        => false,
+        'Weather'            => true,
+        'Road_Closure'       => true,
+        'Driver_Unavailable' => false,
+        'Other'              => false,
+    ];
+
+    public const SUSPENSION_STATUSES = ['Active', 'Resolved'];
+
+    // ─── Route master ──────────────────────────────────────────────────
+
+    /**
+     * List routes for the current tenant, ordered by name. Excludes
+     * Archived by default (soft-delete visibility rule).
+     */
+    public function listRoutes(bool $includeArchived = false): array
+    {
+        $this->_assertReady();
+        $rows = (array) $this->fs->schoolWhere(self::COL_ROUTES, [], 'name', 'ASC');
+        $out  = [];
+        foreach ($rows as $doc) {
+            if (!is_array($doc)) { continue; }
+            $status = (string) ($doc['status'] ?? 'Active');
+            if (!$includeArchived && $status === 'Archived') { continue; }
+            $id = (string) ($doc['routeId'] ?? $doc['id'] ?? '');
+            if ($id === '') { continue; }
+            $doc['id'] = $id;
+            $out[] = $doc;
+        }
+        return $out;
+    }
+
+    public function getRoute(string $routeId): ?array
+    {
+        $this->_assertReady();
+        if ($routeId === '') { return null; }
+        $r = $this->fs->getEntity(self::COL_ROUTES, $routeId);
+        return is_array($r) ? $r : null;
+    }
+
+    /**
+     * Save (create or update) a route. Numbering_service allocates RT
+     * IDs on create (F2 migration from Operations_accounting — same
+     * self-heal proven end-to-end for F1 VH0098 → VH0099).
+     *
+     * Additive F2 fields: session (tag, not doc-key), direction,
+     * service_days, active_suspension_ref (denormalised badge),
+     * notes.
+     */
+    public function saveRoute(array $input): array
+    {
+        $this->_assertReady();
+        $id       = trim((string) ($input['id'] ?? ''));
+        $isNew    = ($id === '');
+        $existing = $isNew ? null : $this->fs->getEntity(self::COL_ROUTES, $id);
+
+        $name = trim((string) ($input['name'] ?? ''));
+        if ($name === '') {
+            throw new \InvalidArgumentException('Route name is required.');
+        }
+        $vehicleId = trim((string) ($input['vehicle_id'] ?? ''));
+        if ($vehicleId !== '') {
+            $veh = $this->fs->getEntity(self::COL_VEHICLES, $vehicleId);
+            if (!is_array($veh)) {
+                throw new \InvalidArgumentException('Referenced vehicle does not exist: ' . $vehicleId);
+            }
+        }
+        // Allocate ID via Numbering_service on create
+        if ($isNew) {
+            $id = $this->numbering->next('trn_route', [
+                'claimedBy'  => $this->adminId,
+                'claimedFor' => 'F2:saveRoute',
+            ]);
+        }
+
+        // Status: preserve on edit; default Active on create. Explicit
+        // status changes go through archiveRoute / unarchiveRoute — do
+        // NOT accept status flips through saveRoute (prevents accidental
+        // client-side archive bypass of the archive-metadata write).
+        if ($isNew) {
+            $status = 'Active';
+        } else {
+            $status = (string) ($existing['status'] ?? 'Active');
+        }
+
+        // service_days: intersect with valid tokens
+        $svcDaysInput = $input['service_days'] ?? ($existing['service_days'] ?? ['Mon','Tue','Wed','Thu','Fri','Sat']);
+        if (!is_array($svcDaysInput)) { $svcDaysInput = []; }
+        $svcDays = array_values(array_intersect(
+            array_map(static fn($d) => (string) $d, $svcDaysInput),
+            self::ROUTE_SERVICE_DAYS
+        ));
+        if ($svcDays === []) {
+            $svcDays = ['Mon','Tue','Wed','Thu','Fri','Sat'];
+        }
+
+        $direction = (string) ($input['direction'] ?? ($existing['direction'] ?? 'Both'));
+        if (!in_array($direction, self::ROUTE_DIRECTIONS, true)) {
+            $direction = 'Both';
+        }
+
+        $now  = date('c');
+        $data = [
+            'routeId'              => $id,
+            'schoolId'             => $this->schoolId,
+            'name'                 => $name,
+            'vehicle_id'           => $vehicleId,
+            'start_point'          => trim((string) ($input['start_point'] ?? '')),
+            'end_point'            => trim((string) ($input['end_point']   ?? '')),
+            'distance_km'          => (float) ($input['distance_km'] ?? 0),
+            'monthly_fee'          => (float) ($input['monthly_fee'] ?? 0),
+            'status'               => $status,
+            'session'              => (string) ($input['session'] ?? ($existing['session'] ?? $this->sessionYear)),
+            'direction'            => $direction,
+            'service_days'         => $svcDays,
+            // active_suspension_ref preserved from existing (do not accept
+            // client-side override — it is set by saveRouteSuspension /
+            // resumeRoute only).
+            'active_suspension_ref' => (string) ($existing['active_suspension_ref'] ?? ''),
+            'notes'                => trim((string) ($input['notes'] ?? '')),
+            'updated_at'           => $now,
+        ];
+        if ($isNew) {
+            $data['created_at'] = $now;
+            $data['created_by'] = $this->adminId;
+        }
+
+        $this->fs->setEntity(self::COL_ROUTES, $id, $data, /* merge */ true);
+
+        $this->emitAudit(
+            'route', $id,
+            $isNew ? 'created' : 'updated',
+            $isNew ? null : $existing,
+            $data,
+            ['domain' => self::DOMAIN_ROUTE]
+        );
+
+        return ['id' => $id, 'isNew' => $isNew, 'data' => $data];
+    }
+
+    /**
+     * Soft-delete a route (Refinement #2): sets status='Archived', records
+     * archived_at + archived_by + archive_reason. Historical assignments,
+     * trips, and audit trails remain intact for reporting.
+     *
+     * Blocked when the route has an active suspension (resume first).
+     */
+    public function archiveRoute(string $routeId, string $reason): void
+    {
+        $this->_assertReady();
+        if ($routeId === '') {
+            throw new \InvalidArgumentException('routeId is required.');
+        }
+        if (trim($reason) === '') {
+            throw new \InvalidArgumentException('reason is required for archiving.');
+        }
+        $existing = $this->fs->getEntity(self::COL_ROUTES, $routeId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('Route not found: ' . $routeId);
+        }
+        if ((string) ($existing['status'] ?? '') === 'Archived') {
+            throw new \InvalidArgumentException('Route is already Archived: ' . $routeId);
+        }
+        if ((string) ($existing['active_suspension_ref'] ?? '') !== '') {
+            throw new \InvalidArgumentException(
+                'Cannot archive: route has an active suspension. Resume it first.'
+            );
+        }
+        $now    = date('c');
+        $update = [
+            'status'         => 'Archived',
+            'archived_at'    => $now,
+            'archived_by'    => $this->adminId,
+            'archive_reason' => trim($reason),
+            'updated_at'     => $now,
+        ];
+        $this->fs->setEntity(self::COL_ROUTES, $routeId, $update, /* merge */ true);
+
+        $this->emitAudit(
+            'route', $routeId, 'archived',
+            ['status' => (string) ($existing['status'] ?? '')],
+            $update,
+            ['domain' => self::DOMAIN_ROUTE, 'reason' => $reason]
+        );
+    }
+
+    /**
+     * Restore an Archived route back to Active (or Inactive if the caller
+     * wants to review before re-activating).
+     */
+    public function unarchiveRoute(string $routeId, string $toStatus = 'Active'): void
+    {
+        $this->_assertReady();
+        if ($routeId === '') {
+            throw new \InvalidArgumentException('routeId is required.');
+        }
+        if (!in_array($toStatus, ['Active', 'Inactive'], true)) {
+            throw new \InvalidArgumentException('unarchive target must be Active or Inactive.');
+        }
+        $existing = $this->fs->getEntity(self::COL_ROUTES, $routeId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('Route not found: ' . $routeId);
+        }
+        if ((string) ($existing['status'] ?? '') !== 'Archived') {
+            throw new \InvalidArgumentException('Route is not Archived.');
+        }
+        $now    = date('c');
+        $update = [
+            'status'          => $toStatus,
+            // clear archive metadata but leave historical trace via audit
+            'archived_at'     => '',
+            'archived_by'     => '',
+            'archive_reason'  => '',
+            'unarchived_at'   => $now,
+            'unarchived_by'   => $this->adminId,
+            'updated_at'      => $now,
+        ];
+        $this->fs->setEntity(self::COL_ROUTES, $routeId, $update, /* merge */ true);
+
+        $this->emitAudit(
+            'route', $routeId, 'unarchived',
+            ['status' => 'Archived'], $update,
+            ['domain' => self::DOMAIN_ROUTE, 'to_status' => $toStatus]
+        );
+    }
+
+    /**
+     * Hard-delete a route — admin power action for cleanup of mis-created
+     * routes that were never referenced. Blocked when ANY assignment
+     * references the route (studentRoutes legacy OR routeAssignments
+     * once F3 lands). Cascades stops that belong to this route.
+     *
+     * Admin UI SHOULD default to archiveRoute; permanentlyDeleteRoute
+     * belongs behind a "power user" affordance with an extra confirm.
+     */
+    public function permanentlyDeleteRoute(string $routeId): void
+    {
+        $this->_assertReady();
+        if ($routeId === '') {
+            throw new \InvalidArgumentException('routeId is required.');
+        }
+        $existing = $this->fs->getEntity(self::COL_ROUTES, $routeId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('Route not found: ' . $routeId);
+        }
+        // Reference checks — legacy + v2 collections
+        $refs = (array) $this->fs->schoolWhere(
+            self::COL_STUDENT_ROUTES_LEGACY, [['route_id', '==', $routeId]]
+        );
+        try {
+            $newRefs = (array) $this->fs->schoolWhere(
+                self::COL_ROUTE_ASSIGNMENTS, [['route_id', '==', $routeId]]
+            );
+            $refs = array_merge($refs, $newRefs);
+        } catch (\Throwable $_) {
+            // routeAssignments not yet populated by F3 — ignore
+        }
+        if ($refs !== []) {
+            throw new \RuntimeException(
+                'Cannot delete: students are assigned to this route. Archive instead.'
+            );
+        }
+
+        // Cascade stops
+        $stops = (array) $this->fs->schoolWhere(
+            self::COL_TRANSPORT_STOPS, [['route_id', '==', $routeId]]
+        );
+        foreach ($stops as $s) {
+            if (!is_array($s)) { continue; }
+            $sid = (string) ($s['stopId'] ?? $s['id'] ?? '');
+            if ($sid !== '') {
+                $this->fs->remove(self::COL_TRANSPORT_STOPS, $this->fs->docId($sid));
+            }
+        }
+
+        $this->fs->remove(self::COL_ROUTES, $this->fs->docId($routeId));
+
+        $this->emitAudit(
+            'route', $routeId, 'permanently_deleted',
+            $existing, null,
+            ['domain' => self::DOMAIN_ROUTE, 'cascaded_stops' => count($stops)]
+        );
+    }
+
+    // ─── Stops ─────────────────────────────────────────────────────────
+
+    public function listStops(string $routeId = ''): array
+    {
+        $this->_assertReady();
+        $where = [];
+        if ($routeId !== '') {
+            $where[] = ['route_id', '==', $routeId];
+        }
+        $rows = (array) $this->fs->schoolWhere(self::COL_TRANSPORT_STOPS, $where);
+        $out  = [];
+        foreach ($rows as $doc) {
+            if (!is_array($doc)) { continue; }
+            $id = (string) ($doc['stopId'] ?? $doc['id'] ?? '');
+            if ($id === '') { continue; }
+            $doc['id'] = $id;
+            $out[] = $doc;
+        }
+        // Sort in-memory by 'order' — small per-route list; avoids adding
+        // a schoolId+order composite index when the route_id filter alone
+        // already narrows to ≤30 stops (design bound).
+        usort($out, static fn($a, $b) => ((int) ($a['order'] ?? 0)) - ((int) ($b['order'] ?? 0)));
+        return $out;
+    }
+
+    public function getStop(string $stopId): ?array
+    {
+        $this->_assertReady();
+        if ($stopId === '') { return null; }
+        $s = $this->fs->getEntity(self::COL_TRANSPORT_STOPS, $stopId);
+        return is_array($s) ? $s : null;
+    }
+
+    public function saveStop(array $input): array
+    {
+        $this->_assertReady();
+        $id       = trim((string) ($input['id'] ?? ''));
+        $isNew    = ($id === '');
+        $existing = $isNew ? null : $this->fs->getEntity(self::COL_TRANSPORT_STOPS, $id);
+
+        $routeId = trim((string) ($input['route_id'] ?? ''));
+        if ($routeId === '') {
+            throw new \InvalidArgumentException('route_id is required.');
+        }
+        $route = $this->fs->getEntity(self::COL_ROUTES, $routeId);
+        if (!is_array($route)) {
+            throw new \InvalidArgumentException('Referenced route does not exist: ' . $routeId);
+        }
+        $name = trim((string) ($input['name'] ?? ''));
+        if ($name === '') {
+            throw new \InvalidArgumentException('Stop name is required.');
+        }
+
+        if ($isNew) {
+            $id = $this->numbering->next('trn_stop', [
+                'claimedBy'  => $this->adminId,
+                'claimedFor' => 'F2:saveStop',
+            ]);
+        }
+
+        $order = max(0, (int) ($input['order'] ?? ($existing['order'] ?? 0)));
+
+        $now  = date('c');
+        $data = [
+            'stopId'      => $id,
+            'schoolId'    => $this->schoolId,
+            'route_id'    => $routeId,
+            'name'        => $name,
+            'pickup_time' => trim((string) ($input['pickup_time'] ?? '')),
+            'drop_time'   => trim((string) ($input['drop_time']   ?? '')),
+            'order'       => $order,
+            'address'     => trim((string) ($input['address']  ?? '')),
+            'landmark'    => trim((string) ($input['landmark'] ?? '')),
+            'latitude'    => (float) ($input['latitude']  ?? 0),
+            'longitude'   => (float) ($input['longitude'] ?? 0),
+            'status'      => trim((string) ($input['status'] ?? ($existing['status'] ?? 'Active'))),
+            'updated_at'  => $now,
+        ];
+        if ($isNew) {
+            $data['created_at'] = $now;
+        }
+        // Refinement #3: guard against writes to reserved future-optimisation fields
+        $this->_assertNoReservedStopOptimizationWrites($data);
+
+        $this->fs->setEntity(self::COL_TRANSPORT_STOPS, $id, $data, /* merge */ true);
+
+        $this->emitAudit(
+            'transportStop', $id,
+            $isNew ? 'created' : 'updated',
+            $isNew ? null : $existing,
+            $data,
+            ['domain' => self::DOMAIN_ROUTE, 'route_id' => $routeId]
+        );
+
+        return ['id' => $id, 'isNew' => $isNew, 'data' => $data];
+    }
+
+    public function deleteStop(string $stopId): void
+    {
+        $this->_assertReady();
+        if ($stopId === '') {
+            throw new \InvalidArgumentException('stopId is required.');
+        }
+        $existing = $this->fs->getEntity(self::COL_TRANSPORT_STOPS, $stopId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('Stop not found: ' . $stopId);
+        }
+        // Block deletion when any active assignment references this stop
+        $refs = (array) $this->fs->schoolWhere(
+            self::COL_STUDENT_ROUTES_LEGACY, [['stop_id', '==', $stopId]]
+        );
+        try {
+            $newRefs = (array) $this->fs->schoolWhere(
+                self::COL_ROUTE_ASSIGNMENTS, [['stop_id', '==', $stopId]]
+            );
+            $refs = array_merge($refs, $newRefs);
+        } catch (\Throwable $_) {
+            // routeAssignments not yet populated
+        }
+        if ($refs !== []) {
+            throw new \RuntimeException('Cannot delete: students are assigned to this stop.');
+        }
+
+        $this->fs->remove(self::COL_TRANSPORT_STOPS, $this->fs->docId($stopId));
+
+        $this->emitAudit(
+            'transportStop', $stopId, 'deleted',
+            $existing, null,
+            ['domain' => self::DOMAIN_ROUTE, 'route_id' => (string) ($existing['route_id'] ?? '')]
+        );
+    }
+
+    // ─── Route Suspensions (LC-10) ─────────────────────────────────────
+
+    /**
+     * Create an Active route suspension (Refinement #1 + #4 baked in).
+     *
+     * Parent notification rule:
+     *   - Admin + Transport Manager: ALWAYS notified
+     *   - Parents on affected route:
+     *       if input['notify_parents'] is explicitly provided → obey it
+     *       else fall back to SUSPENSION_PARENT_NOTIFICATION_DEFAULT[category]
+     *
+     * @param array{
+     *   route_id:string,
+     *   suspended_from:string,
+     *   suspended_to?:string,
+     *   reason_category:string,        // one of SUSPENSION_REASON_CATEGORIES
+     *   reason:string,                 // free-text notes
+     *   notify_parents?:bool,          // admin override
+     * } $input
+     */
+    public function saveRouteSuspension(array $input): array
+    {
+        $this->_assertReady();
+        $routeId  = trim((string) ($input['route_id'] ?? ''));
+        $category = trim((string) ($input['reason_category'] ?? ''));
+        $reason   = trim((string) ($input['reason'] ?? ''));
+        $from     = trim((string) ($input['suspended_from'] ?? ''));
+        $to       = trim((string) ($input['suspended_to']   ?? ''));
+
+        if ($routeId === '') { throw new \InvalidArgumentException('route_id is required.'); }
+        if ($from === '')    { throw new \InvalidArgumentException('suspended_from is required.'); }
+        if ($reason === '')  { throw new \InvalidArgumentException('reason (free-text) is required.'); }
+        if (!in_array($category, self::SUSPENSION_REASON_CATEGORIES, true)) {
+            throw new \InvalidArgumentException(
+                'Invalid reason_category: ' . $category
+                . '. Allowed: ' . implode(',', self::SUSPENSION_REASON_CATEGORIES)
+            );
+        }
+        $route = $this->fs->getEntity(self::COL_ROUTES, $routeId);
+        if (!is_array($route)) {
+            throw new \InvalidArgumentException('Route not found: ' . $routeId);
+        }
+        if ((string) ($route['status'] ?? '') === 'Archived') {
+            throw new \InvalidArgumentException('Cannot suspend an Archived route.');
+        }
+        if ((string) ($route['active_suspension_ref'] ?? '') !== '') {
+            throw new \InvalidArgumentException('Route already has an active suspension. Resume it first.');
+        }
+
+        // Notification decision (Refinement #1)
+        $notifyParents = array_key_exists('notify_parents', $input)
+            ? (bool) $input['notify_parents']
+            : (self::SUSPENSION_PARENT_NOTIFICATION_DEFAULT[$category] ?? false);
+
+        $id  = $this->numbering->next('trn_route_suspension', [
+            'claimedBy'  => $this->adminId,
+            'claimedFor' => 'F2:saveRouteSuspension',
+        ]);
+        $now = date('c');
+        $data = [
+            'suspensionId'        => $id,
+            'schoolId'            => $this->schoolId,
+            'route_id'            => $routeId,
+            'reason_category'     => $category,
+            'reason'              => $reason,
+            'suspended_from'      => $from,
+            'suspended_to'        => $to,
+            'notify_parents'      => $notifyParents,
+            'parents_notified_at' => '',
+            'authorised_by'       => $this->adminId,
+            'status'              => 'Active',
+            'created_at'          => $now,
+            'updated_at'          => $now,
+        ];
+        $this->fs->setEntity(self::COL_ROUTE_SUSPENSIONS, $id, $data, /* merge */ false);
+
+        // Denormalise onto the route for cheap read-side badge
+        $this->fs->setEntity(
+            self::COL_ROUTES, $routeId,
+            ['active_suspension_ref' => $id, 'updated_at' => $now],
+            /* merge */ true
+        );
+
+        // Audit BEFORE notice (audit is business-truth; notice is best-effort)
+        $this->emitAudit(
+            'routeSuspension', $id, 'created',
+            null, $data,
+            [
+                'domain'          => self::DOMAIN_ROUTE,
+                'route_id'        => $routeId,
+                'reason_category' => $category,
+                'notify_parents'  => $notifyParents,
+            ]
+        );
+
+        // Best-effort Communication notice fanout
+        $notifiedAt = $this->_emitSuspensionNotice($data, $route, /* isSuspend */ true);
+        if ($notifiedAt !== '') {
+            $this->fs->setEntity(
+                self::COL_ROUTE_SUSPENSIONS, $id,
+                ['parents_notified_at' => $notifiedAt],
+                /* merge */ true
+            );
+        }
+
+        return ['id' => $id, 'data' => $data, 'notify_parents' => $notifyParents];
+    }
+
+    /**
+     * Resolve an Active route suspension (route resumes normal service).
+     * Clears routes.active_suspension_ref and emits a resume notice using
+     * the same audience rule as the original suspension.
+     */
+    public function resumeRoute(string $suspensionId, string $notes = ''): void
+    {
+        $this->_assertReady();
+        if ($suspensionId === '') {
+            throw new \InvalidArgumentException('suspensionId is required.');
+        }
+        $existing = $this->fs->getEntity(self::COL_ROUTE_SUSPENSIONS, $suspensionId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException('Suspension not found: ' . $suspensionId);
+        }
+        if ((string) ($existing['status'] ?? '') !== 'Active') {
+            throw new \InvalidArgumentException('Suspension is not Active: ' . $suspensionId);
+        }
+        $routeId = (string) ($existing['route_id'] ?? '');
+        $route   = $routeId !== '' ? $this->fs->getEntity(self::COL_ROUTES, $routeId) : null;
+
+        $now    = date('c');
+        $update = [
+            'status'           => 'Resolved',
+            'resolved_at'      => $now,
+            'resolved_by'      => $this->adminId,
+            'resolution_notes' => trim($notes),
+            'suspended_to'     => ((string) ($existing['suspended_to'] ?? '')) !== ''
+                ? (string) $existing['suspended_to']
+                : date('Y-m-d'),
+            'updated_at'       => $now,
+        ];
+        $this->fs->setEntity(self::COL_ROUTE_SUSPENSIONS, $suspensionId, $update, /* merge */ true);
+
+        // Clear denormalisation on the route
+        if (is_array($route)) {
+            $this->fs->setEntity(
+                self::COL_ROUTES, $routeId,
+                ['active_suspension_ref' => '', 'updated_at' => $now],
+                /* merge */ true
+            );
+        }
+
+        $this->emitAudit(
+            'routeSuspension', $suspensionId, 'resumed',
+            ['status' => 'Active'], $update,
+            ['domain' => self::DOMAIN_ROUTE, 'route_id' => $routeId]
+        );
+
+        // Best-effort resume notice — same audience rule as suspend
+        $mergedForNotice = array_merge($existing, $update);
+        $this->_emitSuspensionNotice($mergedForNotice, $route, /* isSuspend */ false);
+    }
+
+    /**
+     * List currently Active suspensions (across all routes) — dashboard read.
+     * Uses composite index routeSuspensions(schoolId, route_id, status,
+     * suspended_from DESC) — Phase 0 index #14.
+     */
+    public function listActiveSuspensions(): array
+    {
+        $this->_assertReady();
+        $rows = (array) $this->fs->schoolWhere(
+            self::COL_ROUTE_SUSPENSIONS,
+            [['status', '==', 'Active']],
+            'suspended_from', 'DESC'
+        );
+        $out = [];
+        foreach ($rows as $doc) {
+            if (!is_array($doc)) { continue; }
+            $id = (string) ($doc['suspensionId'] ?? $doc['id'] ?? '');
+            if ($id === '') { continue; }
+            $doc['id'] = $id;
+            $out[] = $doc;
+        }
+        return $out;
+    }
+
+    /**
+     * List all suspensions for a specific route (historical timeline).
+     * Optional filter to hide Resolved entries.
+     */
+    public function listSuspensionsForRoute(string $routeId, bool $includeResolved = true): array
+    {
+        $this->_assertReady();
+        if ($routeId === '') { return []; }
+        $where = [['route_id', '==', $routeId]];
+        if (!$includeResolved) {
+            $where[] = ['status', '==', 'Active'];
+        }
+        $rows = (array) $this->fs->schoolWhere(
+            self::COL_ROUTE_SUSPENSIONS, $where,
+            'suspended_from', 'DESC'
+        );
+        $out = [];
+        foreach ($rows as $doc) {
+            if (!is_array($doc)) { continue; }
+            $id = (string) ($doc['suspensionId'] ?? $doc['id'] ?? '');
+            if ($id === '') { continue; }
+            $doc['id'] = $id;
+            $out[] = $doc;
+        }
+        return $out;
+    }
+
     // ─── private helpers ─────────────────────────────────────────────────
 
     private function _assertReady(): void
@@ -1898,6 +2600,113 @@ class Transport_service
         }
         if ($odoDelta <= 0 || $litSum <= 0) { return 0.0; }
         return round($odoDelta / $litSum, 2);
+    }
+
+    // ─── DOMAIN_ROUTE (F2) private helpers ───────────────────────────────
+
+    /**
+     * F2 guard (Refinement #3): F2 code MUST NOT write stop-optimisation
+     * fields reserved for the future route-optimisation feature. Enforces
+     * the forward-compat contract at the write boundary.
+     */
+    private function _assertNoReservedStopOptimizationWrites(array $data): void
+    {
+        foreach (self::RESERVED_STOP_OPTIMIZATION_FIELDS as $f) {
+            if (array_key_exists($f, $data)) {
+                throw new \LogicException(
+                    "Transport_service (F2) must not write reserved stop-optimisation field: {$f}"
+                );
+            }
+        }
+    }
+
+    /**
+     * Emit Communication notices for a suspension event (created or
+     * resolved). Audience decision matches Refinement #1:
+     *
+     *   - Admin + Transport Manager: ALWAYS notified (operational audience)
+     *   - Parents on the affected route: only when
+     *     $suspension['notify_parents'] === true
+     *
+     * Returns the ISO timestamp when the parent-facing notice was emitted
+     * (empty string when parents were not notified or when Communication
+     * was unavailable). Callers stamp this on the suspension doc.
+     *
+     * Best-effort: any Communication-side failure is logged, not rethrown
+     * — audit + business state are the source of truth.
+     */
+    private function _emitSuspensionNotice(array $suspension, ?array $route, bool $isSuspend): string
+    {
+        try {
+            $this->ci->load->library('Communication_helper', null, 'commHelper');
+        } catch (\Throwable $_) {
+            log_message('warning', 'Transport_service: Communication_helper unavailable — suspension notice skipped.');
+            return '';
+        }
+        $helper = $this->ci->commHelper ?? null;
+        if (!is_object($helper) || !method_exists($helper, 'createNotice')) {
+            log_message('warning', 'Transport_service: Communication_helper::createNotice not available.');
+            return '';
+        }
+        $routeName = is_array($route) ? (string) ($route['name'] ?? '') : '';
+        $routeId   = (string) ($suspension['route_id'] ?? '');
+        $category  = (string) ($suspension['reason_category'] ?? '');
+        $reason    = (string) ($suspension['reason'] ?? '');
+        $from      = (string) ($suspension['suspended_from'] ?? '');
+        $to        = (string) ($suspension['suspended_to']   ?? '');
+        $verb      = $isSuspend ? 'suspended' : 'resumed';
+        $catLabel  = str_replace('_', ' ', $category);
+        $subject   = "Transport route {$verb}: {$routeName}";
+        $body      = "Route: {$routeName} ({$routeId})\n"
+                   . "Category: {$catLabel}\n"
+                   . "Reason: {$reason}\n"
+                   . "From: {$from}"
+                   . ($to !== '' ? "\nTo: {$to}" : '');
+
+        // Operational audience — always notified
+        try {
+            $helper->createNotice([
+                'schoolId' => $this->schoolId,
+                'subject'  => $subject,
+                'body'     => $body,
+                'audience' => ['role:Admin', 'role:Transport Manager'],
+                'context'  => [
+                    'module'        => 'Transport',
+                    'topic'         => 'route_suspension',
+                    'action'        => $verb,
+                    'route_id'      => $routeId,
+                    'category'      => $category,
+                    'suspension_id' => (string) ($suspension['suspensionId'] ?? ''),
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            log_message('warning', 'Transport_service suspension notice (ops) failed: ' . $e->getMessage());
+        }
+
+        // Parent audience — conditional on business rule
+        $notifyParents = (bool) ($suspension['notify_parents'] ?? false);
+        if ($notifyParents) {
+            try {
+                $helper->createNotice([
+                    'schoolId' => $this->schoolId,
+                    'subject'  => $subject,
+                    'body'     => $body,
+                    'audience' => ['parents_of_route:' . $routeId],
+                    'context'  => [
+                        'module'        => 'Transport',
+                        'topic'         => 'route_suspension',
+                        'action'        => $verb,
+                        'route_id'      => $routeId,
+                        'category'      => $category,
+                        'suspension_id' => (string) ($suspension['suspensionId'] ?? ''),
+                    ],
+                ]);
+                return date('c');
+            } catch (\Throwable $e) {
+                log_message('warning', 'Transport_service suspension notice (parents) failed: ' . $e->getMessage());
+            }
+        }
+        return '';
     }
 
     /**
