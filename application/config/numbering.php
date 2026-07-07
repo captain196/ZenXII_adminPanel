@@ -107,6 +107,242 @@ $config['numbering'] = [
             ],
         ],
 
+        // ─── Transport (TMS Phase 0 foundation, 2026-07-06) ─────────────────
+        // Registered upfront so Phase 1+ Transport LCs can begin allocating
+        // without a config round-trip. All Transport kinds ship 'disabled'
+        // in _kindFlags below — each is flipped 'enabled' by the LC that
+        // starts calling it. Empty seedSource collections yield seed=0 on
+        // first allocation (start at 1) — correct behaviour for greenfield
+        // kinds.  Rule blocks for the target collections are already in
+        // firebase-rules/firestore.rules (Transport section).
+
+        'trn_vehicle' => [
+            'prefix'       => 'VH',
+            'padWidth'     => 4,
+            'gaplessClass' => 'OPERATIONAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'vehicles',
+                'pattern'    => '/^VH(\d+)$/',
+            ],
+        ],
+
+        'trn_vehicle_doc' => [
+            'prefix'       => 'VDOC',
+            'padWidth'     => 6,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'vehicleDocuments',
+                'pattern'    => '/^VDOC(\d+)$/',
+            ],
+        ],
+
+        'trn_vehicle_lifecycle' => [
+            'prefix'       => 'VLC',
+            'padWidth'     => 8,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'vehicleLifecycleLog',
+                'pattern'    => '/^VLC(\d+)$/',
+            ],
+        ],
+
+        'trn_vehicle_replacement' => [
+            'prefix'       => 'VRP',
+            'padWidth'     => 6,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'vehicleReplacementHistory',
+                'pattern'    => '/^VRP(\d+)$/',
+            ],
+        ],
+
+        'trn_vehicle_transfer' => [
+            'prefix'       => 'VRT',
+            'padWidth'     => 6,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'vehicleRouteTransferHistory',
+                'pattern'    => '/^VRT(\d+)$/',
+            ],
+        ],
+
+        'trn_vendor' => [
+            'prefix'       => 'VND',
+            'padWidth'     => 4,
+            'gaplessClass' => 'OPERATIONAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'transportVendors',
+                'pattern'    => '/^VND(\d+)$/',
+            ],
+        ],
+
+        'trn_route' => [
+            // Route IDs reset per Indian academic session — mirrors the
+            // session-scoped ownership of routes/{schoolId}_RT####__{session}.
+            'prefix'       => 'RT',
+            'padWidth'     => 4,
+            'gaplessClass' => 'OPERATIONAL',
+            'periodScope'  => 'session',
+            'seedSource'   => [
+                'collection' => 'routes',
+                'pattern'    => '/^RT(\d+)$/',
+            ],
+        ],
+
+        'trn_stop' => [
+            'prefix'       => 'STP',
+            'padWidth'     => 4,
+            'gaplessClass' => 'OPERATIONAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'transportStops',
+                'pattern'    => '/^STP(\d+)$/',
+            ],
+        ],
+
+        'trn_route_suspension' => [
+            // Session-scoped to match routes.
+            'prefix'       => 'RSP',
+            'padWidth'     => 4,
+            'gaplessClass' => 'OPERATIONAL',
+            'periodScope'  => 'session',
+            'seedSource'   => [
+                'collection' => 'routeSuspensions',
+                'pattern'    => '/^RSP(\d+)$/',
+            ],
+        ],
+
+        'trn_assignment_history' => [
+            'prefix'       => 'HIST',
+            'padWidth'     => 8,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'routeAssignmentHistory',
+                'pattern'    => '/^HIST(\d+)$/',
+            ],
+        ],
+
+        'trn_trip' => [
+            // Monotonic per tenant. Numbering_service periodScope has no
+            // 'date' value, so daily rotation is not offered here; TRP IDs
+            // grow indefinitely. 6-digit pad supports ~1M trips per tenant
+            // over the tenant lifetime — 200 trips/day × ~14 years.
+            'prefix'       => 'TRP',
+            'padWidth'     => 6,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'tripLogs',
+                'pattern'    => '/^TRP(\d+)$/',
+            ],
+        ],
+
+        'trn_maintenance' => [
+            'prefix'       => 'MNT',
+            'padWidth'     => 6,
+            'gaplessClass' => 'OPERATIONAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'maintenanceLogs',
+                'pattern'    => '/^MNT(\d+)$/',
+            ],
+        ],
+
+        'trn_fuel' => [
+            'prefix'       => 'FUEL',
+            'padWidth'     => 6,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'fuelLogs',
+                'pattern'    => '/^FUEL(\d+)$/',
+            ],
+        ],
+
+        'trn_expense' => [
+            'prefix'       => 'TEXP',
+            'padWidth'     => 6,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'transportExpenses',
+                'pattern'    => '/^TEXP(\d+)$/',
+            ],
+        ],
+
+        'trn_driver_incident' => [
+            'prefix'       => 'DINC',
+            'padWidth'     => 6,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'driverIncidents',
+                'pattern'    => '/^DINC(\d+)$/',
+            ],
+        ],
+
+        'trn_driver_review' => [
+            'prefix'       => 'DPRV',
+            'padWidth'     => 4,
+            'gaplessClass' => 'OPERATIONAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'driverPerformanceReviews',
+                'pattern'    => '/^DPRV(\d+)$/',
+            ],
+        ],
+
+        'trn_temp_driver_assign' => [
+            'prefix'       => 'TDA',
+            'padWidth'     => 4,
+            'gaplessClass' => 'OPERATIONAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'temporaryDriverAssignments',
+                'pattern'    => '/^TDA(\d+)$/',
+            ],
+        ],
+
+        'trn_event' => [
+            'prefix'       => 'TEVT',
+            'padWidth'     => 4,
+            'gaplessClass' => 'OPERATIONAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'transportEvents',
+                'pattern'    => '/^TEVT(\d+)$/',
+            ],
+        ],
+
+        'trn_event_assign' => [
+            'prefix'       => 'ETA',
+            'padWidth'     => 6,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'eventTripAssignments',
+                'pattern'    => '/^ETA(\d+)$/',
+            ],
+        ],
+
+        'trn_audit' => [
+            'prefix'       => 'TAUD',
+            'padWidth'     => 8,
+            'gaplessClass' => 'INTERNAL',
+            'periodScope'  => 'none',
+            'seedSource'   => [
+                'collection' => 'transportAuditLog',
+                'pattern'    => '/^TAUD(\d+)$/',
+            ],
+        ],
+
     ],
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -127,5 +363,29 @@ $config['numbering'] = [
         'trigger'  => 'enabled',
         'queue'    => 'enabled',
         'log'      => 'enabled',
+
+        // Transport (TMS Phase 0 foundation, 2026-07-06) — all disabled.
+        // Each kind is flipped 'enabled' by the specific Phase 1+ LC that
+        // starts allocating IDs of that kind (see TMS v2.1 roadmap §7.3).
+        'trn_vehicle'              => 'disabled',
+        'trn_vehicle_doc'          => 'disabled',
+        'trn_vehicle_lifecycle'    => 'disabled',
+        'trn_vehicle_replacement'  => 'disabled',
+        'trn_vehicle_transfer'     => 'disabled',
+        'trn_vendor'               => 'disabled',
+        'trn_route'                => 'disabled',
+        'trn_stop'                 => 'disabled',
+        'trn_route_suspension'     => 'disabled',
+        'trn_assignment_history'   => 'disabled',
+        'trn_trip'                 => 'disabled',
+        'trn_maintenance'          => 'disabled',
+        'trn_fuel'                 => 'disabled',
+        'trn_expense'              => 'disabled',
+        'trn_driver_incident'      => 'disabled',
+        'trn_driver_review'        => 'disabled',
+        'trn_temp_driver_assign'   => 'disabled',
+        'trn_event'                => 'disabled',
+        'trn_event_assign'         => 'disabled',
+        'trn_audit'                => 'disabled',
     ],
 ];

@@ -84,8 +84,11 @@ class Transport extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'transport_view');
         $this->_require_view();
-        $rows = $this->firebase->firestoreQuery(self::COL_VEHICLES,
-            [['schoolId', '==', $this->school_name]], 'number', 'ASC');
+        // TMS Phase 0 (2026-07-06): use Firestore_service::schoolWhere
+        // (auto-injects schoolId equality). Behaviour-equivalent to the
+        // prior firebase->firestoreQuery call.
+        $rows = $this->fs->schoolWhere(self::COL_VEHICLES,
+            [], 'number', 'ASC');
         $list = [];
         foreach ((array) $rows as $doc) {
             $v = is_array($doc) ? $doc : [];
@@ -158,8 +161,8 @@ class Transport extends MY_Controller
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'vehicle_id');
 
         // Block deletion if any active route references this vehicle.
-        $activeRoutes = $this->firebase->firestoreQuery(self::COL_ROUTES, [
-            ['schoolId',   '==', $this->school_name],
+        // TMS Phase 0: schoolWhere auto-injects schoolId equality.
+        $activeRoutes = $this->fs->schoolWhere(self::COL_ROUTES, [
             ['vehicle_id', '==', $id],
             ['status',     '==', 'Active'],
         ]);
@@ -178,8 +181,9 @@ class Transport extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'transport_view');
         $this->_require_view();
-        $rows = $this->firebase->firestoreQuery(self::COL_ROUTES,
-            [['schoolId', '==', $this->school_name]], 'name', 'ASC');
+        // TMS Phase 0: schoolWhere auto-injects schoolId equality.
+        $rows = $this->fs->schoolWhere(self::COL_ROUTES,
+            [], 'name', 'ASC');
         $list = [];
         foreach ((array) $rows as $doc) {
             $r = is_array($doc) ? $doc : [];
@@ -236,8 +240,8 @@ class Transport extends MY_Controller
         $id = $this->safe_path_segment(trim($this->input->post('id') ?? ''), 'route_id');
 
         // Block deletion if any student is assigned.
-        $studentsOnRoute = $this->firebase->firestoreQuery(self::COL_ASSIGNMENTS, [
-            ['schoolId', '==', $this->school_name],
+        // TMS Phase 0: schoolWhere auto-injects schoolId equality.
+        $studentsOnRoute = $this->fs->schoolWhere(self::COL_ASSIGNMENTS, [
             ['route_id', '==', $id],
         ]);
         if (!empty($studentsOnRoute)) {
@@ -245,8 +249,8 @@ class Transport extends MY_Controller
         }
 
         // Delete associated stops for this route.
-        $routeStops = $this->firebase->firestoreQuery(self::COL_STOPS, [
-            ['schoolId', '==', $this->school_name],
+        // TMS Phase 0: schoolWhere auto-injects schoolId equality.
+        $routeStops = $this->fs->schoolWhere(self::COL_STOPS, [
             ['route_id', '==', $id],
         ]);
         foreach ((array) $routeStops as $s) {
@@ -269,10 +273,12 @@ class Transport extends MY_Controller
         $this->_require_view();
         $routeId = trim($this->input->get('route_id') ?? '');
 
-        $where = [['schoolId', '==', $this->school_name]];
+        // TMS Phase 0: schoolWhere auto-injects schoolId equality; only
+        // pass the additional route_id filter when provided.
+        $where = [];
         if ($routeId !== '') $where[] = ['route_id', '==', $routeId];
 
-        $rows = $this->firebase->firestoreQuery(self::COL_STOPS, $where);
+        $rows = $this->fs->schoolWhere(self::COL_STOPS, $where);
         $list = [];
         foreach ((array) $rows as $doc) {
             $s = is_array($doc) ? $doc : [];
@@ -340,8 +346,9 @@ class Transport extends MY_Controller
     {
         $this->_require_role(self::VIEW_ROLES, 'transport_view');
         $this->_require_view();
-        $rows = $this->firebase->firestoreQuery(self::COL_ASSIGNMENTS,
-            [['schoolId', '==', $this->school_name]], 'student_name', 'ASC');
+        // TMS Phase 0: schoolWhere auto-injects schoolId equality.
+        $rows = $this->fs->schoolWhere(self::COL_ASSIGNMENTS,
+            [], 'student_name', 'ASC');
         $list = [];
         foreach ((array) $rows as $doc) {
             $a = is_array($doc) ? $doc : [];

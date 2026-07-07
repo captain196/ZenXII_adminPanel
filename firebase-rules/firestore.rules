@@ -1272,7 +1272,36 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    // ── Transport ────────────────────────────────────────────────
+    // ── Transport (TMS Phase 0 foundation, 2026-07-06) ───────────
+    //
+    // Layout: 22 primary Transport collections + 5 denormalised caches.
+    // The 3 pre-existing blocks (routes, vehicles, studentRoutes) are
+    // preserved BYTE-EQUIVALENT to guarantee no behaviour change on the
+    // Admin panel, Parent App, or Teacher App at Phase 0 landing.
+    // Every other collection is empty at deploy time — reads succeed
+    // trivially, writes are gated tighter than the pre-existing blocks
+    // to prevent client-side entry into new surfaces before their
+    // Phase 1+ writers ship.
+    //
+    // Rule pattern (aligned with existing coarse gating):
+    //   - reads:  isSameSchool()      — same-school + tenantActive
+    //   - writes: isAdmin() && isSameSchoolWrite()  — Phase 0 default
+    //   - append-only histories + audit + caches: writes DISABLED
+    //   - sosAlerts: (isAdmin() OR isStaff()) — Teacher App triggers here
+    //   - tripLogs / fuelLogs: (isAdmin() OR isStaff()) — driver entries
+    //   - sensitive reads (driverIncidents, transportExpenses, audit,
+    //     performance reviews, activity/expense caches): isStaff-gated
+    //     to keep parents/students out.
+    //
+    // NOTE — sosAlerts was previously not rule-covered; the catch-all
+    // (line 1619) was denying every direct-client write attempt from
+    // Teacher App's TransportFirestoreRepository::triggerSos. Phase 0
+    // closes that gap.  (transportStops was similarly uncovered.)
+    //
+    // PHP service-account writes bypass these rules entirely (see file
+    // header) — Admin panel operations are unaffected by tightening.
+
+    // ── Transport: pre-existing (unchanged for Phase 0) ──────────
     match /routes/{docId} {
       allow read: if isSameSchool();
       allow write: if isAdmin();
@@ -1286,6 +1315,149 @@ service cloud.firestore {
     match /studentRoutes/{docId} {
       allow read: if isSameSchool();
       allow write: if isAdmin();
+    }
+
+    // ── Transport: gap-close (previously uncovered by rules) ─────
+    match /transportStops/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /sosAlerts/{docId} {
+      // Same-school read: parents, teachers, admin, drivers can see
+      // active alerts for their school. Writes allowed for admin +
+      // staff (drivers/teachers trigger SOS from Teacher App).
+      allow read: if isSameSchool();
+      allow create: if isSameSchoolWrite() && (isAdmin() || isStaff());
+      allow update, delete: if isAdmin() && isSameSchool();
+    }
+
+    // ── Transport: Phase-1+ writer targets (empty at Phase 0) ────
+    match /vehicleDocuments/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /transportVendors/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /routeSuspensions/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /routeAssignments/{docId} {
+      // v2 session-scoped assignment (canonical replacement for the
+      // pre-existing `studentRoutes` schema — coexists during rollover).
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /tripLogs/{docId} {
+      // Drivers write their own trip logs via Teacher App; admin
+      // writes via the PHP panel (bypass). Reads visible to same-school
+      // staff/admin only (parents don't see fleet ops).
+      allow read: if isSameSchool() && isStaff();
+      allow create: if isSameSchoolWrite() && (isAdmin() || isStaff());
+      allow update, delete: if isAdmin() && isSameSchool();
+    }
+
+    match /maintenanceLogs/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /fuelLogs/{docId} {
+      // Drivers may enter fuel from Teacher App; admin from panel.
+      allow read: if isSameSchool() && isStaff();
+      allow create: if isSameSchoolWrite() && (isAdmin() || isStaff());
+      allow update, delete: if isAdmin() && isSameSchool();
+    }
+
+    match /transportExpenses/{docId} {
+      // Financial — staff-gated read (accountants/admin), admin write.
+      allow read: if isSameSchool() && isStaff();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /driverIncidents/{docId} {
+      // HR-sensitive — staff-gated read (HR/admin), admin write.
+      allow read: if isSameSchool() && isStaff();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /driverPerformanceReviews/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /temporaryDriverAssignments/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /transportEvents/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    match /eventTripAssignments/{docId} {
+      allow read: if isSameSchool();
+      allow write: if isAdmin() && isSameSchoolWrite();
+    }
+
+    // ── Transport: append-only histories + audit (server-only) ───
+    match /vehicleLifecycleLog/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;   // PHP service account bypasses
+    }
+
+    match /vehicleReplacementHistory/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    match /vehicleRouteTransferHistory/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    match /routeAssignmentHistory/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    match /transportAuditLog/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    // ── Transport: denormalised caches (server-only writes) ──────
+    match /busCapacityCache/{docId} {
+      allow read: if isSameSchool();
+      allow write: if false;
+    }
+
+    match /routeFleetSummary/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    match /driverActivitySummary/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    match /vehicleExpiryDashboardCache/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
+    }
+
+    match /fleetMonthlyExpenseSummary/{docId} {
+      allow read: if isSameSchool() && isStaff();
+      allow write: if false;
     }
 
     // ── Library ──────────────────────────────────────────────────
