@@ -101,6 +101,13 @@ class Transport_notifier
         'trip.started',
         'trip.completed',
         'trip.student_no_show',
+        // Transport Events (F8, 2026-07-07)
+        'event.scheduled',
+        'event.rescheduled',
+        'event.cancelled',
+        'event.trip_dispatched',
+        'event.consent_reminder',
+        'event.completed',
     ];
 
     /**
@@ -144,6 +151,13 @@ class Transport_notifier
         'trip.started'                    => self::PRIORITY_NORMAL,
         'trip.completed'                  => self::PRIORITY_NORMAL,
         'trip.student_no_show'            => self::PRIORITY_IMPORTANT,
+        // F8 (2026-07-07) — Transport Events
+        'event.scheduled'                 => self::PRIORITY_IMPORTANT,
+        'event.rescheduled'               => self::PRIORITY_IMPORTANT,
+        'event.cancelled'                 => self::PRIORITY_URGENT,
+        'event.trip_dispatched'           => self::PRIORITY_NORMAL,
+        'event.consent_reminder'          => self::PRIORITY_NORMAL,
+        'event.completed'                 => self::PRIORITY_NORMAL,
     ];
 
     /**
@@ -172,6 +186,13 @@ class Transport_notifier
         'trip.started'                    => self::SCOPE_OPS,
         'trip.completed'                  => self::SCOPE_OPS,
         'trip.student_no_show'            => self::SCOPE_PARENTS_OF_STUDENTS,
+        // F8 (2026-07-07) — Transport Events
+        'event.scheduled'                 => self::SCOPE_PARENTS_OF_STUDENTS,
+        'event.rescheduled'               => self::SCOPE_PARENTS_OF_STUDENTS,
+        'event.cancelled'                 => self::SCOPE_PARENTS_OF_STUDENTS,
+        'event.trip_dispatched'           => self::SCOPE_OPS,
+        'event.consent_reminder'          => self::SCOPE_PARENTS_OF_STUDENTS,
+        'event.completed'                 => self::SCOPE_OPS,
     ];
 
     /**
@@ -198,6 +219,9 @@ class Transport_notifier
         // F7 (2026-07-07) — trip lifecycle ops audiences
         'trip.started'                => ['Admin', 'Transport Manager'],
         'trip.completed'              => ['Admin', 'Transport Manager'],
+        // F8 (2026-07-07) — Transport Events ops audiences
+        'event.trip_dispatched'       => ['Admin', 'Transport Manager'],
+        'event.completed'             => ['Admin', 'Transport Manager', 'Principal'],
     ];
 
     /**
@@ -227,10 +251,18 @@ class Transport_notifier
         // F7 (2026-07-07) — trip lifecycle + no-show
         'trip.started'                    => 300,     // 5min guard on double-start UI
         'trip.completed'                  => 300,     // 5min guard on double-complete UI
+        // F8 (2026-07-07) — Transport Events
+        'event.scheduled'                 => 3600,    // 1h — first Scheduled notice
+        'event.trip_dispatched'           => 300,     // 5min guard on double-dispatch UI
+        'event.consent_reminder'          => 86400,   // 24h — parent reminder cadence
+        'event.completed'                 => 300,
         // trip.student_no_show intentionally OMITTED — never dedupe a
         // per-student no-show notification (Refinement 4 + safety
         // exemption: a repeat no-show for the same student on a fresh
         // trip must always reach the parent).
+        // event.rescheduled + event.cancelled intentionally OMITTED —
+        // safety-adjacent notices always inform parents (parallels
+        // sos.raised + driver.critical_incident safety exemption).
         // sos.raised + driver.critical_incident intentionally OMITTED —
         // never dedupe safety events.
     ];
@@ -1086,6 +1118,60 @@ class Transport_notifier
                     . "\nDirection: " . (string) ($ctx['direction'] ?? '')
                     . "\n\nIf your child took an alternate transport home, please ignore this message. "
                     . "If not, please contact the school Transport Office.",
+                ];
+            case 'event.scheduled':
+                return [
+                    "School event scheduled — " . (string) ($ctx['title'] ?? ''),
+                    "Event: "       . (string) ($ctx['title'] ?? '')
+                    . "\nType: "      . (string) ($ctx['event_type'] ?? '')
+                    . "\nDate: "      . (string) ($ctx['event_date'] ?? '')
+                    . "\nDestination: " . (string) ($ctx['destination'] ?? '')
+                    . "\n\nYour child is included on the transport roster. Please confirm consent with the school office.",
+                ];
+            case 'event.rescheduled':
+                return [
+                    "School event rescheduled — " . (string) ($ctx['title'] ?? ''),
+                    "Event: "         . (string) ($ctx['title'] ?? '')
+                    . "\nOriginal: "    . (string) ($ctx['original_date'] ?? '')
+                    . "\nNew date: "    . (string) ($ctx['event_date'] ?? '')
+                    . "\nReason: "      . (string) ($ctx['reason'] ?? '')
+                    . "\n\nPlease note the change in scheduling.",
+                ];
+            case 'event.cancelled':
+                return [
+                    "School event CANCELLED — " . (string) ($ctx['title'] ?? ''),
+                    "Event: "     . (string) ($ctx['title'] ?? '')
+                    . "\nType: "    . (string) ($ctx['event_type'] ?? '')
+                    . "\nDate: "    . (string) ($ctx['event_date'] ?? '')
+                    . "\nReason: "  . (string) ($ctx['reason']    ?? '')
+                    . "\n\nTransport for this event will not proceed.",
+                ];
+            case 'event.trip_dispatched':
+                return [
+                    "Event trip dispatched — " . (string) ($ctx['event_id'] ?? ''),
+                    "Event: "     . (string) ($ctx['title']      ?? '')
+                    . "\nType: "    . (string) ($ctx['event_type'] ?? '')
+                    . "\nTrip: "    . (string) ($ctx['trip_id']    ?? '')
+                    . "\nVehicle: " . (string) ($ctx['vehicle_id'] ?? '')
+                    . "\nRoute: "   . ((string) ($ctx['route_id']  ?? '') !== '' ? $ctx['route_id'] : '(free-form)'),
+                ];
+            case 'event.consent_reminder':
+                return [
+                    "Consent pending — " . (string) ($ctx['title'] ?? ''),
+                    "Event: "  . (string) ($ctx['title'] ?? '')
+                    . "\nDate: " . (string) ($ctx['event_date'] ?? '')
+                    . "\n\nYour consent for your child's participation is still Pending. "
+                    . "Please contact the school office at the earliest.",
+                ];
+            case 'event.completed':
+                return [
+                    "Event completed — " . (string) ($ctx['title'] ?? ''),
+                    "Event: "          . (string) ($ctx['title'] ?? '')
+                    . "\nType: "         . (string) ($ctx['event_type'] ?? '')
+                    . "\nTrips: "        . (int) ($ctx['trips_completed'] ?? 0) . '/' . (int) ($ctx['trips_dispatched'] ?? 0)
+                    . "\nBudgeted: INR " . (float) ($ctx['budgeted_amount'] ?? 0)
+                    . "\nActual: INR "   . (float) ($ctx['actual_amount']   ?? 0)
+                    . (!empty($ctx['over_budget']) ? "\n\nWARNING: actual transport cost exceeded budget. Review in Events dashboard." : ''),
                 ];
         }
         return ['Transport notification', json_encode($ctx)];

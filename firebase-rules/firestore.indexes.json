@@ -3361,6 +3361,26 @@
       ]
     },
     {
+      "_comment": "TMS F8 (2026-07-07) — event cost-aggregation query (schoolId==, related_event_id==, status==).",
+      "collectionGroup": "transportExpenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "related_event_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "TMS F8 (2026-07-07) — event trips listing (schoolId==, event_id==, date ASC).",
+      "collectionGroup": "tripLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "event_id", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "maintenanceLogs",
       "queryScope": "COLLECTION",
       "fields": [

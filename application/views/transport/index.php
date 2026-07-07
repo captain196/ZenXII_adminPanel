@@ -6,6 +6,7 @@ $tab_map = [
     'drivers'     => ['panel'=>'panelDrivers',     'icon'=>'fa-id-card-o',     'label'=>'Drivers'],
     'expenses'    => ['panel'=>'panelExpenses',    'icon'=>'fa-money',         'label'=>'Expenses'],
     'trips'       => ['panel'=>'panelTrips',       'icon'=>'fa-map-signs',     'label'=>'Trips'],
+    'events'      => ['panel'=>'panelEvents',      'icon'=>'fa-calendar-o',    'label'=>'Events'],
     'sos'         => ['panel'=>'panelSos',         'icon'=>'fa-bell',          'label'=>'SOS Monitor'],
     'expiry'      => ['panel'=>'panelExpiry',      'icon'=>'fa-exclamation-triangle', 'label'=>'Expiry Dashboard'],
     'routes'      => ['panel'=>'panelRoutes',      'icon'=>'fa-road',          'label'=>'Routes & Stops'],
@@ -141,6 +142,45 @@ $tab_map = [
       <table class="trn-table">
         <thead><tr><th>ID</th><th>Date</th><th>Direction</th><th>Vehicle</th><th>Route</th><th>Driver</th><th>Progress</th><th>Boarded</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody id="tripsTbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- EVENTS (F8) -->
+  <div class="trn-panel<?= $at === 'events' ? ' active' : '' ?>" id="panelEvents">
+    <div class="trn-card">
+      <div class="trn-card-title">
+        <span>Transport Events</span>
+        <div style="display:flex;gap:6px">
+          <select id="eventStatusFilter" onchange="TRN.loadEvents()" class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1);cursor:pointer">
+            <option value="">All statuses</option>
+            <option value="Planned">Planned</option>
+            <option value="Scheduled">Scheduled</option>
+            <option value="InProgress">In Progress</option>
+            <option value="Completed">Completed</option>
+            <option value="Cancelled">Cancelled</option>
+          </select>
+          <select id="eventTypeFilter" onchange="TRN.loadEvents()" class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1);cursor:pointer">
+            <option value="">All types</option>
+            <option value="Educational_Tour">Educational Tour</option>
+            <option value="Sports">Sports</option>
+            <option value="Annual_Function">Annual Function</option>
+            <option value="Competition">Competition</option>
+            <option value="Excursion">Excursion</option>
+            <option value="Examination">Examination</option>
+            <option value="Field_Trip">Field Trip</option>
+            <option value="Cultural_Event">Cultural Event</option>
+            <option value="Other">Other</option>
+          </select>
+          <button class="trn-btn trn-btn-primary" onclick="TRN.openCreateEvent()"><i class="fa fa-plus"></i> Create Event</button>
+        </div>
+      </div>
+      <div style="background:rgba(139,92,246,.06);border-left:3px solid #8b5cf6;padding:10px 12px;border-radius:4px;font-size:12px;color:var(--t1);font-family:var(--font-b);margin-bottom:14px">
+        F8 Transport Events (LC-23). Lifecycle: <b>Planned → Scheduled → InProgress → Completed | Cancelled</b>. Reuses F1 fleet, F4 driver overlay, F7 trip logs (trip_kind=Event), F5 expense cost attribution (related_event_id), F6 comms (event.* categories). Route optional per event trip. Budget informational — over-budget warns, never blocks.
+      </div>
+      <table class="trn-table">
+        <thead><tr><th>ID</th><th>Type</th><th>Title</th><th>Date</th><th>Vehicles</th><th>Roster</th><th>Trips</th><th>Cost (Act/Bud)</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="eventsTbody"></tbody>
       </table>
     </div>
   </div>
@@ -322,6 +362,9 @@ $tab_map = [
 
 <!-- F7 Trip modals (create + manage + complete + cancel + skip) -->
 <?php $this->load->view('transport/partials/trip_modal'); ?>
+
+<!-- F8 Event modals (create + manage + dispatch + escorts + complete + cancel) -->
+<?php $this->load->view('transport/partials/event_modal'); ?>
 
 
 <!-- ROUTE MODAL -->
@@ -1425,6 +1468,270 @@ document.addEventListener('DOMContentLoaded', function(){
   };
 
   // ═════════════════════════════════════════════════════════════════════
+  //  F8 Transport Events (LC-23, 2026-07-07)
+  // ═════════════════════════════════════════════════════════════════════
+  var events = [], eventCurrent = null;
+
+  TRN.loadEvents = function(){
+    var st = $('#eventStatusFilter').val() || '';
+    var ty = $('#eventTypeFilter').val() || '';
+    getJSON('transport_event/list_all?status=' + encodeURIComponent(st) + '&event_type=' + encodeURIComponent(ty)).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status !== 'success'){ $('#eventsTbody').html('<tr><td colspan="10" style="text-align:center;color:var(--rose)">'+(r.message||'load failed')+'</td></tr>'); return; }
+      events = r.events || [];
+      if(events.length === 0){ $('#eventsTbody').html('<tr><td colspan="10" style="text-align:center;color:var(--t3)">No events</td></tr>'); return; }
+      var html = '';
+      events.forEach(function(e){
+        var st = String(e.status||'');
+        var cls = st === 'Planned' ? 'trn-badge-blue' : (st === 'Scheduled' ? 'trn-badge-amber' : (st === 'InProgress' ? 'trn-badge-amber' : (st === 'Completed' ? 'trn-badge-green' : 'trn-badge-red')));
+        var actual = (e.actual_amount||0).toFixed(0), budget = (e.budgeted_amount||0).toFixed(0);
+        var costStr = 'INR ' + actual + ' / ' + budget + (e.over_budget ? ' ⚠️' : '');
+        html += '<tr>';
+        html += '<td>' + escH(e.eventId||e.id||'') + '</td>';
+        html += '<td>' + escH((e.event_type||'').replace(/_/g,' ')) + '</td>';
+        html += '<td>' + escH(e.title||'') + '</td>';
+        html += '<td>' + escH(e.event_date||'') + (e.event_end_date && e.event_end_date !== e.event_date ? ' → ' + escH(e.event_end_date) : '') + '</td>';
+        html += '<td>' + ((e.assigned_vehicle_ids||[]).length) + '</td>';
+        html += '<td>' + (e.roster_size||0) + '</td>';
+        html += '<td>' + ((e.dispatched_trip_ids||[]).length) + '</td>';
+        html += '<td>' + costStr + '</td>';
+        html += '<td><span class="trn-badge ' + cls + '">' + escH(st) + '</span></td>';
+        html += '<td><button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.openEventManage(\''+(e.eventId||e.id)+'\')" title="Manage"><i class="fa fa-cog"></i></button></td>';
+        html += '</tr>';
+      });
+      $('#eventsTbody').html(html);
+    });
+  };
+
+  TRN.openCreateEvent = function(){
+    $('#ecTitle,#ecDesc,#ecDestination,#ecPickup,#ecDrop,#ecVehicles,#ecNotes').val('');
+    $('#ecExpectedCount,#ecBudget').val(0);
+    $('#ecDate').val(new Date().toISOString().slice(0,10));
+    $('#ecEndDate').val(new Date().toISOString().slice(0,10));
+    $('#ecType').val('Educational_Tour'); $('#ecCharter').val('Own_Fleet');
+    $('#eventCreateModal').addClass('show');
+  };
+  TRN.closeEventCreate = function(){ $('#eventCreateModal').removeClass('show'); };
+  TRN.confirmCreateEvent = function(){
+    var vehicleList = ($('#ecVehicles').val()||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
+    if(!$('#ecTitle').val().trim()){ toast('Title required.', false); return; }
+    if(vehicleList.length === 0){ toast('At least one vehicle id required.', false); return; }
+    post('transport_event/create', {
+      title:                    $('#ecTitle').val(),
+      event_type:               $('#ecType').val(),
+      description:              $('#ecDesc').val(),
+      event_date:               $('#ecDate').val(),
+      event_end_date:           $('#ecEndDate').val() || $('#ecDate').val(),
+      destination:              $('#ecDestination').val(),
+      pickup_location:          $('#ecPickup').val(),
+      drop_location:            $('#ecDrop').val(),
+      transport_charter_type:   $('#ecCharter').val(),
+      assigned_vehicle_ids_json:JSON.stringify(vehicleList),
+      expected_students_count:  $('#ecExpectedCount').val() || 0,
+      budgeted_amount:          $('#ecBudget').val() || 0,
+      notes:                    $('#ecNotes').val(),
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeEventCreate(); TRN.loadEvents(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openEventManage = function(id){
+    eventCurrent = id;
+    getJSON('transport_event/get?id=' + encodeURIComponent(id)).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status !== 'success' || !r.event){ toast(r.message||'load failed', false); return; }
+      var e = r.event;
+      $('#emTitle').text('Event ' + (e.eventId||e.id) + ' — ' + (e.title||'') + ' (' + e.status + ')');
+      $('#emMeta').text('Type: ' + (e.event_type||'') + ' | Date: ' + (e.event_date||'') + (e.event_end_date && e.event_end_date !== e.event_date ? ' → ' + e.event_end_date : '') + ' | Destination: ' + (e.destination||'-') + ' | Charter: ' + (e.transport_charter_type||''));
+      // Cost bar
+      getJSON('transport_event/cost_summary?id=' + encodeURIComponent(id)).done(function(cr){
+        cr = typeof cr === 'string' ? JSON.parse(cr) : cr;
+        if(cr.status === 'success'){
+          var budget = (e.budgeted_amount||0).toFixed(2), actual = (cr.summary.actual_amount||0).toFixed(2);
+          var over = e.budgeted_amount > 0 && cr.summary.actual_amount > e.budgeted_amount;
+          $('#emCostBar').html('<b>Cost:</b> INR ' + actual + ' actual (' + cr.summary.expense_count + ' expenses) / INR ' + budget + ' budgeted' + (over ? ' <span class="trn-badge trn-badge-red">OVER BUDGET</span>' : ''));
+        }
+      });
+      // Roster
+      getJSON('transport_event/roster?id=' + encodeURIComponent(id)).done(function(rr){
+        rr = typeof rr === 'string' ? JSON.parse(rr) : rr;
+        var roster = (rr && rr.status === 'success') ? rr.roster : [];
+        $('#emRosterSize').text(roster.length);
+        var rHtml = '';
+        var editable = (e.status === 'Planned' || e.status === 'Scheduled');
+        roster.forEach(function(a){
+          var cs = a.consent_status || 'Pending';
+          var cls = cs === 'Approved' ? 'trn-badge-green' : (cs === 'Rejected' ? 'trn-badge-red' : 'trn-badge-amber');
+          rHtml += '<tr>';
+          rHtml += '<td>' + escH(a.studentId||'') + '</td>';
+          rHtml += '<td>' + escH(a.assigned_vehicle_id||'—') + '</td>';
+          rHtml += '<td><span class="trn-badge ' + cls + '">' + escH(cs) + '</span></td>';
+          rHtml += '<td>';
+          if(editable){
+            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-primary" onclick="TRN.updateConsent(\''+a.assignmentId+'\',\'Approved\')" title="Approve"><i class="fa fa-check"></i></button> ';
+            rHtml += '<button class="trn-btn trn-btn-sm" style="background:var(--bg);border:1px solid var(--border);color:var(--t1)" onclick="TRN.updateConsent(\''+a.assignmentId+'\',\'Rejected\')" title="Reject"><i class="fa fa-ban"></i></button> ';
+            rHtml += '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.unassignStudent(\''+id+'\',\''+a.studentId+'\')" title="Remove"><i class="fa fa-times"></i></button>';
+          }
+          rHtml += '</td></tr>';
+        });
+        $('#emRoster').html(rHtml || '<tr><td colspan="4" style="text-align:center;color:var(--t3)">Empty roster</td></tr>');
+        $('#emAssignForm').toggle(editable);
+      });
+      // Escorts
+      var eHtml = '';
+      var escortEditable = (e.status === 'Planned' || e.status === 'Scheduled' || e.status === 'InProgress');
+      (e.escorts||[]).forEach(function(x){
+        eHtml += '<tr><td>' + escH(x.staff_id||'') + '</td><td>' + escH((x.role||'').replace(/_/g,' ')) + '</td>';
+        eHtml += '<td>';
+        if(escortEditable){ eHtml += '<button class="trn-btn trn-btn-sm trn-btn-danger" onclick="TRN.removeEscort(\''+id+'\',\''+x.staff_id+'\')" title="Remove"><i class="fa fa-times"></i></button>'; }
+        eHtml += '</td></tr>';
+      });
+      $('#emEscorts').html(eHtml || '<tr><td colspan="3" style="text-align:center;color:var(--t3)">No escorts</td></tr>');
+      // Trips
+      getJSON('transport_event/trips?id=' + encodeURIComponent(id)).done(function(tr){
+        tr = typeof tr === 'string' ? JSON.parse(tr) : tr;
+        var trips = (tr && tr.status === 'success') ? tr.trips : [];
+        var tHtml = '';
+        trips.forEach(function(t){
+          var cls = t.status === 'Completed' ? 'trn-badge-green' : (t.status === 'Cancelled' ? 'trn-badge-red' : 'trn-badge-amber');
+          tHtml += '<tr><td>' + escH(t.id||'') + '</td><td>' + escH(t.vehicleId||'') + '</td><td>' + escH(t.trip_direction||'') + '</td><td><span class="trn-badge ' + cls + '">' + escH(t.status||'') + '</span></td></tr>';
+        });
+        $('#emTrips').html(tHtml || '<tr><td colspan="4" style="text-align:center;color:var(--t3)">No trips dispatched yet</td></tr>');
+      });
+      // Schedule button visibility
+      $('#emScheduleBtn').toggle(e.status === 'Planned');
+      $('#eventManageModal').addClass('show');
+    });
+  };
+  TRN.closeEventManage = function(){ $('#eventManageModal').removeClass('show'); eventCurrent = null; };
+
+  TRN.assignStudentToEvent = function(){
+    var sid = $('#emStudentIdInput').val().trim();
+    if(!sid){ toast('student_id required.', false); return; }
+    post('transport_event/assign_student', {
+      event_id: eventCurrent, student_id: sid,
+      assigned_vehicle_id: $('#emVehicleAssignInput').val(),
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); $('#emStudentIdInput,#emVehicleAssignInput').val(''); TRN.openEventManage(eventCurrent); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.unassignStudent = function(eid, sid){
+    if(!confirm('Remove student '+sid+' from event roster?')) return;
+    post('transport_event/unassign_student', {event_id: eid, student_id: sid}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openEventManage(eid); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.updateConsent = function(aid, status){
+    post('transport_event/update_consent', {assignment_id: aid, consent_status: status, notes: ''}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast('Consent → '+status, true); TRN.openEventManage(eventCurrent); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openAddEscort = function(){
+    if(!eventCurrent){ toast('No event selected.', false); return; }
+    $('#eaeEventId').val(eventCurrent); $('#eaeStaffId,#eaeNotes').val(''); $('#eaeRole').val('Chaperone');
+    $('#eventAddEscortModal').addClass('show');
+  };
+  TRN.closeAddEscort = function(){ $('#eventAddEscortModal').removeClass('show'); };
+  TRN.confirmAddEscort = function(){
+    var sid = $('#eaeStaffId').val().trim();
+    if(!sid){ toast('staff_id required.', false); return; }
+    post('transport_event/add_escort', {
+      event_id: $('#eaeEventId').val(), staff_id: sid,
+      role: $('#eaeRole').val(), notes: $('#eaeNotes').val(),
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeAddEscort(); TRN.openEventManage(eventCurrent); }
+      else toast(r.message, false);
+    });
+  };
+  TRN.removeEscort = function(eid, sid){
+    if(!confirm('Remove escort '+sid+'?')) return;
+    post('transport_event/remove_escort', {event_id: eid, staff_id: sid}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openEventManage(eid); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.scheduleEvent = function(){
+    if(!eventCurrent){ return; }
+    if(!confirm('Schedule this event? Roster will freeze and parents will receive an Important notification.')) return;
+    post('transport_event/schedule', {id: eventCurrent}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.openEventManage(eventCurrent); TRN.loadEvents(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openDispatchTrip = function(){
+    if(!eventCurrent){ toast('No event selected.', false); return; }
+    var ev = events.find(function(x){ return (x.eventId||x.id) === eventCurrent; });
+    if(!ev){ toast('Event not loaded.', false); return; }
+    $('#edtEventId').val(eventCurrent);
+    var vopts = '';
+    (ev.assigned_vehicle_ids||[]).forEach(function(vid){ vopts += '<option value="'+vid+'">'+escH(vid)+'</option>'; });
+    $('#edtVehicle').html(vopts || '<option value="">-- no vehicles assigned --</option>');
+    var ropts = '<option value="">-- Free-form (no route) --</option>';
+    (routes||[]).forEach(function(r){ ropts += '<option value="'+r.id+'">'+escH(r.name||r.id)+'</option>'; });
+    $('#edtRoute').html(ropts);
+    $('#edtDirection').val('Pickup'); $('#edtSchedStart').val('');
+    $('#eventDispatchModal').addClass('show');
+  };
+  TRN.closeDispatchTrip = function(){ $('#eventDispatchModal').removeClass('show'); };
+  TRN.confirmDispatchTrip = function(){
+    post('transport_event/dispatch_trip', {
+      event_id: $('#edtEventId').val(),
+      vehicle_id: $('#edtVehicle').val(),
+      route_id: $('#edtRoute').val(),
+      trip_direction: $('#edtDirection').val(),
+      scheduled_start_at: $('#edtSchedStart').val(),
+    }).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeDispatchTrip(); TRN.openEventManage(eventCurrent); TRN.loadEvents(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openCompleteEvent = function(){
+    if(!eventCurrent){ return; }
+    $('#ecplEventId').val(eventCurrent); $('#ecplNotes').val('');
+    $('#eventCompleteModal').addClass('show');
+  };
+  TRN.closeCompleteEvent = function(){ $('#eventCompleteModal').removeClass('show'); };
+  TRN.confirmCompleteEvent = function(){
+    post('transport_event/complete', {id: $('#ecplEventId').val(), notes: $('#ecplNotes').val()}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeCompleteEvent(); TRN.closeEventManage(); TRN.loadEvents(); }
+      else toast(r.message, false);
+    });
+  };
+
+  TRN.openCancelEvent = function(){
+    if(!eventCurrent){ return; }
+    $('#ecclEventId').val(eventCurrent); $('#ecclReason').val('');
+    $('#eventCancelModal').addClass('show');
+  };
+  TRN.closeCancelEvent = function(){ $('#eventCancelModal').removeClass('show'); };
+  TRN.confirmCancelEvent = function(){
+    var reason = $('#ecclReason').val().trim();
+    if(!reason){ toast('Reason required.', false); return; }
+    post('transport_event/cancel', {id: $('#ecclEventId').val(), reason: reason}).done(function(r){
+      r = typeof r === 'string' ? JSON.parse(r) : r;
+      if(r.status === 'success'){ toast(r.message, true); TRN.closeCancelEvent(); TRN.closeEventManage(); TRN.loadEvents(); }
+      else toast(r.message, false);
+    });
+  };
+
+  // ═════════════════════════════════════════════════════════════════════
   //  F7 Trip Monitor (LC-17, LC-18, 2026-07-07)
   // ═════════════════════════════════════════════════════════════════════
   var trips = [], tripCurrent = null;
@@ -1750,6 +2057,7 @@ document.addEventListener('DOMContentLoaded', function(){
   TRN.loadSos();
   $('#tripDateFilter').val(new Date().toISOString().slice(0,10));
   TRN.loadTrips();
+  TRN.loadEvents();
   setTimeout(function(){loadStops();loadAssignments();loadExpiry();},500);
 })();
 });

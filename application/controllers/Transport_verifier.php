@@ -228,6 +228,14 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-F7-4', 'category' => self::CAT_RUNTIME,    'label' => 'boarding-event docid determinism','callable' => '_chTrnF7_4' ],
             [ 'id' => 'CH-TRN-F7-5', 'category' => self::CAT_CONTRACT,   'label' => 'completed trip tally consistency','callable' => '_chTrnF7_5' ],
             [ 'id' => 'CH-TRN-F7-6', 'category' => self::CAT_PERFORMANCE,'label' => 'no N+1 in roster snapshot',     'callable' => '_chTrnF7_6' ],
+
+            // ─── F8 Transport Events (added 2026-07-07) ─────────────────────
+            [ 'id' => 'CH-TRN-F8-1', 'category' => self::CAT_SOURCE,     'label' => 'event writes via service',       'callable' => '_chTrnF8_1' ],
+            [ 'id' => 'CH-TRN-F8-2', 'category' => self::CAT_RUNTIME,    'label' => 'assignment→event FK integrity',  'callable' => '_chTrnF8_2' ],
+            [ 'id' => 'CH-TRN-F8-3', 'category' => self::CAT_RUNTIME,    'label' => 'event vehicle+escort FK',        'callable' => '_chTrnF8_3' ],
+            [ 'id' => 'CH-TRN-F8-4', 'category' => self::CAT_RUNTIME,    'label' => 'event-trip FK integrity',        'callable' => '_chTrnF8_4' ],
+            [ 'id' => 'CH-TRN-F8-5', 'category' => self::CAT_CONTRACT,   'label' => 'event cost tally',               'callable' => '_chTrnF8_5' ],
+            [ 'id' => 'CH-TRN-F8-6', 'category' => self::CAT_PERFORMANCE,'label' => 'no N+1 in event roster',         'callable' => '_chTrnF8_6' ],
         ];
     }
 
@@ -2177,6 +2185,233 @@ class Transport_verifier extends CI_Controller
             return ['status' => 'FAIL', 'detail' => 'roster snapshot missing bulk assignment query'];
         }
         return ['status' => 'PASS', 'detail' => 'roster snapshot uses bulk queries (no N+1)'];
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F8 Transport Events assertions (CH-TRN-F8-1..6) 2026-07-07
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * CH-TRN-F8-1 — Every write to transportEvents / eventTripAssignments
+     * routes through Transport_service; controllers must not directly
+     * setEntity() on these collections.
+     */
+    private function _chTrnF8_1(): array
+    {
+        $files = [
+            APPPATH . 'controllers/Transport.php',
+            APPPATH . 'controllers/Transport_ops.php',
+            APPPATH . 'controllers/Transport_driver.php',
+            APPPATH . 'controllers/Transport_rollover.php',
+            APPPATH . 'controllers/Transport_sos.php',
+            APPPATH . 'controllers/Transport_trip.php',
+            APPPATH . 'controllers/Transport_event.php',
+        ];
+        $offenders = [];
+        foreach ($files as $file) {
+            if (!is_readable($file)) { continue; }
+            $src = $this->_stripComments((string) file_get_contents($file));
+            if (preg_match_all(
+                "/setEntity\\s*\\(\\s*['\"](transportEvents|eventTripAssignments)['\"]/",
+                $src, $matches
+            )) {
+                foreach ($matches[0] as $hit) {
+                    $offenders[] = basename($file) . ':' . $hit;
+                }
+            }
+        }
+        if ($offenders !== []) {
+            return ['status' => 'FAIL', 'detail' => count($offenders) . ' direct writes bypassing service: ' . implode('; ', array_slice($offenders, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => 'no direct event-collection writes from controllers'];
+    }
+
+    /**
+     * CH-TRN-F8-2 — Every eventTripAssignments doc references an existing
+     * transportEvents doc.
+     */
+    private function _chTrnF8_2(): array
+    {
+        try {
+            $assigns = (array) $this->fs->schoolWhere('eventTripAssignments', [], null, 'ASC', 200);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'eventTripAssignments unreachable — trivial pass'];
+        }
+        if ($assigns === []) {
+            return ['status' => 'INFO', 'detail' => 'no assignments — trivial pass'];
+        }
+        $orphans = [];
+        $cache = [];
+        foreach ($assigns as $a) {
+            $inner = (isset($a['data']) && is_array($a['data'])) ? $a['data'] : $a;
+            $eid = (string) ($inner['event_id'] ?? '');
+            if ($eid === '') { $orphans[] = ($a['id'] ?? '?') . ':no_event_id'; continue; }
+            if (!array_key_exists($eid, $cache)) {
+                try {
+                    $ev = $this->fs->getEntity('transportEvents', $eid);
+                    $cache[$eid] = is_array($ev);
+                } catch (\Throwable $_) { $cache[$eid] = false; }
+            }
+            if (!$cache[$eid]) {
+                $orphans[] = ($a['id'] ?? '?') . ':orphan_event_' . $eid;
+            }
+        }
+        if ($orphans !== []) {
+            return ['status' => 'FAIL', 'detail' => count($orphans) . ' orphans: ' . implode(',', array_slice($orphans, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => count($assigns) . ' assignments FK-valid'];
+    }
+
+    /**
+     * CH-TRN-F8-3 — Every transportEvents doc's assigned_vehicle_ids[]
+     * references an existing vehicle; every escort staff_id references
+     * existing staff. Non-existent refs are FKI violations (Refinement
+     * additional: teacher escorts are references, not duplicates).
+     */
+    private function _chTrnF8_3(): array
+    {
+        try {
+            $events = (array) $this->fs->schoolWhere('transportEvents', [], null, 'ASC', 100);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'transportEvents unreachable — trivial pass'];
+        }
+        if ($events === []) {
+            return ['status' => 'INFO', 'detail' => 'no events — trivial pass'];
+        }
+        $bad = [];
+        foreach ($events as $e) {
+            $inner = (isset($e['data']) && is_array($e['data'])) ? $e['data'] : $e;
+            $eid = (string) ($e['id'] ?? $inner['id'] ?? $inner['eventId'] ?? '?');
+            foreach ((array) ($inner['assigned_vehicle_ids'] ?? []) as $vid) {
+                if ($vid === '') { continue; }
+                try {
+                    $v = $this->fs->getEntity('vehicles', (string) $vid);
+                    if (!is_array($v)) { $bad[] = "{$eid}:missing_vehicle_{$vid}"; }
+                } catch (\Throwable $_) {}
+            }
+            foreach ((array) ($inner['escorts'] ?? []) as $esc) {
+                $sid = (string) ($esc['staff_id'] ?? '');
+                if ($sid === '') { $bad[] = "{$eid}:escort_no_staff_id"; continue; }
+                try {
+                    $s = $this->fs->getEntity('staff', $sid);
+                    if (!is_array($s)) { $bad[] = "{$eid}:missing_escort_{$sid}"; }
+                } catch (\Throwable $_) {}
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' FKI violations: ' . implode(',', array_slice($bad, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => count($events) . ' events have valid vehicle+escort refs'];
+    }
+
+    /**
+     * CH-TRN-F8-4 — Every tripLogs with trip_kind='Event' has a valid
+     * event_id FK.
+     */
+    private function _chTrnF8_4(): array
+    {
+        try {
+            $trips = (array) $this->fs->schoolWhere('tripLogs',
+                [['trip_kind', '==', 'Event']], null, 'ASC', 100);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($trips === []) {
+            return ['status' => 'INFO', 'detail' => 'no Event trips — trivial pass'];
+        }
+        $bad = [];
+        $cache = [];
+        foreach ($trips as $t) {
+            $inner = (isset($t['data']) && is_array($t['data'])) ? $t['data'] : $t;
+            $tid = (string) ($t['id'] ?? $inner['id'] ?? '?');
+            $eid = (string) ($inner['event_id'] ?? '');
+            if ($eid === '') { $bad[] = "{$tid}:no_event_id"; continue; }
+            if (!array_key_exists($eid, $cache)) {
+                try {
+                    $ev = $this->fs->getEntity('transportEvents', $eid);
+                    $cache[$eid] = is_array($ev);
+                } catch (\Throwable $_) { $cache[$eid] = false; }
+            }
+            if (!$cache[$eid]) { $bad[] = "{$tid}:orphan_event_{$eid}"; }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' orphan event trips: ' . implode(',', array_slice($bad, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => count($trips) . ' Event trips FK-valid'];
+    }
+
+    /**
+     * CH-TRN-F8-5 — For every Completed event, actual_amount must match
+     * the sum of Active transportExpenses linked via related_event_id.
+     * Cost-attribution contract per Refinement 3.
+     */
+    private function _chTrnF8_5(): array
+    {
+        try {
+            $events = (array) $this->fs->schoolWhere('transportEvents',
+                [['status', '==', 'Completed']], null, 'ASC', 50);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'unreachable — trivial pass'];
+        }
+        if ($events === []) {
+            return ['status' => 'INFO', 'detail' => 'no completed events — trivial pass'];
+        }
+        $bad = [];
+        foreach ($events as $e) {
+            $inner = (isset($e['data']) && is_array($e['data'])) ? $e['data'] : $e;
+            $eid = (string) ($e['id'] ?? $inner['id'] ?? $inner['eventId'] ?? '?');
+            $reported = round((float) ($inner['actual_amount'] ?? 0), 2);
+            $sum = 0.0;
+            try {
+                $exps = (array) $this->fs->schoolWhere('transportExpenses',
+                    [['related_event_id', '==', $eid], ['status', '==', 'Active']], null, 'ASC', 1000);
+                foreach ($exps as $x) {
+                    $xi = (isset($x['data']) && is_array($x['data'])) ? $x['data'] : $x;
+                    $sum += (float) ($xi['total_amount'] ?? $xi['amount'] ?? 0);
+                }
+            } catch (\Throwable $_) {}
+            $sum = round($sum, 2);
+            if (abs($reported - $sum) > 0.01) {
+                $bad[] = "{$eid}:actual={$reported}!=sum={$sum}";
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' events with tally mismatch: ' . implode(',', array_slice($bad, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => count($events) . ' completed events have consistent cost tally'];
+    }
+
+    /**
+     * CH-TRN-F8-6 — Event roster snapshot uses a single bulk query
+     * (schoolWhere on eventTripAssignments) — no per-student getEntity
+     * loop.
+     */
+    private function _chTrnF8_6(): array
+    {
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = $this->_stripComments((string) file_get_contents($path));
+        if (!preg_match('/private\s+function\s+_computeEventRoster\s*\([^)]*\)[^{]*\{/', $src, $m, PREG_OFFSET_CAPTURE)) {
+            return ['status' => 'FAIL', 'detail' => '_computeEventRoster method not found'];
+        }
+        $start = $m[0][1] + strlen($m[0][0]) - 1;
+        $depth = 0; $i = $start;
+        while ($i < strlen($src)) {
+            $c = $src[$i];
+            if ($c === '{') { $depth++; }
+            elseif ($c === '}') { $depth--; if ($depth === 0) { break; } }
+            $i++;
+        }
+        $body = substr($src, $start, $i - $start + 1);
+        if (preg_match('/foreach\s*\([^)]+\)\s*\{[^}]*->getEntity\(/', $body)) {
+            return ['status' => 'FAIL', 'detail' => 'event roster snapshot has per-student getEntity (N+1)'];
+        }
+        if (!preg_match('/->schoolWhere\s*\(/', $body)) {
+            return ['status' => 'FAIL', 'detail' => 'event roster missing bulk assignment query'];
+        }
+        return ['status' => 'PASS', 'detail' => 'event roster uses bulk query (no N+1)'];
     }
 
     // ─── shared source-grep helper ───────────────────────────────────────

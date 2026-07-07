@@ -4155,6 +4155,10 @@ class Transport_service
         'Driver_Allowance', 'Driver_Overtime', 'Driver_Uniform', 'Driver_Training_Fee',
         // Vendor
         'Vendor_Contract_Payment',
+        // Event (F8, 2026-07-07) — chartered/hired vehicles + event-specific
+        // supplementary spend that attaches to a transportEvent via
+        // related_event_id
+        'Event_Transport_Charter',
         // Catch-all
         'Miscellaneous', 'Other',
     ];
@@ -4200,6 +4204,7 @@ class Transport_service
         'Vehicle_Road_Tax'            => '6260',
         'Emergency_Repair'            => '6210',
         'Vendor_Contract_Payment'     => '6280',
+        'Event_Transport_Charter'     => '6270',
         'Miscellaneous'               => '6290',
         'Other'                       => '6290',
     ];
@@ -4268,6 +4273,7 @@ class Transport_service
             'related_maintenance_id'  => trim((string) ($input['related_maintenance_id'] ?? '')),
             'related_fuel_id'         => trim((string) ($input['related_fuel_id']        ?? '')),
             'related_incident_id'     => trim((string) ($input['related_incident_id']    ?? '')),
+            'related_event_id'        => trim((string) ($input['related_event_id']       ?? '')),
             'payment_method'          => (string) ($input['payment_method'] ?? 'Cash'),
             'payment_reference'       => trim((string) ($input['payment_reference'] ?? '')),
             'paid_by_staff_id'        => trim((string) ($input['paid_by_staff_id'] ?? $this->adminId)),
@@ -5407,9 +5413,23 @@ class Transport_service
         $routeId    = trim((string) ($input['route_id']   ?? ''));
         $tripDate   = trim((string) ($input['trip_date']  ?? date('Y-m-d')));
         $direction  = trim((string) ($input['trip_direction'] ?? ''));
+        // F8 (2026-07-07) — trip_kind ∈ {Regular, Event}. When Event,
+        // route_id becomes OPTIONAL (per operator Refinement 2: some
+        // events legitimately follow existing routes, others are
+        // free-form destination travel) and event_id must be provided.
+        $tripKind = trim((string) ($input['trip_kind'] ?? 'Regular'));
+        $eventId  = trim((string) ($input['event_id']  ?? ''));
 
         if ($vehicleId === '') { throw new \InvalidArgumentException('vehicle_id is required.'); }
-        if ($routeId === '')   { throw new \InvalidArgumentException('route_id is required.'); }
+        if (!in_array($tripKind, ['Regular', 'Event'], true)) {
+            throw new \InvalidArgumentException("Invalid trip_kind: '{$tripKind}'. Allowed: Regular, Event");
+        }
+        if ($tripKind === 'Regular' && $routeId === '') {
+            throw new \InvalidArgumentException('route_id is required for Regular trips.');
+        }
+        if ($tripKind === 'Event' && $eventId === '') {
+            throw new \InvalidArgumentException('event_id is required for Event trips.');
+        }
         if (!in_array($direction, self::TRIP_DIRECTIONS, true)) {
             throw new \InvalidArgumentException("Invalid trip_direction: '{$direction}'. Allowed: " . implode(',', self::TRIP_DIRECTIONS));
         }
@@ -5421,12 +5441,26 @@ class Transport_service
         if (!is_array($vehicle)) {
             throw new \InvalidArgumentException("Vehicle not found: {$vehicleId}");
         }
-        $route = $this->fs->getEntity(self::COL_ROUTES, $routeId);
-        if (!is_array($route)) {
-            throw new \InvalidArgumentException("Route not found: {$routeId}");
+        // Validate event FK when applicable
+        if ($tripKind === 'Event') {
+            $event = $this->fs->getEntity(self::COL_TRANSPORT_EVENTS, $eventId);
+            if (!is_array($event)) {
+                throw new \InvalidArgumentException("Event not found: {$eventId}");
+            }
+            if (in_array((string) ($event['status'] ?? ''), ['Cancelled', 'Completed'], true)) {
+                throw new \InvalidArgumentException("Event {$eventId} is in terminal state; cannot dispatch trip.");
+            }
         }
-        if ((string) ($route['status'] ?? 'Active') !== 'Active') {
-            throw new \InvalidArgumentException("Route is not Active: {$routeId}");
+        // Validate route only when provided (may be blank for Event trips)
+        $route = null;
+        if ($routeId !== '') {
+            $route = $this->fs->getEntity(self::COL_ROUTES, $routeId);
+            if (!is_array($route)) {
+                throw new \InvalidArgumentException("Route not found: {$routeId}");
+            }
+            if ((string) ($route['status'] ?? 'Active') !== 'Active') {
+                throw new \InvalidArgumentException("Route is not Active: {$routeId}");
+            }
         }
 
         // Resolve effective driver — honours F4 temporary assignments
@@ -5435,10 +5469,17 @@ class Transport_service
             throw new \InvalidArgumentException("No effective driver for vehicle {$vehicleId} on {$tripDate}.");
         }
 
-        // Snapshot checkpoints from route stops (frozen at trip creation)
-        $stops = $this->listStops($routeId);
-        if ($stops === []) {
-            throw new \InvalidArgumentException("Route {$routeId} has no stops — cannot create trip.");
+        // Snapshot checkpoints from route stops (frozen at trip creation).
+        // For Event trips with no route, checkpoints[] stays empty and the
+        // "every checkpoint Reached-or-Skipped" completion gate is vacuously
+        // satisfied — free-form destination travel doesn't need per-stop
+        // orchestration.
+        $stops = [];
+        if ($routeId !== '') {
+            $stops = $this->listStops($routeId);
+            if ($stops === [] && $tripKind === 'Regular') {
+                throw new \InvalidArgumentException("Route {$routeId} has no stops — cannot create Regular trip.");
+            }
         }
         $checkpoints = [];
         foreach ($stops as $s) {
@@ -5471,8 +5512,14 @@ class Transport_service
             ];
         }
 
-        // Snapshot roster — read once, cache on trip doc
-        $roster = $this->_computeTripRoster($routeId, $tripDate, $direction);
+        // Snapshot roster — read once, cache on trip doc.
+        // Event trips get their roster from eventTripAssignments (F8);
+        // Regular trips read studentRoutes LEGACY + routeAssignments v2.
+        if ($tripKind === 'Event') {
+            $roster = $this->_computeEventRosterForVehicle($eventId, $vehicleId);
+        } else {
+            $roster = $this->_computeTripRoster($routeId, $tripDate, $direction);
+        }
 
         // Numbering
         $tripId = $this->numbering->next('trn_trip', [
@@ -5504,9 +5551,12 @@ class Transport_service
             'driver_staff_id'    => $driverStaffId,
             'route_id'           => $routeId,
             'route_snapshot'     => [
-                'name'      => (string) ($route['name'] ?? ''),
-                'direction' => (string) ($route['direction'] ?? ''),
+                'name'      => is_array($route) ? (string) ($route['name'] ?? '') : '',
+                'direction' => is_array($route) ? (string) ($route['direction'] ?? '') : '',
             ],
+            // F8 (2026-07-07) — event linkage
+            'event_id'           => $eventId,
+            'trip_kind'          => $tripKind,
             'session'            => $this->sessionYear,
             'trip_direction'     => $direction,
             'trip_date'          => $tripDate,                          // alias for reader at L3813
@@ -6111,6 +6161,763 @@ class Transport_service
         $actualTs = strtotime($actual);
         if ($schedTs === false || $actualTs === false) { return true; }
         return ($actualTs - $schedTs) <= 15 * 60;
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  DOMAIN_EVENT (F8, 2026-07-07) — Transport Events (LC-23)
+    // ═════════════════════════════════════════════════════════════════════
+    //
+    // F8 delivers LC-23: educational tour / sports / annual function /
+    // competition / excursion / examination / cultural transport. The
+    // architecture treats an event as the parent operational container
+    // that REUSES existing Fleet (F1), Route (F2 optional), Assignment
+    // (F3 EventOnly stays reserved; F8 MVP uses ad-hoc
+    // eventTripAssignments), Driver (F4 getEffectiveDriver), Expenses
+    // (F5 related_event_id), Communication (F6 event.* categories) and
+    // Trip Logs (F7 trip_kind='Event') — no duplicated operational data.
+    //
+    // Lifecycle (5-state per operator Refinement 4 — single record even
+    // for multi-day events):
+    //   Planned → Scheduled → InProgress → Completed | Cancelled
+    //   Planned/Scheduled → Cancelled
+    //
+    // Refinement 1 (consent) — track consent_status on eventTripAssignments
+    //   only; parent-facing consent UI defers to F10 Parent App.
+    // Refinement 2 (route reuse) — route_id OPTIONAL on event trips
+    //   (some events follow existing routes, others are free-form).
+    // Refinement 3 (budget) — budgeted_amount is informational; over-budget
+    //   generates warnings + reporting, never blocks operational
+    //   completion.
+    // Refinement 4 (multi-day) — single transportEvents record spans
+    //   the entire event with multiple dispatched_trip_ids[].
+    // Refinement additional (teacher escorts) — escorts[] array of
+    //   {staff_id, role, notes} referencing existing staff records;
+    //   supports future attendance/emergency/reporting without schema
+    //   redesign.
+    //
+    // GPS-native continuity (Refinement carried from F7): every
+    // dispatched event trip has its own gps_session_id = GPSSESS_{tripId};
+    // event doc aggregates gps_session_ids[] for future multi-vehicle
+    // live-map correlation.
+
+    // Event lifecycle states
+    public const EVENT_STATUSES = ['Planned', 'Scheduled', 'InProgress', 'Completed', 'Cancelled'];
+    private const EVENT_ACTIVE_STATUSES   = ['Planned', 'Scheduled', 'InProgress'];
+    private const EVENT_TERMINAL_STATUSES = ['Completed', 'Cancelled'];
+
+    // Event types — covers the LC-23 categories
+    public const EVENT_TYPES = [
+        'Educational_Tour', 'Sports', 'Annual_Function', 'Competition',
+        'Excursion', 'Examination', 'Field_Trip', 'Cultural_Event', 'Other',
+    ];
+
+    // Transport charter model — Own_Fleet uses school vehicles;
+    // Chartered = hired external vehicle; Mixed = both
+    public const EVENT_CHARTER_TYPES = ['Own_Fleet', 'Chartered', 'Mixed'];
+
+    // eventTripAssignments consent workflow (Refinement 1)
+    public const EVENT_CONSENT_STATUSES = ['Pending', 'Approved', 'Rejected'];
+
+    // Teacher-escort roles (Refinement additional — extensible enum)
+    public const EVENT_ESCORT_ROLES = [
+        'Lead_Teacher', 'Assistant', 'Nurse', 'Security',
+        'Chaperone', 'Coordinator', 'Other',
+    ];
+
+    // ─── Public API — Event lifecycle ────────────────────────────────────
+
+    /**
+     * Create an event in Planned state. Vehicles, roster and escorts are
+     * declared here but nothing is validated for Schedule-time readiness
+     * yet — Planned is the drafting state.
+     */
+    public function createEvent(array $input): array
+    {
+        $this->_assertReady();
+        $title      = trim((string) ($input['title'] ?? ''));
+        $eventType  = trim((string) ($input['event_type'] ?? ''));
+        $eventDate  = trim((string) ($input['event_date'] ?? ''));
+        $endDate    = trim((string) ($input['event_end_date'] ?? $eventDate));
+        $charterType = trim((string) ($input['transport_charter_type'] ?? 'Own_Fleet'));
+
+        if ($title === '') { throw new \InvalidArgumentException('title is required.'); }
+        if (!in_array($eventType, self::EVENT_TYPES, true)) {
+            throw new \InvalidArgumentException("Invalid event_type: '{$eventType}'. Allowed: " . implode(',', self::EVENT_TYPES));
+        }
+        if ($eventDate === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $eventDate)) {
+            throw new \InvalidArgumentException("event_date required in YYYY-MM-DD.");
+        }
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $endDate)) {
+            throw new \InvalidArgumentException("event_end_date must be YYYY-MM-DD if provided.");
+        }
+        if (!in_array($charterType, self::EVENT_CHARTER_TYPES, true)) {
+            throw new \InvalidArgumentException("Invalid transport_charter_type: '{$charterType}'.");
+        }
+        if ($endDate < $eventDate) {
+            throw new \InvalidArgumentException("event_end_date cannot be before event_date.");
+        }
+
+        $eventId = $this->numbering->next('trn_event', [
+            'claimedBy'  => $this->adminId,
+            'claimedFor' => 'F8:createEvent',
+        ]);
+
+        $now = date('c');
+        $data = [
+            'eventId'                 => $eventId,
+            'schoolId'                => $this->schoolId,
+            'session'                 => $this->sessionYear,
+            'event_type'              => $eventType,
+            'status'                  => 'Planned',
+            'title'                   => $title,
+            'description'             => trim((string) ($input['description'] ?? '')),
+            'event_date'              => $eventDate,
+            'event_end_date'          => $endDate,
+            'event_start_at'          => trim((string) ($input['event_start_at'] ?? '')),
+            'event_end_at'            => trim((string) ($input['event_end_at']   ?? '')),
+            'destination'             => trim((string) ($input['destination']    ?? '')),
+            'pickup_location'         => trim((string) ($input['pickup_location'] ?? '')),
+            'drop_location'           => trim((string) ($input['drop_location']   ?? '')),
+            'linked_school_event_id'  => trim((string) ($input['linked_school_event_id'] ?? '')),
+
+            // Fleet + driver + escort (Refinement additional)
+            'transport_charter_type'  => $charterType,
+            'assigned_vehicle_ids'    => array_values(array_unique(array_filter(array_map('strval',
+                                          (array) ($input['assigned_vehicle_ids'] ?? []))))),
+            'assigned_driver_ids'     => [],    // populated at scheduleEvent()
+            'escorts'                 => $this->_normaliseEscorts((array) ($input['escorts'] ?? [])),
+
+            // Roster tracking
+            'expected_students_count' => (int)  ($input['expected_students_count'] ?? 0),
+            'roster_frozen_at'        => null,
+            'roster_size'             => 0,
+
+            // Cost attribution (Refinement 3 — informational only)
+            'budgeted_amount'         => (float) ($input['budgeted_amount'] ?? 0),
+            'actual_amount'           => 0.0,
+            'expense_ref_ids'         => [],
+
+            // Dispatch tracking
+            'dispatched_trip_ids'     => [],
+            'completed_trip_ids'      => [],
+
+            // GPS-native continuity — session ids aggregated at dispatch
+            'gps_session_ids'         => [],
+
+            'notes'                   => trim((string) ($input['notes'] ?? '')),
+            'created_at'              => $now,
+            'created_by'              => $this->adminId,
+            'updated_at'              => $now,
+        ];
+        $this->fs->setEntity(self::COL_TRANSPORT_EVENTS, $eventId, $data, /* merge */ false);
+
+        $this->emitAudit('transportEvent', $eventId, 'created', null, $data,
+            ['domain' => self::DOMAIN_EVENT]);
+        return ['eventId' => $eventId, 'data' => $data];
+    }
+
+    /**
+     * Update mutable fields on a Planned event. Once Scheduled, most
+     * fields lock (except cost tracking + notes) — future rescheduleEvent
+     * covers a controlled date-change flow with a rescheduled notice.
+     */
+    public function updateEvent(string $eventId, array $input): array
+    {
+        $existing = $this->_loadEventOrFail($eventId);
+        if (!in_array($existing['status'], ['Planned', 'Scheduled'], true)) {
+            throw new \InvalidArgumentException("Event {$eventId} is {$existing['status']}; cannot update.");
+        }
+        $now = date('c');
+        $updatable = [
+            'title', 'description', 'destination', 'pickup_location', 'drop_location',
+            'event_start_at', 'event_end_at', 'transport_charter_type',
+            'notes', 'budgeted_amount', 'linked_school_event_id', 'expected_students_count',
+        ];
+        $update = ['updated_at' => $now];
+        foreach ($updatable as $k) {
+            if (array_key_exists($k, $input)) {
+                $update[$k] = is_numeric($input[$k]) ? $input[$k] : trim((string) $input[$k]);
+            }
+        }
+        // Vehicles editable only while Planned (Refinement 4 lock)
+        if ($existing['status'] === 'Planned' && isset($input['assigned_vehicle_ids'])) {
+            $update['assigned_vehicle_ids'] = array_values(array_unique(array_filter(array_map('strval',
+                (array) $input['assigned_vehicle_ids']))));
+        }
+        // Escorts editable in Planned + Scheduled (safety personnel may
+        // change up to dispatch)
+        if (isset($input['escorts'])) {
+            $update['escorts'] = $this->_normaliseEscorts((array) $input['escorts']);
+        }
+        $this->fs->setEntity(self::COL_TRANSPORT_EVENTS, $eventId, $update, /* merge */ true);
+        $this->emitAudit('transportEvent', $eventId, 'updated', $existing,
+            array_merge($existing, $update),
+            ['domain' => self::DOMAIN_EVENT]);
+        return ['eventId' => $eventId, 'data' => array_merge($existing, $update)];
+    }
+
+    /**
+     * Add a student to an event roster. Creates an eventTripAssignments
+     * doc keyed by numbering (ETA prefix). Consent starts Pending
+     * (Refinement 1 — admin edits status; Parent App handles self-service
+     * later).
+     */
+    public function assignStudentToEvent(string $eventId, string $studentId, array $input = []): array
+    {
+        $this->_assertReady();
+        $event = $this->_loadEventOrFail($eventId);
+        if (!in_array($event['status'], ['Planned', 'Scheduled'], true)) {
+            throw new \InvalidArgumentException("Event {$eventId} is {$event['status']}; cannot modify roster.");
+        }
+        if ($studentId === '') { throw new \InvalidArgumentException('studentId required.'); }
+
+        // Deterministic guard against duplicate assignments — hash of
+        // (eventId, studentId) makes idempotent-by-design.
+        $dupKey = substr(sha1($eventId . '|' . $studentId), 0, 16);
+        try {
+            $existing = (array) $this->fs->schoolWhere(self::COL_EVENT_TRIP_ASSIGNMENTS,
+                [['event_id', '==', $eventId], ['studentId', '==', $studentId]],
+                null, 'ASC', 1);
+            if (!empty($existing)) {
+                $inner = $this->_unwrapNestedRow($existing[0], 'event_id');
+                return ['assignmentId' => (string) ($inner['assignmentId'] ?? ''), 'data' => $inner, 'duplicate' => true];
+            }
+        } catch (\Throwable $_) {}
+
+        $assignId = $this->numbering->next('trn_event_assign', [
+            'claimedBy'  => $this->adminId,
+            'claimedFor' => 'F8:assignStudentToEvent',
+        ]);
+        $now = date('c');
+        $data = [
+            'assignmentId'         => $assignId,
+            'schoolId'             => $this->schoolId,
+            'event_id'             => $eventId,
+            'studentId'            => $studentId,
+            'assigned_vehicle_id'  => trim((string) ($input['assigned_vehicle_id'] ?? '')),
+            'pickup_stop'          => trim((string) ($input['pickup_stop'] ?? '')),
+            'drop_stop'            => trim((string) ($input['drop_stop']   ?? '')),
+            'consent_status'       => 'Pending',
+            'consent_notes'        => '',
+            'consent_updated_at'   => null,
+            'consent_updated_by'   => '',
+            'dupe_key'             => $dupKey,
+            'created_at'           => $now,
+            'created_by'           => $this->adminId,
+        ];
+        $this->fs->setEntity(self::COL_EVENT_TRIP_ASSIGNMENTS, $assignId, $data, /* merge */ false);
+        $this->emitAudit('eventTripAssignment', $assignId, 'created', null, $data,
+            ['domain' => self::DOMAIN_EVENT]);
+        return ['assignmentId' => $assignId, 'data' => $data, 'duplicate' => false];
+    }
+
+    /** Remove a student from an event roster (only while Planned/Scheduled). */
+    public function unassignStudentFromEvent(string $eventId, string $studentId): void
+    {
+        $this->_assertReady();
+        $event = $this->_loadEventOrFail($eventId);
+        if (!in_array($event['status'], ['Planned', 'Scheduled'], true)) {
+            throw new \InvalidArgumentException("Event {$eventId} is {$event['status']}; cannot modify roster.");
+        }
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_EVENT_TRIP_ASSIGNMENTS,
+                [['event_id', '==', $eventId], ['studentId', '==', $studentId]],
+                null, 'ASC', 1);
+            foreach ($rows as $r) {
+                $inner = $this->_unwrapNestedRow($r, 'event_id');
+                $aid = (string) ($inner['assignmentId'] ?? '');
+                if ($aid !== '') {
+                    $this->fs->removeEntity(self::COL_EVENT_TRIP_ASSIGNMENTS, $aid);
+                    $this->emitAudit('eventTripAssignment', $aid, 'removed', $inner, null,
+                        ['domain' => self::DOMAIN_EVENT]);
+                }
+            }
+        } catch (\Throwable $e) {
+            throw new \RuntimeException('unassign failed: ' . $e->getMessage());
+        }
+    }
+
+    /** Update consent_status for an eventTripAssignments row. */
+    public function updateEventConsent(string $assignmentId, string $newStatus, string $notes = ''): array
+    {
+        $this->_assertReady();
+        if (!in_array($newStatus, self::EVENT_CONSENT_STATUSES, true)) {
+            throw new \InvalidArgumentException("Invalid consent_status: {$newStatus}");
+        }
+        $existing = $this->fs->getEntity(self::COL_EVENT_TRIP_ASSIGNMENTS, $assignmentId);
+        if (!is_array($existing)) {
+            throw new \InvalidArgumentException("Assignment not found: {$assignmentId}");
+        }
+        $now = date('c');
+        $update = [
+            'consent_status'     => $newStatus,
+            'consent_notes'      => trim($notes),
+            'consent_updated_at' => $now,
+            'consent_updated_by' => $this->adminId,
+        ];
+        $this->fs->setEntity(self::COL_EVENT_TRIP_ASSIGNMENTS, $assignmentId, $update, /* merge */ true);
+        $this->emitAudit('eventTripAssignment', $assignmentId, 'consent_updated',
+            $existing, array_merge($existing, $update),
+            ['domain' => self::DOMAIN_EVENT]);
+        return ['assignmentId' => $assignmentId, 'consent_status' => $newStatus];
+    }
+
+    /**
+     * Planned → Scheduled. Validates:
+     *   • ≥1 vehicle assigned
+     *   • Every vehicle has an effective driver
+     *   • Roster is non-empty
+     * Snapshots driver ids, freezes the roster, fires event.scheduled to
+     * parents_of_students.
+     */
+    public function scheduleEvent(string $eventId): array
+    {
+        $this->_assertReady();
+        $event = $this->_loadEventOrFail($eventId);
+        if ($event['status'] !== 'Planned') {
+            throw new \InvalidArgumentException("Event {$eventId} is not Planned (status: {$event['status']}).");
+        }
+        $vehicleIds = (array) ($event['assigned_vehicle_ids'] ?? []);
+        if ($vehicleIds === []) {
+            throw new \InvalidArgumentException('Cannot schedule — no vehicles assigned.');
+        }
+
+        // Every vehicle needs an effective driver on event_date
+        $driverIds = [];
+        foreach ($vehicleIds as $vid) {
+            $drv = (string) ($this->getEffectiveDriver((string) $vid, (string) $event['event_date']) ?? '');
+            if ($drv === '') {
+                throw new \InvalidArgumentException("Vehicle {$vid} has no effective driver on {$event['event_date']}.");
+            }
+            $driverIds[] = $drv;
+        }
+        $driverIds = array_values(array_unique($driverIds));
+
+        // Snapshot roster
+        $roster = $this->_computeEventRoster($eventId);
+        if ($roster === []) {
+            throw new \InvalidArgumentException("Cannot schedule — roster is empty. Assign students first.");
+        }
+
+        // Escort validation — every staff_id must reference an active staff record
+        foreach ((array) ($event['escorts'] ?? []) as $esc) {
+            $sid = (string) ($esc['staff_id'] ?? '');
+            if ($sid === '') {
+                throw new \InvalidArgumentException('Escort missing staff_id.');
+            }
+            $staff = $this->fs->getEntity('staff', $sid);
+            if (!is_array($staff)) {
+                throw new \InvalidArgumentException("Escort staff not found: {$sid}");
+            }
+            $status = strtolower((string) ($staff['status'] ?? $staff['Status'] ?? 'active'));
+            if ($status !== 'active' && $status !== '') {
+                throw new \InvalidArgumentException("Escort {$sid} is not Active in HR (status='{$status}').");
+            }
+        }
+
+        $now = date('c');
+        $update = [
+            'status'               => 'Scheduled',
+            'assigned_driver_ids'  => $driverIds,
+            'roster_student_ids'   => $roster,
+            'roster_size'          => count($roster),
+            'roster_frozen_at'     => $now,
+            'scheduled_at'         => $now,
+            'scheduled_by'         => $this->adminId,
+            'updated_at'           => $now,
+        ];
+        $this->fs->setEntity(self::COL_TRANSPORT_EVENTS, $eventId, $update, /* merge */ true);
+        $this->emitAudit('transportEvent', $eventId, 'scheduled', $event,
+            array_merge($event, $update),
+            ['domain' => self::DOMAIN_EVENT]);
+        // Parent notification — event.scheduled (per operator + Refinement 1)
+        $this->_notify('event.scheduled', [
+            'event_id'    => $eventId,
+            'event_type'  => (string) ($event['event_type'] ?? ''),
+            'title'       => (string) ($event['title'] ?? ''),
+            'event_date'  => (string) ($event['event_date'] ?? ''),
+            'destination' => (string) ($event['destination'] ?? ''),
+            'student_ids' => $roster,
+        ]);
+        return ['eventId' => $eventId, 'status' => 'Scheduled', 'roster_size' => count($roster)];
+    }
+
+    /**
+     * Dispatch a trip for this event. Creates a tripLogs record with
+     * trip_kind='Event' and event_id linkage (F7 machinery — same
+     * checkpoints, GPS-native architecture, boarding flow). Event
+     * status flips to InProgress on first dispatch.
+     */
+    public function dispatchEventTrip(string $eventId, array $input): array
+    {
+        $this->_assertReady();
+        $event = $this->_loadEventOrFail($eventId);
+        if (!in_array($event['status'], ['Scheduled', 'InProgress'], true)) {
+            throw new \InvalidArgumentException("Event {$eventId} is {$event['status']}; dispatch requires Scheduled or InProgress.");
+        }
+        $vehicleId = trim((string) ($input['vehicle_id'] ?? ''));
+        if ($vehicleId === '' || !in_array($vehicleId, (array) $event['assigned_vehicle_ids'], true)) {
+            throw new \InvalidArgumentException("vehicle_id must be one of the assigned vehicles: " . implode(',', (array) $event['assigned_vehicle_ids']));
+        }
+        // Route is optional per Refinement 2
+        $routeId = trim((string) ($input['route_id'] ?? ''));
+
+        $trip = $this->createTrip([
+            'vehicle_id'         => $vehicleId,
+            'route_id'           => $routeId,
+            'trip_date'          => (string) $event['event_date'],
+            'trip_direction'     => (string) ($input['trip_direction'] ?? 'Pickup'),
+            'scheduled_start_at' => (string) ($input['scheduled_start_at'] ?? ''),
+            'notes'              => 'Event: ' . (string) ($event['title'] ?? '') . ' (' . $eventId . ')',
+            'trip_kind'          => 'Event',
+            'event_id'           => $eventId,
+        ]);
+        $tripId = (string) $trip['tripId'];
+        $gpsSess = (string) ($trip['data']['gps_session_id'] ?? '');
+
+        // Update event: append trip id + gps session id; flip to InProgress
+        $now = date('c');
+        $dispatched = (array) ($event['dispatched_trip_ids'] ?? []);
+        $dispatched[] = $tripId;
+        $gpsSessions = (array) ($event['gps_session_ids'] ?? []);
+        if ($gpsSess !== '') { $gpsSessions[] = $gpsSess; }
+        $update = [
+            'dispatched_trip_ids' => array_values(array_unique($dispatched)),
+            'gps_session_ids'     => array_values(array_unique($gpsSessions)),
+            'status'              => 'InProgress',
+            'first_dispatch_at'   => (string) ($event['first_dispatch_at'] ?? '') !== '' ? (string) $event['first_dispatch_at'] : $now,
+            'updated_at'          => $now,
+        ];
+        $this->fs->setEntity(self::COL_TRANSPORT_EVENTS, $eventId, $update, /* merge */ true);
+        $this->emitAudit('transportEvent', $eventId, 'trip_dispatched',
+            $event, array_merge($event, $update),
+            ['domain' => self::DOMAIN_EVENT, 'trip_id' => $tripId]);
+        $this->_notify('event.trip_dispatched', [
+            'event_id'   => $eventId,
+            'trip_id'    => $tripId,
+            'vehicle_id' => $vehicleId,
+            'route_id'   => $routeId,
+            'event_type' => (string) ($event['event_type'] ?? ''),
+            'title'      => (string) ($event['title'] ?? ''),
+        ]);
+        return ['eventId' => $eventId, 'tripId' => $tripId, 'gps_session_id' => $gpsSess];
+    }
+
+    /**
+     * InProgress → Completed. Requires every dispatched trip to be
+     * Completed or Cancelled. Refinement 3: over-budget generates a
+     * warning (event.completed body carries it) but never blocks
+     * completion.
+     */
+    public function completeEvent(string $eventId, string $notes = ''): array
+    {
+        $this->_assertReady();
+        $event = $this->_loadEventOrFail($eventId);
+        if ($event['status'] !== 'InProgress') {
+            throw new \InvalidArgumentException("Event {$eventId} is not InProgress (status: {$event['status']}).");
+        }
+        // Verify all dispatched trips have terminated
+        $dispatched = (array) ($event['dispatched_trip_ids'] ?? []);
+        $completed  = [];
+        foreach ($dispatched as $tid) {
+            $t = $this->fs->getEntity(self::COL_TRIP_LOGS, (string) $tid);
+            if (!is_array($t)) { continue; }
+            $tst = (string) ($t['status'] ?? '');
+            if (!in_array($tst, ['Completed', 'Cancelled'], true)) {
+                throw new \InvalidArgumentException(
+                    "Cannot complete — trip {$tid} is {$tst}. All dispatched trips must be Completed or Cancelled."
+                );
+            }
+            if ($tst === 'Completed') { $completed[] = (string) $tid; }
+        }
+
+        // Cost aggregation (Refinement 3 — informational)
+        $costSummary = $this->computeEventCostSummary($eventId);
+        $overBudget = ((float) ($event['budgeted_amount'] ?? 0)) > 0
+                      && $costSummary['actual_amount'] > (float) $event['budgeted_amount'];
+
+        $now = date('c');
+        $update = [
+            'status'             => 'Completed',
+            'completed_trip_ids' => $completed,
+            'completed_at'       => $now,
+            'completed_by'       => $this->adminId,
+            'actual_amount'      => $costSummary['actual_amount'],
+            'expense_ref_ids'    => $costSummary['expense_ids'],
+            'over_budget'        => $overBudget,
+            'notes'              => trim($notes) !== '' ? $notes : (string) ($event['notes'] ?? ''),
+            'updated_at'         => $now,
+        ];
+        $this->fs->setEntity(self::COL_TRANSPORT_EVENTS, $eventId, $update, /* merge */ true);
+        $this->emitAudit('transportEvent', $eventId, 'completed', $event,
+            array_merge($event, $update),
+            ['domain' => self::DOMAIN_EVENT, 'over_budget' => $overBudget]);
+        $this->_notify('event.completed', [
+            'event_id'        => $eventId,
+            'event_type'      => (string) ($event['event_type'] ?? ''),
+            'title'           => (string) ($event['title'] ?? ''),
+            'trips_completed' => count($completed),
+            'trips_dispatched'=> count($dispatched),
+            'actual_amount'   => $costSummary['actual_amount'],
+            'budgeted_amount' => (float) ($event['budgeted_amount'] ?? 0),
+            'over_budget'     => $overBudget,
+        ]);
+        return [
+            'eventId'    => $eventId,
+            'status'     => 'Completed',
+            'cost'       => $costSummary,
+            'over_budget'=> $overBudget,
+        ];
+    }
+
+    /** Cancel any active event. Terminal. */
+    public function cancelEvent(string $eventId, string $reason): array
+    {
+        $this->_assertReady();
+        if (trim($reason) === '') {
+            throw new \InvalidArgumentException('cancel reason is required.');
+        }
+        $event = $this->_loadEventOrFail($eventId);
+        if (!in_array($event['status'], self::EVENT_ACTIVE_STATUSES, true)) {
+            throw new \InvalidArgumentException("Event {$eventId} not in cancellable state (status: {$event['status']}).");
+        }
+        $now = date('c');
+        $update = [
+            'status'         => 'Cancelled',
+            'cancelled_at'   => $now,
+            'cancelled_by'   => $this->adminId,
+            'cancel_reason'  => $reason,
+            'updated_at'     => $now,
+        ];
+        $this->fs->setEntity(self::COL_TRANSPORT_EVENTS, $eventId, $update, /* merge */ true);
+        $this->emitAudit('transportEvent', $eventId, 'cancelled', $event,
+            array_merge($event, $update),
+            ['domain' => self::DOMAIN_EVENT, 'cancel_reason' => $reason]);
+        // Urgent parent notification per Refinement 3 (safety — never dedupe)
+        $this->_notify('event.cancelled', [
+            'event_id'    => $eventId,
+            'event_type'  => (string) ($event['event_type'] ?? ''),
+            'title'       => (string) ($event['title'] ?? ''),
+            'event_date'  => (string) ($event['event_date'] ?? ''),
+            'reason'      => $reason,
+            'student_ids' => (array) ($event['roster_student_ids'] ?? []),
+        ]);
+        return ['eventId' => $eventId, 'status' => 'Cancelled'];
+    }
+
+    // ─── Public API — Reads + aggregates ─────────────────────────────────
+
+    public function listEvents(array $filters = []): array
+    {
+        $this->_assertReady();
+        $where = [];
+        if (!empty($filters['status']))     { $where[] = ['status',     '==', (string) $filters['status']]; }
+        if (!empty($filters['event_type'])) { $where[] = ['event_type', '==', (string) $filters['event_type']]; }
+        if (!empty($filters['event_date'])) { $where[] = ['event_date', '==', (string) $filters['event_date']]; }
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_TRANSPORT_EVENTS, $where, 'event_date', 'DESC', 200);
+        } catch (\Throwable $_) { return []; }
+        $out = [];
+        foreach ($rows as $r) { $out[] = $this->_unwrapNestedRow($r, 'event_date'); }
+        return array_values(array_filter($out, static fn($e) => is_array($e) && !empty($e)));
+    }
+
+    public function getEvent(string $eventId): ?array
+    {
+        $this->_assertReady();
+        if ($eventId === '') { return null; }
+        $e = $this->fs->getEntity(self::COL_TRANSPORT_EVENTS, $eventId);
+        return is_array($e) ? $e : null;
+    }
+
+    public function getEventRoster(string $eventId): array
+    {
+        $this->_assertReady();
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_EVENT_TRIP_ASSIGNMENTS,
+                [['event_id', '==', $eventId]], null, 'ASC', 1000);
+        } catch (\Throwable $_) { return []; }
+        $out = [];
+        foreach ($rows as $r) { $out[] = $this->_unwrapNestedRow($r, 'event_id'); }
+        return array_values(array_filter($out, static fn($a) => is_array($a) && !empty($a)));
+    }
+
+    public function getEventTrips(string $eventId): array
+    {
+        $this->_assertReady();
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_TRIP_LOGS,
+                [['event_id', '==', $eventId]], 'date', 'ASC', 200);
+        } catch (\Throwable $_) { return []; }
+        $out = [];
+        foreach ($rows as $r) { $out[] = $this->_unwrapNestedRow($r, 'event_id'); }
+        return array_values(array_filter($out, static fn($t) => is_array($t) && !empty($t)));
+    }
+
+    public function getEventEscorts(string $eventId): array
+    {
+        $event = $this->getEvent($eventId);
+        if (!is_array($event)) { return []; }
+        return array_values((array) ($event['escorts'] ?? []));
+    }
+
+    /**
+     * Aggregate cost from transportExpenses with related_event_id = this
+     * event id. Uses a single filtered query — no N+1 (F8-6 gate).
+     * Refinement 3: reports over_budget flag but never blocks anything.
+     */
+    public function computeEventCostSummary(string $eventId): array
+    {
+        $this->_assertReady();
+        $out = ['event_id' => $eventId, 'actual_amount' => 0.0, 'expense_count' => 0, 'expense_ids' => []];
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_TRANSPORT_EXPENSES,
+                [['related_event_id', '==', $eventId], ['status', '==', 'Active']],
+                null, 'ASC', 1000);
+        } catch (\Throwable $_) { return $out; }
+        foreach ($rows as $r) {
+            $inner = $this->_unwrapNestedRow($r, 'expense_type');
+            if (!is_array($inner)) { continue; }
+            $out['actual_amount'] += (float) ($inner['total_amount'] ?? $inner['amount'] ?? 0);
+            $out['expense_count']++;
+            $out['expense_ids'][] = (string) ($inner['expenseId'] ?? '');
+        }
+        $out['actual_amount'] = round($out['actual_amount'], 2);
+        return $out;
+    }
+
+    // ─── Escort management (Refinement additional) ───────────────────────
+
+    public function addEventEscort(string $eventId, array $escort): array
+    {
+        $this->_assertReady();
+        $event = $this->_loadEventOrFail($eventId);
+        if (!in_array($event['status'], ['Planned', 'Scheduled', 'InProgress'], true)) {
+            throw new \InvalidArgumentException("Event {$eventId} is {$event['status']}; cannot modify escorts.");
+        }
+        $escorts = $this->_normaliseEscorts((array) ($event['escorts'] ?? []));
+        $escorts[] = $this->_normaliseEscort($escort);
+        // Dedupe by staff_id
+        $seen = []; $unique = [];
+        foreach ($escorts as $e) {
+            if (isset($seen[$e['staff_id']])) { continue; }
+            $seen[$e['staff_id']] = true;
+            $unique[] = $e;
+        }
+        $now = date('c');
+        $this->fs->setEntity(self::COL_TRANSPORT_EVENTS, $eventId, [
+            'escorts'    => $unique,
+            'updated_at' => $now,
+        ], /* merge */ true);
+        $this->emitAudit('transportEvent', $eventId, 'escort_added', $event,
+            array_merge($event, ['escorts' => $unique]),
+            ['domain' => self::DOMAIN_EVENT]);
+        return ['eventId' => $eventId, 'escorts' => $unique];
+    }
+
+    public function removeEventEscort(string $eventId, string $staffId): array
+    {
+        $this->_assertReady();
+        $event = $this->_loadEventOrFail($eventId);
+        if (!in_array($event['status'], ['Planned', 'Scheduled', 'InProgress'], true)) {
+            throw new \InvalidArgumentException("Event {$eventId} is {$event['status']}; cannot modify escorts.");
+        }
+        $escorts = (array) ($event['escorts'] ?? []);
+        $filtered = array_values(array_filter($escorts,
+            static fn($e) => (string) ($e['staff_id'] ?? '') !== $staffId));
+        $this->fs->setEntity(self::COL_TRANSPORT_EVENTS, $eventId, [
+            'escorts'    => $filtered,
+            'updated_at' => date('c'),
+        ], /* merge */ true);
+        return ['eventId' => $eventId, 'escorts' => $filtered];
+    }
+
+    // ─── Internals ───────────────────────────────────────────────────────
+
+    private function _loadEventOrFail(string $eventId): array
+    {
+        if ($eventId === '') { throw new \InvalidArgumentException('eventId required.'); }
+        $event = $this->fs->getEntity(self::COL_TRANSPORT_EVENTS, $eventId);
+        if (!is_array($event)) {
+            throw new \InvalidArgumentException("Event not found: {$eventId}");
+        }
+        return $event;
+    }
+
+    /**
+     * Snapshot the ordered list of student ids assigned to an event via
+     * eventTripAssignments (Refinement 4 — no persistent EventOnly rows
+     * on studentRoutes at F8; that path stays reserved for future).
+     * Consent status does NOT filter here — the frozen roster is the
+     * intended attendees; consent is tracked orthogonally.
+     */
+    private function _computeEventRoster(string $eventId): array
+    {
+        $students = [];
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_EVENT_TRIP_ASSIGNMENTS,
+                [['event_id', '==', $eventId]], null, 'ASC', 2000);
+            foreach ($rows as $r) {
+                $inner = $this->_unwrapNestedRow($r, 'event_id');
+                if (!is_array($inner)) { continue; }
+                $sid = (string) ($inner['studentId'] ?? '');
+                if ($sid !== '') { $students[$sid] = true; }
+            }
+        } catch (\Throwable $_) {}
+        return array_keys($students);
+    }
+
+    /**
+     * Roster snapshot for a specific vehicle within an event — used when
+     * an event trip is dispatched. Selects only students whose
+     * assigned_vehicle_id matches (if set) OR all students when no
+     * per-vehicle assignment (small events).
+     */
+    private function _computeEventRosterForVehicle(string $eventId, string $vehicleId): array
+    {
+        $students = [];
+        try {
+            $rows = (array) $this->fs->schoolWhere(self::COL_EVENT_TRIP_ASSIGNMENTS,
+                [['event_id', '==', $eventId]], null, 'ASC', 2000);
+            foreach ($rows as $r) {
+                $inner = $this->_unwrapNestedRow($r, 'event_id');
+                if (!is_array($inner)) { continue; }
+                $sid = (string) ($inner['studentId'] ?? '');
+                $va  = (string) ($inner['assigned_vehicle_id'] ?? '');
+                if ($sid === '') { continue; }
+                if ($va === '' || $va === $vehicleId) {
+                    $students[$sid] = true;
+                }
+            }
+        } catch (\Throwable $_) {}
+        return array_keys($students);
+    }
+
+    private function _normaliseEscorts(array $escorts): array
+    {
+        $out = [];
+        foreach ($escorts as $e) {
+            if (!is_array($e)) { continue; }
+            $out[] = $this->_normaliseEscort($e);
+        }
+        return $out;
+    }
+
+    private function _normaliseEscort(array $escort): array
+    {
+        $staffId = trim((string) ($escort['staff_id'] ?? ''));
+        $role    = trim((string) ($escort['role']     ?? 'Chaperone'));
+        if ($staffId === '') {
+            throw new \InvalidArgumentException('Escort staff_id is required.');
+        }
+        if (!in_array($role, self::EVENT_ESCORT_ROLES, true)) {
+            throw new \InvalidArgumentException("Invalid escort role: '{$role}'. Allowed: " . implode(',', self::EVENT_ESCORT_ROLES));
+        }
+        return [
+            'staff_id' => $staffId,
+            'role'     => $role,
+            'notes'    => trim((string) ($escort['notes'] ?? '')),
+        ];
     }
 
     // ═════════════════════════════════════════════════════════════════════
