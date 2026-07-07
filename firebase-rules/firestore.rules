@@ -1550,6 +1550,28 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // F10 (2026-07-07) — Parent notification preferences (server-
+    // authoritative mute list). Owner-only read/write: the doc-id is
+    // {schoolId}_{userId} so the caller must match both claim fields
+    // via isSameSchool() + doc-id string match. Admin also permitted
+    // (support / operational recovery). Mute-list content is validated
+    // client-side and server-side in Transport_notifier — safety-
+    // exempt categories cannot be muted regardless of what a client
+    // writes here (server-side enforcement in
+    // Transport_notifier::_filterByPreferences).
+    match /notificationPreferences/{docId} {
+      allow read: if isSameSchool() && (
+        isAdmin() ||
+        docId == (request.auth.token.school_id + '_' + request.auth.token.user_id)
+      );
+      allow write: if isSameSchool()
+        && isSameSchoolWrite()
+        && (
+          isAdmin() ||
+          docId == (request.auth.token.school_id + '_' + request.auth.token.user_id)
+        );
+    }
+
     // ── Transport: denormalised caches (server-only writes) ──────
     match /busCapacityCache/{docId} {
       allow read: if isSameSchool();

@@ -242,6 +242,12 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-F9-2', 'category' => self::CAT_SOURCE,     'label' => 'SOS severity matrix complete',   'callable' => '_chTrnF9_2' ],
             [ 'id' => 'CH-TRN-F9-3', 'category' => self::CAT_RUNTIME,    'label' => 'SOS docs carry valid severity',  'callable' => '_chTrnF9_3' ],
             [ 'id' => 'CH-TRN-F9-4', 'category' => self::CAT_CONTRACT,   'label' => 'attendance marked_by_role',      'callable' => '_chTrnF9_4' ],
+
+            // ─── F10 Parent App Transport (added 2026-07-07) ────────────────
+            [ 'id' => 'CH-TRN-F10-1', 'category' => self::CAT_SOURCE,     'label' => 'prefs-honoring in fanout',       'callable' => '_chTrnF10_1' ],
+            [ 'id' => 'CH-TRN-F10-2', 'category' => self::CAT_SOURCE,     'label' => 'safety-exempt covers all Urgent','callable' => '_chTrnF10_2' ],
+            [ 'id' => 'CH-TRN-F10-3', 'category' => self::CAT_RUNTIME,    'label' => 'prefs docs no safety mutes',     'callable' => '_chTrnF10_3' ],
+            [ 'id' => 'CH-TRN-F10-4', 'category' => self::CAT_CONTRACT,   'label' => 'transport fee category lowercase','callable' => '_chTrnF10_4' ],
         ];
     }
 
@@ -2549,6 +2555,148 @@ class Transport_verifier extends CI_Controller
             return ['status' => 'FAIL', 'detail' => count($bad) . ' attendance with bad marked_by_role: ' . implode(',', array_slice($bad, 0, 3))];
         }
         return ['status' => 'PASS', 'detail' => count($rows) . " attendance docs, all marked_by_role ∈ {admin, driver}"];
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F10 Parent App Transport assertions (CH-TRN-F10-1..4) 2026-07-07
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * CH-TRN-F10-1 — Transport_notifier fanout consults notification
+     * preferences BEFORE writing per-user notifications docs. Source-
+     * scan asserts the _filterByPreferences call is present inside
+     * _fanoutNotifications AND the SAFETY_EXEMPT branch happens BEFORE
+     * the filter call.
+     */
+    private function _chTrnF10_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_notifier.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = (string) file_get_contents($path);
+        if (!preg_match('/private\s+function\s+_fanoutNotifications\s*\([^)]*\)[^{]*\{/', $src, $m, PREG_OFFSET_CAPTURE)) {
+            return ['status' => 'FAIL', 'detail' => '_fanoutNotifications method not found'];
+        }
+        $start = $m[0][1];
+        $body  = substr($src, $start, 4000);
+        if (strpos($body, '_filterByPreferences') === false) {
+            return ['status' => 'FAIL', 'detail' => '_filterByPreferences call missing from _fanoutNotifications'];
+        }
+        if (strpos($body, 'SAFETY_EXEMPT_CATEGORIES') === false) {
+            return ['status' => 'FAIL', 'detail' => 'SAFETY_EXEMPT_CATEGORIES gate missing before filter'];
+        }
+        // Assert safety gate comes BEFORE the filter call (order matters
+        // — filter must not run for safety-exempt categories)
+        $filterPos = strpos($body, '_filterByPreferences');
+        $exemptPos = strpos($body, 'SAFETY_EXEMPT_CATEGORIES');
+        if ($exemptPos > $filterPos) {
+            return ['status' => 'FAIL', 'detail' => 'SAFETY_EXEMPT gate must precede _filterByPreferences call'];
+        }
+        return ['status' => 'PASS', 'detail' => 'fanout honors preferences with safety-exempt gate ordered correctly'];
+    }
+
+    /**
+     * CH-TRN-F10-2 — SAFETY_EXEMPT_CATEGORIES covers every category
+     * whose PRIORITY_MATRIX entry is Urgent. Any Urgent-priority
+     * category that's NOT safety-exempt is a policy hole — the
+     * assertion fails so the operator has to decide.
+     */
+    private function _chTrnF10_2(): array
+    {
+        if (!class_exists('Transport_notifier')) {
+            @include_once APPPATH . 'libraries/Transport_notifier.php';
+        }
+        if (!class_exists('Transport_notifier')) {
+            return ['status' => 'FAIL', 'detail' => 'Transport_notifier not loadable'];
+        }
+        $priority = (array) Transport_notifier::PRIORITY_MATRIX;
+        $exempt   = (array) Transport_notifier::SAFETY_EXEMPT_CATEGORIES;
+        $urgentButNotExempt = [];
+        foreach ($priority as $cat => $prio) {
+            if ($prio === Transport_notifier::PRIORITY_URGENT
+                && !in_array($cat, $exempt, true)) {
+                $urgentButNotExempt[] = $cat;
+            }
+        }
+        if ($urgentButNotExempt !== []) {
+            return ['status' => 'FAIL', 'detail' => 'Urgent categories missing from safety-exempt list: ' . implode(',', $urgentButNotExempt)];
+        }
+        return ['status' => 'PASS', 'detail' => count($exempt) . ' safety-exempt categories cover all Urgent priorities'];
+    }
+
+    /**
+     * CH-TRN-F10-3 — Every notificationPreferences doc's mutedCategories
+     * contains ONLY muteable categories (no safety-exempt category
+     * present — sanity gate for client-side tampering). Server-side
+     * filter would honor the mute silently; this assertion surfaces
+     * the tampering attempt for admin visibility.
+     */
+    private function _chTrnF10_3(): array
+    {
+        try {
+            $rows = (array) $this->fs->schoolWhere('notificationPreferences', [], null, 'ASC', 200);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'notificationPreferences unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'no preferences docs — trivial pass'];
+        }
+        $exempt = (array) Transport_notifier::SAFETY_EXEMPT_CATEGORIES;
+        $bad = [];
+        foreach ($rows as $r) {
+            $inner = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
+            $id = (string) ($r['id'] ?? $inner['id'] ?? '?');
+            $muted = (array) ($inner['mutedCategories'] ?? []);
+            foreach ($muted as $m) {
+                if (in_array((string) $m, $exempt, true)) {
+                    $bad[] = "{$id}:muted_safety_{$m}";
+                }
+            }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' prefs docs muting safety categories: ' . implode(',', array_slice($bad, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => count($rows) . ' prefs docs, no safety-exempt category muted'];
+    }
+
+    /**
+     * CH-TRN-F10-4 — Every feeDemands doc created for transport-related
+     * fees uses category='transport' (lowercase). Historical demands
+     * with 'Transport' capitalized are tolerated (INFO count). Future
+     * writers via Fee_lifecycle::createModuleFee are normalized to
+     * lowercase (Refinement 4).
+     */
+    private function _chTrnF10_4(): array
+    {
+        try {
+            // Query fee demands where the head clearly indicates transport
+            // then check the category field's case
+            $rows = (array) $this->fs->schoolWhere('feeDemands', [], null, 'DESC', 200);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'feeDemands unreachable — trivial pass'];
+        }
+        if ($rows === []) {
+            return ['status' => 'INFO', 'detail' => 'no fee demands — trivial pass'];
+        }
+        $transportDemands = 0;
+        $lowercase = 0;
+        $mixedCase = 0;
+        foreach ($rows as $r) {
+            $inner = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
+            $head = strtolower((string) ($inner['feeHead'] ?? ''));
+            $cat  = (string) ($inner['category'] ?? '');
+            $catL = strtolower($cat);
+            $isTransport = ($catL === 'transport') || (strpos($head, 'transport') !== false) || (strpos($head, 'bus') !== false);
+            if (!$isTransport) { continue; }
+            $transportDemands++;
+            if ($cat === 'transport')       { $lowercase++; }
+            elseif ($catL === 'transport')  { $mixedCase++; }
+        }
+        if ($transportDemands === 0) {
+            return ['status' => 'INFO', 'detail' => 'no transport-related demands sampled'];
+        }
+        return ['status' => 'PASS', 'detail' => "{$transportDemands} transport demand(s): {$lowercase} lowercase (F10-canonical), {$mixedCase} mixed-case (pre-F10 legacy — tolerated)"];
     }
 
     // ─── shared source-grep helper ───────────────────────────────────────

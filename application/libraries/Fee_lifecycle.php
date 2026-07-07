@@ -761,7 +761,13 @@ class Fee_lifecycle
                 'className'   => (string) ($stu['className'] ?? ''),
                 'section'     => (string) ($stu['section']   ?? ''),
                 'feeHead'     => $headName,
-                'category'    => $moduleType,
+                // F10 (2026-07-07) — normalise category to lowercase per
+                // Refinement 4. Historical demands may carry mixed-case
+                // ('Transport') — Parent app filter is case-insensitive
+                // for read-time compat + falls back to name.contains for
+                // pre-F10 records without the category field. NO data
+                // migration required.
+                'category'    => strtolower((string) $moduleType),
                 'frequency'   => $frequency,
                 'period'      => $periodLbl,
                 'periodKey'   => $periodKey,

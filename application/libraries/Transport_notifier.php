@@ -67,6 +67,29 @@ class Transport_notifier
     public const SCOPE_PARENTS_OF_STUDENTS = 'parents_of_students';   // F7
     public const SCOPE_STAFF_ADMIN_ONLY    = 'staff_admin_only';
 
+    // F10 (2026-07-07) — Parent notification preferences (server-authoritative).
+    //
+    // Parents opt out of specific categories via
+    // notificationPreferences/{schoolId}_{userId}.mutedCategories[].
+    // Transport_notifier consults this doc at fanout time and skips any
+    // parent who muted the category — UNLESS the category is
+    // safety-exempt. Safety exemption means "operational safety
+    // notifications must never be suppressible" (Refinement 3 —
+    // operator directive); mobile-app tampering cannot bypass the
+    // exemption because enforcement is server-side.
+    //
+    // The exempt list is HARDCODED intentionally — a schema-driven
+    // "suppressible: bool" flag on the matrix would let a bad admin
+    // config flip a safety notice to muteable. Verifier F10-2 cross-
+    // checks this list against the PRIORITY_MATRIX for completeness.
+    public const SAFETY_EXEMPT_CATEGORIES = [
+        'sos.raised', 'sos.responded', 'sos.resolved',
+        'trip.student_no_show',
+        'event.cancelled', 'event.rescheduled',
+        'driver.critical_incident',
+        'trip.disruption',
+    ];
+
     // F9 (2026-07-07) — SOS severity levels + priority routing.
     // Teacher-app default is 'High' (Refinement 1 — bias toward
     // operational safety); driver may explicitly lower.
@@ -290,13 +313,14 @@ class Transport_notifier
     public const IDEMPOTENCY_RETENTION_SECS = 2592000;
 
     // Firestore collection constants (reuse existing Communication surface)
-    private const COL_NOTICES               = 'notices';
-    private const COL_NOTICE_RECIPIENTS     = 'noticeRecipients';
-    private const COL_NOTIFICATIONS         = 'notifications';
-    private const COL_SOS_ALERTS            = 'sosAlerts';
-    private const COL_IDEMPOTENCY           = 'transportNoticeIdempotency';
-    private const COL_STUDENT_ROUTES        = 'studentRoutes';
-    private const COL_ROUTE_ASSIGNMENTS     = 'routeAssignments';
+    private const COL_NOTICES                = 'notices';
+    private const COL_NOTICE_RECIPIENTS      = 'noticeRecipients';
+    private const COL_NOTIFICATIONS          = 'notifications';
+    private const COL_SOS_ALERTS             = 'sosAlerts';
+    private const COL_IDEMPOTENCY            = 'transportNoticeIdempotency';
+    private const COL_STUDENT_ROUTES         = 'studentRoutes';
+    private const COL_ROUTE_ASSIGNMENTS      = 'routeAssignments';
+    private const COL_NOTIFICATION_PREFS     = 'notificationPreferences';   // F10
 
     // Firestore batch write ceiling (matches Firestore's hard limit)
     private const FIRESTORE_BATCH_LIMIT = 500;
@@ -819,6 +843,19 @@ class Transport_notifier
         if ($userIds === []) {
             return ['emitted' => false, 'notice_id' => '', 'per_user_count' => 0, 'dedupe_skipped' => false, 'notified_user_ids' => []];
         }
+
+        // F10 (2026-07-07) — honor parent notification preferences.
+        // Safety-exempt categories bypass preference filtering; every
+        // other category is filtered against each user's mutedCategories.
+        // Missing prefs doc = no mute (default-on behavior). Enforcement
+        // is server-side so mobile-app tampering can't bypass the safety
+        // exemption.
+        if (!in_array($category, self::SAFETY_EXEMPT_CATEGORIES, true)) {
+            $userIds = $this->_filterByPreferences($userIds, $category);
+            if ($userIds === []) {
+                return ['emitted' => false, 'notice_id' => '', 'per_user_count' => 0, 'dedupe_skipped' => false, 'notified_user_ids' => []];
+            }
+        }
         $noticeId = 'TNOT_' . (int) round(microtime(true) * 1000) . '_' . substr(sha1($category . implode('|', $userIds) . microtime(true)), 0, 6);
         $now = date('c');
 
@@ -1223,6 +1260,36 @@ class Transport_notifier
              . "Action: {$verb}\n"
              . "From: " . (string) ($ctx['from_date'] ?? '')
              . (($ctx['to_date'] ?? '') !== '' ? "\nTo: " . $ctx['to_date'] : '');
+    }
+
+    /**
+     * F10 (2026-07-07) — filter userIds against per-user
+     * notificationPreferences/{schoolId}_{userId}.mutedCategories[].
+     * Missing doc = user not opted-out = passes through.
+     *
+     * The category-in-safety-exempt check is at the CALL site (not here)
+     * so this helper is a pure filter — safety enforcement is an
+     * unambiguous branch upstream, not a subtle side-effect of the
+     * preference read.
+     */
+    private function _filterByPreferences(array $userIds, string $category): array
+    {
+        $allowed = [];
+        foreach ($userIds as $uid) {
+            try {
+                // Entity id = userId; Firestore_service::getEntity prefixes
+                // schoolId internally to form {schoolId}_{userId} — matches
+                // the write contract (Parent app sets entity id = userId).
+                $doc = $this->fs->getEntity(self::COL_NOTIFICATION_PREFS, $uid);
+            } catch (\Throwable $_) { $allowed[] = $uid; continue; }
+            if (!is_array($doc)) { $allowed[] = $uid; continue; }
+            $muted = (array) ($doc['mutedCategories'] ?? []);
+            if (in_array($category, array_map('strval', $muted), true)) {
+                continue;   // opted-out
+            }
+            $allowed[] = $uid;
+        }
+        return $allowed;
     }
 
     private function _loadPushService()
