@@ -3392,6 +3392,24 @@
       ]
     },
     {
+      "_comment": "TMS F11 (2026-07-08) — driverActivitySummary 24-month trend + rebuild filter (schoolId==, period_year_month DESC).",
+      "collectionGroup": "driverActivitySummary",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "period_year_month", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "TMS F11 (2026-07-08) — fleetMonthlyExpenseSummary 24-month trend + rebuild filter (schoolId==, period_year_month DESC).",
+      "collectionGroup": "fleetMonthlyExpenseSummary",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "schoolId", "order": "ASCENDING" },
+        { "fieldPath": "period_year_month", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "maintenanceLogs",
       "queryScope": "COLLECTION",
       "fields": [

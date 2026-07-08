@@ -229,6 +229,25 @@ class Admin extends MY_Controller
             'calendar_events'   => [],
         ];
 
+        // F11 (2026-07-08) — Transport analytics slot on the main
+        // dashboard. Composes over Transport_analytics_service's
+        // role-filtered bundle; empty for roles without transport
+        // visibility. Additive to the existing payload — every legacy
+        // consumer keeps reading its slice unchanged.
+        try {
+            $this->load->library('transport_service', null, 'transport');
+            $this->load->library('transport_analytics_service', null, 'trnAnalytics');
+            if (!$this->transport->isEnabled()) {
+                $this->transport->init($this->fs, $this->numbering, $this->school_id, $this->session_year, (string) $this->admin_id);
+            }
+            $this->trnAnalytics->init($this->fs, $this->transport, $this->school_id, $this->session_year);
+            if (Transport_analytics_service::hasAnyVisibility((string) $role)) {
+                $payload['transport_fleet'] = $this->trnAnalytics->bundleForRole((string) $role);
+            }
+        } catch (\Throwable $e) {
+            log_message('warning', 'F11 dashboard transport slot failed: ' . $e->getMessage());
+        }
+
         // SC-Step4: session-keyed cache write. Short TTL (120s) is just a
         // backstop — write paths bust this key on data change (invalidate-on-write).
         $this->dashboard_cache->set($this->school_name, $cacheKey, $payload, 120, $this->session_year);

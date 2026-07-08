@@ -407,7 +407,8 @@ class Transport_service
         $rows = (array) $this->fs->schoolWhere(self::COL_VEHICLES, [], 'number', 'ASC');
         $out  = [];
         foreach ($rows as $doc) {
-            $v = is_array($doc) ? $doc : [];
+            $v = $this->_unwrapNestedRow($doc, 'schoolId');
+            if (empty($v)) { continue; }
             $id = (string) ($v['vehicleId'] ?? $v['id'] ?? '');
             if ($id === '') {
                 continue;
@@ -805,7 +806,8 @@ class Transport_service
         );
         $out = [];
         foreach ($rows as $doc) {
-            $d = is_array($doc) ? $doc : [];
+            $d = $this->_unwrapNestedRow($doc, 'schoolId');
+            if (empty($d)) { continue; }
             $id = (string) ($d['vehicleDocumentId'] ?? $d['id'] ?? '');
             if ($id === '') { continue; }
             $d['id'] = $id;
@@ -830,7 +832,8 @@ class Transport_service
         $rows   = (array) $this->fs->schoolWhere(self::COL_VEHICLE_DOCUMENTS, []);
         $out    = [];
         foreach ($rows as $doc) {
-            $d = is_array($doc) ? $doc : [];
+            $d = $this->_unwrapNestedRow($doc, 'schoolId');
+            if (empty($d)) { continue; }
             $exp = (string) ($d['expiry_date'] ?? '');
             if ($exp === '') { continue; }
             if ($exp >= $today && $exp <= $cutoff) {
@@ -1337,7 +1340,8 @@ class Transport_service
         );
         $out = [];
         foreach ($rows as $doc) {
-            $v = is_array($doc) ? $doc : [];
+            $v = $this->_unwrapNestedRow($doc, 'schoolId');
+            if (empty($v)) { continue; }
             $id = (string) ($v['vendorId'] ?? $v['id'] ?? '');
             if ($id === '') { continue; }
             $v['id'] = $id;
@@ -1357,7 +1361,8 @@ class Transport_service
         );
         $out = [];
         foreach ($rows as $doc) {
-            $v = is_array($doc) ? $doc : [];
+            $v = $this->_unwrapNestedRow($doc, 'schoolId');
+            if (empty($v)) { continue; }
             $id = (string) ($v['vendorId'] ?? $v['id'] ?? '');
             if ($id === '') { continue; }
             $v['id'] = $id;
@@ -1460,7 +1465,8 @@ class Transport_service
         );
         $out = [];
         foreach ($rows as $doc) {
-            $d = is_array($doc) ? $doc : [];
+            $d = $this->_unwrapNestedRow($doc, 'schoolId');
+            if (empty($d)) { continue; }
             $id = (string) ($d['maintenanceId'] ?? $d['id'] ?? '');
             if ($id === '') { continue; }
             $d['id'] = $id;
@@ -1557,7 +1563,8 @@ class Transport_service
         );
         $out = [];
         foreach ($rows as $doc) {
-            $d = is_array($doc) ? $doc : [];
+            $d = $this->_unwrapNestedRow($doc, 'schoolId');
+            if (empty($d)) { continue; }
             $id = (string) ($d['fuelId'] ?? $d['id'] ?? '');
             if ($id === '') { continue; }
             $d['id'] = $id;
@@ -1770,7 +1777,8 @@ class Transport_service
         $rows = (array) $this->fs->schoolWhere(self::COL_ROUTES, [], 'name', 'ASC');
         $out  = [];
         foreach ($rows as $doc) {
-            if (!is_array($doc)) { continue; }
+            $doc = $this->_unwrapNestedRow($doc, 'schoolId');
+            if (empty($doc)) { continue; }
             $status = (string) ($doc['status'] ?? 'Active');
             if (!$includeArchived && $status === 'Archived') { continue; }
             $id = (string) ($doc['routeId'] ?? $doc['id'] ?? '');
@@ -2045,7 +2053,8 @@ class Transport_service
         $rows = (array) $this->fs->schoolWhere(self::COL_TRANSPORT_STOPS, $where);
         $out  = [];
         foreach ($rows as $doc) {
-            if (!is_array($doc)) { continue; }
+            $doc = $this->_unwrapNestedRow($doc, 'schoolId');
+            if (empty($doc)) { continue; }
             $id = (string) ($doc['stopId'] ?? $doc['id'] ?? '');
             if ($id === '') { continue; }
             $doc['id'] = $id;
@@ -2342,7 +2351,8 @@ class Transport_service
         );
         $out = [];
         foreach ($rows as $doc) {
-            if (!is_array($doc)) { continue; }
+            $doc = $this->_unwrapNestedRow($doc, 'schoolId');
+            if (empty($doc)) { continue; }
             $id = (string) ($doc['suspensionId'] ?? $doc['id'] ?? '');
             if ($id === '') { continue; }
             $doc['id'] = $id;
@@ -2369,7 +2379,8 @@ class Transport_service
         );
         $out = [];
         foreach ($rows as $doc) {
-            if (!is_array($doc)) { continue; }
+            $doc = $this->_unwrapNestedRow($doc, 'schoolId');
+            if (empty($doc)) { continue; }
             $id = (string) ($doc['suspensionId'] ?? $doc['id'] ?? '');
             if ($id === '') { continue; }
             $doc['id'] = $id;
@@ -3219,7 +3230,8 @@ class Transport_service
         $rows = (array) $this->fs->schoolWhere(self::COL_STUDENT_ROUTES_LEGACY, $where, 'student_name', 'ASC');
         $out = [];
         foreach ($rows as $doc) {
-            if (!is_array($doc)) { continue; }
+            $doc = $this->_unwrapNestedRow($doc, 'schoolId');
+            if (empty($doc)) { continue; }
             $sid = (string) ($doc['studentId'] ?? '');
             if ($sid === '') { continue; }
             $doc['student_id'] = $sid;
@@ -3357,7 +3369,8 @@ class Transport_service
         }
         $out = [];
         foreach ($rows as $r) {
-            if (!is_array($r)) { continue; }
+            $r = $this->_unwrapNestedRow($r, 'schoolId');
+            if (empty($r)) { continue; }
             $sid = (string) ($r['staffId'] ?? $r['id'] ?? '');
             if ($sid === '') { continue; }
             $r['staff_id'] = $sid;
@@ -4576,6 +4589,152 @@ class Transport_service
     {
         $ym = $yearMonth !== '' ? $yearMonth : date('Y-m');
         return $this->computeFleetMonthlyExpenseSummary($ym);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F11 (2026-07-08) — routeFleetSummary compute (fills the F2 gap)
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * Compute + persist a per-route fleet summary. Fills the
+     * routeFleetSummary collection gap — declared at F2 line 158 but never
+     * written until F11. This is not a new business workflow; it is a
+     * denormalised aggregate over existing tripLogs + studentRoutes +
+     * driverIncidents, backing the F11 per-route KPI widgets.
+     *
+     * Reuses existing readers (schoolWhere on tripLogs/studentRoutes/
+     * driverIncidents). Bounded windows (last-30d default) so a fleet
+     * scale of hundreds of routes doesn't blow through Firestore read
+     * budget.
+     *
+     * @param string $routeId when empty, rebuilds every Active route
+     *                        (nightly cron path)
+     * @param int    $windowDays trailing window for trips/incidents
+     *                           (default 30)
+     * @return array summary of what was computed
+     */
+    public function computeRouteFleetSummary(string $routeId = '', int $windowDays = 30): array
+    {
+        $this->_assertReady();
+        $out = ['routes_processed' => 0, 'ids' => []];
+        $now = date('c');
+        $windowStart = date('Y-m-d', time() - $windowDays * 86400);
+        $windowEnd   = date('Y-m-d');
+        $curMonth    = date('Y-m');
+
+        $routes = [];
+        if ($routeId !== '') {
+            $r = $this->fs->getEntity(self::COL_ROUTES, $routeId);
+            if (is_array($r)) { $r['id'] = $routeId; $routes[] = $r; }
+        } else {
+            try {
+                $rows = (array) $this->fs->schoolWhere(self::COL_ROUTES,
+                    [['status', '==', 'Active']], null, 'ASC', 500);
+                foreach ($rows as $rr) {
+                    $inner = (isset($rr['data']) && is_array($rr['data'])) ? $rr['data'] : $rr;
+                    $rid = (string) ($rr['id'] ?? $inner['id'] ?? '');
+                    if ($rid === '') { continue; }
+                    $inner['id'] = $rid;
+                    $routes[] = $inner;
+                }
+            } catch (\Throwable $_) {}
+        }
+
+        foreach ($routes as $route) {
+            $rid = (string) $route['id'];
+
+            // Active students on the route (F3 studentRoutes LEGACY canonical)
+            $activeStudents = 0;
+            try {
+                $sr = (array) $this->fs->schoolWhere(self::COL_STUDENT_ROUTES_LEGACY,
+                    [['route_id', '==', $rid], ['status', '==', 'Active']], null, 'ASC', 2000);
+                $activeStudents = count($sr);
+            } catch (\Throwable $_) {}
+
+            // Vehicle assigned to route (from route doc or first tripLogs match)
+            $vehicleId = (string) ($route['vehicle_id'] ?? '');
+
+            // Trips in trailing window + on-time %
+            $tripsCount = 0; $onTime = 0; $incidents = 0;
+            try {
+                $trips = (array) $this->fs->schoolWhere(self::COL_TRIP_LOGS,
+                    [['route_id', '==', $rid],
+                     ['date', '>=', $windowStart],
+                     ['date', '<=', $windowEnd]],
+                    'date', 'DESC', 500);
+                foreach ($trips as $t) {
+                    $inner = $this->_unwrapNestedRow($t, 'date');
+                    if (!is_array($inner)) { continue; }
+                    $status = (string) ($inner['status'] ?? '');
+                    if ($status === 'Completed') { $tripsCount++; }
+                    if (!empty($inner['on_time'])) { $onTime++; }
+                    if ($vehicleId === '') { $vehicleId = (string) ($inner['vehicleId'] ?? ''); }
+                }
+            } catch (\Throwable $_) {}
+            $onTimePct = $tripsCount > 0 ? round(($onTime / $tripsCount) * 100, 1) : null;
+
+            // Route incidents (via trips whose vehicle_id had incidents in window)
+            // Cheaper: driverIncidents count for the effective driver on this vehicle
+            $driverStaffId = '';
+            if ($vehicleId !== '') {
+                try {
+                    $v = $this->fs->getEntity(self::COL_VEHICLES, $vehicleId);
+                    if (is_array($v)) {
+                        $driverStaffId = (string) ($v['staff_id'] ?? $v['driver_staff_id'] ?? '');
+                    }
+                } catch (\Throwable $_) {}
+            }
+            if ($driverStaffId !== '') {
+                try {
+                    $inc = (array) $this->fs->schoolWhere(self::COL_DRIVER_INCIDENTS,
+                        [['staff_id', '==', $driverStaffId],
+                         ['incident_date', '>=', $windowStart],
+                         ['incident_date', '<=', $windowEnd]],
+                        null, 'ASC', 100);
+                    $incidents = count($inc);
+                } catch (\Throwable $_) {}
+            }
+
+            // Cost this month — reuses the existing per-vehicle roll-up
+            // from fleetMonthlyExpenseSummary (already populated by F5)
+            $costThisMonth = 0.0;
+            try {
+                $fmes = $this->fs->getEntity(self::COL_FLEET_MONTHLY_EXPENSE_SUMMARY,
+                    "FMES__{$curMonth}");
+                if (is_array($fmes) && $vehicleId !== '') {
+                    $costThisMonth = (float) ($fmes['per_vehicle'][$vehicleId] ?? 0.0);
+                }
+            } catch (\Throwable $_) {}
+
+            $summaryId = "RFS_{$rid}";
+            $data = [
+                'summaryId'          => $summaryId,
+                'schoolId'           => $this->schoolId,
+                'route_id'           => $rid,
+                'route_name'         => (string) ($route['name'] ?? ''),
+                'vehicle_id'         => $vehicleId,
+                'driver_staff_id'    => $driverStaffId,
+                'active_students'    => $activeStudents,
+                'trips_last_window'  => $tripsCount,
+                'window_days'        => $windowDays,
+                'on_time_pct'        => $onTimePct,
+                'incidents_last_window' => $incidents,
+                'cost_this_month'    => round($costThisMonth, 2),
+                'period_month'       => $curMonth,
+                'computed_at'        => $now,
+                'computed_by'        => $this->adminId,
+            ];
+            $this->fs->setEntity(self::COL_ROUTE_FLEET_SUMMARY, $summaryId, $data, /* merge */ false);
+            $out['ids'][] = $summaryId;
+            $out['routes_processed']++;
+        }
+        return $out;
+    }
+
+    /** Rebuild helper — cron path. */
+    public function rebuildRouteFleetSummary(): array
+    {
+        return $this->computeRouteFleetSummary('');
     }
 
     // ─── Read helpers ──────────────────────────────────────────────────

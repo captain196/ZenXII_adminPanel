@@ -1,16 +1,21 @@
 <?php
 $at = isset($active_tab) ? $active_tab : 'vehicles';
+// Tab order — workflow-based setup order (2026-07-08 pm, release-cert
+// manual-test request). Group 1: infrastructure setup (Vehicles, Vendors,
+// Drivers, Routes & Stops, Assignments). Group 2: daily operations (Trips,
+// Expenses, Events, SOS Monitor, Expiry Dashboard). Slugs unchanged so
+// existing URLs + routes.php entries continue to work.
 $tab_map = [
     'vehicles'    => ['panel'=>'panelVehicles',    'icon'=>'fa-bus',           'label'=>'Vehicles'],
     'vendors'     => ['panel'=>'panelVendors',     'icon'=>'fa-handshake-o',   'label'=>'Vendors'],
     'drivers'     => ['panel'=>'panelDrivers',     'icon'=>'fa-id-card-o',     'label'=>'Drivers'],
-    'expenses'    => ['panel'=>'panelExpenses',    'icon'=>'fa-money',         'label'=>'Expenses'],
+    'routes'      => ['panel'=>'panelRoutes',      'icon'=>'fa-road',          'label'=>'Routes & Stops'],
+    'assignments' => ['panel'=>'panelAssignments',  'icon'=>'fa-users',         'label'=>'Assignments'],
     'trips'       => ['panel'=>'panelTrips',       'icon'=>'fa-map-signs',     'label'=>'Trips'],
+    'expenses'    => ['panel'=>'panelExpenses',    'icon'=>'fa-money',         'label'=>'Expenses'],
     'events'      => ['panel'=>'panelEvents',      'icon'=>'fa-calendar-o',    'label'=>'Events'],
     'sos'         => ['panel'=>'panelSos',         'icon'=>'fa-bell',          'label'=>'SOS Monitor'],
     'expiry'      => ['panel'=>'panelExpiry',      'icon'=>'fa-exclamation-triangle', 'label'=>'Expiry Dashboard'],
-    'routes'      => ['panel'=>'panelRoutes',      'icon'=>'fa-road',          'label'=>'Routes & Stops'],
-    'assignments' => ['panel'=>'panelAssignments',  'icon'=>'fa-users',         'label'=>'Assignments'],
 ];
 ?>
 <style>
@@ -405,13 +410,78 @@ document.addEventListener('DOMContentLoaded', function(){
   'use strict';
   var BASE=_TRN_CFG.BASE,CSRF_NAME=_TRN_CFG.CSRF_NAME,CSRF_HASH=_TRN_CFG.CSRF_HASH;
   var vehicles=[],routes=[],stops=[];
-  function getJSON(u){return $.getJSON(BASE+u)} function post(u,d){d[CSRF_NAME]=CSRF_HASH;return $.post(BASE+u,d)}
+  function getJSON(u){return $.getJSON(BASE+u)}
+  // post(u, d) — CSRF-stamped POST. Release-cert 2026-07-08 pm: applies a
+  // TRUE MUTEX to the last primary/danger modal button clicked (see
+  // TRN.__lastBtn tracker below), not just cosmetic disabled state. The
+  // .data('trn-busy') marker is a synchronous JS-side lock that Chrome's
+  // queued-click dispatch cannot bypass — even when rapid clicks slip past
+  // the browser's disabled-attribute click-block, the second/third post()
+  // call sees the marker and returns a rejected promise WITHOUT firing the
+  // POST. Root cause of the 3-duplicate-routes regression: a prior version
+  // fell through to `return $.post(...)` when the button was already
+  // disabled, still firing every duplicate as a real POST.
+  function post(u,d){
+    d[CSRF_NAME]=CSRF_HASH;
+    var $b=(window.TRN&&TRN.__lastBtn)?TRN.__lastBtn:null;
+    if($b&&$b.length){
+      if($b.data('trn-busy')){
+        var dq=$.Deferred();
+        setTimeout(function(){dq.reject('duplicate submission blocked')},0);
+        return dq.promise();
+      }
+      $b.data('trn-busy',true);
+      var oh=$b.html(),label=(window.TRN&&TRN.__busyLabel)||'Working…';
+      $b.prop('disabled',true).html('<i class="fa fa-spinner fa-spin"></i> '+label);
+      if(window.TRN) TRN.__busyLabel=null;
+      var jqXHR=$.post(BASE+u,d);
+      jqXHR.always(function(){$b.removeData('trn-busy').prop('disabled',false).html(oh)});
+      // Default fail handler — every save site binds .done() only, so HTTP
+      // 4xx/5xx responses (json_error → http_response_code) were previously
+      // silent. Surface the server's error message (or a sensible HTTP-code
+      // fallback) as a toast so users know their save failed and why
+      // (release-cert manual-test finding 2026-07-08 pm).
+      jqXHR.fail(function(xhr){
+        var msg='Request failed. Please try again.';
+        try{
+          var body=xhr.responseJSON||(xhr.responseText?JSON.parse(xhr.responseText):null);
+          if(body&&body.message) msg=body.message;
+        }catch(e){}
+        if(msg==='Request failed. Please try again.'&&xhr.status){
+          if(xhr.status===401) msg='Session expired. Please log in again.';
+          else if(xhr.status===403) msg='Access denied.';
+          else if(xhr.status===404) msg='Endpoint not found (server misconfigured).';
+          else if(xhr.status===500||xhr.status===502||xhr.status===503) msg='Server error ('+xhr.status+'). Please retry.';
+          else if(xhr.status===0) msg='Network error — check your connection.';
+          else msg='Error '+xhr.status;
+        }
+        toast(msg,false);
+      });
+      return jqXHR;
+    }
+    return $.post(BASE+u,d);
+  }
   function toast(m,ok){var t=$('<div style="position:fixed;top:20px;right:20px;z-index:99999;padding:12px 20px;border-radius:8px;font-size:.85rem;color:#fff;background:'+(ok?'var(--green)':'var(--rose)')+'">'+m+'</div>');$('body').append(t);setTimeout(function(){t.fadeOut(300,function(){t.remove()})},3000)}
   function escH(s){return $('<span>').text(s||'').html()}
   function vehName(id){for(var i=0;i<vehicles.length;i++) if(vehicles[i].id===id) return vehicles[i].number; return id||'—'}
   function routeName(id){for(var i=0;i<routes.length;i++) if(routes[i].id===id) return routes[i].name; return id||'—'}
 
   window.TRN={};
+
+  // ── UI helper: busy-button (release cert 2026-07-08) ──────────────────────
+  // TRN.__lastBtn — the last primary/danger button clicked inside any Transport
+  // modal. Captured on mousedown (fires BEFORE the click handler that dispatches
+  // the save). post() reads this to auto-apply spinner + disabled state during
+  // the network round-trip, restoring on completion (success OR failure).
+  // Prevents duplicate submits and satisfies the ZenX house-style convention
+  // (matches Session Rollover's roStartBtn pattern and Fees/HR modules).
+  //
+  // Optional per-action label: set TRN.__busyLabel = 'Raising SOS…' immediately
+  // before calling post(). post() consumes and clears it. Default label is
+  // 'Working…' — universally appropriate.
+  TRN.__lastBtn=null;
+  TRN.__busyLabel=null;
+  $(document).on('mousedown','.trn-modal-bg .trn-btn-primary, .trn-modal-bg .trn-btn-danger',function(){TRN.__lastBtn=$(this)});
 
   // ── Vehicles (F1 extended) ──
   var vendors=[];   // populated by loadVendors()
@@ -432,7 +502,14 @@ document.addEventListener('DOMContentLoaded', function(){
           '</td></tr>';
       });
       $('#vehTbody').html(html||'<tr><td colspan="8" style="text-align:center;color:var(--t3)">No vehicles</td></tr>');
-      var opts='<option value="">-- None --</option>'; vehicles.forEach(function(v){opts+='<option value="'+v.id+'">'+escH(v.number)+'</option>'});
+      // Vehicle picker for the Route + Vehicle-Replace dropdowns. When the
+      // tenant has zero vehicles the placeholder text guides the operator to
+      // add vehicles first (release-cert manual-test finding 2026-07-08).
+      var emptyLabel = vehicles.length === 0
+        ? '-- No vehicles yet · add via Vehicles tab first --'
+        : '-- None --';
+      var opts='<option value="">'+emptyLabel+'</option>';
+      vehicles.forEach(function(v){opts+='<option value="'+v.id+'">'+escH(v.number)+'</option>'});
       $('#rtVehicleId').html(opts);
       $('#vmReplVeh').html(opts);
     });
@@ -716,9 +793,15 @@ document.addEventListener('DOMContentLoaded', function(){
         html+='</td></tr>';
       });
       $('#routesTbody').html(html||'<tr><td colspan="7" style="text-align:center;color:var(--t3)">No routes</td></tr>');
-      var opts='<option value="">All Routes</option>',selOpts='';
-      routes.forEach(function(rt){
-        if (rt.status === 'Archived') return;
+      // Route pickers — for the Stop + Assignment modals show the empty-state
+      // hint so operators aren't left with a silent blank dropdown (release-
+      // cert manual-test finding 2026-07-08).
+      var activeRoutes = routes.filter(function(rt){return rt.status !== 'Archived'});
+      var emptyRouteLabel = activeRoutes.length === 0
+        ? '-- No routes yet · add via Routes & Stops tab first --'
+        : '-- Select --';
+      var opts='<option value="">All Routes</option>',selOpts='<option value="">'+emptyRouteLabel+'</option>';
+      activeRoutes.forEach(function(rt){
         opts+='<option value="'+rt.id+'">'+escH(rt.name)+'</option>';
         selOpts+='<option value="'+rt.id+'">'+escH(rt.name)+'</option>';
       });
@@ -727,7 +810,7 @@ document.addEventListener('DOMContentLoaded', function(){
       TRN.loadActiveSuspensions();
     });
   }
-  TRN.openRouteModal=function(){$('#rtId,#rtName,#rtStart,#rtEnd').val('');$('#rtFee,#rtDistance').val(0);$('#rtVehicleId').val('');$('#routeModalTitle').text('Add Route');$('#routeModal').addClass('show')};
+  TRN.openRouteModal=function(){loadVehicles();$('#rtId,#rtName,#rtStart,#rtEnd').val('');$('#rtFee,#rtDistance').val(0);$('#rtVehicleId').val('');$('#routeModalTitle').text('Add Route');$('#routeModal').addClass('show')};
   TRN.closeRouteModal=function(){$('#routeModal').removeClass('show')};
   TRN.editRoute=function(id){var r=routes.find(function(x){return x.id===id});if(!r)return;$('#rtId').val(r.id);$('#rtName').val(r.name);$('#rtVehicleId').val(r.vehicle_id);$('#rtFee').val(r.monthly_fee);$('#rtStart').val(r.start_point);$('#rtEnd').val(r.end_point);$('#rtDistance').val(r.distance_km);$('#routeModalTitle').text('Edit Route');$('#routeModal').addClass('show')};
   TRN.saveRoute=function(){post('transport/save_route',{id:$('#rtId').val(),name:$('#rtName').val(),vehicle_id:$('#rtVehicleId').val(),monthly_fee:$('#rtFee').val(),start_point:$('#rtStart').val(),end_point:$('#rtEnd').val(),distance_km:$('#rtDistance').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeRouteModal();loadRoutes()}else toast(r.message,false)})};
@@ -857,7 +940,7 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   }
   $('#stopRouteFilter').on('change', loadStops);
-  TRN.openStopModal=function(){$('#stId,#stName,#stPickup,#stDrop').val('');$('#stOrder').val(0);$('#stopModalTitle').text('Add Stop');$('#stopModal').addClass('show')};
+  TRN.openStopModal=function(){loadRoutes();$('#stId,#stName,#stPickup,#stDrop').val('');$('#stOrder').val(0);$('#stopModalTitle').text('Add Stop');$('#stopModal').addClass('show')};
   TRN.closeStopModal=function(){$('#stopModal').removeClass('show')};
   TRN.editStop=function(id){var s=stops.find(function(x){return x.id===id});if(!s)return;$('#stId').val(s.id);$('#stRouteId').val(s.route_id);$('#stName').val(s.name);$('#stPickup').val(s.pickup_time);$('#stDrop').val(s.drop_time);$('#stOrder').val(s.order);$('#stopModalTitle').text('Edit Stop');$('#stopModal').addClass('show')};
   TRN.saveStop=function(){post('transport/save_stop',{id:$('#stId').val(),route_id:$('#stRouteId').val(),name:$('#stName').val(),pickup_time:$('#stPickup').val(),drop_time:$('#stDrop').val(),order:$('#stOrder').val()}).done(function(r){r=typeof r==='string'?JSON.parse(r):r;if(r.status==='success'){toast(r.message,true);TRN.closeStopModal();loadStops()}else toast(r.message,false)})};
@@ -897,6 +980,7 @@ document.addEventListener('DOMContentLoaded', function(){
     });
   }
   TRN.openAsnModal=function(editData){
+    loadRoutes();
     $('#asnStudentSearch,#asnStudentId').val('');$('#asnType').val('both');$('#asnStopId').html('<option value="">-- Select --</option>');
     if(editData){
       // Edit mode: pre-fill fields
@@ -1239,6 +1323,7 @@ document.addEventListener('DOMContentLoaded', function(){
   TRN.doRecordIncident=function(){
     var desc=$('#incDesc').val().trim();
     if(!desc){toast('Description required.',false);return}
+    if($('#incSeverity').val()==='Critical'){TRN.__busyLabel='Recording critical incident & notifying…';}else{TRN.__busyLabel='Recording incident…';}
     post('transport_driver/record_incident',{
       staff_id:$('#incStaffId').val(),incident_type:$('#incType').val(),severity:$('#incSeverity').val(),
       incident_date:$('#incDate').val(),incident_time:$('#incTime').val(),
@@ -1724,6 +1809,7 @@ document.addEventListener('DOMContentLoaded', function(){
   TRN.confirmCancelEvent = function(){
     var reason = $('#ecclReason').val().trim();
     if(!reason){ toast('Reason required.', false); return; }
+    TRN.__busyLabel='Cancelling event & notifying parents…';
     post('transport_event/cancel', {id: $('#ecclEventId').val(), reason: reason}).done(function(r){
       r = typeof r === 'string' ? JSON.parse(r) : r;
       if(r.status === 'success'){ toast(r.message, true); TRN.closeCancelEvent(); TRN.closeEventManage(); TRN.loadEvents(); }
@@ -2011,6 +2097,7 @@ document.addEventListener('DOMContentLoaded', function(){
     var msg = $('#sosMessage').val().trim();
     if(!msg){ toast('Message is required.', false); return; }
     if(!confirm('This will fire an URGENT alert to Admin, Transport Manager, Principal AND all parents on the affected route. Continue?')) return;
+    TRN.__busyLabel='Raising SOS…';
     post('transport_sos/raise', {
       vehicle_id: $('#sosVehicle').val(),
       route_id:   $('#sosRoute').val(),

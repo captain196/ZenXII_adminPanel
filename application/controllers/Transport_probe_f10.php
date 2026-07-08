@@ -162,6 +162,11 @@ class Transport_probe_f10 extends CI_Controller
             // dedup TTL colliding with step 1's event.scheduled).
             $r = $this->transportNotifier->notify('event.consent_reminder', [
                 'event_id'    => 'PROBE_F10_EVT_1',
+                // Salient batch_id ensures the idempotency key varies per run so
+                // the 24h dedupe TTL cannot cause the probe to silently fail on
+                // repeat same-day executions (release-cert probe robustness fix
+                // 2026-07-08).
+                'batch_id'    => 'PROBE_F10_STEP3_' . microtime(true),
                 'title'       => 'F10 Probe Excursion',
                 'event_date'  => date('Y-m-d'),
                 'student_ids' => [$studentId],

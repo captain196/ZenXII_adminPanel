@@ -990,6 +990,17 @@ $route['transport']                         = 'Transport/index';
 $route['transport/vehicles']                = 'Transport/index';
 $route['transport/routes']                  = 'Transport/index';
 $route['transport/assignments']             = 'Transport/index';
+// F1-F8 tab routes — every tab slug in transport/index.php's tab_map
+// must be explicitly routed to Transport/index, otherwise CI3 falls
+// through to method-dispatch (looks for Transport::vendors etc.) and
+// 404s. Caught during release certification 2026-07-08.
+$route['transport/vendors']                 = 'Transport/index';   // F1
+$route['transport/drivers']                 = 'Transport/index';   // F4
+$route['transport/expenses']                = 'Transport/index';   // F5
+$route['transport/sos']                     = 'Transport/index';   // F6
+$route['transport/trips']                   = 'Transport/index';   // F7
+$route['transport/events']                  = 'Transport/index';   // F8
+$route['transport/expiry']                  = 'Transport/index';   // F1
 $route['transport/get_vehicles']            = 'Transport/get_vehicles';
 $route['transport/save_vehicle']            = 'Transport/save_vehicle';
 $route['transport/delete_vehicle']          = 'Transport/delete_vehicle';

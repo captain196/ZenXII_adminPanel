@@ -1560,15 +1560,27 @@ service cloud.firestore {
     // writes here (server-side enforcement in
     // Transport_notifier::_filterByPreferences).
     match /notificationPreferences/{docId} {
+      // Owner-only doc-id match. Accept EITHER the custom user_id claim
+      // (set for staff via Firebase::setCanonicalClaims) OR auth.uid — for
+      // parents, Firebase Auth uid == studentId (Sis.php:2035 mints uid =
+      // $user_id at parent password reset), but the SIS parent-claims
+      // path (Sis.php:2049) does NOT include a user_id custom claim, so
+      // the token.user_id check fails for parents. auth.uid is the same
+      // identity signal, server-controlled, and un-spoofable. Release-
+      // cert manual-test finding 2026-07-08 pm: without this fallback,
+      // parents hit PERMISSION_DENIED on every notification-preference
+      // toggle, breaking the entire F10 Parent-side prefs feature.
       allow read: if isSameSchool() && (
         isAdmin() ||
-        docId == (request.auth.token.school_id + '_' + request.auth.token.user_id)
+        docId == (request.auth.token.school_id + '_' + request.auth.token.user_id) ||
+        docId == (request.auth.token.school_id + '_' + request.auth.uid)
       );
       allow write: if isSameSchool()
         && isSameSchoolWrite()
         && (
           isAdmin() ||
-          docId == (request.auth.token.school_id + '_' + request.auth.token.user_id)
+          docId == (request.auth.token.school_id + '_' + request.auth.token.user_id) ||
+          docId == (request.auth.token.school_id + '_' + request.auth.uid)
         );
     }
 

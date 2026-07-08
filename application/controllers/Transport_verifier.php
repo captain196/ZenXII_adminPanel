@@ -182,6 +182,7 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-F1-4', 'category' => self::CAT_RUNTIME,     'label' => 'lifecycle transitions legal','callable' => '_chTrnF1_4' ],
             [ 'id' => 'CH-TRN-F1-5', 'category' => self::CAT_RUNTIME,     'label' => 'maint/fuel FK integrity',   'callable' => '_chTrnF1_5' ],
             [ 'id' => 'CH-TRN-F1-6', 'category' => self::CAT_PERFORMANCE, 'label' => 'no N+1 in fleet writers',   'callable' => '_chTrnF1_6' ],
+            [ 'id' => 'CH-TRN-F1-7', 'category' => self::CAT_CONTRACT,   'label' => 'list endpoints unwrap Firestore envelope', 'callable' => '_chTrnF1_7' ],
 
             // ─── F2 Route & Stop Management (added 2026-07-07) ────────────────
             [ 'id' => 'CH-TRN-F2-1', 'category' => self::CAT_SOURCE,     'label' => 'no ops_acc route/stop',     'callable' => '_chTrnF2_1' ],
@@ -248,6 +249,14 @@ class Transport_verifier extends CI_Controller
             [ 'id' => 'CH-TRN-F10-2', 'category' => self::CAT_SOURCE,     'label' => 'safety-exempt covers all Urgent','callable' => '_chTrnF10_2' ],
             [ 'id' => 'CH-TRN-F10-3', 'category' => self::CAT_RUNTIME,    'label' => 'prefs docs no safety mutes',     'callable' => '_chTrnF10_3' ],
             [ 'id' => 'CH-TRN-F10-4', 'category' => self::CAT_CONTRACT,   'label' => 'transport fee category lowercase','callable' => '_chTrnF10_4' ],
+
+            // ─── F11 Analytics + Super Admin (added 2026-07-08) ─────────────
+            [ 'id' => 'CH-TRN-F11-1', 'category' => self::CAT_SOURCE,     'label' => 'analytics reuse (no raw scans)', 'callable' => '_chTrnF11_1' ],
+            [ 'id' => 'CH-TRN-F11-2', 'category' => self::CAT_RUNTIME,    'label' => 'summary period_year_month shape','callable' => '_chTrnF11_2' ],
+            [ 'id' => 'CH-TRN-F11-3', 'category' => self::CAT_RUNTIME,    'label' => 'routeFleetSummary populated',    'callable' => '_chTrnF11_3' ],
+            [ 'id' => 'CH-TRN-F11-4', 'category' => self::CAT_CONTRACT,   'label' => 'role-scope matrix complete',     'callable' => '_chTrnF11_4' ],
+            [ 'id' => 'CH-TRN-F11-5', 'category' => self::CAT_PERFORMANCE,'label' => 'analytics per-request memo',     'callable' => '_chTrnF11_5' ],
+            [ 'id' => 'CH-TRN-F11-6', 'category' => self::CAT_SOURCE,     'label' => 'analytics endpoints role-gated', 'callable' => '_chTrnF11_6' ],
         ];
     }
 
@@ -982,6 +991,99 @@ class Transport_verifier extends CI_Controller
         // check, no per-item query). Neither is N+1: the routes[] input is
         // bounded by controller intent. Report WARN.
         return ['status' => 'WARN', 'detail' => "{$offenders} bounded-loop pattern(s) noted — reviewer to confirm each is bounded input"];
+    }
+
+    /**
+     * CH-TRN-F1-7 — List endpoints unwrap the Firestore envelope.
+     *
+     * Root cause of the release-cert defect caught 2026-07-08: several
+     * Transport_service list-return methods iterated the wrapped rows from
+     * Firestore_service::schoolWhere() ([['id' => docKey, 'data' => {...}], ...])
+     * as if they were flat entity data. Result: JSON payload leaked the
+     * envelope to the UI (`{id: 'SCH_...', data: {vendor_name, ...}}`), and
+     * the JS could only render `id` — every other column showed `—`.
+     *
+     * Two-layer guard so the regression cannot silently return:
+     *   (1) SOURCE: no `is_array($doc) ? $doc : []` idiom anywhere in the
+     *       service — the broken pattern is easily identified by that
+     *       specific ternary. Every occurrence must be replaced with a call
+     *       to `_unwrapNestedRow($doc, 'schoolId')`.
+     *   (2) RUNTIME: for every list method whose collection contains ≥1
+     *       doc for the test school, assert the first returned row has
+     *       `schoolId` at the top level (a mandatory injected field on every
+     *       setEntity write). If `schoolId` is missing, the row is wrapped.
+     *
+     * FAIL if either layer trips. Zero-data collections skip the runtime
+     * check silently (source layer still provides defense).
+     */
+    private function _chTrnF1_7(): array
+    {
+        // ── Layer 1: source-scan for the broken idiom ──
+        $path = APPPATH . 'libraries/Transport_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = $this->_stripComments((string) file_get_contents($path));
+        $brokenIdiomCount = preg_match_all(
+            '/is_array\(\$(?:doc|r|v|d|row)\)\s*\?\s*\$(?:doc|r|v|d|row)\s*:\s*\[\s*\]/',
+            $src
+        );
+        if ($brokenIdiomCount > 0) {
+            return [
+                'status' => 'FAIL',
+                'detail' => "{$brokenIdiomCount} occurrence(s) of the envelope-leak idiom `is_array(\$doc) ? \$doc : []` — replace with _unwrapNestedRow(\$doc, 'schoolId')",
+            ];
+        }
+
+        // ── Layer 2: runtime shape assertion ──
+        // ($this->transport already initialised in __construct)
+        $offenders = [];
+        $checked   = 0;
+
+        $probes = [
+            ['label' => 'listAllVendors',    'sentinel' => 'vendor_name'],
+            ['label' => 'listVehicles',      'sentinel' => 'number'],
+            ['label' => 'listRoutes',        'sentinel' => 'name'],
+            ['label' => 'listStops',         'sentinel' => 'name'],
+        ];
+        foreach ($probes as $p) {
+            try {
+                $rows = $this->transport->{$p['label']}();
+            } catch (\Throwable $e) {
+                $offenders[] = "{$p['label']}: threw " . $e->getMessage();
+                continue;
+            }
+            if (!is_array($rows) || empty($rows)) {
+                continue; // empty collection — nothing to shape-check
+            }
+            $checked++;
+            $first = $rows[0];
+            if (!is_array($first)) {
+                $offenders[] = "{$p['label']}: first row is not an array";
+                continue;
+            }
+            // Wrapped envelope leak — 'data' key present + sentinel field absent
+            if (isset($first['data']) && is_array($first['data']) && !isset($first[$p['sentinel']])) {
+                $offenders[] = "{$p['label']}: envelope leak — 'data' key present, '{$p['sentinel']}' missing at top level";
+                continue;
+            }
+            // Business-field sentinel check — schoolId is always injected by setEntity
+            if (!isset($first['schoolId'])) {
+                $offenders[] = "{$p['label']}: schoolId missing at top level (unexpected shape)";
+            }
+        }
+
+        if ($offenders !== []) {
+            return [
+                'status' => 'FAIL',
+                'detail' => 'runtime shape check failed: ' . implode('; ', $offenders),
+            ];
+        }
+        $checkedNote = $checked === 0 ? ' (source layer only; no seed data)' : " ({$checked} collection(s) checked)";
+        return [
+            'status' => 'PASS',
+            'detail' => 'no envelope-leak idiom in source; list endpoints return flat entities' . $checkedNote,
+        ];
     }
 
     // ═════════════════════════════════════════════════════════════════════
@@ -2697,6 +2799,192 @@ class Transport_verifier extends CI_Controller
             return ['status' => 'INFO', 'detail' => 'no transport-related demands sampled'];
         }
         return ['status' => 'PASS', 'detail' => "{$transportDemands} transport demand(s): {$lowercase} lowercase (F10-canonical), {$mixedCase} mixed-case (pre-F10 legacy — tolerated)"];
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  F11 Analytics + Super Admin assertions (CH-TRN-F11-1..6) 2026-07-08
+    // ═════════════════════════════════════════════════════════════════════
+
+    /**
+     * CH-TRN-F11-1 — Transport_analytics_service must not scan raw
+     * operational collections. It composes over denormalised caches +
+     * existing compute methods, per the operator directive "no
+     * duplication of business logic". Source-scan forbids
+     * schoolWhere('transportExpenses'|'tripLogs'|... ) inside the
+     * analytics service (with the specific exception of low-cardinality
+     * roll-up collections that ARE the denormalised layer:
+     * vehicles/sosAlerts for KPI counts, transportAttendance for the
+     * live-ops onboard math, routeFleetSummary/driverActivitySummary/
+     * fleetMonthlyExpenseSummary/vehicleExpiryDashboardCache which are
+     * the caches themselves).
+     */
+    private function _chTrnF11_1(): array
+    {
+        $path = APPPATH . 'libraries/Transport_analytics_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = $this->_stripComments((string) file_get_contents($path));
+        // Forbidden = raw operational-collection full scans that would
+        // duplicate compute*() aggregations
+        $forbidden = ['transportExpenses', 'maintenanceLogs', 'fuelLogs', 'driverIncidents',
+                      'driverPerformanceReviews', 'temporaryDriverAssignments'];
+        $violations = [];
+        foreach ($forbidden as $col) {
+            $regex = "/schoolWhere\\s*\\(\\s*['\"]{$col}['\"]/";
+            if (preg_match($regex, $src, $m)) {
+                $violations[] = "{$col}: " . substr($m[0], 0, 40);
+            }
+        }
+        if ($violations !== []) {
+            return ['status' => 'FAIL', 'detail' => count($violations) . ' raw-scan violations: ' . implode('; ', $violations)];
+        }
+        return ['status' => 'PASS', 'detail' => 'analytics service composes over caches; no raw operational-collection scans'];
+    }
+
+    /**
+     * CH-TRN-F11-2 — Every driverActivitySummary + fleetMonthlyExpenseSummary
+     * doc carries a period_year_month field matching /^\d{4}-\d{2}$/.
+     * Trend queries fail silently otherwise (no data), so this catches
+     * schema drift early.
+     */
+    private function _chTrnF11_2(): array
+    {
+        $bad = 0; $sampled = 0;
+        foreach (['driverActivitySummary', 'fleetMonthlyExpenseSummary'] as $col) {
+            try {
+                $rows = (array) $this->fs->schoolWhere($col, [], null, 'ASC', 100);
+            } catch (\Throwable $_) { continue; }
+            foreach ($rows as $r) {
+                $sampled++;
+                $inner = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
+                $ym = (string) ($inner['period_year_month'] ?? '');
+                if (!preg_match('/^\d{4}-\d{2}$/', $ym)) { $bad++; }
+            }
+        }
+        if ($sampled === 0) {
+            return ['status' => 'INFO', 'detail' => 'no summary docs — trivial pass'];
+        }
+        if ($bad > 0) {
+            return ['status' => 'FAIL', 'detail' => "{$bad}/{$sampled} summary docs missing/malformed period_year_month"];
+        }
+        return ['status' => 'PASS', 'detail' => "{$sampled} summary docs, all period_year_month valid"];
+    }
+
+    /**
+     * CH-TRN-F11-3 — For every Active route with active studentRoutes,
+     * a routeFleetSummary doc exists. Fills the F2 gap that F11
+     * closed via computeRouteFleetSummary.
+     */
+    private function _chTrnF11_3(): array
+    {
+        try {
+            $routes = (array) $this->fs->schoolWhere('routes',
+                [['status', '==', 'Active']], null, 'ASC', 200);
+        } catch (\Throwable $_) {
+            return ['status' => 'INFO', 'detail' => 'routes unreachable — trivial pass'];
+        }
+        if ($routes === []) {
+            return ['status' => 'INFO', 'detail' => 'no active routes — trivial pass'];
+        }
+        $missing = [];
+        foreach ($routes as $r) {
+            $inner = (isset($r['data']) && is_array($r['data'])) ? $r['data'] : $r;
+            $rid = (string) ($r['id'] ?? $inner['id'] ?? '');
+            if ($rid === '') { continue; }
+            try {
+                $rfs = $this->fs->getEntity('routeFleetSummary', "RFS_{$rid}");
+                if (!is_array($rfs)) { $missing[] = $rid; }
+            } catch (\Throwable $_) { $missing[] = $rid; }
+        }
+        if ($missing !== []) {
+            return ['status' => 'WARN', 'detail' => count($missing) . ' active routes missing summary: '
+                . implode(',', array_slice($missing, 0, 3)) . ' (run computeRouteFleetSummary to backfill)'];
+        }
+        return ['status' => 'PASS', 'detail' => count($routes) . ' active routes have routeFleetSummary docs'];
+    }
+
+    /**
+     * CH-TRN-F11-4 — Role-scope matrix completeness. Every role in
+     * ROLE_SCOPES maps to a subset of {financial, operational,
+     * strategic, driver}; every widget in WIDGET_SCOPES tags a scope
+     * present in the enum. Guards against a widget landing without an
+     * ownership tag.
+     */
+    private function _chTrnF11_4(): array
+    {
+        if (!class_exists('Transport_analytics_service')) {
+            @include_once APPPATH . 'libraries/Transport_analytics_service.php';
+        }
+        if (!class_exists('Transport_analytics_service')) {
+            return ['status' => 'FAIL', 'detail' => 'Transport_analytics_service not loadable'];
+        }
+        $scopes = ['financial', 'operational', 'strategic', 'driver'];
+        $roles  = (array) Transport_analytics_service::ROLE_SCOPES;
+        $widgets = (array) Transport_analytics_service::WIDGET_SCOPES;
+        $bad = [];
+        foreach ($roles as $r => $scopeList) {
+            foreach ((array) $scopeList as $s) {
+                if (!in_array($s, $scopes, true)) { $bad[] = "role_{$r}_bad_scope_{$s}"; }
+            }
+        }
+        foreach ($widgets as $w => $s) {
+            if (!in_array((string) $s, $scopes, true)) { $bad[] = "widget_{$w}_bad_scope_{$s}"; }
+        }
+        if ($bad !== []) {
+            return ['status' => 'FAIL', 'detail' => count($bad) . ' matrix errors: ' . implode(',', array_slice($bad, 0, 3))];
+        }
+        return ['status' => 'PASS', 'detail' => count($roles) . ' roles + ' . count($widgets) . ' widgets mapped'];
+    }
+
+    /**
+     * CH-TRN-F11-5 — Analytics service implements per-request
+     * memoisation. Source-scan asserts the _memo() pattern is present
+     * and used across the widget accessors.
+     */
+    private function _chTrnF11_5(): array
+    {
+        $path = APPPATH . 'libraries/Transport_analytics_service.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = (string) file_get_contents($path);
+        if (!preg_match('/private\s+function\s+_memo\s*\(/', $src)) {
+            return ['status' => 'FAIL', 'detail' => '_memo helper missing'];
+        }
+        $memoCalls = preg_match_all('/\$this->_memo\s*\(/', $src, $_);
+        if ($memoCalls < 5) {
+            return ['status' => 'FAIL', 'detail' => "only {$memoCalls} _memo call sites — expected ≥5 (widgets not memoised)"];
+        }
+        return ['status' => 'PASS', 'detail' => "{$memoCalls} widget accessors use per-request memoisation"];
+    }
+
+    /**
+     * CH-TRN-F11-6 — Every analytics endpoint applies role-based
+     * visibility filtering. Source-scan: the widget endpoints must
+     * call _widget() (which gates on visibleWidgetsForRole), and
+     * bundle() must consult hasAnyVisibility().
+     */
+    private function _chTrnF11_6(): array
+    {
+        $path = APPPATH . 'controllers/Transport_analytics.php';
+        if (!is_readable($path)) {
+            return ['status' => 'FAIL', 'detail' => "cannot read {$path}"];
+        }
+        $src = (string) file_get_contents($path);
+        $needles = [
+            '_widget('                               => 'widget scope gate',
+            'hasAnyVisibility'                       => 'bundle scope gate',
+            'visibleWidgetsForRole'                  => 'widget list',
+        ];
+        $missing = [];
+        foreach ($needles as $n => $label) {
+            if (strpos($src, $n) === false) { $missing[] = $label; }
+        }
+        if ($missing !== []) {
+            return ['status' => 'FAIL', 'detail' => 'missing gates: ' . implode(', ', $missing)];
+        }
+        return ['status' => 'PASS', 'detail' => 'all analytics endpoints apply role-scope filtering'];
     }
 
     // ─── shared source-grep helper ───────────────────────────────────────
