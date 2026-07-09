@@ -119,11 +119,31 @@ service firebase.storage {
 
     // ─── L2: GALLERY media (Teacher GalleryMediaUploader) ───────────────
     // Path:  galleryMedia/{schoolId}/{albumId}/{path=**}
+    //
+    // Phase B/C hardening (2026-07-09, audit H2): tenant isolation was the
+    // ONLY gate, so ANY authenticated same-school user — including a Parent
+    // or Student token — could push arbitrarily large files of any type
+    // straight into a school's gallery prefix (storage-cost DoS + content-
+    // hosting abuse), even though only staff can register the matching
+    // galleryMedia Firestore doc. Block non-staff writers and bound object
+    // size to the Teacher GalleryMediaUploader's MAX_VIDEO_BYTES (50 MiB).
+    // A contentType MIME allowlist is intentionally deferred: the uploader
+    // uses putFile() with Uri-inferred MIME (no explicit StorageMetadata),
+    // so a contentType predicate risks rejecting legitimate uploads — add it
+    // only once the uploader sets explicit metadata (mirrors L3 Stories).
+    // delete stays tenant-only: request.resource is null on delete, so the
+    // size predicate can't apply, and the uploader's orphan-rollback needs it.
     match /galleryMedia/{schoolId}/{albumId}/{path=**} {
-      allow read:  if request.auth != null
-                   && request.auth.token.school_id == schoolId;
-      allow write: if request.auth != null
-                   && request.auth.token.school_id == schoolId;
+      allow read:   if request.auth != null
+                    && request.auth.token.school_id == schoolId;
+      allow create, update:
+                    if request.auth != null
+                    && request.auth.token.school_id == schoolId
+                    && !(request.auth.token.role in
+                         ['Student','student','Parent','parent','Guardian','guardian'])
+                    && request.resource.size <= 50 * 1024 * 1024;
+      allow delete: if request.auth != null
+                    && request.auth.token.school_id == schoolId;
     }
 
     // ─── L3: STORIES (Teacher-posted via StoryMediaUploader) ────────────
@@ -252,11 +272,21 @@ service firebase.storage {
     // ─── G3: Event gallery media ────────────────────────────────────────
     // Path written by Schools.php gallery upload flow:
     //   {schoolName}/Events/Media/{eventId}/{img|vid}_{ts}_{rand}.{ext}
+    // Frozen legacy path — no NEW writes land here (active gallery writes go
+    // to galleryMedia/... L2 and the PHP-admin-SDK schools/{schoolId}/events
+    // tree L6). Harden defensively with the same non-staff block + 50 MiB cap
+    // as L2 so any residual direct client write can't be abused (audit H2).
     match /{schoolName}/Events/{path=**} {
-      allow read:  if request.auth != null
-                   && request.auth.token.school_id == schoolName;
-      allow write: if request.auth != null
-                   && request.auth.token.school_id == schoolName;
+      allow read:   if request.auth != null
+                    && request.auth.token.school_id == schoolName;
+      allow create, update:
+                    if request.auth != null
+                    && request.auth.token.school_id == schoolName
+                    && !(request.auth.token.role in
+                         ['Student','student','Parent','parent','Guardian','guardian'])
+                    && request.resource.size <= 50 * 1024 * 1024;
+      allow delete: if request.auth != null
+                    && request.auth.token.school_id == schoolName;
     }
 
     // ─── G4: Legacy school logos (Schools.php::add_school) ──────────────

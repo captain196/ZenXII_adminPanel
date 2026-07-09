@@ -47,10 +47,9 @@ class Hr extends MY_Controller
         return "Schools/{$this->school_name}/HR";
     }
 
-    private function _dept($id = '')
-    {
-        return $this->_hr() . '/Departments' . ($id ? "/{$id}" : '');
-    }
+    // NOTE: the legacy RTDB Departments path (Schools/{name}/HR/Departments) is
+    // retired — departments now live on Firestore schools/{id}.departments,
+    // written only via Hr::save_department. The old _dept() helper was removed.
 
     private function _jobs($id = '')
     {
@@ -1567,14 +1566,15 @@ class Hr extends MY_Controller
         if (is_array($profiles)) {
             foreach ($profiles as $sid => $p) {
                 if (!is_array($p) || $sid === 'Count') continue;
-                $dept = trim($p['Department'] ?? '');
+                $dept = trim($p['Department'] ?? $p['department'] ?? '');
                 if ($dept === '') $dept = 'Unassigned';
-                if (!isset($countByDept[$dept])) {
-                    $countByDept[$dept] = 0;
-                    $staffByDept[$dept] = [];
+                $dk = dept_key($dept);   // key on normalized name so all case/space variants SUM
+                if (!isset($countByDept[$dk])) {
+                    $countByDept[$dk] = 0;
+                    $staffByDept[$dk] = [];
                 }
-                $countByDept[$dept]++;
-                $staffByDept[$dept][] = [
+                $countByDept[$dk]++;
+                $staffByDept[$dk][] = [
                     'id'       => $sid,
                     'name'     => $p['Name'] ?? $sid,
                     'position' => $p['Position'] ?? '',
@@ -1605,8 +1605,9 @@ class Hr extends MY_Controller
                 $jDept = $j['department'] ?? '';
                 $jStatus = $j['status'] ?? '';
                 if ($jDept === '' || $jStatus === 'Closed') continue;
-                if (!isset($jobsByDept[$jDept])) $jobsByDept[$jDept] = [];
-                $jobsByDept[$jDept][] = [
+                $jk = dept_key($jDept);   // normalized so jobs join their department
+                if (!isset($jobsByDept[$jk])) $jobsByDept[$jk] = [];
+                $jobsByDept[$jk][] = [
                     'id'               => $jid,
                     'title'            => $j['title'] ?? '',
                     'total_positions'  => (int) ($j['total_positions'] ?? $j['positions'] ?? 0),
@@ -1618,13 +1619,16 @@ class Hr extends MY_Controller
             }
         }
 
+        // Buckets are keyed by normalized name; join each department doc by the
+        // same key so counts include every case/whitespace variant of its name.
         $list = [];
         foreach ($depts as $id => $d) {
             $dName = $d['name'] ?? '';
+            $dk    = dept_key($dName);
             $d['id']           = $id;
-            $d['staff_count']  = $countByDept[$dName] ?? 0;
-            $d['staff']        = $staffByDept[$dName] ?? [];
-            $d['openings']     = $jobsByDept[$dName] ?? [];
+            $d['staff_count']  = $countByDept[$dk] ?? 0;
+            $d['staff']        = $staffByDept[$dk] ?? [];
+            $d['openings']     = $jobsByDept[$dk] ?? [];
             $d['open_count']   = count($d['openings']);
             $list[] = $d;
         }
@@ -1672,7 +1676,7 @@ class Hr extends MY_Controller
         } catch (\Exception $e) {}
         if (!is_array($existing)) $existing = [];
         foreach ($existing as $eid => $ed) {
-            if ($eid !== $id && isset($ed['name']) && strtolower($ed['name']) === strtolower($name)) {
+            if ($eid !== $id && isset($ed['name']) && dept_key($ed['name']) === dept_key($name)) {
                 $this->json_error('A department with this name already exists.');
             }
         }
@@ -1697,11 +1701,17 @@ class Hr extends MY_Controller
         if (!$isNew && isset($prev['created_at'])) {
             $data['created_at'] = $prev['created_at'];
         }
-        if ($this->input->post('role_ids') !== null) {
-            $roleIdsRaw = $this->input->post('role_ids');
-            $roleIds = is_array($roleIdsRaw)
-                ? $roleIdsRaw
-                : array_map('trim', explode(',', (string) $roleIdsRaw));
+        // The Departments & Roles editor always posts `role_ids_present=1` so an
+        // EMPTY selection can genuinely CLEAR a department's roles. Without that
+        // marker an empty FormData omits role_ids entirely, which is
+        // indistinguishable from "field not submitted" — so the legacy branch
+        // below preserved the old list and unchecking-all-then-Save was a no-op.
+        $roleIdsPosted  = $this->input->post('role_ids');
+        $roleIdsPresent = $this->input->post('role_ids_present') !== null;
+        if ($roleIdsPosted !== null || $roleIdsPresent) {
+            $roleIds = is_array($roleIdsPosted)
+                ? $roleIdsPosted
+                : array_map('trim', explode(',', (string) $roleIdsPosted));
             $roleIds = array_values(array_filter(array_unique($roleIds), function ($r) {
                 return is_string($r) && preg_match('/^ROLE_[A-Z0-9_]+$/', $r);
             }));
@@ -1728,7 +1738,46 @@ class Hr extends MY_Controller
             log_message('error', "HR save_department Firestore failed: " . $e->getMessage());
         }
 
-        $this->json_success(['id' => $id, 'message' => $isNew ? 'Department created.' : 'Department updated.']);
+        // If an existing department was RENAMED, cascade the new name onto every
+        // staff doc that still carries the old one. Staff store the department
+        // NAME (not its id), so without this a rename orphans their department
+        // and silently zeroes the dept's staff count / delete guard. Best-effort.
+        $renamedFrom = (!$isNew && isset($prev['name'])) ? trim((string) $prev['name']) : '';
+        $cascaded = 0; $cascadeFailed = 0;
+        if ($renamedFrom !== '' && dept_key($renamedFrom) !== dept_key($name)) {
+            $fromKey = dept_key($renamedFrom);
+            try {
+                $fsStaff = $this->fs->schoolWhere('staff', []);
+                if (is_array($fsStaff)) {
+                    foreach ($fsStaff as $doc) {
+                        $d   = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                        $cur = $d['Department'] ?? $d['department'] ?? '';
+                        if ($cur !== '' && dept_key($cur) === $fromKey) {
+                            $sid = (string) ($d['staffId'] ?? $d['User ID'] ?? '');
+                            if ($sid === '') continue;
+                            // Per-staff try so one failed write doesn't abort the
+                            // rest (re-running save is idempotent). Write BOTH the
+                            // canonical Department and legacy lowercase department
+                            // so neither is left pointing at the old name.
+                            try {
+                                $this->fs->update('staff', $this->fs->docId($sid), ['Department' => $name, 'department' => $name]);
+                                $cascaded++;
+                            } catch (\Throwable $ie) {
+                                $cascadeFailed++;
+                                log_message('error', "HR save_department rename cascade write failed for {$sid}: " . $ie->getMessage());
+                            }
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                log_message('error', 'HR save_department rename cascade failed: ' . $e->getMessage());
+            }
+        }
+
+        $msg = $isNew ? 'Department created.' : 'Department updated.';
+        if ($cascaded > 0) $msg .= " Renamed department on {$cascaded} staff record(s).";
+        if ($cascadeFailed > 0) $msg .= " {$cascadeFailed} staff update(s) failed — save again to retry.";
+        $this->json_success(['id' => $id, 'message' => $msg, 'renamed_staff' => $cascaded, 'renamed_failed' => $cascadeFailed]);
     }
 
     /**
@@ -1759,9 +1808,13 @@ class Hr extends MY_Controller
         try {
             $fsStaff = $this->fs->schoolWhere('staff', []);
             if (is_array($fsStaff)) {
+                $deptNameKey = dept_key($deptName);
                 foreach ($fsStaff as $doc) {
                     $d = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
-                    if (($d['Department'] ?? $d['department'] ?? '') === $deptName) {
+                    // Case/whitespace-insensitive match so an Excel-imported
+                    // "Science " or legacy "science" can't slip past the guard
+                    // and orphan the staff (see delete-guard bypass audit).
+                    if (dept_key($d['Department'] ?? $d['department'] ?? '') === $deptNameKey) {
                         $this->json_error('Cannot delete: staff members are assigned to this department. Reassign them first.');
                     }
                 }
@@ -4927,7 +4980,7 @@ HTML;
             }
 
             $staffName  = $profile['Name'] ?? $staffId;
-            $department = $profile['Department'] ?? '';
+            $department = $profile['Department'] ?? $profile['department'] ?? '';
             $position   = $profile['Position'] ?? '';
 
             // ── Per-staff working days — pro-rated for join/exit ──
@@ -5092,6 +5145,7 @@ HTML;
             // Primary: use staff_roles + role category from Config/StaffRoles
             $staffRoles = $profile['staff_roles'] ?? [];
             $isTeaching = false;
+            $sawCategory = false;
             if (!empty($staffRoles) && is_array($staffRoles)) {
                 if (!isset($_roleDefs)) {
                     try {
@@ -5101,13 +5155,17 @@ HTML;
                     if (!is_array($_roleDefs)) $_roleDefs = [];
                 }
                 foreach ($staffRoles as $_rid) {
-                    if (($_roleDefs[$_rid]['category'] ?? '') === 'Teaching') {
-                        $isTeaching = true;
-                        break;
+                    $cat = $_roleDefs[$_rid]['category'] ?? '';
+                    if ($cat !== '') {
+                        $sawCategory = true;
+                        if ($cat === 'Teaching') { $isTeaching = true; break; }
                     }
                 }
-            } else {
-                // Fallback for unmigrated staff: use Position text matching
+            }
+            // Fallback to Position text when staff has no roles OR the role defs
+            // carried no category (old staffRoles shape) — otherwise a teacher
+            // would silently book as a Non-Teaching expense.
+            if (!$isTeaching && !$sawCategory) {
                 $isTeaching = (
                     stripos($position, 'teacher') !== false ||
                     stripos($position, 'lecturer') !== false ||
@@ -6042,7 +6100,7 @@ HTML;
                 'name'          => $staffProfile['Name'] ?? '',
                 'email'         => $staffProfile['Email'] ?? '',
                 'phone'         => $staffProfile['Phone'] ?? '',
-                'department'    => $staffProfile['Department'] ?? '',
+                'department'    => $staffProfile['Department'] ?? $staffProfile['department'] ?? '',
                 'position'      => $staffProfile['Position'] ?? '',
                 'qualification' => $staffProfile['Qualification'] ?? '',
             ] : null,
@@ -6823,7 +6881,7 @@ HTML;
                 $list[] = [
                     'staff_id'      => $staffId,
                     'name'          => $p['Name'] ?? $staffId,
-                    'department'    => $p['Department'] ?? '',
+                    'department'    => $p['Department'] ?? $p['department'] ?? '',
                     'position'      => $p['Position'] ?? '',
                     'phone'         => $p['Phone'] ?? '',
                     'email'         => $p['Email'] ?? '',
@@ -6995,35 +7053,40 @@ HTML;
         }
         if ($profiles === null) $profiles = [];
 
-        // Count staff per department
-        $countByDept = [];
+        // Count staff per department — keyed on the normalized name so every
+        // case/whitespace variant sums into one bucket; keep a display name.
+        $countByDept  = [];
+        $displayByKey = [];
         if (is_array($roster) && is_array($profiles)) {
             foreach ($roster as $sid => $rd) {
                 $dept = (isset($profiles[$sid]) && is_array($profiles[$sid]))
-                    ? ($profiles[$sid]['Department'] ?? 'Unassigned')
+                    ? ($profiles[$sid]['Department'] ?? $profiles[$sid]['department'] ?? 'Unassigned')
                     : 'Unassigned';
-                $countByDept[$dept] = ($countByDept[$dept] ?? 0) + 1;
+                if (trim((string) $dept) === '') $dept = 'Unassigned';
+                $dk = dept_key($dept);
+                $countByDept[$dk] = ($countByDept[$dk] ?? 0) + 1;
+                if (!isset($displayByKey[$dk])) $displayByKey[$dk] = $dept;
             }
         }
 
         $list = [];
-        $assignedDeptNames = [];
+        $assignedKeys = [];
         if (is_array($depts)) {
             foreach ($depts as $id => $d) {
                 $dName = $d['name'] ?? '';
                 $d['id']          = $id;
-                $d['staff_count'] = $countByDept[$dName] ?? 0;
+                $d['staff_count'] = $countByDept[dept_key($dName)] ?? 0;
                 $list[] = $d;
-                $assignedDeptNames[] = $dName;
+                $assignedKeys[dept_key($dName)] = true;
             }
         }
 
         // Add "Unassigned" or any departments not in the formal list
-        foreach ($countByDept as $dName => $cnt) {
-            if (!in_array($dName, $assignedDeptNames, true)) {
+        foreach ($countByDept as $dk => $cnt) {
+            if (!isset($assignedKeys[$dk])) {
                 $list[] = [
                     'id'          => '',
-                    'name'        => $dName,
+                    'name'        => $displayByKey[$dk] ?? $dk,
                     'staff_count' => $cnt,
                     'status'      => 'N/A',
                 ];

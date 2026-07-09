@@ -383,11 +383,19 @@ class Exam_result_store
     // ──────────────────────────────────────────────────────────────────────
     public function commitSectionResults(string $examId, string $examName, string $class, string $section,
         array $studentResults, array $rosterNames, array $actor, string $gradingScale, int $passingPct,
-        string $computedBy, string $computedAt, string $reason = ''): array
+        string $computedBy, string $computedAt, string $reason = '',
+        array $rosterRolls = [], string $targetCollection = ''): array
     {
-        if (!$this->ready) return ['ok' => false, 'count' => 0, 'reason' => 'store not ready'];
+        if (!$this->ready) return ['ok' => false, 'count' => 0, 'reason' => 'store not ready', 'resultDocs' => []];
+        // PUBLISH-GATE (HIGH-3): compute writes to resultsStaging by default —
+        // NEVER straight to the parent-visible `results` collection. Draft
+        // results stay staged; the publish transition promotes staging→results.
+        // Callers may pass Firestore_helper::RESULTS explicitly (not used by the
+        // compute path). INVARIANT: `results` holds ONLY published results.
+        $targetCol = ($targetCollection !== '') ? $targetCollection : Firestore_helper::RESULTS_STAGING;
         $cid = $this->newCorrelationId('compute');
         $ops = [];
+        $resultDocs = [];   // [uid => resultDoc] — returned so the caller can promote in-memory (no re-read)
 
         foreach ($studentResults as $uid => $L) {
             $uid = (string) $uid;
@@ -408,15 +416,17 @@ class Exam_result_store
             }
             $doc = $this->buildResultDoc(
                 $examId, $examName, $class, $section, $uid,
-                (string) ($rosterNames[$uid] ?? ''), '', $subjects,
+                // MED-6: thread the real roster roll number (was hardcoded '').
+                (string) ($rosterNames[$uid] ?? ''), (string) ($rosterRolls[$uid] ?? ''), $subjects,
                 $L['TotalMarks'] ?? 0, $L['MaxMarks'] ?? 0, $L['Percentage'] ?? null,   // overall percentage null preserved (CC-8)
                 (string) ($L['Grade'] ?? ''), (string) ($L['PassFail'] ?? ''), !empty($L['Absent']),
                 $absentSubjects, (int) ($L['Rank'] ?? 0), $gradingScale, $passingPct, $computedBy, $computedAt
             );
-            $ops[] = $this->setOp(Firestore_helper::RESULTS, $this->resultDocId($examId, $class, $section, $uid), $doc, false);
+            $resultDocs[$uid] = $doc;
+            $ops[] = $this->setOp($targetCol, $this->resultDocId($examId, $class, $section, $uid), $doc, false);
         }
 
-        if (empty($ops)) return ['ok' => true, 'count' => 0, 'reason' => 'no students'];
+        if (empty($ops)) return ['ok' => true, 'count' => 0, 'reason' => 'no students', 'resultDocs' => []];
 
         // Single read of examResultMeta (supplies BOTH the audit's lastMarksAt and
         // the metaClearOp CAS token) — one Firestore get, not two.
@@ -440,7 +450,136 @@ class Exam_result_store
             return ['ok' => false, 'count' => 0, 'reason' => 'section exceeds commit limit'];
         }
         $ok = $this->commit($ops);
-        return ['ok' => $ok, 'count' => count($studentResults), 'reason' => $ok ? '' : 'commit failed'];
+        return ['ok' => $ok, 'count' => count($studentResults), 'reason' => $ok ? '' : 'commit failed',
+            'resultDocs' => $ok ? $resultDocs : []];
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    //  PUBLISH / UNPUBLISH — staging↔results promotion for a whole exam.
+    //  Reuses the existing promoteOps / stagingSetOp scaffolding (no parallel
+    //  path). `results` holds ONLY published results; resultsStaging holds the
+    //  unpublished computed set. Both keyed by resultDocId (same id shape).
+    // ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * Read every staged result doc for an exam, grouped by section:
+     *   [ "{class}\t{section}" => [ studentId => resultDoc ] ].
+     * Firestore meta keys (__updateTime / id) are stripped so the docs can be
+     * re-committed verbatim into `results`.
+     */
+    public function readStagingByExam(string $examId): array
+    {
+        if (!$this->ready || $examId === '') return [];
+        $rows = $this->firebase->firestoreQuery(Firestore_helper::RESULTS_STAGING,
+            [['schoolId', '==', $this->schoolId], ['examId', '==', $examId]], null, 'ASC', 5000);
+        $out = [];
+        foreach ((array) $rows as $r) {
+            $d = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+            if (!is_array($d)) continue;
+            $class   = (string) ($d['className'] ?? '');
+            $section = (string) ($d['section'] ?? '');
+            $uid     = (string) ($d['studentId'] ?? '');
+            if ($class === '' || $section === '' || $uid === '') continue;
+            unset($d['__updateTime'], $d['id']);
+            $out[$class . "\t" . $section][$uid] = $d;
+        }
+        return $out;
+    }
+
+    /**
+     * Promote one section's staged results → results (parent-visible), delete
+     * the staging rows, stamp the publish marker + append resultsAudit — ONE
+     * atomic batch (chunked if > COMMIT_MAX_OPS). $stagedResultDocsById = [uid => doc].
+     */
+    public function commitPromoteSection(string $examId, string $class, string $section,
+        array $stagedResultDocsById, array $actor, string $prevStatus, string $newStatus,
+        string $publishedAt, string $reason = ''): array
+    {
+        if (!$this->ready) return ['ok' => false, 'count' => 0];
+        if (empty($stagedResultDocsById)) return ['ok' => true, 'count' => 0];
+        $cid          = $this->newCorrelationId('publish');
+        $snapshotHash = substr(hash('sha256', json_encode(array_keys($stagedResultDocsById))), 0, 16);
+        $lastMarksAt  = $this->metaLastMarksAt($examId, $class, $section);
+        $audit = $this->buildResultsAudit($cid, $examId, $class, $section, $actor, 'publish', 'admin_publish',
+            count($stagedResultDocsById), $prevStatus, $newStatus, $snapshotHash, $lastMarksAt, $publishedAt, $reason, $publishedAt);
+        $ops = $this->promoteOps($examId, $class, $section, $stagedResultDocsById, $snapshotHash, $publishedAt, $audit, $cid);
+
+        // promoteOps emits 2 ops/student (+2 markers). Chunk if a very large
+        // section exceeds the :commit ceiling — flip the marker/audit last.
+        if (count($ops) <= self::COMMIT_MAX_OPS) {
+            $ok = $this->commit($ops);
+        } else {
+            $ok = true;
+            $tail = array_splice($ops, -2);                 // [metaPublishOp, resultsAuditOp]
+            foreach (array_chunk($ops, self::COMMIT_MAX_OPS) as $chunk) { $ok = $this->commit($chunk) && $ok; }
+            $ok = $this->commit($tail) && $ok;
+        }
+        return ['ok' => $ok, 'count' => count($stagedResultDocsById)];
+    }
+
+    /**
+     * Promote ALL of an exam's staged results → results, section by section.
+     * Returns the count promoted + the list of promoted student ids (for the
+     * caller's publish-time parent notification). No-op (count 0) when staging
+     * is empty — e.g. a Completed→Published reopen where results were already
+     * promoted (and staging deleted) on the first publish.
+     */
+    public function promoteExam(string $examId, array $actor, string $prevStatus, string $newStatus,
+        string $publishedAt, string $reason = ''): array
+    {
+        $groups = $this->readStagingByExam($examId);
+        $ok = true; $total = 0; $notify = [];
+        foreach ($groups as $key => $docsById) {
+            [$class, $section] = array_pad(explode("\t", $key, 2), 2, '');
+            $r = $this->commitPromoteSection($examId, $class, $section, $docsById, $actor, $prevStatus, $newStatus, $publishedAt, $reason);
+            $ok = ($r['ok'] ?? false) && $ok;
+            $total += (int) ($r['count'] ?? 0);
+            foreach ($docsById as $uid => $doc) {
+                $notify[] = [
+                    'student_id' => (string) $uid,
+                    'exam_name'  => (string) ($doc['examName'] ?? ''),
+                    'class'      => $class,
+                    'section'    => $section,
+                ];
+            }
+        }
+        return ['ok' => $ok, 'count' => $total, 'sections' => count($groups), 'notify' => $notify];
+    }
+
+    /**
+     * Unpublish (Published→Draft): move an exam's published `results` back to
+     * resultsStaging and delete them from `results` so parents stop seeing them.
+     * Self-paginating (2 ops/doc → 250 docs/commit). Reuses setOp/deleteOp.
+     */
+    public function demoteExam(string $examId, array $actor, string $ts): array
+    {
+        if (!$this->ready || $examId === '') return ['ok' => false, 'count' => 0];
+        $ok = true; $total = 0;
+        $pageDocs = (int) (self::COMMIT_MAX_OPS / 2);   // 2 ops per doc (set staging + delete result)
+        do {
+            $rows = $this->firebase->firestoreQuery(Firestore_helper::RESULTS,
+                [['schoolId', '==', $this->schoolId], ['examId', '==', $examId]], null, 'ASC', $pageDocs);
+            $ops = []; $n = 0;
+            foreach ((array) $rows as $r) {
+                $id = is_array($r) ? (string) ($r['id'] ?? '') : '';
+                $d  = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+                if ($id === '' || !is_array($d)) continue;
+                unset($d['__updateTime'], $d['id']);
+                $ops[] = $this->setOp(Firestore_helper::RESULTS_STAGING, $id, $d, false);
+                $ops[] = $this->deleteOp(Firestore_helper::RESULTS, $id);
+                $n++;
+            }
+            if (empty($ops)) break;
+            $ok = $this->commit($ops) && $ok;
+            $total += $n;
+        } while ($n >= $pageDocs && $ok);
+
+        // append-only audit event for the unpublish
+        $cid = $this->newCorrelationId('unpublish');
+        $audit = $this->buildResultsAudit($cid, $examId, '', '', $actor, 'unpublish', 'admin_unpublish',
+            $total, 'Published', 'Draft', '', '', '', 'unpublish — results moved back to staging', $ts);
+        $this->commit([ $this->resultsAuditOp($this->resultsAuditDocId($cid), $audit) ]);
+        return ['ok' => $ok, 'count' => $total];
     }
 
     // ──────────────────────────────────────────────────────────────────────

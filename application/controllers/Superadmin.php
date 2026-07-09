@@ -13,6 +13,102 @@ class Superadmin extends MY_Superadmin_Controller
     public function __construct() { parent::__construct(); }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // GET/POST  /superadmin/change_my_password
+    // Forced set-new-password interstitial for developer SAs. The base
+    // controller's gate (MY_Superadmin_Controller) confines a flagged SA here
+    // until they pick a new password. Mirrors AdminUsers::change_my_password.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public function change_my_password(): void
+    {
+        if (empty($this->sa_id)) {
+            redirect('superadmin/login');
+            return;
+        }
+
+        if ($this->input->method() !== 'post') {
+            $data = [
+                'page_title'    => 'Set New Password',
+                'must_change'   => (bool) $this->session->userdata('sa_must_change_password'),
+                'sa_id'         => $this->sa_id,
+                'sa_name'       => $this->sa_name,
+                'sa_csrf_token' => $this->session->userdata('sa_csrf_token'),
+            ];
+            $this->load->view('superadmin/change_my_password', $data);
+            return;
+        }
+
+        $new_password     = (string) $this->input->post('new_password', FALSE);
+        $confirm_password = (string) $this->input->post('confirm_password', FALSE);
+
+        if ($new_password === '' || $confirm_password === '') {
+            $this->json_error('New password and confirmation are required.');
+            return;
+        }
+        if ($new_password !== $confirm_password) {
+            $this->json_error('Passwords do not match.');
+            return;
+        }
+        if (strlen($new_password) < 8 || strlen($new_password) > 72) {
+            $this->json_error('Password must be 8–72 characters.');
+            return;
+        }
+        if (!preg_match('/[A-Z]/', $new_password)
+            || !preg_match('/[a-z]/', $new_password)
+            || !preg_match('/[0-9]/', $new_password)) {
+            $this->json_error('Password must contain an uppercase letter, a lowercase letter, and a digit.');
+            return;
+        }
+
+        try {
+            $updated = $this->firebase->updateFirebaseUser($this->sa_id, ['password' => $new_password]);
+            if ($updated === null) {
+                $this->json_error('Failed to update password in Firebase Auth.');
+                return;
+            }
+
+            // Clear the must-change-password claim while preserving role=super_admin.
+            $this->firebase->clearCustomClaims($this->sa_id, [
+                'must_change_password', 'password_reset_at', 'password_reset_by',
+            ]);
+
+            // Clear the Firestore mirror the login gate reads.
+            try {
+                $this->firebase->firestoreSet('superAdmins', $this->sa_id, [
+                    'mustChangePassword' => false,
+                    'updatedAt'          => date('c'),
+                ], true);
+            } catch (\Exception $e) {
+                log_message('error', 'Superadmin::change_my_password Firestore clear failed: ' . $e->getMessage());
+            }
+
+            // Mirror bcrypt to the RTDB Our Panel record (write-only, record-keeping).
+            try {
+                $hashed = password_hash($new_password, PASSWORD_BCRYPT, ['cost' => 12]);
+                $this->firebase->update(
+                    "Users/Admin/Our Panel/{$this->sa_id}/Credentials",
+                    ['Password' => $hashed]
+                );
+            } catch (\Exception $mirrorEx) {
+                log_message('error', 'Superadmin::change_my_password RTDB mirror failed: ' . $mirrorEx->getMessage());
+            }
+
+            // Drop the session flag so the gate releases the user.
+            $this->session->unset_userdata('sa_must_change_password');
+
+            log_audit('Superadmin', 'change_my_password', $this->sa_id, 'Self-changed password');
+
+            $this->json_success([
+                'message'  => 'Password updated. Redirecting to dashboard.',
+                'redirect' => base_url('superadmin/dashboard'),
+            ]);
+        } catch (\Exception $e) {
+            log_message('error', 'Superadmin::change_my_password failed: ' . $e->getMessage());
+            $this->json_error('Failed to update password.');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // GET  /superadmin/dashboard
     // ─────────────────────────────────────────────────────────────────────────
 

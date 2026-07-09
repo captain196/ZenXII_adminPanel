@@ -9,7 +9,7 @@ function tp_money($v) { return (is_numeric($v) && $v > 0) ? '₹' . number_forma
 $name       = htmlspecialchars($t['Name'] ?? 'Unknown', ENT_QUOTES, 'UTF-8');
 $tid        = htmlspecialchars($t['User ID'] ?? '', ENT_QUOTES, 'UTF-8');
 $position   = htmlspecialchars($t['Position'] ?? '', ENT_QUOTES, 'UTF-8');
-$dept       = htmlspecialchars($t['Department'] ?? '', ENT_QUOTES, 'UTF-8');
+$dept       = htmlspecialchars($t['Department'] ?? $t['department'] ?? '', ENT_QUOTES, 'UTF-8');
 $gender     = $t['Gender'] ?? '';
 // Resolve photo: new structure Doc.Photo.url → fallback top-level ProfilePic → legacy Doc.ProfilePic
 $_picRaw = '';
@@ -503,7 +503,7 @@ $defaultPic = base_url('tools/image/default-school.jpeg');
                 </div>
                 <div class="tp-info-row">
                     <span class="tp-lbl">Department</span>
-                    <span class="tp-val"><?= tp_val($t['Department'] ?? '') ?></span>
+                    <span class="tp-val"><?= tp_val($t['Department'] ?? $t['department'] ?? '') ?></span>
                 </div>
                 <div class="tp-info-row">
                     <span class="tp-lbl">Date of Joining</span>

@@ -79,6 +79,9 @@ class Admin_login extends CI_Controller
         'subscription_warning',
         'sub_check_ts',
         'login_csrf',
+        'rbac_permissions',       // module access — must clear so a re-login as a
+                                  // different role can't inherit stale permissions
+        'rbac_ts',                // last real-time permission-refresh timestamp
     ];
 
     // ─────────────────────────────────────────────────────────────────────
@@ -311,8 +314,25 @@ class Admin_login extends CI_Controller
         // Clear any SA panel session to prevent session bleed-through
         $this->session->unset_userdata(['sa_id', 'sa_name', 'sa_role', 'sa_email', 'sa_csrf_token']);
 
+        // Clear any RBAC permissions carried over from a PREVIOUS login in this
+        // browser (e.g. an Admin/Super Admin session, or this account's earlier
+        // broader role). If left, MY_Controller sees a populated array and skips
+        // the reload — so the new role would inherit the old role's access.
+        // Bypass roles re-seed it below; every other role lazy-loads it fresh.
+        $this->session->unset_userdata('rbac_permissions');
+
         $adminName    = (string) ($staffDoc['name'] ?? $staffDoc['Name'] ?? $adminId);
         $displayRole  = $roleLabel !== '' ? $roleLabel : $roleRaw;
+
+        // Forced set-new-password gate seed. The reset flows (AdminUsers/Ssa_reset)
+        // and every fresh-account create now set the `must_change_password` custom
+        // claim; mirror it into the session so MY_Controller's preflight gate
+        // (application/core/MY_Controller.php) redirects the user to
+        // admin_users/change_my_password before any other page loads. The claim is
+        // authoritative; OR the Firestore staff-doc field as a belt-and-braces
+        // fallback for accounts whose doc carries the mirror but not the claim.
+        $mustChangePassword = !empty($claims['must_change_password'])
+            || !empty($staffDoc['mustChangePassword']);
 
         // [S-11] Store session data (mirrors legacy session-shape contract).
         $this->session->set_userdata([
@@ -321,6 +341,7 @@ class Admin_login extends CI_Controller
             'school_code'            => $schoolCode,       // numeric login code (back-compat)
             'admin_role'             => $displayRole,
             'admin_name'             => $adminName,
+            'must_change_password'   => $mustChangePassword,
             'subscription_expiry'    => $endTs,
             'subscription_grace_end' => $graceEndTs,
             'subscription_warning'   => $subWarning,
@@ -336,11 +357,24 @@ class Admin_login extends CI_Controller
         // Hydrate session-derived fields from schools/{schoolId} Firestore doc.
         $this->_hydrate_admin_session_from_school($schoolId);
 
-        // [RBAC] Permissions are hydrated by MY_Controller on the first
-        // authenticated request, where the Firestore `fs` service is loaded.
-        // Admin_login extends CI_Controller and does not load `fs`, so hydrating
-        // here would no-op (fail-closed []) — deferral keeps login read-free and
-        // Firestore-canonical (schools/{schoolId}.roles is the sole authority).
+        // [RBAC] Non-bypass roles: permissions are hydrated by MY_Controller on
+        // the first authenticated request, where the Firestore `fs` service is
+        // loaded. Admin_login extends CI_Controller and does not load `fs`, so
+        // hydrating them here would no-op (fail-closed []) — deferral keeps login
+        // read-free and Firestore-canonical (schools/{schoolId}.roles authority).
+        //
+        // Bypass roles (Super Admin / School Super Admin / Admin) ARE the only
+        // roles that land on the /admin dashboard, which fires 5 parallel AJAX
+        // widgets on load. Left cold, each concurrent request independently
+        // hydrates RBAC and writes it back to the session — all serialised on the
+        // CI session file-lock — so the first post-login load stalls and the tail
+        // widgets reset to blank until a manual refresh. Bypass roles resolve to
+        // RBAC_MODULES with NO Firestore read, so seeding here is free and removes
+        // that stampede at the source.
+        $this->load->helper('rbac');
+        if (in_array($displayRole, RBAC_BYPASS_ROLES, true)) {
+            $this->session->set_userdata('rbac_permissions', RBAC_MODULES);
+        }
 
         $this->sec_telem->emit('ADMIN_LOGIN_SUCCESS', 'info', [
             'admin_id'    => $adminId,

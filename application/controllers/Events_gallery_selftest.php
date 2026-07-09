@@ -93,8 +93,9 @@ class Events_gallery_selftest extends CI_Controller
         return '';
     }
 
-    public function seed($sid = 'SCH_B56BB9A401')
+    public function seed($sid = '')
     {
+        if ($sid === '') { $this->out("ERROR: pass an explicit school id — e.g. `php index.php events_gallery_selftest seed SCH_XXXXXXXX`. Refusing to default to a live tenant."); return; }
         $url = $this->findRealImageUrl($sid);
         if ($url === '') { $this->out("No real Firebase Storage image URL found for {$sid}; app would show a broken tile. Aborting seed."); return; }
         $this->entity_sync->init($this->firebase, $sid, '2026-2027', 'devicetest');
@@ -214,7 +215,7 @@ class Events_gallery_selftest extends CI_Controller
         }
     }
 
-    public function probe_events($sid = 'SCH_B56BB9A401')
+    public function probe_events($sid = '')
     {
         $rows = $this->firebase->firestoreQuery('events', [['schoolId','==',$sid]], 'startDate', 'DESC');
         $this->out("row count: ".count((array)$rows));
@@ -225,7 +226,7 @@ class Events_gallery_selftest extends CI_Controller
         $this->out("title under data: ".json_encode($first['data']['title'] ?? '(none)'));
     }
 
-    public function probe_getevents($sid = 'SCH_B56BB9A401')
+    public function probe_getevents($sid = '')
     {
         // Simulate the FIXED get_events transform: unwrap data + raw id.
         $rows = $this->firebase->firestoreQuery('events', [['schoolId','==',$sid]], 'startDate', 'DESC');
@@ -240,7 +241,7 @@ class Events_gallery_selftest extends CI_Controller
         }
     }
 
-    public function notices_audit($sid = 'SCH_B56BB9A401')
+    public function notices_audit($sid = '')
     {
         $rows = $this->firebase->firestoreQuery('notices', [['schoolId','==',$sid]]);
         $this->out("notices for {$sid}: ".count((array)$rows));
@@ -261,8 +262,9 @@ class Events_gallery_selftest extends CI_Controller
     }
 
     /** Delete notices whose source=event and eventRef points to a now-deleted event. */
-    public function notices_dedupe($sid = 'SCH_B56BB9A401', $commit = '')
+    public function notices_dedupe($sid = '', $commit = '')
     {
+        if ($sid === '') { $this->out("ERROR: pass an explicit school id — this DELETES notices. Refusing to default to a live tenant."); return; }
         $go = ($commit === 'commit');
         $ev = $this->firebase->firestoreQuery('events', [['schoolId','==',$sid]]);
         $liveEvt = [];
@@ -283,7 +285,7 @@ class Events_gallery_selftest extends CI_Controller
         $this->out("  ".($go?'deleted':'would delete')." {$n} orphan event-notice(s).");
     }
 
-    public function mq_audit($sid = 'SCH_B56BB9A401')
+    public function mq_audit($sid = '')
     {
         $ev = $this->firebase->firestoreQuery('events', [['schoolId','==',$sid]]);
         $liveEvt = [];
@@ -302,7 +304,7 @@ class Events_gallery_selftest extends CI_Controller
         }
     }
 
-    public function gallery_audit($sid = 'SCH_B56BB9A401')
+    public function gallery_audit($sid = '')
     {
         $this->out("== events ==");
         foreach ((array)$this->firebase->firestoreQuery('events', [['schoolId','==',$sid]]) as $r){
@@ -323,7 +325,7 @@ class Events_gallery_selftest extends CI_Controller
         }
     }
 
-    public function verifyseed($sid = 'SCH_B56BB9A401')
+    public function verifyseed($sid = '')
     {
         $this->out("Verifying seeded data is app-visible for {$sid}:");
         $ev = $this->firebase->firestoreQuery('events', [['schoolId','==',$sid]]);
@@ -336,8 +338,9 @@ class Events_gallery_selftest extends CI_Controller
         $this->out(sprintf("  (%d pass, %d fail)", $this->pass, $this->fail));
     }
 
-    public function unseed($sid = 'SCH_B56BB9A401')
+    public function unseed($sid = '')
     {
+        if ($sid === '') { $this->out("ERROR: pass an explicit school id — this DELETES seeded docs. Refusing to default to a live tenant."); return; }
         foreach ([
             ['events', "{$sid}_".self::SEED_EVT],
             ['galleryAlbums', "{$sid}_".self::SEED_EVT],

@@ -1540,9 +1540,34 @@
         var sk = document.querySelector('#feeChartWrap .db-skel-chartov'); if (sk) sk.remove();
     }
 
+    /* Resilient JSON fetch with retry+backoff. The dashboard fires 5 of these
+       in parallel right after login, when the RBAC/session cache is cold and the
+       requests serialise on the PHP session lock — the tail ones can reset or
+       come back non-JSON, which is why the page used to land blank until a manual
+       refresh. Retrying is that refresh, done automatically: by attempt 2 the
+       first request has warmed the caches so the retry succeeds. The X-Requested-With
+       header also makes the server's auth guard answer with JSON (not an HTML
+       login redirect) if the session genuinely lapsed. */
+    function _dbFetchJSON(url, tries) {
+        tries = tries || 3;
+        return fetch(url, {
+            credentials: 'same-origin',
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' }
+        }).then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        }).catch(function(err) {
+            if (tries > 1) {
+                return new Promise(function(res) { setTimeout(res, 700); })
+                    .then(function() { return _dbFetchJSON(url, tries - 1); });
+            }
+            throw err;
+        });
+    }
+
     // Fire both heavy endpoints in PARALLEL — charts no longer waits for data.
-    var _dataP   = fetch(BASE + '/admin/get_dashboard_data').then(function(r) { return r.json(); });
-    var _chartsP = fetch(BASE + '/admin/get_dashboard_charts').then(function(r) { return r.json(); });
+    var _dataP   = _dbFetchJSON(BASE + '/admin/get_dashboard_data');
+    var _chartsP = _dbFetchJSON(BASE + '/admin/get_dashboard_charts');
 
     // Stage 1 — render KPIs/attendance/events the moment the fast endpoint lands.
     _dataP.then(function(D) {
@@ -1587,8 +1612,7 @@
     /* ══════════════════════════════════════════
        ACTIVITY FEED — lazy, fires after main dashboard lands.
     ══════════════════════════════════════════ */
-    fetch(BASE + '/admin/get_dashboard_activity')
-        .then(function(r) { return r.json(); })
+    _dbFetchJSON(BASE + '/admin/get_dashboard_activity')
         .then(function(A) { populateActivity((A && A.activity) || []); })
         .catch(function(e) {
             console.warn('Activity load failed:', e);
@@ -1802,7 +1826,7 @@
        TASKS & ALERTS — reuses the header bell's fetch instead of
        firing a second request. See header.php for the shared promise.
     ══════════════════════════════════════════ */
-    (window.__graderTasksPromise || fetch(BASE + '/notifications/get_tasks').then(function(r){return r.json();}))
+    (window.__graderTasksPromise || _dbFetchJSON(BASE + '/notifications/get_tasks'))
         .then(function(D) {
             if (!D || D.status !== 'success') {
                 // Server reachable but errored — don't claim "all clear".

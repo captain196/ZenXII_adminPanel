@@ -127,6 +127,7 @@ class Staff_attendance extends MY_Controller
         if (!preg_match('/^[A-Za-z0-9_\-]{8,64}$/', $clientPunchId)) {
             $clientPunchId = '';   // server will mint a random audit id
         }
+        $integrityToken = (string) ($body['integrityToken'] ?? '');
         $request = [
             'method'    => 'gps',
             'direction' => $direction,
@@ -146,6 +147,33 @@ class Staff_attendance extends MY_Controller
         // still valid (deactivation is Firestore-status-only). 403 + audited.
         if (!$this->_assert_staff_active($staffId, $request, $clientPunchId)) {
             return; // 403/503 already sent by the gate; rejection already audited
+        }
+
+        // ── Anti-spoof: Play Integrity attestation (config-gated; INERT by default) ──
+        // The geofence is server-authoritative but judges CLIENT-supplied coords with
+        // only the client `mock` flag as defence — defeatable by a rooted/fake-GPS
+        // device. When Play Integrity is configured (see config/play_integrity.php),
+        // a genuine-app + genuine-device attestation is verified server-side. A token
+        // that is PRESENT but fails verification is a positive spoof signal → always
+        // rejected; a MISSING token is rejected only once attestation is 'require'd
+        // (so older app builds keep working during rollout). Disabled → no-op.
+        $this->load->library('play_integrity');
+        if ($this->play_integrity->available()) {
+            $att = $this->play_integrity->verify($integrityToken, ['staffId' => $staffId]);
+            if (!$att['ok'] && ($att['reason'] === 'verdict_failed' || $this->play_integrity->isRequired())) {
+                $this->_record_punch($staffId, date('Y-m-d'), date('Y-m-d H:i:s'), $request, [
+                    'allowed'        => false,
+                    'reason'         => 'attestation_failed',
+                    'mark'           => null,
+                    'distanceMeters' => null,
+                    'direction'      => $direction,
+                    'attestation'    => $att['verdict'] ?? [],
+                ], $clientPunchId);
+                return $this->json_error(
+                    'Device verification failed. Please use the official app on a genuine device.',
+                    403
+                );
+            }
         }
 
         // ── Load config: schools/{id} → attendancePolicy (W8: memoized —

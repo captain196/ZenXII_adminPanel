@@ -9,10 +9,27 @@ class Schools extends MY_Controller
     /** Roles that may view school data */
     private const VIEW_ROLES  = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'Academic Coordinator', 'HR Manager', 'Accountant', 'Class Teacher', 'Teacher', 'Front Office'];
 
+    /** Gallery endpoints belong to the Events feature, not school Configuration. */
+    private const GALLERY_METHODS = [
+        'schoolgallery', 'fetchGalleryAlbums', 'fetchAlbumMedia',
+        'uploadMedia', 'deleteMedia', 'setEventCover',
+    ];
+
     public function __construct()
     {
         parent::__construct();
-        require_permission('Configuration');
+        // The gallery lives inside this controller for historical reasons but is
+        // logically part of Events (the Events page deep-links "Add Photos" into
+        // it). Gate those methods on the 'Events' RBAC module so a role granted
+        // Events — but not the unrelated school 'Configuration' module — can
+        // manage gallery media. Every other Schools method stays Configuration-
+        // gated. (Fixes audit M1: RBAC module mismatch.)
+        $method = $this->router->fetch_method();
+        if (in_array($method, self::GALLERY_METHODS, true)) {
+            require_permission('Events');
+        } else {
+            require_permission('Configuration');
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -982,17 +999,37 @@ class Schools extends MY_Controller
                 }
             } else {
                 // Event/default album media — Firestore is authoritative now
-                // (RTDB Events/Media removed, Critical C2). Read the galleryMedia
-                // doc to also clean up its thumbnail Storage file, then let the
-                // Firestore delete below remove the doc.
+                // (RTDB Events/Media removed, Critical C2).
+                //
+                // FIX-1b (CROSS-TENANT DELETE IDOR — Firestore leg): the Storage
+                // guard above only proves the caller owns the `url` param. But
+                // event_id/media_id — which key THIS galleryMedia doc and its
+                // thumbnail — are independent client input. Without a check an
+                // attacker can pass a self-owned `url` plus a VICTIM's
+                // event_id/media_id and delete another school's galleryMedia doc
+                // + thumbnail (galleryMedia doc-ids are NOT schoolId-namespaced,
+                // and eventId is a small per-school sequential counter that
+                // collides across tenants). Read the doc first and hard-assert
+                // its schoolId matches the caller before deleting anything.
+                $doc = null;
                 try {
                     $doc = $this->firebase->firestoreGet('galleryMedia', "{$eventId}_{$mediaId}");
-                    if (is_array($doc) && !empty($doc['thumbnail'])) {
+                } catch (\Throwable $e) {
+                    log_message('error', 'Schools::deleteMedia galleryMedia lookup failed [' . $eventId . '/' . $mediaId . ']: ' . $e->getMessage());
+                }
+                if (is_array($doc)) {
+                    $docSchool = (string) ($doc['schoolId'] ?? '');
+                    // Block only on an explicit mismatch. An empty schoolId means
+                    // a legacy/malformed doc (the caller already passed the url
+                    // guard), so allow that through to avoid breaking cleanup.
+                    if ($docSchool !== '' && $docSchool !== (string) $this->school_id) {
+                        $this->_deletemedia_reject_cross_tenant($eventId, $mediaId, $docSchool);
+                        return;
+                    }
+                    if (!empty($doc['thumbnail'])) {
                         $thumbPath = $this->extract_firebase_storage_path((string) $doc['thumbnail']);
                         if ($thumbPath) $this->CM->delete_file_from_firebase($thumbPath);
                     }
-                } catch (\Throwable $e) {
-                    log_message('error', 'Schools::deleteMedia thumbnail lookup failed [' . $eventId . '/' . $mediaId . ']: ' . $e->getMessage());
                 }
             }
 
@@ -1015,6 +1052,37 @@ class Schools extends MY_Controller
         } catch (Exception $e) {
             echo json_encode(['status' => 'error', 'message' => $e->getMessage()]);
         }
+    }
+
+    /**
+     * Emit CROSS_TENANT_PROBE telemetry + 403 for a deleteMedia attempt whose
+     * Firestore galleryMedia doc belongs to a different school than the caller.
+     * Caller must `return` immediately after invoking this (response is sent).
+     */
+    private function _deletemedia_reject_cross_tenant($eventId, $mediaId, $docSchool)
+    {
+        $this->load->library('security_telemetry', null, 'sec_telem');
+        if (isset($this->sec_telem)) {
+            $this->sec_telem->init(
+                $this->firebase,
+                (string) $this->school_id,
+                ['uid' => $this->admin_id, 'role' => $this->admin_role]
+            );
+            if ($this->sec_telem->isReady()) {
+                $this->sec_telem->emit('CROSS_TENANT_PROBE', 'warning', [
+                    'endpoint'        => 'Schools::deleteMedia',
+                    'attempted_doc'   => "galleryMedia/{$eventId}_{$mediaId}",
+                    'doc_school_id'   => (string) $docSchool,
+                    'actor_school_id' => (string) $this->school_id,
+                ]);
+            }
+        }
+        log_message('error',
+            "Schools::deleteMedia CROSS_TENANT_PROBE (Firestore) — actor school=[{$this->school_id}]"
+            . " admin=[{$this->admin_id}] doc=[galleryMedia/{$eventId}_{$mediaId}] doc_school=[{$docSchool}]"
+        );
+        http_response_code(403);
+        echo json_encode(['status' => 'error', 'message' => 'You are not allowed to delete this file.']);
     }
 
     // ── Gallery: upload media to event album ────────────────────────────
@@ -1040,11 +1108,29 @@ class Schools extends MY_Controller
         }
 
         $file          = $_FILES['file'];
+
+        // ── Guard the PHP upload itself (FIX) ────────────────────────
+        // A partial/failed upload (over upload_max_filesize, aborted, etc.)
+        // leaves a missing/invalid tmp file; surface it before reading size.
+        if (!isset($file['error']) || $file['error'] !== UPLOAD_ERR_OK) {
+            echo json_encode(['status' => 'error', 'message' => 'File upload failed or was incomplete. Please try again.']);
+            return;
+        }
+
         $fileName      = $file['name'];
         $fileTmpPath   = $file['tmp_name'];
         $fileSize      = $file['size'];
         $fileExtension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
         $fileType      = $this->input->post('type');
+
+        // ── Fail closed on any unknown media type (FIX — H1) ─────────
+        // EVERY gate below is `if ($fileType == '1'|'2')`, so a missing or
+        // other value (e.g. '3', '') would skip extension, size, MIME sniff
+        // AND quota — allowing an unbounded arbitrary file. Reject up front.
+        if ($fileType !== '1' && $fileType !== '2') {
+            echo json_encode(['status' => 'error', 'message' => 'Invalid or missing media type.']);
+            return;
+        }
 
         // ── Enforce storage limits ──────────────────────────────────
         $limits                 = self::GALLERY_LIMITS;

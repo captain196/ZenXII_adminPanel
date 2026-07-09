@@ -194,6 +194,7 @@ $config['csrf_exclude_uris'] = [
     'superadmin/school_admins(.*)',
     'superadmin/bootstrap(.*)',
     'superadmin/login(.*)',
+    'superadmin/change_my_password(.*)',
     'superadmin/csrf_token',
     'fee_management/payment_webhook',
     'fee_management/parent_create_order',

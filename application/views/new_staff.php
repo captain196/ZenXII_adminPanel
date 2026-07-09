@@ -1198,10 +1198,11 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     loadStaffRoles();
 
-    /* Roles allowed for the currently chosen department:
-     *   - no department chosen  → null  (picker locked, "choose department first")
-     *   - department has a mapping → just those roles
-     *   - department has NO mapping (not set up yet) → all roles (graceful fallback)
+    /* Roles allowed for the currently chosen department (STRICT — matches the
+     * Excel import template and Departments & Roles):
+     *   - no department chosen        → null (picker locked, "choose department first")
+     *   - department has a mapping     → just those roles
+     *   - department has NO mapping    → [] (none; set roles for it in Departments & Roles)
      * "role is a subset of department": you pick the department, then its roles.  */
     function allowedRoleIds() {
         var deptSel = document.getElementById('teacher_department');
@@ -1209,7 +1210,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!dept) return null;
         var ids = _deptRoles[dept];
         if (ids && ids.length) return ids.filter(function(id){ return _roleData[id]; });
-        return Object.keys(_roleData); // dept not mapped yet → allow all
+        return []; // dept not mapped yet → no roles (configure in Departments & Roles)
     }
 
     function refreshRoleOptions() {

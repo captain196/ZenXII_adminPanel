@@ -444,6 +444,10 @@ class Superadmin_login extends CI_Controller
             'sa_name'  => $authz['name'] !== '' ? $authz['name'] : $adminId,
             'sa_role'  => 'developer',
             'sa_email' => $authz['email'],
+            // Forced set-new-password gate seed. Read from the superAdmins doc
+            // (RTDB fallback); MY_Superadmin_Controller redirects to
+            // superadmin/change_my_password before any SA page loads.
+            'sa_must_change_password' => $this->_sa_must_change_flag($adminId, $useFs),
         ]);
 
         $this->_write_sa_access_history($adminId, $ip, $useFs);
@@ -461,6 +465,27 @@ class Superadmin_login extends CI_Controller
             }
         } catch (\Throwable $e) { /* fall through to default */ }
         return $adminId;
+    }
+
+    /**
+     * Read the forced-change-password flag for a developer SA at login.
+     * Firestore superAdmins doc first (when sa.authz_firestore is ON), RTDB
+     * `Users/Admin/Our Panel/{id}` as fallback. Defaults to false on any read
+     * error so a transient outage can never lock an SA into the change screen.
+     */
+    private function _sa_must_change_flag(string $adminId, bool $useFs): bool
+    {
+        if ($useFs) {
+            try {
+                $doc = $this->firebase->firestoreGet('superAdmins', $adminId);
+                if (is_array($doc)) return !empty($doc['mustChangePassword']);
+            } catch (\Throwable $e) {
+                log_message('error', "SA must-change read failed for {$adminId}: " . $e->getMessage());
+                return false;
+            }
+        }
+        $rec = $this->firebase->get("Users/Admin/Our Panel/{$adminId}");
+        return is_array($rec) && !empty($rec['mustChangePassword']);
     }
 
     /**

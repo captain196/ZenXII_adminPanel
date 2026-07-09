@@ -77,6 +77,100 @@ class Exam extends MY_Controller
     }
 
     // ── create() — GET: form; POST AJAX: save ────────────────────────────
+    /**
+     * MED-9 — shared schedule-row parser used by create() AND edit_exam().
+     * Was ~120 duplicated lines in each. Validates every submitted row, skips
+     * invalid ones (with a per-row reason + error log), and accumulates the
+     * per-section examSchedule entries. Both callers write IDENTICAL schedule
+     * docs from the returned `schedAccum` via efs->syncExamScheduleFull().
+     *
+     * @return array{schedAccum:array,classesSeen:array,savedCount:int,skippedRows:array}
+     */
+    private function _parse_schedule_rows(array $scheduleRows, array $structure, int $passingPct): array
+    {
+        $savedCount  = 0;
+        $skippedRows = [];
+        $rowIndex    = 0;
+        $schedAccum  = []; // [className][sectionKey] => [ subject entry, … ]
+        $classesSeen = []; // distinct classes → applicableClasses
+
+        foreach ($scheduleRows as $row) {
+            $rowIndex++;
+            if (!is_array($row)) continue;
+
+            $className  = trim((string) ($row['className']   ?? ''));
+            $subject    = strip_tags(trim((string) ($row['subject']     ?? '')));
+            $startTime  = trim((string) ($row['startTime']  ?? ''));
+            $endTime    = trim((string) ($row['endTime']    ?? ''));
+            $totalMarks = is_numeric($row['totalMarks']  ?? '') ? (int) $row['totalMarks'] : null;
+            $passMks    = is_numeric($row['passingMarks'] ?? '') ? (int) $row['passingMarks'] : null;
+            $dateRaw    = trim((string) ($row['date'] ?? ''));
+
+            if (!$className || !$subject || !$startTime || !$endTime || $totalMarks === null || !$dateRaw) {
+                $skippedRows[] = "Row {$rowIndex}: Missing required fields (class/subject/time/marks/date).";
+                log_message('error', 'Exam::_parse_schedule_rows — incomplete row skipped: ' . json_encode($row));
+                continue;
+            }
+
+            $dateDt = DateTime::createFromFormat('d/m/Y', $dateRaw);
+            if (!$dateDt) {
+                $skippedRows[] = "Row {$rowIndex} ({$subject}): Invalid date format '{$dateRaw}' — expected DD/MM/YYYY.";
+                log_message('error', "Exam::_parse_schedule_rows — bad date [{$dateRaw}], skipping.");
+                continue;
+            }
+            $dateKey = $dateDt->format('d-m-Y');
+
+            $stDt = DateTime::createFromFormat('H:i', $startTime);
+            $etDt = DateTime::createFromFormat('H:i', $endTime);
+            if (!$stDt || !$etDt) {
+                $skippedRows[] = "Row {$rowIndex} ({$subject}): Invalid time format '{$startTime}-{$endTime}'.";
+                log_message('error', "Exam::_parse_schedule_rows — bad time [{$startTime}-{$endTime}], skipping.");
+                continue;
+            }
+            // A1-3: per-row end time must be after start time.
+            if ($etDt <= $stDt) {
+                $skippedRows[] = "Row {$rowIndex} ({$subject}): End time must be after start time ('{$startTime}-{$endTime}').";
+                log_message('error', "Exam::_parse_schedule_rows — end<=start time [{$startTime}-{$endTime}], skipping.");
+                continue;
+            }
+
+            if ($passMks === null) {
+                $passMks = (int) round($totalMarks * $passingPct / 100);
+            }
+
+            // Save to each section of the class.
+            $sections = $structure[$className] ?? [];
+            if (empty($sections)) {
+                $skippedRows[] = "Row {$rowIndex} ({$subject}): No sections found for '{$className}'.";
+                log_message('error', "Exam::_parse_schedule_rows — no sections for [{$className}], skipping.");
+                continue;
+            }
+            $classesSeen[$className] = true;
+            foreach ($sections as $sectionLetter) {
+                $sectionKey = "Section {$sectionLetter}";
+                $schedAccum[$className][$sectionKey][] = [
+                    'subjectName'  => $subject,
+                    'date'         => $dateKey,
+                    'startTime'    => $stDt->format('h:iA'),
+                    'endTime'      => $etDt->format('h:iA'),
+                    'maxTheory'    => 0,
+                    'maxPractical' => 0,
+                    'maxTotal'     => $totalMarks,
+                    'passingMarks' => $passMks,
+                    'room'         => '',
+                ];
+            }
+            $savedCount++;
+        }
+
+        return [
+            'schedAccum'  => $schedAccum,
+            'classesSeen' => $classesSeen,
+            'savedCount'  => $savedCount,
+            'skippedRows' => $skippedRows,
+        ];
+    }
+
     public function create()
     {
         $this->_require_role(self::ADMIN_ROLES, 'create exam');
@@ -163,89 +257,13 @@ class Exam extends MY_Controller
             // — Generate EXM ID
             $examId = $this->generate_exam_id();
 
-            // — Phase 2B: accumulate the schedule, then write Firestore-only
-            //   (syncExam + syncExamScheduleFull) after the loop. No RTDB writes.
-            $savedCount  = 0;
-            $skippedRows = []; // H-08 FIX: Track skipped rows to report back to user
-            $rowIndex    = 0;
-            $schedAccum  = []; // [className][sectionKey] => [ subject entry, … ]
-            $classesSeen = []; // distinct classes → applicableClasses
-
-            foreach ($scheduleRows as $row) {
-                $rowIndex++;
-                if (!is_array($row)) continue;
-
-                $className  = trim((string) ($row['className']   ?? ''));
-                $subject    = strip_tags(trim((string) ($row['subject']     ?? '')));
-                $startTime  = trim((string) ($row['startTime']  ?? ''));
-                $endTime    = trim((string) ($row['endTime']    ?? ''));
-                $totalMarks = is_numeric($row['totalMarks']  ?? '') ? (int) $row['totalMarks'] : null;
-                $passMks    = is_numeric($row['passingMarks'] ?? '') ? (int) $row['passingMarks'] : null;
-                $dateRaw    = trim((string) ($row['date'] ?? ''));
-
-                if (!$className || !$subject || !$startTime || !$endTime || $totalMarks === null || !$dateRaw) {
-                    $skippedRows[] = "Row {$rowIndex}: Missing required fields (class/subject/time/marks/date).";
-                    log_message('error', 'Exam::create — incomplete row skipped: ' . json_encode($row));
-                    continue;
-                }
-
-                $dateDt = DateTime::createFromFormat('d/m/Y', $dateRaw);
-                if (!$dateDt) {
-                    $skippedRows[] = "Row {$rowIndex} ({$subject}): Invalid date format '{$dateRaw}' — expected DD/MM/YYYY.";
-                    log_message('error', "Exam::create — bad date [{$dateRaw}], skipping.");
-                    continue;
-                }
-                $dateKey = $dateDt->format('d-m-Y');
-
-                $stDt = DateTime::createFromFormat('H:i', $startTime);
-                $etDt = DateTime::createFromFormat('H:i', $endTime);
-                if (!$stDt || !$etDt) {
-                    $skippedRows[] = "Row {$rowIndex} ({$subject}): Invalid time format '{$startTime}-{$endTime}'.";
-                    log_message('error', "Exam::create — bad time [{$startTime}-{$endTime}], skipping.");
-                    continue;
-                }
-                // A1-3: per-row end time must be after start time.
-                if ($etDt <= $stDt) {
-                    $skippedRows[] = "Row {$rowIndex} ({$subject}): End time must be after start time ('{$startTime}-{$endTime}').";
-                    log_message('error', "Exam::create — end<=start time [{$startTime}-{$endTime}], skipping.");
-                    continue;
-                }
-                $timeStr = $stDt->format('h:iA') . '-' . $etDt->format('h:iA');
-
-                if ($passMks === null) {
-                    $passMks = (int) round($totalMarks * $passingPct / 100);
-                }
-
-                $entry = [
-                    'Time'         => $timeStr,
-                    'TotalMarks'   => $totalMarks,
-                    'PassingMarks' => $passMks,
-                ];
-
-                // Save to each section of the class
-                $sections = $structure[$className] ?? [];
-                if (empty($sections)) {
-                    $skippedRows[] = "Row {$rowIndex} ({$subject}): No sections found for '{$className}'.";
-                    log_message('error', "Exam::create — no sections for [{$className}], skipping.");
-                    continue;
-                }
-                $classesSeen[$className] = true;
-                foreach ($sections as $sectionLetter) {
-                    $sectionKey = "Section {$sectionLetter}";
-                    $schedAccum[$className][$sectionKey][] = [
-                        'subjectName'  => $subject,
-                        'date'         => $dateKey,
-                        'startTime'    => $stDt->format('h:iA'),
-                        'endTime'      => $etDt->format('h:iA'),
-                        'maxTheory'    => 0,
-                        'maxPractical' => 0,
-                        'maxTotal'     => $totalMarks,
-                        'passingMarks' => $passMks,
-                        'room'         => '',
-                    ];
-                }
-                $savedCount++;
-            }
+            // — Phase 2B: accumulate the schedule (shared parser — MED-9), then
+            //   write Firestore-only after the loop. No RTDB writes.
+            $parsed      = $this->_parse_schedule_rows($scheduleRows, $structure, $passingPct);
+            $schedAccum  = $parsed['schedAccum'];  // [className][sectionKey] => [ subject entry, … ]
+            $classesSeen = $parsed['classesSeen']; // distinct classes → applicableClasses
+            $savedCount  = $parsed['savedCount'];
+            $skippedRows = $parsed['skippedRows']; // H-08: reported back to the user
 
             // — Phase 2B: Firestore-only writes (exam meta + per-section schedule).
             $this->efs->syncExam($examId, [
@@ -621,67 +639,13 @@ class Exam extends MY_Controller
             }
         }
 
-        // ── Accumulate the new schedule (identical to create()). ──
-        $savedCount  = 0;
-        $skippedRows = [];
-        $rowIndex    = 0;
-        $schedAccum  = [];
-        $classesSeen = [];
-        foreach ($scheduleRows as $row) {
-            $rowIndex++;
-            if (!is_array($row)) continue;
-            $className  = trim((string) ($row['className']   ?? ''));
-            $subject    = strip_tags(trim((string) ($row['subject']     ?? '')));
-            $startTime  = trim((string) ($row['startTime']  ?? ''));
-            $endTime    = trim((string) ($row['endTime']    ?? ''));
-            $totalMarks = is_numeric($row['totalMarks']  ?? '') ? (int) $row['totalMarks'] : null;
-            $passMks    = is_numeric($row['passingMarks'] ?? '') ? (int) $row['passingMarks'] : null;
-            $dateRaw    = trim((string) ($row['date'] ?? ''));
-            if (!$className || !$subject || !$startTime || !$endTime || $totalMarks === null || !$dateRaw) {
-                $skippedRows[] = "Row {$rowIndex}: Missing required fields (class/subject/time/marks/date).";
-                continue;
-            }
-            $dateDt = DateTime::createFromFormat('d/m/Y', $dateRaw);
-            if (!$dateDt) {
-                $skippedRows[] = "Row {$rowIndex} ({$subject}): Invalid date format '{$dateRaw}' — expected DD/MM/YYYY.";
-                continue;
-            }
-            $dateKey = $dateDt->format('d-m-Y');
-            $stDt = DateTime::createFromFormat('H:i', $startTime);
-            $etDt = DateTime::createFromFormat('H:i', $endTime);
-            if (!$stDt || !$etDt) {
-                $skippedRows[] = "Row {$rowIndex} ({$subject}): Invalid time format '{$startTime}-{$endTime}'.";
-                continue;
-            }
-            if ($etDt <= $stDt) {
-                $skippedRows[] = "Row {$rowIndex} ({$subject}): End time must be after start time ('{$startTime}-{$endTime}').";
-                continue;
-            }
-            if ($passMks === null) {
-                $passMks = (int) round($totalMarks * $passingPct / 100);
-            }
-            $sections = $structure[$className] ?? [];
-            if (empty($sections)) {
-                $skippedRows[] = "Row {$rowIndex} ({$subject}): No sections found for '{$className}'.";
-                continue;
-            }
-            $classesSeen[$className] = true;
-            foreach ($sections as $sectionLetter) {
-                $sectionKey = "Section {$sectionLetter}";
-                $schedAccum[$className][$sectionKey][] = [
-                    'subjectName'  => $subject,
-                    'date'         => $dateKey,
-                    'startTime'    => $stDt->format('h:iA'),
-                    'endTime'      => $etDt->format('h:iA'),
-                    'maxTheory'    => 0,
-                    'maxPractical' => 0,
-                    'maxTotal'     => $totalMarks,
-                    'passingMarks' => $passMks,
-                    'room'         => '',
-                ];
-            }
-            $savedCount++;
-        }
+        // ── Accumulate the new schedule (shared parser — MED-9; identical
+        //    schedule docs to create()). ──
+        $parsed      = $this->_parse_schedule_rows($scheduleRows, $structure, $passingPct);
+        $schedAccum  = $parsed['schedAccum'];
+        $classesSeen = $parsed['classesSeen'];
+        $savedCount  = $parsed['savedCount'];
+        $skippedRows = $parsed['skippedRows'];
 
         // ── Rewrite the SAME examId. Preserve created metadata + ALL lifecycle
         //    audit history; only updatedAt changes (buildExamDoc stamps it).
@@ -879,6 +843,58 @@ class Exam extends MY_Controller
         }
 
         $this->firebase->firestoreUpdate('exams', "{$school}_{$id}", $decision['update']);
+
+        // ── HIGH-3 PUBLISH GATE — keep the parent-visible `results` collection
+        //    in lock-step with the exam's publication state, reusing the staging
+        //    pipeline (promoteExam / demoteExam). INVARIANT: `results` holds ONLY
+        //    published results; the computed set lives in resultsStaging.
+        $this->load->library('exam_result_store');
+        $ers   = $this->exam_result_store->init($this->firebase, $this->school_id, $this->session_year);
+        $actor = ['uid' => (string) ($this->admin_id ?? ''), 'role' => (string) ($this->admin_role ?? ''), 'name' => (string) ($this->admin_id ?? '')];
+
+        if ($to === 'Published') {
+            // Promote this exam's staged results → results (deletes staging rows
+            // as it promotes). No-op when staging is empty (e.g. Completed→Published
+            // reopen — already promoted on the first publish).
+            try {
+                $prom = $ers->promoteExam($id, $actor, $from, $to, date('c'));
+
+                // ── HIGH-4 — fire the parent "results published" notification HERE
+                //    (at publish, not compute), PER STUDENT, so each event carries a
+                //    `student_id` and _resolve_recipient('parent') actually resolves.
+                //    Fire-and-forget (uses the direct Push_service/messageQueue path).
+                $recipients = $prom['notify'] ?? [];
+                if (!empty($recipients)) {
+                    $this->load->library('Communication_helper', null, 'comm');
+                    $this->comm->init($this->firebase, $school, $this->session_year);
+                    $bulk = [];
+                    foreach ($recipients as $rc) {
+                        $sid = (string) ($rc['student_id'] ?? '');
+                        if ($sid === '') continue;
+                        $bulk[] = [
+                            'student_id' => $sid,
+                            'exam_id'    => $id,
+                            'exam_name'  => (string) ($rc['exam_name'] ?? ($meta['Name'] ?? $id)),
+                            'class'      => (string) ($rc['class'] ?? ''),
+                            'section'    => (string) ($rc['section'] ?? ''),
+                        ];
+                    }
+                    if (!empty($bulk)) $this->comm->fire_event_bulk('exam_result', $bulk);
+                }
+            } catch (\Exception $e) {
+                log_message('error', "update_status: publish promotion/notify failed [{$id}]: " . $e->getMessage());
+            }
+        } elseif ($from === 'Published' && $to === 'Draft') {
+            // Unpublish: move published results back to staging so parents stop
+            // seeing them. (The marks guard above already blocks this when marks
+            // exist — this is belt-and-suspenders result cleanup.)
+            try {
+                $ers->demoteExam($id, $actor, date('c'));
+            } catch (\Exception $e) {
+                log_message('error', "update_status: unpublish demotion failed [{$id}]: " . $e->getMessage());
+            }
+        }
+
         $this->json_success(['message' => "Status updated: {$from} \u{2192} {$to}."]);
     }
 

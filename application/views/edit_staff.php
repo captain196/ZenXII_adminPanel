@@ -834,7 +834,7 @@ document.addEventListener('DOMContentLoaded', function() {
     (function(){
         var sel = document.getElementById('teacher_department');
         if (!sel) return;
-        var currentDept = '<?= htmlspecialchars($staff_data['Department'] ?? '', ENT_QUOTES, 'UTF-8') ?>';
+        var currentDept = '<?= htmlspecialchars($staff_data['Department'] ?? $staff_data['department'] ?? '', ENT_QUOTES, 'UTF-8') ?>';
         fetch('<?= base_url("hr/get_departments") ?>')
             .then(function(r){ return r.json(); })
             .then(function(r){
@@ -847,7 +847,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     var opt = document.createElement('option');
                     opt.value = d.name;
                     opt.textContent = d.name;
-                    if (d.name === currentDept) { opt.selected = true; found = true; }
+                    // Case-insensitive so a legacy "science" selects the real
+                    // "Science" option (and saving self-heals the casing) rather
+                    // than adding a duplicate "(not in HR)" entry.
+                    if (d.name.toLowerCase() === currentDept.toLowerCase()) { opt.selected = true; found = true; }
                     sel.appendChild(opt);
                 });
                 // If current department doesn't match any HR dept, add it as-is
@@ -910,15 +913,15 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     loadStaffRoles();
 
-    /* Roles selectable for the chosen department (see new_staff for the rule).
-     * null → no department chosen; [] mapping → those roles; unmapped → all. */
+    /* Roles selectable for the chosen department (STRICT — see new_staff).
+     * null → no department chosen; mapped → those roles; unmapped → [] (none). */
     function allowedRoleIds() {
         var deptSel = document.getElementById('teacher_department');
         var dept = deptSel ? deptSel.value : '';
         if (!dept) return null;
         var ids = _deptRoles[dept];
         if (ids && ids.length) return ids.filter(function(id){ return _roleData[id]; });
-        return Object.keys(_roleData);
+        return [];
     }
 
     function refreshRoleOptions() {

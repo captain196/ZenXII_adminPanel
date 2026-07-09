@@ -23,7 +23,21 @@ defined('BASEPATH') OR exit('No direct script access allowed');
 define('RBAC_MODULES', [
     'SIS','Fees','Accounting','Attendance','Examinations','Results',
     'LMS','Certificates','HR','Events','Communication','Operations',
+    // Operations sub-modules — separately grantable so a Librarian can be given
+    // just 'Library', a Transport Manager just 'Transport', etc.
+    'Library','Transport','Hostel','Inventory','Assets',
     'Academic','Reports','Configuration','Admin Users','Stories','Homework',
+]);
+
+/**
+ * Parent → child permission tree. A child is accessible when the role has the
+ * child module directly OR holds the parent "umbrella" (which grants all its
+ * children — this is what keeps every existing 'Operations' account working).
+ * Conversely an umbrella parent is considered "present" (its menu group shows)
+ * when the role holds the parent itself or ANY of its children.
+ */
+define('RBAC_MODULE_CHILDREN', [
+    'Operations' => ['Library', 'Transport', 'Hostel', 'Inventory', 'Assets'],
 ]);
 
 /**
@@ -56,7 +70,31 @@ function has_permission(string $module): bool
         return false;
     }
 
-    return in_array($module, $permissions, true);
+    // Direct grant.
+    if (in_array($module, $permissions, true)) {
+        return true;
+    }
+
+    // Child inherits access from its umbrella parent (e.g. 'Operations' grants
+    // 'Library'). Keeps every legacy Operations-only role fully working.
+    foreach (RBAC_MODULE_CHILDREN as $parent => $children) {
+        if (in_array($module, $children, true) && in_array($parent, $permissions, true)) {
+            return true;
+        }
+    }
+
+    // An umbrella parent is "present" (its sidebar group renders) when the role
+    // holds any one of its children — so a Library-only staffer still sees the
+    // Operations group, with only Library enabled inside it.
+    if (isset(RBAC_MODULE_CHILDREN[$module])) {
+        foreach (RBAC_MODULE_CHILDREN[$module] as $child) {
+            if (in_array($child, $permissions, true)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -135,6 +173,24 @@ function load_role_permissions($firebase, string $school_id, string $role): arra
         }
 
         $schoolDoc = $CI->fs->get('schools', $school_id);
+
+        // PRIMARY: the unified role catalogue (schools.staffRoles) is the single
+        // source of truth. An admin's claim carries the role LABEL, so resolve by
+        // matching label (or the ROLE_* id, for forward-compat if a claim ever
+        // carries the id). Each unified role carries its own permissions[].
+        $staffRoles = (is_array($schoolDoc) && isset($schoolDoc['staffRoles']) && is_array($schoolDoc['staffRoles']))
+                      ? $schoolDoc['staffRoles']
+                      : [];
+        foreach ($staffRoles as $rid => $r) {
+            if (!is_array($r)) continue;
+            if ((string) ($r['label'] ?? '') === $role || (string) $rid === $role) {
+                $perms = is_array($r['permissions'] ?? null) ? $r['permissions'] : [];
+                return array_values(array_intersect($perms, RBAC_MODULES));
+            }
+        }
+
+        // FALLBACK: legacy RBAC map (schools.roles[name]) for any tenant not yet
+        // folded into the unified catalogue. Kept read-only for safety.
         $roles     = (is_array($schoolDoc) && isset($schoolDoc['roles']) && is_array($schoolDoc['roles']))
                      ? $schoolDoc['roles']
                      : [];

@@ -34,6 +34,8 @@
     <button class="orgx-guide-x" id="orgGuideX" title="Dismiss">&times;</button>
   </div>
 
+  <section id="orgPaneStructure" class="orgx-pane active">
+
   <!-- Summary tiles -->
   <div class="orgx-tiles">
     <div class="orgx-tile"><div class="orgx-tile-n" id="tDept">0</div><div class="orgx-tile-l"><i class="fa fa-building-o"></i> Departments</div></div>
@@ -51,6 +53,11 @@
           <button class="orgx-btn orgx-btn-primary" id="addDeptBtn"><i class="fa fa-plus"></i> Add Department</button>
         </div>
       </div>
+      <div id="legacyDeptBanner" class="orgx-note" style="margin-bottom:12px;display:none;">
+        <i class="fa fa-clock-o"></i>
+        <div><b><span id="legacyDeptCount">0</span> department(s)</b> found in the old system.
+        <a href="#" id="importLegacyDeptBtn"><b>Import them here</b></a> — then assign roles to each.</div>
+      </div>
       <div id="deptList" class="dcard-grid"><div class="orgx-empty">Loading…</div></div>
     </section>
 
@@ -64,6 +71,13 @@
       <div id="roleList" class="rrow-list"><div class="orgx-empty">Loading…</div></div>
     </aside>
   </div>
+
+  </section><!-- /#orgPaneStructure -->
+
+  <!-- Access roles were merged INTO the single role catalogue above: each role now
+       carries its module permissions (Role modal → "Module permissions"). One role
+       serves both staff and admins. Assign a role to an admin from
+       <a href="<?= base_url('admin_users') ?>">Admin Users</a>. -->
 
   <!-- ── Department modal ─────────────────────────────────────── -->
 <div class="orgx-modal" id="deptModal" aria-hidden="true">
@@ -113,18 +127,15 @@
       <button class="orgx-x" data-close-role>&times;</button>
     </div>
     <div class="orgx-modal-body">
-      <div id="roleSysNote" class="orgx-note" hidden><i class="fa fa-lock"></i> System role — you can adjust capabilities, but not its name, ID or category.</div>
+      <div id="roleSysNote" class="orgx-note" hidden><i class="fa fa-lock"></i> System role — you can adjust its capabilities and module permissions, but not its name, ID or category.</div>
       <div class="orgx-field-row">
         <div class="orgx-field" style="flex:1;">
-          <label>Role ID <span class="req">*</span></label>
-          <input type="text" id="roleId" class="orgx-input mono" placeholder="ROLE_COUNSELLOR" maxlength="40">
-        </div>
-        <div class="orgx-field" style="flex:1;">
-          <label>Display label <span class="req">*</span></label>
-          <input type="text" id="roleLabel" class="orgx-input" placeholder="Counsellor" maxlength="40">
+          <label>Role name <span class="req">*</span></label>
+          <input type="text" id="roleLabel" class="orgx-input" placeholder="e.g. Counsellor" maxlength="40">
         </div>
       </div>
-      <p class="orgx-field-hint" style="margin-top:-6px;">Role ID is uppercase, starts with <code>ROLE_</code>, and can't change later.</p>
+      <input type="hidden" id="roleId">
+      <p class="orgx-field-hint" style="margin-top:-6px;">Reference&nbsp;ID <code id="roleIdPreview" class="mono">—</code> <span id="roleIdPreviewNote">is generated automatically and can't change later.</span></p>
       <div class="orgx-field-row">
         <div class="orgx-field" style="flex:1;">
           <label>Category <span class="req">*</span></label>
@@ -139,6 +150,12 @@
         <label>Capabilities</label>
         <div id="roleFlags" class="chip-pick"></div>
       </div>
+      <div class="orgx-field">
+        <label>Panel access <span id="rolePermCount" class="orgx-count">0</span></label>
+        <p class="orgx-field-hint"><span id="roleAccessSummary">This role opens no panel sections yet.</span>
+        Access (which admin-panel sections this role can open) is managed in
+        <a href="<?= base_url('admin_users') ?>">Admin&nbsp;Users → Access</a>. Only affects people who log into the panel.</p>
+      </div>
     </div>
     <div class="orgx-modal-foot">
       <button class="orgx-btn orgx-btn-danger" id="deleteRoleBtn" hidden style="margin-right:auto;"><i class="fa fa-trash"></i> Delete</button>
@@ -147,6 +164,8 @@
     </div>
   </div>
 </div>
+
+  <!-- (Access Role modal removed — module permissions now live in the single Role modal above.) -->
 
 </div><!-- /.orgx -->
 </div><!-- /.content-wrapper -->
@@ -302,6 +321,30 @@
     font-size:.71rem !important; font-weight:600 !important; color:var(--faint) !important;
     text-transform:uppercase !important; letter-spacing:.3px !important; margin-left:6px;
   }
+
+  /* ── Tabs + panes ── */
+  .orgx-tabs { display:flex; gap:6px; margin:0 0 18px; border-bottom:1px solid var(--border); }
+  .orgx-tab { appearance:none; background:none; border:0; border-bottom:2px solid transparent; padding:9px 16px 11px; margin-bottom:-1px; font:inherit; font-size:.92rem; font-weight:700; color:var(--muted); cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
+  .orgx-tab:hover { color:var(--ink-2); }
+  .orgx-tab.active { color:var(--brand); border-bottom-color:var(--brand); }
+  .orgx-pane { display:none; }
+  .orgx-pane.active { display:block; animation:orgxFade .15s ease; }
+  @keyframes orgxFade { from{ opacity:0; transform:translateY(3px); } to{ opacity:1; transform:none; } }
+
+  /* ── Access roles ── */
+  .orgx-count { display:inline-block; min-width:20px; text-align:center; background:var(--brand-soft); color:var(--brand-d); border:1px solid var(--brand-bd); border-radius:20px; font-size:.72rem; font-weight:700; padding:1px 7px; margin-left:6px; }
+  .arole-list { display:flex; flex-direction:column; gap:8px; }
+  .arole-row { display:flex; align-items:center; gap:12px; padding:12px 14px; background:var(--surface-2); border:1px solid var(--border); border-radius:12px; cursor:pointer; transition:border-color .12s, background .12s; }
+  .arole-row:hover { border-color:var(--brand-bd); background:var(--brand-soft); }
+  .arole-row .arole-main { flex:1; min-width:0; }
+  .arole-row .arole-name { font-weight:700; font-size:.95rem; display:flex; align-items:center; gap:8px; }
+  .arole-row .arole-desc { color:var(--muted); font-size:.82rem; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .arole-row .arole-perm-n { color:var(--faint); font-size:.8rem; white-space:nowrap; }
+  .arole-sys { font-size:.66rem; font-weight:800; text-transform:uppercase; letter-spacing:.4px; color:var(--warn); background:var(--warn-soft); border:1px solid var(--warn-bd); border-radius:6px; padding:1px 6px; }
+  .arole-perms { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; max-height:280px; overflow:auto; padding:2px; }
+  .arole-perms label { display:flex !important; align-items:center; gap:8px; font-size:.85rem !important; font-weight:500 !important; text-transform:none !important; letter-spacing:normal !important; color:var(--ink-2) !important; background:var(--surface-2); border:1px solid var(--border); border-radius:9px; padding:8px 10px; margin:0 !important; cursor:pointer; }
+  .arole-perms label input { position:static !important; margin:0 !important; width:15px; height:15px; min-width:15px; accent-color:var(--brand); }
+  .arole-perms label.on { background:var(--brand-soft); border-color:var(--brand-bd); color:var(--brand-d) !important; }
 </style>
 
 <script>
@@ -311,7 +354,7 @@
   var CSRF_HASH = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
   var CHIP_LIMIT = 5;
 
-  var DEPARTMENTS = [], ROLES = [], ROLE_BY_ID = {}, STAFF = [];
+  var DEPARTMENTS = [], ROLES = [], ROLE_BY_ID = {}, STAFF = [], LEGACY_AVAILABLE = 0, MODULES = [];
   var SEED_DEPTS = ['Academic','Administration','Finance','HR','Operations','Library','Medical','Admissions'];
   var CAP_FLAGS = [
     { key:'can_teach', label:'Can teach' }, { key:'can_access_timetable', label:'Timetable access' },
@@ -334,7 +377,7 @@
 
   function load(){
     fetch(BASE+'/org/get_data',{headers:{'X-Requested-With':'XMLHttpRequest'}}).then(function(r){return r.json();})
-      .then(function(resp){ DEPARTMENTS=resp.departments||[]; ROLES=resp.roles||[]; ROLE_BY_ID={}; ROLES.forEach(function(r){ROLE_BY_ID[r.id]=r;}); renderAll(); })
+      .then(function(resp){ DEPARTMENTS=resp.departments||[]; ROLES=resp.roles||[]; LEGACY_AVAILABLE=resp.legacy_available||0; MODULES=resp.modules||[]; ROLE_BY_ID={}; ROLES.forEach(function(r){ROLE_BY_ID[r.id]=r;}); renderAll(); })
       .catch(function(e){ alertMsg('err','Could not load data: '+(e.message||e)); });
   }
 
@@ -353,7 +396,26 @@
   function roleLabel(id){ return (ROLE_BY_ID[id]&&ROLE_BY_ID[id].label)||id.replace(/^ROLE_/,'').replace(/_/g,' '); }
   function isActive(d){ return (d.status||'Active')!=='Inactive'; }
 
-  function renderAll(){ renderTiles(); renderDepts(); renderRoles(); }
+  function renderAll(){ renderTiles(); renderDepts(); renderRoles(); renderLegacyBanner(); }
+
+  // Old-account nudge: offer a one-click import of legacy RTDB departments when
+  // the new module is empty. The write itself goes through the MANAGE_ROLES
+  // backfill endpoint (never auto-run on load).
+  function renderLegacyBanner(){
+    var b=el('legacyDeptBanner'); if(!b) return;
+    if(LEGACY_AVAILABLE>0 && DEPARTMENTS.length===0){ el('legacyDeptCount').textContent=LEGACY_AVAILABLE; b.style.display=''; }
+    else { b.style.display='none'; }
+  }
+  function importLegacyDepts(e){
+    if(e) e.preventDefault();
+    if(!confirm('Import '+LEGACY_AVAILABLE+' department(s) from the old system?')) return;
+    var a=el('importLegacyDeptBtn'); if(a) a.style.pointerEvents='none';
+    post('/org/backfill_legacy_departments',{}).then(function(resp){
+      if(a) a.style.pointerEvents='';
+      if(resp.status==='error'){ alertMsg('err',resp.message||'Import failed.'); return; }
+      alertMsg('ok',resp.message||'Imported.'); load();
+    }).catch(function(err){ if(a) a.style.pointerEvents=''; alertMsg('err',err.message||'Import failed.'); });
+  }
 
   function renderTiles(){
     el('tDept').textContent = DEPARTMENTS.length;
@@ -428,7 +490,10 @@
     var name=el('deptName').value.trim(); if(!name){ alert('Department name is required.'); return; }
     var roleIds=Array.prototype.map.call(el('deptRoleChecks').querySelectorAll('input:checked'),function(i){return i.value;});
     var b=el('saveDeptBtn'); b.disabled=true;
-    post('/hr/save_department',{id:el('deptId').value,name:name,description:el('deptDesc').value.trim(),status:el('deptStatus').value,head_staff_id:(el('deptHeadSelect')?el('deptHeadSelect').value:''),role_ids:roleIds})
+    // role_ids_present tells the server this submit carries an authoritative role
+    // selection — so unchecking every role and saving actually CLEARS the mapping
+    // (an empty role_ids array otherwise appends no field and looks like "absent").
+    post('/hr/save_department',{id:el('deptId').value,name:name,description:el('deptDesc').value.trim(),status:el('deptStatus').value,head_staff_id:(el('deptHeadSelect')?el('deptHeadSelect').value:''),role_ids:roleIds,role_ids_present:'1'})
       .then(function(resp){ b.disabled=false; if(resp.status==='error'){alert(resp.message||'Save failed.');return;} closeModal('deptModal'); alertMsg('ok','Department saved.'); load(); })
       .catch(function(e){ b.disabled=false; alert(e.message||'Save failed.'); });
   }
@@ -444,24 +509,49 @@
     flags=flags||[]; var on=Array.isArray(flags)?flags:Object.keys(flags).filter(function(k){return flags[k];});
     return CAP_FLAGS.map(function(f){ return '<label><input type="checkbox" value="'+f.key+'" '+(on.indexOf(f.key)!==-1?'checked':'')+'><span>'+esc(f.label)+'</span></label>'; }).join('');
   }
+  // Panel "Access" (module permissions) is a read-only summary here — it is
+  // edited in Admin Users → Access. We do NOT send permissions from this modal,
+  // so Org::save_role preserves whatever access the role already has.
   function openRole(id){
     var r=id?ROLE_BY_ID[id]:null, sys=r&&r.is_system;
-    el('roleModalTitle').textContent=r?'Edit Staff Role':'Add Staff Role';
+    el('roleModalTitle').textContent=r?'Edit Role':'Add Role';
     el('roleSysNote').hidden=!sys;
-    el('roleId').value=r?r.id:''; el('roleId').disabled=!!r;
+    el('roleId').value=r?r.id:'';
     el('roleLabel').value=r?r.label:''; el('roleLabel').disabled=!!sys;
+    updateRoleIdPreview();
     el('roleCategory').value=r?(r.category||'Teaching'):'Teaching'; el('roleCategory').disabled=!!sys;
     el('roleAttendance').value=r?(r.attendance_type||'standard'):'standard'; el('roleAttendance').disabled=!!sys;
     el('roleFlags').innerHTML=roleFlagChecks(r?r.flags:[]);
+    var perms=(r&&r.permissions)||[];
+    el('rolePermCount').textContent=perms.length;
+    el('roleAccessSummary').textContent = perms.length
+      ? ('This role opens '+perms.length+' panel section'+(perms.length===1?'':'s')+': '+perms.slice(0,6).join(', ')+(perms.length>6?'…':'')+'.')
+      : 'This role opens no panel sections yet.';
     el('deleteRoleBtn').hidden=!(r&&!sys); el('deleteRoleBtn').setAttribute('data-role',r?r.id:'');
-    openModal('roleModal'); if(!r) setTimeout(function(){ el('roleId').focus(); },50);
+    openModal('roleModal'); if(!r&&!sys) setTimeout(function(){ el('roleLabel').focus(); },50);
+  }
+  // Client-side mirror of the server's ID generator — preview only; the server
+  // is authoritative for the final ID (and any collision suffix) on save.
+  function slugRoleId(s){
+    var t=(s||'').toUpperCase().replace(/[^A-Z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+    return t?('ROLE_'+t):'';
+  }
+  function updateRoleIdPreview(){
+    var fixed=el('roleId').value.trim();            // set = editing an existing role
+    var note=el('roleIdPreviewNote'), prev=el('roleIdPreview');
+    if(fixed){ prev.textContent=fixed; note.textContent='is fixed for this role and can’t change.'; return; }
+    var gen=slugRoleId(el('roleLabel').value);
+    prev.textContent=gen||'—';
+    note.textContent='is generated automatically and can’t change later.';
   }
   function saveRole(){
-    var roleId=el('roleId').value.trim().toUpperCase(), label=el('roleLabel').value.trim();
-    if(!roleId||!label){ alert('Role ID and label are required.'); return; }
-    if(!/^ROLE_[A-Z0-9_]+$/.test(roleId)){ alert('Role ID must be ROLE_ followed by UPPERCASE letters/digits/underscores.'); return; }
+    // roleId is empty for a new role (server generates it from the name) and set
+    // when editing an existing one. Only the human name is user-required.
+    var roleId=el('roleId').value.trim(), label=el('roleLabel').value.trim();
+    if(!label){ alert('Please enter a role name.'); return; }
     var flags=Array.prototype.map.call(el('roleFlags').querySelectorAll('input:checked'),function(i){return i.value;});
     var b=el('saveRoleBtn'); b.disabled=true;
+    // No permissions sent → server keeps existing Access (edited in Admin Users → Access).
     post('/org/save_role',{role_id:roleId,label:label,category:el('roleCategory').value,attendance_type:el('roleAttendance').value,flags:flags})
       .then(function(resp){ b.disabled=false; if(resp.status==='error'){alert(resp.message||'Save failed.');return;} closeModal('roleModal'); alertMsg('ok','Role saved.'); load(); })
       .catch(function(e){ b.disabled=false; alert(e.message||'Save failed.'); });
@@ -518,8 +608,10 @@
   el('addDeptBtn').onclick=function(){ openDept(null); };
   el('addRoleBtn').onclick=function(){ openRole(null); };
   el('saveDeptBtn').onclick=saveDept; el('saveRoleBtn').onclick=saveRole; el('deleteRoleBtn').onclick=delRole;
+  el('roleLabel').addEventListener('input',updateRoleIdPreview);
   el('suggestBtn').onclick=suggestMapping;
   if(el('seedDeptBtn')) el('seedDeptBtn').onclick=seedDefaults;
+  if(el('importLegacyDeptBtn')) el('importLegacyDeptBtn').onclick=importLegacyDepts;
   document.querySelectorAll('[data-close-dept]').forEach(function(n){ n.onclick=function(){closeModal('deptModal');}; });
   document.querySelectorAll('[data-close-role]').forEach(function(n){ n.onclick=function(){closeModal('roleModal');}; });
   [el('deptModal'),el('roleModal')].forEach(function(m){ m.onclick=function(e){ if(e.target===m) closeModal(m.id); }; });

@@ -1,4 +1,6 @@
 <div class="content-wrapper">
+<link rel="icon" type="image/png" href="<?= base_url('Designs/favicon.png?v=2') ?>">
+<link rel="apple-touch-icon" href="<?= base_url('Designs/favicon.png?v=2') ?>">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <link href="https://fonts.googleapis.com/css2?family=Clash+Display:wght@400;500;600;700&family=Satoshi:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <!-- Fallback if Clash Display CDN not available -->
@@ -994,15 +996,58 @@
         pwToggle.classList.toggle('fa-eye-slash',  show);
     });
 
-    /* Submit loading */
-    document.getElementById('lxLoginForm').addEventListener('submit', function () {
-        var btn = document.getElementById('lxSubmitBtn');
+    /* Submit loading — in-button spinner + a top page-loading bar.
+       admin_login is a full-page POST: on a fast (localhost) round-trip the
+       browser can replace the page BEFORE it ever paints the loading state,
+       so nothing is seen. We fix that by intercepting the submit, painting the
+       loading UI, then handing off to the real submit only after a guaranteed
+       repaint (double requestAnimationFrame). The submit event fires only once
+       native `required` validation passes, so an empty-field click still shows
+       no loading — which is correct. */
+    function lxTopBar() {
+        var b = document.getElementById('lxTopBar');
+        if (!b) {
+            b = document.createElement('div');
+            b.id = 'lxTopBar';
+            b.style.cssText = 'position:fixed;top:0;left:0;height:3px;width:0;z-index:99999;'
+                + 'background:linear-gradient(90deg,var(--brand2,#0d9488),var(--leaf,#22c55e));'
+                + 'box-shadow:0 0 10px rgba(13,148,136,.7);';
+            document.body.appendChild(b);
+        }
+        /* Jump to a clearly-visible chunk with NO transition so the very first
+           painted frame already shows the bar, then let it creep onward. */
+        b.style.transition = 'none';  b.style.width = '30%';
+        void b.offsetWidth;
+        b.style.transition = 'width 8s cubic-bezier(.1,.7,.1,1)';
+        b.style.width = '92%';
+        return b;
+    }
+    var lxSubmitting = false;
+    document.getElementById('lxLoginForm').addEventListener('submit', function (e) {
+        if (lxSubmitting) return;              // programmatic re-submit — let it through
+        e.preventDefault();
+        lxSubmitting = true;
+        var btn  = document.getElementById('lxSubmitBtn');
+        var form = this;
         btn.classList.add('loading');
         btn.disabled = true;
-        setTimeout(function () {
-            btn.classList.remove('loading');
-            btn.disabled = false;
-        }, 6000);
+        lxTopBar();
+        /* Wait for an actual paint, THEN submit for real. Double rAF ensures the
+           loading frame is on screen before navigation tears the page down. */
+        requestAnimationFrame(function () {
+            requestAnimationFrame(function () { form.submit(); });
+        });
+    });
+
+    /* If the page is restored from the back/forward (bfcache) cache, the button
+       would otherwise stay stuck in its loading state — reset it. */
+    window.addEventListener('pageshow', function (e) {
+        if (e.persisted) {
+            var btn = document.getElementById('lxSubmitBtn');
+            if (btn) { btn.classList.remove('loading'); btn.disabled = false; }
+            var b = document.getElementById('lxTopBar');
+            if (b) { b.style.transition = 'none'; b.style.width = '0'; }
+        }
     });
 
 }());

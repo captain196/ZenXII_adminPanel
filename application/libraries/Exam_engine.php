@@ -64,50 +64,20 @@ class Exam_engine
      */
     public function compute_grade(float $pct, string $scale): string
     {
-        switch ($scale) {
-            case 'Percentage':
-                if ($pct >= 90) return 'A+';
-                if ($pct >= 80) return 'A';
-                if ($pct >= 70) return 'B+';
-                if ($pct >= 60) return 'B';
-                if ($pct >= 50) return 'C';
-                if ($pct >= 33) return 'D';
-                return 'F';
-
-            case 'A-F Grades':
-                if ($pct >= 90) return 'A';
-                if ($pct >= 80) return 'B';
-                if ($pct >= 70) return 'C';
-                if ($pct >= 60) return 'D';
-                if ($pct >= 50) return 'E';
-                return 'F';
-
-            case 'O-E Grades':
-                if ($pct >= 91) return 'O';
-                if ($pct >= 81) return 'E1';
-                if ($pct >= 71) return 'E2';
-                if ($pct >= 61) return 'B1';
-                if ($pct >= 51) return 'B2';
-                if ($pct >= 41) return 'C1';
-                if ($pct >= 33) return 'C2';
-                return 'D';
-
-            case '10-Point':
-                if ($pct >= 91) return '10';
-                if ($pct >= 81) return '9';
-                if ($pct >= 71) return '8';
-                if ($pct >= 61) return '7';
-                if ($pct >= 51) return '6';
-                if ($pct >= 41) return '5';
-                if ($pct >= 33) return '4';
-                return 'F';
-
-            case 'Pass/Fail':
-                return '';
-
-            default:
-                return '';
+        // MED-10: derive from the SINGLE grade-threshold table (get_grade_thresholds)
+        // instead of a hand-synced switch. Each scale is an ordered list of
+        // [minPct, grade] pairs (descending); return the first grade whose minPct
+        // the percentage meets. Unknown scale or an empty list (e.g. Pass/Fail)
+        // yields '' — identical output to the prior switch for all current scales.
+        $table = $this->get_grade_thresholds();
+        $rows  = $table[$scale] ?? [];
+        if (empty($rows)) return '';
+        foreach ($rows as [$minPct, $grade]) {
+            if ($pct >= $minPct) return (string) $grade;
         }
+        // Every table ends with a [0, …] floor row, so a match is guaranteed for
+        // any pct >= 0; this is an unreachable safety net.
+        return '';
     }
 
     /**

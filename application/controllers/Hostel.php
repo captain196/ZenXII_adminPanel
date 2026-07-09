@@ -33,6 +33,7 @@ class Hostel extends MY_Controller
     public function __construct()
     {
         parent::__construct();
+        require_permission('Hostel');
         $this->load->library('Operations_accounting', null, 'operations_accounting');
         $this->operations_accounting->init(
             $this->firebase, $this->school_name, $this->session_year,

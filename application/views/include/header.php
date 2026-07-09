@@ -7,10 +7,13 @@
          cause), and set the theme + an explicit <html> background before any CSS
          paints. Night-theme users get color-scheme:dark set via the script below. -->
     <meta name="color-scheme" content="light">
-    <script>(function(){try{var t=localStorage.getItem('graderiq_theme');if(!t){var h=new Date().getHours();t=(h>=6&&h<18)?'day':'night';}var d=document.documentElement,dark=(t==='night');d.setAttribute('data-theme',t);d.style.backgroundColor=dark?'#070f1c':'#f0f7f5';if(dark)d.style.colorScheme='dark';}catch(e){}})();</script>
+    <script>(function(){try{var t=localStorage.getItem('graderiq_theme');if(!t){var h=new Date().getHours();t=(h>=6&&h<18)?'day':'night';}var d=document.documentElement,dark=(t==='night');d.setAttribute('data-theme',t);d.style.backgroundColor='#f0f7f5';/* light base kills inter-page black flash; chrome stays dark via CSS --bg2/3, dashboard via .db-root */}catch(e){}})();</script>
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <title>ZenXii Admin</title>
+    <!-- Favicon / tab icon — canonical ZenXii mark -->
+    <link rel="icon" type="image/png" href="<?= base_url('Designs/favicon.png?v=2') ?>">
+    <link rel="apple-touch-icon" href="<?= base_url('Designs/favicon.png?v=2') ?>">
     <meta name="viewport" content="width=device-width, initial-scale=1">
 
     <!-- CSRF tokens — must be before any scripts -->
@@ -158,9 +161,13 @@
 
     <nav class="navbar navbar-static-top">
 
-        <div class="g-search">
+        <div class="g-search" id="gSearchBox">
             <i class="fa fa-search"></i>
-            <input type="text" id="globalSearch" placeholder="Search anything…" autocomplete="off">
+            <input type="text" id="globalSearch" placeholder="Search students, staff, pages…"
+                   autocomplete="off" role="combobox" aria-autocomplete="list"
+                   aria-expanded="false" aria-controls="gSearchPanel" spellcheck="false">
+            <kbd class="g-search-kbd" id="gSearchKbd" aria-hidden="true">⌘K</kbd>
+            <div class="g-search-panel" id="gSearchPanel" role="listbox" aria-label="Search results"></div>
         </div>
 
         <div class="navbar-custom-menu">
@@ -319,6 +326,11 @@
     #subWarnBanner ~ .main-sidebar { top: calc(var(--hh) + 38px) !important; }
     #subWarnBanner ~ * .content-wrapper,
     .sub-warn-offset .content-wrapper { margin-top: calc(var(--hh) + 38px) !important; }
+    /* Locked sidebar item — visible but not clickable (no access) */
+    .sidebar-menu .treeview-menu li.nav-locked > a{
+        cursor:not-allowed; opacity:.45; pointer-events:none;
+    }
+    .sidebar-menu .treeview-menu li.nav-locked > a .fa-lock{ font-size:11px; }
 </style>
 <script>
     // Shift sidebar + content-wrapper down when banner is present
@@ -351,7 +363,20 @@
         $can = function(string $module) use ($rp, $admin_role) {
             // Bypass roles always see everything
             if (isset($admin_role) && in_array($admin_role, ['Super Admin', 'School Super Admin', 'Admin'], true)) return true;
-            return in_array($module, $rp, true);
+            if (in_array($module, $rp, true)) return true;
+            // Parent/child inheritance (mirrors has_permission): a child is
+            // granted by its umbrella parent; an umbrella group shows if the role
+            // holds any of its children. Keeps legacy 'Operations' roles intact.
+            $tree = defined('RBAC_MODULE_CHILDREN') ? RBAC_MODULE_CHILDREN : [];
+            foreach ($tree as $parent => $children) {
+                if (in_array($module, $children, true) && in_array($parent, $rp, true)) return true;
+            }
+            if (isset($tree[$module])) {
+                foreach ($tree[$module] as $child) {
+                    if (in_array($child, $rp, true)) return true;
+                }
+            }
+            return false;
         };
         ?>
         <ul class="sidebar-menu" data-widget="tree">
@@ -654,15 +679,29 @@
             <?php endif; ?>
 
             <?php if ($can('Operations')): ?>
+            <?php
+                // Operations sub-items render for everyone in the group, but each
+                // link is only clickable when the role holds that sub-permission
+                // (or the 'Operations' umbrella, which grants all). Items the user
+                // lacks show greyed + locked — visible, not clickable. This is UX
+                // only; the sub-controllers still enforce access server-side.
+                $opsItems = [
+                    ['Dashboard', 'operations', 'Operations'],
+                    ['Library',   'library',    'Library'],
+                    ['Transport', 'transport',  'Transport'],
+                    ['Hostel',    'hostel',     'Hostel'],
+                    ['Inventory', 'inventory',  'Inventory'],
+                    ['Assets',    'assets',     'Assets'],
+                ];
+            ?>
             <li class="treeview">
                 <a href="#"><i class="fa fa-cog"></i><span>Operations</span><span class="pull-right-container"><i class="fa fa-angle-left pull-right"></i></span></a>
                 <ul class="treeview-menu">
-                    <li><a href="<?= base_url('operations') ?>"><i class="fa fa-circle-o"></i>Dashboard</a></li>
-                    <li><a href="<?= base_url('library') ?>"><i class="fa fa-circle-o"></i>Library</a></li>
-                    <li><a href="<?= base_url('transport') ?>"><i class="fa fa-circle-o"></i>Transport</a></li>
-                    <li><a href="<?= base_url('hostel') ?>"><i class="fa fa-circle-o"></i>Hostel</a></li>
-                    <li><a href="<?= base_url('inventory') ?>"><i class="fa fa-circle-o"></i>Inventory</a></li>
-                    <li><a href="<?= base_url('assets') ?>"><i class="fa fa-circle-o"></i>Assets</a></li>
+                    <?php foreach ($opsItems as $it): [$label, $route, $perm] = $it; if ($can($perm)): ?>
+                    <li><a href="<?= base_url($route) ?>"><i class="fa fa-circle-o"></i><?= $label ?></a></li>
+                    <?php else: ?>
+                    <li class="nav-locked"><a href="#" onclick="return false;" title="You don't have access to <?= $label ?>"><i class="fa fa-lock"></i><?= $label ?></a></li>
+                    <?php endif; endforeach; ?>
                 </ul>
             </li>
             <?php endif; ?>
@@ -676,9 +715,6 @@
 
             <?php if ($can('Admin Users')): ?>
             <li class="sidebar-single"><a href="<?= base_url('admin_users') ?>"><i class="fa fa-user-circle-o"></i><span>Admin Users</span></a></li>
-            <?php endif; ?>
-            <?php if (strcasecmp($admin_role ?? '', 'School Super Admin') === 0): ?>
-            <li class="sidebar-single"><a href="<?= base_url('admin_users/school_super_admins') ?>"><i class="fa fa-user-shield"></i><span>School Super Admins</span></a></li>
             <?php endif; ?>
             <?php if ($can('Admin Users')): ?>
             <li class="sidebar-single"><a href="<?= base_url('audit_logs') ?>"><i class="fa fa-shield"></i><span>Audit Logs</span></a></li>
@@ -765,6 +801,28 @@
                 if(pUl){var pLi=pUl.closest('.treeview');if(pLi)pLi.classList.add('active','menu-open');}
             }
         }
+    }
+
+    /* PRESERVE SIDEBAR SCROLL across navigation. Each module is a full page
+       reload, so the .sidebar scroll container re-renders at the top and the
+       user loses their place. Restore the last position (per-tab) synchronously
+       here — this IIFE runs right after the sidebar markup, so there's no flash —
+       and keep it in sync as the user scrolls. */
+    var _sb=document.querySelector('.main-sidebar .sidebar');
+    if(_sb){
+        var _SBK='graderiq_sb_scroll';
+        try{var _y=parseInt(sessionStorage.getItem(_SBK),10);if(_y>0)_sb.scrollTop=_y;}catch(e){}
+        /* Nothing saved (first visit / new tab): make sure the active item is on
+           screen rather than defaulting to the very top. */
+        if(!_sb.scrollTop&&best){
+            var _r=best.getBoundingClientRect(),_sr=_sb.getBoundingClientRect();
+            if(_r.top<_sr.top||_r.bottom>_sr.bottom){try{best.scrollIntoView({block:'center'});}catch(e){best.scrollIntoView();}}
+        }
+        var _sbT=null;
+        _sb.addEventListener('scroll',function(){
+            if(_sbT)return;
+            _sbT=requestAnimationFrame(function(){_sbT=null;try{sessionStorage.setItem(_SBK,String(_sb.scrollTop));}catch(e){}});
+        },{passive:true});
     }
 
     /* Persist sidebar collapse state on desktop. AdminLTE's push-menu toggles
@@ -1074,5 +1132,160 @@
              });
         });
     }
+})();
+</script>
+
+<!-- ═══════════════════ GLOBAL SEARCH ═══════════════════ -->
+<script>
+(function () {
+    'use strict';
+    var box   = document.getElementById('gSearchBox');
+    var input = document.getElementById('globalSearch');
+    var panel = document.getElementById('gSearchPanel');
+    var kbd   = document.getElementById('gSearchKbd');
+    if (!box || !input || !panel) return;
+
+    var isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+    if (kbd) kbd.textContent = isMac ? '⌘K' : 'Ctrl K';
+
+    /* Page index — built from the (already RBAC-filtered) sidebar so it always
+       matches exactly what this admin can actually open, with zero hardcoding. */
+    var pages = [];
+    (function () {
+        var seen = {};
+        document.querySelectorAll('.sidebar-menu a[href]').forEach(function (a) {
+            var href = a.getAttribute('href') || '';
+            if (!href || href === '#' || /^javascript:/i.test(href)) return;
+            var span  = a.querySelector('span');
+            var label = (span ? span.textContent : a.textContent).replace(/\s+/g, ' ').trim();
+            if (!label) return;
+            var k = label.toLowerCase() + '|' + href;
+            if (seen[k]) return; seen[k] = 1;
+            pages.push({ title: label, url: href.replace(BASE_URL, '') });
+        });
+    })();
+
+    var items = [];      // flat list of {title,detail,url,type,icon} for keyboard nav
+    var active = -1;
+    var lastQ = '';
+    var timer = null, ctrl = null;
+
+    function esc(s){ return (s == null ? '' : String(s)).replace(/[&<>"]/g, function(c){
+        return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+    function hi(text, q){
+        var t = String(text || ''), i = t.toLowerCase().indexOf(q);
+        if (i < 0 || !q) return esc(t);
+        return esc(t.slice(0,i)) + '<mark>' + esc(t.slice(i,i+q.length)) + '</mark>' + esc(t.slice(i+q.length));
+    }
+    function openP(){ panel.classList.add('open'); input.setAttribute('aria-expanded','true'); }
+    function closeP(){ panel.classList.remove('open'); input.setAttribute('aria-expanded','false'); active = -1; }
+
+    function pageMatches(q){
+        var out = [];
+        for (var i=0; i<pages.length && out.length<6; i++){
+            if (pages[i].title.toLowerCase().indexOf(q) !== -1)
+                out.push({ title: pages[i].title, detail: '', url: pages[i].url, type: 'page', icon: 'fa-arrow-right' });
+        }
+        return out;
+    }
+
+    function render(q, groups, loading){
+        items = [];
+        var html = '';
+        groups.forEach(function (g){
+            if (!g.rows.length) return;
+            html += '<div class="gs-group"><div class="gs-grouphd">' + esc(g.label) + '</div>';
+            g.rows.forEach(function (r){
+                var idx = items.length; items.push(r);
+                html += '<a class="gs-item" data-idx="' + idx + '" data-type="' + esc(r.type) + '" '
+                     + 'href="' + esc(BASE_URL + r.url) + '" role="option">'
+                     + '<span class="gs-ic"><i class="fa ' + esc(r.icon || 'fa-angle-right') + '"></i></span>'
+                     + '<span class="gs-tx"><span class="gs-t">' + hi(r.title, q) + '</span>'
+                     + (r.detail ? '<span class="gs-d">' + esc(r.detail) + '</span>' : '')
+                     + '</span></a>';
+            });
+            html += '</div>';
+        });
+        if (loading) html += '<div class="gs-note"><span class="gs-spin"></span>Searching students &amp; staff…</div>';
+        else if (!items.length) html = '<div class="gs-empty">No matches for “' + esc(q) + '”</div>';
+        panel.innerHTML = html;
+        active = -1;
+        openP();
+    }
+
+    function run(q){
+        var mods = pageMatches(q);
+        // Pages resolve instantly; entities need >=2 chars + a round-trip.
+        var wantServer = q.length >= 2;
+        render(q, [{ label: 'Pages', rows: mods }], wantServer);
+        if (!wantServer) return;
+
+        if (ctrl && ctrl.abort) { try { ctrl.abort(); } catch(e){} }
+        ctrl = (window.AbortController ? new AbortController() : null);
+        fetch(BASE_URL + 'admin/global_search?q=' + encodeURIComponent(q), {
+            credentials: 'same-origin',
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
+            signal: ctrl ? ctrl.signal : undefined
+        })
+        .then(function (r){ return r.json(); })
+        .then(function (res){
+            if (q !== lastQ) return;                       // a newer keystroke won
+            var rows = (res && res.results) || [];
+            var students = rows.filter(function(x){ return x.type === 'student'; });
+            var staff    = rows.filter(function(x){ return x.type === 'staff'; });
+            var events   = rows.filter(function(x){ return x.type === 'event'; });
+            render(q, [
+                { label: 'Pages',    rows: pageMatches(q) },
+                { label: 'Students', rows: students },
+                { label: 'Staff',    rows: staff },
+                { label: 'Events',   rows: events },
+            ], false);
+        })
+        .catch(function (e){
+            if (e && e.name === 'AbortError') return;
+            if (q !== lastQ) return;
+            render(q, [{ label: 'Pages', rows: pageMatches(q) }], false);  // keep pages usable
+        });
+    }
+
+    function setActive(n){
+        var els = panel.querySelectorAll('.gs-item');
+        if (!els.length) return;
+        if (active >= 0 && els[active]) els[active].classList.remove('active');
+        active = (n + els.length) % els.length;
+        els[active].classList.add('active');
+        els[active].scrollIntoView({ block: 'nearest' });
+    }
+
+    input.addEventListener('input', function (){
+        var q = input.value.trim().toLowerCase();
+        lastQ = q;
+        clearTimeout(timer);
+        if (!q){ closeP(); return; }
+        timer = setTimeout(function(){ run(q); }, 180);
+    });
+
+    input.addEventListener('keydown', function (e){
+        if (e.key === 'ArrowDown'){ e.preventDefault(); setActive(active + 1); }
+        else if (e.key === 'ArrowUp'){ e.preventDefault(); setActive(active - 1); }
+        else if (e.key === 'Enter'){
+            var els = panel.querySelectorAll('.gs-item');
+            var el = (active >= 0 ? els[active] : els[0]);
+            if (el){ e.preventDefault(); window.location.href = el.getAttribute('href'); }
+        }
+        else if (e.key === 'Escape'){ closeP(); input.blur(); }
+    });
+
+    input.addEventListener('focus', function (){ if (input.value.trim() && items.length) openP(); });
+    document.addEventListener('click', function (e){ if (!box.contains(e.target)) closeP(); });
+
+    /* ⌘K / Ctrl-K to focus from anywhere; "/" when not already typing. */
+    document.addEventListener('keydown', function (e){
+        if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')){
+            e.preventDefault(); input.focus(); input.select();
+        } else if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName||'')) && !e.target.isContentEditable){
+            e.preventDefault(); input.focus();
+        }
+    });
 })();
 </script>

@@ -298,6 +298,11 @@ class Superadmin_schools extends MY_Superadmin_Controller
                     'school_id'     => $school_id,
                     'school_code'   => $school_code,
                     'parent_db_key' => $school_code,
+                    // Force set-new-password on first login. The web-panel gate
+                    // (Admin_login → MY_Controller) reads this claim.
+                    'extra'         => [
+                        'must_change_password' => true,
+                    ],
                 ]);
                 if (!$claimOk && $attempt < 2) usleep(200000);
             }

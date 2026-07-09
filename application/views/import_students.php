@@ -202,6 +202,10 @@ $isError  = $flashMsg && (stripos($flashMsg, 'fail') !== false || stripos($flash
   .imx-more summary { cursor:pointer; font-size:.85rem; font-weight:600; color:var(--brand); }
   .imx-detaillist { margin:10px 0 0; padding-left:18px; color:var(--muted); font-size:.82rem; line-height:1.55; }
   .imx-detaillist li { margin-bottom:6px; }
+
+  /* Neutralize the panel's global `label {…!important}` (header-inline.css:473)
+     so the drop-zone label renders as designed (it forces uppercase/teal/11px). */
+  .imx label.imx-drop { text-transform:none !important; letter-spacing:normal !important; color:var(--ink) !important; font-size:1rem !important; font-weight:400 !important; }
 </style>
 
 <script>

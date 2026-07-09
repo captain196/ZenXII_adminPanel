@@ -2764,7 +2764,27 @@ class Sis extends MY_Controller
                 'parent_db_key' => $this->parent_db_key,
                 // auth.uid == studentId; emit student identity for studentFlags.
                 'student_id'    => $studentId,
+                // Force set-new-password on first login. Parent app gates on the
+                // Firestore mirror below, not the claim, but emit both for parity
+                // with the reset flow (reset_password@2048).
+                'extra'         => [
+                    'must_change_password' => true,
+                ],
             ]);
+            // Mirror to the students doc — the Parent app reads this field to
+            // trigger its force-change-password screen on first login. Merge
+            // write (upsert): the primary student doc already exists at every
+            // caller (save_admission/import/enroll write it before this helper),
+            // and Entity_firestore_sync::syncStudent never touches this key, so
+            // the flag survives all subsequent syncs.
+            try {
+                $this->fs->set('students', $this->fs->docId($studentId), [
+                    'mustChangePassword' => true,
+                    'updatedAt'          => date('c'),
+                ], true);
+            } catch (\Exception $e) {
+                log_message('error', "{$context}: Firestore mustChange write failed for {$studentId}: " . $e->getMessage());
+            }
             log_message('info', "{$context}: Firebase Auth user created for {$studentId} (email={$authEmail}).");
             return ['success' => true, 'error' => ''];
         } catch (\Exception $e) {

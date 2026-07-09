@@ -561,7 +561,12 @@ class Entity_firestore_sync
             'phone'       => $data['Phone'] ?? $data['phone'] ?? '',
             'role'        => $data['Role'] ?? $data['role'] ?? '',
             'designation' => $data['designation'] ?? $data['Designation'] ?? $data['Position'] ?? '',
+            'position'    => $data['Position'] ?? $data['position'] ?? '',
             'department'  => $data['Department'] ?? $data['department'] ?? '',
+            // Carry role fields so a sync-only staff doc is still visible to
+            // teacher-detection (Academic) and payroll classification.
+            'staff_roles'  => is_array($data['staff_roles'] ?? null) ? array_values($data['staff_roles']) : [],
+            'primary_role' => $data['primary_role'] ?? '',
             'profilePic'  => $data['Doc']['ProfilePic'] ?? $data['profile_pic'] ?? '',
             'status'      => $data['Status'] ?? 'Active',
             // BUG-052 fix 2026-05-25: caller-provided session precedence

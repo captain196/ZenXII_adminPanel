@@ -7,6 +7,8 @@ $displayName = $profile['display_name'] ?? $school_name;
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Online Admission — <?= htmlspecialchars($displayName) ?></title>
+<link rel="icon" type="image/png" href="<?= base_url('Designs/favicon.png?v=2') ?>">
+<link rel="apple-touch-icon" href="<?= base_url('Designs/favicon.png?v=2') ?>">
     <meta name="csrf-token" content="<?= $this->security->get_csrf_hash() ?>">
     <meta name="csrf-name" content="<?= $this->security->get_csrf_token_name() ?>">
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Syne:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">

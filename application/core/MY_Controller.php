@@ -200,6 +200,7 @@ class MY_Controller extends CI_Controller
             'admin/get_dashboard_charts',
             'admin/get_dashboard_activity',
             'admin/get_subscription_info',
+            'admin/global_search',
             'notifications/get_tasks',
         ], true);
 
@@ -219,7 +220,15 @@ class MY_Controller extends CI_Controller
             // is set on their Firebase Auth claims and (after login) in their CI
             // session. Restrict them to the change-password screen + logout until
             // they pick a new password.
+            //
+            // NOTE: $route_key = strtolower(fetch_class()).'/'.strtolower(fetch_method()),
+            // and fetch_class() returns the CONTROLLER CLASS name, not the URI segment.
+            // The change-password page's route admin_users/change_my_password maps to
+            // class AdminUsers, so its route_key is 'adminusers/change_my_password'
+            // (no underscore). Both spellings are allow-listed so the gate can never
+            // redirect this page back to itself (that caused a redirect loop).
             $allowedRoutes = [
+                'adminusers/change_my_password',
                 'admin_users/change_my_password',
                 'admin_login/logout',
             ];
@@ -303,6 +312,20 @@ class MY_Controller extends CI_Controller
                 } catch (\Exception $e) { /* never break a page */ }
             }
 
+            // ── Auto-finalise staff attendance (throttled once/day/school) ──
+            // Persists past unmarked working days as Absent (and rest days as
+            // O/H) so payroll/HR reads of the STORED staffAttendanceSummary
+            // counts match the overlay Staff_attendance::me() shows read-only.
+            // Piggybacks the poller — no cron needed. Best-effort, capped, and
+            // wrapped so it can never slow or break the page.
+            $lastFinalise = (int) $this->session->userdata('staff_finalise_ts');
+            if (!$skip_periodic_checks && $this->school_id && ($now - $lastFinalise >= 86400)) {
+                $this->session->set_userdata('staff_finalise_ts', $now);
+                try {
+                    $this->_auto_finalise_staff_attendance();
+                } catch (\Throwable $e) { /* never break a page */ }
+            }
+
             // ── [BUG-1+2 FIX] [A-01] Live subscription re-check every 5 min ──
             //
             // [A-01] CRITICAL FIX: if Firebase is unreachable the library
@@ -369,15 +392,8 @@ class MY_Controller extends CI_Controller
                         }
                     }
 
-                    // ── RBAC permission refresh (piggyback on same interval) ──
-                    // NON-B2 surface (Schools/{name}/Roles) — runs identically under both flag states.
-                    // If another admin changes this role's permissions, pick it up.
-                    $freshPerms = load_role_permissions(
-                        $this->firebase,
-                        $this->school_name,
-                        $this->admin_role ?? ''
-                    );
-                    $this->session->set_userdata('rbac_permissions', $freshPerms);
+                    // (RBAC permission refresh moved OUT of this 5-min block — it
+                    //  now runs per-request below so access changes are live.)
                 } else {
                     // Firestore/Firebase unreachable — update timestamp to avoid hammering
                     // the store on every request, but don't kick the user out.
@@ -438,16 +454,35 @@ class MY_Controller extends CI_Controller
 
         // ── [A-03] Share common vars with all views ───────────────────────
         // 'current_session' added so account_book.php gets the right variable.
-        // ── [RBAC] Load permissions (cached in session at login) ────────
+        // ── [RBAC] Real-time permission refresh ─────────────────────────
+        // Re-resolve the role's module permissions on (almost) every request so
+        // an access change made in Admin Users → Access takes effect on the
+        // user's very NEXT page action — no re-login, no 5-min wait. A 5-second
+        // dedup absorbs bursts of AJAX calls on a single page. Bypass roles
+        // (Admin/Super Admin) resolve with NO Firestore read, so this is free
+        // for them; only restricted roles incur the (single, indexed) doc read.
         $rbac_permissions = $this->session->userdata('rbac_permissions');
-        if (!is_array($rbac_permissions)) {
-            // First request after login or session doesn't have it yet — load now
-            $rbac_permissions = load_role_permissions(
+        $rbacNow = time();
+        $rbacTs  = (int) $this->session->userdata('rbac_ts');
+        // Always refresh on a full page load (the sidebar re-renders → must be
+        // current); dedup only the AJAX calls that fire afterwards within 5s.
+        $rbacStale = !is_array($rbac_permissions)
+            || !$this->input->is_ajax_request()
+            || ($rbacNow - $rbacTs) >= 5;
+        if ($rbacStale) {
+            $fresh = load_role_permissions(
                 $this->firebase,
                 $this->school_name,
                 $this->admin_role ?? ''
             );
-            $this->session->set_userdata('rbac_permissions', $rbac_permissions);
+            // Guard against a transient Firestore blip (which returns []) wiping a
+            // user's access mid-session: accept an empty result only when we have
+            // no prior perms. A genuine full-revoke still applies on re-login.
+            if (!empty($fresh) || !is_array($rbac_permissions)) {
+                $rbac_permissions = $fresh;
+                $this->session->set_userdata('rbac_permissions', $rbac_permissions);
+            }
+            $this->session->set_userdata('rbac_ts', $rbacNow);
         }
 
         $this->load->vars([
@@ -587,7 +622,7 @@ class MY_Controller extends CI_Controller
                 'session', 'current_session', 'session_year',
                 'schoolName', 'school_display_name', 'school_features',
                 'subscription_expiry', 'subscription_grace_end', 'subscription_warning',
-                'sub_check_ts', 'login_csrf',
+                'sub_check_ts', 'login_csrf', 'rbac_permissions', 'rbac_ts',
             ];
 
         $this->session->unset_userdata($keys);
@@ -1296,6 +1331,45 @@ class MY_Controller extends CI_Controller
      * Called from MY_Controller constructor (throttled to every 30s).
      * Handles: attendance A/T, leave approve/reject, homework created/reviewed.
      */
+    /**
+     * Once/day/school: persist the staff-attendance "no-vacant" overlay so
+     * payroll/HR reads of the stored counts match what me() shows. Delegates to
+     * Staff_attendance_finaliser. Skips schools with no attendance policy.
+     * Wrapped by the caller so it can never break a page render.
+     */
+    private function _auto_finalise_staff_attendance(): void
+    {
+        if (!isset($this->fs) || !$this->school_id || empty($this->session_year)) return;
+
+        // Only for schools that actually use GPS / staff attendance.
+        try { $schoolDoc = $this->fs->get('schools', $this->school_id); }
+        catch (\Throwable $e) { return; }
+        $policy = (is_array($schoolDoc) && is_array($schoolDoc['attendancePolicy'] ?? null))
+            ? $schoolDoc['attendancePolicy'] : [];
+        if (empty($policy)) return;
+
+        // Resolve "today" in the school timezone (matches the punch/me flow).
+        $tz = (is_string($policy['timezone'] ?? null) && $policy['timezone'] !== '')
+            ? $policy['timezone'] : 'Asia/Kolkata';
+        try { $now = new DateTime('now', new DateTimeZone($tz)); }
+        catch (\Throwable $e) { $now = new DateTime('now', new DateTimeZone('Asia/Kolkata')); }
+        $todayISO = $now->format('Y-m-d');
+        $months = [
+            $now->format('Y-m'),
+            (clone $now)->modify('first day of last month')->format('Y-m'),
+        ];
+
+        $this->load->library('staff_attendance_finaliser');
+        $this->staff_attendance_finaliser->init($this->fs, $this->school_id, $this->session_year);
+        $res = $this->staff_attendance_finaliser->run($policy, $todayISO, $months);
+        if ((int) ($res['updated'] ?? 0) > 0) {
+            log_message('info', sprintf(
+                'staff attendance finalised: school=%s scanned=%d updated=%d daysFilled=%d skipped=%d',
+                $this->school_id, $res['scanned'], $res['updated'], $res['daysFilled'], $res['skipped']
+            ));
+        }
+    }
+
     private function _auto_process_push_requests(): void
     {
         if (!isset($this->fs) || !$this->school_id) return;

@@ -45,6 +45,11 @@ class Stories extends MY_Controller
     //  Any drift will produce silent cross-system validation failures.
     // ════════════════════════════════════════════════════════════════
     private const COLLECTION          = 'stories';
+    // Whole-school audience sentinel. The apps now enforce audience
+    // SERVER-SIDE with an array-contains-any query, so a whole-school story
+    // MUST carry audienceClassKeys = ["*"] (NOT an empty array) or parents'
+    // query won't match it. Mirror of StorySharedConfig.AUDIENCE_ALL on both apps.
+    private const AUDIENCE_ALL        = '*';
     private const ALLOWED_STATUSES    = ['active', 'flagged', 'removed'];
     private const ALLOWED_TYPES       = ['image', 'video'];
     private const ALLOWED_PRIORITIES  = ['high', 'normal'];
@@ -227,7 +232,10 @@ class Stories extends MY_Controller
             'status'            => $status,
             'effectiveStatus'   => $isExpired ? 'expired' : $status,
             'audienceClassKeys' => $audience,
-            'audienceLabel'     => empty($audience) ? 'Whole school' : implode(', ', array_map('strval', $audience)),
+            // Whole-school = empty (legacy) OR the ["*"] sentinel (new contract).
+            'audienceLabel'     => (empty($audience) || $audience === [self::AUDIENCE_ALL])
+                                    ? 'Whole school'
+                                    : implode(', ', array_map('strval', $audience)),
             'moderatedBy'       => (string) ($d['moderatedBy'] ?? ''),
             'moderatedByName'   => (string) ($d['moderatedByName'] ?? ''),
             'moderatedAt'       => $this->_to_millis($d['moderatedAt'] ?? 0),
@@ -728,7 +736,8 @@ class Stories extends MY_Controller
     //  Accepts a multipart POST (file + caption + priority + type) from
     //  the Stories Management SPA, uploads the media to Firebase Storage,
     //  then writes a canonical Firestore doc with authorType='admin'.
-    //  Admin stories are WHOLE-SCHOOL (audienceClassKeys = []).
+    //  Whole-school admin stories carry audienceClassKeys = ["*"] (the
+    //  AUDIENCE_ALL sentinel) so the apps' server-side audience query matches.
     //
     //  Storage path:  schools/{schoolId}/stories/{adminId}/{epochMillis}.{ext}
     //  Firestore doc: stories/{schoolId}_admin_{adminId}_{epochMillis}
@@ -752,11 +761,13 @@ class Stories extends MY_Controller
             $this->json_error('Caption exceeds ' . self::MAX_CAPTION_LENGTH . ' chars.');
         }
 
-        // ── 1b. Audience — EMPTY = whole-school. A submitted `audience`
-        // (JSON array of canonical keys) is intersected with the school's
-        // REAL section keys so a story can't target a bogus/other-school
-        // section. Unknown keys are dropped; if nothing valid remains the
-        // post falls back to whole-school.
+        // ── 1b. Audience — WHOLE-SCHOOL = ["*"] (AUDIENCE_ALL sentinel), NOT
+        // an empty array: the apps' server-side array-contains-any audience
+        // query only matches stories that carry either the child's class key
+        // or the '*' sentinel. A submitted `audience` (JSON array of canonical
+        // keys) is intersected with the school's REAL section keys so a story
+        // can't target a bogus/other-school section. Unknown keys are dropped;
+        // if nothing valid remains the post falls back to whole-school (["*"]).
         $audienceRaw = $this->input->post('audience');
         if (is_string($audienceRaw)) {
             $audienceRaw = json_decode($audienceRaw, true);
@@ -771,24 +782,52 @@ class Stories extends MY_Controller
                 }
             }
         }
+        // Whole-school (no specific classes chosen / none valid) → ["*"].
+        if (empty($audienceClassKeys)) {
+            $audienceClassKeys = [self::AUDIENCE_ALL];
+        }
 
         // ── 2. Validate file ──────────────────────────────────────────
         if (!isset($_FILES['media']) || $_FILES['media']['error'] !== UPLOAD_ERR_OK) {
             $this->json_error('Media file is required.');
         }
         $file = $_FILES['media'];
-        $mime = (string) ($file['type'] ?? '');
         $size = (int) ($file['size'] ?? 0);
         $maxBytes = $type === 'image' ? self::MAX_IMAGE_BYTES : self::MAX_VIDEO_BYTES;
         if ($size <= 0 || $size > $maxBytes) {
             $maxMb = $maxBytes / (1024 * 1024);
             $this->json_error(ucfirst($type) . " must be 0–{$maxMb} MB.");
         }
-        if ($type === 'image' && !preg_match('#^image/#', $mime)) {
-            $this->json_error('Uploaded file is not an image (got ' . $mime . ').');
+
+        // ── MIME sniff (M-3) — the browser-supplied $_FILES['media']['type']
+        // is spoofable, so we IGNORE it and derive the real content type from
+        // the file bytes with finfo, then reconcile against a strict allow-list
+        // that also matches the declared `type` (image vs video). The sniffed
+        // MIME (never the client value) drives the stored extension below.
+        $allowedMimes = [
+            'image' => ['image/jpeg', 'image/png', 'image/webp'],
+            'video' => ['video/mp4', 'video/quicktime', 'video/3gpp', 'video/webm'],
+        ];
+        $tmp = (string) ($file['tmp_name'] ?? '');
+        if ($tmp === '' || !is_uploaded_file($tmp)) {
+            $this->json_error('Invalid upload.');
         }
-        if ($type === 'video' && !preg_match('#^video/#', $mime)) {
-            $this->json_error('Uploaded file is not a video (got ' . $mime . ').');
+        $mime = '';
+        if (function_exists('finfo_open')) {
+            $finfo = finfo_open(FILEINFO_MIME_TYPE);
+            if ($finfo !== false) {
+                $mime = (string) finfo_file($finfo, $tmp);
+                finfo_close($finfo);
+            }
+        }
+        if ($mime === '') {
+            $this->json_error('Could not determine the file type.');
+        }
+        if (!in_array($mime, $allowedMimes[$type] ?? [], true)) {
+            $this->json_error(
+                'File content (' . $mime . ') is not an allowed ' . $type . '. '
+                . 'Allowed: ' . implode(', ', $allowedMimes[$type] ?? []) . '.'
+            );
         }
 
         // ── 2b. Rate limit (Hardening #4) ─────────────────────────────
@@ -877,8 +916,9 @@ class Stories extends MY_Controller
             'expiresAtTs'     => \FirestoreRestClient::timestamp($expiresAt),
             'expiresAt'       => $expiresAt,   // LEGACY — remove in v2.0
             'viewCount'       => 0,
-            // Audience — EMPTY = whole-school; else the validated canonical
-            // class-section keys chosen in the upload picker.
+            // Audience — ["*"] (AUDIENCE_ALL) = whole-school; else the
+            // validated canonical class-section keys chosen in the upload
+            // picker. Never an empty array (see §1b).
             'audienceClassKeys' => $audienceClassKeys,
             // reactionCounts is intentionally omitted — the apps default it
             // to an empty map and the reaction transaction lazily creates the

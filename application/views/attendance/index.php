@@ -70,6 +70,9 @@
         <a href="<?= base_url('attendance/analytics') ?>" class="att-btn att-btn-outline">
             <i class="fa fa-bar-chart"></i> View Analytics
         </a>
+        <a href="<?= base_url('attendance/staff_regularization') ?>" class="att-btn att-btn-outline">
+            <i class="fa fa-user-clock"></i> Regularization Requests
+        </a>
     </div>
 
     <!-- Recent Punch Log -->

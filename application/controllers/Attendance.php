@@ -377,6 +377,15 @@ class Attendance extends MY_Controller
         $this->load->view('include/footer');
     }
 
+    /** Admin/HR page: review + approve/reject staff GPS-attendance regularizations. */
+    public function staff_regularization()
+    {
+        $this->_require_role(self::VIEW_ROLES);
+        $this->load->view('include/header');
+        $this->load->view('attendance/staff_regularization');
+        $this->load->view('include/footer');
+    }
+
     /**
      * Health check — verifies Firebase connectivity, config presence, cache status
      */
@@ -747,9 +756,17 @@ class Attendance extends MY_Controller
         // canonical store; response shape unchanged.
         $byStudent = [];
         try {
+            // Section-scoped read (audit finding H10). Previously this filtered
+            // ONLY [month, type] and then discarded every doc not in the roster —
+            // a school-wide scan (~10k reads to render one 40-student section at
+            // scale). className/section are stamped by BOTH writers (bulk +
+            // per-day), so equality-filtering them scopes the read to this one
+            // section. Served by the composite index
+            // [schoolId, className, section, month] (firestore.indexes.json).
             $sumDocs = $this->fs->schoolWhere('attendanceSummary', [
-                ['month', '==', $monthKey],
-                ['type',  '==', 'student'],
+                ['className', '==', Firestore_service::classKey($class)],
+                ['section',   '==', Firestore_service::sectionKey($section)],
+                ['month',     '==', $monthKey],
             ]);
             foreach ($sumDocs as $entry) {
                 $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
@@ -843,17 +860,31 @@ class Attendance extends MY_Controller
         // Load holidays + governance config
         $this->load->helper('attendance');
         $nonWorking = $this->_resolve_non_working_days($monthNum, $year);
+        // Defined BEFORE the governance block: the needs_approval branch below
+        // reads the current summary via docId2($sid, $monthKey). Pre-fix this was
+        // assigned only later (~line 894), so that branch built the wrong doc id
+        // (null month) → $curStr all 'V' → unreliable diff + a PHP notice.
+        $monthKey = date('Y-m', mktime(0, 0, 0, $monthNum, 1, $year));
         $rules = $this->_att_rules();
         $pastLimit = (int)($rules['allow_past_edit_days'] ?? 0);
         $requireApproval = !empty($rules['require_approval_for_backdated']);
 
         // ── DATE GOVERNANCE (bulk): validate the first non-V, non-H mark's date ──
         // For bulk saves, check if the string contains any marks for future or past days
-        $sampleStr = reset($attData);
-        if (is_string($sampleStr)) {
-            $govResult = att_validate_date_governance(
-                $sampleStr, $daysInMonth, $monthNum, $year, $pastLimit, $requireApproval
+        // Validate EVERY submitted student string (audit finding M5): the first
+        // violation drives the response (needs_approval → diff all students
+        // below; hard error → reject). Previously only the first student
+        // (reset($attData)) was validated, so a later student's future / past
+        // out-of-window day slipped through completely ungoverned.
+        $govResult = ['ok' => true];
+        foreach ($attData as $chkStr) {
+            if (!is_string($chkStr)) continue;
+            $r = att_validate_date_governance(
+                $chkStr, $daysInMonth, $monthNum, $year, $pastLimit, $requireApproval
             );
+            if (!$r['ok']) { $govResult = $r; break; }
+        }
+        if (true) {
             if (!$govResult['ok']) {
                 if (!empty($govResult['needs_approval'])) {
                     // Compute diff: store only changed days per student
@@ -891,7 +922,7 @@ class Attendance extends MY_Controller
         }
 
         $saved = 0;
-        $monthKey = date('Y-m', mktime(0, 0, 0, $monthNum, 1, $year));
+        // $monthKey already resolved above (before the governance block).
         $sectionRoot = $this->_resolve_section_root($class, $section);
 
         // Resolve a studentId → name map once so each Firestore write
@@ -999,6 +1030,13 @@ class Attendance extends MY_Controller
                 'type'       => 'student',
                 'className'  => Firestore_service::classKey($class),
                 'section'    => Firestore_service::sectionKey($section),
+                // Canonical combined key ("Class 9th/Section A"). The Teacher
+                // dashboard's "Today's Attendance" card and the app query
+                // attendanceSummary by sectionKey; the per-day writer already
+                // stamps it, but this BULK writer was missing it → any class
+                // saved via the admin grid showed every student as unmarked on
+                // the Teacher dashboard (audit finding H6). Kept in sync here.
+                'sectionKey' => Firestore_service::buildSectionKey($class, $section),
                 'month'      => $monthKey,
                 'monthLabel' => $attKey,
                 'session'    => $session,
@@ -1223,6 +1261,32 @@ class Attendance extends MY_Controller
             return $this->json_error('Invalid day.');
         }
 
+        // Block marking on Sundays/holidays — must be 'H' (parity with the
+        // single-day path; canonical non-working-day source). Pre-fix, bulk
+        // mark had no such guard so a whole section could be written P/A onto
+        // a holiday/Sunday, diverging the per-day `attendance` docs from the
+        // summary (which later re-stamps 'H').
+        if ($mark !== 'H' && isset($this->_resolve_non_working_days($monthNum, $year)[$day])) {
+            return $this->json_error("Day {$day} is a holiday/Sunday. Cannot bulk-mark as {$mark}.");
+        }
+
+        // ── DATE GOVERNANCE: block future days; route past-window edits to the
+        // correction workflow (parity with mark_student_day). Pre-fix, bulk
+        // mark accepted any future day up to daysInMonth.
+        $govCheck = $this->_check_day_governance($day, $monthNum, $year, $mark, [
+            'class' => $class, 'section' => $section, 'month' => $month,
+            'day' => $day, 'mark' => $mark,
+        ]);
+        if ($govCheck !== null) {
+            if (!empty($govCheck['needs_approval'])) {
+                return $this->json_error(
+                    'This date is past the free-edit window. Please file correction '
+                    . 'requests (Attendance → Corrections) for admin approval.', 422
+                );
+            }
+            return $this->json_error($govCheck['error'] ?? 'Date validation failed.');
+        }
+
         $sectionRoot = $this->_resolve_section_root($class, $section);
         // R5 — roster from Firestore. The per-student attendance writes
         // below at `{sectionRoot}/Students/{id}/Attendance/{key}` are
@@ -1257,6 +1321,14 @@ class Attendance extends MY_Controller
             'className' => $class, 'section' => $section, 'day' => $day,
             'month' => $attKey, 'mark' => $mark, 'count' => $count,
         ]);
+
+        // Parent notification (P2 fix, 2026-07-07): bulk-marking a whole section
+        // Absent/Tardy previously sent parents nothing (unlike save_student_attendance).
+        // _fire_student_att_events self-guards to today's marks only and dedups
+        // per student, so a backdated bulk mark won't spam and a re-run won't double-send.
+        if ($mark === 'A' || $mark === 'T') {
+            $this->_fire_student_att_events($class, $section, $attKey);
+        }
 
         return $this->json_success(['marked' => $count]);
     }
@@ -1298,6 +1370,15 @@ class Attendance extends MY_Controller
             foreach ($fsDocs as $entry) {
                 $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
                 if (!is_array($d)) continue;
+                // Session scope (P2 fix): studentId persists across academic
+                // years, so a returning student's prior-year summary docs also
+                // match studentId==. Skip any doc that explicitly belongs to a
+                // DIFFERENT session. Legacy docs missing the field fall through
+                // unchanged, so this can never hide current-session data.
+                $docSession = $d['session'] ?? null;
+                if ($docSession !== null && (string) $docSession !== (string) $this->session_year) {
+                    continue;
+                }
                 $attStr = $d['dayWise'] ?? '';
                 if (!is_string($attStr) || $attStr === '') continue;
                 $monthLabel = $d['monthLabel'] ?? ($d['month'] ?? '');
@@ -1613,7 +1694,18 @@ class Attendance extends MY_Controller
         $saved          = 0;
         $skipped        = [];
         $attemptsTotal  = 0;
-        $statusToField  = ['P'=>'present','A'=>'absent','L'=>'leave','H'=>'holiday','T'=>'tardy','V'=>'void'];
+        // Staff dayWise supports the full company-schedule status set that the
+        // GPS punch writer (Staff_attendance_writer) produces. Pre-fix this map
+        // and the sanitizer only knew P/A/L/H/T/V, so an admin grid save
+        // rewrote M (half-day) / W (work-on-off) / O (weekly-off) → V and
+        // dropped their counts — silently clobbering GPS-written payroll marks.
+        // Field names + workingDays formula are kept IDENTICAL to the canonical
+        // writer's STATUS_TO_FIELD / workingDays so both write paths agree.
+        $staffStatus    = ['P','A','L','H','T','V','M','W','O'];
+        $statusToField  = [
+            'P'=>'present','A'=>'absent','L'=>'leave','H'=>'holiday','T'=>'tardy',
+            'V'=>'void','M'=>'halfDay','W'=>'extraWorked','O'=>'weeklyOff',
+        ];
 
         foreach ($attData as $staffId => $attString) {
             $staffId = trim((string) $staffId);
@@ -1621,16 +1713,23 @@ class Attendance extends MY_Controller
                 $skipped[] = ['staffId' => $staffId, 'name' => $staffId, 'reason' => 'invalid_id_format'];
                 continue;
             }
-            $cleanStr = $this->_sanitize_att_string($attString, $daysInMonth);
+            $cleanStr = $this->_sanitize_att_string($attString, $daysInMonth, $staffStatus);
 
-            // Compute counts from cleanStr
-            $counts = ['present'=>0,'absent'=>0,'leave'=>0,'holiday'=>0,'tardy'=>0,'void'=>0];
+            // Compute ABSOLUTE counts from cleanStr across the full 9-field set.
+            // Writing every field (not just the 6 old ones) means the merge:true
+            // summary write can never leave a stale halfDay/extraWorked/weeklyOff
+            // count behind when dayWise legitimately loses those marks.
+            $counts = [
+                'present'=>0,'absent'=>0,'leave'=>0,'holiday'=>0,'tardy'=>0,
+                'void'=>0,'halfDay'=>0,'extraWorked'=>0,'weeklyOff'=>0,
+            ];
             for ($i = 0; $i < $daysInMonth; $i++) {
                 $c = strtoupper($cleanStr[$i] ?? 'V');
                 $f = $statusToField[$c] ?? 'void';
                 $counts[$f]++;
             }
-            $workingDays = (int) ($counts['present'] + $counts['leave'] + $counts['tardy']);
+            // Parity with Staff_attendance_writer::workingDays (adds halfDay).
+            $workingDays = (int) ($counts['present'] + $counts['leave'] + $counts['tardy'] + $counts['halfDay']);
 
             $summaryDocId = "{$this->school_id}_{$staffId}_{$monthKey}";
             $captured     = $existingSummaries[$staffId]['__updateTime'] ?? '';
@@ -2117,8 +2216,13 @@ class Attendance extends MY_Controller
             if (!gf_valid_coord($centerLat, $centerLng)) {
                 return $this->json_error('A valid campus latitude/longitude is required.');
             }
-            if ($radius < 10 || $radius > 5000) {
-                return $this->json_error('Radius must be between 10 and 5000 metres.');
+            // Hard cap tightened 2026-07-07: the old 5000 m ceiling let a fence
+            // span a whole town (a live tenant sat at 5 km = effectively no fence,
+            // enabling off-campus punches). A single school campus is comfortably
+            // under 2 km; anything larger is a misconfiguration that defeats the
+            // geofence. Existing over-cap policies must be corrected on next save.
+            if ($radius < 25 || $radius > 2000) {
+                return $this->json_error('Campus radius must be between 25 and 2000 metres. A larger radius defeats the geofence — use a value that tightly covers the campus.');
             }
         }
 
@@ -5430,6 +5534,11 @@ class Attendance extends MY_Controller
                 'schoolId'    => $school,
                 'session'     => $session,
                 'date'        => $date,
+                // audit M16: stamp type='student' so the fast per-day dashboard
+                // query schoolWhere('attendance',[date==,type=='student']) matches
+                // (writers previously omitted it → that query hit 0 docs and
+                // silently fell back to the attendanceSummary path).
+                'type'        => 'student',
                 'className'   => $cs['className']  !== '' ? $cs['className']  : $classKey,
                 'section'     => $cs['section']    !== '' ? $cs['section']    : $sectionKey,
                 'classOrder'  => $cs['classOrder'],
@@ -5495,28 +5604,50 @@ class Attendance extends MY_Controller
 
             $monthKey = sprintf('%04d-%02d', $year, $monthNum);
             $docId    = $this->fs->docId2($studentId, $monthKey);
-
-            // Read the current canonical dayWise (seed a fresh month if absent).
-            $doc = null;
-            try { $doc = $this->fs->get('attendanceSummary', $docId); } catch (\Exception $e) {}
-            $dayWise = ($doc && is_string($doc['dayWise'] ?? null) && $doc['dayWise'] !== '')
-                ? $doc['dayWise'] : str_repeat('V', $daysInMonth);
-            $dayWise = str_pad($dayWise, $daysInMonth, 'V');
-
-            // Apply the single day, then re-stamp holidays/Sundays as 'H'
-            // (identical rule to save_student_attendance / approve paths).
-            $dayWise[$day - 1] = $mark;
             $nonWorking = $this->_resolve_non_working_days($monthNum, $year);
-            $dayWise = enforce_holidays_on_string($dayWise, $daysInMonth, $nonWorking);
+            $hasCas = isset($this->firebase) && method_exists($this->firebase, 'firestoreGet');
 
-            // Preserve an existing name if the caller didn't supply one.
-            if ($studentName === '' && $doc && isset($doc['studentName'])) {
-                $studentName = (string) $doc['studentName'];
+            // CAS RETRY LOOP (audit finding H11) — this read-modify-write of the
+            // canonical dayWise runs UNLOCKED from the bulk-save and Teacher-app
+            // save() paths, so a naive read→mutate→set could drop a concurrent
+            // writer's mark. Read the current dayWise WITH its __updateTime,
+            // apply this single day, and write with a precondition; on a
+            // conflict re-read the fresh dayWise and re-apply (bounded retries).
+            $maxTries = $hasCas ? 4 : 1;
+            for ($try = 0; $try < $maxTries; $try++) {
+                $doc = null;
+                $precondition = null;
+                if ($hasCas) {
+                    try { $doc = $this->firebase->firestoreGet('attendanceSummary', $docId); } catch (\Exception $e) {}
+                    $ut = is_array($doc) ? (string) ($doc['__updateTime'] ?? '') : '';
+                    $precondition = ($ut !== '') ? ['updateTime' => $ut] : ['exists' => false];
+                } else {
+                    try { $doc = $this->fs->get('attendanceSummary', $docId); } catch (\Exception $e) {}
+                }
+
+                $dayWise = ($doc && is_string($doc['dayWise'] ?? null) && $doc['dayWise'] !== '')
+                    ? $doc['dayWise'] : str_repeat('V', $daysInMonth);
+                $dayWise = str_pad($dayWise, $daysInMonth, 'V');
+
+                // Apply the single day, then re-stamp holidays/Sundays as 'H'
+                // (identical rule to save_student_attendance / approve paths).
+                $dayWise[$day - 1] = $mark;
+                $dayWise = enforce_holidays_on_string($dayWise, $daysInMonth, $nonWorking);
+
+                // Preserve an existing name if the caller didn't supply one.
+                $name = $studentName;
+                if ($name === '' && $doc && isset($doc['studentName'])) {
+                    $name = (string) $doc['studentName'];
+                }
+
+                $ok = $this->_syncStudentSummaryToFirestore(
+                    $studentId, $class, $section, $monthNum, $year, $dayWise, $name, $precondition
+                );
+                if ($ok) return true;
+                // Precondition conflict (or transient) — brief backoff, then re-read.
+                if ($try < $maxTries - 1) usleep(40000 * ($try + 1));
             }
-
-            return $this->_syncStudentSummaryToFirestore(
-                $studentId, $class, $section, $monthNum, $year, $dayWise, $studentName
-            );
+            return false;
         } catch (\Exception $e) {
             log_message('error', "Attendance summary day-sync failed for {$studentId}: " . $e->getMessage());
             return false;
@@ -5662,7 +5793,8 @@ class Attendance extends MY_Controller
         int    $monthNum,
         int    $year,
         string $dayWise,
-        string $studentName = ''
+        string $studentName = '',
+        ?array $precondition = null   // audit H11: optional CAS precondition (updateTime|exists)
     ): bool {
         try {
             $monthName = date('F', mktime(0, 0, 0, $monthNum, 1, $year));
@@ -5690,6 +5822,12 @@ class Attendance extends MY_Controller
                 'type'       => 'student',
                 'className'  => Firestore_service::classKey($class),
                 'section'    => Firestore_service::sectionKey($section),
+                // Canonical combined key ("Class 9th/Section A"). Added 2026-07-07:
+                // the Teacher dashboard's "Today's Attendance" card queries
+                // attendanceSummary by sectionKey, but summaries never carried the
+                // field → the query matched 0 docs → every student showed unmarked.
+                // Same format the per-day `attendance` docs already use.
+                'sectionKey' => Firestore_service::buildSectionKey($class, $section),
                 'month'      => $monthKey,
                 'monthLabel' => $attKey,
                 'session'    => $this->session_year,
@@ -5708,6 +5846,24 @@ class Attendance extends MY_Controller
             }
 
             $docId = $this->fs->docId2($studentId, $monthKey);
+
+            // CAS write (audit finding H11): when the caller supplies a
+            // precondition (from a read that captured __updateTime), commit via
+            // firestoreCommitBatch so a concurrent writer converging on the same
+            // {studentId}_{month} doc cannot silently drop this update — a stale
+            // precondition makes the commit return false and the caller re-reads
+            // + retries. merge:true preserves the admin-owned lateTimes map,
+            // identical to the fs->set(...,true) legacy path used when no
+            // precondition is passed (all pre-existing callers unchanged).
+            if ($precondition !== null
+                && isset($this->firebase)
+                && method_exists($this->firebase, 'firestoreCommitBatch')) {
+                $ok = $this->firebase->firestoreCommitBatch([
+                    ['op' => 'set', 'collection' => 'attendanceSummary', 'docId' => $docId,
+                     'data' => $doc, 'merge' => true, 'precondition' => $precondition],
+                ]);
+                return $ok === true;
+            }
             return (bool) $this->fs->set('attendanceSummary', $docId, $doc, true);
         } catch (\Exception $e) {
             log_message('error', "Student attendance summary Firestore sync failed for {$studentId}: " . $e->getMessage());
@@ -6046,13 +6202,17 @@ class Attendance extends MY_Controller
     /**
      * Sanitize an attendance string to only valid characters, padded to length
      */
-    private function _sanitize_att_string(string $raw, int $daysInMonth): string
+    private function _sanitize_att_string(string $raw, int $daysInMonth, ?array $allowed = null): string
     {
+        // $allowed defaults to the student status set ($this->valid_marks =
+        // P/A/L/H/T/V). Staff attendance passes the wider company-schedule set
+        // (adds M/W/O) so those GPS-written marks are not silently rewritten to V.
+        $allowed = $allowed ?? $this->valid_marks;
         $raw = strtoupper(trim($raw));
         $raw = substr($raw, 0, $daysInMonth);
         $clean = '';
         for ($i = 0; $i < strlen($raw); $i++) {
-            $clean .= in_array($raw[$i], $this->valid_marks) ? $raw[$i] : 'V';
+            $clean .= in_array($raw[$i], $allowed) ? $raw[$i] : 'V';
         }
         return str_pad($clean, $daysInMonth, 'V');
     }
@@ -6572,12 +6732,15 @@ class Attendance extends MY_Controller
         // batchSet returns the count of successful writes. We don't unwind
         // partial failures — Firestore set(merge:true) is idempotent, so
         // a retry of the whole save() converges to the intended state.
+        $attExpected = count($attendanceWrites);
+        $attWritten  = $attExpected;
         if (!empty($attendanceWrites)) {
             $okAtt = $this->fs->batchSet('attendance', $attendanceWrites);
-            if ($okAtt < count($attendanceWrites)) {
+            $attWritten = (int) $okAtt;
+            if ($okAtt < $attExpected) {
                 log_message('error', sprintf(
                     'attendance batchSet partial: %d/%d for school=%s section=%s date=%s',
-                    $okAtt, count($attendanceWrites),
+                    $okAtt, $attExpected,
                     $this->school_id, $sectionKey, $serverDate
                 ));
             }
@@ -6606,16 +6769,46 @@ class Attendance extends MY_Controller
                 $this->_applyDayToSummary(
                     $sid, $class, $section, $dayNum, $attKey, $u['mark'], $u['name']
                 );
+
+                // ── PARENT NOTIFICATION (P1 fix, 2026-07-07) ──────────────
+                // The Teacher app marks attendance THROUGH this endpoint. Before
+                // this, a child marked Absent/Late from the app produced no push
+                // and no in-app alert — only the admin single-day/bulk UI paths
+                // notified. Reuse the SAME per-student event helper those paths
+                // use so the contract (dedup, FCM channel, notifications doc) is
+                // identical. Only 'A' (absent) and 'T' (tardy) notify; 'L'/'P'
+                // do not. The per-student dedup inside _fire_single_student_event
+                // (keyed student|date|mark) prevents a double-send if an admin
+                // later re-saves the same day. Best-effort: a notify failure is
+                // logged but never fails the already-committed attendance write.
+                if ($u['mark'] === 'A' || $u['mark'] === 'T') {
+                    try {
+                        $this->_fire_single_student_event(
+                            $sid, $class, $section, $u['mark'], $dayNum, $attKey
+                        );
+                    } catch (\Exception $e) {
+                        log_message('error', 'attendance save() notify failed: ' . $e->getMessage());
+                    }
+                }
             }
         }
 
-        return $this->json_success([
+        $resp = [
             'updated'    => $updated,
             'rejected'   => $rejected,
             'date'       => $serverDate,
             'stage'      => $stage,
             'rosterSize' => count($roster),
-        ]);
+        ];
+        // audit M8: surface partial persistence instead of reporting a clean
+        // success while some per-day docs failed to write. batchSet is
+        // idempotent, so the app can safely retry the whole save.
+        if ($attWritten < $attExpected) {
+            $resp['partial']       = true;
+            $resp['writtenCount']  = $attWritten;
+            $resp['expectedCount'] = $attExpected;
+        }
+        return $this->json_success($resp);
     }
 
     /* ================================================================
@@ -7184,6 +7377,233 @@ class Attendance extends MY_Controller
             'limit'      => $limit,
             'nextCursor' => $nextCursor,
             'filter'     => ['status' => $statusFilter, 'date' => $dateFilter],
+        ]);
+    }
+
+    /* ================================================================
+       STAFF GPS-ATTENDANCE REGULARIZATION REVIEW (admin / HR)
+       ----------------------------------------------------------------
+       The Teacher app files regularization requests (missed/failed GPS
+       punches) into `attendanceRegularizations` (personType='staff',
+       status='pending'). Pre-fix there was NO admin surface to act on
+       them, so staff had no path to fix a missed punch except the manual
+       grid. These two endpoints list and decide those requests; approval
+       stamps the corrected day via the SAME canonical writer the GPS
+       punch uses (source='correction'), keeping counts/workingDays right.
+       ================================================================ */
+
+    /** Roles allowed to approve/reject staff regularizations (adds HR Manager). */
+    private const STAFF_REG_DECIDE_ROLES = [
+        'Super Admin', 'School Super Admin', 'Admin', 'Principal', 'Vice Principal', 'HR Manager',
+    ];
+
+    /**
+     * POST /attendance/staff_regularization/list
+     * Body: status? (pending|approved|rejected|cancelled|auto_rejected|all), limit?
+     * Lists staff regularization requests for this school, newest date first,
+     * also grouped by batchId so the UI can show one request (many dates) together.
+     */
+    public function staff_regularization_list()
+    {
+        $this->_require_role(self::VIEW_ROLES, 'staff_regularization_list');
+
+        $statusFilter = strtolower(trim((string) $this->input->post('status')));
+        $allowed = ['pending', 'approved', 'rejected', 'cancelled', 'auto_rejected', 'all'];
+        if (!in_array($statusFilter, $allowed, true)) $statusFilter = 'pending';
+
+        $limit = (int) $this->input->post('limit');
+        if ($limit < 1 || $limit > 200) $limit = 100;
+
+        // Equality-only conditions (schoolId auto-added by schoolWhere) → served by
+        // single-field indexes; no composite index required, no orderBy.
+        $conds = [['personType', '==', 'staff']];
+        if ($statusFilter !== 'all') $conds[] = ['status', '==', $statusFilter];
+
+        $rows = [];
+        try {
+            $rows = $this->fs->schoolWhere('attendanceRegularizations', $conds);
+        } catch (\Exception $e) {
+            log_message('error', 'staff_regularization_list query failed: ' . $e->getMessage());
+        }
+
+        $out = [];
+        foreach ($rows as $entry) {
+            $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+            if (!is_array($d)) continue;
+            $d['requestId'] = $entry['id'] ?? ($d['requestId'] ?? null);
+            $out[] = $d;
+        }
+        usort($out, static function ($a, $b) {
+            return strcmp((string) ($b['date'] ?? ''), (string) ($a['date'] ?? ''));
+        });
+        if (count($out) > $limit) $out = array_slice($out, 0, $limit);
+
+        $batches = [];
+        foreach ($out as $d) {
+            $bid = (string) ($d['batchId'] ?? $d['requestId'] ?? '');
+            if ($bid === '') continue;
+            $batches[$bid][] = $d;
+        }
+
+        return $this->json_success([
+            'requests' => $out,
+            'batches'  => $batches,
+            'count'    => count($out),
+            'status'   => $statusFilter,
+        ]);
+    }
+
+    /**
+     * POST /attendance/staff_regularization/decide
+     * Body: doc_id (single) OR batch_id (whole request); decision (approve|reject);
+     *       remarks?; mark? (optional final mark override, defaults to requestedStatus).
+     * Approve = stamp the day via Staff_attendance_writer (source='correction') +
+     * mark the request approved. Reject = mark rejected only. Month-locked days are
+     * skipped (reported), never silently dropped.
+     */
+    public function staff_regularization_decide()
+    {
+        $this->_require_role(self::STAFF_REG_DECIDE_ROLES, 'staff_regularization_decide');
+
+        $docId    = trim((string) $this->input->post('doc_id'));
+        $batchId  = trim((string) $this->input->post('batch_id'));
+        $decision = strtolower(trim((string) $this->input->post('decision')));
+        $remarks  = trim((string) $this->input->post('remarks'));
+        $override = strtoupper(trim((string) $this->input->post('mark')));   // optional
+
+        if (!in_array($decision, ['approve', 'reject'], true)) {
+            return $this->json_error('decision (approve|reject) is required.');
+        }
+        if ($docId === '' && $batchId === '') {
+            return $this->json_error('doc_id or batch_id is required.');
+        }
+
+        // ── Resolve the target request docs (single or whole batch) ──
+        $targets = [];
+        if ($docId !== '') {
+            $doc = $this->fs->get('attendanceRegularizations', $docId);
+            if (!is_array($doc)) return $this->json_error('Request not found.', 404);
+            $doc['requestId'] = $docId;
+            $targets[] = $doc;
+        } else {
+            try {
+                $rows = $this->fs->schoolWhere('attendanceRegularizations', [
+                    ['batchId',    '==', $batchId],
+                    ['personType', '==', 'staff'],
+                ]);
+            } catch (\Exception $e) {
+                return $this->json_error('Could not load request batch.', 500);
+            }
+            foreach ($rows as $entry) {
+                $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
+                if (!is_array($d)) continue;
+                $d['requestId'] = $entry['id'] ?? null;
+                $targets[] = $d;
+            }
+            if (empty($targets)) return $this->json_error('No requests found for this batch.', 404);
+        }
+
+        $userId = $this->admin_id ?: 'system';
+        $nowIso = $this->_server_now()->format('c');
+
+        $staffStatus = ['P', 'A', 'L', 'H', 'T', 'V', 'M', 'W', 'O'];
+        $overrideOk  = ($override !== '' && in_array($override, $staffStatus, true));
+
+        $writerReady = false;
+        $applied = [];
+        $skipped = [];
+
+        foreach ($targets as $d) {
+            $rid = (string) ($d['requestId'] ?? '');
+            // Tenant + type + state guards (mirror correction_decide).
+            if ((string) ($d['schoolId'] ?? '') !== $this->school_id) { $skipped[] = ['id' => $rid, 'reason' => 'not_found']; continue; }
+            if ((string) ($d['personType'] ?? '') !== 'staff')        { $skipped[] = ['id' => $rid, 'reason' => 'not_staff']; continue; }
+            if ((string) ($d['status'] ?? 'pending') !== 'pending')   { $skipped[] = ['id' => $rid, 'reason' => 'already_decided']; continue; }
+
+            $staffId = (string) ($d['staffId'] ?? '');
+            $date    = (string) ($d['date'] ?? '');
+            if ($staffId === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+                $skipped[] = ['id' => $rid, 'reason' => 'bad_request'];
+                continue;
+            }
+
+            if ($decision === 'reject') {
+                $this->fs->set('attendanceRegularizations', $rid, [
+                    'status'     => 'rejected',
+                    'reviewedBy' => $userId,
+                    'reviewedAt' => $nowIso,
+                    'remarks'    => $remarks,
+                ], true);
+                $this->_audit_write([
+                    'action' => 'STAFF_REG_REJECT', 'stage' => 'CORRECTION',
+                    'targetType' => 'staff', 'targetId' => $staffId, 'date' => $date,
+                    'reason' => $remarks !== '' ? $remarks : null, 'requestId' => $rid,
+                ]);
+                $applied[] = ['id' => $rid, 'date' => $date, 'result' => 'rejected'];
+                continue;
+            }
+
+            // ── SELF-APPROVAL GUARD (audit finding H1) ──────────────────
+            // The approver ($userId) is the reviewer's own Firebase uid
+            // (MY_Controller: admin_id = RAW uid). A privileged reviewer
+            // (Principal/VP/HR) must NOT approve their OWN missed-punch
+            // regularization — that is self-service payroll fraud with a
+            // clean audit naming them as both subject and approver. Require a
+            // different approver. (Self-REJECT is harmless and still allowed.)
+            if ($staffId !== '' && $staffId === $userId) {
+                $skipped[] = ['id' => $rid, 'reason' => 'self_approval_forbidden'];
+                continue;
+            }
+
+            // ── approve: apply the corrected mark via the canonical writer ──
+            // requestedStatus is constrained to {P, M} by the Firestore create
+            // rule + the app; the override (admin manual) may be any staff mark.
+            $reqMark   = strtoupper((string) ($d['requestedStatus'] ?? 'P'));
+            $finalMark = $overrideOk ? $override
+                : (in_array($reqMark, $staffStatus, true) ? $reqMark : 'P');
+
+            try {
+                if (!$writerReady) {
+                    $this->load->library('staff_attendance_writer');
+                    $this->staff_attendance_writer->init($this->firebase, $this->school_id, $this->session_year);
+                    $writerReady = true;
+                }
+                $this->staff_attendance_writer->markSingleDay($staffId, $date, $finalMark, [
+                    'markedBy'     => 'admin:' . $userId,
+                    'source'       => 'correction',
+                    'correctionId' => $rid,
+                ]);
+            } catch (MonthLockedException $e) {
+                $skipped[] = ['id' => $rid, 'reason' => 'month_locked'];
+                continue;
+            } catch (\Throwable $e) {
+                log_message('error', 'staff_regularization_decide writer failed for ' . $rid . ': ' . $e->getMessage());
+                $skipped[] = ['id' => $rid, 'reason' => 'write_failed'];
+                continue;
+            }
+
+            $this->fs->set('attendanceRegularizations', $rid, [
+                'status'      => 'approved',
+                'appliedMark' => $finalMark,
+                'reviewedBy'  => $userId,
+                'reviewedAt'  => $nowIso,
+                'remarks'     => $remarks,
+            ], true);
+            $this->_audit_write([
+                'action' => 'STAFF_REG_APPROVE', 'stage' => 'CORRECTION',
+                'targetType' => 'staff', 'targetId' => $staffId, 'date' => $date,
+                'newValue' => $finalMark, 'reason' => $remarks !== '' ? $remarks : null,
+                'requestId' => $rid,
+            ]);
+            $applied[] = ['id' => $rid, 'date' => $date, 'result' => 'approved', 'mark' => $finalMark];
+        }
+
+        return $this->json_success([
+            'decision'     => $decision,
+            'applied'      => $applied,
+            'skipped'      => $skipped,
+            'appliedCount' => count($applied),
+            'skippedCount' => count($skipped),
         ]);
     }
 

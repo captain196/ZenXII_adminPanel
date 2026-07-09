@@ -331,7 +331,8 @@ class Auth_claims_backfill extends CI_Controller
             } elseif ($pr !== '') {
                 $role = ucfirst(strtolower(str_replace(['ROLE_', '_'], ['', ' '], $pr)));
             } else {
-                $role = 'Teacher';
+                // Neutral default — never assume Teacher for a role-less staffer.
+                $role = 'Staff';
             }
             return ['role' => $role, 'role_label' => $role, 'student_id' => '', 'source' => $col];
         }

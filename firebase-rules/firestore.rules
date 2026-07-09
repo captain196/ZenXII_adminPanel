@@ -301,6 +301,32 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ── Staff GPS-attendance Regularization requests (staff self-file) ─
+    // The Teacher app writes ONE doc per date DIRECTLY here on submit (no
+    // backend round-trip). A staff member may create + read ONLY their own
+    // requests, hard-bound to their own uid + school + personType, and only
+    // in the initial 'pending' state. Admin/HR read every request in-school.
+    // Approve/reject transitions are applied by the PHP service account
+    // (which bypasses rules), so clients can never update/delete — this is
+    // what makes the client-supplied staffId safe: it MUST equal auth.uid,
+    // the same identity the server-authoritative punch/me flow derives from
+    // the token. Without this block the collection hit the default-deny
+    // catch-all and every app submit failed with PERMISSION_DENIED.
+    match /attendanceRegularizations/{docId} {
+      allow read:   if (isAdmin() && isSameSchool())
+                    || (isStaff() && isSameSchool() && resource.data.staffId == request.auth.uid);
+      allow create: if isStaff()
+                    && request.resource.data.schoolId == request.auth.token.school_id
+                    && request.resource.data.staffId == request.auth.uid
+                    && request.resource.data.personType == 'staff'
+                    && request.resource.data.status == 'pending'
+                    // A staff member may only request Present (P) or Half-Day (M).
+                    // Blocks a modified client from self-requesting Holiday/Leave/
+                    // Weekly-off/Extra-pay marks that carry payroll value.
+                    && request.resource.data.requestedStatus in ['P', 'M'];
+      allow update, delete: if false;   // PHP service account applies decisions
+    }
+
     // ── Audit Log (Phase 3 — admin only; never writable by clients) ─
     match /attendanceAuditLog/{docId} {
       allow read:  if isAdmin() && isSameSchool();
@@ -574,43 +600,68 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // examVisible — inherit a schedule's visibility from its PARENT exam's
+    // status. Staff (Teacher/Admin/…) bypass entirely (they must read Draft
+    // exams for marks entry); for non-staff we get() the parent exam doc
+    // (id = {schoolId}_{examId}, per Exam_read / syncExamScheduleFull) and
+    // require Published/Completed. Cost: one document get() per non-staff
+    // schedule read (Firestore caches get()s per request). A missing parent
+    // exam → get() null → rule denies (fail-closed), which is correct: a
+    // schedule for a non-existent exam is not readable.
+    function examVisible(schoolId, examId) {
+      return isStaff()
+        || get(/databases/$(database)/documents/exams/$(schoolId + '_' + examId)).data.status in ['Published', 'Completed'];
+    }
+
     // ── Exam Schedule ────────────────────────────────────────────
-    // DEFERRED HARDENING ITEM — examSchedule visibility inheritance
-    // from exams.status (NOT a Phase 2 blocker; future enhancement).
-    //   Current position: examSchedule read is gated by tenant
-    //     isolation (isSameSchool: same-school + tenantActive) only;
-    //     it does NOT derive visibility from its parent exam's status.
-    //     A parent obtains a schedule only by navigating from an exam
-    //     already filtered to Published/Completed (app flow + the
-    //     /exams rule above), and there is no known parent navigation
-    //     path that surfaces a Draft exam's schedule. Schedules carry
-    //     no marks/results — only date/time/maxTotal/passingMarks.
-    //   Risk level: LOW. Exposure requires a same-school authenticated
-    //     parent to directly query examSchedule by a Draft exam's id
-    //     out-of-band (no in-app path); leaks scheduling metadata only,
-    //     no marks/PII. Defended today by tenant isolation + app flow.
-    //   Future approach: optionally enforce in-rule by deriving the
-    //     parent exam's status — e.g. get(/databases/$(db)/documents/
-    //     exams/$(resource.data.schoolId + '_' + resource.data.examId))
-    //     .data.status in ['Published','Completed'] for non-staff.
-    //     Cost: one extra document get() per schedule read (billed +
-    //     latency); requires examSchedule docs to reliably carry
-    //     schoolId+examId (they do). Revisit alongside Phase 3.
+    // RESIDUAL-2 fix (2026-07-08): read WAS `isSameSchool()`, so any
+    // same-school parent could directly query examSchedule by a Draft
+    // exam's id and read its datesheet out-of-band (no in-app path, but a
+    // rules-level leak of scheduling metadata). Now visibility is derived
+    // from the parent exam's status via examVisible(): staff read Draft
+    // schedules (marks entry — Teacher getExams picker); parents/students
+    // read schedules ONLY for Published/Completed exams, matching the
+    // /exams rule above. Schedules carry no marks/PII (date/time/maxTotal/
+    // passingMarks only). examSchedule docs reliably carry schoolId+examId.
+    // Backend (Admin SDK) bypasses rules → Exam_read server reads unaffected.
     match /examSchedule/{docId} {
-      allow read: if isSameSchool();
+      allow read: if isStaff()
+                  || (isSameSchool() && examVisible(resource.data.schoolId, resource.data.examId));
       allow write: if isAdmin();
     }
 
     // ── Marks ────────────────────────────────────────────────────
+    // CRITICAL-1 (2026-07-08): read was `isSameSchool()` — any same-school
+    // parent could read EVERY student's marks (intra-school IDOR). Now
+    // staff read school-wide (marks-entry dashboards); parents read only
+    // their own child (marks docs carry `studentId`, matched by
+    // isOwnStudent() against auth.uid). Uses the canonical isStaffOrOwnStudent()
+    // helper (staff OR same-school own-student) — same pattern as feeDemands /
+    // submissions, so tenant isolation (tenantActive + schoolId) is enforced too.
+    // CRITICAL-2: write was bare `isStaff()` (no tenant binding on the
+    // payload) — a staff token from School A could stamp a marks doc with
+    // schoolId:"SCH_B". isSameSchoolWrite() pins request.resource.data.schoolId
+    // to the caller's claim while keeping legitimate teacher writes working.
     match /marks/{docId} {
-      allow read: if isSameSchool();
-      allow write: if isStaff();
+      allow read: if isStaffOrOwnStudent();
+      allow write: if isStaff() && isSameSchoolWrite();
     }
 
     // ── Results ──────────────────────────────────────────────────
+    // CRITICAL-1 (2026-07-08): read was `isSameSchool()` — same-school IDOR
+    // (any parent reads every student's results). Now staff school-wide /
+    // parent own-child only (results docs carry `studentId`).
+    // CRITICAL-2: results are Admin-SDK / server-only — the PHP compute +
+    // publish flow writes via the service account (bypasses these rules).
+    // Client writes were `isStaff()`, letting a teacher forge/overwrite
+    // published results. Locked to deny-all for clients, mirroring
+    // resultsStaging. INVARIANT: `results` holds ONLY published results;
+    // unpublished computed results live in `resultsStaging` (server-only).
+    // Read uses the canonical isStaffOrOwnStudent() helper (staff OR same-school
+    // own-student), matching feeDemands/submissions and enforcing tenant isolation.
     match /results/{docId} {
-      allow read: if isSameSchool();
-      allow write: if isStaff();
+      allow read: if isStaffOrOwnStudent();
+      allow write: if false;
     }
 
     // ── Exam Templates (Phase B) ─────────────────────────────────
@@ -1043,18 +1094,35 @@ service cloud.firestore {
     // caller's school on both the existing doc and the incoming payload, matching
     // the events/submissions pattern. isSameSchoolWrite() checks
     // request.resource.data.schoolId; isSameSchool() checks resource.data.schoolId.
+    // Audit follow-up (2026-07-09): destructive ops were bare isStaff()+same-
+    // school, so ANY staff token could delete/patch ANOTHER staff member's
+    // album/media school-wide (one rogue token wipes the gallery). Restrict
+    // delete to the doc's owner OR an admin, matching homework/stories. (Admin-
+    // panel deletes use the Admin SDK and bypass rules, so this only tightens
+    // the client surface; the Teacher app currently has no client delete path.)
     match /galleryAlbums/{docId} {
       allow read:   if isSameSchool();
       allow create: if isStaff() && isSameSchoolWrite();
       allow update: if isStaff() && isSameSchool() && isSameSchoolWrite();
-      allow delete: if isStaff() && isSameSchool();
+      allow delete: if isStaff() && isSameSchool()
+                    && (resource.data.createdBy == request.auth.uid || isAdmin());
     }
 
     match /galleryMedia/{docId} {
       allow read:   if isSameSchool();
       allow create: if isStaff() && isSameSchoolWrite();
       allow update: if isStaff() && isSameSchool() && isSameSchoolWrite();
-      allow delete: if isStaff() && isSameSchool();
+      allow delete: if isStaff() && isSameSchool()
+                    && (resource.data.uploadedBy == request.auth.uid || isAdmin());
+    }
+
+    // ── Event participants ───────────────────────────────────────
+    // Server-only collection: written exclusively by the admin panel via the
+    // Admin SDK (Events.php), which bypasses these rules. No client (Teacher/
+    // Parent app) reads or writes it. Locked to explicit deny so the intent is
+    // documented and it fails loudly rather than via the generic catch-all.
+    match /eventParticipants/{docId} {
+      allow read, write: if false;
     }
 
     // ── Stories ──────────────────────────────────────────────────
@@ -1066,8 +1134,40 @@ service cloud.firestore {
     // We bind explicitly on token.school_id (NOT isSameSchoolWrite(), whose
     // `|| schoolCode` arm is payload-spoofable — F-2) so neither the payload
     // nor the existing doc can name another tenant.
+    // ── Story audience index (SEC-1) ─────────────────────────────
+    // Server-maintained entitlement doc, one per parent, keyed by the
+    // parent's Firebase uid. Holds the UNION of the parent's children's
+    // canonical class-section keys (e.g. ["9-a","10-b"]). Written ONLY by
+    // the `refreshStoryAudience` callable Cloud Function (admin creds,
+    // bypasses these rules) — NEVER by a client, so a parent cannot forge
+    // their own entitlement. The stories read rule below consults this doc
+    // to authorise class-targeted reads server-side, replacing the old
+    // client-side-only audience filter that was trivially bypassable.
+    match /storyAudience/{uid} {
+      allow read:  if isAuth() && uid == request.auth.uid;
+      allow write: if false;
+    }
+
     match /stories/{docId} {
-      allow read: if isSameSchool();
+      // READ (SEC-1): staff see every in-school story. A non-staff user
+      // (parent) may read a story only when it is school-wide — audience
+      // empty (legacy) or containing the '*' sentinel — OR it targets one
+      // of THEIR children's classes, verified against the server-maintained
+      // storyAudience index (NOT a client-supplied value). The exists()
+      // guard keeps the rule from erroring when a parent has no index doc
+      // yet (they then see only school-wide stories — fail-safe, no leak).
+      allow read: if isSameSchool()
+        && (
+          isStaff()
+          || resource.data.get('audienceClassKeys', []).size() == 0
+          || ('*' in resource.data.get('audienceClassKeys', []))
+          || (
+            exists(/databases/$(database)/documents/storyAudience/$(request.auth.uid))
+            && resource.data.get('audienceClassKeys', []).hasAny(
+                 get(/databases/$(database)/documents/storyAudience/$(request.auth.uid))
+                   .data.get('classKeys', []))
+          )
+        );
 
       // Staff author a story into THEIR OWN school only.
       allow create: if isStaff()
@@ -1077,22 +1177,19 @@ service cloud.firestore {
       allow delete: if isStaff()
         && resource.data.schoolId == request.auth.token.school_id;
 
-      allow update: if
-        // Staff moderate/edit within their own school; schoolId is immutable.
-        (isStaff()
-          && resource.data.schoolId == request.auth.token.school_id
-          && request.resource.data.schoolId == resource.data.schoolId)
-        // Parents (non-staff) may bump ONLY the engagement counters on a
-        // same-school story — never content/moderation. viewCount is pinned
-        // to a +1 delta (M2) so it can't be set to an arbitrary value; the
-        // view and reaction write paths are separate transactions that each
-        // touch only one of the two keys.
-        || (isSameSchool()
-            && request.resource.data.schoolId == resource.data.schoolId
-            && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['viewCount', 'reactionCounts'])
-            && (!('viewCount' in request.resource.data.diff(resource.data).affectedKeys())
-                || request.resource.data.viewCount == resource.data.get('viewCount', 0) + 1));
+      // UPDATE is STAFF-ONLY and may NOT touch the engagement counters
+      // (SEC-4). viewCount / reactionCounts are maintained EXCLUSIVELY
+      // server-side by the Cloud Functions `onStoryViewerCreated` and
+      // `onStoryReactionWritten` (admin creds, bypass these rules) off the
+      // tenant-guarded viewers/reactions subcollection writes. No client —
+      // staff or parent — writes them directly, so they can't be forged or
+      // double-counted. Staff may still moderate/edit other fields (status,
+      // caption, moderatedBy, …) within their own school; schoolId immutable.
+      allow update: if isStaff()
+        && resource.data.schoolId == request.auth.token.school_id
+        && request.resource.data.schoolId == resource.data.schoolId
+        && !request.resource.data.diff(resource.data).affectedKeys()
+              .hasAny(['viewCount', 'reactionCounts']);
     }
 
     // Per-user story engagement markers (viewers + reactions). Declared
@@ -1112,14 +1209,19 @@ service cloud.firestore {
     // (StoryFirestoreRepository.markAsViewed / reactToStory). Delete tolerates
     // legacy docs that predate the schoolId field.
     //
-    // NOTE — READ is still `isAuth()`: closing the cross-tenant PII read
-    // (viewer/reaction docs are readable across tenants) requires adding a
-    // schoolId filter to the collection-group seen-state / reaction-hydrate /
-    // insights queries in BOTH apps + a collection-group index, and must be
-    // emulator-tested before deploy (query↔rule alignment). Tracked as the
-    // C2 read-side follow-up.
+    // READ (SEC-3, C2 read-side CLOSED 2026-07-08): tenant-bound. A viewer/
+    // reaction doc carries the writer's schoolId; the read now requires it to
+    // equal the caller's own school_id claim, so an authenticated user of one
+    // school can no longer collectionGroup()-read another tenant's "who saw
+    // this" list (student/parent PII) or reaction identities. The apps' seen-
+    // state / reaction-hydrate / insights queries were updated to filter
+    // whereEqualTo("schoolId", <claim>) so the query aligns with this rule
+    // (collection-group composite index schoolId+userId added). Legacy docs
+    // that predate the schoolId field become unreadable — acceptable, they
+    // belong to stories that expire within 24h and are swept.
     match /{path=**}/viewers/{uid} {
-      allow read: if isAuth();
+      allow read: if isAuth()
+        && resource.data.get('schoolId', '') == request.auth.token.school_id;
       allow create, update: if isAuth()
         && request.resource.data.userId == uid
         && request.resource.data.schoolId == request.auth.token.school_id;
@@ -1128,7 +1230,8 @@ service cloud.firestore {
             || resource.data.schoolId == request.auth.token.school_id);
     }
     match /{path=**}/reactions/{uid} {
-      allow read: if isAuth();
+      allow read: if isAuth()
+        && resource.data.get('schoolId', '') == request.auth.token.school_id;
       allow create, update: if isAuth()
         && request.resource.data.userId == uid
         && request.resource.data.schoolId == request.auth.token.school_id;

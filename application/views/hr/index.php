@@ -131,23 +131,15 @@
        2. DEPARTMENTS
   ================================================================= -->
   <div class="hr-panel<?= $at === 'departments' ? ' active' : '' ?>" id="panelDept">
-    <div class="hr-card">
-      <div class="hr-card-title">
-        <span><i class="fa fa-building-o"></i> Departments</span>
-        <div style="display:flex;gap:8px;">
-          <button class="hr-btn hr-btn-ghost hr-btn-sm" onclick="HR.seedDepartments()" id="seedDeptBtn"><i class="fa fa-magic"></i> Seed Suggestions</button>
-          <button class="hr-btn hr-btn-primary hr-btn-sm" onclick="HR.openDeptModal()"><i class="fa fa-plus"></i> Add Department</button>
-        </div>
-      </div>
-      <div class="hr-table-wrap">
-        <table class="hr-table" id="tblDepts">
-          <thead><tr>
-            <th style="width:32px"></th><th>Name</th><th>Head</th>
-            <th>Staff</th><th>Open Jobs</th><th>Created</th><th>Status</th><th>Actions</th>
-          </tr></thead>
-          <tbody><tr><td colspan="8" class="hr-empty"><i class="fa fa-spinner fa-spin"></i> Loading...</td></tr></tbody>
-        </table>
-      </div>
+    <div class="hr-card" style="text-align:center;padding:40px 24px;">
+      <div style="font-size:40px;color:var(--brand,#2563eb);margin-bottom:12px;"><i class="fa fa-sitemap"></i></div>
+      <div class="hr-card-title" style="justify-content:center;border:0;"><span>Departments have moved</span></div>
+      <p style="max-width:520px;margin:8px auto 18px;color:var(--t2,#64748b);line-height:1.55;">
+        Departments are now managed together with their staff roles in the new
+        <b>Departments &amp; Roles</b> module — one place to create departments, define roles,
+        and choose which roles belong to each department.
+      </p>
+      <a href="<?= base_url('org') ?>" class="hr-btn hr-btn-primary"><i class="fa fa-arrow-right"></i> Open Departments &amp; Roles</a>
     </div>
   </div>
 

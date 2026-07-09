@@ -139,6 +139,30 @@
         .g-search i{color:var(--t3);font-size:12px;margin-right:8px;flex-shrink:0;}
         .g-search input{background:none !important;border:none !important;outline:none !important;color:var(--t1) !important;font-family:var(--font-b) !important;font-size:13px !important;flex:1;min-width:0;}
         .g-search input::placeholder{color:var(--t4) !important;}
+        /* ── Global search dropdown ─────────────────────────────── */
+        .g-search{position:relative;}
+        .g-search-kbd{flex-shrink:0;margin-left:8px;font-family:var(--font-m) !important;font-size:10px;line-height:1;color:var(--t3);background:var(--bg2);border:1px solid var(--brd2);border-radius:6px;padding:3px 6px;letter-spacing:.02em;}
+        .g-search-panel{position:absolute;top:calc(100% + 8px);left:0;right:0;z-index:1200;display:none;max-height:min(70vh,520px);overflow-y:auto;background:var(--bg2);border:1px solid var(--brd2);border-radius:12px;box-shadow:var(--sh),0 18px 50px -20px rgba(0,0,0,.55);padding:6px;scrollbar-width:thin;}
+        .g-search-panel.open{display:block;animation:gsIn .14s ease;}
+        @keyframes gsIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+        .gs-group + .gs-group{margin-top:2px;border-top:1px solid var(--border);padding-top:2px;}
+        .gs-grouphd{font-family:var(--font-m) !important;font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--t3);padding:8px 10px 5px;}
+        .gs-item{display:flex;align-items:center;gap:11px;padding:8px 10px;border-radius:8px;text-decoration:none !important;color:var(--t1) !important;cursor:pointer;}
+        .gs-item:hover,.gs-item.active{background:var(--bg3);}
+        .gs-item.active{box-shadow:inset 0 0 0 1px var(--brd2);}
+        .gs-ic{width:28px;height:28px;flex-shrink:0;border-radius:8px;display:grid;place-items:center;background:var(--gold-dim);color:var(--gold);font-size:12px;}
+        .gs-item[data-type="student"] .gs-ic{background:rgba(59,130,246,.14);color:var(--blue);}
+        .gs-item[data-type="staff"] .gs-ic{background:rgba(16,185,129,.14);color:var(--green);}
+        .gs-item[data-type="event"] .gs-ic{background:rgba(245,158,11,.15);color:var(--amber);}
+        .gs-tx{min-width:0;display:flex;flex-direction:column;gap:1px;}
+        .gs-t{font-size:13px;font-weight:500;color:var(--t1) !important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .gs-t mark{background:var(--gold-glow);color:inherit;border-radius:3px;padding:0 1px;}
+        .gs-d{font-size:11px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .gs-empty,.gs-note{padding:16px 12px;text-align:center;color:var(--t3);font-size:12.5px;}
+        .gs-note{display:flex;align-items:center;justify-content:center;gap:7px;}
+        .gs-spin{width:13px;height:13px;border:2px solid var(--brd2);border-top-color:var(--gold);border-radius:50%;animation:gsSpin .6s linear infinite;}
+        @keyframes gsSpin{to{transform:rotate(360deg)}}
+        @media (max-width:767px){.g-search-kbd{display:none;}}
         .navbar-custom-menu{margin-left:0 !important;}
         .g-actions{display:flex;align-items:center;gap:6px;}
         .g-ibtn{position:relative;width:36px;height:36px;border-radius:9px;background:transparent;border:1px solid var(--border);display:inline-flex;align-items:center;justify-content:center;color:var(--t3);font-size:15px;cursor:pointer;transition:all var(--ease);}
@@ -276,6 +300,19 @@
 
         /* LAYOUT */
         .content-wrapper{background:var(--bg) !important;margin-left:var(--sw) !important;margin-top:var(--hh) !important;min-height:calc(100vh - var(--hh)) !important;color:var(--t1) !important;font-family:var(--font-b) !important;transition:margin-left var(--ease),background var(--ease) !important;}
+        /* ── KILL THE BLACK FLASH (2026-07) ───────────────────────────────────
+           Most inner views (student list, fees, staff, …) were built for a LIGHT
+           content area, but night theme paints .content-wrapper near-black (--bg
+           #070f1c) — which flashes before their light content loads on every nav.
+           Keep their content-wrapper light in night theme so there is no dark gap.
+           The dark dashboard uses .db-root with its OWN scoped dark --bg, so it is
+           excluded here and stays dark. */
+        [data-theme="night"] .content-wrapper:not(.db-root){background:#f0f7f5 !important;color:#1a2332 !important;}
+        /* Base html/body also light in night theme so the INTER-PAGE navigation gap
+           (shown before content paints) is light, not near-black. Chrome elements use
+           --bg2/--bg3 (still dark); the dashboard uses .db-root (its own dark bg). */
+        html[data-theme="night"]{background:#f0f7f5 !important;}
+        [data-theme="night"] body{background:#f0f7f5 !important;}
         .main-footer{background:var(--bg2) !important;border-top:1px solid var(--border) !important;color:var(--t3) !important;font-size:12px !important;margin-left:var(--sw) !important;padding:11px 24px !important;transition:background var(--ease),margin-left var(--ease) !important;}
 
         /* ── FIX: Neutralize AdminLTE transform on content-wrapper ──

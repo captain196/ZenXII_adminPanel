@@ -1079,8 +1079,14 @@ function openLightbox(url, type) {
     if (type === 'image') {
         inner.innerHTML = btnHtml + '<img src="' + url + '" alt="Preview">';
     } else {
+        // Derive the MIME from the real extension — hardcoding video/mp4 made
+        // legitimately-uploaded .mov/.webm/.mkv/.avi files fail to play.
+        var mimeMap = { mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime',
+                        mkv:'video/x-matroska', avi:'video/x-msvideo', ogg:'video/ogg', ogv:'video/ogg' };
+        var m = (url.split('?')[0].match(/\.([a-z0-9]+)$/i) || [,''])[1].toLowerCase();
+        var vType = mimeMap[m] || 'video/mp4';
         inner.innerHTML = btnHtml + '<video controls autoplay style="max-width:90vw;max-height:85vh;border-radius:8px;background:#000;">' +
-            '<source src="' + url + '" type="video/mp4">Your browser does not support video.</video>';
+            '<source src="' + url + '" type="' + vType + '">Your browser does not support video.</video>';
     }
 
     lb.classList.add('open');

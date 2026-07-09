@@ -123,7 +123,14 @@ class Superadmin_admins extends MY_Superadmin_Controller
         if ($fbUser === null) {
             $this->json_error('Failed to create the Firebase Auth login account. Admin not created.');
         }
-        $this->firebase->setFirebaseClaims($admin_id, ['role' => 'super_admin']);
+        // Force set-new-password on first login. SUP accounts are cross-tenant
+        // (no setCanonicalClaims), so the flag goes on the raw claim array; the
+        // SA-panel gate (MY_Superadmin_Controller) reads the superAdmins-doc
+        // mirror written below.
+        $this->firebase->setFirebaseClaims($admin_id, [
+            'role'                 => 'super_admin',
+            'must_change_password' => true,
+        ]);
 
         // ── Canonical profile in Firestore (password-free; mirrors A1 schema) ──
         $ok = $this->firebase->firestoreSet('superAdmins', $admin_id, [
@@ -134,6 +141,7 @@ class Superadmin_admins extends MY_Superadmin_Controller
             'role'                => 'super_admin',
             'isPrimary'           => false,
             'phone'               => $phone,
+            'mustChangePassword'  => true,
             'createdAt'           => $nowIso,
             'createdBy'           => $this->sa_id,
             'firebaseUid'         => $admin_id,
