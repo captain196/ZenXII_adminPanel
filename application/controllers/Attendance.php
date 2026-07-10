@@ -5906,9 +5906,22 @@ class Attendance extends MY_Controller
                 $dayWise = str_pad($dayWise, $daysInMonth, 'V');
 
                 // Apply the single day, then re-stamp holidays/Sundays as 'H'
-                // (identical rule to save_student_attendance / approve paths).
+                // for the rest of the month.
                 $dayWise[$day - 1] = $mark;
                 $dayWise = enforce_holidays_on_string($dayWise, $daysInMonth, $nonWorking);
+                // EXPLICIT-MARK-WINS: an actual attendance mark (P/A/L/T) on a
+                // non-working day means the day was really worked — an admin-
+                // approved correction, or a deliberate save on a Sunday/holiday.
+                // enforce_holidays_on_string above unconditionally re-stamps every
+                // Sunday/holiday to 'H', which silently reverted such a mark in the
+                // canonical dayWise the apps + calendar read (the per-day
+                // `attendance` doc kept the mark, so it looked like the correction
+                // "had no effect"). Re-apply the explicit mark for THIS day only;
+                // every other non-working day stays 'H', and 'V' (unmarked) does
+                // NOT override so genuine holidays still fill in.
+                if (in_array($mark, ['P', 'A', 'L', 'T'], true)) {
+                    $dayWise[$day - 1] = $mark;
+                }
 
                 // Preserve an existing name if the caller didn't supply one.
                 $name = $studentName;
