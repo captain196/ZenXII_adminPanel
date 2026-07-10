@@ -32,6 +32,21 @@ class Hr extends MY_Controller
     /** Roles that may view HR data */
     private const VIEW_ROLES  = ['Super Admin', 'School Super Admin', 'Admin', 'Principal', 'HR Manager', 'Teacher'];
 
+    // ── Leave tuning constants (LOW — extracted magic numbers) ──────────
+    /** Reject approving a leave whose start date is older than this window. */
+    private const LEAVE_STALE_WINDOW_DAYS = 60;
+    /** Max audit rows returned by get_leave_audit_log. */
+    private const LEAVE_AUDIT_LIMIT       = 200;
+    /** Hard cap on a single leave span (inclusive days) for staff. */
+    private const LEAVE_MAX_SPAN_DAYS     = 366;
+    /** Page size cap for leave-request list queries (pagination TODO). */
+    private const LEAVE_QUERY_LIMIT       = 500;
+    /** CAS retry budget for atomic balance / lock writes. */
+    private const LEAVE_CAS_MAX_ATTEMPTS  = 5;
+    /** Default HRA / DA percentage-of-basic when a school has no salaryDefaults. */
+    private const DEFAULT_HRA_PCT_OF_BASIC = 40;
+    private const DEFAULT_DA_PCT_OF_BASIC  = 10;
+
     public function __construct()
     {
         parent::__construct();
@@ -258,6 +273,197 @@ class Hr extends MY_Controller
         return null;
     }
 
+    // --------------------------------------------------------------------
+    //  LEAVE BALANCE — LIVE DERIVATION (single source of truth)
+    //  The stored BAL_{staffId}_{year} doc is a SNAPSHOT of `allocated` taken at
+    //  allocation time. To make the current leaveTypes config the single source
+    //  of truth, `allocated` (and therefore `balance`) is derived LIVE from the
+    //  current leave-type definition on every read — stored `used` and `carried`
+    //  are preserved. See _deriveLiveBalances().
+    // --------------------------------------------------------------------
+
+    /**
+     * Return the CURRENT active leave types keyed by typeId.
+     * Status read case-insensitively (lowercase-write / case-insensitive-read).
+     *
+     * @return array typeId => leaveType map (may be empty)
+     */
+    private function _activeLeaveTypes(): array
+    {
+        $out = [];
+        $all = $this->_fsGetLeaveType('');
+        if (is_array($all)) {
+            foreach ($all as $tid => $lt) {
+                if (!is_array($lt)) continue;
+                if (strtolower(trim((string) ($lt['status'] ?? 'Active'))) === 'active') {
+                    $out[$tid] = $lt;
+                }
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Return the active-staff roster keyed by staffId (Firestore-only).
+     * Used to (a) show un-allocated staff their full entitlement and
+     * (b) apply gender-based leave-type applicability.
+     *
+     * @return array staffId => staff data map (may be empty)
+     */
+    private function _activeStaffRoster(): array
+    {
+        $roster = [];
+        try {
+            $fsDocs = $this->fs->schoolWhere('staff', [['status', '==', 'Active']]);
+            if (!empty($fsDocs)) {
+                foreach ($fsDocs as $doc) {
+                    $d   = is_array($doc['data'] ?? null) ? $doc['data'] : $doc;
+                    $sid = $d['staffId'] ?? $d['userId'] ?? '';
+                    if ($sid !== '') $roster[$sid] = $d;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', 'HR _activeStaffRoster: Firestore failed: ' . $e->getMessage());
+        }
+        return $roster;
+    }
+
+    /**
+     * Is this leave type applicable to a staff member, honouring an OPTIONAL
+     * `gender` field on the type? A type with no gender (or 'all'/'any') applies
+     * to everyone; a gendered type (e.g. Maternity=female) only applies when the
+     * staff's gender matches. Unknown staff gender → applies (fail-open, never
+     * hides an entitlement we can't disprove).
+     */
+    private function _leaveTypeAppliesToStaff(array $type, ?array $staffMeta): bool
+    {
+        $typeGender = strtolower(trim((string) ($type['gender'] ?? '')));
+        if ($typeGender === '' || $typeGender === 'all' || $typeGender === 'any') {
+            return true;
+        }
+        $g = '';
+        if (is_array($staffMeta)) {
+            $g = strtolower(trim((string) ($staffMeta['gender'] ?? $staffMeta['Gender'] ?? '')));
+        }
+        if ($g === '') return true; // unknown gender → fail-open
+        return $g === $typeGender;
+    }
+
+    /**
+     * Merge a stored balances map with the CURRENT active leave types so the
+     * returned `allocated`/`balance` always reflect live leave-type config, NOT
+     * the snapshot captured at allocation time. Preserves stored `used`+`carried`.
+     *
+     * Output shape is backward-compatible: balances[typeId] =
+     *   {allocated, used, carried, balance}  where
+     *   allocated = current days_per_year (live), used = stored (or 0),
+     *   carried   = stored (or 0),           balance = max(0, allocated+carried-used).
+     *
+     * Active types with NO stored entry are included (used=0, carried=0) so
+     * un-allocated staff still show their full entitlement. Stored types that are
+     * no longer active are preserved as-is (keeps historical `used` visible).
+     *
+     * @param array      $stored      stored balances map (may be empty)
+     * @param array      $activeTypes typeId => leaveType (already filtered active)
+     * @param array|null $staffMeta   staff profile for gender applicability
+     * @return array derived balances map (same keys as the stored shape)
+     */
+    private function _deriveLiveBalances(array $stored, array $activeTypes, ?array $staffMeta = null): array
+    {
+        $out = [];
+        foreach ($activeTypes as $tid => $lt) {
+            if (!is_array($lt)) continue;
+            if (!$this->_leaveTypeAppliesToStaff($lt, $staffMeta)) continue;
+
+            $allocated = (int) ($lt['days_per_year'] ?? 0);
+            $s         = is_array($stored[$tid] ?? null) ? $stored[$tid] : [];
+            $used      = (float) ($s['used'] ?? 0);
+            $carried   = (float) ($s['carried'] ?? 0);
+            $balance   = $allocated + $carried - $used;
+            if ($balance < 0) $balance = 0;
+
+            $out[$tid] = [
+                'allocated' => $allocated,
+                'used'      => $used,
+                'carried'   => $carried,
+                'balance'   => $balance,
+            ];
+        }
+        // Preserve stored-but-now-inactive types so historical `used` stays visible
+        // (no live entitlement — allocated reflects whatever was last stored).
+        foreach ($stored as $tid => $s) {
+            if (isset($out[$tid]) || !is_array($s)) continue;
+            $out[$tid] = [
+                'allocated' => $s['allocated'] ?? 0,
+                'used'      => (float) ($s['used'] ?? 0),
+                'carried'   => (float) ($s['carried'] ?? 0),
+                'balance'   => (float) ($s['balance'] ?? 0),
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Re-propagate an allocation-affecting leave-type change to EVERY current-year
+     * stored BAL doc (single source of truth, retroactive). For each staff BAL doc
+     * that has — or, being active, SHOULD have — this type, set
+     * balances[typeId].allocated = new days_per_year (0 when the type is inactive)
+     * and recompute balance = max(0, allocated + carried - used). PRESERVES used +
+     * carried. Uses the per-staff CAS path so each write is atomic and floored at 0.
+     *
+     * Un-allocated staff (no BAL doc) need no write — get_leave_balances derives
+     * their entitlement live. Bounded by the active-staff roster / existing docs.
+     *
+     * @return int number of staff BAL docs updated
+     */
+    private function _propagate_leave_type_to_balances(string $typeId, array $type, string $year): int
+    {
+        $isActive  = strtolower(trim((string) ($type['status'] ?? 'Active'))) === 'active';
+        $allocated = (int) ($type['days_per_year'] ?? 0);
+
+        $stored = $this->_fsGetLeaveBalance('', $year);
+        if (!is_array($stored)) $stored = [];
+
+        // Roster only needed for gender applicability of a gendered type.
+        $typeGender = strtolower(trim((string) ($type['gender'] ?? '')));
+        $roster = ($typeGender !== '' && $typeGender !== 'all' && $typeGender !== 'any')
+            ? $this->_activeStaffRoster()
+            : [];
+
+        $count = 0;
+        foreach ($stored as $sid => $balances) {
+            if (!is_array($balances)) continue;
+
+            // Skip staff a gendered type doesn't apply to.
+            if (!empty($roster) || ($typeGender !== '' && $typeGender !== 'all' && $typeGender !== 'any')) {
+                $meta = is_array($roster[$sid] ?? null) ? $roster[$sid] : null;
+                if (!$this->_leaveTypeAppliesToStaff($type, $meta)) continue;
+            }
+
+            $hasEntry = is_array($balances[$typeId] ?? null);
+            // Nothing to do: no entry and the type grants no entitlement.
+            if (!$hasEntry && !$isActive) continue;
+
+            $ok = $this->_casLeaveBalance($sid, $year, function (array $existing) use ($typeId, $allocated, $isActive) {
+                $cur      = is_array($existing[$typeId] ?? null) ? $existing[$typeId] : null;
+                $used     = $cur !== null ? (float) ($cur['used'] ?? 0)    : 0.0;
+                $carried  = $cur !== null ? (float) ($cur['carried'] ?? 0) : 0.0;
+                $newAlloc = $isActive ? $allocated : 0;   // inactive type → no entitlement
+                $balance  = $newAlloc + $carried - $used;
+                if ($balance < 0) $balance = 0;
+                $existing[$typeId] = [
+                    'allocated' => $newAlloc,
+                    'used'      => $used,
+                    'carried'   => $carried,
+                    'balance'   => $balance,
+                ];
+                return $existing;
+            });
+            if ($ok) $count++;
+        }
+        return $count;
+    }
+
     /**
      * Read a single leave request by its ID.
      * Tries HR-format doc ID (LR_{id}), then direct doc ID, then RTDB.
@@ -375,12 +581,19 @@ class Hr extends MY_Controller
      */
     private function _log_leave_audit(array $data): void
     {
+        // MEDIUM (audit integrity): `school_id` must be the real school id
+        // (SCH_XXXXXX), not the school NAME. Keep the display name in a
+        // separate `school_name` field. Fixes cross-tenant audit ambiguity.
+        // TODO(audit): tamper-evident hash-chaining (prev-hash link per entry)
+        // is out of scope for this pass — add a `prev_hash`/`entry_hash` chain
+        // so audit rows become append-only-verifiable.
         $entry = array_merge([
-            'school_id'  => $this->school_name,
-            'admin_id'   => $this->admin_id ?? '',
-            'admin_name' => $this->admin_name ?? '',
-            'ip'         => $this->input->ip_address(),
-            'timestamp'  => date('c'),
+            'school_id'   => $this->school_id,
+            'school_name' => $this->school_name,
+            'admin_id'    => $this->admin_id ?? '',
+            'admin_name'  => $this->admin_name ?? '',
+            'ip'          => $this->input->ip_address(),
+            'timestamp'   => date('c'),
         ], $data);
 
         // 1. Firestore FIRST
@@ -519,36 +732,96 @@ class Hr extends MY_Controller
     }
 
     /**
-     * Sync leave balance to Firestore.
+     * Sync leave balance to Firestore — ATOMICALLY (HIGH H3).
+     *
+     * Was a plain read-merge-write (lost-update / balance-inflation prone).
+     * Now delegates to _casLeaveBalance() which uses a documented compare-and-set
+     * loop (Firestore `currentDocument.updateTime` precondition via commitBatch),
+     * and floors every stored balance at 0 so NO branch can persist a negative.
+     *
+     * @return bool true only on a confirmed write (callers may check).
      */
-    private function _fsSyncLeaveBalance(string $staffId, string $year, array $balances): void
+    private function _fsSyncLeaveBalance(string $staffId, string $year, array $balances): bool
     {
-        try {
-            $docId = $this->fs->docId("BAL_{$staffId}_{$year}");
-
-            // Read existing balance doc to merge (not overwrite) the balances map
-            $existing = [];
-            try {
-                $fsDoc = $this->firebase->firestoreGet('leaveApplications', $docId);
-                if (is_array($fsDoc) && is_array($fsDoc['balances'] ?? null)) {
-                    $existing = $fsDoc['balances'];
-                }
-            } catch (\Exception $e) {}
-
-            // Merge new balances into existing
+        return $this->_casLeaveBalance($staffId, $year, function (array $existing) use ($balances) {
             $merged = array_merge($existing, $balances);
+            // Negative guard (H3): no type may persist a negative balance/used.
+            foreach ($merged as $tid => $bd) {
+                if (!is_array($bd)) continue;
+                if (isset($bd['balance']) && (float) $bd['balance'] < 0) $bd['balance'] = 0;
+                if (isset($bd['used'])    && (float) $bd['used']    < 0) $bd['used']    = 0;
+                $merged[$tid] = $bd;
+            }
+            return $merged;
+        });
+    }
 
-            $this->firebase->firestoreSet('leaveApplications', $docId, [
+    /**
+     * Atomic read-modify-write of a staff member's leave-balance document via a
+     * documented compare-and-set (CAS) loop. (HIGH H3)
+     *
+     * Our Firestore REST client exposes NO multi-document transaction primitive,
+     * so we use the strongest one it DOES expose: read the doc (which surfaces
+     * the server-assigned `__updateTime` through decodeDocument), compute the new
+     * `balances` map in PHP, then `commitBatch` a single set with a
+     * `currentDocument.updateTime` precondition. If a concurrent writer moved the
+     * doc, the commit fails with FAILED_PRECONDITION and we retry against a fresh
+     * read — eliminating the lost-update / repeatable-inflation window. A missing
+     * doc is created with an `exists:false` precondition (create-or-collide).
+     *
+     * $mutate(array $balancesMap): array — MUST return the FULL new balances map.
+     *
+     * @return bool true on a confirmed successful write, false after exhausting
+     *              retries (caller must treat as failure — never a false success).
+     */
+    private function _casLeaveBalance(string $staffId, string $year, callable $mutate, int $maxAttempts = self::LEAVE_CAS_MAX_ATTEMPTS): bool
+    {
+        $docId  = $this->fs->docId("BAL_{$staffId}_{$year}");
+        $client = $this->fs->raw_client();
+
+        for ($attempt = 0; $attempt < max(1, $maxAttempts); $attempt++) {
+            $doc      = $this->fs->get('leaveApplications', $docId);
+            $exists   = is_array($doc) && !empty($doc);
+            $balances = ($exists && is_array($doc['balances'] ?? null)) ? $doc['balances'] : [];
+
+            $newBalances = $mutate($balances);
+            if (!is_array($newBalances)) return false;
+
+            $data = [
                 'schoolId'  => $this->school_id ?? $this->school_name,
                 'staffId'   => $staffId,
                 'year'      => $year,
-                'balances'  => $merged,
+                'balances'  => $newBalances,
                 'type'      => 'balance',
                 'updatedAt' => date('c'),
-            ]);
-        } catch (\Exception $e) {
-            log_message('error', "HR: Leave balance → Firestore FAILED for {$staffId}: " . $e->getMessage());
+            ];
+
+            // No CAS token available (e.g. non-REST client) → best-effort merge write.
+            if ($client === null || !method_exists($client, 'commitBatch')
+                || ($exists && empty($doc['__updateTime']))) {
+                return (bool) $this->fs->set('leaveApplications', $docId, $data, true);
+            }
+
+            $precondition = $exists
+                ? ['updateTime' => (string) $doc['__updateTime']]  // CAS
+                : ['exists' => false];                             // create-or-collide
+
+            $ok = $client->commitBatch([[
+                'op'           => 'set',
+                'collection'   => 'leaveApplications',
+                'docId'        => $docId,
+                'data'         => $data,
+                'merge'        => true,
+                'precondition' => $precondition,
+            ]]);
+            if ($ok) return true;
+
+            // Precondition failed → a concurrent writer won; back off and retry
+            // against a fresh read (commitBatch already flushed the read memo).
+            usleep(40000 * ($attempt + 1));
         }
+        log_message('error', "HR _casLeaveBalance: CAS exhausted {$maxAttempts} attempts for {$staffId}/{$year}");
+        return false;
     }
 
     /**
@@ -620,8 +893,8 @@ class Hr extends MY_Controller
         }
         $get = function ($k, $fb) use ($cfg) { return isset($cfg[$k]) && is_numeric($cfg[$k]) ? (float) $cfg[$k] : $fb; };
 
-        $hraPct = $get('hra_pct_of_basic', 40);
-        $daPct  = $get('da_pct_of_basic', 10);
+        $hraPct = $get('hra_pct_of_basic', self::DEFAULT_HRA_PCT_OF_BASIC);
+        $daPct  = $get('da_pct_of_basic', self::DEFAULT_DA_PCT_OF_BASIC);
         $hra = round($basic * ($hraPct / 100), 2);
         $da  = round($basic * ($daPct / 100), 2);
         $rem = max(0, $allow - $hra - $da);
@@ -688,30 +961,45 @@ class Hr extends MY_Controller
      */
     private function _next_id(string $prefix, string $type, int $pad = 4): string
     {
-        $counterPath = $this->_counters($type);
+        // MEDIUM (#10): the previous read-modify-write on schools/{profile}
+        // hrCounters was non-atomic — two concurrent applies could read the
+        // same value and mint DUPLICATE LR/LT ids. Switch to the atomic
+        // per-school claim-doc counter (Firestore_service::nextSchoolCounter),
+        // which uses createDocument()'s 409-safe compare-and-set and RETURNS
+        // the claimed integer, so concurrent callers can never collide. The
+        // counter is seeded ONCE from the legacy hrCounters value (missing-
+        // pointer callback) so we never re-issue an already-used number.
+        $kind = 'hr_' . $type;
+        $seedFromLegacy = function () use ($type) {
+            try {
+                $schoolDoc = $this->fs->get('schools', $this->fs->docId('profile'));
+                $counters  = (is_array($schoolDoc) && isset($schoolDoc['hrCounters'])) ? $schoolDoc['hrCounters'] : [];
+                return (isset($counters[$type]) && is_numeric($counters[$type])) ? (int) $counters[$type] : 0;
+            } catch (\Throwable $e) {
+                return 0;
+            }
+        };
 
-        // ── Firestore-first: counters in schools doc hrCounters field ──
-        $fsNext = null;
+        $n = 0;
         try {
-            $schoolDoc = $this->fs->get('schools', $this->fs->docId('profile'));
-            $counters  = (is_array($schoolDoc) && isset($schoolDoc['hrCounters'])) ? $schoolDoc['hrCounters'] : [];
-            $cur       = isset($counters[$type]) && is_numeric($counters[$type]) ? (int) $counters[$type] : 0;
-            $fsNext    = $cur + 1;
-            $this->fs->update('schools', $this->fs->docId('profile'), [
-                "hrCounters.{$type}" => $fsNext,
-            ]);
-        } catch (\Exception $e) {
-            log_message('error', "HR _next_id FS failed [{$type}]: " . $e->getMessage());
-            $fsNext = null;
+            $n = $this->fs->nextSchoolCounter($kind, 0, 12, [], $seedFromLegacy);
+        } catch (\Throwable $e) {
+            log_message('error', "HR _next_id counter failed [{$type}]: " . $e->getMessage());
+            $n = 0;
         }
 
-        if ($fsNext !== null) {
-            return $prefix . str_pad($fsNext, $pad, '0', STR_PAD_LEFT);
+        if ($n > 0) {
+            // Best-effort mirror onto legacy hrCounters (no longer authoritative)
+            // so any legacy reader stays roughly in sync. Never affects correctness.
+            try {
+                $this->fs->update('schools', $this->fs->docId('profile'), ["hrCounters.{$type}" => $n]);
+            } catch (\Throwable $e) { /* non-fatal */ }
+            return $prefix . str_pad((string) $n, $pad, '0', STR_PAD_LEFT);
         }
 
-        // Firestore failed — generate a unique fallback ID using timestamp + random
+        // Counter unavailable — unique NON-sequential fallback (never a dup seq id).
         $fallback = (int) (microtime(true) * 1000) % 100000;
-        return $prefix . str_pad($fallback, $pad, '0', STR_PAD_LEFT) . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
+        return $prefix . str_pad((string) $fallback, $pad, '0', STR_PAD_LEFT) . '_' . substr(bin2hex(random_bytes(2)), 0, 4);
     }
 
     // ====================================================================
@@ -2738,6 +3026,8 @@ HTML;
 
         // Check duplicate name — Firestore-first via helper
         $existing = $this->_fsGetLeaveType('');
+        // Snapshot the PREVIOUS value (for change detection → balance propagation).
+        $prevType = (is_array($existing) && is_array($existing[$id] ?? null)) ? $existing[$id] : null;
         if (is_array($existing)) {
             foreach ($existing as $eid => $et) {
                 if ($eid !== $id && isset($et['name']) && strtolower($et['name']) === strtolower($name)) {
@@ -2761,20 +3051,75 @@ HTML;
             $data['created_at'] = $now;
         }
 
-        // 1. Firestore FIRST — update leaveTypes map on schools doc
+        // 1. Firestore FIRST — update leaveTypes map on schools doc.
+        // H4: check the write RESULT — never report success on a failed write.
+        $ok = false;
         try {
             $allTypes = is_array($existing) ? $existing : [];
             $allTypes[$id] = $data;
-            $this->fs->update('schools', $this->fs->schoolId(), [
+            $ok = $this->fs->update('schools', $this->fs->schoolId(), [
                 'leaveTypes' => $allTypes,
                 'updatedAt'  => $now,
             ]);
-            log_message('debug', "HR: save_leave_type -> Firestore OK for {$id}");
         } catch (\Exception $e) {
             log_message('error', "HR: save_leave_type -> Firestore FAILED for {$id}: " . $e->getMessage());
+            $ok = false;
+        }
+        if (!$ok) {
+            $this->json_error('Could not save the leave type. Please try again.');
         }
 
-        $this->json_success(['id' => $id, 'message' => $isNew ? 'Leave type created.' : 'Leave type updated.']);
+        // Audit (MEDIUM #9): leave-type config changes are now audit-logged.
+        $this->_log_leave_audit([
+            'action'       => $isNew ? 'leave_type_created' : 'leave_type_updated',
+            'leave_type_id'=> $id,
+            'leave_type'   => $code,
+            'type_name'    => $name,
+            'paid_flag'    => $paid,
+            'days_per_year'=> $daysPerYear,
+        ]);
+
+        // Propagate to existing stored balances if an allocation-affecting field
+        // changed (single source of truth, retroactive). New types have no stored
+        // balances yet — get_leave_balances derives their entitlement live — so we
+        // only propagate on EDITS. Propagation failure must NOT fail the type save;
+        // it is surfaced as a non-fatal warning instead.
+        $warning = null;
+        if (!$isNew && is_array($prevType)) {
+            $affecting = ['days_per_year', 'carry_forward', 'max_carry', 'status'];
+            $changed = false;
+            foreach ($affecting as $f) {
+                $old = $prevType[$f] ?? null;
+                $new = $data[$f] ?? null;
+                if (is_bool($old) || is_bool($new)) {
+                    if ((bool) $old !== (bool) $new) { $changed = true; break; }
+                } elseif ((string) $old !== (string) $new) {
+                    $changed = true; break;
+                }
+            }
+            if ($changed) {
+                try {
+                    $propYear = date('Y');
+                    $affected = $this->_propagate_leave_type_to_balances($id, $data, $propYear);
+                    $this->_log_leave_audit([
+                        'action'        => 'leave_type_propagated',
+                        'leave_type_id' => $id,
+                        'leave_type'    => $code,
+                        'type_name'     => $name,
+                        'days_per_year' => $daysPerYear,
+                        'year'          => $propYear,
+                        'staff_updated' => $affected,
+                    ]);
+                } catch (\Exception $e) {
+                    log_message('error', "HR: save_leave_type -> balance propagation FAILED for {$id}: " . $e->getMessage());
+                    $warning = 'Leave type saved, but existing balances could not be updated automatically. Run "Initialize Balances" to reconcile.';
+                }
+            }
+        }
+
+        $resp = ['id' => $id, 'message' => $isNew ? 'Leave type created.' : 'Leave type updated.'];
+        if ($warning !== null) $resp['warning'] = $warning;
+        $this->json_success($resp);
     }
 
     /**
@@ -2800,7 +3145,8 @@ HTML;
         foreach ($allReqs as $lr) {
             if (
                 ($lr['type_id'] ?? '') === $id &&
-                isset($lr['status']) && in_array($lr['status'], ['Pending', 'Approved'], true)
+                // H1: read status case-insensitively (legacy CapitalCase + lowercase).
+                in_array(strtolower((string) ($lr['status'] ?? '')), ['pending', 'approved'], true)
             ) {
                 $hasActive = true;
                 break;
@@ -2810,19 +3156,32 @@ HTML;
             $this->json_error('Cannot delete: active leave requests exist for this type.');
         }
 
-        // 1. Firestore FIRST — remove from leaveTypes map
+        // 1. Firestore FIRST — remove from leaveTypes map.
+        // H4: check the write RESULT before reporting success.
+        $ok = false;
         try {
             if (is_array($allTypes)) {
                 unset($allTypes[$id]);
-                $this->fs->update('schools', $this->fs->schoolId(), [
+                $ok = $this->fs->update('schools', $this->fs->schoolId(), [
                     'leaveTypes' => $allTypes,
                     'updatedAt'  => date('c'),
                 ]);
             }
-            log_message('debug', "HR: delete_leave_type -> Firestore OK for {$id}");
         } catch (\Exception $e) {
             log_message('error', "HR: delete_leave_type -> Firestore FAILED for {$id}: " . $e->getMessage());
+            $ok = false;
         }
+        if (!$ok) {
+            $this->json_error('Could not delete the leave type. Please try again.');
+        }
+
+        // Audit (MEDIUM #9)
+        $this->_log_leave_audit([
+            'action'        => 'leave_type_deleted',
+            'leave_type_id' => $id,
+            'leave_type'    => strtoupper(trim($existing['code'] ?? '')),
+            'type_name'     => $existing['name'] ?? '',
+        ]);
 
         $this->json_success(['message' => 'Leave type deleted.']);
     }
@@ -2887,17 +3246,28 @@ HTML;
             $added[] = $code;
         }
 
-        // 1. Firestore FIRST — sync all leave types to schools doc
+        // 1. Firestore FIRST — sync all leave types to schools doc.
+        // H4: check the write RESULT before reporting success.
         if (!empty($added)) {
+            $ok = false;
             try {
-                $this->fs->update('schools', $this->fs->schoolId(), [
+                $ok = $this->fs->update('schools', $this->fs->schoolId(), [
                     'leaveTypes' => $allTypes,
                     'updatedAt'  => $now,
                 ]);
-                log_message('debug', "HR: seed_leave_types -> Firestore OK (" . count($added) . " added)");
             } catch (\Exception $e) {
                 log_message('error', "HR: seed_leave_types -> Firestore FAILED: " . $e->getMessage());
+                $ok = false;
             }
+            if (!$ok) {
+                $this->json_error('Could not seed leave types. Please try again.');
+            }
+            // Audit (MEDIUM #9)
+            $this->_log_leave_audit([
+                'action'    => 'leave_types_seeded',
+                'added'     => $added,
+                'skipped'   => $skipped,
+            ]);
         }
 
         $msg = count($added) . ' leave type(s) added';
@@ -2925,7 +3295,7 @@ HTML;
         try {
             $fsDocs = $this->fs->schoolWhere('leaveApplications', [
                 ['type', '==', 'audit'],
-            ], 'timestamp', 'DESC', 200);
+            ], 'timestamp', 'DESC', self::LEAVE_AUDIT_LIMIT);
             foreach ($fsDocs as $doc) {
                 $d = $doc['data'];
                 $d['id'] = $d['id'] ?? '';
@@ -2942,7 +3312,7 @@ HTML;
         usort($list, function ($a, $b) {
             return strcmp($b['timestamp'] ?? '', $a['timestamp'] ?? '');
         });
-        $list = array_slice($list, 0, 200);
+        $list = array_slice($list, 0, self::LEAVE_AUDIT_LIMIT);
 
         $this->json_success(['audit_logs' => $list]);
     }
@@ -2966,12 +3336,31 @@ HTML;
             $this->json_error('Invalid year format.');
         }
 
+        // H10 (privilege): non-HR viewers (e.g. Teacher) may only read their
+        // OWN balances. Force staff_id to the caller's own id ($this->admin_id
+        // is the raw uid = staffId) and ignore any requested staff_id.
+        $isHr = in_array($this->admin_role, self::HR_ROLES, true);
+        if (!$isHr) {
+            $staffId = (string) ($this->admin_id ?? '');
+            if ($staffId === '') {
+                $this->json_error('You are not permitted to view these balances.');
+            }
+        }
+
+        // Current active leave types — the LIVE single source of truth for
+        // `allocated`. Derived into every balance below so the view always shows
+        // the current entitlement, not the value snapshotted at allocation time.
+        $activeTypes = $this->_activeLeaveTypes();
+
         if ($staffId !== '') {
             $staffId = $this->safe_path_segment($staffId, 'staff_id');
-            // Single staff — Firestore-first via helper
-            $balances = $this->_fsGetLeaveBalance($staffId, $year);
+            // Single staff — stored snapshot merged with live leave-type config.
+            $stored    = $this->_fsGetLeaveBalance($staffId, $year);
+            $stored    = is_array($stored) ? $stored : [];
+            $staffMeta = $this->_fsGetStaffProfile($staffId);
+            $balances  = $this->_deriveLiveBalances($stored, $activeTypes, is_array($staffMeta) ? $staffMeta : null);
             $this->json_success([
-                'balances' => is_array($balances) ? $balances : [],
+                'balances' => $balances,
                 'staff_id' => $staffId,
                 'year'     => $year,
             ]);
@@ -2982,7 +3371,20 @@ HTML;
         $result = $this->_fsGetLeaveBalance('', $year);
         if (!is_array($result)) $result = [];
 
-        // Leave type names — Firestore-first via helper
+        // Union of staff who have a stored BAL doc + the whole active-staff roster
+        // so un-allocated staff still show their full live entitlement.
+        $roster   = $this->_activeStaffRoster();
+        $staffIds = array_unique(array_merge(array_keys($result), array_keys($roster)));
+
+        $derived = [];
+        foreach ($staffIds as $sid) {
+            $stored = is_array($result[$sid] ?? null) ? $result[$sid] : [];
+            $meta   = is_array($roster[$sid] ?? null) ? $roster[$sid] : null;
+            $derived[$sid] = $this->_deriveLiveBalances($stored, $activeTypes, $meta);
+        }
+
+        // Leave type names — include ALL types (active + any stored-inactive) so
+        // every rendered column has a header.
         $typeNames = [];
         $allTypes = $this->_fsGetLeaveType('');
         if (is_array($allTypes)) {
@@ -2993,7 +3395,7 @@ HTML;
             }
         }
 
-        $this->json_success(['balances' => $result, 'types' => $typeNames, 'year' => $year]);
+        $this->json_success(['balances' => $derived, 'types' => $typeNames, 'year' => $year]);
     }
 
     /**
@@ -3054,7 +3456,8 @@ HTML;
         if (is_array($allRequests)) {
             foreach ($allRequests as $rid => $req) {
                 if (!is_array($req)) continue;
-                if (($req['status'] ?? '') !== 'Approved') continue;
+                // H1: read status case-insensitively (legacy CapitalCase + lowercase).
+                if (strtolower((string) ($req['status'] ?? '')) !== 'approved') continue;
                 $reqYear = date('Y', strtotime($req['from_date'] ?? ''));
                 if ($reqYear !== $year) continue;
                 $sid = $req['staff_id'] ?? '';
@@ -3101,10 +3504,21 @@ HTML;
 
             }
 
-            // Firestore: write ALL types at once (avoids nested map overwrite issue)
-            $this->_fsSyncLeaveBalance($staffId, $year, $allBalances);
-            $staffCount++;
+            // Firestore: write ALL types at once (atomic CAS + floor via helper).
+            if ($this->_fsSyncLeaveBalance($staffId, $year, $allBalances)) {
+                $staffCount++;
+            } else {
+                log_message('error', "HR allocate_leave_balances: balance write failed for {$staffId}/{$year}");
+            }
         }
+
+        // Audit (MEDIUM #9): allocation is a balance-affecting action.
+        $this->_log_leave_audit([
+            'action'      => 'leave_balances_allocated',
+            'year'        => $year,
+            'staff_count' => $staffCount,
+            'type_count'  => count($activeTypes),
+        ]);
 
         $this->json_success([
             'message'     => "Leave balances allocated for {$staffCount} staff members across " . count($activeTypes) . " leave types.",
@@ -3128,22 +3542,36 @@ HTML;
         $filterStatus  = trim($this->input->get('status') ?? '');
         $filterStaffId = trim($this->input->get('staff_id') ?? '');
 
+        // H10 (privilege): non-HR viewers (e.g. Teacher) may only list their OWN
+        // requests. Force the staff filter to the caller's own id regardless of
+        // any requested staff_id. HR_ROLES keep full cross-staff visibility.
+        $isHr = in_array($this->admin_role, self::HR_ROLES, true);
+        if (!$isHr) {
+            $filterStaffId = (string) ($this->admin_id ?? '');
+            if ($filterStaffId === '') {
+                $this->json_success(['leave_requests' => []]);
+                return;
+            }
+        }
+
         $list = [];
 
         // 1. Firestore FIRST — query BOTH HR-created (type=request) AND
         //    Teacher-app-created (applicantType=staff) leave docs.
+        // #12: bound each query with a hard limit. NOTE: true cursor pagination
+        // is a TODO — LEAVE_QUERY_LIMIT is a safety cap, not a paged reader.
         try {
             // Query 1: HR-format docs (type=request)
             $conditions1 = [['type', '==', 'request']];
             if ($filterStatus !== '') $conditions1[] = ['status', '==', $filterStatus];
             if ($filterStaffId !== '') $conditions1[] = ['staffId', '==', $filterStaffId];
-            $fsDocs1 = $this->fs->schoolWhere('leaveApplications', $conditions1);
+            $fsDocs1 = $this->fs->schoolWhere('leaveApplications', $conditions1, null, 'ASC', self::LEAVE_QUERY_LIMIT);
 
             // Query 2: Teacher-app-format docs (applicantType=staff)
             $conditions2 = [['applicantType', '==', 'staff']];
             if ($filterStatus !== '') $conditions2[] = ['status', '==', $filterStatus];
             if ($filterStaffId !== '') $conditions2[] = ['applicantId', '==', $filterStaffId];
-            $fsDocs2 = $this->fs->schoolWhere('leaveApplications', $conditions2);
+            $fsDocs2 = $this->fs->schoolWhere('leaveApplications', $conditions2, null, 'ASC', self::LEAVE_QUERY_LIMIT);
 
             $allDocs = array_merge($fsDocs1 ?: [], $fsDocs2 ?: []);
 
@@ -3222,6 +3650,17 @@ HTML;
         $toDate   = trim($this->input->post('to_date') ?? '');
         $reason   = trim($this->input->post('reason') ?? '');
 
+        // H10 (privilege): a non-HR caller (e.g. Teacher) may only apply for
+        // THEMSELVES. Force staff_id to the caller's own id ($this->admin_id is
+        // the raw uid = staffId); only HR_ROLES may apply on behalf of others.
+        if (!in_array($this->admin_role, self::HR_ROLES, true)) {
+            $ownId = (string) ($this->admin_id ?? '');
+            if ($ownId === '') {
+                $this->json_error('You are not permitted to apply leave for another staff member.');
+            }
+            $staffId = $ownId;
+        }
+
         // Validate dates
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $fromDate)) {
             $this->json_error('From date must be in YYYY-MM-DD format.');
@@ -3246,10 +3685,16 @@ HTML;
             if ($halfDayPeriod === '') $halfDayPeriod = 'AM';   // default to morning
         }
 
-        // Calculate days
+        // Calculate days. #12: cap the span to guard against unbounded ranges.
         $from = new DateTime($fromDate);
         $to   = new DateTime($toDate);
-        $days = (int) $from->diff($to)->days + 1;
+        $spanDays = (int) $from->diff($to)->days + 1;   // inclusive calendar span
+        if ($spanDays > self::LEAVE_MAX_SPAN_DAYS) {
+            $this->json_error('Leave span cannot exceed ' . self::LEAVE_MAX_SPAN_DAYS . ' days.');
+        }
+        // MEDIUM (#7): a half-day counts as 0.5 (matches payroll's 0.5 LWP and
+        // the 0.5 balance deduction below); a full-day range counts its span.
+        $days = $halfDay ? 0.5 : $spanDays;
 
         // Verify leave type — Firestore-first via helper
         $leaveType = $this->_fsGetLeaveType($typeId);
@@ -3289,9 +3734,10 @@ HTML;
         // Check leave balance — Firestore-first via helper
         $year = date('Y', strtotime($fromDate));
         $balance = $this->_fsGetLeaveBalance($staffId, $year, $typeId);
-        $currentBalance = 0;
+        $currentBalance = 0.0;
         if (is_array($balance) && isset($balance['balance'])) {
-            $currentBalance = max(0, (int) $balance['balance']);
+            // Balances may be fractional (0.5) after half-day deductions — use float.
+            $currentBalance = max(0.0, (float) $balance['balance']);
         }
 
         if (!$isPaidType) {
@@ -3315,7 +3761,8 @@ HTML;
             foreach ($existingReqs as $rid => $er) {
                 if (
                     isset($er['staff_id']) && $er['staff_id'] === $staffId &&
-                    isset($er['status']) && in_array($er['status'], ['Pending', 'Approved'], true)
+                    // H1: read status case-insensitively (legacy + lowercase).
+                    in_array(strtolower((string) ($er['status'] ?? '')), ['pending', 'approved'], true)
                 ) {
                     $erFrom = $er['from_date'] ?? '';
                     $erTo   = $er['to_date'] ?? '';
@@ -3363,7 +3810,7 @@ HTML;
             'calculation_reason'  => $calcReason,
             'balance_at_apply'    => $currentBalance,
             'reason'              => $reason,
-            'status'              => 'Pending',
+            'status'              => 'pending',   // H1: lowercase status enum
             'applied_on'          => date('c'),
             'decided_by'          => '',
             'decided_on'          => '',
@@ -3378,12 +3825,24 @@ HTML;
                 'type'      => 'request',
                 'staffId'   => $staffId,
                 'staffName' => $staffName,
+                // Canonical apps-facing parity fields (contract §3): the Teacher
+                // app "My Leave" history queries applicantId + applicantType=="staff"
+                // and renders startDate/endDate/appliedAt. Without these, an
+                // HR-filed staff leave is invisible in the applicant's own app.
+                // Dual-written alongside the legacy staffId/fromDate/toDate.
+                'applicantId'   => $staffId,
+                'applicantType' => 'staff',
+                'applicantName' => $staffName,
+                'startDate'     => $fromDate,
+                'endDate'       => $toDate,
+                'appliedAt'     => $data['applied_on'],
                 'typeId'    => $typeId,
                 'typeName'  => $leaveType['name'] ?? '',
                 'typeCode'  => $leaveCode,
                 'typePaid'  => $isPaidType,
                 'fromDate'  => $fromDate,
                 'toDate'    => $toDate,
+                'numberOfDays' => $days,   // #7: canonical field; 0.5 for half-day
                 'paidDays'  => $paidDays,
                 'lwpDays'   => $lwpDays,
                 'halfDay'        => $halfDay,
@@ -3396,10 +3855,16 @@ HTML;
                 'decidedOn' => '',
                 'updatedAt' => date('c'),
             ]);
-            $this->fs->set('leaveApplications', $this->fs->docId("LR_{$reqId}"), $fsReqData, true);
-            log_message('debug', "HR: apply_leave -> Firestore OK for {$reqId}");
+            $ok = $this->fs->set('leaveApplications', $this->fs->docId("LR_{$reqId}"), $fsReqData, true);
         } catch (\Exception $e) {
             log_message('error', "HR: apply_leave -> Firestore FAILED for {$reqId}: " . $e->getMessage());
+            $ok = false;
+        }
+        // H4: never report success on a failed write. No balance was mutated at
+        // apply time (deduction happens at decide), so a failed write leaves no
+        // stranded state — the only cost is a consumed sequence id (harmless gap).
+        if (!$ok) {
+            $this->json_error('Could not submit the leave request. Please try again.');
         }
 
         // Audit log
@@ -3448,9 +3913,45 @@ HTML;
         }
         $fsDocId = $request['_fsDocId'] ?? '';
 
+        // CRITICAL C3 — cross-tenant IDOR guard: the resolved request MUST belong
+        // to the caller's own school. Reject BEFORE any mutation. ($this->school_id
+        // is the session's SCH_XXXXXX id.)
+        if ((string) ($request['schoolId'] ?? '') !== (string) $this->school_id) {
+            $this->json_error('Leave request not found.');
+        }
+
+        // MEDIUM #11 — no self-approval: the approver may not decide their own
+        // leave. ($this->admin_id is the raw uid = the applicant's staffId.)
+        $applicantId = (string) ($request['staff_id'] ?? $request['applicantId'] ?? '');
+        if ($applicantId !== '' && $applicantId === (string) ($this->admin_id ?? '')) {
+            $this->json_error('You cannot approve or reject your own leave request.');
+        }
+
         $currentStatus = strtolower($request['status'] ?? '');
         if ($currentStatus !== 'pending') {
             $this->json_error('Only pending requests can be decided.');
+        }
+
+        // MEDIUM #8 — overlap re-check at DECIDE time (closes the TOCTOU where two
+        // separately-non-overlapping pendings become overlapping before approval).
+        // Only relevant when approving.
+        if ($decision === 'Approved' && $applicantId !== '') {
+            $dFrom = (string) ($request['from_date'] ?? '');
+            $dTo   = (string) ($request['to_date'] ?? '');
+            $others = $this->_fsGetAllLeaveRequests($applicantId);
+            foreach ($others as $oid => $er) {
+                if ($oid === $fsDocId) continue;                 // skip self (doc id)
+                if (($er['requestId'] ?? '') === ($request['requestId'] ?? '_x_') && ($request['requestId'] ?? '') !== '') continue;
+                if (($er['staff_id'] ?? '') !== $applicantId) continue;
+                // Only APPROVED others block (another pending doesn't consume days yet).
+                if (strtolower((string) ($er['status'] ?? '')) !== 'approved') continue;
+                $erFrom = (string) ($er['from_date'] ?? '');
+                $erTo   = (string) ($er['to_date'] ?? '');
+                if ($dFrom !== '' && $dTo !== '' && $erFrom !== '' && $erTo !== ''
+                    && $dFrom <= $erTo && $dTo >= $erFrom) {
+                    $this->json_error("Cannot approve — overlaps an already-approved leave ({$erFrom} to {$erTo}).");
+                }
+            }
         }
 
         // Past-date sanity guard — prevent decisions on stale requests
@@ -3458,30 +3959,58 @@ HTML;
         // this only blocks new approve/reject decisions on ancient leaves.
         if ($decision === 'Approved') {
             $startTs = strtotime((string) ($request['from_date'] ?? ''));
-            if ($startTs && (time() - $startTs) > (60 * 86400)) {
-                $this->json_error('Cannot approve leave whose start date is older than 60 days.');
+            if ($startTs && (time() - $startTs) > (self::LEAVE_STALE_WINDOW_DAYS * 86400)) {
+                $this->json_error('Cannot approve leave whose start date is older than ' . self::LEAVE_STALE_WINDOW_DAYS . ' days.');
             }
         }
 
-        // M-04 FIX: Atomically mark request as "Processing"
+        // HIGH H3 — REAL pending→processing transition via compare-and-set.
+        // The old "set Processing then re-read" did NOT serialize (two callers
+        // both write, both re-read 'Processing', both proceed). Now we CAS on the
+        // request doc's server updateTime: only the writer whose precondition
+        // holds wins the transition; the loser is told to refresh. If no CAS token
+        // is available (Teacher-app doc read via legacy client, no __updateTime),
+        // fall back to the best-effort set (documented weaker guarantee).
+        $lockToken = (string) ($request['__updateTime'] ?? '');
+        $wonLock   = false;
         if ($fsDocId !== '') {
-            try {
-                $this->firebase->firestoreSet('leaveApplications', $fsDocId, ['status' => 'Processing', 'updatedAt' => date('c')], true);
-            } catch (\Exception $e) {}
+            $client = $this->fs->raw_client();
+            if ($lockToken !== '' && $client !== null && method_exists($client, 'commitBatch')) {
+                $wonLock = $client->commitBatch([[
+                    'op'           => 'set',
+                    'collection'   => 'leaveApplications',
+                    'docId'        => $fsDocId,
+                    'data'         => ['status' => 'processing', 'updatedAt' => date('c')],
+                    'merge'        => true,
+                    'precondition' => ['updateTime' => $lockToken],   // H1: lowercase
+                ]]);
+            } else {
+                // Weaker fallback (no CAS token) — best-effort lock + re-read.
+                try {
+                    $this->firebase->firestoreSet('leaveApplications', $fsDocId, ['status' => 'processing', 'updatedAt' => date('c')], true);
+                    $recheckDoc = $this->_fsGetLeaveRequest($id);
+                    $wonLock = is_array($recheckDoc) && strtolower((string) ($recheckDoc['status'] ?? '')) === 'processing';
+                } catch (\Exception $e) { $wonLock = false; }
+            }
         }
-        // Re-read to verify we won the race (Firestore)
-        $recheck = null;
-        try {
-            $recheckDoc = $this->_fsGetLeaveRequest($id);
-            if (is_array($recheckDoc)) $recheck = $recheckDoc['status'] ?? null;
-        } catch (\Exception $e) {}
-        if ($recheck !== 'Processing') {
+        if (!$wonLock) {
             $this->json_error('This request is being processed by another user. Please refresh.');
         }
 
+        // Helper to release the lock back to 'pending' if a later step fails
+        // (leaves the request RETRYABLE — never stranded in 'processing').
+        $revertToPending = function () use ($fsDocId, $id) {
+            $docId = $fsDocId !== '' ? $fsDocId : $this->fs->docId("LR_{$id}");
+            try {
+                $this->fs->update('leaveApplications', $docId, ['status' => 'pending', 'updatedAt' => date('c')]);
+            } catch (\Exception $e) {
+                log_message('error', "HR decide_leave: failed to revert {$docId} to pending: " . $e->getMessage());
+            }
+        };
+
         $staffId  = $request['staff_id'] ?? '';
         $typeId   = $request['type_id'] ?? '';
-        $days     = (int) ($request['days'] ?? 0);
+        $days     = (float) ($request['days'] ?? $request['numberOfDays'] ?? 0);  // #7: fractional for half-day
         $fromDate = $request['from_date'] ?? '';
         $year     = date('Y', strtotime($fromDate));
 
@@ -3493,6 +4022,7 @@ HTML;
             if (is_array($staffProfile)) {
                 $rawStatus = (string) ($staffProfile['status'] ?? $staffProfile['Status'] ?? 'Active');
                 if (strtolower(trim($rawStatus)) !== 'active') {
+                    $revertToPending();   // release the lock — retryable
                     $this->json_error('Cannot perform this action for an inactive staff member.');
                 }
             }
@@ -3532,64 +4062,75 @@ HTML;
             log_message('error', "decide_leave: leave type '{$typeId}' / '{$ltName}' not found — defaulting to paid");
         }
 
-        // If approving, calculate paid/LWP split and deduct from balance
+        // If approving, calculate paid/LWP split and deduct from balance.
+        // HIGH H3 — the whole read→split→deduct is done inside ONE atomic CAS
+        // mutator (fresh read, floored, single conditional write). This removes
+        // the previous read-modify-write + post-write "verify negative then roll
+        // back" dance, which could not actually serialize concurrent deductions.
+        // #7 — half-day $days is 0.5, so the deduction is 0.5 (matches payroll).
         $paidDays = $days;
-        $lwpDays  = 0;
+        $lwpDays  = 0.0;
         if ($decision === 'Approved') {
-            if (!$isPaidType) {
-                // Unpaid leave type — ALL days are LWP, but still track usage in balance
-                $paidDays = 0;
-                $lwpDays  = $days;
+            $allocatedForNew = is_array($leaveType) ? (int) ($leaveType['days_per_year'] ?? 0) : 0;
+            $capturedPaid = null;
+            $capturedLwp  = null;
+            $capturedOrig = null;   // pre-deduction snapshot of this type (for exact rollback)
 
-                // Update balance — Firestore-first via helper
-                $balance = $this->_fsGetLeaveBalance($staffId, $year, $typeId);
-                if (is_array($balance)) {
-                    $currentUsed    = (int) ($balance['used'] ?? 0);
-                    $currentBalance = (int) ($balance['balance'] ?? 0);
-                    $newBalData = ['used' => $currentUsed + $days, 'balance' => $currentBalance - $days];
-                    $this->_fsSyncLeaveBalance($staffId, $year, [$typeId => array_merge($balance, $newBalData)]);
+            $balOk = $this->_casLeaveBalance($staffId, $year, function (array $balances)
+                use ($typeId, $days, $isPaidType, $allocatedForNew, &$capturedPaid, &$capturedLwp, &$capturedOrig) {
+
+                $cur = is_array($balances[$typeId] ?? null) ? $balances[$typeId] : null;
+                $capturedOrig = $cur;   // null => the type had no record before this deduction
+
+                // SINGLE SOURCE OF TRUTH: `allocated` is the CURRENT leave-type
+                // days_per_year ($allocatedForNew), NOT a possibly-stale stored
+                // snapshot. Effective available = live_allocated + carried - used,
+                // so a just-changed allocation is honoured immediately on approval —
+                // whether or not a stored record exists for this staff/type.
+                $liveAlloc = (float) $allocatedForNew;
+                $carried   = $cur !== null ? (float) ($cur['carried'] ?? 0) : 0.0;
+                $used      = $cur !== null ? (float) ($cur['used'] ?? 0)    : 0.0;
+
+                if (!$isPaidType) {
+                    // Unpaid type — ALL days are LWP, but still tracked in `used`.
+                    $capturedPaid = 0.0;
+                    $capturedLwp  = $days;
+                    $newUsed = $used + $days;
+                    $bal     = max(0.0, $liveAlloc + $carried - $newUsed);          // floor at 0
+                    $balances[$typeId] = [
+                        'allocated' => $allocatedForNew,
+                        'used'      => $newUsed,
+                        'carried'   => $carried,
+                        'balance'   => $bal,
+                    ];
                 } else {
-                    $allocated = 0;
-                    if (is_array($leaveType)) $allocated = (int) ($leaveType['days_per_year'] ?? 0);
-                    $newBal = ['allocated' => $allocated, 'used' => $days, 'carried' => 0, 'balance' => $allocated - $days];
-                    $this->_fsSyncLeaveBalance($staffId, $year, [$typeId => $newBal]);
+                    // Paid type — pay from LIVE-derived available balance first,
+                    // excess becomes LWP.
+                    $effAvail = max(0.0, $liveAlloc + $carried - $used);
+                    $paid = min($effAvail, $days);
+                    $capturedPaid = $paid;
+                    $capturedLwp  = $days - $paid;
+                    $newUsed = $used + $paid;
+                    $bal     = max(0.0, $liveAlloc + $carried - $newUsed);          // floor at 0
+                    $balances[$typeId] = [
+                        'allocated' => $allocatedForNew,
+                        'used'      => $newUsed,
+                        'carried'   => $carried,
+                        'balance'   => $bal,
+                    ];
                 }
-            } else {
-                // Paid leave type — deduct from balance; Firestore-first via helper
-                $balance = $this->_fsGetLeaveBalance($staffId, $year, $typeId);
-                if (is_array($balance)) {
-                    $currentBalance = (int) ($balance['balance'] ?? 0);
-                    $currentUsed    = (int) ($balance['used'] ?? 0);
+                return $balances;
+            });
 
-                    // Split into paid and LWP portions
-                    $paidDays = min(max(0, $currentBalance), $days);
-                    $lwpDays  = $days - $paidDays;
-
-                    // Only deduct the paid portion from balance
-                    if ($paidDays > 0) {
-                        $paidBalUpdate = ['used' => $currentUsed + $paidDays, 'balance' => $currentBalance - $paidDays];
-                        $this->_fsSyncLeaveBalance($staffId, $year, [$typeId => array_merge(is_array($balance) ? $balance : [], $paidBalUpdate)]);
-
-                        // M-04 FIX: Post-write verification — re-read balance to detect concurrent deduction
-                        $verifyBal = $this->_fsGetLeaveBalance($staffId, $year, $typeId);
-                        if (is_array($verifyBal) && (int) ($verifyBal['balance'] ?? 0) < 0) {
-                            $this->_fsSyncLeaveBalance($staffId, $year, [$typeId => ['used' => $currentUsed, 'balance' => $currentBalance]]);
-                            try {
-                                $writeDocId2 = $fsDocId !== '' ? $fsDocId : $this->fs->docId("LR_{$id}");
-                                $this->firebase->firestoreSet('leaveApplications', $writeDocId2, ['status' => 'Pending', 'updatedAt' => date('c')], true);
-                            } catch (\Exception $e2) {}
-                            $this->json_error('Leave balance was modified concurrently. Please try again.');
-                        }
-                    }
-                } else {
-                    // No balance record for a paid type — create one with 0 allocation
-                    $paidDays = $days;
-                    $lwpDays  = 0;
-                    $noBal = ['allocated' => 0, 'used' => $days, 'carried' => 0, 'balance' => 0 - $days];
-                    $this->_fsSyncLeaveBalance($staffId, $year, [$typeId => $noBal]);
-                    log_message('info', "decide_leave: no balance record for paid type '{$typeId}' / staff '{$staffId}' — treating {$days} day(s) as paid with negative balance");
-                }
+            if (!$balOk) {
+                // H4 — balance write failed / lost every CAS attempt. Roll the
+                // request lock back to pending (retryable) and surface an error.
+                $revertToPending();
+                $this->json_error('Leave balance was modified concurrently. Please try again.');
             }
+
+            $paidDays = $capturedPaid !== null ? $capturedPaid : $days;
+            $lwpDays  = $capturedLwp  !== null ? $capturedLwp  : 0.0;
         }
 
         // Build calculation reason for audit trail
@@ -3600,7 +4141,7 @@ HTML;
         } elseif (!$isPaidType) {
             $calcReason = "Unpaid leave type ({$ltCode}) — all {$days} day(s) deducted from salary";
             $payLabel   = 'Unpaid Leave (LWP)';
-        } elseif ($lwpDays === 0) {
+        } elseif ($lwpDays <= 0) {   // #7: $lwpDays is a float (0.0 for fully-paid)
             $calcReason = "Paid leave ({$ltCode}), fully covered by balance — no salary deduction";
             $payLabel   = 'Fully Paid';
         } else {
@@ -3608,8 +4149,9 @@ HTML;
             $payLabel   = 'Partially Paid (Exceeds Balance)';
         }
 
+        $statusWrite = strtolower($decision);   // H1: 'approved' | 'rejected'
         $updateData = [
-            'status'              => $decision,
+            'status'              => $statusWrite,
             'decided_by'          => $this->admin_name,
             'decided_on'          => date('c'),
             'remarks'             => $remarks,
@@ -3621,7 +4163,11 @@ HTML;
             'calculation_reason'  => $calcReason,
         ];
 
-        // 1. Firestore FIRST — update leave request decision
+        // 1. Firestore FIRST — update leave request decision.
+        // H4: check the write RESULT. On failure, roll BACK any balance deduction
+        // (exact pre-deduction snapshot) AND release the lock to 'pending' so the
+        // request is retryable — never a stranded 'processing' or a phantom deduct.
+        $writeOk = false;
         try {
             $fsUpdateData = array_merge($updateData, [
                 'decidedBy' => $updateData['decided_by'] ?? '',
@@ -3637,10 +4183,25 @@ HTML;
             ]);
             // Use the actual Firestore doc ID (works for both HR-format and Teacher-app-format)
             $writeDocId = $fsDocId !== '' ? $fsDocId : $this->fs->docId("LR_{$id}");
-            $this->firebase->firestoreSet('leaveApplications', $writeDocId, $fsUpdateData, true);
-            log_message('debug', "HR: decide_leave -> Firestore OK for {$writeDocId}");
+            $writeOk = $this->fs->set('leaveApplications', $writeDocId, $fsUpdateData, true);
         } catch (\Exception $e) {
             log_message('error', "HR: decide_leave -> Firestore FAILED for {$id}: " . $e->getMessage());
+            $writeOk = false;
+        }
+        if (!$writeOk) {
+            // Roll back the balance deduction (approvals only) to its exact prior state.
+            if ($decision === 'Approved') {
+                $this->_casLeaveBalance($staffId, $year, function (array $balances) use ($typeId, $capturedOrig) {
+                    if ($capturedOrig === null) {
+                        unset($balances[$typeId]);           // type had no record before — remove it
+                    } else {
+                        $balances[$typeId] = $capturedOrig;  // restore exact pre-deduction snapshot
+                    }
+                    return $balances;
+                });
+            }
+            $revertToPending();
+            $this->json_error('Could not record the decision. Please try again.');
         }
 
         // On approval, automatically mark attendance as "L" (Leave) for each leave day —
@@ -3726,59 +4287,98 @@ HTML;
             $this->json_error('Leave request not found.');
         }
 
-        $currentStatus = $request['status'] ?? '';
-        if (!in_array($currentStatus, ['Pending', 'Approved'], true)) {
-            $this->json_error('Only Pending or Approved requests can be cancelled.');
+        // CRITICAL C4 — write to the RESOLVED doc id, NOT a hardcoded LR_{id}.
+        // App-submitted staff leaves live under their own doc id; the old code
+        // locked/cancelled LR_{id} (which didn't exist for those) so the balance
+        // was restored while the request stayed 'approved' → repeatable inflation.
+        $fsDocId = (string) ($request['_fsDocId'] ?? '');
+        if ($fsDocId === '') $fsDocId = $this->fs->docId("LR_{$id}");
+
+        // CRITICAL C3 — cross-tenant IDOR guard: the request MUST belong to the
+        // caller's own school. Reject BEFORE any mutation.
+        if ((string) ($request['schoolId'] ?? '') !== (string) $this->school_id) {
+            $this->json_error('Leave request not found.');
         }
 
-        // M-04 FIX: Lock the request by transitioning to Cancelling status
-        try {
-            $this->fs->update('leaveApplications', $this->fs->docId("LR_{$id}"), ['status' => 'Cancelling', 'updatedAt' => date('c')]);
-        } catch (\Exception $e) {
-            log_message('error', "HR cancel_leave: Firestore Cancelling lock failed: " . $e->getMessage());
+        // H1: read status case-insensitively (legacy CapitalCase + lowercase).
+        $currentStatus = strtolower((string) ($request['status'] ?? ''));
+        // Idempotency (C4): refuse if already cancelled (or mid-cancel) so a
+        // repeated call can never restore the balance a second time.
+        if (in_array($currentStatus, ['cancelled', 'cancelling'], true)) {
+            $this->json_error('This leave request is already cancelled.');
+        }
+        if (!in_array($currentStatus, ['pending', 'approved'], true)) {
+            $this->json_error('Only Pending or Approved requests can be cancelled.');
         }
 
         $staffId  = $request['staff_id'] ?? '';
         $typeId   = $request['type_id'] ?? '';
-        $days     = (int) ($request['days'] ?? 0);
+        $days     = (float) ($request['days'] ?? $request['numberOfDays'] ?? 0);   // #7: fractional
         $fromDate = $request['from_date'] ?? '';
         $year     = date('Y', strtotime($fromDate));
 
+        // H3 lock — CAS the request pending/approved → 'cancelling' on the RESOLVED
+        // doc id, so only one canceller wins. Weaker fallback if no CAS token.
+        $lockToken = (string) ($request['__updateTime'] ?? '');
+        $client    = $this->fs->raw_client();
+        $wonLock   = false;
+        if ($lockToken !== '' && $client !== null && method_exists($client, 'commitBatch')) {
+            $wonLock = $client->commitBatch([[
+                'op'           => 'set',
+                'collection'   => 'leaveApplications',
+                'docId'        => $fsDocId,
+                'data'         => ['status' => 'cancelling', 'updatedAt' => date('c')],   // H1 lowercase
+                'merge'        => true,
+                'precondition' => ['updateTime' => $lockToken],
+            ]]);
+        } else {
+            $wonLock = (bool) $this->fs->update('leaveApplications', $fsDocId, ['status' => 'cancelling', 'updatedAt' => date('c')]);
+        }
+        if (!$wonLock) {
+            $this->json_error('This request is being processed by another user. Please refresh.');
+        }
+
+        // Revert the 'cancelling' lock to the original status on any later failure
+        // (leaves the request retryable — never stranded in 'cancelling').
+        $revertLock = function () use ($fsDocId, $currentStatus) {
+            try {
+                $this->fs->update('leaveApplications', $fsDocId, ['status' => $currentStatus, 'updatedAt' => date('c')]);
+            } catch (\Exception $e) {
+                log_message('error', "HR cancel_leave: failed to revert {$fsDocId} to {$currentStatus}: " . $e->getMessage());
+            }
+        };
+
         // Phase HR-1 — block cancellation on requests for now-Inactive staff.
-        // Mirrors decide_leave: keeps the lifecycle consistent across the
-        // approve/reject/cancel triplet.
         if ($staffId !== '') {
             $staffProfile = $this->_fsGetStaffProfile($staffId);
             if (is_array($staffProfile)) {
                 $rawStatus = (string) ($staffProfile['status'] ?? $staffProfile['Status'] ?? 'Active');
                 if (strtolower(trim($rawStatus)) !== 'active') {
+                    $revertLock();
                     $this->json_error('Cannot perform this action for an inactive staff member.');
                 }
             }
         }
 
-        // If was Approved, restore balance (paid days + unpaid days both tracked in used count)
-        $paidDays = (int) ($request['paid_days'] ?? $days); // fallback to full days for legacy requests
-        $lwpDays  = (int) ($request['lwp_days'] ?? 0);
-        $totalUsedDays = $paidDays + $lwpDays; // total days deducted from used count
-        if ($totalUsedDays === 0) $totalUsedDays = $days; // legacy fallback
-        if ($currentStatus === 'Approved' && $staffId !== '' && $typeId !== '' && $totalUsedDays > 0) {
-            // Read balance — Firestore-first via helper
-            $balance = $this->_fsGetLeaveBalance($staffId, $year, $typeId);
-            if (is_array($balance)) {
-                $currentUsed    = (int) ($balance['used'] ?? 0);
-                $currentBalance = (int) ($balance['balance'] ?? 0);
-
-                $newUsed    = max(0, $currentUsed - $totalUsedDays);
-                $newBalance = $currentBalance + $totalUsedDays;
-
-                $restoreData = ['used' => $newUsed, 'balance' => $newBalance];
-                $this->_fsSyncLeaveBalance($staffId, $year, [$typeId => array_merge($balance, $restoreData)]);
-            }
+        // If was Approved, restore balance (paid + LWP both tracked in `used`).
+        // H3: atomic CAS restore computed against a FRESH read (no lost update).
+        $paidDays = (float) ($request['paid_days'] ?? $days);   // legacy fallback = full days
+        $lwpDays  = (float) ($request['lwp_days'] ?? 0);
+        $totalUsedDays = $paidDays + $lwpDays;
+        if ($totalUsedDays <= 0) $totalUsedDays = $days;        // legacy fallback
+        if ($currentStatus === 'approved' && $staffId !== '' && $typeId !== '' && $totalUsedDays > 0) {
+            $this->_casLeaveBalance($staffId, $year, function (array $balances) use ($typeId, $totalUsedDays) {
+                $cur = is_array($balances[$typeId] ?? null) ? $balances[$typeId] : null;
+                if ($cur === null) return $balances;            // nothing to restore
+                $newUsed    = max(0.0, (float) ($cur['used'] ?? 0) - $totalUsedDays);
+                $newBalance = (float) ($cur['balance'] ?? 0) + $totalUsedDays;
+                $balances[$typeId] = array_merge($cur, ['used' => $newUsed, 'balance' => $newBalance]);
+                return $balances;
+            });
         }
 
         // Revert attendance marks if the leave was previously approved
-        if ($currentStatus === 'Approved') {
+        if ($currentStatus === 'approved') {
             $this->_revert_leave_from_attendance(
                 $staffId,
                 $request['from_date'] ?? '',
@@ -3786,27 +4386,46 @@ HTML;
             );
         }
 
-        // 1. Firestore FIRST — update to Cancelled
+        // 1. Firestore FIRST — finalize to 'cancelled' (H1) on the RESOLVED doc id.
+        // H4: check the write RESULT; on failure revert the lock (retryable).
         $cancelData = [
-            'status'     => 'Cancelled',
+            'status'     => 'cancelled',   // H1 lowercase
             'decided_by' => $this->admin_name,
             'decided_on' => date('c'),
-            'remarks'    => 'Cancelled' . ($currentStatus === 'Approved' ? ' (balance restored, attendance reverted)' : ''),
+            'remarks'    => 'Cancelled' . ($currentStatus === 'approved' ? ' (balance restored, attendance reverted)' : ''),
+            'decidedBy'  => $this->admin_name,
+            'decidedOn'  => date('c'),
+            'updatedAt'  => date('c'),
         ];
+        $writeOk = false;
         try {
-            $fsCancelData = array_merge($cancelData, [
-                'decidedBy' => $cancelData['decided_by'],
-                'decidedOn' => $cancelData['decided_on'],
-                'updatedAt' => date('c'),
-            ]);
-            $this->fs->update('leaveApplications', $this->fs->docId("LR_{$id}"), $fsCancelData);
-            log_message('debug', "HR: cancel_leave -> Firestore OK for {$id}");
+            $writeOk = $this->fs->update('leaveApplications', $fsDocId, $cancelData);
         } catch (\Exception $e) {
-            log_message('error', "HR: cancel_leave -> Firestore FAILED for {$id}: " . $e->getMessage());
+            log_message('error', "HR: cancel_leave -> Firestore FAILED for {$fsDocId}: " . $e->getMessage());
+            $writeOk = false;
+        }
+        if (!$writeOk) {
+            $revertLock();
+            $this->json_error('Could not cancel the leave request. Please try again.');
         }
 
+        // Audit (MEDIUM #9): cancellation is a balance-affecting action.
+        $this->_log_leave_audit([
+            'action'           => 'leave_cancelled',
+            'leave_request_id' => $id,
+            'staff_id'         => $staffId,
+            'staff_name'       => $request['staff_name'] ?? $staffId,
+            'leave_type'       => strtoupper(trim($request['type_code'] ?? '')),
+            'leave_type_id'    => $typeId,
+            'total_days'       => $days,
+            'paid_days'        => $paidDays,
+            'lwp_days'         => $lwpDays,
+            'prior_status'     => $currentStatus,
+            'decision_reason'  => ($currentStatus === 'approved' ? 'balance restored + attendance reverted' : 'pending request withdrawn'),
+        ]);
+
         $this->json_success([
-            'message' => 'Leave request cancelled.' . ($currentStatus === 'Approved' ? ' Balance restored, attendance reverted.' : ''),
+            'message' => 'Leave request cancelled.' . ($currentStatus === 'approved' ? ' Balance restored, attendance reverted.' : ''),
         ]);
     }
 
@@ -6938,9 +7557,10 @@ HTML;
                             'approved_days' => 0,
                         ];
                     }
-                    $days = (int) ($r['days'] ?? 0);
+                    $days = (float) ($r['days'] ?? $r['numberOfDays'] ?? 0);
                     $byStaff[$sid]['total_days'] += $days;
-                    if (($r['status'] ?? '') === 'Approved') {
+                    // H1: $status already lowercased above — compare lowercase.
+                    if ($status === 'approved') {
                         $byStaff[$sid]['approved_days'] += $days;
                     }
                 }
@@ -7171,7 +7791,8 @@ HTML;
         string $monthEnd,
         string $rid = ''
     ): ?array {
-        if (($leaveDoc['status'] ?? '') !== 'Approved') return null;
+        // H1: read status case-insensitively (leaves are now written lowercase).
+        if (strtolower((string) ($leaveDoc['status'] ?? '')) !== 'approved') return null;
 
         $lrFrom = (string) ($leaveDoc['from_date'] ?? '');
         $lrTo   = (string) ($leaveDoc['to_date']   ?? '');

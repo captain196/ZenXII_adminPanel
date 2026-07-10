@@ -667,6 +667,7 @@ $route['attendance/scan_qr']                 = 'Attendance/scan_qr';
 $route['attendance/teacher_notify']          = 'Attendance/teacher_notify';
 $route['attendance/process_push_requests']   = 'Attendance/process_push_requests';
 $route['attendance/health_check']            = 'Attendance/health_check';
+$route['attendance/audit']                   = 'Attendance/audit';
 $route['attendance/fetch_audit_logs']        = 'Attendance/fetch_audit_logs';
 $route['attendance/cleanup']                 = 'Attendance/cleanup';
 $route['attendance/autofill_staff_today']   = 'Attendance/autofill_staff_today';

@@ -320,10 +320,12 @@
                 <div class="att-field"><label>Half-day Hours (&ge;)</label><input type="number" min="0" max="24" step="0.5" id="schHalf" value="4"></div>
                 <div class="att-field"><label>Break (min)</label><input type="number" min="0" max="480" id="schBreak" value="60"></div>
                 <div class="att-field"><label>Early-out Before</label><input type="time" id="schEarlyOut" value="17:30"></div>
+                <div class="att-field"><label>Check-in Opens At <span style="color:var(--att-t3)">(optional)</span></label><input type="time" id="schEarliest" value="07:00"></div>
                 <div class="att-field"><label>Latest Check-in <span style="color:var(--att-t3)">(optional)</span></label><input type="time" id="schLatest" value=""></div>
             </div>
             <div style="font-size:12px;color:var(--att-t3);margin-top:10px">
                 <b>On-time vs Late</b> uses Shift Start + Grace. <b>Half vs full day</b> is decided by hours worked at check-out (worked = check-out &minus; check-in &minus; break) — you can clock out anytime.
+                <b>Check-in Opens At</b> blocks any check-in before that time (staff can't punch at odd hours) — leave blank for no opening restriction.
                 Set <b>Full-day Hours to 0</b> to keep the classic on-time / late-only model; leave <b>Latest Check-in</b> blank for no hard cutoff.
             </div>
         </div>
@@ -903,6 +905,7 @@
             if (typeof sch.fullDayHours !== 'undefined') $('schFull').value = sch.fullDayHours;
             if (typeof sch.halfDayHours !== 'undefined') $('schHalf').value = sch.halfDayHours;
             if (sch.earlyOutBefore) $('schEarlyOut').value = sch.earlyOutBefore;
+            if (sch.earliestCheckIn && sch.earliestCheckIn !== '00:00') $('schEarliest').value = sch.earliestCheckIn;
             $('schLatest').value = (sch.latestCheckIn && sch.latestCheckIn !== '23:59') ? sch.latestCheckIn : '';
 
             var offs = p.weeklyOffs || [];
@@ -938,8 +941,9 @@
                 fullDayHours:   parseFloat($('schFull').value) || 0,
                 halfDayHours:   parseFloat($('schHalf').value) || 0,
                 breakMinutes:   parseInt($('schBreak').value,10) || 0,
-                earlyOutBefore: $('schEarlyOut').value,
-                latestCheckIn:  $('schLatest').value
+                earlyOutBefore:  $('schEarlyOut').value,
+                latestCheckIn:   $('schLatest').value,
+                earliestCheckIn: $('schEarliest').value
             },
             weeklyOffs: (function(){ var a=[]; document.querySelectorAll('#weeklyOffsGroup input:checked').forEach(function(cb){ a.push(cb.value); }); return a; })(),
             allowWorkOnOff: $('allowWorkOnOff').checked,

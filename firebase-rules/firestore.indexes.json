@@ -1479,11 +1479,15 @@
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "studentId",
+          "fieldPath": "applicantId",
           "order": "ASCENDING"
         },
         {
-          "fieldPath": "createdAt",
+          "fieldPath": "applicantType",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "appliedAt",
           "order": "DESCENDING"
         }
       ]

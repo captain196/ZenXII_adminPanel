@@ -1,171 +1,215 @@
 <?php defined('BASEPATH') OR exit('No direct script access allowed'); ?>
 
 <style>
-.sr-wrap { --sr-green:#16a34a; --sr-red:#dc2626; --sr-orange:#d97706; --sr-blue:#2563eb;
-    font-family: var(--font-b,'Plus Jakarta Sans',sans-serif); color: var(--t1); }
-.sr-hdr { margin-bottom: 16px; }
-.sr-hdr h4 { font-weight: 700; margin: 0 0 4px; font-size: 18px; }
-.sr-hdr h4 i { color: var(--gold); margin-right: 6px; }
-.sr-hdr p { font-size: 13px; color: var(--t3); margin: 0; }
-.sr-tabs { display: flex; gap: 6px; margin: 14px 0 18px; flex-wrap: wrap; }
-.sr-tab { font: inherit; font-size: 13px; font-weight: 600; border: 1px solid var(--border);
-    background: var(--bg2); color: var(--t2); padding: 7px 14px; border-radius: 8px; cursor: pointer; }
-.sr-tab.active { background: var(--gold); color: #1a1200; border-color: var(--gold); }
+.sr-wrap { --sr-accent:#2f6fbf; --sr-green:#16a34a; --sr-red:#dc2626; --sr-amber:#d97706;
+    font-family: var(--font-b,'Plus Jakarta Sans',sans-serif); color: var(--t1,#1f2933); max-width: 1000px; }
+.sr-hdr { display:flex; align-items:flex-start; gap:14px; margin-bottom: 18px; }
+.sr-hdr .sr-ic { width:44px; height:44px; flex:0 0 44px; border-radius:12px; display:flex; align-items:center; justify-content:center;
+    background: rgba(47,111,191,.12); color: var(--sr-accent); font-size:20px; }
+.sr-hdr h4 { font-weight: 800; margin: 0 0 4px; font-size: 19px; }
+.sr-hdr p { font-size: 13px; color: var(--t3,#5a6b7d); margin: 0; line-height:1.5; }
+.sr-hdr .sr-refresh { margin-left:auto; font:inherit; font-size:13px; font-weight:600; cursor:pointer;
+    background: var(--bg2,#f4f7fb); border:1px solid var(--border,#d8e0ea); color: var(--t2,#3a4a5b);
+    padding:8px 14px; border-radius:9px; display:flex; align-items:center; gap:7px; }
+.sr-refresh:hover { border-color: var(--sr-accent); color: var(--sr-accent); }
+
+.sr-tabs { display: flex; gap: 8px; margin: 0 0 18px; flex-wrap: wrap; }
+.sr-tab { font: inherit; font-size: 13px; font-weight: 600; border: 1px solid var(--border,#d8e0ea);
+    background: var(--bg2,#f4f7fb); color: var(--t2,#3a4a5b); padding: 8px 16px; border-radius: 999px; cursor: pointer; display:flex; gap:7px; align-items:center; }
+.sr-tab .sr-cnt { font-size:11px; font-weight:800; min-width:18px; text-align:center; padding:1px 6px; border-radius:999px;
+    background: rgba(47,111,191,.14); color: var(--sr-accent); }
+.sr-tab.active { background: var(--sr-accent); color: #fff; border-color: var(--sr-accent); }
+.sr-tab.active .sr-cnt { background: rgba(255,255,255,.25); color:#fff; }
+
 .sr-list { display: flex; flex-direction: column; gap: 12px; }
-.sr-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
-.sr-card-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.sr-name { font-weight: 700; font-size: 15px; }
-.sr-sid { font-family: var(--font-m,monospace); font-size: 12px; color: var(--t3); }
-.sr-pill { font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 20px; margin-left: auto; }
-.sr-pill.pending { color: var(--sr-orange); background: rgba(217,119,6,.14); }
+.sr-card { background: var(--bg2,#fff); border: 1px solid var(--border,#d8e0ea); border-radius: 14px; padding: 16px 18px;
+    transition: box-shadow .15s, border-color .15s; }
+.sr-card:hover { box-shadow: 0 3px 14px rgba(15,59,111,.08); }
+.sr-card-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sr-av { width:34px; height:34px; border-radius:50%; flex:0 0 34px; display:flex; align-items:center; justify-content:center;
+    background: rgba(47,111,191,.14); color: var(--sr-accent); font-weight:800; font-size:14px; }
+.sr-name { font-weight: 800; font-size: 15px; }
+.sr-sid { font-family: var(--font-m,monospace); font-size: 12px; color: var(--t3,#5a6b7d); background: var(--bg3,#eef2f7); padding:2px 8px; border-radius:6px; }
+.sr-pill { font-size: 11px; font-weight: 800; padding: 3px 11px; border-radius: 999px; margin-left: auto; text-transform: capitalize; }
+.sr-pill.pending { color: var(--sr-amber); background: rgba(217,119,6,.14); }
 .sr-pill.approved { color: var(--sr-green); background: rgba(22,163,74,.14); }
-.sr-pill.rejected { color: var(--sr-red); background: rgba(220,38,38,.14); }
-.sr-reason { font-size: 13px; color: var(--t2); margin: 8px 0; }
-.sr-dates { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-.sr-date { font-size: 12px; font-family: var(--font-m,monospace); background: var(--bg3);
-    border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; }
-.sr-date small { color: var(--t3); margin-left: 6px; }
-.sr-actions { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+.sr-pill.rejected, .sr-pill.auto_rejected { color: var(--sr-red); background: rgba(220,38,38,.14); }
+.sr-pill.cancelled { color: var(--t3,#5a6b7d); background: rgba(120,130,145,.14); }
+.sr-reason { font-size: 13.5px; color: var(--t2,#3a4a5b); margin: 12px 0 2px; line-height:1.55; }
+.sr-reason em { color: var(--t3,#5a6b7d); }
+.sr-meta { font-size:11.5px; color: var(--t3,#5a6b7d); margin-top:2px; }
+.sr-dates { display: flex; flex-wrap: wrap; gap: 7px; margin: 12px 0 2px; }
+.sr-date { font-size: 12px; font-family: var(--font-m,monospace); font-weight:600; background: var(--bg3,#eef2f7);
+    border: 1px solid var(--border,#d8e0ea); border-radius: 8px; padding: 4px 10px; color: var(--t1,#1f2933); }
+.sr-date small { color: var(--sr-accent); margin-left: 6px; font-weight:700; }
+.sr-actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; flex-wrap: wrap;
+    border-top:1px dashed var(--border,#d8e0ea); padding-top:14px; }
+.sr-actions label { font-size:11.5px; font-weight:700; color:var(--t3,#5a6b7d); }
+.sr-actions select.sr-mark { font: inherit; font-size: 13px; padding: 8px 10px;
+    border: 1px solid var(--border,#d8e0ea); border-radius: 9px; background: var(--bg,#fff); color: var(--t1,#1f2933); }
 .sr-actions input.sr-remarks { flex: 1; min-width: 160px; font: inherit; font-size: 13px;
-    padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--t1); }
-.sr-actions select.sr-mark { font: inherit; font-size: 13px; padding: 7px 8px;
-    border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--t1); }
-.sr-btn { font: inherit; font-size: 13px; font-weight: 600; border: 0; border-radius: 8px;
-    padding: 8px 16px; cursor: pointer; }
+    padding: 8px 12px; border: 1px solid var(--border,#d8e0ea); border-radius: 9px; background: var(--bg,#fff); color: var(--t1,#1f2933); }
+.sr-actions input.sr-remarks:focus, .sr-actions select.sr-mark:focus { outline:none; border-color:var(--sr-accent); box-shadow:0 0 0 3px rgba(47,111,191,.15); }
+.sr-btn { font: inherit; font-size: 13px; font-weight: 700; border: 0; border-radius: 9px; padding: 9px 18px; cursor: pointer; }
 .sr-btn.approve { background: var(--sr-green); color: #fff; }
-.sr-btn.reject { background: transparent; color: var(--sr-red); border: 1px solid var(--sr-red); }
+.sr-btn.reject { background: transparent; color: var(--sr-red); border: 1px solid rgba(220,38,38,.5); }
+.sr-btn.approve:hover { filter:brightness(1.05); } .sr-btn.reject:hover { background: rgba(220,38,38,.08); }
 .sr-btn:disabled { opacity: .5; cursor: default; }
-.sr-empty, .sr-loading { text-align: center; color: var(--t3); font-size: 14px; padding: 40px 0; }
+.sr-state { text-align: center; color: var(--t3,#5a6b7d); font-size: 14px; padding: 48px 0; }
+.sr-state .sr-emoji { font-size: 30px; display:block; margin-bottom:8px; opacity:.7; }
+.sr-spin { width:22px; height:22px; border:3px solid var(--border,#d8e0ea); border-top-color:var(--sr-accent);
+    border-radius:50%; animation:sr-rot .8s linear infinite; display:inline-block; }
+@keyframes sr-rot { to { transform: rotate(360deg); } }
 .sr-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-    background: var(--t1); color: var(--bg); font-size: 13px; font-weight: 600; padding: 10px 18px;
-    border-radius: 10px; opacity: 0; transition: opacity .2s; z-index: 9999; pointer-events: none; }
+    background: var(--t1,#1f2933); color: var(--bg,#fff); font-size: 13px; font-weight: 700; padding: 11px 20px;
+    border-radius: 11px; opacity: 0; transition: opacity .2s; z-index: 9999; pointer-events: none; box-shadow:0 6px 20px rgba(0,0,0,.25); }
 .sr-toast.show { opacity: 1; }
 </style>
 
+<div class="content-wrapper">
+<section class="content">
+<div class="container-fluid">
+
 <div class="sr-wrap">
     <div class="sr-hdr">
-        <h4><i class="fa-solid fa-user-clock"></i>Staff Attendance Regularization</h4>
-        <p>Review and approve GPS self-attendance correction requests filed by staff from the app. Approving stamps the corrected day onto their attendance record.</p>
+        <div class="sr-ic"><i class="fa-solid fa-user-clock"></i></div>
+        <div>
+            <h4>Staff Attendance Regularization</h4>
+            <p>GPS self-attendance correction requests filed by staff from the app. Approving stamps the corrected day onto their attendance record.</p>
+        </div>
+        <button class="sr-refresh" id="srRefresh"><i class="fa-solid fa-rotate"></i> Refresh</button>
     </div>
 
     <div class="sr-tabs" id="srTabs">
-        <button class="sr-tab active" data-status="pending">Pending</button>
+        <button class="sr-tab active" data-status="pending">Pending <span class="sr-cnt" id="cnt-pending">·</span></button>
         <button class="sr-tab" data-status="approved">Approved</button>
         <button class="sr-tab" data-status="rejected">Rejected</button>
         <button class="sr-tab" data-status="all">All</button>
     </div>
 
     <div class="sr-list" id="srList">
-        <div class="sr-loading">Loading requests…</div>
+        <div class="sr-state"><span class="sr-spin"></span></div>
     </div>
 </div>
+
+</div><!-- /.container-fluid -->
+</section>
+</div><!-- /.content-wrapper -->
 
 <div class="sr-toast" id="srToast"></div>
 
 <script>
+/* Native DOM + fetch (NO jQuery). jQuery loads in the footer AFTER this inline
+   script, so any $() here would throw and kill the page (blank list, dead tabs).
+   The .../list and .../decide routes are in csrf_exclude_uris, so no token needed. */
 (function () {
     var LIST_URL   = '<?= site_url('attendance/staff_regularization/list') ?>';
     var DECIDE_URL = '<?= site_url('attendance/staff_regularization/decide') ?>';
     var state = { status: 'pending' };
-    var $list = $('#srList');
+    var listEl = document.getElementById('srList');
 
-    function toast(msg) {
-        var t = document.getElementById('srToast');
-        t.textContent = msg; t.classList.add('show');
-        setTimeout(function () { t.classList.remove('show'); }, 2600);
+    function esc(s){ var d=document.createElement('div'); d.textContent = (s==null?'':String(s)); return d.innerHTML; }
+    function initial(n){ n=(n||'?').trim(); return n?n.charAt(0).toUpperCase():'?'; }
+    function fmtTime(iso){ if(!iso) return ''; try{ var d=new Date(iso); if(isNaN(d.getTime()))return ''; return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}catch(e){return '';} }
+    function toast(msg){ var t=document.getElementById('srToast'); t.textContent=msg; t.classList.add('show'); setTimeout(function(){t.classList.remove('show');},2600); }
+    function stateBox(emoji,msg){ return '<div class="sr-state"><span class="sr-emoji">'+emoji+'</span>'+esc(msg)+'</div>'; }
+
+    function post(url, params){
+        var body = new URLSearchParams();
+        Object.keys(params).forEach(function(k){ body.append(k, params[k]); });
+        return fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type':'application/x-www-form-urlencoded', 'X-Requested-With':'XMLHttpRequest' },
+            credentials: 'same-origin',
+            body: body.toString()
+        }).then(function(r){ return r.json(); });
     }
 
-    function esc(s) { return $('<div>').text(s == null ? '' : String(s)).html(); }
-    function fmtTime(iso) {
-        if (!iso) return '';
-        try { var d = new Date(iso); if (isNaN(d)) return ''; return d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
-        catch (e) { return ''; }
-    }
-
-    function render(batches) {
+    function render(batches){
         var keys = Object.keys(batches || {});
-        if (!keys.length) { $list.html('<div class="sr-empty">No ' + esc(state.status) + ' requests.</div>'); return; }
+        var cnt = document.getElementById('cnt-pending');
+        if (state.status === 'pending' && cnt) cnt.textContent = keys.length;
+        if (!keys.length){ listEl.innerHTML = stateBox('📭','No '+state.status+' requests.'); return; }
         var html = '';
-        keys.forEach(function (bid) {
-            var items = batches[bid];
-            if (!items || !items.length) return;
+        keys.forEach(function(bid){
+            var items = batches[bid]; if (!items || !items.length) return;
             var first = items[0];
-            var status = first.status || 'pending';
-            var datesHtml = items.map(function (it) {
+            var status = (first.status || 'pending').toLowerCase();
+            var datesHtml = items.map(function(it){
                 var ci = fmtTime(it.claimedCheckInAt), co = fmtTime(it.claimedCheckOutAt);
-                var times = (ci || co) ? ' <small>' + esc(ci) + (co ? '–' + esc(co) : '') + '</small>' : '';
-                return '<span class="sr-date">' + esc(it.date) + times + '</span>';
+                var times = (ci || co) ? ' <small>'+esc(ci)+(co?' – '+esc(co):'')+'</small>' : '';
+                return '<span class="sr-date">'+esc(it.date)+times+'</span>';
             }).join('');
             var actions = '';
-            if (status === 'pending') {
-                actions =
-                    '<div class="sr-actions">' +
-                        '<select class="sr-mark" title="Mark to apply on approval">' +
-                            '<option value="">Present (default)</option>' +
-                            '<option value="T">Late (T)</option>' +
-                            '<option value="M">Half-day (M)</option>' +
-                            '<option value="L">Leave (L)</option>' +
-                            '<option value="W">Work-on-off (W)</option>' +
-                        '</select>' +
-                        '<input class="sr-remarks" type="text" placeholder="Remarks (optional)">' +
-                        '<button class="sr-btn reject" data-batch="' + esc(bid) + '" data-decision="reject">Reject</button>' +
-                        '<button class="sr-btn approve" data-batch="' + esc(bid) + '" data-decision="approve">Approve</button>' +
-                    '</div>';
-            } else if (first.remarks) {
-                actions = '<div class="sr-reason"><em>Remarks: ' + esc(first.remarks) + '</em></div>';
-            }
-            html +=
-                '<div class="sr-card" data-card="' + esc(bid) + '">' +
-                    '<div class="sr-card-top">' +
-                        '<span class="sr-name">' + esc(first.staffName || first.staffId) + '</span>' +
-                        '<span class="sr-sid">' + esc(first.staffId) + '</span>' +
-                        '<span class="sr-pill ' + esc(status) + '">' + esc(status) + '</span>' +
-                    '</div>' +
-                    '<div class="sr-reason">' + esc(first.reason || '(no reason given)') + '</div>' +
-                    '<div class="sr-dates">' + datesHtml + '</div>' +
-                    actions +
+            if (status === 'pending'){
+                actions = '<div class="sr-actions">'+
+                    '<label>Apply as</label>'+
+                    '<select class="sr-mark"><option value="">Present</option><option value="T">Late (T)</option><option value="M">Half-day (M)</option><option value="L">Leave (L)</option><option value="W">Work-on-off (W)</option></select>'+
+                    '<input class="sr-remarks" type="text" placeholder="Remarks (optional)">'+
+                    '<button class="sr-btn reject" data-batch="'+esc(bid)+'" data-decision="reject">Reject</button>'+
+                    '<button class="sr-btn approve" data-batch="'+esc(bid)+'" data-decision="approve">Approve</button>'+
                 '</div>';
+            } else if (first.remarks){
+                actions = '<div class="sr-reason"><em>Admin remarks: '+esc(first.remarks)+'</em></div>';
+            }
+            var appliedMark = first.appliedMark ? (' · applied as '+esc(first.appliedMark)) : '';
+            html += '<div class="sr-card">'+
+                '<div class="sr-card-top">'+
+                    '<span class="sr-av">'+esc(initial(first.staffName||first.staffId))+'</span>'+
+                    '<span class="sr-name">'+esc(first.staffName||first.staffId)+'</span>'+
+                    '<span class="sr-sid">'+esc(first.staffId)+'</span>'+
+                    '<span class="sr-pill '+esc(status)+'">'+esc(status.replace('_',' '))+'</span>'+
+                '</div>'+
+                '<div class="sr-reason">'+esc(first.reason||'(no reason given)')+'</div>'+
+                '<div class="sr-meta">'+items.length+' day'+(items.length===1?'':'s')+' requested'+appliedMark+'</div>'+
+                '<div class="sr-dates">'+datesHtml+'</div>'+
+                actions+
+            '</div>';
         });
-        $list.html(html);
+        listEl.innerHTML = html;
     }
 
-    function load() {
-        $list.html('<div class="sr-loading">Loading requests…</div>');
-        $.post(LIST_URL, { status: state.status }, function (res) {
-            if (res && res.status === 'success') { render((res.data && res.data.batches) || {}); }
-            else { $list.html('<div class="sr-empty">Could not load requests.</div>'); }
-        }, 'json').fail(function () {
-            $list.html('<div class="sr-empty">Could not load requests.</div>');
-        });
+    function load(){
+        listEl.innerHTML = '<div class="sr-state"><span class="sr-spin"></span></div>';
+        post(LIST_URL, { status: state.status }).then(function(res){
+            // json_success() merges data at the TOP LEVEL — batches is res.batches,
+            // NOT res.data.batches. `batches` is always present (even {}) on success.
+            if (res && res.batches !== undefined){ render(res.batches || {}); }
+            else { listEl.innerHTML = stateBox('⚠️', (res && res.message) || 'Could not load requests.'); }
+        }).catch(function(){ listEl.innerHTML = stateBox('⚠️','Could not load requests. Reload the page and try again.'); });
     }
 
-    $('#srTabs').on('click', '.sr-tab', function () {
-        $('#srTabs .sr-tab').removeClass('active'); $(this).addClass('active');
-        state.status = $(this).data('status'); load();
+    document.getElementById('srTabs').addEventListener('click', function(e){
+        var btn = e.target.closest('.sr-tab'); if (!btn) return;
+        this.querySelectorAll('.sr-tab').forEach(function(t){ t.classList.remove('active'); });
+        btn.classList.add('active');
+        state.status = btn.getAttribute('data-status');
+        load();
     });
+    document.getElementById('srRefresh').addEventListener('click', load);
 
-    $list.on('click', '.sr-btn', function () {
-        var $btn = $(this), bid = $btn.data('batch'), decision = $btn.data('decision');
-        if ($btn.prop('disabled')) return;
+    listEl.addEventListener('click', function(e){
+        var btn = e.target.closest('.sr-btn'); if (!btn || btn.disabled) return;
+        var bid = btn.getAttribute('data-batch'), decision = btn.getAttribute('data-decision');
         if (decision === 'reject' && !confirm('Reject this regularization request?')) return;
-        var $card = $btn.closest('.sr-card');
-        var remarks = $card.find('.sr-remarks').val() || '';
-        var mark = $card.find('.sr-mark').val() || '';
-        $card.find('.sr-btn').prop('disabled', true);
-        $.post(DECIDE_URL, { batch_id: bid, decision: decision, remarks: remarks, mark: mark }, function (res) {
-            if (res && res.status === 'success') {
-                var d = res.data || {};
-                var msg = decision === 'approve'
-                    ? ('Approved ' + (d.appliedCount || 0) + ' day(s)' + (d.skippedCount ? ', ' + d.skippedCount + ' skipped' : ''))
-                    : 'Request rejected';
-                toast(msg);
+        var card = btn.closest('.sr-card');
+        var remarksEl = card.querySelector('.sr-remarks'), markEl = card.querySelector('.sr-mark');
+        var remarks = remarksEl ? remarksEl.value : '', mark = markEl ? markEl.value : '';
+        card.querySelectorAll('.sr-btn').forEach(function(b){ b.disabled = true; });
+        post(DECIDE_URL, { batch_id: bid, decision: decision, remarks: remarks, mark: mark }).then(function(res){
+            if (res && res.status === 'success'){
+                // appliedCount / skippedCount are TOP-LEVEL (json_success merge), not res.data.*
+                toast(decision === 'approve'
+                    ? ('Approved '+(res.appliedCount||0)+' day(s)'+(res.skippedCount?', '+res.skippedCount+' skipped':''))
+                    : 'Request rejected');
                 load();
             } else {
                 toast((res && res.message) || 'Action failed');
-                $card.find('.sr-btn').prop('disabled', false);
+                card.querySelectorAll('.sr-btn').forEach(function(b){ b.disabled = false; });
             }
-        }, 'json').fail(function () {
-            toast('Action failed'); $card.find('.sr-btn').prop('disabled', false);
+        }).catch(function(){
+            toast('Action failed');
+            card.querySelectorAll('.sr-btn').forEach(function(b){ b.disabled = false; });
         });
     });
 

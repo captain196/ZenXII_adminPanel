@@ -77,6 +77,33 @@ class Attendance extends MY_Controller
         // Firestore_service ($this->fs) already loaded and initialized by MY_Controller
     }
 
+    /**
+     * Module-level authorization override — "module grant = all sections".
+     *
+     * The base MY_Controller::_require_role() gates each action by matching the
+     * admin's role NAME against a hardcoded allowlist (MANAGE/MARK/VIEW_ROLES).
+     * That name-matching is incompatible with the custom admin roles created in
+     * Admin Users: any school-defined role (e.g. "Academic Coordinator") that is
+     * granted the Attendance module via RBAC still gets bounced from sections
+     * like Settings / devices / policy, because its label isn't in the hardcoded
+     * list. The result was a coordinator who could open Attendance but not its
+     * Settings page.
+     *
+     * We make the RBAC "Attendance" permission the single source of truth for the
+     * whole module: anyone who holds it (enforced in the constructor via
+     * require_permission('Attendance')) may use every Attendance section. Any
+     * caller that somehow reaches here without the permission still falls through
+     * to the base role check. The per-method self::MANAGE_ROLES/MARK_ROLES/
+     * VIEW_ROLES arguments are retained but no longer restrict RBAC holders.
+     */
+    protected function _require_role(array $allowed, string $action = ''): void
+    {
+        if (has_permission('Attendance')) {
+            return;
+        }
+        parent::_require_role($allowed, $action);
+    }
+
     /** Month names → numbers */
     private $month_map = [
         'January' => 1, 'February' => 2, 'March' => 3, 'April' => 4,
@@ -244,13 +271,17 @@ class Attendance extends MY_Controller
         // Firestore canonical (no RTDB fallback). When upstream Firestore returns
         // empty totals, that is the authoritative result — no roster fallback.
 
-        // Count pending student leave applications
+        // Count pending student leave applications.
+        // [Fix #6] Bounded read (cap 500). This is a dashboard badge, not an audit
+        // total: at extreme scale (>500 pending) it reports the cap rather than an
+        // unbounded scan. Firestore lacks a cheap count without an aggregation query
+        // here, so a bounded cap is the safe trade-off.
         $pendingLeaves = 0;
         try {
             $leaveDocs = $this->fs->schoolWhere('leaveApplications', [
                 ['status',        '==', 'pending'],
                 ['applicantType', '==', 'student'],
-            ]);
+            ], null, 'ASC', 500);
             $pendingLeaves = count($leaveDocs);
         } catch (\Exception $e) {
             log_message('error', 'Attendance::dashboard_stats pendingLeaves count failed: ' . $e->getMessage());
@@ -349,6 +380,20 @@ class Attendance extends MY_Controller
         $this->_require_role(self::MANAGE_ROLES, 'att_settings');
         $this->load->view('include/header');
         $this->load->view('attendance/settings');
+        $this->load->view('include/footer');
+    }
+
+    /**
+     * Audit Log page — searchable trail of every attendance mark/edit and the
+     * reason behind it. Data is fetched client-side from fetch_audit_logs.
+     * This is the ONLY surface for S2 "edit with reason" saves; before it the
+     * reason was written to attendanceAuditLog but had no viewer.
+     */
+    public function audit()
+    {
+        $this->_require_role(self::MANAGE_ROLES, 'attendance/audit');
+        $this->load->view('include/header');
+        $this->load->view('attendance/audit');
         $this->load->view('include/footer');
     }
 
@@ -538,6 +583,16 @@ class Attendance extends MY_Controller
         $filterUser   = trim((string) $this->input->post('user'));
         $filterClass  = trim((string) $this->input->post('class'));
         $filterTarget = trim((string) $this->input->post('target'));
+        // Free-text search box (matches student id/name, class, section, reason,
+        // acting user, action) — resolved client-of-endpoint via the enrichment
+        // + haystack match below.
+        $filterSearch = strtolower(trim((string) $this->input->post('search')));
+
+        // Resolve targetId/userId → display name once (students + staff maps) so
+        // the audit view can search BY NAME and show who did what instead of bare
+        // IDs. The endpoint used to return only raw IDs, so an admin couldn't tell
+        // which student a mark/reason belonged to or which teacher entered it.
+        $nameMaps = $this->_audit_name_maps();
 
         // Read exclusively from Firestore attendanceAuditLog (schoolId-scoped +
         // yearMonth==). Canonical schema only — no dual-field bridge. The POST
@@ -567,6 +622,35 @@ class Attendance extends MY_Controller
                 if ($filterTarget && (string) ($entry['targetId'] ?? '') !== $filterTarget) continue;
 
                 if ($logId !== '') $entry['log_id'] = $logId;
+
+                // Enrich with display names for the target (student/staff) and
+                // the acting user, so the UI can show names and search by them.
+                $tType = (string) ($entry['targetType'] ?? 'student');
+                $tId   = (string) ($entry['targetId'] ?? '');
+                $uId   = (string) ($entry['userId'] ?? '');
+                $entry['targetName'] = ($tType === 'staff')
+                    ? ($nameMaps['staff'][$tId] ?? '')
+                    : ($nameMaps['students'][$tId] ?? ($nameMaps['staff'][$tId] ?? ''));
+                $entry['userName'] = $nameMaps['staff'][$uId]
+                    ?? ($nameMaps['students'][$uId] ?? '');
+
+                // Free-text search across id / name / class / section / reason /
+                // user / action / date (case-insensitive substring).
+                if ($filterSearch !== '') {
+                    $hay = strtolower(implode(' ', [
+                        $tId,
+                        (string) $entry['targetName'],
+                        (string) ($entry['className'] ?? ''),
+                        (string) ($entry['section'] ?? ''),
+                        (string) ($entry['reason'] ?? ''),
+                        $uId,
+                        (string) $entry['userName'],
+                        (string) ($entry['action'] ?? ''),
+                        (string) ($entry['date'] ?? ''),
+                    ]));
+                    if (strpos($hay, $filterSearch) === false) continue;
+                }
+
                 $logs[] = $entry;
             }
         }
@@ -593,6 +677,50 @@ class Attendance extends MY_Controller
                 'total_pages' => (int) ceil($total / $limit),
             ],
         ]);
+    }
+
+    /**
+     * Build one-shot id→name maps for students and staff (school-scoped), used
+     * to enrich audit rows so the log shows/searches by name rather than raw
+     * IDs. Tolerant of the mixed field casing across the two collections.
+     * Best-effort: a read failure yields an empty map (rows fall back to IDs).
+     *
+     * @return array{students: array<string,string>, staff: array<string,string>}
+     */
+    private function _audit_name_maps(): array
+    {
+        $students = [];
+        $staff    = [];
+
+        try {
+            foreach ($this->fs->schoolWhere('students', []) as $doc) {
+                $d = is_array($doc) ? ($doc['data'] ?? $doc) : null;
+                if (!is_array($d)) continue;
+                $name = (string) ($d['Name'] ?? $d['name'] ?? '');
+                if ($name === '') continue;
+                foreach ([$d['User Id'] ?? null, $d['studentId'] ?? null, $d['userId'] ?? null] as $k) {
+                    if (is_string($k) && $k !== '') $students[$k] = $name;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', '_audit_name_maps students read failed: ' . $e->getMessage());
+        }
+
+        try {
+            foreach ($this->fs->schoolWhere('staff', []) as $doc) {
+                $d = is_array($doc) ? ($doc['data'] ?? $doc) : null;
+                if (!is_array($d)) continue;
+                $name = (string) ($d['name'] ?? $d['Name'] ?? '');
+                if ($name === '') continue;
+                foreach ([$d['staffId'] ?? null, $d['User Id'] ?? null, $d['userId'] ?? null, $d['id'] ?? null] as $k) {
+                    if (is_string($k) && $k !== '') $staff[$k] = $name;
+                }
+            }
+        } catch (\Exception $e) {
+            log_message('error', '_audit_name_maps staff read failed: ' . $e->getMessage());
+        }
+
+        return ['students' => $students, 'staff' => $staff];
     }
 
     /**
@@ -2241,7 +2369,7 @@ class Attendance extends MY_Controller
         $sched = [];
 
         // Shift times (HH:MM). latestCheckIn is an OPTIONAL hard cutoff ('' = none).
-        foreach (['shiftStart', 'shiftEnd', 'earlyOutBefore', 'latestCheckIn'] as $k) {
+        foreach (['shiftStart', 'shiftEnd', 'earlyOutBefore', 'latestCheckIn', 'earliestCheckIn'] as $k) {
             $v = (string) ($schedIn[$k] ?? '');
             if ($v !== '' && !preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $v)) {
                 return $this->json_error("Invalid time for {$k} (expected HH:MM).");
@@ -2274,7 +2402,7 @@ class Attendance extends MY_Controller
         // grace carried, optional hard latest-check-in, NO check-out gating.
         $shiftStart = $sched['shiftStart'] ?? '09:00';
         $derivedWindows = [
-            'earliestCheckIn' => '00:00',
+            'earliestCheckIn' => $sched['earliestCheckIn'] ?? '00:00',
             'lateThreshold'   => $shiftStart,
             'gracePeriodMin'  => $grace,
             'latestCheckIn'   => $sched['latestCheckIn'] ?? '23:59',
@@ -4068,14 +4196,22 @@ class Attendance extends MY_Controller
             }
             $conditions[] = ['applicantType', '==', 'student'];
 
-            $docs = $this->fs->schoolWhere('leaveApplications', $conditions);
+            // [Fix #6] Bounded read (cap 500) + server-side ordering by appliedAt.
+            // Fall back to an unordered bounded read if the composite index for
+            // (status/applicantType + appliedAt) isn't deployed, so the page never
+            // hard-fails. The PHP usort below still guarantees final ordering.
+            try {
+                $docs = $this->fs->schoolWhere('leaveApplications', $conditions, 'appliedAt', 'DESC', 500);
+            } catch (\Exception $eOrder) {
+                $docs = $this->fs->schoolWhere('leaveApplications', $conditions, null, 'ASC', 500);
+            }
         } catch (\Exception $e) {
             return $this->json_error('Failed to fetch leave applications: ' . $e->getMessage());
         }
 
         $leaves = [];
         foreach ($docs as $entry) {
-            $d = $entry['data'] ?? $entry;
+            // [Fix #10] Removed dead duplicate $d assignment.
             $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
             $id = is_array($entry) ? ($d['id'] ?? '') : '';
             if (!is_array($d)) continue;
@@ -4084,12 +4220,9 @@ class Attendance extends MY_Controller
             if ($classFilter && ($d['className'] ?? '') !== Firestore_service::classKey($classFilter)) continue;
             if ($sectionFilter && ($d['section'] ?? '') !== Firestore_service::sectionKey($sectionFilter)) continue;
 
-            // Teachers: only show leaves for their assigned classes
-            if (!$this->_is_admin_role()) {
-                $cls = $d['className'] ?? '';
-                $sec = str_replace('Section ', '', $d['section'] ?? '');
-                if (!$this->_teacher_can_access($cls, "Section {$sec}")) continue;
-            }
+            // [Fix #7] Scope to assigned classes for ALL non-admin teaching roles
+            // (not just the literal 'Teacher' role) via their actual assignments.
+            if (!$this->_leave_can_access($d['className'] ?? '', $d['section'] ?? '')) continue;
 
             $leaves[] = [
                 'id'             => $id,
@@ -4142,7 +4275,17 @@ class Attendance extends MY_Controller
             $leave = $this->fs->get('leaveApplications', $leaveId);
         } catch (\Exception $e) {}
         if (!is_array($leave)) return $this->json_error('Leave application not found.');
-        if (($leave['status'] ?? '') !== 'pending') return $this->json_error('Leave is not in pending status.');
+
+        // [Fix C2] Cross-school IDOR guard — a leave from another tenant must be
+        // indistinguishable from "not found", BEFORE any status/stamp/push.
+        if (($leave['schoolId'] ?? '') !== $this->school_id) {
+            return $this->json_error('Leave application not found.', 404);
+        }
+
+        // Status compared case-insensitively (accept legacy CapitalCase docs).
+        if (strtolower((string) ($leave['status'] ?? '')) !== 'pending') {
+            return $this->json_error('Leave is not in pending status.');
+        }
 
         $studentId = $leave['applicantId'] ?? '';
         $startDate = $leave['startDate'] ?? '';
@@ -4154,6 +4297,27 @@ class Attendance extends MY_Controller
             return $this->json_error('Invalid leave application data.');
         }
 
+        // [Fix #5] Strict date validation — reject unparseable/out-of-order/over-cap
+        // ranges with a clean error so a bad date can NEVER reach the stamp path as
+        // a 500. createFromFormat is lenient (rolls over), so also require the
+        // round-trip to equal the input.
+        $sDt = \DateTime::createFromFormat('Y-m-d', $startDate);
+        $eDt = \DateTime::createFromFormat('Y-m-d', $endDate);
+        if (!$sDt || !$eDt
+            || $sDt->format('Y-m-d') !== $startDate
+            || $eDt->format('Y-m-d') !== $endDate) {
+            return $this->json_error('Leave has invalid start/end dates.');
+        }
+        $sDt->setTime(0, 0, 0);
+        $eDt->setTime(0, 0, 0);
+        if ($eDt < $sDt) {
+            return $this->json_error('End date cannot be before start date.');
+        }
+        $spanDays = (int) $sDt->diff($eDt)->days + 1; // inclusive
+        if ($spanDays > 60) {
+            return $this->json_error('Leave span exceeds the 60-day limit.');
+        }
+
         // Past-date sanity guard — reject approval when start date is older than 60 days.
         // Stops late-night data tampering on ancient leave records; legitimate
         // backdated cases should go through the correction-request flow.
@@ -4162,31 +4326,63 @@ class Attendance extends MY_Controller
             return $this->json_error('Cannot approve leave whose start date is older than 60 days.');
         }
 
-        // Teachers can only approve for their assigned classes
-        if (!$this->_is_admin_role()) {
-            $sec = str_replace('Section ', '', $section);
-            if (!$this->_teacher_can_access($className, "Section {$sec}")) {
-                return $this->json_error('You are not assigned to this class/section.', 403);
-            }
+        // [Fix #7] Scope to assigned classes for ALL non-admin teaching roles
+        // (not just the literal 'Teacher' role). Admin roles bypass.
+        if (!$this->_leave_can_access($className, $section)) {
+            return $this->json_error('You are not assigned to this class/section.', 403);
+        }
+
+        // [Contract §6] No self-approval — approver id must differ from applicant id.
+        if ((string) $this->admin_id !== '' && (string) $this->admin_id === (string) $studentId) {
+            return $this->json_error('You cannot approve your own leave.', 403);
         }
 
         $approverName = $this->admin_name ?? $this->session->userdata('user_id') ?? 'system';
 
-        // 1. Update leave status in Firestore
+        // [Fix #4] Duplicate-approval / concurrency guard — re-read immediately
+        // before the status flip and confirm the leave is STILL pending. This
+        // narrows the window in which two concurrent approvals both flip + push.
+        // (Residual: a true CAS-on-leave-doc flip would fully close it; the
+        // authoritative summary write below already uses a CAS precondition.)
+        try {
+            $fresh = $this->fs->get('leaveApplications', $leaveId);
+        } catch (\Exception $e) { $fresh = null; }
+        if (!is_array($fresh) || strtolower((string) ($fresh['status'] ?? '')) !== 'pending') {
+            return $this->json_error('Leave has already been processed.');
+        }
+
+        // [Fix H7] Flip status to approved FIRST but WITHOUT attendanceStamped=true.
+        // If the stamp write fails below, the doc keeps attendanceStamped=false so
+        // the reconciler (_process_approved_leaves) picks it up and retries.
+        // attendanceStamped is set true ONLY after a confirmed-successful stamp.
         try {
             $this->fs->set('leaveApplications', $leaveId, [
                 'status'            => 'approved',
                 'approvedBy'        => $approverName,
                 'approvedAt'        => date('c'),
                 'remarks'           => $remarks,
-                'attendanceStamped' => true,  // admin stamps immediately below
+                'attendanceStamped' => false,
             ], true);
         } catch (\Exception $e) {
             return $this->json_error('Failed to update leave status: ' . $e->getMessage());
         }
 
-        // 2. Update attendance dayWise — mark "L" for each day in the range
-        $daysUpdated = $this->_stamp_leave_on_attendance($studentId, $className, $section, $startDate, $endDate);
+        // [Fix H6/H7] Stamp "L" for each working, unmarked day in the range.
+        // Returns ['ok'=>bool,'days'=>int]; we honour the success flag.
+        $stamp       = $this->_stamp_leave_on_attendance($studentId, $className, $section, $startDate, $endDate);
+        $daysUpdated = (int) ($stamp['days'] ?? 0);
+
+        if (!empty($stamp['ok'])) {
+            // Confirmed-successful stamp → NOW it is safe to mark stamped.
+            try {
+                $this->fs->set('leaveApplications', $leaveId, ['attendanceStamped' => true], true);
+            } catch (\Exception $e) {
+                log_message('error', "Leave {$leaveId} stamped OK but attendanceStamped flag write failed: " . $e->getMessage());
+            }
+        } else {
+            // Stamp failed — leave attendanceStamped=false so the reconciler retries.
+            log_message('error', "Leave {$leaveId} approved but attendance stamp failed; reconciler will retry.");
+        }
 
         // 3. Fire push notification to parent
         try {
@@ -4230,7 +4426,22 @@ class Attendance extends MY_Controller
             $leave = $this->fs->get('leaveApplications', $leaveId);
         } catch (\Exception $e) {}
         if (!is_array($leave)) return $this->json_error('Leave application not found.');
-        if (($leave['status'] ?? '') !== 'pending') return $this->json_error('Leave is not in pending status.');
+
+        // [Fix C2] Cross-school IDOR guard — reject before any status/push change.
+        if (($leave['schoolId'] ?? '') !== $this->school_id) {
+            return $this->json_error('Leave application not found.', 404);
+        }
+
+        // Status compared case-insensitively (accept legacy CapitalCase docs).
+        if (strtolower((string) ($leave['status'] ?? '')) !== 'pending') {
+            return $this->json_error('Leave is not in pending status.');
+        }
+
+        // [Fix #7] Scope to assigned classes for ALL non-admin teaching roles
+        // (the reject path previously had NO class scoping at all).
+        if (!$this->_leave_can_access($leave['className'] ?? '', $leave['section'] ?? '')) {
+            return $this->json_error('You are not assigned to this class/section.', 403);
+        }
 
         $studentId = $leave['applicantId'] ?? '';
         $rejecterName = $this->admin_name ?? $this->session->userdata('user_id') ?? 'system';
@@ -4272,17 +4483,31 @@ class Attendance extends MY_Controller
      * Handles leaves that span multiple months by updating each month's
      * attendanceSummary doc separately.
      *
-     * @return int Number of days updated
+     * @return array{ok:bool,days:int}  ok=false if ANY month's summary write
+     *         failed (so callers can withhold attendanceStamped=true and let the
+     *         reconciler retry). days = number of dayWise cells actually flipped.
      */
     private function _stamp_leave_on_attendance(
         string $studentId, string $className, string $section,
         string $startDate, string $endDate
-    ): int {
-        $start = new \DateTime($startDate);
-        $end   = new \DateTime($endDate);
-        if ($start > $end) return 0;
+    ): array {
+        // [Fix #5] Never let unparseable/out-of-order dates reach the write path —
+        // return a clean no-op failure instead of throwing (the `new \DateTime()`
+        // of an invalid string would 500). Callers already validate; this is
+        // defense-in-depth for the reconciler path too.
+        $start = \DateTime::createFromFormat('Y-m-d', $startDate);
+        $end   = \DateTime::createFromFormat('Y-m-d', $endDate);
+        if (!$start || !$end
+            || $start->format('Y-m-d') !== $startDate
+            || $end->format('Y-m-d') !== $endDate) {
+            return ['ok' => false, 'days' => 0];
+        }
+        $start->setTime(0, 0, 0);
+        $end->setTime(0, 0, 0);
+        if ($start > $end) return ['ok' => false, 'days' => 0];
 
         $updated = 0;
+        $allOk   = true;
         $current = clone $start;
 
         // Group days by month
@@ -4301,48 +4526,90 @@ class Attendance extends MY_Controller
             $current->modify('+1 day');
         }
 
-        // For each month, read → modify → write the dayWise string
+        $hasCas = isset($this->firebase) && method_exists($this->firebase, 'firestoreGet');
+
+        // For each month, read → modify → write the dayWise string.
         foreach ($monthDays as $monthKey => $info) {
-            $docId = $this->fs->docId2($studentId, $monthKey);
+            $docId       = $this->fs->docId2($studentId, $monthKey);
             $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $info['monthNum'], $info['year']);
 
-            // Read existing summary
-            $doc = null;
-            try { $doc = $this->fs->get('attendanceSummary', $docId); } catch (\Exception $e) {}
+            // [Fix #2/H6] Weekend + holiday calendar from the SAME canonical source
+            // the marking paths use (Sundays + calendarEvents holidays). Days keyed
+            // here must NEVER be stamped 'L'.
+            $nonWorking = $this->_resolve_non_working_days($info['monthNum'], $info['year']);
 
-            $dayWise = ($doc && isset($doc['dayWise']) && is_string($doc['dayWise']))
-                ? str_pad($doc['dayWise'], $daysInMonth, 'V')
-                : str_repeat('V', $daysInMonth);
+            // [Fix #4] CAS read-modify-write retry loop (mirrors _syncDailyToFirestore)
+            // so a concurrent attendance writer converging on the same summary doc
+            // can't be silently clobbered by this stamp.
+            $maxTries = $hasCas ? 4 : 1;
+            $monthOk  = false;
+            for ($try = 0; $try < $maxTries; $try++) {
+                $doc = null;
+                $precondition = null;
+                if ($hasCas) {
+                    try { $doc = $this->firebase->firestoreGet('attendanceSummary', $docId); } catch (\Exception $e) {}
+                    $ut = is_array($doc) ? (string) ($doc['__updateTime'] ?? '') : '';
+                    $precondition = ($ut !== '') ? ['updateTime' => $ut] : ['exists' => false];
+                } else {
+                    try { $doc = $this->fs->get('attendanceSummary', $docId); } catch (\Exception $e) {}
+                }
 
-            // Stamp "L" for each leave day (skip holidays — H stays as H)
-            $changed = false;
-            foreach ($info['days'] as $day) {
-                if ($day < 1 || $day > $daysInMonth) continue;
-                $existing = $dayWise[$day - 1];
-                if ($existing === 'H') continue; // don't overwrite holidays
-                $dayWise[$day - 1] = 'L';
-                $changed = true;
-                $updated++;
+                $dayWise = ($doc && is_string($doc['dayWise'] ?? null) && $doc['dayWise'] !== '')
+                    ? str_pad($doc['dayWise'], $daysInMonth, 'V')
+                    : str_repeat('V', $daysInMonth);
+
+                // [Fix H6] Stamp 'L' ONLY on an unmarked ('V' or blank) WORKING day.
+                // Never overwrite a real mark (P/A/T/H/L); never a weekend/holiday.
+                $changed      = false;
+                $monthUpdated = 0;
+                foreach ($info['days'] as $day) {
+                    if ($day < 1 || $day > $daysInMonth) continue;
+                    if (isset($nonWorking[$day])) continue;                 // weekend/holiday
+                    $existing = $dayWise[$day - 1];
+                    if ($existing !== 'V' && $existing !== ' ') continue;   // only overwrite unmarked
+                    $dayWise[$day - 1] = 'L';
+                    $changed = true;
+                    $monthUpdated++;
+                }
+
+                if (!$changed) { $monthOk = true; break; } // nothing to do = success
+
+                $name = (string) ($doc['studentName'] ?? '');
+                $ok = $this->_syncStudentSummaryToFirestore(
+                    $studentId, $className, $section,
+                    $info['monthNum'], $info['year'], $dayWise, $name, $precondition
+                );
+                if ($ok) { $updated += $monthUpdated; $monthOk = true; break; }
+                // Precondition conflict (or transient) — brief backoff, then re-read.
+                if ($try < $maxTries - 1) usleep(40000 * ($try + 1));
             }
-
-            if (!$changed) continue;
-
-            // Recompute counts
-            $monthName = date('F', mktime(0, 0, 0, $info['monthNum'], 1, $info['year']));
-            $attKey = "{$monthName} {$info['year']}";
-
-            // Use the helper to write (handles counts + percentage + Firestore + RTDB mirror)
-            $this->_syncStudentSummaryToFirestore(
-                $studentId, $className, $section,
-                $info['monthNum'], $info['year'], $dayWise,
-                $doc['studentName'] ?? ''
-            );
-
-            // Student-attendance RTDB mirror REMOVED — Firestore summary
-            // (written above via _syncStudentSummaryToFirestore) is canonical.
+            if (!$monthOk) $allOk = false;
         }
 
-        return $updated;
+        return ['ok' => $allOk, 'days' => $updated];
+    }
+
+    /**
+     * [Fix #7] Leave-scope check that binds ALL non-admin teaching roles to their
+     * class assignments — not just the literal 'Teacher' role that
+     * MY_Controller::_teacher_can_access() scopes.
+     *
+     * A 'Class Teacher' (or any other teaching-role string) previously slipped
+     * through _teacher_can_access() (which no-ops for role !== 'Teacher') and
+     * could act on any class. Here scoping is by ACTUAL assignments: an admin-level
+     * role bypasses; any non-admin user WITH teaching assignments is restricted to
+     * exactly those class+sections; a non-admin user with NO assignments (e.g. an
+     * Academic Coordinator / HR Manager granted the module) keeps broad access,
+     * preserving prior behaviour and not locking them out.
+     */
+    private function _leave_can_access(string $className, string $section): bool
+    {
+        if ($this->_is_admin_role()) return true;
+        $assignments = $this->_get_teacher_assignments();
+        if (empty($assignments)) return true; // broad, non-class-scoped role
+        $sec   = str_replace('Section ', '', $section);
+        $csKey = $this->_cs_norm($className, "Section {$sec}");
+        return isset($assignments[$csKey]);
     }
 
     /**
@@ -4755,16 +5022,23 @@ class Attendance extends MY_Controller
 
     private function _process_approved_leaves(): void
     {
+        // [Fix #6] Bounded read (cap 200 per pass) + server-side ordering; fall
+        // back to unordered bounded read if the composite index isn't deployed.
+        $conds = [
+            ['status',            '==', 'approved'],
+            ['attendanceStamped', '==', false],
+            ['applicantType',     '==', 'student'],
+        ];
         try {
-            $docs = $this->fs->schoolWhere('leaveApplications', [
-                ['status',            '==', 'approved'],
-                ['attendanceStamped', '==', false],
-                ['applicantType',     '==', 'student'],
-            ]);
-        } catch (\Exception $e) { return; }
+            $docs = $this->fs->schoolWhere('leaveApplications', $conds, 'appliedAt', 'DESC', 200);
+        } catch (\Exception $e) {
+            try {
+                $docs = $this->fs->schoolWhere('leaveApplications', $conds, null, 'ASC', 200);
+            } catch (\Exception $e2) { return; }
+        }
 
         foreach ($docs as $entry) {
-            $d = $entry['data'] ?? $entry;
+            // [Fix #10] Removed dead duplicate $d assignment.
             $d = is_array($entry) ? ($entry['data'] ?? $entry) : null;
             $docId = is_array($entry) ? ($d['id'] ?? '') : '';
             if (!is_array($d) || $docId === '') continue;
@@ -4777,8 +5051,10 @@ class Attendance extends MY_Controller
 
             if ($studentId === '' || $startDate === '' || $endDate === '') continue;
 
-            // Stamp "L" on attendance dayWise
-            $this->_stamp_leave_on_attendance($studentId, $className, $section, $startDate, $endDate);
+            // [Fix H7] Stamp "L" — only mark attendanceStamped + push on a
+            // confirmed-successful stamp, so a failed stamp is retried next pass.
+            $stamp = $this->_stamp_leave_on_attendance($studentId, $className, $section, $startDate, $endDate);
+            if (empty($stamp['ok'])) continue;
 
             // Fire push to parent
             try {
@@ -7170,6 +7446,48 @@ class Attendance extends MY_Controller
     /* ──────────────────────  CORRECTION  ────────────────────── */
 
     /**
+     * Build a per-day-doc-shaped context for a student+date from the per-month
+     * attendanceSummary when no per-day `attendance` doc exists. Lets a teacher
+     * file a correction for any day the History grid shows (which is driven by
+     * summary.dayWise), not only days that already have a per-day doc.
+     *
+     * Returns the same keys correction_submit reads off a per-day doc
+     * (status/late/lateMinutes/className/section/studentName), or null when the
+     * student has no summary for that month at all.
+     *
+     * @return array<string,mixed>|null
+     */
+    private function _correction_context_from_summary(string $studentId, string $date): ?array
+    {
+        $ym  = substr($date, 0, 7);                 // "2026-07"
+        $day = (int) substr($date, 8, 2);           // 1..31
+        if ($day < 1) return null;
+
+        $sumId = "{$this->school_id}_{$studentId}_{$ym}";
+        $sum   = $this->fs->get('attendanceSummary', $sumId);
+        if (!is_array($sum)) return null;
+
+        // Current mark = the dayWise char for this day (if any). 'T' encodes a
+        // late present; P/A/L map straight through; anything else (V/H/-/blank/
+        // out-of-range) is treated as "unmarked" so the correction simply sets it.
+        $dayWise = (string) ($sum['dayWise'] ?? '');
+        $char    = ($day <= strlen($dayWise)) ? strtoupper($dayWise[$day - 1]) : '';
+        $status  = '';
+        $late    = false;
+        if ($char === 'T')            { $status = 'P'; $late = true; }
+        elseif (in_array($char, ['P', 'A', 'L'], true)) { $status = $char; }
+
+        return [
+            'status'      => $status,
+            'late'        => $late,
+            'lateMinutes' => 0,
+            'className'   => (string) ($sum['className']   ?? ''),
+            'section'     => (string) ($sum['section']     ?? ''),
+            'studentName' => (string) ($sum['studentName'] ?? $studentId),
+        ];
+    }
+
+    /**
      * POST /attendance/correction/submit
      * Body: studentId, date, requestedMark{status,late?,lateMinutes?}, reason (≥10)
      * Teacher must be assigned to the student's class+section.
@@ -7207,11 +7525,25 @@ class Attendance extends MY_Controller
         if ($reqLm > 180) $reqLm = 180;
         if ($reqStatus !== 'P') { $reqLate = false; $reqLm = 0; }
 
-        // Fetch existing attendance doc for context (and ownership check)
+        // Fetch existing per-day attendance doc for context (+ ownership check).
+        // FALLBACK: the History grid a teacher corrects from is rendered off the
+        // per-MONTH attendanceSummary.dayWise, and many past days have NO per-day
+        // `attendance` doc (attendance was never taken that day, or only ever
+        // summarised). Hard-requiring the per-day doc made every such correction
+        // fail with "No attendance record" even though the grid clearly showed a
+        // mark — and re-marking the month in admin didn't help because those
+        // paths converge the summary, not necessarily a per-day doc for each day.
+        // So when the per-day doc is absent, derive the current mark + class/
+        // section from the month summary. On approval,
+        // _privileged_write_attendance writes the per-day doc and re-converges
+        // the summary, so the record self-heals.
         $perDayId = "{$this->school_id}_{$date}_{$studentId}";
         $cur      = $this->fs->get('attendance', $perDayId);
         if (!is_array($cur)) {
-            return $this->json_error('No attendance record exists for that student on that date.', 404);
+            $cur = $this->_correction_context_from_summary($studentId, $date);
+        }
+        if (!is_array($cur)) {
+            return $this->json_error('No attendance data exists for that student in that month — take attendance for the class first, then file a correction.', 404);
         }
         $className   = (string) ($cur['className']   ?? '');
         $section     = (string) ($cur['section']     ?? '');
@@ -7449,7 +7781,10 @@ class Attendance extends MY_Controller
             'requests' => $out,
             'batches'  => $batches,
             'count'    => count($out),
-            'status'   => $statusFilter,
+            // NB: key is 'filter', NOT 'status' — json_success() merges
+            // ['status'=>'success'] with this array, so a 'status' key here would
+            // overwrite the success marker (the client then read res.status!='success').
+            'filter'   => $statusFilter,
         ]);
     }
 
@@ -7744,6 +8079,34 @@ class Attendance extends MY_Controller
             $reasonStr, $reqId
         )) {
             return $this->json_error('Failed to apply correction.', 500);
+        }
+
+        // PARENT NOTIFICATION — an approved correction that lands on Absent or
+        // Tardy must notify the parent, exactly like the daily save() path. Before
+        // this, flipping a child to Absent via a correction was silent (only the
+        // mark/save/bulk paths notified). Reuse the SAME per-student event helper
+        // so the FCM channel + notifications doc + dedup contract are identical;
+        // the per-student dedup (keyed student|date|mark) makes a re-approval of
+        // the same mark a no-op. Best-effort: a notify failure never fails the
+        // already-applied correction.
+        //
+        // GUARD: only for TODAY's corrections. _fire_single_student_event stamps
+        // the event with the SERVER's current date (it was built for the today-only
+        // save path), so firing it for a back-dated correction would tell the
+        // parent the child was absent *today* — wrong. Past-date corrections are
+        // silently applied (the mark + summary still update everywhere).
+        $notifMark = $newLate ? 'T' : $newStatus;
+        if (($notifMark === 'A' || $notifMark === 'T') && $date === $this->_server_today()) {
+            try {
+                $dt2     = \DateTime::createFromFormat('Y-m-d', $date);
+                $attKey2 = $dt2 ? $dt2->format('F Y') : date('F Y', strtotime($date));
+                $dayNum2 = $dt2 ? (int) $dt2->format('j') : (int) date('j', strtotime($date));
+                $this->_fire_single_student_event(
+                    $studentId, $className, $section, $notifMark, $dayNum2, $attKey2
+                );
+            } catch (\Exception $e) {
+                log_message('error', 'correction_decide notify failed: ' . $e->getMessage());
+            }
         }
 
         $this->fs->set('attendanceCorrectionRequests', $reqId, [

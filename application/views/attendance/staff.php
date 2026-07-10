@@ -24,6 +24,9 @@
     --att-t: #2563eb;
     --att-h: #7c3aed;
     --att-v: #9ca3af;
+    --att-m: #0891b2;   /* half-day */
+    --att-w: #4f46e5;   /* work-on-off (extra) */
+    --att-o: #64748b;   /* weekly-off (rest) */
 
     --att-p-bg: rgba(22,163,74,.15);
     --att-a-bg: rgba(220,38,38,.15);
@@ -31,6 +34,9 @@
     --att-t-bg: rgba(37,99,235,.15);
     --att-h-bg: rgba(124,58,237,.15);
     --att-v-bg: rgba(156,163,175,.12);
+    --att-m-bg: rgba(8,145,178,.15);
+    --att-w-bg: rgba(79,70,229,.15);
+    --att-o-bg: rgba(100,116,139,.14);
 
     --att-dirty: rgba(234,179,8,.45);
     --att-sunday: rgba(239,68,68,.07);
@@ -177,6 +183,9 @@
 .att-cell[data-v="T"] { background: var(--att-t-bg); color: var(--att-t); }
 .att-cell[data-v="H"] { background: var(--att-h-bg); color: var(--att-h); }
 .att-cell[data-v="V"] { background: var(--att-v-bg); color: var(--att-v); }
+.att-cell[data-v="M"] { background: var(--att-m-bg); color: var(--att-m); }
+.att-cell[data-v="W"] { background: var(--att-w-bg); color: var(--att-w); }
+.att-cell[data-v="O"] { background: var(--att-o-bg); color: var(--att-o); }
 
 .att-cell .att-clock {
     position: absolute; top: -3px; right: -3px; width: 12px; height: 12px;
@@ -353,6 +362,9 @@
             <span class="att-legend-item"><span class="att-legend-dot" style="background:var(--att-t);">T</span> Late</span>
             <span class="att-legend-item"><span class="att-legend-dot" style="background:var(--att-h);">H</span> Holiday</span>
             <span class="att-legend-item"><span class="att-legend-dot" style="background:var(--att-v);">V</span> Vacant</span>
+            <span class="att-legend-item"><span class="att-legend-dot" style="background:var(--att-m);">M</span> Half-day</span>
+            <span class="att-legend-item"><span class="att-legend-dot" style="background:var(--att-w);">W</span> Work-off</span>
+            <span class="att-legend-item"><span class="att-legend-dot" style="background:var(--att-o);">O</span> Weekly-off</span>
         </div>
     </div>
 
@@ -455,7 +467,10 @@
         return idx >= 0 ? idx : 0;
     }
 
-    var CYCLE = ['V','P','A','L','T','H'];
+    // Click-cycle for manual marking. M (half-day), W (work-on-off), O
+    // (weekly-off) were added so an admin can set them by hand, just like
+    // P/A/L — the backend save_staff_attendance already accepts all of these.
+    var CYCLE = ['V','P','A','L','T','H','M','W','O'];
 
     function nextMark(v) {
         var i = CYCLE.indexOf(v);

@@ -1368,10 +1368,64 @@ service cloud.firestore {
     }
 
     // ── Leave Applications ───────────────────────────────────────
+    // Hardened 2026-07-10 (Leave watertight pass). This ONE collection
+    // holds three request shapes (student leave, staff leave, balance/
+    // audit ledgers written by the PHP service account). The prior rule
+    // (read/create/update: isSameSchool) allowed (a) any same-school user
+    // to read EVERY student's leave reason + all staff payroll-leave, and
+    // (b) any client to self-approve by writing status:'approved' directly
+    // — which the PHP poller then stamped as an authoritative attendance
+    // 'L'. Both closed here, mirroring the attendanceRegularizations model:
+    // clients may only CREATE a 'pending' request they own and CANCEL
+    // their own; APPROVE/REJECT is a same-school STAFF action on someone
+    // ELSE's request (no self-approval) and can never pre-stamp attendance.
+    // All immutable identity/date fields are frozen across updates. Balance
+    // and audit docs (no applicantId, applicantType not student/staff) fall
+    // through every client branch → writable only by the service account.
+    //
+    // Ownership is enforceable because auth.uid == applicantId for BOTH
+    // cohorts: parent-app uid == studentId (see isOwnStudent, ~L173) and
+    // staff uid == staffId (see attendanceRegularizations create, ~L320).
     match /leaveApplications/{docId} {
-      allow read: if isSameSchool();
-      allow create: if isAuth() && isSameSchoolWrite();
-      allow update: if isAuth() && isSameSchool();
+      // Staff see the whole school (student-leave queue + own balance);
+      // students/parents see ONLY their own applications.
+      allow read: if isSameSchool()
+                  && ( isStaff() || resource.data.applicantId == request.auth.uid );
+
+      // Only a brand-new 'pending' request the caller owns, never
+      // pre-approved / pre-stamped. Staff-type requires an actual staff
+      // claim (blocks a parent minting a paid staff leave).
+      allow create: if isSameSchoolWrite()
+                    && request.resource.data.status == 'pending'
+                    && request.resource.data.attendanceStamped != true
+                    && request.resource.data.applicantId == request.auth.uid
+                    && (
+                         ( request.resource.data.applicantType == 'staff' && isStaff() )
+                         || request.resource.data.applicantType == 'student'
+                       );
+
+      // Two legal transitions only; identity + dates are frozen.
+      allow update: if isSameSchool()
+                    && request.resource.data.schoolId == resource.data.schoolId
+                    && request.resource.data.applicantId == resource.data.applicantId
+                    && request.resource.data.applicantType == resource.data.applicantType
+                    && request.resource.data.startDate == resource.data.startDate
+                    && request.resource.data.endDate == resource.data.endDate
+                    && (
+                         // (a) STAFF decides someone ELSE's pending request.
+                         //     No self-approval; cannot pre-stamp attendance
+                         //     (the service-account poller owns the 'L' stamp).
+                         ( isStaff()
+                           && resource.data.applicantId != request.auth.uid
+                           && resource.data.status == 'pending'
+                           && request.resource.data.status in ['approved', 'rejected']
+                           && request.resource.data.attendanceStamped != true )
+                         // (b) OWNER cancels their own pending/approved request.
+                         || ( resource.data.applicantId == request.auth.uid
+                              && resource.data.status in ['pending', 'approved']
+                              && request.resource.data.status == 'cancelled' )
+                       );
+
       allow delete: if isAdmin();
     }
 

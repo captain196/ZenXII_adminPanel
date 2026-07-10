@@ -353,11 +353,40 @@ class Staff_attendance extends MY_Controller
         }
         $times = av_today_times($punchesByDate[$dateISO] ?? []);
 
+        // Approved regularizations → claimed times, keyed by date. A regularized
+        // day never has a physical punch, so its times live only on the request
+        // doc. Overlaying them here is what makes an approved correction visible
+        // (with its time) on the calendar, not just as a status letter.
+        $regByDate = [];
+        try {
+            $regs = $this->fs->schoolWhere('attendanceRegularizations', [
+                ['staffId', '==', $staffId],
+                ['status',  '==', 'approved'],
+            ]);
+            foreach ((array) $regs as $r) {
+                $p = is_array($r['data'] ?? null) ? $r['data'] : (is_array($r) ? $r : []);
+                if (($p['personType'] ?? '') !== 'staff') continue;
+                $d = (string) ($p['date'] ?? '');
+                if ($d === '' || $d < $windowStartISO) continue;
+                $regByDate[$d] = $p; // one approved reg per staff+day (doc id is staff_date)
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'Staff_attendance::me regularizations query failed: ' . $e->getMessage());
+        }
+
         // Enrich each history day with its check-in/out times (null when none).
+        // Physical punches win; an approved regularization fills the gap so the
+        // calendar shows the corrected time on days with no real punch.
         foreach ($history as &$_h) {
             $ht = av_today_times($punchesByDate[$_h['date']] ?? []);
-            $_h['checkInAt']  = $ht['checkInAt'];
-            $_h['checkOutAt'] = $ht['checkOutAt'];
+            $reg = $regByDate[$_h['date']] ?? null;
+            $_h['checkInAt']  = $ht['checkInAt']  ?? null;
+            $_h['checkOutAt'] = $ht['checkOutAt'] ?? null;
+            if ($reg !== null) {
+                if ($_h['checkInAt']  === null && !empty($reg['claimedCheckInAt']))  $_h['checkInAt']  = (string) $reg['claimedCheckInAt'];
+                if ($_h['checkOutAt'] === null && !empty($reg['claimedCheckOutAt'])) $_h['checkOutAt'] = (string) $reg['claimedCheckOutAt'];
+                $_h['regularized'] = true; // let the app badge a corrected day
+            }
         }
         unset($_h);
 

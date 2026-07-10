@@ -944,8 +944,13 @@ class Schools extends MY_Controller
             // else is a cross-tenant probe: reject, log, delete NOTHING.
             $canonicalPrefix = "schools/{$this->school_id}/";
             $legacyPrefix    = "{$this->school_name}/Events/";
-            $ownedByCaller   = ($this->school_id   !== '' && strpos($filePath, $canonicalPrefix) === 0)
-                            || ($this->school_name !== '' && strpos($filePath, $legacyPrefix)    === 0);
+            // Teacher/Parent apps upload gallery media to galleryMedia/{schoolId}/{albumId}/...
+            // (GalleryMediaUploader.kt); this prefix is schoolId-namespaced so the
+            // tenant check still holds. Without it, admins can't delete app-uploaded photos.
+            $appGalleryPrefix = "galleryMedia/{$this->school_id}/";
+            $ownedByCaller   = ($this->school_id   !== '' && strpos($filePath, $canonicalPrefix)  === 0)
+                            || ($this->school_name !== '' && strpos($filePath, $legacyPrefix)     === 0)
+                            || ($this->school_id   !== '' && strpos($filePath, $appGalleryPrefix) === 0);
 
             if (!$ownedByCaller) {
                 // Mirror Homework::CROSS_TENANT_PROBE telemetry pattern.
@@ -1353,6 +1358,8 @@ class Schools extends MY_Controller
         $ownedByCaller = $coverPath !== null && (
             ($this->school_id   !== '' && strpos($coverPath, "schools/{$this->school_id}/") === 0)
             || ($this->school_name !== '' && strpos($coverPath, "{$this->school_name}/Events/") === 0)
+            // App-uploaded gallery media (galleryMedia/{schoolId}/...) — schoolId-namespaced.
+            || ($this->school_id   !== '' && strpos($coverPath, "galleryMedia/{$this->school_id}/") === 0)
         );
         if (!$ownedByCaller) {
             log_message('error', "Schools::setEventCover cross-tenant cover rejected — school=[{$this->school_id}] path=[{$coverPath}]");
