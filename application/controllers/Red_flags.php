@@ -850,11 +850,30 @@ class Red_flags extends MY_Controller
             $this->json_error('Failed to create flag.', 500);
         }
 
-        // pushRequests writer is intentionally NOT invoked from the admin
-        // flow today — the Cloud Function that consumes it is Spark-blocked,
-        // so the doc would be inert and only adds latency to the user's
-        // request. When Blaze is enabled, restore the write here and in
-        // `bulk_resolve` if status changes need to dispatch FCM.
+        // Notify the flagged student's parent — restored now that Cloud
+        // Functions (Blaze) are live and consume `pushRequests`. Mirrors the
+        // Teacher-app producer (RedFlagRepository) so a panel-raised flag pushes
+        // exactly like an app-raised one; the universal dispatcher's FLAG_CREATED
+        // mark targets the single studentId. Best-effort — never block the flag.
+        try {
+            $reqId = $this->school_id . '_flag_' . $flagId;
+            $this->fs->set('pushRequests', $reqId, [
+                'mark'        => 'FLAG_CREATED',
+                'schoolId'    => $this->school_id,
+                'flagId'      => $flagId,
+                'studentId'   => $studentId,
+                'studentName' => $studentName,
+                'severity'    => strtolower($severity),
+                'flagType'    => strtolower($type),
+                'subject'     => $subject,
+                'message'     => $message,
+                'teacherName' => $this->admin_name ?? $this->admin_id,
+                'status'      => 'pending',
+                'createdAt'   => date('c'),
+            ], false);
+        } catch (\Exception $e) {
+            log_message('error', 'red_flag create pushRequests write failed (non-fatal): ' . $e->getMessage());
+        }
 
         log_audit('Red Flags', 'create_flag', $flagId,
             "Created {$severity} {$type} flag for student {$studentId}");
