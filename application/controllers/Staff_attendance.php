@@ -374,17 +374,38 @@ class Staff_attendance extends MY_Controller
             log_message('error', 'Staff_attendance::me regularizations query failed: ' . $e->getMessage());
         }
 
+        // TODAY gets the same approved-regularization override as the history
+        // days below — otherwise a regularization filed + approved for the current
+        // day would fix the calendar (history) but the "Today" card kept showing
+        // the wrong physical-punch time.
+        $todayRegularized = false;
+        $todayReg = $regByDate[$dateISO] ?? null;
+        if ($todayReg !== null) {
+            if (!empty($todayReg['claimedCheckInAt']))  $times['checkInAt']  = (string) $todayReg['claimedCheckInAt'];
+            if (!empty($todayReg['claimedCheckOutAt'])) $times['checkOutAt'] = (string) $todayReg['claimedCheckOutAt'];
+            $todayRegularized = true;
+        }
+
         // Enrich each history day with its check-in/out times (null when none).
-        // Physical punches win; an approved regularization fills the gap so the
-        // calendar shows the corrected time on days with no real punch.
+        // An approved regularization's claimed time overrides the physical punch
+        // (see the override note in the loop); a status-only reg keeps the punch.
         foreach ($history as &$_h) {
             $ht = av_today_times($punchesByDate[$_h['date']] ?? []);
             $reg = $regByDate[$_h['date']] ?? null;
             $_h['checkInAt']  = $ht['checkInAt']  ?? null;
             $_h['checkOutAt'] = $ht['checkOutAt'] ?? null;
             if ($reg !== null) {
-                if ($_h['checkInAt']  === null && !empty($reg['claimedCheckInAt']))  $_h['checkInAt']  = (string) $reg['claimedCheckInAt'];
-                if ($_h['checkOutAt'] === null && !empty($reg['claimedCheckOutAt'])) $_h['checkOutAt'] = (string) $reg['claimedCheckOutAt'];
+                // An approved regularization is a deliberate correction the admin
+                // signed off on, so its claimed times OVERRIDE the physical punch
+                // (the staff filed it precisely because the punch time was wrong
+                // or missing — "by mistake wrong time marked"). Previously the
+                // claimed time was only used when there was NO punch, so a day
+                // that WAS punched kept the wrong time and the approval looked
+                // like it "had no effect on the calendar time". Only override when
+                // a claimed time is actually present; a status-only regularization
+                // keeps the real punch time.
+                if (!empty($reg['claimedCheckInAt']))  $_h['checkInAt']  = (string) $reg['claimedCheckInAt'];
+                if (!empty($reg['claimedCheckOutAt'])) $_h['checkOutAt'] = (string) $reg['claimedCheckOutAt'];
                 $_h['regularized'] = true; // let the app badge a corrected day
             }
         }
@@ -399,8 +420,9 @@ class Staff_attendance extends MY_Controller
             'today'      => [
                 'date'           => $dateISO,
                 'status'         => $todayStatus,         // P|T|M|A|L|H|O|W|V
-                'checkInAt'      => $times['checkInAt'],  // ISO-8601 | null
-                'checkOutAt'     => $times['checkOutAt'], // ISO-8601 | null
+                'checkInAt'      => $times['checkInAt'],  // ISO-8601 | null (reg-overridden)
+                'checkOutAt'     => $times['checkOutAt'], // ISO-8601 | null (reg-overridden)
+                'regularized'    => $todayRegularized,
                 'isHoliday'      => $todayIsHoliday,
                 'isWeeklyOff'    => $todayIsWeeklyOff,
                 'allowWorkOnOff' => !empty($pol['allowWorkOnOff']),
